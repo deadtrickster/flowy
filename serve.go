@@ -63,6 +63,16 @@ func serve(args []string) error {
 	}
 	defer db.Close()
 
+	// The clock lives in memory and the rows do not: a node that applied a
+	// peer's rows and was then restarted has to come up above the highest
+	// reading it is already holding, or its next write would lose a merge it
+	// should have won.
+	if highest, err := db.SeedClock(dialCtx); err != nil {
+		log.Printf("clock: could not read the highest reading in the store: %v", err)
+	} else if highest > 0 {
+		log.Printf("clock: seeded above the store's highest reading (%d)", highest)
+	}
+
 	srv := &server{db: db, node: *node, operator: *operator, started: time.Now()}
 
 	// Listen before announcing, so a port clash is an error rather than a
@@ -131,6 +141,9 @@ var apiRoutes = []string{
 	"POST /api/task/{id}/state",
 	"PUT /api/me/auto_delegate",
 	"POST /api/grants",
+	"GET /api/sync/pull",
+	"POST /api/sync/push",
+	"GET /api/peers",
 	"GET /api/whoami",
 	"GET /api/node",
 }
@@ -174,6 +187,11 @@ func (s *server) routes() http.Handler {
 	api.HandleFunc("POST /api/task/{id}/state", s.handleTaskState)
 	api.HandleFunc("PUT /api/me/auto_delegate", s.handleAutoDelegate)
 	api.HandleFunc("POST /api/grants", s.handleCreateGrant)
+	// Replication. A peer is a client like any other: it holds a token, it
+	// resolves to a principal, and it pulls what that principal may read.
+	api.HandleFunc("GET /api/sync/pull", s.handleSyncPull)
+	api.HandleFunc("POST /api/sync/push", s.handleSyncPush)
+	api.HandleFunc("GET /api/peers", s.handleListPeers)
 	api.HandleFunc("GET /api/whoami", s.handleWhoami)
 	api.HandleFunc("GET /api/node", s.handleNode)
 	// A path under /api/ that nothing claims is a 404 in JSON. Without this it
@@ -245,7 +263,7 @@ func (s *server) handleNode(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"node":    s.node,
 		"version": version,
-		"phase":   4,
+		"phase":   5,
 		"console": s.console != nil && s.console.index != nil,
 		"routes":  append([]string{"GET /healthz", "GET /version"}, apiRoutes...),
 	})

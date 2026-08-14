@@ -41,7 +41,13 @@ type artifactRequest struct {
 // silently dropping a misspelled `visibilty` is how an artifact ends up
 // readable by a project that was never meant to see it.
 func decodeJSON(r *http.Request, into any) error {
-	dec := json.NewDecoder(io.LimitReader(r.Body, maxBody))
+	return decodeJSONLimit(r, into, maxBody)
+}
+
+// decodeJSONLimit is decodeJSON with a different cap, for the one endpoint that
+// takes a page of rows rather than a single one.
+func decodeJSONLimit(r *http.Request, into any, limit int64) error {
+	dec := json.NewDecoder(io.LimitReader(r.Body, limit))
 	dec.DisallowUnknownFields()
 	return dec.Decode(into)
 }

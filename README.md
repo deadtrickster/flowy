@@ -1,4 +1,4 @@
-# flowy - Handoff Fabric node (Phase 4)
+# flowy - Handoff Fabric node (Phase 5)
 
 The host-side node: one Go binary, one Postgres-wire database, and the schema
 spine every later phase rides on. Phase 0 was the skeleton - a server that
@@ -33,6 +33,15 @@ bug moves `open -> triaged -> in-progress -> in-review -> done`, with `wont-fix`
 and `duplicate` as terminal exits, every move appending an event that names the
 one before it.
 
+Phase 5 is federation: **two nodes, each with its own database, holding each
+other's work**. A node hands a peer a delta of everything the peer's principal
+may read since a cursor, applies what it gets back, and merges it
+last-writer-wins by HLC - so the same edit made on a laptop and on a server
+converges to one row on both, a delete travels as a tombstone, and an artifact
+nobody granted the peer access to never leaves the node it was written on.
+`flowy sync --peer <url> --token <t>` is the whole of the driver, and being
+offline just means syncing later.
+
 ## Run the gate
 
 ```sh
@@ -50,6 +59,12 @@ and ends with `passed: N failed: M`, exiting non-zero if anything failed. Phase
 2 added an MCP section - `flowy mcp --http` on a free port and JSON-RPC piped
 into `flowy mcp` on stdin, both transports, one store - and Phase 3 adds the
 chat, watcher, inbox and console-routing checks.
+
+Phase 5 stands up **two more clusters and two more nodes** inside the same run -
+`nodeA` and `nodeB`, separate `PGDATA`, separate ports, separate
+`DATABASE_URL`s, seeded with the same principals so a peer can authenticate -
+and drives the real `flowy sync` between them. Everything it creates is torn
+down by the same trap, including both extra clusters.
 
 `npm ci` is the one step that wants the network, and only when the package cache
 is cold; the Go build never does, because the module's one dependency is
@@ -86,9 +101,25 @@ guesses: the log line at startup says which of the two you have.
 | `flowy serve` | HTTP server, wired to the store, serving the embedded console |
 | `flowy mcp` | MCP server: shared memory over stdio, or `--http :PORT` |
 | `flowy fuse` | prints `fuse: not yet` (artifacts as a filesystem) |
-| `flowy sync` | prints `sync: not yet` (peer replication over `seq_hlc`) |
+| `flowy sync` | replicate with a peer: `--peer <url> --token <t>`, pull then push |
 | `flowy version` | build version |
 | `flowy help` | usage |
+
+`flowy sync` takes the peer and the token it authenticates as; everything else
+has a default:
+
+| flag | what it is |
+| --- | --- |
+| `--peer` | base URL of the peer node, required |
+| `--token` | bearer token, or `$FLOWY_TOKEN`; must resolve on **both** nodes |
+| `-dsn` | this node's database, default `$DATABASE_URL` |
+| `-node` | this node's name, default `$FLOWY_NODE` or the hostname |
+| `--limit` | rows per table per page, default 500 |
+| `--pull` / `--push` | either half on its own, both default true |
+
+It prints one JSON object per run - what it pulled, what that applied, what it
+pushed, what the peer applied, and where both cursors ended up - so a cron entry
+or a shell can read the result back.
 
 `mcp` and `serve` read their configuration from the environment, and flags
 override it:
@@ -290,6 +321,9 @@ and deletes are tombstones.
 | `POST /api/task/{id}/state` | move it: `open`\|`delegated`\|`done`. Either party may. Returns `{task, event}` |
 | `PUT /api/me/auto_delegate` | `{on: bool}` - your standing answer to inbound work |
 | `POST /api/grants` | issue a capability: `{from_project,to_project}` for a project-wide one, `{artifact,subject}` for a share |
+| `GET /api/sync/pull?since=&limit=` | the delta a peer may read: `{artifacts, events, tasks, grants, hwm}`, ordered by the clock, tombstones included |
+| `POST /api/sync/push` | merge a peer's delta: upsert by id, append-only events, last-writer-wins by `hlc` |
+| `GET /api/peers` | replication bookmarks and their cursors; the operator only |
 | `GET /api/whoami` | the principal this token resolves to |
 | `GET /api/node` | this node, its version and its routes |
 
@@ -299,8 +333,9 @@ is. An update keeps whatever it does not restate.
 
 A thread with no `thread` given is named after its first event. `parents` is the
 DAG: none opens a thread, one continues it, several merge. `since` is the same
-cursor peer replication will page by, and it is strictly greater, so a caller
-hands back the last value it saw.
+cursor peer replication pages by - `/api/sync/pull` takes the same parameter and
+means the same thing by it - and it is strictly greater, so a caller hands back
+the last value it saw.
 
 A tombstoned artifact still answers a `GET` by id, marked `"tombstone": true` -
 that is how the delete replicates - but it is gone from every list and every
@@ -428,6 +463,86 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/
 curl -s -H "Authorization: Bearer $TOKEN" 127.0.0.1:8787/api/artifact/01H.../history
 ```
 
+## Federation
+
+A node is one `flowy serve`, one database and one name - `FLOWY_NODE`, the
+hostname by default - and that name is stamped on every row it writes, next to
+the clock reading that ordered it. Two nodes hold each other's work by
+exchanging deltas. The mechanism is symmetric: there is no primary, and a laptop
+syncing with a server is the same command run from either end, even though that
+deployment is a hub with one spoke.
+
+```sh
+# on the laptop, whenever it has the server in front of it
+flowy sync --peer https://box.local:8787 --token "$TOKEN"
+{"peer":"https://box.local:8787","node":"laptop","peer_node":"box","as":"01H...",
+ "pulled":{"artifacts":3,"events":11,"tasks":1,"grants":0},
+ "applied":{"artifacts":3,"events":11,"tasks":1,"grants":0},
+ "pushed":{"artifacts":1,"events":4,"tasks":0,"grants":1},
+ "peer_applied":{"artifacts":1,"events":4,"tasks":0,"grants":1},
+ "pull_cursor":117094...,"pushed_cursor":117094...}
+```
+
+**Replication is permission-filtered, and that is the whole design.** A peer
+authenticates as a principal exactly like an agent does - it holds a bearer
+token, the token resolves to a `(user, agent, project)` triple - and it gets
+what that principal may read, through the same `ArtifactFilterSQL`,
+`EventFilterSQL` and task party test every other read goes through. So the
+cross-project grant that lets somebody in `pb` read an artifact in `pa` is what
+lets a node holding `pb`'s work replicate it, a personal artifact replicates to
+nobody, and a project nobody opened up stays on the machine it was written on.
+There is no replication user, no bypass and no second set of rules to keep in
+step with the first.
+
+The two endpoints:
+
+| route | what it does |
+| --- | --- |
+| `GET /api/sync/pull?since=<hlc>&limit=` | `{artifacts, events, tasks, grants, hwm, node}` - every row the requesting principal may read whose `hlc`/`seq_hlc` is **strictly greater** than `since`, ordered by the clock. Tombstones included: a delete has to travel, and it travels as a row |
+| `POST /api/sync/push` | body `{artifacts, events, tasks, grants}`; upserts each by id and answers with what it received and what that actually changed |
+
+`hwm` is the cursor the caller may store once it has applied the page. It is the
+greatest reading in the set, except when a table filled its page - then it is
+the smallest of the truncated tables' greatest readings, so nothing above the
+cursor is left behind. Rows below it arrive again on the next pull and applying
+them again does nothing.
+
+**The merge**, which is the same code on both sides (`internal/store/sync.go`),
+whether a row arrived by pull or by push:
+
+- **events are append-only.** Insert when the id is new, ignore it otherwise.
+  Nothing about an event is ever updated, including by replication, so a thread
+  arrives with its `parents` DAG exactly as it was written.
+- **artifacts, tasks and grants are last-writer-wins by `hlc`.** An incoming row
+  replaces the local one **only** when `incoming.hlc > local.hlc` - the `WHERE`
+  on the upsert is the only place that is decided. Both nodes therefore pick the
+  same winner whichever order the rows arrive in and however many times they
+  arrive, which is what makes a push idempotent rather than merely repeatable.
+- **an hlc is never lowered**, and a tombstone is a column rather than an
+  absence, so a delete beats an older write for exactly the same reason - and
+  loses to a newer one, which is what makes an edit made after a delete on
+  another node come back rather than vanish.
+- **applying a remote row advances the local clock past it.** The next local
+  write is then strictly newer than everything replication has brought in, so an
+  edit made here after pulling a peer's edit wins the next merge. `flowy serve`
+  also lifts its clock above the highest reading in its store at startup, since
+  the clock lives in memory and the rows do not.
+
+**Cursors live in `peers`**, one row per peer: `pull_cursor` is the greatest
+reading pulled and applied, `pushed_cursor` the greatest handed over, and
+neither ever moves backwards. That is what makes a sync resumable - a run that
+dies half way through resumes from where it got to, because each page is applied
+in one transaction and the cursor moves after it - and idempotent: a second run
+with nothing new to say transfers nothing and prints zeros. Being offline is
+being behind, and being behind is a cursor that has not moved yet.
+
+What replication does **not** carry is `tokens`, `users` and `agents`. Tokens
+are local credentials and the schema says so - they carry no `hlc`, no `node`
+and no tombstone. Two nodes that are meant to authenticate the same people are
+handed the same rows out of band, the way two machines are handed the same key.
+`GET /api/peers` shows the bookmarks, and only to this node's operator: a peer's
+cursor is not something one principal's token should reveal to another.
+
 ## The console
 
 `web/` is a React 19 + TypeScript app built by Vite, styled with Tailwind CSS v4
@@ -515,8 +630,9 @@ every table:
   write without asking each other first.
 - **`hlc bigint` + `node text` on every mutable row.** A hybrid logical clock
   reading packed into one sortable integer, plus the node that stamped it. That
-  is enough for a later phase to merge concurrent edits and to break ties the
-  same way on both sides.
+  is what Phase 5 merges concurrent edits by: last-writer-wins on `hlc`, and the
+  same winner picked on both sides because the readings are total and travel
+  with the row.
 - **`events` is append-only and carries the thread DAG** in `parents text[]`.
   No parents opens a thread, one continues it, several merge branches. Peers
   page through the log by `seq_hlc`.
@@ -530,7 +646,7 @@ every table:
 | `artifacts` | transcripts, memories, chats, bugs, features, notes |
 | `events` | the append-only log and its DAG |
 | `tasks` | handoffs: one artifact, from one user to another, with a thread and a state of `open`\|`delegated`\|`done` |
-| `peers` | replication bookmarks, one row per peer node |
+| `peers` | replication bookmarks: `pull_cursor`, `pushed_cursor` and `last_seen`, one row per peer, neither cursor ever moving backwards |
 
 An artifact with `project` NULL is personal to `owner_user`; `visibility` is
 `personal`, `project` or `shared`. `kind` narrows `type` without multiplying it -
@@ -560,6 +676,16 @@ what a status trail is.
   node on the way in; reads rows back with their arrays and jsonb intact.
   `perm.go` holds the principal, the read predicate and the SQL filter;
   `artifacts.go` and `events.go` hold the queries that carry it.
+- `internal/store/sync.go` - replication, both halves. `SyncPull` is a
+  permission-filtered read of all four replicated tables plus the high water
+  mark; `SyncApply` is the merge - append-only for events, last-writer-wins by
+  `hlc` for everything else - in one transaction, reporting what it actually
+  changed rather than what it was handed. The peers bookmarks and `SeedClock`
+  are here too.
+- `sync.go` - the node half: `GET /api/sync/pull`, `POST /api/sync/push`,
+  `GET /api/peers`, and the `flowy sync` driver that pages between two nodes and
+  moves the cursors. Both endpoints and the driver go through the one merge, so
+  a row cannot be applied one way over a pull and another over a push.
 - `cmd/smoke` - the live checks the gate runs against a running node, plus
   `smoke seed`, which mints the principals the permission checks act as.
 - `auth.go`, `api.go` - the token middleware and the handlers. The whole of
@@ -595,8 +721,8 @@ what a status trail is.
 against a live `flowy serve`:
 
 - `/healthz` comes up and reports `ok:true` with the database up
-- the seven spine tables exist
-- `fuse` and `sync` print their placeholder and exit zero
+- the eight spine tables exist
+- `fuse` prints its placeholder and exits zero
 - 10000 ULIDs are unique and strictly increasing - sorted order equals
   generation order
 - 8 goroutines minting 5000 HLC readings each produce 40000 distinct values,
@@ -740,6 +866,50 @@ actually served:
 - `psql` sees the chat rows in the same `events` table, a reply carrying its
   parent, and two projects with a room called `general`
 
+Then Phase 5, against **two** nodes - two clusters, two `flowy serve`
+processes, `nodeA` and `nodeB` - seeded with the same principals and driven by
+the real `flowy sync`:
+
+- both nodes come up on their own databases with their own names, and neither
+  holds a single artifact the other wrote
+- the replication token resolves to the same principal in the same project on
+  both, which is what lets a peer authenticate at all
+- A opens `pa` up to `pb`, writes a shared artifact, a **personal** one and one
+  in `pc` that nobody granted the peer, and a thread of two events; B writes one
+  of its own in `pb`
+- one sync, and A's artifact is on B with **the same id, the same `hlc` and the
+  same author** - and searchable there, because the search vector is rebuilt on
+  the way in rather than shipped. B's artifact is on A the same way, still
+  stamped `nodeB`
+- the thread is on B with its `parents` edge intact and the node that appended
+  it unchanged
+- the personal artifact is **not on B at all**, and neither is the one in `pc`;
+  `GET /api/sync/pull` offers the peer neither of them and offers the granted
+  one, which is the permission filter deciding replication rather than a second
+  rule about it
+- **conflict**: the same artifact is edited on A at `h1` and then on B at
+  `h2 > h1` with no sync between. After one sync both nodes hold the `h2`
+  version, at `h2`, authored `nodeB`, and **exactly one row each** - no lost
+  update, no duplicate
+- A deletes it: the tombstone reads after the edit it removes, and after a sync
+  B answers the same `tombstone: true` at the same reading, with the artifact
+  gone from B's list and B's search and the row still in B's table
+- an assignment on A arrives on B as all three of its parts - the task, the
+  share that makes the artifact readable, and the thread it opened
+- a sync with nothing new **moves nothing**: pulled and pushed are zero on both
+  sides. The same delta pushed twice is received twice and applied once, and B
+  ends with one row at the reading A wrote
+- each node holds a `peers` row for the other with both cursors moved and
+  `last_seen` set; `GET /api/peers` answers the operator and `403`s everyone
+  else; `flowy sync` refuses a run with no peer, and refuses a token that names
+  no principal on this node before anything is sent anywhere
+- the two databases **agree row for row**: every artifact id they both hold
+  carries the same reading, the same author and the same tombstone state
+- `psql` sees A's rows on B and B's on A stamped with the node that wrote them,
+  the replicated DAG, the tombstone as a row rather than a hole, the replicated
+  task joined to its share, the personal artifact on A and only on A, and both
+  cursors on both nodes
+
 The last thing the gate does is ask git whether the tree it just tested is the
 tree on disk: uncommitted changes, or nothing ever committed, is a failure.
 `web/node_modules` and everything vite writes into `web/dist` are ignored, so
@@ -765,22 +935,39 @@ else. It is quarantined there because it is meant to be deleted: when SereneDB
 brings vectors, that section goes and `store.SearchArtifacts` becomes a vector
 query. Nothing above it depends on anything below it.
 
-## Phase 4 status
+## Phase 5 status
 
-Green. `./run-tests.sh` reports `passed: 139 failed: 0` with Go 1.22, Node 22.14
-and Postgres 16 - the 103 checks Phases 0 to 3 ended with, plus 36 for
-assignment, delegation, the task inbox, the lifecycle, the status trail and the
-two new console routes. Phases 0 to 3 stayed green throughout: an assignment is
-a Phase 1 grant, a Phase 3 chat event and one new row, and a transition is one
-column and one event.
+Green. `./run-tests.sh` reports `passed: 178 failed: 0` with Go 1.22, Node 22.14
+and Postgres 16 - the 139 checks Phases 0 to 4 ended with (one of them now
+`flowy fuse` alone, since `sync` left the stub list), plus 40 for federation:
+two clusters, two nodes, and the replication, conflict, permission-filter,
+tombstone and cursor checks above. Phases 0 to 4 stayed green
+throughout, and mostly by construction - replication reuses the permission
+filter rather than reimplementing it, the merge is the schema's `hlc` and
+tombstone columns doing what they were put there for in Phase 0, and the only
+change to an existing file outside the routing table was seeding the clock at
+startup.
 
-Not here yet: `flowy fuse` and `flowy sync` still print their placeholder; the
-MCP HTTP transport answers `POST /mcp` only, with no server-initiated SSE
-stream; `/metrics` is a stub over `/healthz`; the console has no MCP-side view
-of memory yet, and no screen for making an assignment - it reads the inbox and
-acts on what is in it, and `POST /api/assign` is a call an agent or a curl
-makes. Tasks have no watcher of their own either: the inbox is fetched on load
-and after an action, and only the thread inside a task long-polls.
+Not here yet: `flowy fuse` still prints its placeholder. Sync is a command you
+run rather than a loop the node keeps - there is no daemon, no schedule and no
+push notification, so two nodes converge when somebody (or a cron entry) says
+so. `users` and `agents` do not replicate either, so a person who exists on one
+node is copied to the other out of band along with their token. The MCP HTTP
+transport answers `POST /mcp` only, with no server-initiated SSE stream;
+`/metrics` is a stub over `/healthz`; the console has no MCP-side view of memory
+yet, no screen for making an assignment, and no federation view - `GET
+/api/peers` is JSON an operator reads with curl. Tasks have no watcher of their
+own either: the inbox is fetched on load and after an action, and only the
+thread inside a task long-polls.
+
+One thing worth knowing about the cursor model: a `pushed_cursor` is a watermark
+over a hybrid logical clock, so it assumes the two nodes' wall clocks are within
+the ordinary NTP distance of each other. Two things keep that honest - a node
+lifts its clock above the highest reading in its store at startup, and applying
+a peer's rows (including an incoming push, which lands in the serving process)
+advances it past them - but a node whose clock is hours behind its peer would
+mint readings that its own watermark has already passed. There is no check for
+that yet.
 
 Two things worth knowing about the shape of the console: the bundle is one
 600 kB chunk (react-flow and framer-motion are most of it) because nothing is

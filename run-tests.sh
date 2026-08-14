@@ -14,6 +14,12 @@
 # it. Both transports are exercised - JSON-RPC over POST /mcp and JSON-RPC over
 # a subprocess's pipes - and an item written over one is read back over the
 # other, which is the whole of the "one shared memory" claim.
+#
+# Phase 5 adds federation, and it needs two of everything: two Postgres clusters,
+# two `flowy serve` processes, two node names. Nothing about replication can be
+# tested inside one database - a merge that is only ever asked to merge a row
+# with itself is not a merge - so the gate stands up a second node beside the
+# first and drives the real `flowy sync` between them.
 
 set -euo pipefail
 
@@ -27,7 +33,15 @@ PGLOG="$WORK/postgres.log"
 SERVE_LOG="$WORK/serve.log"
 MCP_LOG="$WORK/mcp.log"
 DBNAME="flowy"
+# Phase 5 runs two more nodes, each with a cluster of its own.
+PGDATA5A="$WORK/pgdata5a"
+PGDATA5B="$WORK/pgdata5b"
+PGSOCK5A="$WORK/sock5a"
+PGSOCK5B="$WORK/sock5b"
+NODE5A_LOG="$WORK/nodeA.log"
+NODE5B_LOG="$WORK/nodeB.log"
 readonly ROOT WORK PGDATA PGSOCK PGLOG SERVE_LOG MCP_LOG DBNAME
+readonly PGDATA5A PGDATA5B PGSOCK5A PGSOCK5B NODE5A_LOG NODE5B_LOG
 
 PG_BIN=""
 PGPORT=""
@@ -35,22 +49,26 @@ HTTP_PORT=""
 MCP_PORT=""
 SERVE_PID=""
 MCP_PID=""
+NODE5A_PID=""
+NODE5B_PID=""
 passed=0
 failed=0
 
 cleanup() {
 	local status=$?
 	set +e
-	local pid
-	for pid in "$SERVE_PID" "$MCP_PID"; do
+	local pid data
+	for pid in "$SERVE_PID" "$MCP_PID" "$NODE5A_PID" "$NODE5B_PID"; do
 		if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
 			kill "$pid" 2>/dev/null
 			wait "$pid" 2>/dev/null
 		fi
 	done
-	if [ -n "$PG_BIN" ] && [ -d "$PGDATA" ]; then
-		"$PG_BIN/pg_ctl" -D "$PGDATA" -m immediate -w stop >/dev/null 2>&1
-	fi
+	for data in "$PGDATA" "$PGDATA5A" "$PGDATA5B"; do
+		if [ -n "$PG_BIN" ] && [ -d "$data" ]; then
+			"$PG_BIN/pg_ctl" -D "$data" -m immediate -w stop >/dev/null 2>&1
+		fi
+	done
 	rm -rf "$WORK"
 	exit "$status"
 }
@@ -1648,6 +1666,521 @@ serves_the_inbox_route() {
 	printf '/inbox -> 200, and a task deep link with it\n'
 }
 
+# ------------------------------------------------------------ phase 5 helpers
+#
+# Two nodes. Everything below takes the node it is talking to as an argument,
+# because the whole point of the phase is that there are two of them and that
+# what one of them holds is not automatically what the other one holds.
+
+# start_pg5 LABEL PGDATA SOCKET PORT - a throwaway cluster for one federated
+# node: its own PGDATA, its own port, its own copy of the schema.
+start_pg5() {
+	local label=$1 data=$2 sock=$3 port=$4
+	mkdir -p "$sock"
+	if ! "$PG_BIN/initdb" -D "$data" -U "$PGUSER" -A trust -E UTF8 --locale=C --no-sync \
+		>"$WORK/initdb5$label.log" 2>&1; then
+		cat "$WORK/initdb5$label.log" >&2
+		return 1
+	fi
+	if ! "$PG_BIN/pg_ctl" -D "$data" -l "$WORK/postgres5$label.log" -w -t 60 \
+		-o "-p $port -k $sock -h 127.0.0.1 -c fsync=off -c full_page_writes=off" \
+		start >"$WORK/pg_ctl5$label.log" 2>&1; then
+		cat "$WORK/pg_ctl5$label.log" >&2
+		[ -f "$WORK/postgres5$label.log" ] && cat "$WORK/postgres5$label.log" >&2
+		return 1
+	fi
+	"$PG_BIN/createdb" -h 127.0.0.1 -p "$port" "$DBNAME" || return 1
+	psql -v ON_ERROR_STOP=1 -q -d "postgres://$PGUSER@127.0.0.1:$port/$DBNAME?sslmode=disable" \
+		-f "$ROOT/schema.sql" || return 1
+	printf 'cluster %s: port %s, schema loaded\n' "$label" "$port"
+}
+
+# copy_principals FROM_DSN TO_DSN - hands the second node the same users, agents
+# and tokens as the first.
+#
+# This is a copy rather than a sync on purpose. Tokens are local credentials and
+# not fabric state - the schema says so, and nothing replicates them - so two
+# nodes that are meant to authenticate the same people have to be told who those
+# people are out of band, exactly as two machines are handed the same key.
+copy_principals() {
+	local from=$1 to=$2 table
+	for table in users agents tokens; do
+		psql -v ON_ERROR_STOP=1 -q -d "$from" -c "\\copy $table to '$WORK/$table.csv' csv" || return 1
+		psql -v ON_ERROR_STOP=1 -q -d "$to" -c "\\copy $table from '$WORK/$table.csv' csv" || return 1
+	done
+	printf 'users, agents and tokens: %s row(s) each side\n' \
+		"$(psql -tA -d "$to" -c 'SELECT count(*) FROM tokens')"
+}
+
+# napi PORT METHOD TOKEN PATH [BODY] - api(), against one of the two federated
+# nodes. Each check runs in a subshell of its own, so pointing the helpers at
+# another node cannot leak into the next check.
+napi() {
+	local port=$1
+	shift
+	HTTP_PORT="$port"
+	api "$@"
+}
+
+# want_napi WANT PORT METHOD TOKEN PATH [BODY] - want_status, against one node.
+want_napi() {
+	local want=$1 port=$2
+	shift 2
+	HTTP_PORT="$port"
+	want_status "$want" "$@"
+}
+
+# remember5 / recall5 - the Phase 5 ids live in a file of their own, so the two
+# federated nodes' principals cannot be confused with the single node's.
+remember5() { printf '%s=%q\n' "$1" "$2" >>"$WORK/ids5"; }
+
+recall5() {
+	# shellcheck source=/dev/null
+	. "$WORK/ids5"
+}
+
+# scalar5 DSN QUERY - one value straight out of one of the two databases.
+scalar5() { psql -v ON_ERROR_STOP=1 -tA -d "$1" -c "$2"; }
+
+# psql5_counts DSN QUERY - psql_counts, against one of the two databases.
+psql5_counts() {
+	local n
+	n="$(psql -v ON_ERROR_STOP=1 -tA -d "$1" -c "$2")"
+	if [ -z "$n" ] || [ "$n" -lt 1 ]; then
+		printf 'query returned %s, want at least one row:\n%s\n' "${n:-<empty>}" "$2" >&2
+		return 1
+	fi
+	printf '%s row(s)\n' "$n"
+}
+
+# sync5 DSN NODE PEER_PORT TOKEN - one run of the real driver, with its report
+# left in SYNC_REPORT.
+sync5() {
+	local dsn=$1 node=$2 port=$3 token=$4
+	SYNC_REPORT="$(DATABASE_URL="$dsn" FLOWY_NODE="$node" \
+		"$ROOT/flowy" sync --peer "http://127.0.0.1:$port" --token "$token")" || return 1
+}
+
+# moved5 - how many rows the last report moved, in either direction.
+moved5() { printf '%s' "$SYNC_REPORT" | jq '[.pulled[], .pushed[]] | add'; }
+
+# sync_round - a full exchange: A syncs with B, then B syncs with A. The count
+# of rows that moved lands in SYNC_MOVED. Callers recall5 first.
+#
+# Both runs authenticate as the same principal, which is what federation is: two
+# nodes holding the work of the people they have in common, and nothing else.
+sync_round() {
+	local total=0 n
+	sync5 "$N5_DSN_A" nodeA "$N5_PORT_B" "$N5_TOKEN_B" || return 1
+	n="$(moved5)" || return 1
+	total=$((total + n))
+	sync5 "$N5_DSN_B" nodeB "$N5_PORT_A" "$N5_TOKEN_B" || return 1
+	n="$(moved5)" || return 1
+	SYNC_MOVED=$((total + n))
+}
+
+# ------------------------------------------------------------- phase 5 checks
+
+both_nodes_are_up_and_apart() {
+	recall5
+	napi "$N5_PORT_A" GET "" /healthz || return 1
+	want_eq "node A's name" "$(jqv .node)" nodeA || return 1
+	want_eq "node A's database" "$(jqv .db)" up || return 1
+	napi "$N5_PORT_B" GET "" /healthz || return 1
+	want_eq "node B's name" "$(jqv .node)" nodeB || return 1
+	want_eq "node B's database" "$(jqv .db)" up || return 1
+	want_eq "rows B holds that A wrote" \
+		"$(scalar5 "$N5_DSN_B" "SELECT count(*) FROM artifacts")" 0 || return 1
+	want_eq "rows A holds that B wrote" \
+		"$(scalar5 "$N5_DSN_A" "SELECT count(*) FROM artifacts")" 0 || return 1
+	printf 'nodeA on %s and nodeB on %s, two databases, both empty of artifacts\n' \
+		"$N5_PORT_A" "$N5_PORT_B"
+}
+
+the_same_token_authenticates_on_both() {
+	recall5
+	napi "$N5_PORT_A" GET "$N5_TOKEN_B" /api/whoami || return 1
+	local user
+	user="$(jqv .user)"
+	want_eq "the principal on node A" "$user" "$N5_USER_B" || return 1
+	napi "$N5_PORT_B" GET "$N5_TOKEN_B" /api/whoami || return 1
+	want_eq "the principal on node B" "$(jqv .user)" "$user" || return 1
+	want_eq "and its home project" "$(jqv .project)" pb || return 1
+	printf 'the replication token is %s in pb on both nodes\n' "$user"
+}
+
+a_opens_pa_up_to_pb_on_node_a() {
+	recall5
+	want_napi 200 "$N5_PORT_A" POST "$N5_TOKEN_A" /api/grants \
+		'{"from_project":"pb","to_project":"pa"}' || return 1
+	printf 'grant %s: pb may read pa, which is what lets pa replicate\n' "$(jqv .id)"
+}
+
+a_writes_a_shared_artifact() {
+	recall5
+	want_napi 200 "$N5_PORT_A" POST "$N5_TOKEN_A" /api/artifacts \
+		'{"type":"note","title":"the shared one","body":"zibbleflax is the word"}' || return 1
+	want_eq "the node that wrote it" "$(jqv .node)" nodeA || return 1
+	want_eq "the project it landed in" "$(jqv .project)" pa || return 1
+	remember5 SHARED_ID "$(jqv .id)"
+	remember5 SHARED_HLC "$(jqv .hlc)"
+	printf 'artifact %s at hlc %s, on nodeA\n' "$(jqv .id)" "$(jqv .hlc)"
+}
+
+a_writes_what_the_peer_may_not_see() {
+	recall5
+	want_napi 200 "$N5_PORT_A" POST "$N5_TOKEN_A" /api/artifacts \
+		'{"type":"note","title":"the personal one","visibility":"personal","body":"quibblenock"}' ||
+		return 1
+	want_eq "no project at all" "$(jqv .project)" null || return 1
+	remember5 PERSONAL_ID "$(jqv .id)"
+	# And one in pc, a project the peer principal holds no grant into.
+	want_napi 200 "$N5_PORT_A" POST "$N5_TOKEN_A_PC" /api/artifacts \
+		'{"type":"note","title":"the ungranted one","body":"thrumbleaxe"}' || return 1
+	remember5 UNGRANTED_ID "$(jqv .id)"
+	printf 'a personal artifact and one in pc, neither of them the peer principals business\n'
+}
+
+a_appends_a_thread() {
+	recall5
+	want_napi 200 "$N5_PORT_A" POST "$N5_TOKEN_A" /api/events \
+		'{"type":"chat","room":"general","body":"first, on node A"}' || return 1
+	local first thread
+	first="$(jqv .id)"
+	thread="$(jqv .thread)"
+	want_napi 200 "$N5_PORT_A" POST "$N5_TOKEN_A" /api/events \
+		"{\"type\":\"chat\",\"room\":\"general\",\"thread\":\"$thread\",\"parents\":[\"$first\"],\"body\":\"second, on node A\"}" ||
+		return 1
+	remember5 THREAD5 "$thread"
+	remember5 THREAD5_FIRST "$first"
+	remember5 THREAD5_SECOND "$(jqv .id)"
+	printf 'thread %s: %s then %s, which names it as its parent\n' "$thread" "$first" "$(jqv .id)"
+}
+
+b_writes_one_of_its_own() {
+	recall5
+	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_B" /api/artifacts \
+		'{"type":"note","title":"the one from B","body":"wobblethorn"}' || return 1
+	want_eq "the node that wrote it" "$(jqv .node)" nodeB || return 1
+	want_eq "the project it landed in" "$(jqv .project)" pb || return 1
+	remember5 B_ID "$(jqv .id)"
+	remember5 B_HLC "$(jqv .hlc)"
+	printf 'artifact %s at hlc %s, on nodeB\n' "$(jqv .id)" "$(jqv .hlc)"
+}
+
+the_first_sync() {
+	recall5
+	sync5 "$N5_DSN_A" nodeA "$N5_PORT_B" "$N5_TOKEN_B" || return 1
+	want_eq "the node that ran it" \
+		"$(printf '%s' "$SYNC_REPORT" | jq -r .node)" nodeA || return 1
+	want_eq "the node it reached" \
+		"$(printf '%s' "$SYNC_REPORT" | jq -r .peer_node)" nodeB || return 1
+	local moved
+	moved="$(moved5)"
+	if [ "$moved" -lt 1 ]; then
+		printf 'the first sync moved nothing: %s\n' "$SYNC_REPORT" >&2
+		return 1
+	fi
+	# And the other way, which is the same command with the ends swapped.
+	sync5 "$N5_DSN_B" nodeB "$N5_PORT_A" "$N5_TOKEN_B" || return 1
+	printf 'A -> B moved %s rows; B -> A: %s\n' "$moved" "$SYNC_REPORT"
+}
+
+the_shared_artifact_is_on_b() {
+	recall5
+	want_napi 200 "$N5_PORT_B" GET "$N5_TOKEN_A" "/api/artifact/$SHARED_ID" || return 1
+	want_eq "the id" "$(jqv .id)" "$SHARED_ID" || return 1
+	want_eq "the clock reading" "$(jqv .hlc)" "$SHARED_HLC" || return 1
+	want_eq "the node that wrote it" "$(jqv .node)" nodeA || return 1
+	want_eq "the title" "$(jqv .title)" "the shared one" || return 1
+	# The search vector is rebuilt on the way in rather than shipped, so a
+	# replicated artifact has to be findable on the node that received it.
+	want_napi 200 "$N5_PORT_B" GET "$N5_TOKEN_A" "/api/search?q=zibbleflax" || return 1
+	want_eq "B finds it by a word from its body" "$(hits ".id == \"$SHARED_ID\"")" 1 || return 1
+	printf '%s is on nodeB at the same hlc %s, and searchable there\n' "$SHARED_ID" "$SHARED_HLC"
+}
+
+bs_artifact_is_on_a() {
+	recall5
+	want_napi 200 "$N5_PORT_A" GET "$N5_TOKEN_B" "/api/artifact/$B_ID" || return 1
+	want_eq "the id" "$(jqv .id)" "$B_ID" || return 1
+	want_eq "the clock reading" "$(jqv .hlc)" "$B_HLC" || return 1
+	want_eq "the node that wrote it" "$(jqv .node)" nodeB || return 1
+	printf '%s is on nodeA at the same hlc %s, still stamped nodeB\n' "$B_ID" "$B_HLC"
+}
+
+the_thread_is_on_b_with_its_parents() {
+	recall5
+	want_napi 200 "$N5_PORT_B" GET "$N5_TOKEN_A" "/api/events?thread=$THREAD5" || return 1
+	want_eq "events in the thread on B" \
+		"$(printf '%s' "$API_BODY" | jq '.events | length')" 2 || return 1
+	want_eq "the first" "$(jqv '.events[0].id')" "$THREAD5_FIRST" || return 1
+	want_eq "the second" "$(jqv '.events[1].id')" "$THREAD5_SECOND" || return 1
+	want_eq "the edge between them" "$(jqv '.events[1].parents[0]')" "$THREAD5_FIRST" || return 1
+	want_eq "the node that appended it" "$(jqv '.events[1].node')" nodeA || return 1
+	printf 'thread %s replicated with its DAG intact\n' "$THREAD5"
+}
+
+the_personal_artifact_did_not_replicate() {
+	recall5
+	want_eq "copies of it on B" \
+		"$(scalar5 "$N5_DSN_B" "SELECT count(*) FROM artifacts WHERE id = '$PERSONAL_ID'")" 0 || return 1
+	# Not even for its owner, because it never crossed at all.
+	want_napi 404 "$N5_PORT_B" GET "$N5_TOKEN_A" "/api/artifact/$PERSONAL_ID" || return 1
+	printf 'the personal artifact is not on nodeB in any form\n'
+}
+
+the_ungranted_project_did_not_replicate() {
+	recall5
+	want_eq "copies of it on B" \
+		"$(scalar5 "$N5_DSN_B" "SELECT count(*) FROM artifacts WHERE id = '$UNGRANTED_ID'")" 0 || return 1
+	want_napi 404 "$N5_PORT_B" GET "$N5_TOKEN_A_PC" "/api/artifact/$UNGRANTED_ID" || return 1
+	printf 'pc has no grant into it, so pc does not replicate\n'
+}
+
+the_delta_offers_only_what_the_peer_may_read() {
+	recall5
+	want_napi 200 "$N5_PORT_A" GET "$N5_TOKEN_B" "/api/sync/pull?since=0" || return 1
+	local ids
+	ids="$(printf '%s' "$API_BODY" | jq -r '.artifacts[].id')"
+	if printf '%s\n' "$ids" | grep -qx "$PERSONAL_ID"; then
+		printf 'the pull endpoint offered a personal artifact to a peer\n' >&2
+		return 1
+	fi
+	if printf '%s\n' "$ids" | grep -qx "$UNGRANTED_ID"; then
+		printf 'the pull endpoint offered an artifact in a project with no grant\n' >&2
+		return 1
+	fi
+	if ! printf '%s\n' "$ids" | grep -qx "$SHARED_ID"; then
+		printf 'the pull endpoint withheld an artifact the peer holds a grant on\n%s\n' \
+			"$API_BODY" >&2
+		return 1
+	fi
+	printf 'the delta holds the granted artifact and neither of the two it may not read\n'
+}
+
+the_same_artifact_is_edited_on_both_nodes() {
+	recall5
+	want_napi 200 "$N5_PORT_A" POST "$N5_TOKEN_A" /api/artifacts \
+		"{\"id\":\"$SHARED_ID\",\"type\":\"note\",\"title\":\"edited on A\"}" || return 1
+	want_eq "the edit on A is A's" "$(jqv .node)" nodeA || return 1
+	local h1 h2
+	h1="$(jqv .hlc)"
+	# A moment apart, so the two readings cannot tie. Two writes in the same
+	# millisecond on two nodes are two logical counters that know nothing of
+	# each other, and last-writer-wins has no last writer to pick.
+	sleep 0.2
+	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_A" /api/artifacts \
+		"{\"id\":\"$SHARED_ID\",\"type\":\"note\",\"title\":\"edited on B\"}" || return 1
+	want_eq "the edit on B is B's" "$(jqv .node)" nodeB || return 1
+	h2="$(jqv .hlc)"
+	if [ "$h2" -le "$h1" ]; then
+		printf 'the second edit read %s, which does not order after %s\n' "$h2" "$h1" >&2
+		return 1
+	fi
+	remember5 CONFLICT_H1 "$h1"
+	remember5 CONFLICT_H2 "$h2"
+	printf 'edited on A at %s and on B at %s, with no sync in between\n' "$h1" "$h2"
+}
+
+both_nodes_converge_on_the_later_edit() {
+	recall5
+	sync_round || return 1
+	local title_a reading_a author_a title_b reading_b author_b
+	napi "$N5_PORT_A" GET "$N5_TOKEN_A" "/api/artifact/$SHARED_ID" || return 1
+	title_a="$(jqv .title)"
+	reading_a="$(jqv .hlc)"
+	author_a="$(jqv .node)"
+	napi "$N5_PORT_B" GET "$N5_TOKEN_A" "/api/artifact/$SHARED_ID" || return 1
+	title_b="$(jqv .title)"
+	reading_b="$(jqv .hlc)"
+	author_b="$(jqv .node)"
+	want_eq "node A's copy" "$title_a" "edited on B" || return 1
+	want_eq "node B's copy" "$title_b" "edited on B" || return 1
+	want_eq "node A's reading" "$reading_a" "$CONFLICT_H2" || return 1
+	want_eq "node B's reading" "$reading_b" "$CONFLICT_H2" || return 1
+	want_eq "the author on A" "$author_a" nodeB || return 1
+	want_eq "the author on B" "$author_b" nodeB || return 1
+	want_eq "rows for it on A" \
+		"$(scalar5 "$N5_DSN_A" "SELECT count(*) FROM artifacts WHERE id = '$SHARED_ID'")" 1 || return 1
+	want_eq "rows for it on B" \
+		"$(scalar5 "$N5_DSN_B" "SELECT count(*) FROM artifacts WHERE id = '$SHARED_ID'")" 1 || return 1
+	printf 'both nodes hold one row, at %s, carrying the later edit\n' "$CONFLICT_H2"
+}
+
+a_delete_on_a_reaches_b() {
+	recall5
+	want_napi 200 "$N5_PORT_A" POST "$N5_TOKEN_A" "/api/artifact/$SHARED_ID/delete" || return 1
+	want_eq "tombstoned" "$(jqv .tombstone)" true || return 1
+	local h
+	h="$(jqv .hlc)"
+	if [ "$h" -le "$CONFLICT_H2" ]; then
+		printf 'the delete read %s, which does not order after the edit at %s\n' \
+			"$h" "$CONFLICT_H2" >&2
+		return 1
+	fi
+	remember5 TOMB_HLC "$h"
+	sync_round || return 1
+	printf 'deleted on nodeA at %s, and synced\n' "$h"
+}
+
+the_tombstone_is_on_b_too() {
+	recall5
+	# A tombstone is a row and reads back as one, on both nodes alike: what the
+	# delete removes is the artifact from the views, not the fact from the table.
+	want_napi 200 "$N5_PORT_A" GET "$N5_TOKEN_A" "/api/artifact/$SHARED_ID" || return 1
+	want_eq "the delete on A" "$(jqv .tombstone)" true || return 1
+	want_napi 200 "$N5_PORT_B" GET "$N5_TOKEN_A" "/api/artifact/$SHARED_ID" || return 1
+	want_eq "the delete on B" "$(jqv .tombstone)" true || return 1
+	want_eq "at the same reading" "$(jqv .hlc)" "$TOMB_HLC" || return 1
+	want_napi 200 "$N5_PORT_B" GET "$N5_TOKEN_A" /api/artifacts || return 1
+	want_eq "in B's list" "$(hits ".id == \"$SHARED_ID\"")" 0 || return 1
+	want_napi 200 "$N5_PORT_B" GET "$N5_TOKEN_A" "/api/search?q=zibbleflax" || return 1
+	want_eq "in B's search" "$(hits ".id == \"$SHARED_ID\"")" 0 || return 1
+	want_eq "still a row in B's table" \
+		"$(scalar5 "$N5_DSN_B" "SELECT tombstone FROM artifacts WHERE id = '$SHARED_ID'")" t || return 1
+	want_eq "at the delete's reading" \
+		"$(scalar5 "$N5_DSN_B" "SELECT hlc FROM artifacts WHERE id = '$SHARED_ID'")" \
+		"$TOMB_HLC" || return 1
+	printf 'gone from nodeB list and search, still there as a tombstone at %s\n' "$TOMB_HLC"
+}
+
+an_assignment_replicates_as_a_task() {
+	recall5
+	want_napi 200 "$N5_PORT_A" POST "$N5_TOKEN_A" /api/artifacts \
+		'{"type":"bug","title":"the federated bug","body":"gribbleflint in the gearbox","status":"open"}' ||
+		return 1
+	local art task thread
+	art="$(jqv .id)"
+	want_napi 200 "$N5_PORT_A" POST "$N5_TOKEN_A" /api/assign \
+		"{\"artifact\":\"$art\",\"to_user\":\"$N5_USER_B\",\"note\":\"over to you, on the other node\"}" ||
+		return 1
+	task="$(jqv .id)"
+	thread="$(jqv .thread)"
+	sync_round || return 1
+
+	want_napi 200 "$N5_PORT_B" GET "$N5_TOKEN_B" "/api/task/$task" || return 1
+	want_eq "the task on B" "$(jqv .id)" "$task" || return 1
+	want_eq "who it is for" "$(jqv .to_user)" "$N5_USER_B" || return 1
+	want_eq "and where it came from" "$(jqv .from_user)" "$N5_USER_A" || return 1
+	# The share it wrote and the thread it opened crossed with it.
+	want_napi 200 "$N5_PORT_B" GET "$N5_TOKEN_B" "/api/artifact/$art" || return 1
+	want_napi 200 "$N5_PORT_B" GET "$N5_TOKEN_B" "/api/events?thread=$thread" || return 1
+	local n
+	n="$(printf '%s' "$API_BODY" | jq '.events | length')"
+	if [ "$n" -lt 1 ]; then
+		printf 'the assignment thread reached B empty\n' >&2
+		return 1
+	fi
+	printf 'task %s, its share and its %s-event thread all reached nodeB\n' "$task" "$n"
+}
+
+a_sync_with_nothing_new_moves_nothing() {
+	recall5
+	# Settle first. A write takes one exchange to reach the other node and one
+	# more for each side's cursor to catch up with what came back.
+	sync_round || return 1
+	sync_round || return 1
+	sync_round || return 1
+	want_eq "rows moved by a sync with nothing new" "$SYNC_MOVED" 0 || return 1
+	printf 'caught up, and it costs nothing to say so: %s\n' "$SYNC_REPORT"
+}
+
+pushing_the_same_delta_twice_applies_it_once() {
+	recall5
+	want_napi 200 "$N5_PORT_A" POST "$N5_TOKEN_A" /api/artifacts \
+		'{"type":"note","title":"pushed by hand","body":"flimflammery"}' || return 1
+	local id hlc delta
+	id="$(jqv .id)"
+	hlc="$(jqv .hlc)"
+
+	# Take the delta out of A as the peer principal, then hand it to B twice.
+	want_napi 200 "$N5_PORT_A" GET "$N5_TOKEN_B" "/api/sync/pull?since=$((hlc - 1))" || return 1
+	want_eq "the delta holds the one new row" \
+		"$(printf '%s' "$API_BODY" | jq '.artifacts | length')" 1 || return 1
+	delta="$(printf '%s' "$API_BODY" | jq -c '{artifacts, events, tasks, grants}')"
+
+	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_B" /api/sync/push "$delta" || return 1
+	want_eq "the first push applies it" "$(jqv '.applied.artifacts')" 1 || return 1
+	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_B" /api/sync/push "$delta" || return 1
+	want_eq "the second receives it" "$(jqv '.received.artifacts')" 1 || return 1
+	want_eq "and applies nothing" "$(jqv '.applied.artifacts')" 0 || return 1
+	want_eq "B holds one row for it" \
+		"$(scalar5 "$N5_DSN_B" "SELECT count(*) FROM artifacts WHERE id = '$id'")" 1 || return 1
+	want_eq "at the reading A wrote" \
+		"$(scalar5 "$N5_DSN_B" "SELECT hlc FROM artifacts WHERE id = '$id'")" "$hlc" || return 1
+	printf 'the same delta pushed twice, applied once: %s\n' "$id"
+}
+
+both_nodes_know_the_other_as_a_peer() {
+	recall5
+	local where a b
+	where="pull_cursor > 0 AND pushed_cursor > 0 AND last_seen IS NOT NULL"
+	a="$(scalar5 "$N5_DSN_A" \
+		"SELECT count(*) FROM peers WHERE peer = 'http://127.0.0.1:$N5_PORT_B' AND $where")"
+	b="$(scalar5 "$N5_DSN_B" \
+		"SELECT count(*) FROM peers WHERE peer = 'http://127.0.0.1:$N5_PORT_A' AND $where")"
+	want_eq "nodeA's bookmark for nodeB" "$a" 1 || return 1
+	want_eq "nodeB's bookmark for nodeA" "$b" 1 || return 1
+	printf 'each node holds one peers row for the other, both cursors moved\n'
+}
+
+the_bookmarks_are_the_operators_view() {
+	recall5
+	want_napi 200 "$N5_PORT_A" GET "$N5_TOKEN_OP" /api/peers || return 1
+	want_eq "the peer it names" "$(jqv '.peers[0].peer')" "http://127.0.0.1:$N5_PORT_B" || return 1
+	want_napi 403 "$N5_PORT_A" GET "$N5_TOKEN_A" /api/peers || return 1
+	printf 'peers answers the operator and refuses everyone else\n'
+}
+
+sync_refuses_a_peer_it_cannot_name() {
+	local out
+	if out="$("$ROOT/flowy" sync 2>&1)"; then
+		printf 'flowy sync with no peer succeeded: %s\n' "$out" >&2
+		return 1
+	fi
+	case "$out" in
+	*"no peer"*) ;;
+	*)
+		printf 'want a complaint about the peer, got: %s\n' "$out" >&2
+		return 1
+		;;
+	esac
+	# Replication runs as a principal on both sides, so a token this node cannot
+	# resolve is refused before anything is sent anywhere.
+	if out="$("$ROOT/flowy" sync --peer http://127.0.0.1:1 --token no-such-token 2>&1)"; then
+		printf 'flowy sync with an unknown token succeeded: %s\n' "$out" >&2
+		return 1
+	fi
+	case "$out" in
+	*"does not resolve"*) ;;
+	*)
+		printf 'want a complaint about the token, got: %s\n' "$out" >&2
+		return 1
+		;;
+	esac
+	printf 'no peer and no principal are both refused, and nothing is sent\n'
+}
+
+the_two_databases_agree_row_for_row() {
+	recall5
+	local rows="SELECT id || '|' || hlc || '|' || node || '|' || tombstone FROM artifacts ORDER BY 1"
+	scalar5 "$N5_DSN_A" "$rows" | sort >"$WORK/rows5a"
+	scalar5 "$N5_DSN_B" "$rows" | sort >"$WORK/rows5b"
+
+	local common differing
+	common="$(join -t'|' -j 1 "$WORK/rows5a" "$WORK/rows5b" | wc -l)"
+	differing="$(join -t'|' -j 1 "$WORK/rows5a" "$WORK/rows5b" |
+		awk -F'|' '$2 != $5 || $3 != $6 || $4 != $7' | wc -l)"
+	if [ "$common" -lt 3 ]; then
+		printf 'only %s artifact(s) are on both nodes; the two never met\n' "$common" >&2
+		return 1
+	fi
+	want_eq "rows that disagree" "$differing" 0 || return 1
+	printf '%s artifacts on both nodes, every one of them at the same reading, author and state\n' \
+		"$common"
+}
+
 # ---------------------------------------------------------------- environment
 
 say "environment"
@@ -1761,9 +2294,8 @@ check "healthz reports the spine tables" \
 check "spine tables exist" "$WORK/smoke" schema
 
 say "subcommand stubs"
-for sub in fuse sync; do
-	check "flowy $sub is a stub" stub_says "$sub"
-done
+# fuse is the last one: mcp left this list in Phase 2 and sync in Phase 5.
+check "flowy fuse is a stub" stub_says fuse
 
 say "identifiers and clocks"
 check "10000 ulids unique and strictly increasing" "$WORK/smoke" ulid
@@ -1995,6 +2527,117 @@ check "psql sees auto_delegate switched off for one user" psql_counts \
 
 check "node survived the run" kill -0 "$SERVE_PID"
 
+# ------------------------------------------------------------------- phase 5
+#
+# Federation. Two nodes, each with its own Postgres cluster, its own name and
+# its own copy of the schema, seeded with the same principals so that a peer can
+# authenticate - a token is a local credential and is handed over out of band,
+# which is why it is copied here rather than replicated.
+#
+# Everything after the setup is driven through the real `flowy sync`, against
+# two real `flowy serve` processes, over the wire.
+
+say "federation: a second node"
+PG5A_PORT="$(free_port 54400)"
+PG5B_PORT="$(free_port "$((PG5A_PORT + 1))")"
+DSN5A="postgres://$PGUSER@127.0.0.1:$PG5A_PORT/$DBNAME?sslmode=disable"
+DSN5B="postgres://$PGUSER@127.0.0.1:$PG5B_PORT/$DBNAME?sslmode=disable"
+check "a cluster and a schema for node A" start_pg5 A "$PGDATA5A" "$PGSOCK5A" "$PG5A_PORT"
+check "a cluster and a schema for node B" start_pg5 B "$PGDATA5B" "$PGSOCK5B" "$PG5B_PORT"
+
+: >"$WORK/ids5"
+if seed5_out="$(DATABASE_URL="$DSN5A" "$WORK/smoke" seed 2>&1)"; then
+	# The same seed as Phase 1, under names of its own: two people, their
+	# agents, their tokens and an operator, on the first of the two nodes.
+	printf '%s\n' "$seed5_out" | sed 's/^/N5_/' >>"$WORK/ids5"
+	# shellcheck source=/dev/null
+	. "$WORK/ids5"
+	printf 'PASS principals seeded on node A\n'
+	passed=$((passed + 1))
+else
+	printf 'FAIL seed principals on node A\n%s\n' "$seed5_out" | indent
+	failed=$((failed + 1))
+fi
+check "node B is handed the same principals and tokens" copy_principals "$DSN5A" "$DSN5B"
+
+NODE5A_PORT="$(free_port 8890)"
+NODE5B_PORT="$(free_port "$((NODE5A_PORT + 1))")"
+remember5 N5_DSN_A "$DSN5A"
+remember5 N5_DSN_B "$DSN5B"
+remember5 N5_PORT_A "$NODE5A_PORT"
+remember5 N5_PORT_B "$NODE5B_PORT"
+
+DATABASE_URL="$DSN5A" FLOWY_NODE=nodeA FLOWY_OPERATOR="${N5_USER_OP:-}" \
+	./flowy serve -addr "127.0.0.1:$NODE5A_PORT" >"$NODE5A_LOG" 2>&1 &
+NODE5A_PID=$!
+DATABASE_URL="$DSN5B" FLOWY_NODE=nodeB FLOWY_OPERATOR="${N5_USER_OP:-}" \
+	./flowy serve -addr "127.0.0.1:$NODE5B_PORT" >"$NODE5B_LOG" 2>&1 &
+NODE5B_PID=$!
+printf 'nodeA pid %s on 127.0.0.1:%s\nnodeB pid %s on 127.0.0.1:%s\n' \
+	"$NODE5A_PID" "$NODE5A_PORT" "$NODE5B_PID" "$NODE5B_PORT"
+
+check "node A comes up" "$WORK/smoke" healthz "http://127.0.0.1:$NODE5A_PORT/healthz"
+check "node B comes up" "$WORK/smoke" healthz "http://127.0.0.1:$NODE5B_PORT/healthz"
+check "two nodes, two databases, nothing shared yet" both_nodes_are_up_and_apart
+check "the replication token authenticates on both" the_same_token_authenticates_on_both
+
+say "what replicates"
+check "A opens pa up to pb, which is what makes pa replicable" a_opens_pa_up_to_pb_on_node_a
+check "A writes a shared artifact" a_writes_a_shared_artifact
+check "A writes a personal one, and one in a project with no grant" a_writes_what_the_peer_may_not_see
+check "A appends a thread of two events" a_appends_a_thread
+check "B writes one of its own" b_writes_one_of_its_own
+check "sync: A pulls B's delta and pushes its own" the_first_sync
+check "A's artifact is on B, same id, same hlc, same author" the_shared_artifact_is_on_b
+check "B's artifact is on A the same way" bs_artifact_is_on_a
+check "the thread is on B with its parents intact" the_thread_is_on_b_with_its_parents
+
+say "permission-filtered replication"
+check "the personal artifact did not cross" the_personal_artifact_did_not_replicate
+check "neither did the project the peer has no grant into" the_ungranted_project_did_not_replicate
+check "and the pull endpoint does not offer either of them" the_delta_offers_only_what_the_peer_may_read
+
+say "conflict"
+check "the same artifact is edited on A, then on B, with no sync between" \
+	the_same_artifact_is_edited_on_both_nodes
+check "after a sync both nodes hold the later edit, once" both_nodes_converge_on_the_later_edit
+
+say "tombstones travel"
+check "A deletes it, and the delete syncs" a_delete_on_a_reaches_b
+check "it is gone from B's list and search, and still a row in B's table" the_tombstone_is_on_b_too
+
+say "a handoff across the fabric"
+check "an assignment on A arrives on B as a task, a share and a thread" \
+	an_assignment_replicates_as_a_task
+
+say "cursors"
+check "a sync with nothing new transfers nothing" a_sync_with_nothing_new_moves_nothing
+check "the same delta pushed twice is applied once" pushing_the_same_delta_twice_applies_it_once
+check "each node bookmarked the other" both_nodes_know_the_other_as_a_peer
+check "the bookmarks are the operator's view" the_bookmarks_are_the_operators_view
+check "sync refuses a peer it cannot name and a token it cannot resolve" \
+	sync_refuses_a_peer_it_cannot_name
+
+say "both databases, as a second client"
+check "the two databases agree, row for row" the_two_databases_agree_row_for_row
+check "psql sees A's rows on B, stamped with the node that wrote them" psql5_counts "$DSN5B" \
+	"SELECT count(*) FROM artifacts WHERE node = 'nodeA'"
+check "psql sees B's rows on A" psql5_counts "$DSN5A" \
+	"SELECT count(*) FROM artifacts WHERE node = 'nodeB'"
+check "psql sees the replicated DAG on B" psql5_counts "$DSN5B" \
+	"SELECT count(*) FROM events WHERE node = 'nodeA' AND array_length(parents, 1) = 1"
+check "psql sees the tombstone on B, not a missing row" psql5_counts "$DSN5B" \
+	"SELECT count(*) FROM artifacts WHERE tombstone = true AND node = 'nodeA'"
+check "psql sees the replicated task and its share on B" psql5_counts "$DSN5B" \
+	"SELECT count(*) FROM tasks t JOIN grants g ON g.artifact = t.artifact AND g.subject = t.to_user"
+check "psql sees the personal artifact on A and only on A" psql5_counts "$DSN5A" \
+	"SELECT count(*) FROM artifacts WHERE visibility = 'personal' AND project IS NULL"
+check "psql sees both cursors on both nodes" psql5_counts "$DSN5A" \
+	"SELECT count(*) FROM peers WHERE pull_cursor > 0 AND pushed_cursor > 0"
+
+check "node A survived the run" kill -0 "$NODE5A_PID"
+check "node B survived the run" kill -0 "$NODE5B_PID"
+
 # ------------------------------------------------------------------- verdict
 
 say "result"
@@ -2007,6 +2650,12 @@ if [ "$failed" -ne 0 ]; then
 		printf 'mcp log:\n'
 		indent <"$MCP_LOG"
 	fi
+	for log in "$NODE5A_LOG" "$NODE5B_LOG"; do
+		if [ -f "$log" ]; then
+			printf '%s:\n' "$(basename "$log")"
+			indent <"$log"
+		fi
+	done
 fi
 printf 'passed: %d failed: %d\n' "$passed" "$failed"
 [ "$failed" -eq 0 ] || exit 1

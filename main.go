@@ -6,7 +6,9 @@
 // store. Phase 3 is chat over the same event DAG and the console that reads it,
 // embedded in this binary. Phase 4 is the agentic Jira layer on top: assignment
 // as a share plus a task plus a thread, delegation to the assignee's agent, and
-// an issue lifecycle whose every move is an event.
+// an issue lifecycle whose every move is an event. Phase 5 is federation: two
+// nodes, each with its own database, exchanging permission-filtered deltas and
+// merging them last-writer-wins by hlc.
 package main
 
 import (
@@ -24,13 +26,15 @@ commands:
   mcp      MCP server for agents: stdio by default, --http :PORT for a remote
            client (env: DATABASE_URL, FLOWY_TOKEN, FLOWY_NODE)
   fuse     FUSE mount of artifacts (not yet)
-  sync     peer replication (not yet)
+  sync     replicate with a peer: pull its delta, apply it, push ours
+           (flowy sync --peer <url> --token <t>; env: DATABASE_URL, FLOWY_NODE,
+           FLOWY_TOKEN)
   version  print the version and exit
   help     print this message
 `
 
 // version is the node's build version.
-const version = "0.5.0-phase4"
+const version = "0.6.0-phase5"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -52,7 +56,10 @@ func main() {
 	case "fuse":
 		fmt.Println("fuse: not yet")
 	case "sync":
-		fmt.Println("sync: not yet")
+		if err := syncCmd(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "flowy sync: %v\n", err)
+			os.Exit(1)
+		}
 	case "version", "--version", "-v":
 		fmt.Println(version)
 	case "help", "--help", "-h":
