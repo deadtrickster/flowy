@@ -268,6 +268,8 @@ func (s *server) routes() http.Handler {
 		api.HandleFunc("POST /api/forge/mock/comment", s.handleMockComment)
 		api.HandleFunc("GET /api/forge/mock/issue", s.handleMockIssue)
 		api.HandleFunc("POST /api/forge/mock/fail", s.handleMockFail)
+		api.HandleFunc("POST /api/forge/mock/login", s.handleMockLogin)
+		api.HandleFunc("POST /api/forge/mock/on-file", s.handleMockOnFile)
 	}
 	// Replication. A peer is a client like any other: it holds a token, it
 	// resolves to a principal, and it pulls what that principal may read.

@@ -136,6 +136,14 @@ func (d *DB) SyncPull(ctx context.Context, p *Principal, q SyncQuery) (*SyncSet,
 	limit := q.limit()
 	set := &SyncSet{Artifacts: []*Artifact{}, Events: []*Event{}, Tasks: []*Task{}, Grants: []Grant{}}
 
+	// A cursor at or above the mark a pending row was handed over under is the
+	// reader saying it applied that page. Settle those first, so this pull
+	// does not hand back what the last one already delivered.
+	key := pendingKey(p)
+	if err := d.ackPending(ctx, key, q.Since); err != nil {
+		return nil, err
+	}
+
 	// hwm tracks the greatest reading in the set; capped tracks the smallest
 	// greatest reading among the tables that filled their page.
 	var hwm int64
@@ -192,17 +200,52 @@ func (d *DB) SyncPull(ctx context.Context, p *Principal, q SyncQuery) (*SyncSet,
 	// never come back: the peer would hold the grant and not the thing it
 	// grants. These rows go in below the high water mark and do not move it,
 	// so once the grant itself is under the cursor the extra scan stops.
-	newly, err := d.syncNewlyVisible(ctx, p, q.Since, limit, grants)
+	newly, over, err := d.syncNewlyVisible(ctx, p, q.Since, limit, grants)
 	if err != nil {
 		return nil, err
 	}
 	set.Artifacts = append(set.Artifacts, newly...)
 
+	// What that rescan could not carry is written down rather than dropped.
+	// One grant can open a whole project, and a project is bigger than a page.
+	if len(over) > 0 {
+		if err := d.holdPending(ctx, key, over); err != nil {
+			return nil, err
+		}
+	}
+	pending, err := d.drainPending(ctx, p, key, limit)
+	if err != nil {
+		return nil, err
+	}
+	set.Artifacts = append(set.Artifacts, pending...)
+
 	set.HWM = hwm
 	if capped > 0 && capped < hwm {
 		set.HWM = capped
 	}
+	if len(pending) > 0 {
+		// The debt is only settled when the reader comes back with a cursor
+		// past the mark it was handed the rows under, so the mark has to move
+		// even on a page that carried nothing new of its own. Nothing is
+		// skipped by moving it one: a page that capped nothing has already
+		// handed over everything above the cursor.
+		if capped == 0 && set.HWM <= q.Since {
+			set.HWM = q.Since + 1
+		}
+		if err := d.markPendingSent(ctx, key, ids(pending), set.HWM); err != nil {
+			return nil, err
+		}
+	}
 	return set, nil
+}
+
+// ids is the id list of a page of artifacts.
+func ids(arts []*Artifact) []string {
+	out := make([]string, 0, len(arts))
+	for _, a := range arts {
+		out = append(out, a.ID)
+	}
+	return out
 }
 
 func (d *DB) syncArtifacts(ctx context.Context, p *Principal, since int64, limit int) ([]*Artifact, error) {
@@ -242,9 +285,16 @@ func (d *DB) syncArtifacts(ctx context.Context, p *Principal, since int64, limit
 // Only grants that widen p's own view count. A share of somebody else's to
 // somebody else changes nothing about what p may read, and re-scanning for it
 // would be a page of rows p is about to be refused anyway.
+//
+// It returns the page and, when there was more than a page of it, the ids of
+// everything it left behind. Those cannot be found again by paging forward -
+// their readings are below the cursor and the grant that opened them is about
+// to be below it too - so the caller writes them down in sync_pending and
+// hands them over on later pulls. Dropping them silently is how a peer ends up
+// holding a project-wide grant and a fraction of the project.
 func (d *DB) syncNewlyVisible(
 	ctx context.Context, p *Principal, since int64, limit int, grants []Grant,
-) ([]*Artifact, error) {
+) ([]*Artifact, []string, error) {
 	var shared, opened []string
 	for _, g := range grants {
 		if g.Tombstone || g.HLC <= since {
@@ -262,30 +312,35 @@ func (d *DB) syncNewlyVisible(
 		}
 	}
 	if len(shared) == 0 && len(opened) == 0 {
-		return nil, nil
+		return nil, nil, nil
+	}
+
+	// where is built twice - once for the page, once for what is beyond it -
+	// so it is a function of the parameter list it is spliced into.
+	where := func(a *args) string {
+		sinceArg := a.next(since)
+		reach := []string{}
+		if len(shared) > 0 {
+			reach = append(reach, "ar.id IN ("+placeholders(a, shared)+")")
+		}
+		if len(opened) > 0 {
+			reach = append(reach, "ar.project IN ("+placeholders(a, opened)+")")
+		}
+		return `ar.hlc <= ` + sinceArg + `
+		    AND (` + strings.Join(reach, " OR ") + `)
+		    AND ` + ArtifactFilterSQL(p, "ar", a, false)
 	}
 
 	a := &args{}
-	sinceArg := a.next(since)
-	reach := []string{}
-	if len(shared) > 0 {
-		reach = append(reach, "ar.id IN ("+placeholders(a, shared)+")")
-	}
-	if len(opened) > 0 {
-		reach = append(reach, "ar.project IN ("+placeholders(a, opened)+")")
-	}
-	filter := ArtifactFilterSQL(p, "ar", a, false)
 	query := `SELECT ` + artifactColumns + `
 	            FROM artifacts ar
-	           WHERE ar.hlc <= ` + sinceArg + `
-	             AND (` + strings.Join(reach, " OR ") + `)
-	             AND ` + filter + `
+	           WHERE ` + where(a) + `
 	           ORDER BY ar.hlc, ar.id
 	           LIMIT ` + a.next(limit)
 
 	rows, err := d.sql.QueryContext(ctx, query, a.vals...)
 	if err != nil {
-		return nil, fmt.Errorf("store: sync newly visible artifacts: %w", err)
+		return nil, nil, fmt.Errorf("store: sync newly visible artifacts: %w", err)
 	}
 	defer rows.Close()
 
@@ -293,14 +348,188 @@ func (d *DB) syncNewlyVisible(
 	for rows.Next() {
 		art, err := scanArtifact(rows, nil)
 		if err != nil {
-			return nil, fmt.Errorf("store: sync newly visible artifacts: %w", err)
+			return nil, nil, fmt.Errorf("store: sync newly visible artifacts: %w", err)
 		}
 		out = append(out, art)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: sync newly visible artifacts: %w", err)
+		return nil, nil, fmt.Errorf("store: sync newly visible artifacts: %w", err)
+	}
+	if len(out) < limit {
+		return out, nil, nil
+	}
+
+	// The page filled, so there may be more of it. The rest is read as ids in
+	// the same order, from where the page stopped: they are what the caller
+	// owes this reader.
+	over := &args{}
+	overflow, err := d.readIDs(ctx, `SELECT ar.id
+	                                   FROM artifacts ar
+	                                  WHERE `+where(over)+`
+	                                  ORDER BY ar.hlc, ar.id
+	                                 OFFSET `+over.next(limit), over.vals)
+	if err != nil {
+		return nil, nil, fmt.Errorf("store: sync newly visible overflow: %w", err)
+	}
+	return out, overflow, nil
+}
+
+// readIDs runs a query whose one column is an id and collects it.
+func (d *DB) readIDs(ctx context.Context, query string, vals []any) ([]string, error) {
+	rows, err := d.sql.QueryContext(ctx, query, vals...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+// ---------------------------------------------------------- what did not fit
+//
+// sync_pending is the debt a pull owes a reader: artifacts a grant made
+// readable below that reader's cursor and that did not fit in the page the
+// grant arrived on. It is a table rather than a cleverer cursor because one
+// integer cannot say "everything above here, and also these forty thousand
+// older rows you have just been let into".
+//
+// The rows are keyed by principal and not by peer node: a pull knows which
+// principal is asking, and that is all it knows. Two machines replicating as
+// the same principal therefore share one debt, and each drains the part the
+// other has not - which is right for the same reason the permission filter is:
+// they are the same reader.
+
+// pendingKey is the reader a pending row is owed to. Unit separators, so a
+// principal cannot be forged out of two others by choosing an id with a
+// separator in it.
+func pendingKey(p *Principal) string {
+	return p.UserID + "\x1f" + p.AgentID + "\x1f" + p.Project
+}
+
+// ackPending forgets what the reader has demonstrably applied: a row handed
+// over under a mark the reader has now passed is a row it holds.
+func (d *DB) ackPending(ctx context.Context, key string, since int64) error {
+	if since <= 0 {
+		return nil
+	}
+	_, err := d.sql.ExecContext(ctx,
+		`DELETE FROM sync_pending
+		  WHERE principal = $1 AND coalesce(sent_hwm, 0) > 0 AND coalesce(sent_hwm, 0) <= $2`,
+		key, since)
+	if err != nil {
+		return fmt.Errorf("store: sync pending ack: %w", err)
+	}
+	return nil
+}
+
+// holdPending records artifacts owed to a reader. An id already on the list
+// keeps the mark it was last sent under rather than being reset: it is the same
+// debt, and re-arming it would stop it ever being settled.
+func (d *DB) holdPending(ctx context.Context, key string, artifacts []string) error {
+	for _, id := range artifacts {
+		if id == "" {
+			continue
+		}
+		_, err := d.sql.ExecContext(ctx,
+			`INSERT INTO sync_pending (principal, artifact, sent_hwm) VALUES ($1, $2, 0)
+			 ON CONFLICT (principal, artifact) DO NOTHING`, key, id)
+		if err != nil {
+			return fmt.Errorf("store: sync pending hold: %w", err)
+		}
+	}
+	return nil
+}
+
+// drainPending reads a page of what the reader is owed, through the same
+// permission filter every other read uses - a share revoked since the row was
+// written down is a row that is no longer owed, and it is struck off rather
+// than handed over.
+func (d *DB) drainPending(
+	ctx context.Context, p *Principal, key string, limit int,
+) ([]*Artifact, error) {
+	owed, err := d.readIDs(ctx,
+		`SELECT artifact FROM sync_pending WHERE principal = $1 ORDER BY artifact LIMIT $2`,
+		[]any{key, limit})
+	if err != nil {
+		return nil, fmt.Errorf("store: sync pending read: %w", err)
+	}
+	if len(owed) == 0 {
+		return nil, nil
+	}
+
+	a := &args{}
+	query := `SELECT ` + artifactColumns + `
+	            FROM artifacts ar
+	           WHERE ar.id IN (` + placeholders(a, owed) + `)
+	             AND ` + ArtifactFilterSQL(p, "ar", a, false) + `
+	           ORDER BY ar.hlc, ar.id`
+	rows, err := d.sql.QueryContext(ctx, query, a.vals...)
+	if err != nil {
+		return nil, fmt.Errorf("store: sync pending drain: %w", err)
+	}
+	defer rows.Close()
+
+	out := []*Artifact{}
+	held := map[string]bool{}
+	for rows.Next() {
+		art, err := scanArtifact(rows, nil)
+		if err != nil {
+			return nil, fmt.Errorf("store: sync pending drain: %w", err)
+		}
+		held[art.ID] = true
+		out = append(out, art)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: sync pending drain: %w", err)
+	}
+
+	gone := []string{}
+	for _, id := range owed {
+		if !held[id] {
+			gone = append(gone, id)
+		}
+	}
+	if err := d.dropPending(ctx, key, gone); err != nil {
+		return nil, err
 	}
 	return out, nil
+}
+
+// markPendingSent records the mark a page of owed rows went out under, which is
+// what the next pull settles them against.
+func (d *DB) markPendingSent(ctx context.Context, key string, artifacts []string, hwm int64) error {
+	if hwm <= 0 {
+		return nil
+	}
+	for _, id := range artifacts {
+		_, err := d.sql.ExecContext(ctx,
+			`UPDATE sync_pending SET sent_hwm = $3 WHERE principal = $1 AND artifact = $2`,
+			key, id, hwm)
+		if err != nil {
+			return fmt.Errorf("store: sync pending mark: %w", err)
+		}
+	}
+	return nil
+}
+
+// dropPending strikes rows off the list.
+func (d *DB) dropPending(ctx context.Context, key string, artifacts []string) error {
+	for _, id := range artifacts {
+		_, err := d.sql.ExecContext(ctx,
+			`DELETE FROM sync_pending WHERE principal = $1 AND artifact = $2`, key, id)
+		if err != nil {
+			return fmt.Errorf("store: sync pending drop: %w", err)
+		}
+	}
+	return nil
 }
 
 // placeholders records each value and returns the comma-separated placeholders
@@ -509,6 +738,10 @@ func (d *DB) syncApply(ctx context.Context, p *Principal, in *SyncSet) (*SyncRes
 		d.observe(art.HLC, art.Node)
 	}
 	for _, e := range in.Events {
+		if why := checkEvent(p, e); why != "" {
+			refuse("events", why)
+			continue
+		}
 		n, err := applyEvent(ctx, tx, e)
 		if err != nil {
 			return nil, err
@@ -587,6 +820,70 @@ func checkReadings(in *SyncSet) error {
 	return nil
 }
 
+// mintedEventTypes are the event types a handler of this node writes and
+// nobody hands over: a lifecycle move, a handoff, something the forge bridge
+// did. Each one is a claim the node itself makes, and a trail is only worth
+// reading if the only way to get an entry in it is to have done the thing.
+//
+// It is the same list POST /api/events refuses by hand - see mintedTypes in
+// api.go, and the test in the server package that holds the two together. A
+// push that could carry them would be the way round that endpoint.
+var mintedEventTypes = map[string]bool{
+	"status": true,
+	"task":   true,
+	"forge":  true,
+}
+
+// MintedEventType reports whether an event type is one this node's own handlers
+// write rather than one a client may hand over.
+func MintedEventType(kind string) bool { return mintedEventTypes[kind] }
+
+// checkEvent answers why p may not push e, or "" when it may.
+//
+// The log is append-only and nothing ever rewrites a row of it, so the only
+// question is whether this event is one p could have appended over the API -
+// and the API decides two things about an event that the pusher does not: who
+// wrote it, and where it landed. So both are checked here:
+//
+//   - the actor is the pusher. An event carrying somebody else's name is the
+//     signature forgery POST /api/events was fixed to make impossible, arriving
+//     by another door - and it is worse over this one, because a replicated
+//     event is one every peer then holds.
+//   - the project is the pusher's own, or the event has none and belongs to the
+//     pusher. Writing into another project would produce a row its own author
+//     cannot read back, which is what handleCreateArtifact refuses for the same
+//     reason.
+//   - a minted type is nobody's to write by hand.
+//
+// It needs no database: an event is decided entirely by what it says, because
+// an id that is already here is a row that is already right.
+func checkEvent(p *Principal, e *Event) string {
+	if p == nil {
+		return ""
+	}
+	if mintedEventTypes[e.Type] {
+		return "a " + e.Type + " event is written by the endpoint that does the thing, " +
+			"not pushed (" + e.ID + ")"
+	}
+	actor := p.AgentID
+	if actor == "" {
+		actor = p.UserID
+	}
+	if actor == "" || e.Actor != actor {
+		return "event " + e.ID + " is signed " + e.Actor + ", which is not you"
+	}
+	if e.Project == nil {
+		if (e.Actor != p.UserID || p.UserID == "") && (e.Actor != p.AgentID || p.AgentID == "") {
+			return "event " + e.ID + " has no project and is not yours"
+		}
+		return ""
+	}
+	if p.Project == "" || *e.Project != p.Project {
+		return "event " + e.ID + " is in project " + *e.Project + ", and you write in " + p.Project
+	}
+	return ""
+}
+
 // checkArtifact answers why p may not push art, or "" when it may.
 //
 // Two rules, and they are the two ways a pushed artifact escalates:
@@ -594,10 +891,12 @@ func checkReadings(in *SyncSet) error {
 //   - a personal row belongs to its owner. Nobody else pushes one, because
 //     nobody else can read one, and a push of somebody else's would be a write
 //     into a place no read of theirs can reach.
-//   - a row that is already here is only overwritten by somebody who can read
-//     the row that is here. An id is a guess anybody can make; without this,
-//     guessing one is enough to take the row over, which is the same hole the
-//     store's own upsert had.
+//   - a row that is already here is only overwritten by its owner. That is the
+//     rule POST /api/artifacts keeps, and it has to be the rule here too:
+//     applying a row replaces every column of the one it lands on - owner_user,
+//     project and visibility included - so anything less than ownership is a
+//     way to take a row over and then share it onwards. Being able to read it
+//     is not enough; a read-share is a read.
 //
 // A row that is not here yet is allowed: that is ordinary replication, and a
 // row invented in a project the pusher cannot read is a row the pusher still
@@ -611,45 +910,46 @@ func checkArtifact(ctx context.Context, tx *sql.Tx, p *Principal, a *Artifact) (
 			return "artifact " + a.ID + " is personal and not yours", nil
 		}
 	}
-	args := &args{}
-	idArg := args.next(a.ID)
-	filter := ArtifactFilterSQL(p, "ar", args, false)
-	var readable bool
+	var owner sql.NullString
 	err := tx.QueryRowContext(ctx,
-		`SELECT EXISTS (SELECT 1 FROM artifacts ar WHERE ar.id = `+idArg+` AND `+filter+`)`,
-		args.vals...).Scan(&readable)
+		`SELECT coalesce(owner_user, '') FROM artifacts WHERE id = $1`, a.ID).Scan(&owner)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
 	if err != nil {
 		return "", fmt.Errorf("store: sync check artifact %s: %w", a.ID, err)
 	}
-	if readable {
-		return "", nil
-	}
-	var exists bool
-	if err := tx.QueryRowContext(ctx,
-		`SELECT EXISTS (SELECT 1 FROM artifacts WHERE id = $1)`, a.ID).Scan(&exists); err != nil {
-		return "", fmt.Errorf("store: sync check artifact %s: %w", a.ID, err)
-	}
-	if exists {
-		return "artifact " + a.ID + " is already here and you cannot read it", nil
+	if owner.String == "" || owner.String != p.UserID {
+		return "artifact " + a.ID + " is already here and is not yours to rewrite", nil
 	}
 	return "", nil
 }
 
-// checkTask answers why p may not push t. The rule is the one every read of a
-// task uses: a task is between the two people named on it and the agent it was
-// delegated to. A task that is already here is only rewritten by one of them,
-// so a handoff cannot be reassigned by a stranger who guessed its id.
+// checkTask answers why p may not push t.
+//
+// A task is not only a record of a handoff: it is a read capability. The tasks
+// clause in EventFilterSQL says that the parties to a task may read the thread
+// it names, whichever project they write from - so a task row invented by a
+// stranger, naming themselves on both sides and somebody else's thread, is a
+// way to read that conversation. It is checked the way POST /api/assign is:
+//
+//   - a task that is already here is rewritten only by a party to it, so a
+//     handoff cannot be reassigned by somebody who guessed its id;
+//   - a new one has to be a handoff the pusher could have made. They are the
+//     side handing the work over, the artifact is one they may read and is not
+//     personal, and the thread is one they can already read - a thread nobody
+//     has said anything in yet is a thread there is nothing to learn from.
 func checkTask(ctx context.Context, tx *sql.Tx, p *Principal, t *Task) (string, error) {
 	if p == nil {
 		return "", nil
 	}
-	args := &args{}
-	idArg := args.next(t.ID)
-	party := taskPartySQL(p, "t", args)
+	own := &args{}
+	idArg := own.next(t.ID)
+	party := taskPartySQL(p, "t", own)
 	var mine bool
 	err := tx.QueryRowContext(ctx,
 		`SELECT EXISTS (SELECT 1 FROM tasks t WHERE t.id = `+idArg+` AND `+party+`)`,
-		args.vals...).Scan(&mine)
+		own.vals...).Scan(&mine)
 	if err != nil {
 		return "", fmt.Errorf("store: sync check task %s: %w", t.ID, err)
 	}
@@ -664,6 +964,44 @@ func checkTask(ctx context.Context, tx *sql.Tx, p *Principal, t *Task) (string, 
 	if exists {
 		return "task " + t.ID + " is already here and you are not a party to it", nil
 	}
+
+	if p.UserID == "" || t.FromUser != p.UserID {
+		return "task " + t.ID + " hands over work as " + t.FromUser + ", which is not you", nil
+	}
+
+	shareable := &args{}
+	artArg := shareable.next(t.Artifact)
+	filter := ArtifactFilterSQL(p, "ar", shareable, false)
+	var canHandOver bool
+	err = tx.QueryRowContext(ctx,
+		`SELECT EXISTS (SELECT 1 FROM artifacts ar
+		                 WHERE ar.id = `+artArg+`
+		                   AND coalesce(ar.visibility, '') <> 'personal'
+		                   AND ar.project IS NOT NULL
+		                   AND `+filter+`)`, shareable.vals...).Scan(&canHandOver)
+	if err != nil {
+		return "", fmt.Errorf("store: sync check task %s: %w", t.ID, err)
+	}
+	if !canHandOver {
+		return "task " + t.ID + " is about " + t.Artifact + ", which is not yours to hand over", nil
+	}
+
+	if t.Thread != "" {
+		thread := &args{}
+		threadArg := thread.next(t.Thread)
+		events := EventFilterSQL(p, "e", thread, false)
+		var hidden bool
+		err = tx.QueryRowContext(ctx,
+			`SELECT EXISTS (SELECT 1 FROM events e
+			                 WHERE e.thread = `+threadArg+`
+			                   AND NOT coalesce((`+events+`), false))`, thread.vals...).Scan(&hidden)
+		if err != nil {
+			return "", fmt.Errorf("store: sync check task %s: %w", t.ID, err)
+		}
+		if hidden {
+			return "task " + t.ID + " names thread " + t.Thread + ", which you cannot read", nil
+		}
+	}
 	return "", nil
 }
 
@@ -676,8 +1014,12 @@ func checkTask(ctx context.Context, tx *sql.Tx, p *Principal, t *Task) (string, 
 //     itself a grant from its own project into yours and reads it from then
 //     on - and because merging is last-writer-wins, a big enough reading makes
 //     the forgery permanent.
-//   - a share is the owner's to give. The artifact has to be here, and its
-//     owner has to be whoever the grant says granted it.
+//   - a share is the owner's to give, and the pusher has to be that owner. The
+//     artifact has to be here, its owner has to be whoever the grant says
+//     granted it, and that has to be the principal handing it over: a grant
+//     that merely claims to have come from the owner is a claim the pusher
+//     wrote, and believing it lets anybody share anybody's artifact with
+//     themselves.
 func checkGrant(ctx context.Context, tx *sql.Tx, p *Principal, g *Grant) (string, error) {
 	if p == nil {
 		return "", nil
@@ -707,6 +1049,9 @@ func checkGrant(ctx context.Context, tx *sql.Tx, p *Principal, g *Grant) (string
 	}
 	if owner.String == "" || owner.String != g.GrantedBy {
 		return "grant " + g.ID + " is not the owner's to give", nil
+	}
+	if p.UserID == "" || owner.String != p.UserID {
+		return "grant " + g.ID + " shares " + g.Artifact + ", which is not yours to share", nil
 	}
 	return "", nil
 }

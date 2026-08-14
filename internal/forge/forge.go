@@ -77,6 +77,17 @@ type ForgeClient interface {
 	ListComments(ctx context.Context, repo string, number int, since time.Time) ([]Comment, error)
 }
 
+// SelfLoginer is a forge that can say which login it posts as.
+//
+// It is not part of ForgeClient because it is not part of the bridge: the node
+// asks once, when it files, so that the link records the name its own comments
+// will arrive under and the sync can tell them from a reviewer's. A client that
+// does not implement it is one whose name the caller already knows.
+type SelfLoginer interface {
+	// SelfLogin is the login the credential behind this client posts as.
+	SelfLogin(ctx context.Context) (string, error)
+}
+
 // ErrNoForge is what Select returns when nothing is configured and no CLI is on
 // PATH. It is not a startup failure: a node with no forge is a perfectly good
 // node, it just answers 503 on /api/forge/*.

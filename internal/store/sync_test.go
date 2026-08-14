@@ -353,3 +353,83 @@ func TestPeerCursorsOnlyMoveForward(t *testing.T) {
 		t.Fatal("an unknown peer read back without an error")
 	}
 }
+
+// TestCheckEventIsWhatTheAPIWouldHaveAllowed is the rule a pushed event has to
+// clear, and it needs no database: an event is signed by the principal handing
+// it over, lands in that principal's project, and is not one of the types this
+// node's own handlers mint.
+//
+// Without it, POST /api/sync/push was a way to write the log under anybody's
+// name - a status move nobody made, a message from somebody who never said it -
+// and to have every peer hold the forgery afterwards.
+func TestCheckEventIsWhatTheAPIWouldHaveAllowed(t *testing.T) {
+	pa, pb := "pa", "pb"
+	peer := &Principal{UserID: "u-peer", Project: pb}
+	agent := &Principal{UserID: "u-peer", AgentID: "a-peer", Project: pb}
+	event := func(kind, actor string, project *string) *Event {
+		return &Event{ID: "e1", Type: kind, Actor: actor, Project: project}
+	}
+
+	for _, tc := range []struct {
+		what  string
+		p     *Principal
+		e     *Event
+		allow bool
+	}{
+		{"its own chat in its own project", peer, event("chat", "u-peer", &pb), true},
+		{"its own note with no project", peer, event("note", "u-peer", nil), true},
+		{"an agent's own message", agent, event("chat", "a-peer", &pb), true},
+		{"somebody else's chat", peer, event("chat", "u-other", &pb), false},
+		{"its own chat in another project", peer, event("chat", "u-peer", &pa), false},
+		{"a status move nobody made", peer, event("status", "u-peer", &pb), false},
+		{"a handoff nobody handed over", peer, event("task", "u-peer", &pb), false},
+		{"something the forge bridge did not do", peer, event("forge", "u-peer", &pb), false},
+		{"an unsigned event", peer, event("chat", "", &pb), false},
+		{"an agent posting as its user", agent, event("chat", "u-peer", &pb), false},
+	} {
+		why := checkEvent(tc.p, tc.e)
+		if tc.allow && why != "" {
+			t.Errorf("%s was refused: %s", tc.what, why)
+		}
+		if !tc.allow && why == "" {
+			t.Errorf("%s was taken", tc.what)
+		}
+	}
+
+	// The operator is this node's own administration - the pull side, run by
+	// whoever owns the machine - and is not filtered at all.
+	if why := checkEvent(nil, event("status", "anybody", &pa)); why != "" {
+		t.Errorf("the operator's own merge was refused: %s", why)
+	}
+}
+
+// TestSyncApplyAsRefusesAForgedEvent is the same rule through the merge, which
+// is where it matters: a refused row is counted and not written, and the rest
+// of the delta still lands.
+func TestSyncApplyAsRefusesAForgedEvent(t *testing.T) {
+	ctx, db := open(t)
+
+	project := "pe-" + ulid.NewString()
+	peer := &Principal{UserID: "u-" + ulid.NewString(), Project: project}
+	at := db.Clock().Pack()
+
+	mine := &Event{ID: ulid.NewString(), Type: "chat", Project: &project,
+		Actor: peer.UserID, Body: "mine", SeqHLC: at + 1, Node: "peer-node"}
+	forged := &Event{ID: ulid.NewString(), Type: "status", Project: &project,
+		Actor: "u-somebody-else", Body: "open->done", SeqHLC: at + 2, Node: "peer-node"}
+
+	res, err := db.SyncApplyAs(ctx, peer, &SyncSet{Events: []*Event{mine, forged}})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if res.Applied["events"] != 1 || res.Refused["events"] != 1 {
+		t.Fatalf("applied %d and refused %d events, want one of each: %+v",
+			res.Applied["events"], res.Refused["events"], res.Reasons)
+	}
+	if _, err := db.GetEvent(ctx, forged.ID); err == nil {
+		t.Fatal("the forged event was written")
+	}
+	if _, err := db.GetEvent(ctx, mine.ID); err != nil {
+		t.Fatalf("the pusher's own event was not written: %v", err)
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -183,6 +184,16 @@ func (s *server) handleForgeFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The comment cursor starts at the filing, like the push cursor below: the
+	// reviewer loop carries what is said about the issue from the moment it
+	// existed, and there is nothing before that to carry.
+	//
+	// It is read before the round trip and not after it. Opening an issue takes
+	// as long as the forge takes, and a reviewer watching the tracker can
+	// answer inside that window - a cursor set afterwards is a cursor set past
+	// their comment, and ListComments never offers it again.
+	filed := time.Now().UTC()
+
 	number, issueURL, err := client.FileIssue(ctx, req.Repo, forgeIssueTitle(art), forgeIssueBody(art))
 	if err != nil {
 		// The forge refused, or is not there. That is not this node being
@@ -191,10 +202,6 @@ func (s *server) handleForgeFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The comment cursor starts at the filing, like the push cursor below: the
-	// reviewer loop carries what is said about the issue from the moment it
-	// existed, and there is nothing before that to carry.
-	filed := time.Now().UTC()
 	ref := &store.ExternalRef{
 		Forge:  client.Kind(),
 		Repo:   req.Repo,
@@ -202,7 +209,7 @@ func (s *server) handleForgeFile(w http.ResponseWriter, r *http.Request) {
 		URL:    issueURL,
 		State:  forge.StateOpen,
 		Thread: s.forgeThread(ctx, art),
-		Author: forge.SelfAuthor,
+		Author: s.forgeSelfLogin(ctx, client),
 		Since:  filed,
 		Filed:  filed,
 	}
@@ -228,6 +235,32 @@ func (s *server) handleForgeFile(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// forgeSelfLogin is the login this node's own comments appear under on the
+// forge, recorded on the link when it is filed.
+//
+// It has to be asked for rather than assumed. The sync skips comments written
+// under it - that is what stops the reviewer loop echoing - and a node talking
+// to a real GitHub posts as whoever `gh` is logged in as, which is not the
+// mock's name for itself. Getting it wrong means the node threads its own
+// replies back in as if a reviewer had said them, and then pushes them out
+// again.
+//
+// A forge that cannot say - the mock, or a CLI that refuses - leaves it at the
+// name the mock posts under, which is what it was before.
+func (s *server) forgeSelfLogin(ctx context.Context, client forge.ForgeClient) string {
+	who, ok := client.(forge.SelfLoginer)
+	if !ok {
+		return forge.SelfAuthor
+	}
+	login, err := who.SelfLogin(ctx)
+	if err != nil || login == "" {
+		log.Printf("forge: cannot read this node's own login (%v); "+
+			"treating %q as its own comments", err, forge.SelfAuthor)
+		return forge.SelfAuthor
+	}
+	return login
+}
+
 // handleForgeStatus refreshes an issue's state, and moves the artifact to done
 // when the issue is finished.
 //
@@ -248,6 +281,14 @@ func (s *server) handleForgeStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	art, ref, ok := s.filedArtifact(w, r, r.URL.Query().Get("artifact"))
 	if !ok {
+		return
+	}
+	// The repository comes off the link on the artifact, and a link is a
+	// replicated column: a peer can write one that names any repository at all.
+	// So the operator's list is checked here too, exactly as filing and syncing
+	// check it - otherwise a pushed artifact is enough to point this node's
+	// credential at somebody else's tracker.
+	if !s.forgeRepoAllowed(w, ref.Repo) {
 		return
 	}
 
@@ -340,24 +381,35 @@ func (s *server) handleForgeSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	threaded, err := s.forgePullComments(r, art, ref, client)
-	if err != nil {
-		writeJSON(w, http.StatusBadGateway, errorBody("forge: "+err.Error()))
-		return
+	// Both halves report what they finished before they report what went
+	// wrong, and the ref is written either way. The pull side threads one
+	// comment at a time and marks each one seen as it lands; a failure halfway
+	// through - the log refusing a row, the request being cancelled - leaves
+	// the ones before it in the thread, so throwing the ref away would mean the
+	// next sync threaded them in a second time. Pushing is not attempted after
+	// a pull that broke: whatever stopped it is likely to stop that too, and a
+	// half-threaded conversation is not one to reply to.
+	threaded, pullErr := s.forgePullComments(r, art, ref, client)
+	pushed := 0
+	var pushErr error
+	if pullErr == nil {
+		pushed, pushErr = s.forgePushReplies(r, ref, client)
 	}
-	pushed, pushErr := s.forgePushReplies(r, ref, client)
 
-	// The cursors are written before the refusal is reported, and they describe
-	// what actually happened: every comment that reached the forge is behind the
-	// cursor and every one that did not is still in front of it. Answering 502
-	// first and writing nothing - which is what this did - meant the next sync
-	// started again from before the first reply and posted the ones that had
-	// already arrived a second time.
+	// The cursors describe what actually happened: every comment that reached
+	// the forge is behind the cursor and every one that did not is still in
+	// front of it. Answering 502 first and writing nothing - which is what this
+	// did - meant the next sync started again from before the first reply and
+	// posted the ones that had already arrived a second time.
 	if len(threaded) > 0 || pushed > 0 {
 		if err := s.db.SetArtifactExternal(ctx, art, ref, art.Reported); err != nil {
 			writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
 			return
 		}
+	}
+	if pullErr != nil {
+		writeJSON(w, http.StatusBadGateway, errorBody("forge: "+pullErr.Error()))
+		return
 	}
 	if pushErr != nil {
 		writeJSON(w, http.StatusBadGateway, errorBody("forge: "+pushErr.Error()))
@@ -375,6 +427,11 @@ func (s *server) handleForgeSync(w http.ResponseWriter, r *http.Request) {
 
 // forgePullComments threads the issue's new comments into the artifact's thread
 // and advances the comment cursor over them.
+//
+// It returns what it threaded even when it stops on an error, because what it
+// threaded is in the log by then: the caller writes the cursor over those and
+// then reports the failure, so the ones that landed are not threaded again on
+// the next sync.
 func (s *server) forgePullComments(
 	r *http.Request, art *store.Artifact, ref *store.ExternalRef, client forge.ForgeClient,
 ) ([]*store.Event, error) {
@@ -402,7 +459,7 @@ func (s *server) forgePullComments(
 		}
 		event, err := s.threadForgeComment(r, art, ref, c)
 		if err != nil {
-			return nil, err
+			return out, err
 		}
 		ref.MarkSeen(c.ID, c.At)
 		if event.SeqHLC > ref.Pushed {
@@ -728,6 +785,48 @@ func (s *server) handleMockFail(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mockForge.FailNext(req.After)
 	writeJSON(w, http.StatusOK, map[string]any{"armed": true, "after": req.After})
+}
+
+// mockLoginRequest renames the login the mock posts under, and arms a comment
+// for the window a filing takes.
+type mockLoginRequest struct {
+	Login  string `json:"login"`
+	Author string `json:"author"`
+	Body   string `json:"body"`
+}
+
+// handleMockLogin changes who the mock forge is logged in as. A real gh posts
+// as whoever set the machine up, and a fake that is only ever called "flowy"
+// cannot show that the node asked the forge rather than assumed.
+//
+// POST /api/forge/mock/login  {login}
+func (s *server) handleMockLogin(w http.ResponseWriter, r *http.Request) {
+	var req mockLoginRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody("bad request body: "+err.Error()))
+		return
+	}
+	s.mockForge.SetSelfAuthor(req.Login)
+	writeJSON(w, http.StatusOK, map[string]any{"login": s.mockForge.SelfAuthor()})
+}
+
+// handleMockOnFile arms a comment that the next filing records as part of
+// opening the issue: the reviewer who answered while the forge was still
+// creating it. It is the filing window, made a fact rather than a race.
+//
+// POST /api/forge/mock/on-file  {author, body}
+func (s *server) handleMockOnFile(w http.ResponseWriter, r *http.Request) {
+	var req mockLoginRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody("bad request body: "+err.Error()))
+		return
+	}
+	if strings.TrimSpace(req.Body) == "" {
+		writeJSON(w, http.StatusBadRequest, errorBody("body is required"))
+		return
+	}
+	s.mockForge.CommentOnFile(req.Author, req.Body)
+	writeJSON(w, http.StatusOK, map[string]any{"armed": true, "author": req.Author})
 }
 
 // handleMockIssue reads a mock issue back, comments and all - which is how a

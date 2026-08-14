@@ -309,3 +309,113 @@ func TestFileIssueNeedsAURL(t *testing.T) {
 		t.Error("a repo that is not owner/name should not reach the CLI")
 	}
 }
+
+// TestSelfLoginArgv pins how each CLI is asked who it is logged in as. The node
+// writes the answer onto the link when it files, and skips comments by it - so
+// asking the wrong way, or reading the answer wrong, means the node threads its
+// own replies back in as somebody else's.
+func TestSelfLoginArgv(t *testing.T) {
+	ctx := context.Background()
+
+	fake := &fakeCLI{out: "octobot\n"}
+	gh := &GhClient{kind: KindGh, run: fake.runner()}
+	login, err := gh.SelfLogin(ctx)
+	if err != nil {
+		t.Fatalf("gh self login: %v", err)
+	}
+	if login != "octobot" {
+		t.Errorf("gh is logged in as %q, want octobot", login)
+	}
+	if want := "gh api user --jq .login"; fake.last() != want {
+		t.Errorf("argv is %q, want %q", fake.last(), want)
+	}
+
+	fake.out = `{"id":7,"username":"labbot","name":"Lab Bot"}`
+	glab := &GhClient{kind: KindGlab, run: fake.runner()}
+	if login, err = glab.SelfLogin(ctx); err != nil {
+		t.Fatalf("glab self login: %v", err)
+	}
+	if login != "labbot" {
+		t.Errorf("glab is logged in as %q, want labbot", login)
+	}
+	if want := "glab api user"; fake.last() != want {
+		t.Errorf("argv is %q, want %q", fake.last(), want)
+	}
+
+	fake.out = "\n"
+	if _, err := gh.SelfLogin(ctx); err == nil {
+		t.Error("a CLI that printed no login should be an error, not an empty author")
+	}
+}
+
+// TestMockForgeAnswersItsOwnLogin: the mock is a forge like any other, so the
+// node asks it the same question - and a test can rename it, which is the only
+// way to show that the answer is used rather than assumed.
+func TestMockForgeAnswersItsOwnLogin(t *testing.T) {
+	mock := NewMockForge()
+	login, err := mock.SelfLogin(context.Background())
+	if err != nil || login != SelfAuthor {
+		t.Fatalf("a fresh mock says %q, %v; want %q", login, err, SelfAuthor)
+	}
+
+	mock.SetSelfAuthor("flowy-bot")
+	if login, err = mock.SelfLogin(context.Background()); err != nil || login != "flowy-bot" {
+		t.Fatalf("after renaming, the mock says %q, %v", login, err)
+	}
+	if _, _, err := mock.FileIssue(context.Background(), "o/r", "t", "b"); err != nil {
+		t.Fatalf("file: %v", err)
+	}
+	if err := mock.Comment(context.Background(), "o/r", 1, "ours"); err != nil {
+		t.Fatalf("comment: %v", err)
+	}
+	issue, err := mock.Issue("o/r", 1)
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+	if len(issue.Comments) != 1 || issue.Comments[0].Author != "flowy-bot" {
+		t.Fatalf("the mock posted as %+v", issue.Comments)
+	}
+}
+
+// TestRunCommandDoesNotEchoTheArgv: a failed invocation is reported to whoever
+// made the request and written to the node's log, and the argv of a filing
+// carries the artifact's whole body. So the error names the call - program,
+// subcommand, repository - and quotes none of what it carried.
+func TestRunCommandDoesNotEchoTheArgv(t *testing.T) {
+	// `false` ignores its arguments and exits 1, which is the failure this is
+	// about: a CLI that refused.
+	client := &GhClient{kind: "false", timeout: cliTimeout, run: runCommand}
+	const secret = "the body of a bug nobody outside this node may read"
+
+	_, _, err := client.FileIssue(context.Background(), "o/r", "a title", secret)
+	if err == nil {
+		t.Fatal("filing through `false` should have failed")
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Errorf("the error carries the artifact body: %v", err)
+	}
+	if strings.Contains(err.Error(), "a title") {
+		t.Errorf("the error carries the issue title: %v", err)
+	}
+	for _, want := range []string{"issue create", "--repo o/r"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error does not say %q: %v", want, err)
+		}
+	}
+}
+
+// TestDescribeArgs is the rule itself: everything up to the first flag, plus
+// the repository, and nothing a flag introduced.
+func TestDescribeArgs(t *testing.T) {
+	for _, tc := range []struct{ argv, want string }{
+		{"issue create --repo o/r --title T --body BODY", "issue create --repo o/r"},
+		{"issue view 17 --repo o/r --json state,url", "issue view 17 --repo o/r"},
+		{"issue note 17 --repo o/r --message BODY", "issue note 17 --repo o/r"},
+		{"api repos/o/r/issues/17/comments", "api repos/o/r/issues/17/comments"},
+		{"api user --jq .login", "api user"},
+	} {
+		if got := describeArgs(strings.Fields(tc.argv)); got != tc.want {
+			t.Errorf("describeArgs(%q) = %q, want %q", tc.argv, got, tc.want)
+		}
+	}
+}

@@ -2761,6 +2761,366 @@ a_reply_does_not_adopt_an_unreadable_thread() {
 	printf 'the unreadable parent was ignored and the reply opened its own thread %s\n' "$thread"
 }
 
+# ------------------------------------------ the second round of security fixes
+#
+# The first round gated POST /api/sync/push on being a peer, and checked the
+# rows a peer handed over table by table. The checks it added are above; these
+# are the ones the re-review found that those did not cover: events went through
+# with no check at all, and the three tables that were checked were checked
+# against the wrong question - what the pusher may read, rather than what the
+# pusher owns.
+#
+# They run last, against the nodes the earlier phases left standing, so nothing
+# here can change what those phases were asserting. The federation one goes at
+# the end of them, because it opens a project up for good.
+
+# psql_do runs a statement against the first node's database. It is how a check
+# is something the node cannot do to itself: a link a peer replicated in, a log
+# that refuses a row halfway through a sync.
+psql_do() { psql -v ON_ERROR_STOP=1 -q -c "$1"; }
+
+# forged_delta_hlc - a clock reading a peer would plausibly have written: one
+# millisecond ahead of what the node last handed out, which is believable and
+# beats anything already stored.
+forged_hlc() {
+	napi "$1" GET "" /healthz || return 1
+	printf '%s' "$(($(jqv .hlc) + 65536))"
+}
+
+# HIGH 1. Artifacts, tasks and grants were checked when they arrived; events
+# were not checked at all. A peer could write the log under anybody's name, and
+# every node it reached then held the forgery - including the minted types the
+# API refuses by hand, which is a lifecycle move nobody made.
+a_pushed_event_is_signed_by_the_pusher() {
+	recall5
+	local hlc forged mine delta
+	hlc="$(forged_hlc "$N5_PORT_B")" || return 1
+	forged="forged-ev-$$-$(date +%s)"
+	mine="own-ev-$$-$(date +%s)"
+	delta="$(jq -nc --arg f "$forged" --arg m "$mine" --arg a "$N5_USER_A" --arg b "$N5_USER_B" \
+		--argjson h1 "$hlc" --argjson h2 "$((hlc + 65536))" '
+		{artifacts: [], tasks: [], grants: [], hwm: 0, events: [
+		  {id: $f, type: "status", project: "pb", room: "pb/bugs", thread: $f, parents: [],
+		   actor: $a, artifact: "", seq_hlc: $h1, node: "forger", body: "open->done"},
+		  {id: $m, type: "chat", project: "pb", room: "pb/bugs", thread: $m, parents: [],
+		   actor: $b, artifact: "", seq_hlc: $h2, node: "forger", body: "this one really is mine"}]}')"
+
+	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_B" /api/sync/push "$delta" || return 1
+	want_eq "events received" "$(jqv '.received.events')" 2 || return 1
+	want_eq "events refused" "$(jqv '.refused.events')" 1 || return 1
+	want_eq "events applied" "$(jqv '.applied.events')" 1 || return 1
+	want_eq "rows in B's log for the forged one" \
+		"$(scalar5 "$N5_DSN_B" "SELECT count(*) FROM events WHERE id = '$forged'")" 0 || return 1
+	want_eq "rows for the one the pusher signed" \
+		"$(scalar5 "$N5_DSN_B" "SELECT count(*) FROM events WHERE id = '$mine'")" 1 || return 1
+	printf 'the forged status event was refused and the pusher own message applied: %s\n' \
+		"$(jqv '.reasons[0]')"
+}
+
+# HIGH 2. A pushed artifact that was already here was let through if the pusher
+# could read it - and applying it replaces every column, owner_user included. A
+# read-share was therefore a way to take the artifact over and share it on.
+a_read_share_is_not_a_write() {
+	recall5
+	local id hlc delta
+	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_A" /api/artifacts \
+		'{"type":"note","title":"A owns this one","body":"quibblesworth"}' || return 1
+	id="$(jqv .id)"
+	# One read-share, which is all the pusher ever gets here.
+	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_A" /api/grants \
+		"$(jq -nc --arg a "$id" --arg s "$N5_USER_B" '{artifact: $a, subject: $s}')" || return 1
+	want_napi 200 "$N5_PORT_B" GET "$N5_TOKEN_B" "/api/artifact/$id" || return 1
+	want_eq "who owns it" "$(jqv .owner_user)" "$N5_USER_A" || return 1
+
+	hlc="$(forged_hlc "$N5_PORT_B")" || return 1
+	delta="$(jq -nc --arg i "$id" --arg b "$N5_USER_B" --argjson h "$hlc" '
+		{events: [], tasks: [], grants: [], hwm: 0, artifacts: [
+		  {id: $i, type: "note", project: "pb", owner_user: $b, title: "mine now",
+		   body: "taken over by a reader", visibility: "project", hlc: $h, node: "forger",
+		   tombstone: false, reported: false}]}')"
+	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_B" /api/sync/push "$delta" || return 1
+	want_eq "artifacts refused" "$(jqv '.refused.artifacts')" 1 || return 1
+	want_eq "artifacts applied" "$(jqv '.applied.artifacts')" 0 || return 1
+
+	want_napi 200 "$N5_PORT_B" GET "$N5_TOKEN_A" "/api/artifact/$id" || return 1
+	want_eq "the owner" "$(jqv .owner_user)" "$N5_USER_A" || return 1
+	want_eq "the project" "$(jqv .project)" pa || return 1
+	want_eq "the title" "$(jqv .title)" "A owns this one" || return 1
+	printf 'a reader could not rewrite %s; the owner, the project and the title are as they were\n' \
+		"$id"
+}
+
+# HIGH 3. A pushed share was checked against what it claimed - that the
+# artifact's owner is whoever it says granted it - and never against who was
+# handing it over. Anybody could write themselves a share of anything by
+# putting the owner's name in the granted_by field.
+a_share_is_only_the_owners_to_hand_over() {
+	recall5
+	local id gid hlc delta
+	# A's artifact, in A's project, owned by A and shared with nobody.
+	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_A" /api/artifacts \
+		'{"type":"note","title":"A owns this one too","body":"thrimblewick"}' || return 1
+	id="$(jqv .id)"
+	want_eq "who owns it" "$(jqv .owner_user)" "$N5_USER_A" || return 1
+	gid="forged-grant-$$-$(date +%s)"
+	hlc="$(forged_hlc "$N5_PORT_B")" || return 1
+	delta="$(jq -nc --arg g "$gid" --arg i "$id" --arg s "$N5_USER_B" --arg o "$N5_USER_A" \
+		--argjson h "$hlc" '
+		{artifacts: [], events: [], tasks: [], hwm: 0, grants: [
+		  {id: $g, from_project: "pa", to_project: "pa", subject: $s, artifact: $i,
+		   cap: "read", granted_by: $o, hlc: $h, node: "forger", tombstone: false}]}')"
+
+	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_B" /api/sync/push "$delta" || return 1
+	want_eq "grants refused" "$(jqv '.refused.grants')" 1 || return 1
+	want_eq "grants applied" "$(jqv '.applied.grants')" 0 || return 1
+	want_eq "rows in B's grants table for it" \
+		"$(scalar5 "$N5_DSN_B" "SELECT count(*) FROM grants WHERE id = '$gid'")" 0 || return 1
+	printf 'a share nobody who owns it wrote was refused: %s\n' "$(jqv '.reasons[0]')"
+}
+
+# HIGH 4. A task row is a read capability: the tasks clause in EventFilterSQL
+# lets the parties to a task read the thread it names. A new task was accepted
+# from anybody, so a peer could name itself on both sides of a handoff, name a
+# conversation it cannot see, and read it from then on.
+a_pushed_task_cannot_name_a_thread_it_cannot_read() {
+	recall5
+	local thread art tid hlc delta
+	# A conversation in pc, which the peer holds no grant into.
+	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_A_PC" /api/events \
+		'{"type":"note","room":"pc/quiet","body":"the thing nobody outside pc may read"}' || return 1
+	thread="$(jqv .thread)"
+	want_napi 200 "$N5_PORT_B" GET "$N5_TOKEN_B" "/api/events?thread=$thread" || return 1
+	want_eq "what the peer can read of it to begin with" \
+		"$(printf '%s' "$API_BODY" | jq '.events | length')" 0 || return 1
+
+	# An artifact the pusher really may hand over, so that the only thing left
+	# to refuse the task is the thread it names.
+	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_B" /api/artifacts \
+		'{"type":"note","title":"the peer own note","body":"snickersnee"}' || return 1
+	art="$(jqv .id)"
+	tid="forged-task-$$-$(date +%s)"
+	hlc="$(forged_hlc "$N5_PORT_B")" || return 1
+	delta="$(jq -nc --arg t "$tid" --arg a "$art" --arg u "$N5_USER_B" --arg th "$thread" \
+		--argjson h "$hlc" '
+		{artifacts: [], events: [], grants: [], hwm: 0, tasks: [
+		  {id: $t, artifact: $a, from_user: $u, to_user: $u, project: "pb", state: "open",
+		   assignee_agent: "", thread: $th, hlc: $h, node: "forger"}]}')"
+
+	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_B" /api/sync/push "$delta" || return 1
+	want_eq "tasks refused" "$(jqv '.refused.tasks')" 1 || return 1
+	want_eq "tasks applied" "$(jqv '.applied.tasks')" 0 || return 1
+	want_eq "rows in B's tasks table for it" \
+		"$(scalar5 "$N5_DSN_B" "SELECT count(*) FROM tasks WHERE id = '$tid'")" 0 || return 1
+
+	# And the conversation is still pc's.
+	want_napi 200 "$N5_PORT_B" GET "$N5_TOKEN_B" "/api/events?thread=$thread" || return 1
+	want_eq "what the peer can read of it now" \
+		"$(printf '%s' "$API_BODY" | jq '.events | length')" 0 || return 1
+	printf 'the task naming thread %s was refused, and the thread reads back empty still\n' "$thread"
+}
+
+# HIGH/MED 5. Filing and syncing check the operator's repository list; the
+# status refresh did not - and the repository it uses comes off the artifact's
+# link, which is a replicated column. A peer that pushes an artifact carrying a
+# link therefore chose which repository this node's credential talked to.
+forge_status_obeys_the_repo_list() {
+	recall
+	local id
+	id="$(new_artifact "$TOKEN_A_PC" bug "the tailgate rattles over cobbles")" || return 1
+	forge_file "$TOKEN_A_PC" "$id" o/r || return 1
+	want_eq "filed" "$API_STATUS" 200 || return 1
+	forge_status "$TOKEN_A_PC" "$id" || return 1
+	want_eq "a status refresh against the allowed repo" "$API_STATUS" 200 || return 1
+
+	# What a replicated link looks like: the same row, pointing somewhere the
+	# operator never named.
+	psql_do "UPDATE artifacts SET external = jsonb_set(external, '{repo}', '\"somebody/else\"')
+	          WHERE id = '$id'" || return 1
+	forge_status "$TOKEN_A_PC" "$id" || return 1
+	want_eq "a status refresh against a repo that is not on the list" "$API_STATUS" 403 || return 1
+	case "$API_BODY" in
+	*FLOWY_FORGE_REPOS*) ;;
+	*)
+		printf 'the refusal does not say whose list it is: %s\n' "$API_BODY" >&2
+		return 1
+		;;
+	esac
+	# Nothing was asked of the forge, so nothing about the artifact moved.
+	api GET "$TOKEN_A_PC" "/api/artifact/$id" || return 1
+	want_eq "the state on the link" "$(jqv .external.state)" open || return 1
+	want_eq "and the artifact was not moved" "$(jqv '.status == "done"')" false || return 1
+	printf 'status went through for o/r and was refused for somebody/else\n'
+}
+
+# MED 7. The push half of the reviewer loop was fixed to write its cursor before
+# reporting a refusal; the pull half was not. A pull that died halfway had
+# already threaded the comments before the failure into the log, and threw away
+# the record of having done so - so the next sync threaded them in again.
+a_half_threaded_pull_is_not_threaded_twice() {
+	recall
+	local id num thread i
+	id="$(new_artifact "$TOKEN_A_PC" bug "the sunroof drips on the passenger")" || return 1
+	forge_file "$TOKEN_A_PC" "$id" o/r || return 1
+	want_eq "filed" "$API_STATUS" 200 || return 1
+	num="$(jqv .external.number)"
+	thread="$(jqv .external.thread)"
+	for i in 1 2 3 4 5; do
+		mock_comment "$TOKEN_A_PC" o/r "$num" reviewer "inbound $i about the sunroof" || return 1
+		want_eq "the reviewer comment $i" "$API_STATUS" 200 || return 1
+	done
+
+	# The log refuses the third one, which is a pull dying with two comments
+	# already threaded in.
+	psql_do "ALTER TABLE events ADD CONSTRAINT gate_no_third_inbound
+	          CHECK (body NOT LIKE '%inbound 3 about the sunroof%')" || return 1
+	forge_sync "$TOKEN_A_PC" "$id" || return 1
+	want_eq "the sync reports the refusal" "$API_STATUS" 502 || return 1
+	psql_do "ALTER TABLE events DROP CONSTRAINT gate_no_third_inbound" || return 1
+
+	api GET "$TOKEN_A_PC" "/api/chat/forge?thread=$thread" || return 1
+	want_eq "comments that got in before it died" \
+		"$(jqv '[.events[] | select(.body | test("inbound [12] about the sunroof"))] | length')" 2 ||
+		return 1
+
+	forge_sync "$TOKEN_A_PC" "$id" || return 1
+	want_eq "the sync after it" "$API_STATUS" 200 || return 1
+	want_eq "comments it threaded" "$(jqv .pulled)" 3 || return 1
+	api GET "$TOKEN_A_PC" "/api/chat/forge?thread=$thread" || return 1
+	for i in 1 2 3 4 5; do
+		want_eq "copies of comment $i in the thread" \
+			"$(jqv "[.events[] | select(.body | test(\"inbound $i about the sunroof\"))] | length")" 1 ||
+			return 1
+	done
+	printf 'five comments, one refusal halfway, five events in thread %s\n' "$thread"
+}
+
+# MED 8. The login the node's own comments arrive under was the mock's name for
+# itself, written onto every link whatever forge was behind it. On a real gh the
+# node posts as whoever the machine is logged in as, so its own replies came
+# back as a stranger comments, were threaded in, and were pushed out again.
+the_node_asks_the_forge_who_it_is() {
+	recall
+	local id num
+	api POST "$TOKEN_A_PC" /api/forge/mock/login '{"login":"flowy-bot"}' || return 1
+	want_eq "the forge is logged in as" "$(jqv .login)" flowy-bot || return 1
+
+	id="$(new_artifact "$TOKEN_A_PC" bug "the horn sticks in the cold")" || return 1
+	forge_file "$TOKEN_A_PC" "$id" o/r || return 1
+	want_eq "filed" "$API_STATUS" 200 || return 1
+	want_eq "the login the link records" "$(jqv .external.author)" flowy-bot || return 1
+	num="$(jqv .external.number)"
+
+	mock_comment "$TOKEN_A_PC" o/r "$num" flowy-bot "this one came from this node" || return 1
+	mock_comment "$TOKEN_A_PC" o/r "$num" reviewer "and this one did not" || return 1
+	forge_sync "$TOKEN_A_PC" "$id" || return 1
+	want_eq "the sync" "$API_STATUS" 200 || return 1
+	want_eq "comments it threaded in" "$(jqv .pulled)" 1 || return 1
+	want_eq "and who said the one it took" "$(jqv '.events[0].actor')" "forge:reviewer" || return 1
+
+	# Back to the name the rest of the run uses.
+	api POST "$TOKEN_A_PC" /api/forge/mock/login '{"login":"flowy"}' || return 1
+	want_eq "the forge is itself again" "$(jqv .login)" flowy || return 1
+	printf 'the node posts as flowy-bot here, and knows its own comments by it\n'
+}
+
+# MED/LOW 10. The comment cursor was read after the filing round trip returned,
+# so anything said between the request going out and the answer coming back was
+# already behind the cursor when it was written - and ListComments never offers
+# it again.
+a_comment_made_while_filing_is_not_lost() {
+	recall
+	local id num
+	api POST "$TOKEN_A_PC" /api/forge/mock/on-file \
+		'{"author":"reviewer","body":"answered while the issue was being opened"}' || return 1
+	want_eq "the forge is armed" "$(jqv .armed)" true || return 1
+
+	id="$(new_artifact "$TOKEN_A_PC" bug "the indicator ticks out of time")" || return 1
+	forge_file "$TOKEN_A_PC" "$id" o/r || return 1
+	want_eq "filed" "$API_STATUS" 200 || return 1
+	num="$(jqv .external.number)"
+	mock_issue "$TOKEN_A_PC" o/r "$num" || return 1
+	want_eq "the comment is on the issue" \
+		"$(jqv '[.comments[] | select(.body | test("while the issue was being opened"))] | length')" 1 ||
+		return 1
+
+	forge_sync "$TOKEN_A_PC" "$id" || return 1
+	want_eq "the sync" "$API_STATUS" 200 || return 1
+	want_eq "comments it threaded in" "$(jqv .pulled)" 1 || return 1
+	want_eq "said by" "$(jqv '.events[0].actor')" "forge:reviewer" || return 1
+	printf 'the comment made inside the filing window reached the thread\n'
+}
+
+# MED 6. A grant that opens a whole project makes every artifact in it readable
+# at once, and all of them are below the cursor. The rescan that carries them is
+# a page like any other, and what did not fit in it used to be dropped: the peer
+# held the grant and a fraction of the project, with nothing to page towards.
+#
+# It runs last of these, because it opens pc up to pb for good.
+a_project_grant_carries_more_than_a_page() {
+	recall5
+	local first second second_hlc marker cursor
+	want_napi 200 "$N5_PORT_A" POST "$N5_TOKEN_A_PC" /api/artifacts \
+		'{"type":"note","title":"the first old one in pc","body":"wimblesnatch"}' || return 1
+	first="$(jqv .id)"
+	want_napi 200 "$N5_PORT_A" POST "$N5_TOKEN_A_PC" /api/artifacts \
+		'{"type":"note","title":"the second old one in pc","body":"wimblesnatch"}' || return 1
+	second="$(jqv .id)"
+	second_hlc="$(jqv .hlc)"
+	# Something the peer may read, written after them, so that settling leaves
+	# the cursor above both - which is what makes them old.
+	want_napi 200 "$N5_PORT_A" POST "$N5_TOKEN_A" /api/artifacts \
+		'{"type":"note","title":"the marker in pa","body":"wimblesnatch"}' || return 1
+	marker="$(jqv .id)"
+	sync_round || return 1
+	sync_round || return 1
+	sync_round || return 1
+
+	cursor="$(scalar5 "$N5_DSN_B" \
+		"SELECT pull_cursor FROM peers WHERE peer = 'http://127.0.0.1:$N5_PORT_A'")"
+	if [ "$cursor" -le "$second_hlc" ]; then
+		printf 'the cursor %s is not past the pc rows (%s); they are not old yet\n' \
+			"$cursor" "$second_hlc" >&2
+		return 1
+	fi
+	want_eq "copies of the first on B before the grant" \
+		"$(scalar5 "$N5_DSN_B" "SELECT count(*) FROM artifacts WHERE id = '$first'")" 0 || return 1
+	want_eq "and of the marker, which the peer could always read" \
+		"$(scalar5 "$N5_DSN_B" "SELECT count(*) FROM artifacts WHERE id = '$marker'")" 1 || return 1
+
+	# One grant opens the whole project.
+	want_napi 200 "$N5_PORT_A" POST "$N5_TOKEN_A_PC" /api/grants \
+		'{"from_project":"pb","to_project":"pc"}' || return 1
+
+	# Page through it as the driver does, a row at a time, which is what makes
+	# the rescan overflow: a page holds one and the grant opened a project.
+	local page hwm seen="" pages=0
+	for page in $(seq 1 20); do
+		want_napi 200 "$N5_PORT_A" GET "$N5_TOKEN_B" "/api/sync/pull?since=$cursor&limit=1" ||
+			return 1
+		seen="$seen$(printf '%s' "$API_BODY" | jq -r '.artifacts[].id')
+"
+		pages=$page
+		hwm="$(jqv .hwm)"
+		if printf '%s' "$seen" | grep -qx "$first" && printf '%s' "$seen" | grep -qx "$second"; then
+			break
+		fi
+		if [ "$hwm" -le "$cursor" ]; then
+			break
+		fi
+		cursor="$hwm"
+	done
+
+	if ! printf '%s' "$seen" | grep -qx "$first"; then
+		printf 'the first old pc artifact never came over in %s pages\n' "$pages" >&2
+		return 1
+	fi
+	if ! printf '%s' "$seen" | grep -qx "$second"; then
+		printf 'the second old pc artifact never came over in %s pages\n' "$pages" >&2
+		return 1
+	fi
+	printf 'both old pc artifacts crossed, in %s pages of one row\n' "$pages"
+}
+
 # ---------------------------------------------------------------- environment
 
 say "environment"
@@ -3339,6 +3699,45 @@ check "a driver that will not count its rows is reported, not assumed (LOW 9)" \
 check "a comment at the cursor is not forgotten and threaded in twice (LOW 10)" \
 	go test -count=1 -run 'TestExternalRef(Cursors|KeepsSameSecondCommentsSeen)|TestSeenComment' \
 	./internal/store
+
+# ------------------------------------------------- the second round of fixes
+#
+# The re-review of the first round: push checked three tables and not the
+# fourth, and checked those three against readability where the API checks
+# ownership. Plus five in the forge bridge. One check each, and every one of
+# them fails on the code as it was.
+
+say "a push is what that principal could have written"
+check "an event pushed under somebody else's name is refused (HIGH 1)" \
+	a_pushed_event_is_signed_by_the_pusher
+check "a reader cannot rewrite the artifact it was shown (HIGH 2)" \
+	a_read_share_is_not_a_write
+check "a share of somebody else's artifact is refused however it is signed (HIGH 3)" \
+	a_share_is_only_the_owners_to_hand_over
+check "a pushed task cannot name a thread the pusher may not read (HIGH 4)" \
+	a_pushed_task_cannot_name_a_thread_it_cannot_read
+check "the same rule, in the store, row by row (HIGH 1)" \
+	go test -count=1 -run 'TestCheckEventIsWhatTheAPIWouldHaveAllowed|TestSyncApplyAsRefusesAForgedEvent' \
+	./internal/store
+check "the endpoint's minted types and the store's are one list (HIGH 1)" \
+	go test -count=1 -run TestMintedTypesAgreeWithTheStore .
+
+say "the forge, again"
+check "a status refresh obeys the operator's repository list (HIGH 5)" \
+	forge_status_obeys_the_repo_list
+check "a pull that died halfway does not thread those comments in twice (MED 7)" \
+	a_half_threaded_pull_is_not_threaded_twice
+check "the node asks the forge which login it posts as (MED 8)" \
+	the_node_asks_the_forge_who_it_is
+check "a CLI failure names the call and not what it carried (MED 9)" \
+	go test -count=1 -run 'TestRunCommandDoesNotEchoTheArgv|TestDescribeArgs|TestSelfLoginArgv|TestMockForgeAnswersItsOwnLogin' \
+	./internal/forge
+check "a comment made while the issue was being filed is not lost (MED 10)" \
+	a_comment_made_while_filing_is_not_lost
+
+say "federation, again"
+check "a grant that opens a project carries more of it than one page (MED 6)" \
+	a_project_grant_carries_more_than_a_page
 
 # ------------------------------------------------------------------- verdict
 

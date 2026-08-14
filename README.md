@@ -797,6 +797,15 @@ and `external jsonb`, the link to an issue on a forge and the two cursors the
 reviewer loop keeps. They are written only by the forge endpoints, replicate
 with the row they are on, and are indexed by `reported` for "what have I filed".
 
+The second security slice adds one more local table beside `peers`:
+
+| table | holds |
+| --- | --- |
+| `sync_pending` | artifacts a grant made readable below a reader's cursor that did not fit in the page the grant arrived on: `(principal, artifact, sent_hwm)`, drained by later pulls and struck off when the reader's cursor passes the mark they went out under |
+
+Like `peers` it is bookkeeping about replication rather than fabric state, so it
+carries no `hlc`, replicates nowhere, and means nothing on another node.
+
 An artifact with `project` NULL is personal to `owner_user`; `visibility` is
 `personal`, `project` or `shared`. `kind` narrows `type` without multiplying it -
 a memory item is `type='memory'` with a kind of `note`, `todo`, `feature` or
@@ -1135,6 +1144,34 @@ run against the source it fixes to see it fail first:
 - a comment made at exactly the cursor survives a hundred more at the same
   instant, and both shapes of the seen list still parse
 
+And the second slice, the same way - one check per defect the re-review found:
+
+- an event pushed under another user's name, of a type this node mints, is
+  received, refused and not in the log, while the one the pusher signed in the
+  same delta is applied
+- a peer holding a read-share on somebody else's artifact pushes a newer version
+  of it naming itself as owner: `refused.artifacts: 1`, and the row still has
+  its owner, its project and its title
+- a pushed share of an artifact the pusher does not own is refused however it is
+  signed, and no grant row is written
+- a pushed task naming a thread in a project the pusher holds no grant into is
+  refused, and that thread still reads back empty for them
+- `GET /api/forge/status` on an artifact whose link names a repository that is
+  not on the operator's list is `403`, and nothing about the artifact moves
+- with the log refusing the third of five inbound comments: the sync answers
+  `502` with two threaded, and the next one threads three - each comment is in
+  the thread exactly once
+- the mock forge renamed to `flowy-bot`: filing records that login on the link,
+  and a comment by it is treated as this node's own and not threaded back in
+- a `gh` invocation that fails names `issue create --repo o/r` and carries
+  neither the title nor the body of what it was filing
+- a comment recorded while the issue was being opened is threaded in by the
+  first sync rather than lost behind the cursor
+- a project-wide grant with a page of one row still carries both of the old
+  artifacts it opened, over successive pulls
+- `checkEvent` row by row in the store, and the endpoint's minted types and the
+  store's are asserted to be one list
+
 The last thing the gate does is ask git whether the tree it just tested is the
 tree on disk: uncommitted changes, or nothing ever committed, is a failure.
 `web/node_modules` and everything vite writes into `web/dist` are ignored, so
@@ -1146,6 +1183,8 @@ A review found ten defects, and this slice fixes all ten. Each one has a check
 in `run-tests.sh` that fails on the code as it was and passes on the code as it
 is - the run below verifies that by reverting the source and leaving the checks
 in place, which is the only way to know a regression test is testing anything.
+A re-review of this slice found ten more, mostly in the push gate it added;
+those are the section after this one.
 
 Two of them change how a node is configured, so they are worth reading before
 upgrading one:
@@ -1245,6 +1284,103 @@ again. Entries now carry their comment's time, and the trim only ever drops one
 the cursor already covers. Refs written by older nodes still parse: a bare id is
 an entry whose age is unknown, and is the first to be forgotten.
 
+## The second round of security fixes
+
+The first round was reviewed again, and the review found that the push gate had
+been put in the right place with the wrong question in it. `SyncApplyAs` checked
+three tables and not the fourth, and it checked those three against what the
+pusher may **read** where the API checks what the pusher **owns**. Ten more
+defects, four of them in that one paragraph. Same rule as before: one check in
+`run-tests.sh` per defect, each verified by reverting the source and leaving the
+checks in place.
+
+Nothing here changes how a node is configured. `FLOWY_PEERS` and
+`FLOWY_FORGE_REPOS` mean what they meant.
+
+**HIGH - a pushed event was not checked at all.** `syncApply` called
+`applyEvent` straight from the loop, so the one append-only table - the one the
+lifecycle, the inbox and the forge bridge all read back - was the one table a
+peer could write anything into. A pushed `status` event was a lifecycle move
+nobody made, on every node it reached, and a pushed `chat` was a message from
+somebody who never said it. `checkEvent` now asks what `POST /api/events` asks:
+the actor is the pusher, the project is the pusher's own (or the event has none
+and is theirs), and the minted types - `status`, `task`, `forge` - are refused
+outright. The two lists of minted types live in two packages, so a test in the
+server package holds them together.
+
+**HIGH - a read-share was a write.** `checkArtifact` let a row that is already
+here through if the pusher could **read** it, and `applyArtifact` then replaced
+every column of it - `owner_user`, `project` and `visibility` included. Being
+shown an artifact was therefore enough to take it over and share it onwards.
+The rule is now the one `handleCreateArtifact` keeps: a row that is already here
+is rewritten only by its owner. Readability is still the rule for a row that is
+not here yet, which is ordinary replication.
+
+**HIGH - a pushed share was checked against its own claim.** `checkGrant`
+verified that the artifact's owner is whoever the grant says granted it, and
+never that the pusher is that owner - so writing the owner's id into
+`granted_by` was enough to share anybody's artifact with yourself. It now
+requires both.
+
+**HIGH - a pushed task was a read capability nobody checked.** The tasks clause
+in `EventFilterSQL` lets the parties to a task read the thread it names,
+whichever project they write from. A *new* task was accepted from any principal,
+so `{thread: T, from_user: me, to_user: me}` was a way to read conversation `T`.
+A new task is now validated the way `POST /api/assign` is: the pusher is the
+side handing the work over, the artifact exists, is readable by them and is not
+personal, and the thread is one they can already read - a thread nobody has said
+anything in yet has nothing to leak.
+
+**HIGH - `GET /api/forge/status` skipped the repository list.** Filing and
+syncing check it; the refresh did not, and the repository it uses comes off the
+artifact's `external` link - which is a replicated column. So a peer that pushed
+an artifact carrying a link chose which repository this node's credential
+talked to. It checks the list now, like the other two.
+
+**MEDIUM - a grant that opened a project carried one page of it.** The rescan
+that catches artifacts a fresh grant made readable below the cursor is a page
+like any other, and what did not fit in it was dropped: those rows are below the
+cursor and the grant is about to be, so nothing pages towards them ever again.
+One project-wide grant is more than one page by definition. The overflow is
+written to `sync_pending` now, keyed by the reader rather than by the peer
+machine - a pull knows which principal is asking and not which host - and later
+pulls drain it. A row is struck off when the reader comes back with a cursor at
+or above the high water mark it went out under, which is the only acknowledgement
+the protocol has; the mark moves by one on a page that carried nothing else, so
+the drain always makes progress.
+
+**MEDIUM - the forge pull threaded comments twice on a failure.** The push half
+was fixed last round to write its cursor before reporting a refusal. The pull
+half still answered `502` first, and by then it had threaded the comments before
+the failure into the log - so the next sync threaded them in again. It now
+returns what it threaded along with the error, the ref is written either way,
+and the refusal is reported after. Pushing is not attempted after a pull that
+broke.
+
+**MEDIUM - the node assumed the forge's name for it.** `Author` on a new link
+was `forge.SelfAuthor`, which is the *mock's* login. Against a real `gh` the
+node posts as whoever the machine is logged in as, so its own replies came back
+as a stranger's comments, were threaded in, and were pushed out again - the echo
+the field exists to stop. It is resolved once, when the artifact is filed, by
+`gh api user --jq .login` / `glab api user`, through a `SelfLoginer` a client
+implements when it can answer. A forge that cannot say leaves it at `flowy`,
+which is what the mock is called.
+
+**MEDIUM - a CLI failure quoted the argv.** `runCommand` folded the whole
+command line into its error, and the argv of a filing carries the artifact's
+whole body - so an issue that could not be opened published the thing it could
+not publish, to whoever made the request and to the node's log. The error names
+the call now: program, subcommand, issue number and repository, and nothing a
+flag introduced. `gh`'s own stderr is still folded in, because that is the
+diagnosis.
+
+**MEDIUM - the comment cursor was read after the filing.** `Since` was stamped
+when `FileIssue` returned, so anything a reviewer said between the request going
+out and the answer coming back was already behind the cursor when it was
+written, and `ListComments` never offered it again. It is stamped before the
+round trip. The mock can now be told to record a comment as part of opening an
+issue, which is that window made deterministic rather than raced for.
+
 ## Deployment
 
 The store speaks the Postgres wire and nothing else. The spine of `schema.sql`
@@ -1267,10 +1403,10 @@ query. Nothing above it depends on anything below it.
 
 ## Phase 6 status
 
-Green. `./run-tests.sh` reports `passed: 212 failed: 0` with Go 1.22, Node 22.14
+Green. `./run-tests.sh` reports `passed: 224 failed: 0` with Go 1.22, Node 22.14
 and Postgres 16 - the 200 checks Phase 6 ended with, all still green, plus the
-12 the security slice added: one per defect above, each of them verified to fail
-on the source it fixes. Phase 6's own 22 were: capability selection, filing, the conflict and permission cases, the
+12 the first security slice added and the 12 the second one did: one per defect
+above, each of them verified to fail on the source it fixes. Phase 6's own 22 were: capability selection, filing, the conflict and permission cases, the
 close-to-done move, the reviewer loop in both directions, the no-op sync, the
 untouched `gh`, and six `psql` checks over what all of it wrote. Phases 0 to 5
 stayed green throughout, and mostly by construction - the three endpoints are

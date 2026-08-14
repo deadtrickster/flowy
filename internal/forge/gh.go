@@ -55,18 +55,48 @@ func (c *GhClient) Kind() string { return c.kind }
 
 // runCommand is the real runner. Stderr is folded into the error rather than
 // dropped: when `gh` refuses, what it printed is the whole of the diagnosis.
+//
+// What the argv carried is not folded in. A failure here becomes an HTTP
+// response and a line in the node's log, and the argv of a filing holds the
+// artifact's whole body - so an issue that could not be opened used to publish
+// the thing it could not publish, to whoever asked and to the log. The
+// invocation is named by what identifies it instead: the program, what it was
+// asked to do, and which issue.
 func runCommand(ctx context.Context, name string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	out, err := cmd.Output()
 	if err != nil {
+		what := name + " " + describeArgs(args)
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) && len(exitErr.Stderr) > 0 {
-			return nil, fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err,
+			return nil, fmt.Errorf("%s: %w: %s", what, err,
 				strings.TrimSpace(string(exitErr.Stderr)))
 		}
-		return nil, fmt.Errorf("%s %s: %w", name, strings.Join(args, " "), err)
+		return nil, fmt.Errorf("%s: %w", what, err)
 	}
 	return out, nil
+}
+
+// describeArgs names an invocation without repeating what it carried: the
+// leading run of subcommands and positionals - `issue create`, `issue view 17`,
+// `api repos/o/r/issues/17/comments` - and the repository, which is where the
+// call went rather than what it said. Everything a flag introduces is a value:
+// a title, a body, a comment, a jq expression. None of it is described.
+func describeArgs(args []string) string {
+	out := []string{}
+	for i := 0; i < len(args); i++ {
+		if strings.HasPrefix(args[i], "-") {
+			break
+		}
+		out = append(out, args[i])
+	}
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == "--repo" || args[i] == "-R" {
+			out = append(out, args[i], args[i+1])
+			break
+		}
+	}
+	return strings.Join(out, " ")
 }
 
 // exec runs the CLI under the client's own timeout, on top of whatever deadline
@@ -111,6 +141,42 @@ func (c *GhClient) FileIssue(ctx context.Context, repo, title, body string) (int
 		return 0, issueURL, err
 	}
 	return number, issueURL, nil
+}
+
+// SelfLogin is who the CLI is logged in as: the login this node's comments
+// arrive under on the forge.
+//
+// It is one call to the forge's own "who am I", made once when an artifact is
+// filed. The node needs it to tell its own replies from a reviewer's, and it
+// cannot be guessed: the credential belongs to whoever set the machine up, and
+// on GitHub it is as likely to be a bot account as a person.
+func (c *GhClient) SelfLogin(ctx context.Context) (string, error) {
+	var args []string
+	switch c.kind {
+	case KindGlab:
+		// glab has no --jq, so the JSON is parsed here.
+		args = []string{"api", "user"}
+	default:
+		args = []string{"api", "user", "--jq", ".login"}
+	}
+	out, err := c.exec(ctx, args...)
+	if err != nil {
+		return "", err
+	}
+	login := strings.Trim(strings.TrimSpace(string(out)), `"`)
+	if c.kind == KindGlab {
+		var user struct {
+			Username string `json:"username"`
+		}
+		if err := json.Unmarshal(out, &user); err != nil {
+			return "", fmt.Errorf("forge: %s api user: %w", c.kind, err)
+		}
+		login = user.Username
+	}
+	if login == "" {
+		return "", fmt.Errorf("forge: %s api user: no login in the answer", c.kind)
+	}
+	return login, nil
 }
 
 // ghIssue is the shape of a viewed issue, in both dialects: gh answers

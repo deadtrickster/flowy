@@ -164,6 +164,29 @@ CREATE TABLE IF NOT EXISTS peers (
     last_seen      timestamptz
 );
 
+-- What a page of a delta could not carry, per reader.
+--
+-- A grant can make an artifact that is older than the reader's cursor readable
+-- for the first time, so a pull rescans below the cursor for the rows the
+-- grants in that page just opened. That rescan is a page like any other, and
+-- what does not fit in it cannot be found again by paging forward - the grant
+-- is under the cursor by then and nothing else about those rows ever moved.
+-- So the overflow is written down here instead, and every later pull by the
+-- same reader drains it.
+--
+-- principal is the reader the rows are owed to - the (user, agent, project)
+-- triple a token resolves to - rather than a peer node, because a pull knows
+-- which principal is asking and not which machine it is asking from.
+-- sent_hwm is the high water mark a row was last handed over under: when the
+-- reader comes back with a cursor at or above it, the row has certainly been
+-- applied and the debt is settled.
+CREATE TABLE IF NOT EXISTS sync_pending (
+    principal text,
+    artifact  text,
+    sent_hwm  bigint DEFAULT 0,
+    PRIMARY KEY (principal, artifact)
+);
+
 CREATE INDEX IF NOT EXISTS artifacts_project_type_idx ON artifacts (project, type);
 CREATE INDEX IF NOT EXISTS artifacts_owner_idx        ON artifacts (owner_user);
 CREATE INDEX IF NOT EXISTS artifacts_hlc_idx          ON artifacts (hlc);

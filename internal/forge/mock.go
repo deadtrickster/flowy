@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -42,6 +43,18 @@ type MockForge struct {
 	// twice.
 	failArmed bool
 	failAfter int
+	// self is the login the mock posts under and answers SelfLogin with. It is
+	// SelfAuthor unless a test says otherwise: a real gh posts as whoever it is
+	// logged in as, and a fake that can only ever be called one thing cannot
+	// show that the node asked.
+	self string
+	// onFileAuthor and onFileBody are a comment the next FileIssue records as
+	// part of opening the issue - a reviewer who answered while the issue was
+	// being created. It is the window between reading the comment cursor and
+	// the forge finishing, made deterministic: a comment stamped inside it is
+	// dropped for good by a cursor read afterwards.
+	onFileAuthor string
+	onFileBody   string
 }
 
 // MockIssue is one issue on the mock forge.
@@ -98,6 +111,18 @@ func (m *MockForge) FileIssue(_ context.Context, repo, title, body string) (int,
 		Comments: []Comment{},
 	}
 	m.issues[key(repo, number)] = issue
+
+	// Somebody answered while the issue was being opened.
+	if m.onFileBody != "" {
+		m.seq++
+		issue.Comments = append(issue.Comments, Comment{
+			ID:     "c" + strconv.Itoa(m.seq),
+			Author: m.onFileAuthor,
+			Body:   m.onFileBody,
+			At:     m.stamp(),
+		})
+		m.onFileAuthor, m.onFileBody = "", ""
+	}
 	return number, issue.URL, nil
 }
 
@@ -123,8 +148,45 @@ func (m *MockForge) Comment(_ context.Context, repo string, number int, body str
 	if err := m.takeFailure(); err != nil {
 		return err
 	}
-	_, err := m.AddComment(repo, number, SelfAuthor, body)
+	_, err := m.AddComment(repo, number, m.SelfAuthor(), body)
 	return err
+}
+
+// SelfLogin is who this forge says the node posts as, which is what a real gh
+// answers `api user` with. It is what the node writes onto the link when it
+// files, and what the sync skips comments by.
+func (m *MockForge) SelfLogin(_ context.Context) (string, error) { return m.SelfAuthor(), nil }
+
+// SelfAuthor is the login the mock posts under.
+func (m *MockForge) SelfAuthor() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.self == "" {
+		return SelfAuthor
+	}
+	return m.self
+}
+
+// SetSelfAuthor changes the login the mock posts under, so a test can show
+// that the node asked the forge for it rather than assuming the mock's name.
+func (m *MockForge) SetSelfAuthor(login string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.self = strings.TrimSpace(login)
+}
+
+// CommentOnFile arms a comment for the next FileIssue to record as part of
+// opening the issue: the reviewer who answered inside the filing window.
+func (m *MockForge) CommentOnFile(author, body string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if author == "" {
+		author = "reviewer"
+	}
+	m.onFileAuthor, m.onFileBody = author, body
 }
 
 // takeFailure reports the armed refusal when this call is the one to refuse,
