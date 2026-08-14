@@ -8,6 +8,7 @@ package hlc
 
 import (
 	"fmt"
+	"math"
 	"sync"
 	"time"
 )
@@ -17,6 +18,14 @@ const LogicalBits = 16
 
 // MaxLogical is the largest logical counter that fits.
 const MaxLogical = 1<<LogicalBits - 1
+
+// MaxWallMS is the largest wall reading that still packs into a positive
+// int64. A reading above it would shift its top bits into the sign and come
+// back out of Pack as a negative number - which sorts below every reading the
+// node has ever written, so every later write would lose its merge and
+// replication would never move again. It is roughly the year 6.6 million, so
+// clamping to it costs nothing a real clock will ever notice.
+const MaxWallMS = math.MaxInt64 >> LogicalBits
 
 // Timestamp is a single reading of a hybrid logical clock.
 type Timestamp struct {
@@ -37,13 +46,46 @@ func (t Timestamp) String() string {
 }
 
 // Pack folds a wall/logical pair into one sortable int64.
+//
+// The wall reading is clamped rather than shifted blindly: a reading a peer
+// made up - MaxInt64, say - would otherwise pack to a negative number and every
+// reading this node ever handed out would sort above it. Packing is the one
+// place that can happen, so it is the one place that has to refuse.
 func Pack(wallMS int64, logical uint16) int64 {
+	if wallMS < 0 {
+		wallMS = 0
+	}
+	if wallMS > MaxWallMS {
+		wallMS = MaxWallMS
+	}
 	return wallMS<<LogicalBits | int64(logical)
 }
 
 // Unpack splits a packed value back into its wall and logical parts.
 func Unpack(packed int64) (int64, uint16) {
 	return packed >> LogicalBits, uint16(packed & MaxLogical)
+}
+
+// MaxSkew is how far ahead of this node's physical clock a reading made
+// somewhere else may be and still be believed. A day is generous for a clock
+// that is merely wrong and impossible for one that is lying: a reading further
+// ahead than this drags every node that merges it along with it, and nothing
+// brings the fabric back down again.
+const MaxSkew = 24 * time.Hour
+
+// BelievableAt reports whether packed is a reading a working clock could have
+// produced at nowMS: not negative, and no further ahead than MaxSkew.
+func BelievableAt(packed, nowMS int64) bool {
+	if packed < 0 {
+		return false
+	}
+	wall, _ := Unpack(packed)
+	return wall <= nowMS+MaxSkew.Milliseconds()
+}
+
+// Believable is BelievableAt against this machine's clock.
+func Believable(packed int64) bool {
+	return BelievableAt(packed, time.Now().UnixMilli())
 }
 
 // UnpackTimestamp splits a packed value into a Timestamp tagged with node.
@@ -85,8 +127,15 @@ func (c *Clock) tick(phys int64) {
 
 // bump advances the logical counter by one, carrying into the wall clock when
 // the counter is exhausted. Callers hold mu.
+//
+// The carry saturates at MaxWallMS rather than wrapping: a clock that has been
+// pushed to the top of the range by a bad reading stops advancing, which is a
+// clock that has stopped rather than a clock that has gone negative.
 func (c *Clock) bump() {
 	if c.logical == MaxLogical {
+		if c.wall >= MaxWallMS {
+			return
+		}
 		c.wall++
 		c.logical = 0
 		return
@@ -114,6 +163,17 @@ func (c *Clock) Pack() int64 { return c.Now().Pack() }
 // one and anything this clock handed out earlier.
 func (c *Clock) Update(remote Timestamp) Timestamp {
 	phys := c.now()
+
+	// A remote reading is somebody else's claim about the time. Adopting one
+	// past the top of the range would leave this clock unable to hand out a
+	// reading greater than the one it just took, which is the end of every
+	// merge it takes part in afterwards.
+	if remote.WallMS > MaxWallMS {
+		remote.WallMS = MaxWallMS
+	}
+	if remote.WallMS < 0 {
+		remote.WallMS = 0
+	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()

@@ -95,6 +95,42 @@ func (s *server) handleForgeCapability(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
+// forgeOwner reports whether p may make this node act on art outside itself,
+// and answers 403 when it may not.
+//
+// Reading an artifact is not permission to publish it. The body of a bug goes
+// out of this machine over a credential the caller does not hold and cannot be
+// taken back, so filing and pushing replies are the owner's to do - or the
+// operator's, who holds the credential in the first place. Everyone else who
+// can read it can still read it, comment in the thread, and move the status:
+// none of that leaves the building.
+func (s *server) forgeOwner(w http.ResponseWriter, r *http.Request, art *store.Artifact) bool {
+	p := principalOf(r)
+	if p != nil && (p.Operator || (p.UserID != "" && art.OwnerUser == p.UserID)) {
+		return true
+	}
+	writeJSON(w, http.StatusForbidden,
+		errorBody("only the owner of "+art.ID+" can send it to a forge"))
+	return false
+}
+
+// forgeRepoAllowed reports whether this node files into repo, and answers 403
+// when it does not.
+//
+// The repository used to be whatever the request body said, which made the
+// node's forge credential a general-purpose publisher: name any repo you can
+// write to and the artifact's body lands in it. Where this node may file is the
+// operator's decision, made once, in FLOWY_FORGE_REPOS.
+func (s *server) forgeRepoAllowed(w http.ResponseWriter, repo string) bool {
+	if s.forgeRepos[repo] {
+		return true
+	}
+	writeJSON(w, http.StatusForbidden,
+		errorBody("this node does not file into "+repo+
+			"; the repositories it files into are the operator's list (FLOWY_FORGE_REPOS)"))
+	return false
+}
+
 // forgeFileRequest is the body of a filing.
 type forgeFileRequest struct {
 	Artifact string `json:"artifact"`
@@ -131,6 +167,12 @@ func (s *server) handleForgeFile(w http.ResponseWriter, r *http.Request) {
 	}
 	art, ok := s.readableArtifact(w, r, req.Artifact)
 	if !ok {
+		return
+	}
+	if !s.forgeOwner(w, r, art) {
+		return
+	}
+	if !s.forgeRepoAllowed(w, req.Repo) {
 		return
 	}
 	if art.External != nil {
@@ -291,23 +333,35 @@ func (s *server) handleForgeSync(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !s.forgeOwner(w, r, art) {
+		return
+	}
+	if !s.forgeRepoAllowed(w, ref.Repo) {
+		return
+	}
 
 	threaded, err := s.forgePullComments(r, art, ref, client)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, errorBody("forge: "+err.Error()))
 		return
 	}
-	pushed, err := s.forgePushReplies(r, ref, client)
-	if err != nil {
-		writeJSON(w, http.StatusBadGateway, errorBody("forge: "+err.Error()))
-		return
-	}
+	pushed, pushErr := s.forgePushReplies(r, ref, client)
 
+	// The cursors are written before the refusal is reported, and they describe
+	// what actually happened: every comment that reached the forge is behind the
+	// cursor and every one that did not is still in front of it. Answering 502
+	// first and writing nothing - which is what this did - meant the next sync
+	// started again from before the first reply and posted the ones that had
+	// already arrived a second time.
 	if len(threaded) > 0 || pushed > 0 {
 		if err := s.db.SetArtifactExternal(ctx, art, ref, art.Reported); err != nil {
 			writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
 			return
 		}
+	}
+	if pushErr != nil {
+		writeJSON(w, http.StatusBadGateway, errorBody("forge: "+pushErr.Error()))
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"artifact": art.ID,
@@ -404,8 +458,18 @@ func (s *server) threadForgeComment(
 }
 
 // forgePushReplies sends everything said in the thread since the last push out
-// to the issue, and moves the cursor over everything it looked at - including
-// what it decided not to send, which is why a second sync sends nothing.
+// to the issue, and moves the cursor over everything it has finished with -
+// including what it decided not to send, which is why a second sync sends
+// nothing.
+//
+// The cursor advances one event at a time and only ever behind a comment the
+// forge has accepted. It used to be raised to the highest event it had looked
+// at whether or not the sending worked, which is two bugs in one line: on a
+// refusal halfway through, the replies that did not go out were behind the
+// cursor and never went out at all, and - because the caller threw the whole
+// ref away on the error - the ones that had gone out were sent again on the
+// next sync. Either way the issue is wrong, and the second way is wrong in
+// public.
 func (s *server) forgePushReplies(
 	r *http.Request, ref *store.ExternalRef, client forge.ForgeClient,
 ) (int, error) {
@@ -415,32 +479,27 @@ func (s *server) forgePushReplies(
 		return 0, err
 	}
 
-	pushed, high := 0, ref.Pushed
+	pushed := 0
 	for _, e := range events {
 		if e.SeqHLC <= ref.Pushed {
 			continue
 		}
-		if e.SeqHLC > high {
-			high = e.SeqHLC
-		}
 		// Only the conversation goes out. A status move or a task handoff is
 		// this node's bookkeeping, and the issue's reviewer did not ask for it.
-		if e.Type != chatEventType || isForgeActor(e.Actor) {
-			continue
-		}
-		if strings.TrimSpace(e.Body) == "" {
+		// Nothing left this node, so the cursor may pass it either way.
+		if e.Type != chatEventType || isForgeActor(e.Actor) || strings.TrimSpace(e.Body) == "" {
+			ref.Pushed = e.SeqHLC
 			continue
 		}
 		if err := client.Comment(ctx, ref.Repo, ref.Number, s.forgeReplyBody(ctx, e)); err != nil {
-			// Stop at the first refusal and keep the cursor where it was, so
-			// the replies that did not make it are still pending rather than
-			// silently dropped.
-			ref.Pushed = high
+			// Stop at the first refusal, with the cursor behind this event: it
+			// did not reach the forge, so it is still pending. Everything before
+			// it did, and is not sent again.
 			return pushed, err
 		}
+		ref.Pushed = e.SeqHLC
 		pushed++
 	}
-	ref.Pushed = high
 	return pushed, nil
 }
 
@@ -649,6 +708,26 @@ func (s *server) handleMockComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, comment)
+}
+
+// mockFailRequest arms one refusal on the mock forge.
+type mockFailRequest struct {
+	After int `json:"after"`
+}
+
+// handleMockFail makes the mock forge refuse a comment, so a test can be the
+// network going away in the middle of a reviewer loop rather than only ever the
+// happy path.
+//
+// POST /api/forge/mock/fail  {after}
+func (s *server) handleMockFail(w http.ResponseWriter, r *http.Request) {
+	var req mockFailRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody("bad request body: "+err.Error()))
+		return
+	}
+	s.mockForge.FailNext(req.After)
+	writeJSON(w, http.StatusOK, map[string]any{"armed": true, "after": req.After})
 }
 
 // handleMockIssue reads a mock issue back, comments and all - which is how a

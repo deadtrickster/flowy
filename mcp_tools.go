@@ -193,6 +193,15 @@ func memWrite(ctx context.Context, m *mcpServer, p *store.Principal, raw json.Ra
 		if err != nil {
 			return nil, err
 		}
+		if old.Type != memoryType {
+			// Readable, owned, and not a memory item. These tools have one
+			// namespace, and writing through them must not be a way to turn a
+			// bug into a note - which is what it was: the update path rewrote
+			// type as well as everything else, and the artifact left the
+			// lifecycle it was in. Same answer as an id that is not there,
+			// which is what mem_read gives for the same row.
+			return nil, notThere(a.ID)
+		}
 		if old.OwnerUser != p.UserID {
 			return nil, fmt.Errorf("memory item %s belongs to somebody else", a.ID)
 		}

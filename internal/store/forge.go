@@ -36,11 +36,18 @@ type ExternalRef struct {
 	// Since is the time of the newest comment that has been threaded in, and is
 	// what the next ListComments asks for.
 	Since time.Time `json:"since,omitempty"`
-	// Seen holds the ids of the comments already threaded in, newest last and
-	// capped. It is the belt to Since's braces: a forge whose timestamps have
-	// one-second resolution can hand back two comments at the same instant, and
-	// a cursor alone cannot tell the second one from the first.
-	Seen []string `json:"seen,omitempty"`
+	// Seen holds the comments already threaded in, newest last and capped. It
+	// is the belt to Since's braces: a forge whose timestamps have one-second
+	// resolution can hand back two comments at the same instant, and a cursor
+	// alone cannot tell the second one from the first.
+	//
+	// Each entry carries the time of its comment as well as its id, because the
+	// cap has to know which entries the cursor already covers. It used to be a
+	// list of bare ids trimmed to the newest hundred, and the hundred-and-first
+	// same-second comment pushed the first one out - after which Since could
+	// not rule it out either, because a comment made at exactly the cursor is
+	// not before it, and the node threaded it in a second time.
+	Seen []SeenComment `json:"seen,omitempty"`
 	// Pushed is the seq_hlc of the last thread event the sync has considered.
 	// Everything above it is a reply that has not been out to the forge yet.
 	Pushed int64 `json:"pushed,omitempty"`
@@ -48,7 +55,35 @@ type ExternalRef struct {
 	Filed time.Time `json:"filed,omitempty"`
 }
 
-// seenCap is how many comment ids an ExternalRef carries. Enough to cover any
+// SeenComment is one comment this node has already threaded in: which comment,
+// and when the forge said it was made.
+type SeenComment struct {
+	ID string    `json:"id"`
+	At time.Time `json:"at,omitempty"`
+}
+
+// UnmarshalJSON accepts both shapes a seen entry has had: the bare id earlier
+// nodes wrote, and the {id, at} pair this one writes. Refs replicate, so a
+// link written by an older node has to keep parsing here - an entry with no
+// time is one whose age is unknown, and is the first to be forgotten.
+func (s *SeenComment) UnmarshalJSON(data []byte) error {
+	var id string
+	if err := json.Unmarshal(data, &id); err == nil {
+		s.ID, s.At = id, time.Time{}
+		return nil
+	}
+	var raw struct {
+		ID string    `json:"id"`
+		At time.Time `json:"at"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	s.ID, s.At = raw.ID, raw.At
+	return nil
+}
+
+// seenCap is how many comments an ExternalRef carries. Enough to cover any
 // plausible batch of same-second comments, small enough that the column stays a
 // link rather than a copy of the issue.
 const seenCap = 100
@@ -56,21 +91,43 @@ const seenCap = 100
 // MarkSeen records a comment as threaded in and advances the cursor past it.
 func (r *ExternalRef) MarkSeen(id string, at time.Time) {
 	if id != "" {
-		r.Seen = append(r.Seen, id)
-		if len(r.Seen) > seenCap {
-			r.Seen = r.Seen[len(r.Seen)-seenCap:]
-		}
+		r.Seen = append(r.Seen, SeenComment{ID: id, At: at})
 	}
 	if at.After(r.Since) {
 		r.Since = at
 	}
+	r.forget()
+}
+
+// forget trims the list back towards the cap, oldest first, and only ever drops
+// an entry the cursor covers on its own - one whose comment is strictly older
+// than Since. An entry made at exactly the cursor is the one case the cursor
+// cannot decide, so it stays however long the list gets; when the cursor moves
+// past it, it becomes forgettable like everything else.
+//
+// The cap is therefore a target rather than a limit. A hard limit is what the
+// bug was: it threw away the entries that were doing the work.
+func (r *ExternalRef) forget() {
+	drop := len(r.Seen) - seenCap
+	if drop <= 0 {
+		return
+	}
+	keep := make([]SeenComment, 0, len(r.Seen))
+	for _, seen := range r.Seen {
+		if drop > 0 && (seen.At.IsZero() || seen.At.Before(r.Since)) {
+			drop--
+			continue
+		}
+		keep = append(keep, seen)
+	}
+	r.Seen = keep
 }
 
 // AlreadySeen reports whether a comment has been threaded in: by its id, or by
 // being older than the cursor and so accounted for by an earlier sync.
 func (r *ExternalRef) AlreadySeen(id string, at time.Time) bool {
 	for _, seen := range r.Seen {
-		if seen == id {
+		if seen.ID == id {
 			return true
 		}
 	}

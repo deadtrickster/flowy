@@ -97,6 +97,14 @@ func scanArtifact(sc scanner, rank *float64) (*Artifact, error) {
 // reported and external are not in the column list and are not in the ON
 // CONFLICT clause: the forge link is written by SetArtifactExternal alone, so
 // editing the title of a bug that has been filed cannot unfile it.
+//
+// The update branch only fires for the owner. An id is a guess anybody can
+// make, and an unconditional ON CONFLICT DO UPDATE turns a guessed id into a
+// takeover: every column, including owner_user, project and visibility, is
+// replaced by whoever wrote last. So the ownership test is here rather than in
+// the handler that happens to have read the row first - a caller who cannot
+// read the row cannot be told about it either, and gets ErrNotFound, exactly
+// as a read of it would.
 func (d *DB) UpsertArtifact(ctx context.Context, a *Artifact) error {
 	if a.Visibility == "" {
 		a.Visibility = "project"
@@ -136,11 +144,16 @@ func (d *DB) UpsertArtifact(ctx context.Context, a *Artifact) error {
 		     visibility = excluded.visibility, file_path = excluded.file_path,
 		     fields = excluded.fields, hlc = excluded.hlc, node = excluded.node,
 		     tombstone = excluded.tombstone, search = excluded.search, updated = now()
+		  WHERE artifacts.owner_user = excluded.owner_user
 		 RETURNING created, updated`,
 		a.ID, a.Type, a.Kind, a.Project, a.OwnerUser, a.Title, a.Body, a.Discovery,
 		a.Status, a.Severity, pq.Array(a.Tags), pq.Array(a.UserTags), pq.Array(a.Related),
 		a.Visibility, a.FilePath, fields, a.HLC, a.Node, a.Tombstone, searchText(a)).
 		Scan(&a.Created, &a.Updated)
+	if errors.Is(err, sql.ErrNoRows) {
+		// The id is taken, and not by this owner. Nothing was written.
+		return ErrNotFound
+	}
 	if err != nil {
 		return fmt.Errorf("store: upsert artifact: %w", err)
 	}

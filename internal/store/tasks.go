@@ -251,7 +251,11 @@ func (d *DB) SetAutoDelegate(ctx context.Context, userID string, on bool) (*User
 	if err != nil {
 		return nil, fmt.Errorf("store: set auto_delegate for %s: %w", userID, err)
 	}
-	if n, err := res.RowsAffected(); err == nil && n == 0 {
+	n, err := affectedRows(res)
+	if err != nil {
+		return nil, fmt.Errorf("store: set auto_delegate for %s: %w", userID, err)
+	}
+	if n == 0 {
 		return nil, ErrNotFound
 	}
 	return d.GetUser(ctx, userID)

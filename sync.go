@@ -95,26 +95,65 @@ func (s *server) handleSyncPull(w http.ResponseWriter, r *http.Request) {
 // pushResponse reports what a push carried and what it changed. They differ
 // whenever a row lost its merge - an older artifact, an event that was already
 // here - which is what makes pushing the same delta twice a no-op you can see.
+//
+// Refused is the third number: rows this node would not take from this
+// principal at all. A peer that is quietly having half its delta dropped should
+// be able to see that it is, and why.
 type pushResponse struct {
 	Node     string         `json:"node"`
 	Received map[string]int `json:"received"`
 	Applied  map[string]int `json:"applied"`
+	Refused  map[string]int `json:"refused"`
+	Reasons  []string       `json:"reasons,omitempty"`
 	HWM      int64          `json:"hwm"`
+}
+
+// isPeer reports whether p may push a delta at this node.
+//
+// Pushing is not reading. A pull hands a token holder what that token may
+// already read one row at a time; a push writes rows of the caller's choosing
+// into this database and merges them last-writer-wins. So it is not open to
+// every token: it is the operator's, and whoever the operator named in
+// FLOWY_PEERS. A share subject - somebody who holds one grant on one artifact -
+// is exactly the principal this keeps out.
+func (s *server) isPeer(p *store.Principal) bool {
+	if p == nil {
+		return false
+	}
+	return p.Operator || (p.UserID != "" && s.peers[p.UserID])
 }
 
 // handleSyncPush merges a peer's delta into this node. It is an upsert by id
 // and it is idempotent: the same body applied twice changes nothing the second
 // time.
 //
+// Two gates, and both of them are here because a push used to have neither: the
+// caller has to be a peer this node's operator named, and every row it carries
+// has to be one that caller could have written over the API - see SyncApplyAs.
+//
 // POST /api/sync/push
 func (s *server) handleSyncPush(w http.ResponseWriter, r *http.Request) {
+	p := principalOf(r)
+	if !s.isPeer(p) {
+		writeJSON(w, http.StatusForbidden,
+			errorBody("replication is pushed by a peer this node names, not by any token; "+
+				"pull instead, or ask the operator to add you to FLOWY_PEERS"))
+		return
+	}
+
 	var in store.SyncSet
 	if err := decodeJSONLimit(r, &in, maxSyncBody); err != nil {
 		writeJSON(w, http.StatusBadRequest, errorBody("bad request body: "+err.Error()))
 		return
 	}
 
-	applied, err := s.db.SyncApply(r.Context(), &in)
+	res, err := s.db.SyncApplyAs(r.Context(), p, &in)
+	if errors.Is(err, store.ErrBadReading) {
+		// Nothing was merged and the clock was not touched. A reading like this
+		// is not a row to skip: it is a delta to refuse.
+		writeJSON(w, http.StatusBadRequest, errorBody(err.Error()))
+		return
+	}
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
 		return
@@ -122,7 +161,9 @@ func (s *server) handleSyncPush(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, pushResponse{
 		Node:     s.node,
 		Received: in.Counts(),
-		Applied:  applied,
+		Applied:  res.Applied,
+		Refused:  res.Refused,
+		Reasons:  res.Reasons,
 		HWM:      in.HWM,
 	})
 }
@@ -160,6 +201,7 @@ type syncReport struct {
 	Applied      map[string]int `json:"applied"`
 	Pushed       map[string]int `json:"pushed"`
 	PeerApplied  map[string]int `json:"peer_applied"`
+	PeerRefused  map[string]int `json:"peer_refused"`
 	PullCursor   int64          `json:"pull_cursor"`
 	PushedCursor int64          `json:"pushed_cursor"`
 }
@@ -239,7 +281,7 @@ func syncCmd(args []string) error {
 	report := syncReport{
 		Peer: base, Node: *node, As: principal.UserID,
 		Pulled: zeroCounts(), Applied: zeroCounts(),
-		Pushed: zeroCounts(), PeerApplied: zeroCounts(),
+		Pushed: zeroCounts(), PeerApplied: zeroCounts(), PeerRefused: zeroCounts(),
 		PullCursor: bookmark.PullCursor, PushedCursor: bookmark.PushedCursor,
 	}
 
@@ -334,6 +376,7 @@ func pushToPeer(ctx context.Context, db *store.DB, client *http.Client,
 		report.PeerNode = got.Node
 		addCounts(report.Pushed, set.Counts())
 		addCounts(report.PeerApplied, got.Applied)
+		addCounts(report.PeerRefused, got.Refused)
 
 		if set.HWM <= cursor {
 			break

@@ -6,9 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/lib/pq"
+
+	"github.com/deadtrickster/flowy/internal/hlc"
 )
 
 // Replication, the store half.
@@ -182,6 +185,19 @@ func (d *DB) SyncPull(ctx context.Context, p *Principal, q SyncQuery) (*SyncSet,
 		note(grants[n-1].HLC, n)
 	}
 
+	// A grant that is newer than the cursor can make an artifact that is older
+	// than the cursor readable for the first time. The cursor is a clock
+	// reading and the artifact's reading did not move when it was shared, so
+	// paging by "newer than the cursor" alone would step straight over it and
+	// never come back: the peer would hold the grant and not the thing it
+	// grants. These rows go in below the high water mark and do not move it,
+	// so once the grant itself is under the cursor the extra scan stops.
+	newly, err := d.syncNewlyVisible(ctx, p, q.Since, limit, grants)
+	if err != nil {
+		return nil, err
+	}
+	set.Artifacts = append(set.Artifacts, newly...)
+
 	set.HWM = hwm
 	if capped > 0 && capped < hwm {
 		set.HWM = capped
@@ -217,6 +233,84 @@ func (d *DB) syncArtifacts(ctx context.Context, p *Principal, since int64, limit
 		return nil, fmt.Errorf("store: sync artifacts: %w", err)
 	}
 	return out, nil
+}
+
+// syncNewlyVisible reads the artifacts below the cursor that the grants in this
+// page have just opened up to p: the ones a fresh share names, and the ones in
+// a project a fresh project-wide grant reaches into.
+//
+// Only grants that widen p's own view count. A share of somebody else's to
+// somebody else changes nothing about what p may read, and re-scanning for it
+// would be a page of rows p is about to be refused anyway.
+func (d *DB) syncNewlyVisible(
+	ctx context.Context, p *Principal, since int64, limit int, grants []Grant,
+) ([]*Artifact, error) {
+	var shared, opened []string
+	for _, g := range grants {
+		if g.Tombstone || g.HLC <= since {
+			continue
+		}
+		switch {
+		case g.Artifact != "":
+			if p.UserID != "" && g.Subject == p.UserID {
+				shared = append(shared, g.Artifact)
+			}
+		default:
+			if p.Project != "" && g.FromProject == p.Project && g.ToProject != "" {
+				opened = append(opened, g.ToProject)
+			}
+		}
+	}
+	if len(shared) == 0 && len(opened) == 0 {
+		return nil, nil
+	}
+
+	a := &args{}
+	sinceArg := a.next(since)
+	reach := []string{}
+	if len(shared) > 0 {
+		reach = append(reach, "ar.id IN ("+placeholders(a, shared)+")")
+	}
+	if len(opened) > 0 {
+		reach = append(reach, "ar.project IN ("+placeholders(a, opened)+")")
+	}
+	filter := ArtifactFilterSQL(p, "ar", a, false)
+	query := `SELECT ` + artifactColumns + `
+	            FROM artifacts ar
+	           WHERE ar.hlc <= ` + sinceArg + `
+	             AND (` + strings.Join(reach, " OR ") + `)
+	             AND ` + filter + `
+	           ORDER BY ar.hlc, ar.id
+	           LIMIT ` + a.next(limit)
+
+	rows, err := d.sql.QueryContext(ctx, query, a.vals...)
+	if err != nil {
+		return nil, fmt.Errorf("store: sync newly visible artifacts: %w", err)
+	}
+	defer rows.Close()
+
+	out := []*Artifact{}
+	for rows.Next() {
+		art, err := scanArtifact(rows, nil)
+		if err != nil {
+			return nil, fmt.Errorf("store: sync newly visible artifacts: %w", err)
+		}
+		out = append(out, art)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: sync newly visible artifacts: %w", err)
+	}
+	return out, nil
+}
+
+// placeholders records each value and returns the comma-separated placeholders
+// that read them back, for an IN list.
+func placeholders(a *args, values []string) string {
+	out := make([]string, 0, len(values))
+	for _, v := range values {
+		out = append(out, a.next(v))
+	}
+	return strings.Join(out, ", ")
 }
 
 func (d *DB) syncEvents(ctx context.Context, p *Principal, since int64, limit int) ([]*Event, error) {
@@ -312,18 +406,79 @@ func (d *DB) syncGrants(ctx context.Context, p *Principal, since int64, limit in
 	return out, nil
 }
 
-// SyncApply merges a delta into this node and reports how many rows of each
-// table it actually changed. A row that lost its merge - an older artifact, an
-// event that is already here - is received and not applied, which is what makes
-// a second push of the same set report zeros.
+// SyncResult is what one merge did: the rows it applied, and the rows it
+// refused because the principal that pushed them had no business writing them.
+// The reasons are carried back so a peer that is being refused can be told why
+// rather than left to guess from a count.
+type SyncResult struct {
+	Applied map[string]int `json:"applied"`
+	Refused map[string]int `json:"refused"`
+	Reasons []string       `json:"reasons,omitempty"`
+}
+
+// maxReasons caps what a refusal reports, so a page of bad rows answers with a
+// readable message rather than a page of its own.
+const maxReasons = 8
+
+// ErrBadReading is what a delta carrying a clock reading no clock could have
+// made comes back as. It is refused whole: a single poisoned reading, merged,
+// lifts this node's clock past everything it will ever write again.
+var ErrBadReading = errors.New("store: clock reading is not believable")
+
+// SyncApply merges a delta this node went and fetched into it, and reports how
+// many rows of each table it actually changed. A row that lost its merge - an
+// older artifact, an event that is already here - is received and not applied,
+// which is what makes a second push of the same set report zeros.
 //
 // The whole set lands in one transaction: a peer's page is either applied or
 // not, so a driver that dies mid-page resumes from a cursor that still
 // describes the database.
+//
+// It does not filter by principal, because there is none: this is the pull
+// side, run by this node's own operator against a peer they named and hold a
+// token for. What arrives unasked - POST /api/sync/push - goes through
+// SyncApplyAs instead.
 func (d *DB) SyncApply(ctx context.Context, in *SyncSet) (map[string]int, error) {
-	applied := map[string]int{"artifacts": 0, "events": 0, "tasks": 0, "grants": 0}
+	res, err := d.syncApply(ctx, nil, in)
+	if err != nil {
+		return nil, err
+	}
+	return res.Applied, nil
+}
+
+// SyncApplyAs merges a delta somebody pushed at this node, as p, and refuses
+// the rows p could not have written one at a time over the API.
+//
+// A peer authenticates as a principal, and the rows it hands over are rows that
+// principal is claiming. Without this, a push was a way around every rule the
+// rest of the node keeps: a grant into a project the pusher has no say over, a
+// personal artifact belonging to somebody else, a rewrite of a row the pusher
+// cannot even read. Merging is last-writer-wins, so a forged row with a high
+// enough reading wins and stays won.
+//
+// The operator is not filtered: an operator token is this node's own
+// administration, and it already reads everything here through ?scope=all.
+func (d *DB) SyncApplyAs(ctx context.Context, p *Principal, in *SyncSet) (*SyncResult, error) {
+	if p == nil {
+		return nil, errors.New("store: sync apply without a principal")
+	}
+	if p.Operator {
+		p = nil
+	}
+	return d.syncApply(ctx, p, in)
+}
+
+func (d *DB) syncApply(ctx context.Context, p *Principal, in *SyncSet) (*SyncResult, error) {
+	res := &SyncResult{
+		Applied: map[string]int{"artifacts": 0, "events": 0, "tasks": 0, "grants": 0},
+		Refused: map[string]int{"artifacts": 0, "events": 0, "tasks": 0, "grants": 0},
+	}
 	if in == nil || in.Len() == 0 {
-		return applied, nil
+		return res, nil
+	}
+	// Before anything is merged, and before a single reading reaches the clock.
+	if err := checkReadings(in); err != nil {
+		return nil, err
 	}
 
 	tx, err := d.sql.BeginTx(ctx, nil)
@@ -332,12 +487,25 @@ func (d *DB) SyncApply(ctx context.Context, in *SyncSet) (map[string]int, error)
 	}
 	defer tx.Rollback() //nolint:errcheck // rolled back only when Commit did not happen
 
+	refuse := func(table, why string) {
+		res.Refused[table]++
+		if len(res.Reasons) < maxReasons {
+			res.Reasons = append(res.Reasons, why)
+		}
+	}
+
 	for _, art := range in.Artifacts {
+		if why, err := checkArtifact(ctx, tx, p, art); err != nil {
+			return nil, err
+		} else if why != "" {
+			refuse("artifacts", why)
+			continue
+		}
 		n, err := applyArtifact(ctx, tx, art)
 		if err != nil {
 			return nil, err
 		}
-		applied["artifacts"] += n
+		res.Applied["artifacts"] += n
 		d.observe(art.HLC, art.Node)
 	}
 	for _, e := range in.Events {
@@ -345,36 +513,212 @@ func (d *DB) SyncApply(ctx context.Context, in *SyncSet) (map[string]int, error)
 		if err != nil {
 			return nil, err
 		}
-		applied["events"] += n
+		res.Applied["events"] += n
 		d.observe(e.SeqHLC, e.Node)
 	}
 	for _, t := range in.Tasks {
+		if why, err := checkTask(ctx, tx, p, t); err != nil {
+			return nil, err
+		} else if why != "" {
+			refuse("tasks", why)
+			continue
+		}
 		n, err := applyTask(ctx, tx, t)
 		if err != nil {
 			return nil, err
 		}
-		applied["tasks"] += n
+		res.Applied["tasks"] += n
 		d.observe(t.HLC, t.Node)
 	}
 	for i := range in.Grants {
+		if why, err := checkGrant(ctx, tx, p, &in.Grants[i]); err != nil {
+			return nil, err
+		} else if why != "" {
+			refuse("grants", why)
+			continue
+		}
 		n, err := applyGrant(ctx, tx, &in.Grants[i])
 		if err != nil {
 			return nil, err
 		}
-		applied["grants"] += n
+		res.Applied["grants"] += n
 		d.observe(in.Grants[i].HLC, in.Grants[i].Node)
 	}
 
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("store: sync apply: %w", err)
 	}
-	return applied, nil
+	return res, nil
+}
+
+// checkReadings refuses a delta carrying a reading no clock could have made:
+// negative, or further ahead of this machine than hlc.MaxSkew.
+//
+// It is the whole delta rather than the row, and it runs before the merge
+// rather than during it, because the damage is not the row. Applying a row
+// advances this node's clock past the reading it carries, so one reading of
+// MaxInt64 leaves the node unable to write anything that orders after what it
+// already holds - permanently, on every node the reading reaches.
+func checkReadings(in *SyncSet) error {
+	nowMS := time.Now().UnixMilli()
+	bad := func(kind, id string, packed int64) error {
+		return fmt.Errorf("%w: %s %s carries %d", ErrBadReading, kind, id, packed)
+	}
+	for _, a := range in.Artifacts {
+		if !hlc.BelievableAt(a.HLC, nowMS) {
+			return bad("artifact", a.ID, a.HLC)
+		}
+	}
+	for _, e := range in.Events {
+		if !hlc.BelievableAt(e.SeqHLC, nowMS) {
+			return bad("event", e.ID, e.SeqHLC)
+		}
+	}
+	for _, t := range in.Tasks {
+		if !hlc.BelievableAt(t.HLC, nowMS) {
+			return bad("task", t.ID, t.HLC)
+		}
+	}
+	for i := range in.Grants {
+		if !hlc.BelievableAt(in.Grants[i].HLC, nowMS) {
+			return bad("grant", in.Grants[i].ID, in.Grants[i].HLC)
+		}
+	}
+	return nil
+}
+
+// checkArtifact answers why p may not push art, or "" when it may.
+//
+// Two rules, and they are the two ways a pushed artifact escalates:
+//
+//   - a personal row belongs to its owner. Nobody else pushes one, because
+//     nobody else can read one, and a push of somebody else's would be a write
+//     into a place no read of theirs can reach.
+//   - a row that is already here is only overwritten by somebody who can read
+//     the row that is here. An id is a guess anybody can make; without this,
+//     guessing one is enough to take the row over, which is the same hole the
+//     store's own upsert had.
+//
+// A row that is not here yet is allowed: that is ordinary replication, and a
+// row invented in a project the pusher cannot read is a row the pusher still
+// cannot read.
+func checkArtifact(ctx context.Context, tx *sql.Tx, p *Principal, a *Artifact) (string, error) {
+	if p == nil {
+		return "", nil
+	}
+	if a.Visibility == "personal" || a.Project == nil {
+		if a.OwnerUser == "" || a.OwnerUser != p.UserID {
+			return "artifact " + a.ID + " is personal and not yours", nil
+		}
+	}
+	args := &args{}
+	idArg := args.next(a.ID)
+	filter := ArtifactFilterSQL(p, "ar", args, false)
+	var readable bool
+	err := tx.QueryRowContext(ctx,
+		`SELECT EXISTS (SELECT 1 FROM artifacts ar WHERE ar.id = `+idArg+` AND `+filter+`)`,
+		args.vals...).Scan(&readable)
+	if err != nil {
+		return "", fmt.Errorf("store: sync check artifact %s: %w", a.ID, err)
+	}
+	if readable {
+		return "", nil
+	}
+	var exists bool
+	if err := tx.QueryRowContext(ctx,
+		`SELECT EXISTS (SELECT 1 FROM artifacts WHERE id = $1)`, a.ID).Scan(&exists); err != nil {
+		return "", fmt.Errorf("store: sync check artifact %s: %w", a.ID, err)
+	}
+	if exists {
+		return "artifact " + a.ID + " is already here and you cannot read it", nil
+	}
+	return "", nil
+}
+
+// checkTask answers why p may not push t. The rule is the one every read of a
+// task uses: a task is between the two people named on it and the agent it was
+// delegated to. A task that is already here is only rewritten by one of them,
+// so a handoff cannot be reassigned by a stranger who guessed its id.
+func checkTask(ctx context.Context, tx *sql.Tx, p *Principal, t *Task) (string, error) {
+	if p == nil {
+		return "", nil
+	}
+	args := &args{}
+	idArg := args.next(t.ID)
+	party := taskPartySQL(p, "t", args)
+	var mine bool
+	err := tx.QueryRowContext(ctx,
+		`SELECT EXISTS (SELECT 1 FROM tasks t WHERE t.id = `+idArg+` AND `+party+`)`,
+		args.vals...).Scan(&mine)
+	if err != nil {
+		return "", fmt.Errorf("store: sync check task %s: %w", t.ID, err)
+	}
+	if mine {
+		return "", nil
+	}
+	var exists bool
+	if err := tx.QueryRowContext(ctx,
+		`SELECT EXISTS (SELECT 1 FROM tasks WHERE id = $1)`, t.ID).Scan(&exists); err != nil {
+		return "", fmt.Errorf("store: sync check task %s: %w", t.ID, err)
+	}
+	if exists {
+		return "task " + t.ID + " is already here and you are not a party to it", nil
+	}
+	return "", nil
+}
+
+// checkGrant answers why p may not push g. It is the rule POST /api/grants
+// enforces, applied to a row that arrived over the wire instead of in a
+// request body:
+//
+//   - a project-wide grant opens a project up, so it has to come from a
+//     principal of the project being opened. Without this, a peer writes
+//     itself a grant from its own project into yours and reads it from then
+//     on - and because merging is last-writer-wins, a big enough reading makes
+//     the forgery permanent.
+//   - a share is the owner's to give. The artifact has to be here, and its
+//     owner has to be whoever the grant says granted it.
+func checkGrant(ctx context.Context, tx *sql.Tx, p *Principal, g *Grant) (string, error) {
+	if p == nil {
+		return "", nil
+	}
+	if g.Artifact == "" {
+		if g.ToProject == "" || g.ToProject != p.Project {
+			return "only a principal of " + g.ToProject + " can open it up", nil
+		}
+		return "", nil
+	}
+	var (
+		owner sql.NullString
+		vis   sql.NullString
+		proj  sql.NullString
+	)
+	err := tx.QueryRowContext(ctx,
+		`SELECT owner_user, visibility, project FROM artifacts WHERE id = $1`, g.Artifact).
+		Scan(&owner, &vis, &proj)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "no artifact " + g.Artifact + " here to share", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("store: sync check grant %s: %w", g.ID, err)
+	}
+	if vis.String == "personal" || !proj.Valid {
+		return "artifact " + g.Artifact + " is personal and cannot be shared", nil
+	}
+	if owner.String == "" || owner.String != g.GrantedBy {
+		return "grant " + g.ID + " is not the owner's to give", nil
+	}
+	return "", nil
 }
 
 // observe advances this node's clock past a reading seen on another node, so
 // the next local write is newer than everything replication has brought in.
+//
+// A reading that is not believable never gets here - checkReadings refuses the
+// delta first - and the belt to that brace is in Pack, which clamps rather than
+// letting a wall reading shift into the sign bit.
 func (d *DB) observe(packed int64, node string) {
-	if packed <= 0 {
+	if packed <= 0 || !hlc.Believable(packed) {
 		return
 	}
 	if node == "" {
@@ -526,6 +870,18 @@ func rowsAffected(res sql.Result) int {
 		return 1
 	}
 	return int(n)
+}
+
+// affectedRows reads a result's row count where the count is a decision rather
+// than a report - "did that update find the row" - and hands the driver's
+// refusal to say back to the caller. Swallowing it there is how an update that
+// touched nothing gets reported as an update that worked.
+func affectedRows(res sql.Result) (int64, error) {
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("the driver would not count the rows it changed: %w", err)
+	}
+	return n, nil
 }
 
 // SeedClock lifts this node's clock above the highest reading its store already

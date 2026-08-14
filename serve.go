@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -32,7 +33,18 @@ type server struct {
 	// a fact about this machine, not a row that could ever replicate to another
 	// node and grant somebody a view of everything there.
 	operator string
-	started  time.Time
+	// peers are the user ids that may POST /api/sync/push at this node. Like
+	// operator, it is local configuration and never a row: a push is a write of
+	// somebody else's rows into this database, and being allowed to do that is
+	// a decision the person running the node makes about a token, not something
+	// a token can carry with it. Empty means only the operator may push.
+	peers map[string]bool
+	// forgeRepos are the repositories this node will file into and comment on.
+	// Filing is the one operation that leaves this machine, using a credential
+	// nobody who calls the API holds, so where it may go is the operator's
+	// choice rather than a field in a request body.
+	forgeRepos map[string]bool
+	started    time.Time
 	// console is the embedded single-page app, opened once by routes().
 	console *console
 	// forge is the issue tracker this node speaks to, chosen once at startup by
@@ -57,6 +69,12 @@ func serve(args []string) error {
 	forgeKind := fs.String("forge", os.Getenv("FLOWY_FORGE"),
 		"issue tracker: gh|glab|mock, or empty to use whichever CLI is installed "+
 			"(default $FLOWY_FORGE)")
+	peers := fs.String("peers", os.Getenv("FLOWY_PEERS"),
+		"comma-separated user ids whose token may push replication deltas at this node "+
+			"(default $FLOWY_PEERS)")
+	forgeRepos := fs.String("forge-repos", os.Getenv("FLOWY_FORGE_REPOS"),
+		"comma-separated repositories this node may file into, e.g. owner/name "+
+			"(default $FLOWY_FORGE_REPOS)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -86,7 +104,20 @@ func serve(args []string) error {
 		log.Printf("clock: seeded above the store's highest reading (%d)", highest)
 	}
 
-	srv := &server{db: db, node: *node, operator: *operator, started: time.Now()}
+	srv := &server{
+		db: db, node: *node, operator: *operator,
+		peers:      commaSet(*peers),
+		forgeRepos: commaSet(*forgeRepos),
+		started:    time.Now(),
+	}
+	if len(srv.peers) > 0 {
+		log.Printf("peers: %d token holder(s) may push replication deltas here", len(srv.peers))
+	} else {
+		log.Print("peers: none configured; only the operator may push (set FLOWY_PEERS)")
+	}
+	if len(srv.forgeRepos) == 0 {
+		log.Print("forge: no repositories allowed; filing will be refused (set FLOWY_FORGE_REPOS)")
+	}
 
 	// Which forge this node speaks to is decided once, here, and only by
 	// looking: nothing is executed, so a node that comes up with `gh` installed
@@ -236,6 +267,7 @@ func (s *server) routes() http.Handler {
 		api.HandleFunc("POST /api/forge/mock/state", s.handleMockState)
 		api.HandleFunc("POST /api/forge/mock/comment", s.handleMockComment)
 		api.HandleFunc("GET /api/forge/mock/issue", s.handleMockIssue)
+		api.HandleFunc("POST /api/forge/mock/fail", s.handleMockFail)
 	}
 	// Replication. A peer is a client like any other: it holds a token, it
 	// resolves to a principal, and it pulls what that principal may read.
@@ -370,6 +402,18 @@ type statusRecorder struct {
 func (r *statusRecorder) WriteHeader(code int) {
 	r.status = code
 	r.ResponseWriter.WriteHeader(code)
+}
+
+// commaSet reads a comma-separated configuration value into a set, dropping
+// blanks so that "a,,b " and "a,b" are the same list.
+func commaSet(raw string) map[string]bool {
+	out := map[string]bool{}
+	for _, item := range strings.Split(raw, ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			out[item] = true
+		}
+	}
+	return out
 }
 
 func envOr(key, fallback string) string {

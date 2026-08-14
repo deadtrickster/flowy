@@ -144,6 +144,13 @@ func (s *server) handleCreateArtifact(w http.ResponseWriter, r *http.Request) {
 		Fields:     req.Fields,
 	}
 	if err := s.db.UpsertArtifact(r.Context(), art); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			// The id names a row this principal does not own. The store refused
+			// it, and the answer is the one a read of that row would give: a
+			// caller must not learn an id exists by writing to it.
+			writeJSON(w, http.StatusNotFound, errorBody("no such artifact"))
+			return
+		}
 		writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
 		return
 	}
@@ -309,19 +316,38 @@ func (s *server) handleSearch(w http.ResponseWriter, r *http.Request) {
 // the principal's home project, because that is the only project it is entitled
 // to write into.
 type eventRequest struct {
-	Type     string          `json:"type"`
-	Room     string          `json:"room"`
-	Thread   string          `json:"thread"`
-	Parents  []string        `json:"parents"`
+	Type    string   `json:"type"`
+	Room    string   `json:"room"`
+	Thread  string   `json:"thread"`
+	Parents []string `json:"parents"`
+	// Actor is accepted and ignored. Who wrote an event is decided by the
+	// token, here and everywhere else.
 	Actor    string          `json:"actor"`
 	Artifact string          `json:"artifact"`
 	Body     string          `json:"body"`
 	Meta     json.RawMessage `json:"meta"`
 }
 
+// mintedTypes are the event types a handler of this node writes and a client
+// may not. Each of them is a claim the node itself makes - a lifecycle move, a
+// handoff, something the forge bridge did - and the trail is only worth reading
+// if the only way to get one is to actually do the thing. chat is not in here:
+// it carries no authority beyond what POST /api/chat/{room}/say already gives
+// the same principal.
+var mintedTypes = map[string]bool{
+	statusEventType: true,
+	taskEventType:   true,
+	forgeEventType:  true,
+}
+
 // handleAppendEvent appends to the log. The log is append-only: there is no
 // update and no delete, and the DAG is carried in parents rather than in the
 // order rows happen to land.
+//
+// The actor is the token's, always. It used to be whatever the body said, which
+// made the log worth nothing: anybody holding any token could write an entry
+// under somebody else's name, and the history that the lifecycle, the inbox and
+// the forge bridge all read back would have been signed by a stranger.
 //
 // POST /api/events
 func (s *server) handleAppendEvent(w http.ResponseWriter, r *http.Request) {
@@ -336,14 +362,17 @@ func (s *server) handleAppendEvent(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorBody("type is required"))
 		return
 	}
-
-	actor := req.Actor
-	if actor == "" {
-		// An agent acting on its own behalf is the actor; otherwise the user is.
-		if actor = p.AgentID; actor == "" {
-			actor = p.UserID
-		}
+	if mintedTypes[req.Type] {
+		writeJSON(w, http.StatusForbidden,
+			errorBody("a "+req.Type+" event is written by the endpoint that does the thing, "+
+				"not by hand"))
+		return
 	}
+
+	// An agent acting on its own behalf is the actor; otherwise the user is.
+	// req.Actor is read and dropped: it is accepted so an older client is not
+	// broken by a 400, and it decides nothing.
+	actor, _ := chatActor(p)
 	var project *string
 	if p.Project != "" {
 		home := p.Project

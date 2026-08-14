@@ -1,6 +1,8 @@
 package store
 
 import (
+	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -123,14 +125,96 @@ func TestExternalRefCursors(t *testing.T) {
 		t.Errorf("the cursor went backwards to %s", ref.Since)
 	}
 
-	// The seen list is capped, and keeps the newest.
+	// The seen list is trimmed towards the cap, but never at the cost of an
+	// entry the cursor cannot rule out on its own: these are all at the cursor,
+	// so they all stay however many there are.
 	for i := 0; i < seenCap+50; i++ {
 		ref.MarkSeen("x"+ulid.NewString(), at)
 	}
+	if len(ref.Seen) <= seenCap {
+		t.Errorf("seen list holds %d entries; entries at the cursor must not be dropped", len(ref.Seen))
+	}
+
+	// Once the cursor moves past them, the same entries are forgettable: the
+	// cursor covers them, and the list comes back to the cap.
+	ref.MarkSeen("later", at.Add(time.Hour))
 	if len(ref.Seen) != seenCap {
-		t.Errorf("seen list holds %d ids, want it capped at %d", len(ref.Seen), seenCap)
+		t.Errorf("seen list holds %d entries, want it trimmed to %d", len(ref.Seen), seenCap)
+	}
+	if !ref.AlreadySeen("later", at.Add(time.Hour)) {
+		t.Error("the newest comment must survive the trim")
 	}
 }
+
+// TestExternalRefKeepsSameSecondCommentsSeen is LOW 10: a forge that stamps
+// comments to the second hands back several at the cursor's exact time, and the
+// cursor cannot tell them apart - only the seen list can. Trimming that list by
+// count alone threw the oldest of them away, and the next sync threaded it in
+// again as if the reviewer had said it twice.
+func TestExternalRefKeepsSameSecondCommentsSeen(t *testing.T) {
+	at := time.Date(2026, 2, 3, 4, 5, 6, 0, time.UTC)
+	ref := &ExternalRef{}
+
+	first := "c-first"
+	ref.MarkSeen(first, at)
+	// Enough same-second comments to push the first one out of a list that is
+	// capped by count.
+	for i := 0; i < seenCap+1; i++ {
+		ref.MarkSeen("c"+ulid.NewString(), at)
+	}
+	if !ref.AlreadySeen(first, at) {
+		t.Fatalf("%s was threaded in already; a second sync would post it again", first)
+	}
+}
+
+// TestSeenCommentReadsTheOlderShape: refs replicate, so the bare-id list an
+// older node wrote has to keep parsing here.
+func TestSeenCommentReadsTheOlderShape(t *testing.T) {
+	var ref ExternalRef
+	if err := json.Unmarshal([]byte(`{"repo":"o/r","seen":["c1",{"id":"c2","at":"2026-02-03T04:05:06Z"}]}`),
+		&ref); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(ref.Seen) != 2 || ref.Seen[0].ID != "c1" || ref.Seen[1].ID != "c2" {
+		t.Fatalf("seen came back as %+v", ref.Seen)
+	}
+	if !ref.Seen[0].At.IsZero() {
+		t.Errorf("a bare id has no time, got %s", ref.Seen[0].At)
+	}
+	if ref.Seen[1].At.IsZero() {
+		t.Error("the pair shape lost its time")
+	}
+}
+
+// TestAffectedRowsReportsTheDriversError is LOW 9: SetAutoDelegate used to read
+// RowsAffected and drop the error, which turns "the driver could not tell me
+// whether that update found the row" into "it did".
+func TestAffectedRowsReportsTheDriversError(t *testing.T) {
+	n, err := affectedRows(countlessResult{})
+	if err == nil {
+		t.Fatalf("affectedRows returned %d and no error for a driver that cannot count", n)
+	}
+	if !errors.Is(err, errNoCount) {
+		t.Errorf("the driver's own error was lost: %v", err)
+	}
+	if n, err := affectedRows(countedResult(3)); err != nil || n != 3 {
+		t.Errorf("affectedRows(3) = %d, %v", n, err)
+	}
+}
+
+var errNoCount = errors.New("this driver does not count rows")
+
+// countlessResult is a driver that will not say how many rows it changed.
+type countlessResult struct{}
+
+func (countlessResult) LastInsertId() (int64, error) { return 0, errNoCount }
+func (countlessResult) RowsAffected() (int64, error) { return 0, errNoCount }
+
+// countedResult is one that will.
+type countedResult int64
+
+func (countedResult) LastInsertId() (int64, error)   { return 0, nil }
+func (r countedResult) RowsAffected() (int64, error) { return int64(r), nil }
 
 // TestLatestTaskForArtifact: the forge bridge asks for it so an issue's
 // conversation lands in the thread the people working on it already have.

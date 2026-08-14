@@ -100,9 +100,14 @@ func (s *server) handleChatSay(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Thread == "" {
 		// A message that answers something inherits that message's thread, so
-		// a reply cannot start a second thread by accident.
+		// a reply cannot start a second thread by accident. The parent is read
+		// through the permission filter: an id is a guess anybody can make, and
+		// inheriting a thread from a message the speaker may not read would put
+		// them in a conversation they cannot see - and put what they say next
+		// in front of the people who can. An unreadable parent is ignored, and
+		// the message starts a thread of its own.
 		if len(req.Parents) > 0 {
-			if parent, err := s.db.GetEvent(r.Context(), req.Parents[0]); err == nil {
+			if parent, err := s.db.ReadEvent(r.Context(), p, req.Parents[0]); err == nil {
 				req.Thread = parent.Thread
 			}
 		}

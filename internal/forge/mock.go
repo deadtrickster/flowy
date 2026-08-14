@@ -34,6 +34,14 @@ type MockForge struct {
 	// still order - a fake that hands out the same instant twice would make a
 	// cursor test pass or fail on how fast the machine is.
 	last time.Time
+	// failArmed and failAfter are how a test makes the forge refuse one
+	// comment: the next failAfter comments are accepted and the one after that
+	// is not. A forge that is up is easy to test against and tells you nothing
+	// about what a node does when a push dies halfway through a conversation,
+	// which is the case where a cursor that moved too far posts the same reply
+	// twice.
+	failArmed bool
+	failAfter int
 }
 
 // MockIssue is one issue on the mock forge.
@@ -108,9 +116,45 @@ func (m *MockForge) GetState(_ context.Context, repo string, number int) (string
 // Comment says something on an issue as the node itself. This is the receiving
 // end of the reviewer loop: what the gate asserts is that a reply typed into
 // the node's chat arrives here.
+//
+// It refuses when FailNext has armed a refusal, and nothing is recorded when it
+// does: a comment that was refused is a comment that is not on the issue.
 func (m *MockForge) Comment(_ context.Context, repo string, number int, body string) error {
+	if err := m.takeFailure(); err != nil {
+		return err
+	}
 	_, err := m.AddComment(repo, number, SelfAuthor, body)
 	return err
+}
+
+// takeFailure reports the armed refusal when this call is the one to refuse,
+// and disarms it: one refusal per arming, so a test says where the wire breaks
+// rather than breaking it for good.
+func (m *MockForge) takeFailure() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if !m.failArmed {
+		return nil
+	}
+	if m.failAfter > 0 {
+		m.failAfter--
+		return nil
+	}
+	m.failArmed = false
+	return fmt.Errorf("forge: the mock was told to refuse this comment")
+}
+
+// FailNext arms one refusal: the next after comments are accepted and the one
+// after them is not.
+func (m *MockForge) FailNext(after int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if after < 0 {
+		after = 0
+	}
+	m.failArmed, m.failAfter = true, after
 }
 
 // ListComments reads an issue's comments, dropping anything older than since.

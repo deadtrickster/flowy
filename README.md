@@ -115,6 +115,11 @@ open http://127.0.0.1:8787/           # the console
 serves the API and answers `503` with a hint at every console path. Nothing
 guesses: the log line at startup says which of the two you have.
 
+Two more things the node will not do until it is told to: take a replication
+push, and file an issue. `FLOWY_PEERS` names the user ids whose token may push a
+delta here, and `FLOWY_FORGE_REPOS` names the repositories it may file into -
+both empty by default. See [The security fixes](#the-security-fixes).
+
 ## Subcommands
 
 | command | what it does |
@@ -1099,10 +1104,146 @@ Then the forge bridge, against `MockForge`:
   the event log, the comment that came in from the forge, the reply that went
   out in the same thread, and the status move the forge caused
 
+And the security slice, one check per defect - each written against the fix and
+run against the source it fixes to see it fail first:
+
+- `POST /api/sync/push` answers the peer named in `FLOWY_PEERS` and refuses
+  every other token, agent identities included, with `403`
+- a pushed grant into a project the pusher has no say over is **received,
+  refused and not written**: the response says `refused.grants: 1` with the
+  reason, and the row is not in the peer's `grants` table
+- a pushed reading of `MaxInt64` is `400`, nothing is merged, and afterwards the
+  node still writes strictly increasing positive readings that page by cursor
+- writing to an artifact this principal cannot read is `404`, and the row is
+  untouched: owner, project, visibility, title and body all as they were
+- an event is signed by the token that appended it, whatever the body says, for
+  a user token and an agent token both - and `status`, `task` and `forge` are
+  refused as hand-written types
+- a reader who is not the owner cannot file (`403`, and nothing is filed), the
+  owner cannot file into a repository the operator never named (`403`), the
+  owner can file into the one that is on the list, and a reader who was handed
+  the artifact still cannot push its thread out to the forge
+- with the mock forge refusing the second of three replies: the sync answers
+  `502` with one comment on the issue, and the next one sends the two that were
+  left - each of the three is on the issue exactly once
+- an artifact shared after the peer's cursor had passed it arrives on the peer
+  anyway, and reads back there
+- `mem_write` refuses an id that is not a memory item and leaves it a bug
+- a reply naming a parent in a project it cannot read does not join that
+  parent's thread, and does not appear in it
+- `affectedRows` reports a driver that will not count the rows it changed
+- a comment made at exactly the cursor survives a hundred more at the same
+  instant, and both shapes of the seen list still parse
+
 The last thing the gate does is ask git whether the tree it just tested is the
 tree on disk: uncommitted changes, or nothing ever committed, is a failure.
 `web/node_modules` and everything vite writes into `web/dist` are ignored, so
 what the gate builds does not count as a change to the tree.
+
+## The security fixes
+
+A review found ten defects, and this slice fixes all ten. Each one has a check
+in `run-tests.sh` that fails on the code as it was and passes on the code as it
+is - the run below verifies that by reverting the source and leaving the checks
+in place, which is the only way to know a regression test is testing anything.
+
+Two of them change how a node is configured, so they are worth reading before
+upgrading one:
+
+| variable | what it does |
+| --- | --- |
+| `FLOWY_PEERS` | comma-separated user ids whose token may `POST /api/sync/push` here. Empty means only the operator may push. |
+| `FLOWY_FORGE_REPOS` | comma-separated repositories this node files into and comments on. Empty means it files nowhere. |
+
+Both default to closed. A node that replicates has to name the principal
+replication runs as, and a node that files has to name the repositories it
+files into; until it does, the two endpoints refuse rather than accept
+everything, which is the way round that fails safely.
+
+**CRITICAL - `POST /api/sync/push` took a delta from any token.** A peer's
+delta is merged last-writer-wins, so a row with a high enough reading wins and
+stays won, and anybody holding any token - a share subject with one grant on one
+artifact - could hand the node whatever rows they liked. Three fixes: the
+endpoint is gated on `isPeer` (operator, or `FLOWY_PEERS`); every row is checked
+against the pusher in `store.SyncApplyAs` before it is merged - a project-wide
+grant has to open the pusher's own project, a share has to belong to the
+artifact's owner, a personal artifact has to be the pusher's, and a row that is
+already here is only overwritten by somebody who can read the row that is here;
+and a delta carrying a reading no clock could have made is refused whole, before
+a single reading reaches `Clock.Update`. That last one was the worst of the
+three: `hlc=MaxInt64` packed into a negative int64 and left the node unable to
+write anything that ordered after what it already held, permanently, on every
+node the reading reached. `hlc.Pack` now clamps and `Clock.bump` saturates, so
+the arithmetic cannot go negative even if a reading gets past the check.
+
+The pull side is deliberately not filtered: it is this node's own operator
+fetching from a peer they named and hold a token for, which is a different
+relationship from an unsolicited push. The clamp and the reading check are on
+both paths.
+
+**CRITICAL - `POST /api/artifacts` took over rows it could not read.** An id is
+a guess anybody can make, and the store's `ON CONFLICT (id) DO UPDATE` replaced
+every column of whatever it landed on, `owner_user` and `visibility` included.
+The handler's ownership test only ran when it could read the row, which is
+exactly when the attack does not need it. The guard is now in the store - `WHERE
+artifacts.owner_user = excluded.owner_user` - so every caller has it, and a
+write that matches nothing is `ErrNotFound`, which the handler answers as `404`:
+the same answer a read gives, so a write cannot be used to find out that an id
+exists.
+
+**HIGH - `POST /api/events` let the caller pick the actor.** The log is what the
+lifecycle, the inbox and the forge bridge all read back, and it was signable
+with anybody's name. The actor is now the token's, always; the field is still
+accepted and ignored so an older client is not broken by a `400`. `status`,
+`task` and `forge` events are refused outright - they are claims this node makes
+about things it did. `chat` is still allowed, because it carries no authority
+beyond what `POST /api/chat/{room}/say` already gives the same principal.
+
+**HIGH - the forge bridge published on a read.** Filing sends an artifact's body
+out of the machine over a credential the caller does not hold, and reading the
+artifact was enough to do it, into any repository the request named. Filing and
+pushing replies now require the owner (or the operator), and the repository has
+to be on the operator's list. Everything that does not leave the building -
+reading, commenting in the thread, moving the status - is unchanged.
+
+**MEDIUM - the forge push cursor moved over comments that never went out.** It
+was raised to the highest event the loop had looked at whether or not the forge
+accepted it, and `handleForgeSync` answered `502` before writing anything, so a
+refusal halfway through both lost the replies that had not been sent and sent
+the ones that had a second time. The cursor now advances one event at a time,
+only behind a comment the forge accepted, and is written before the refusal is
+reported.
+
+**MEDIUM - a share newer than the cursor never carried its artifact.** A cursor
+is a clock reading and an artifact's reading does not move when it is shared, so
+a peer that had already paged past it held the grant and nothing to use it on.
+`SyncPull` now looks for the artifacts a fresh grant has just opened up and adds
+them below the high water mark, which does not move the cursor - so once the
+grant is under the cursor the extra scan stops on its own.
+
+**MEDIUM - `mem_write` rewrote artifacts that were not memory.** The update path
+never checked what it had read, so an owned bug could be turned into a note and
+leave the lifecycle it was in. It now answers `no such memory item`, which is
+what `mem_read` says about the same row.
+
+**LOW - a reply inherited its thread from an unfiltered parent.** `handleChatSay`
+read the parent with `GetEvent`, which asks nobody's permission, so naming an id
+was enough to join a conversation you cannot read - and to put what you said
+next in front of the people who can. The parent is read through the permission
+filter now, and an unreadable one is ignored: the message starts its own thread.
+
+**LOW - `SetAutoDelegate` swallowed a driver error.** `RowsAffected` returning
+an error meant "the driver would not say whether that update found the row", and
+it was read as "it did". It is reported now, through `affectedRows`.
+
+**LOW - the forge's seen-comment list forgot what it needed.** It was capped at
+a hundred ids by count, and a forge whose timestamps have one-second resolution
+hands back several comments at the cursor's exact time - the hundred-and-first
+pushed the first one out, and the cursor could not rule it out either, because a
+comment made at exactly the cursor is not before it. So it was threaded in
+again. Entries now carry their comment's time, and the trim only ever drops one
+the cursor already covers. Refs written by older nodes still parse: a bare id is
+an entry whose age is unknown, and is the first to be forgotten.
 
 ## Deployment
 
@@ -1126,9 +1267,10 @@ query. Nothing above it depends on anything below it.
 
 ## Phase 6 status
 
-Green. `./run-tests.sh` reports `passed: 200 failed: 0` with Go 1.22, Node 22.14
-and Postgres 16 - the 178 checks Phases 0 to 5 ended with, plus 22 for the forge
-bridge: capability selection, filing, the conflict and permission cases, the
+Green. `./run-tests.sh` reports `passed: 212 failed: 0` with Go 1.22, Node 22.14
+and Postgres 16 - the 200 checks Phase 6 ended with, all still green, plus the
+12 the security slice added: one per defect above, each of them verified to fail
+on the source it fixes. Phase 6's own 22 were: capability selection, filing, the conflict and permission cases, the
 close-to-done move, the reviewer loop in both directions, the no-op sync, the
 untouched `gh`, and six `psql` checks over what all of it wrote. Phases 0 to 5
 stayed green throughout, and mostly by construction - the three endpoints are
@@ -1168,8 +1310,11 @@ the ordinary NTP distance of each other. Two things keep that honest - a node
 lifts its clock above the highest reading in its store at startup, and applying
 a peer's rows (including an incoming push, which lands in the serving process)
 advances it past them - but a node whose clock is hours behind its peer would
-mint readings that its own watermark has already passed. There is no check for
-that yet.
+mint readings that its own watermark has already passed. What there is now is a
+floor under how wrong that can get: a pushed reading more than a day ahead of
+this machine is refused rather than merged, and packing clamps rather than
+letting a wall reading shift into the sign bit. A peer an hour out still drags
+its neighbour an hour forward.
 
 Two things worth knowing about the shape of the console: the bundle is one
 600 kB chunk (react-flow and framer-motion are most of it) because nothing is

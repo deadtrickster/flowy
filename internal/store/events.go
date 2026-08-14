@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/lib/pq"
@@ -41,6 +42,29 @@ func scanEvent(sc scanner) (*Event, error) {
 		e.Parents = []string{}
 	}
 	return &e, nil
+}
+
+// ReadEvent returns one event only if p may read it. An event that is there but
+// out of reach comes back as ErrNotFound, exactly like one that is not there -
+// the same rule ReadArtifact keeps.
+//
+// It exists because GetEvent does not ask who wants it, and a caller that looks
+// a message up by an id somebody handed it needs the filter: a reply that
+// inherits its thread from a message it may not read joins a conversation it
+// was never in.
+func (d *DB) ReadEvent(ctx context.Context, p *Principal, id string) (*Event, error) {
+	a := &args{}
+	idArg := a.next(id)
+	filter := EventFilterSQL(p, "e", a, false)
+	e, err := scanEvent(d.sql.QueryRowContext(ctx,
+		`SELECT `+eventColumns+` FROM events e WHERE e.id = `+idArg+` AND `+filter, a.vals...))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("store: read event %s: %w", id, err)
+	}
+	return e, nil
 }
 
 // EventQuery narrows a read of the log. Since pages by seq_hlc, which is the
