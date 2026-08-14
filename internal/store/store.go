@@ -201,12 +201,13 @@ func (d *DB) InsertArtifact(ctx context.Context, a *Artifact) error {
 	err := d.sql.QueryRowContext(ctx,
 		`INSERT INTO artifacts (id, type, project, owner_user, title, body, discovery,
 		                        status, severity, tags, user_tags, related, visibility,
-		                        file_path, fields, hlc, node, tombstone)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+		                        file_path, fields, hlc, node, tombstone, search)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
+		         `+fmt.Sprintf(artifactSearchSQL, 19)+`)
 		 RETURNING created, updated`,
 		a.ID, a.Type, a.Project, a.OwnerUser, a.Title, a.Body, a.Discovery,
 		a.Status, a.Severity, pq.Array(a.Tags), pq.Array(a.UserTags), pq.Array(a.Related),
-		a.Visibility, a.FilePath, fields, a.HLC, a.Node, a.Tombstone).
+		a.Visibility, a.FilePath, fields, a.HLC, a.Node, a.Tombstone, searchText(a)).
 		Scan(&a.Created, &a.Updated)
 	if err != nil {
 		return fmt.Errorf("store: insert artifact: %w", err)
@@ -214,48 +215,16 @@ func (d *DB) InsertArtifact(ctx context.Context, a *Artifact) error {
 	return nil
 }
 
-// GetArtifact reads an artifact by id.
+// GetArtifact reads an artifact by id, without asking who wants it. Handlers
+// use ReadArtifact instead; this is for the paths that have already decided,
+// and for the tests.
 func (d *DB) GetArtifact(ctx context.Context, id string) (*Artifact, error) {
-	var (
-		a        Artifact
-		project  sql.NullString
-		owner    sql.NullString
-		title    sql.NullString
-		body     sql.NullString
-		disc     sql.NullString
-		status   sql.NullString
-		severity sql.NullString
-		vis      sql.NullString
-		filePath sql.NullString
-		nodeCol  sql.NullString
-		typeCol  sql.NullString
-		fields   []byte
-		clockVal sql.NullInt64
-		tomb     sql.NullBool
-	)
-	err := d.sql.QueryRowContext(ctx,
-		`SELECT id, type, project, owner_user, title, body, discovery, status, severity,
-		        tags, user_tags, related, visibility, file_path, fields, hlc, node,
-		        tombstone, created, updated
-		   FROM artifacts WHERE id = $1`, id).
-		Scan(&a.ID, &typeCol, &project, &owner, &title, &body, &disc, &status, &severity,
-			pq.Array(&a.Tags), pq.Array(&a.UserTags), pq.Array(&a.Related), &vis, &filePath,
-			&fields, &clockVal, &nodeCol, &tomb, &a.Created, &a.Updated)
+	a, err := scanArtifact(d.sql.QueryRowContext(ctx,
+		`SELECT `+artifactColumns+` FROM artifacts ar WHERE ar.id = $1`, id), nil)
 	if err != nil {
 		return nil, fmt.Errorf("store: get artifact %s: %w", id, err)
 	}
-	if project.Valid {
-		p := project.String
-		a.Project = &p
-	}
-	a.Type, a.OwnerUser, a.Title, a.Body = typeCol.String, owner.String, title.String, body.String
-	a.Discovery, a.Status, a.Severity = disc.String, status.String, severity.String
-	a.Visibility, a.FilePath, a.Node = vis.String, filePath.String, nodeCol.String
-	a.HLC, a.Tombstone = clockVal.Int64, tomb.Bool
-	if len(fields) > 0 {
-		a.Fields = json.RawMessage(fields)
-	}
-	return &a, nil
+	return a, nil
 }
 
 // Event is one entry in the append-only log. Parents carries the thread DAG:
@@ -301,41 +270,14 @@ func (d *DB) AppendEvent(ctx context.Context, e *Event) error {
 	return nil
 }
 
-// GetEvent reads an event by id.
+// GetEvent reads an event by id, without asking who wants it.
 func (d *DB) GetEvent(ctx context.Context, id string) (*Event, error) {
-	var (
-		e        Event
-		typeCol  sql.NullString
-		project  sql.NullString
-		room     sql.NullString
-		thread   sql.NullString
-		actor    sql.NullString
-		artifact sql.NullString
-		nodeCol  sql.NullString
-		body     sql.NullString
-		meta     []byte
-		seq      sql.NullInt64
-	)
-	err := d.sql.QueryRowContext(ctx,
-		`SELECT id, type, project, room, thread, parents, actor, artifact, seq_hlc,
-		        node, body, meta, created
-		   FROM events WHERE id = $1`, id).
-		Scan(&e.ID, &typeCol, &project, &room, &thread, pq.Array(&e.Parents), &actor,
-			&artifact, &seq, &nodeCol, &body, &meta, &e.Created)
+	e, err := scanEvent(d.sql.QueryRowContext(ctx,
+		`SELECT `+eventColumns+` FROM events e WHERE e.id = $1`, id))
 	if err != nil {
 		return nil, fmt.Errorf("store: get event %s: %w", id, err)
 	}
-	if project.Valid {
-		p := project.String
-		e.Project = &p
-	}
-	e.Type, e.Room, e.Thread = typeCol.String, room.String, thread.String
-	e.Actor, e.Artifact, e.Node, e.Body = actor.String, artifact.String, nodeCol.String, body.String
-	e.SeqHLC = seq.Int64
-	if len(meta) > 0 {
-		e.Meta = json.RawMessage(meta)
-	}
-	return &e, nil
+	return e, nil
 }
 
 // ThreadEvents reads one thread in log order.
@@ -373,7 +315,7 @@ func (d *DB) ThreadEvents(ctx context.Context, thread string) ([]*Event, error) 
 // Counts returns the row count of each spine table, which is what /healthz
 // reports when it is asked for detail.
 func (d *DB) Counts(ctx context.Context) (map[string]int64, error) {
-	tables := []string{"users", "agents", "grants", "artifacts", "events", "tasks", "peers"}
+	tables := []string{"users", "agents", "tokens", "grants", "artifacts", "events", "tasks", "peers"}
 	out := make(map[string]int64, len(tables))
 	for _, t := range tables {
 		var n int64

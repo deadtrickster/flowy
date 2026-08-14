@@ -23,7 +23,7 @@ commands:
 `
 
 // version is the node's build version.
-const version = "0.1.0-phase0"
+const version = "0.2.0-phase1"
 
 func main() {
 	if len(os.Args) < 2 {

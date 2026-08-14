@@ -8,16 +8,19 @@
 //	smoke schema          the spine tables are all present
 //	smoke roundtrip       user, agent, artifact and event insert and read back
 //	smoke personal        a personal artifact (project NULL) inserts and reads back
+//	smoke seed            two principals in two projects, printed as shell vars
 package main
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -30,7 +33,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fail("usage: smoke <healthz|ulid|hlc|schema|roundtrip|personal> [args]")
+		fail("usage: smoke <healthz|ulid|hlc|schema|roundtrip|personal|seed> [args]")
 	}
 
 	var err error
@@ -50,6 +53,8 @@ func main() {
 		err = withDB(checkRoundTrip)
 	case "personal":
 		err = withDB(checkPersonal)
+	case "seed":
+		err = withDB(seedPrincipals)
 	default:
 		fail("smoke: unknown check %q", os.Args[1])
 	}
@@ -230,7 +235,7 @@ func checkHLC() error {
 
 // checkSchema asserts that every spine table exists.
 func checkSchema(ctx context.Context, db *store.DB) error {
-	want := []string{"users", "agents", "grants", "artifacts", "events", "tasks", "peers"}
+	want := []string{"users", "agents", "tokens", "grants", "artifacts", "events", "tasks", "peers"}
 	for _, table := range want {
 		var n int
 		err := db.SQL().QueryRowContext(ctx,
@@ -452,6 +457,108 @@ func checkPersonal(ctx context.Context, db *store.DB) error {
 	}
 
 	fmt.Printf("personal artifact %s: project NULL, visibility personal, owner %s\n", note.ID, owner.ID)
+	return nil
+}
+
+// seedPrincipals creates the two people, their agents and their bearer tokens
+// that the permission checks are run as: user A with an agent in project pa,
+// user B with an agent in project pb, and an operator who is the local node's
+// own principal. It prints the ids as shell assignments, so the gate can eval
+// them and then drive the HTTP API as either of them.
+//
+// No grants are seeded. Every cross-project read has to be earned by a grant
+// the gate issues itself, over the API, mid-run.
+func seedPrincipals(ctx context.Context, db *store.DB) error {
+	type principal struct {
+		prefix  string // shell variable prefix
+		handle  string
+		project string
+		kind    string
+	}
+	people := []principal{
+		{prefix: "A", handle: "alice", project: "pa", kind: "claude"},
+		{prefix: "B", handle: "bob", project: "pb", kind: "opencode"},
+		{prefix: "OP", handle: "operator", project: "pa", kind: "claude"},
+	}
+
+	var out []string
+	// agentTokens maps an agent's token to the user and project it must resolve
+	// to, so the seed can prove the inheritance rather than assume it.
+	agentTokens := map[string][2]string{}
+	// userIDs remembers the minted ids by prefix, for the extra tokens below.
+	userIDs := map[string]string{}
+	for _, person := range people {
+		// Handles are unique in the schema, so they carry a suffix: seeding is
+		// something a gate run does to whatever database it was pointed at, and
+		// it must not depend on that database being empty.
+		user := &store.User{
+			Handle:       person.handle + "-" + ulid.NewString(),
+			Display:      person.handle,
+			AutoDelegate: true,
+		}
+		if err := db.InsertUser(ctx, user); err != nil {
+			return err
+		}
+		agent := &store.Agent{UserID: user.ID, Kind: person.kind, Project: person.project}
+		if err := db.InsertAgent(ctx, agent); err != nil {
+			return err
+		}
+
+		// The user's own token, and a token for the agent acting on their
+		// behalf. The agent token names no user of its own: it inherits one,
+		// which is what lets an agent read its user's personal artifacts.
+		userToken := "t" + person.prefix + "-" + ulid.NewString()
+		agentToken := "t" + person.prefix + "agent-" + ulid.NewString()
+		for _, tok := range []*store.Principal{
+			{Token: userToken, UserID: user.ID, Project: person.project},
+			{Token: agentToken, AgentID: agent.ID},
+		} {
+			if err := db.InsertToken(ctx, tok); err != nil {
+				return err
+			}
+		}
+
+		agentTokens[agentToken] = [2]string{user.ID, person.project}
+		userIDs[person.prefix] = user.ID
+		out = append(out,
+			fmt.Sprintf("USER_%s=%s", person.prefix, user.ID),
+			fmt.Sprintf("AGENT_%s=%s", person.prefix, agent.ID),
+			fmt.Sprintf("PROJECT_%s=%s", person.prefix, person.project),
+			fmt.Sprintf("TOKEN_%s=%s", person.prefix, userToken),
+			fmt.Sprintf("TOKEN_%s_AGENT=%s", person.prefix, agentToken))
+	}
+
+	// A second token for user A, working in a third project. A principal is a
+	// (user, agent, project) triple, so the same person in another project is
+	// another principal - which is exactly what the per-artifact share needs to
+	// be tested against: a project nobody has a project-wide grant into.
+	pcToken := "tApc-" + ulid.NewString()
+	if err := db.InsertToken(ctx, &store.Principal{
+		Token: pcToken, UserID: userIDs["A"], Project: "pc",
+	}); err != nil {
+		return err
+	}
+	out = append(out, "PROJECT_C=pc", "TOKEN_A_PC="+pcToken)
+
+	// Sanity: an agent token has to resolve to its user and its project, or
+	// every check that runs as an agent is testing the wrong principal.
+	for token, want := range agentTokens {
+		p, err := db.PrincipalForToken(ctx, token)
+		if err != nil {
+			return fmt.Errorf("resolve agent token: %w", err)
+		}
+		if p.UserID != want[0] || p.Project != want[1] {
+			return fmt.Errorf("agent token resolved to user %q project %q, want %q and %q",
+				p.UserID, p.Project, want[0], want[1])
+		}
+	}
+
+	// An unknown token has to resolve to nothing at all.
+	if _, err := db.PrincipalForToken(ctx, "no-such-token"); !errors.Is(err, store.ErrNotFound) {
+		return fmt.Errorf("an unknown token resolved with error %v, want ErrNotFound", err)
+	}
+
+	fmt.Println(strings.Join(out, "\n"))
 	return nil
 }
 

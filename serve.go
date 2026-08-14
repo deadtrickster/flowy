@@ -24,9 +24,14 @@ const defaultAddr = "127.0.0.1:8787"
 
 // server holds what the HTTP handlers need.
 type server struct {
-	db      *store.DB
-	node    string
-	started time.Time
+	db   *store.DB
+	node string
+	// operator is the user id that runs this node. It is the only principal
+	// ?scope=all obeys. It is local configuration on purpose: operator-ness is
+	// a fact about this machine, not a row that could ever replicate to another
+	// node and grant somebody a view of everything there.
+	operator string
+	started  time.Time
 }
 
 // serve runs the node's HTTP server until it is interrupted.
@@ -35,6 +40,8 @@ func serve(args []string) error {
 	addr := fs.String("addr", envOr("FLOWY_ADDR", defaultAddr), "listen address")
 	dsn := fs.String("dsn", os.Getenv("DATABASE_URL"), "Postgres-wire DSN (default $DATABASE_URL)")
 	node := fs.String("node", envOr("FLOWY_NODE", defaultNode()), "name of this node, stamped onto every row")
+	operator := fs.String("operator", os.Getenv("FLOWY_OPERATOR"),
+		"user id that may use ?scope=all on this node (default $FLOWY_OPERATOR)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -54,7 +61,7 @@ func serve(args []string) error {
 	}
 	defer db.Close()
 
-	srv := &server{db: db, node: *node, started: time.Now()}
+	srv := &server{db: db, node: *node, operator: *operator, started: time.Now()}
 
 	// Listen before announcing, so a port clash is an error rather than a
 	// health check that never comes up.
@@ -98,13 +105,51 @@ func serve(args []string) error {
 	return <-errCh
 }
 
-// routes wires the Phase 0 surface. Later phases hang artifacts, events and the
-// handoff endpoints off the same mux.
+// apiRoutes are the endpoints that speak for a principal. Every one of them is
+// behind authenticate, and every read they do goes through the store's
+// permission filter - there is no path to an artifact that skips either.
+var apiRoutes = []string{
+	"POST /api/artifacts",
+	"GET /api/artifacts",
+	"GET /api/artifact/{id}",
+	"POST /api/artifact/{id}/delete",
+	"GET /api/search",
+	"POST /api/events",
+	"GET /api/events",
+	"POST /api/grants",
+	"GET /api/whoami",
+}
+
+// routes wires the node's surface: an open operational corner, and everything
+// under /api/ behind a bearer token.
 func (s *server) routes() http.Handler {
 	mux := http.NewServeMux()
+
+	// Operational, and deliberately unauthenticated: a health check that needs
+	// a credential is a health check that stops working at the worst moment.
+	// None of these read a row of fabric data.
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.HandleFunc("GET /version", s.handleVersion)
-	mux.HandleFunc("GET /", s.handleRoot)
+	// No method on the catch-all: "GET /" would be more permissive on paths and
+	// less permissive on methods than "/api/", which the mux refuses to rank.
+	mux.HandleFunc("/", s.handleRoot)
+
+	api := http.NewServeMux()
+	api.HandleFunc("POST /api/artifacts", s.handleCreateArtifact)
+	api.HandleFunc("GET /api/artifacts", s.handleListArtifacts)
+	api.HandleFunc("GET /api/artifact/{id}", s.handleGetArtifact)
+	api.HandleFunc("POST /api/artifact/{id}/delete", s.handleDeleteArtifact)
+	api.HandleFunc("GET /api/search", s.handleSearch)
+	api.HandleFunc("POST /api/events", s.handleAppendEvent)
+	api.HandleFunc("GET /api/events", s.handleListEvents)
+	api.HandleFunc("POST /api/grants", s.handleCreateGrant)
+	api.HandleFunc("GET /api/whoami", s.handleWhoami)
+
+	// One mount, so nothing under /api/ can be added later without the token
+	// check - including a method or a path this mux does not know, which has to
+	// answer 401 before it answers 404.
+	mux.Handle("/api/", s.authenticate(api))
+
 	return logRequests(mux)
 }
 
@@ -160,11 +205,16 @@ func (s *server) handleRoot(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 		return
 	}
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"node":    s.node,
 		"version": version,
-		"phase":   0,
-		"routes":  []string{"/healthz", "/version"},
+		"phase":   1,
+		"routes":  append([]string{"GET /healthz", "GET /version"}, apiRoutes...),
 	})
 }
 

@@ -9,8 +9,18 @@
 --
 -- Postgres wire portable only. The deployment target is SereneDB, so nothing in
 -- here may depend on a stock-Postgres storage feature: no extensions, no
--- partitioning, no engine-specific index methods, no SERIAL/identity (ids come
--- from the node), no triggers.
+-- partitioning, no SERIAL/identity (ids come from the node), no triggers, no
+-- stored procedures.
+--
+-- The one exception is search, and it is deliberately quarantined at the bottom
+-- of this file: artifacts.search is a tsvector with a GIN index, which is
+-- Postgres full text and nothing else. Phase 1 needs ranked text search now;
+-- SereneDB brings vectors, and when it does the whole of the SEARCH section
+-- goes away - one column and one index - without touching a row of the spine.
+-- The column is filled by the node on write rather than by a generated column
+-- or a trigger, so nothing but the type and the index method is engine-specific
+-- (array_to_string is STABLE, so a generated column is not even possible, and a
+-- trigger would drag PL/pgSQL into a schema that promises none).
 
 BEGIN;
 
@@ -33,6 +43,20 @@ CREATE TABLE IF NOT EXISTS agents (
     project text,
     hlc     bigint,
     node    text
+);
+
+-- Bearer tokens. A token resolves to a principal: the (user, agent, project)
+-- triple every request is authorised as. project is the principal's home
+-- project - the one it may read without a grant. Either user_id or agent_id may
+-- be empty; a token that names only an agent inherits that agent's user.
+--
+-- Tokens are local credentials, not fabric state: they carry no hlc/node and
+-- Phase 3 will not replicate this table.
+CREATE TABLE IF NOT EXISTS tokens (
+    token    text PRIMARY KEY,
+    user_id  text,
+    agent_id text,
+    project  text
 );
 
 -- Cross-project sharing. A grant is a capability from one project to another,
@@ -134,5 +158,27 @@ CREATE INDEX IF NOT EXISTS grants_to_project_idx      ON grants (to_project);
 CREATE INDEX IF NOT EXISTS grants_from_project_idx    ON grants (from_project);
 CREATE INDEX IF NOT EXISTS tasks_to_user_state_idx    ON tasks (to_user, state);
 CREATE INDEX IF NOT EXISTS tasks_artifact_idx         ON tasks (artifact);
+
+-- The permission filter asks two questions of grants on every read: is there a
+-- project-wide grant along this edge, and is this one artifact shared with this
+-- one user. One index each.
+CREATE INDEX IF NOT EXISTS grants_edge_idx            ON grants (from_project, to_project);
+CREATE INDEX IF NOT EXISTS grants_artifact_subject_idx ON grants (artifact, subject);
+
+CREATE INDEX IF NOT EXISTS tokens_user_idx            ON tokens (user_id);
+CREATE INDEX IF NOT EXISTS tokens_agent_idx           ON tokens (agent_id);
+
+-- ------------------------------------------------------------------- SEARCH
+-- Everything below this line is Postgres full text and is expected to be
+-- deleted when the store moves to SereneDB and search becomes vector search.
+-- Nothing above it depends on anything below it.
+--
+-- search covers title, body, discovery and tags, so a word that appears only in
+-- the discovery of a bug still finds it. The node writes the column in the same
+-- statement that writes the row (see internal/store.artifactSearchSQL); there
+-- is no generated column and no trigger.
+ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS search tsvector;
+
+CREATE INDEX IF NOT EXISTS artifacts_search_idx ON artifacts USING gin (search);
 
 COMMIT;
