@@ -97,6 +97,13 @@ CREATE TABLE IF NOT EXISTS artifacts (
     visibility text DEFAULT 'project',
     file_path  text,
     fields     jsonb,
+    -- Phase 6. external is the link to an issue on a forge -
+    -- {forge, repo, number, url, state} plus the two sync cursors - and
+    -- reported says the artifact has been filed there. Both are written only by
+    -- the forge endpoints: an ordinary update of an artifact does not touch
+    -- them, so editing a bug cannot silently unfile it.
+    reported   boolean DEFAULT false,
+    external   jsonb,
     hlc        bigint,
     node       text,
     tombstone  boolean DEFAULT false,
@@ -168,6 +175,16 @@ CREATE INDEX IF NOT EXISTS artifacts_updated_idx      ON artifacts (updated);
 ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS kind text;
 
 CREATE INDEX IF NOT EXISTS artifacts_type_kind_idx    ON artifacts (type, kind);
+
+-- Phase 6 links an artifact to an issue on a forge. The columns are in the
+-- CREATE TABLE above; the ALTERs are here so a database created by an earlier
+-- phase picks them up on the next load.
+ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS reported boolean DEFAULT false;
+ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS external jsonb;
+
+-- "what have I filed" is a read of the reported flag, and it is a small
+-- minority of the rows.
+CREATE INDEX IF NOT EXISTS artifacts_reported_idx      ON artifacts (reported);
 
 CREATE INDEX IF NOT EXISTS events_thread_idx          ON events (thread);
 CREATE INDEX IF NOT EXISTS events_seq_hlc_idx         ON events (seq_hlc);

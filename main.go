@@ -8,7 +8,10 @@
 // as a share plus a task plus a thread, delegation to the assignee's agent, and
 // an issue lifecycle whose every move is an event. Phase 5 is federation: two
 // nodes, each with its own database, exchanging permission-filtered deltas and
-// merging them last-writer-wins by hlc.
+// merging them last-writer-wins by hlc. Phase 6 is the forge bridge: a bug here
+// is filed as an issue on GitHub or GitLab through that forge's own CLI, its
+// state is read back, and the comments on it and the replies here are one
+// conversation.
 package main
 
 import (
@@ -22,7 +25,8 @@ usage: flowy <command> [flags]
 
 commands:
   serve    run the HTTP server and the embedded console
-           (env: DATABASE_URL, FLOWY_ADDR, FLOWY_NODE, FLOWY_OPERATOR)
+           (env: DATABASE_URL, FLOWY_ADDR, FLOWY_NODE, FLOWY_OPERATOR,
+           FLOWY_FORGE=gh|glab|mock)
   mcp      MCP server for agents: stdio by default, --http :PORT for a remote
            client (env: DATABASE_URL, FLOWY_TOKEN, FLOWY_NODE)
   fuse     FUSE mount of artifacts (not yet)
@@ -34,7 +38,7 @@ commands:
 `
 
 // version is the node's build version.
-const version = "0.6.0-phase5"
+const version = "0.7.0-phase6"
 
 func main() {
 	if len(os.Args) < 2 {

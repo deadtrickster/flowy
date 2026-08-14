@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -394,6 +395,11 @@ func nullTime(t time.Time) any {
 // applyArtifact is last-writer-wins by hlc. The search vector is rebuilt here
 // rather than shipped, because it is an artefact of this node's text search
 // configuration and not a fact about the artifact.
+//
+// The forge link travels with the row: a bug filed as an issue on one node
+// arrives on its peers already carrying the issue it was filed as, cursors and
+// all, so neither node files it twice and neither pushes the same reply out
+// twice.
 func applyArtifact(ctx context.Context, tx *sql.Tx, a *Artifact) (int, error) {
 	if a.ID == "" {
 		return 0, errors.New("store: sync apply: artifact with no id")
@@ -402,12 +408,22 @@ func applyArtifact(ctx context.Context, tx *sql.Tx, a *Artifact) (int, error) {
 	if len(a.Fields) > 0 {
 		fields = []byte(a.Fields)
 	}
+	var external any
+	if a.External != nil {
+		encoded, err := json.Marshal(a.External)
+		if err != nil {
+			return 0, fmt.Errorf("store: sync apply artifact %s: %w", a.ID, err)
+		}
+		external = encoded
+	}
 	res, err := tx.ExecContext(ctx,
 		`INSERT INTO artifacts (id, type, kind, project, owner_user, title, body, discovery,
 		                        status, severity, tags, user_tags, related, visibility,
-		                        file_path, fields, hlc, node, tombstone, search, created, updated)
+		                        file_path, fields, hlc, node, tombstone, search, created, updated,
+		                        reported, external)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
-		         $19, `+fmt.Sprintf(artifactSearchSQL, 20)+`, coalesce($21::timestamptz, now()), now())
+		         $19, `+fmt.Sprintf(artifactSearchSQL, 20)+`, coalesce($21::timestamptz, now()), now(),
+		         $22, $23)
 		 ON CONFLICT (id) DO UPDATE SET
 		     type = excluded.type, kind = excluded.kind, project = excluded.project,
 		     owner_user = excluded.owner_user, title = excluded.title, body = excluded.body,
@@ -415,12 +431,13 @@ func applyArtifact(ctx context.Context, tx *sql.Tx, a *Artifact) (int, error) {
 		     tags = excluded.tags, user_tags = excluded.user_tags, related = excluded.related,
 		     visibility = excluded.visibility, file_path = excluded.file_path,
 		     fields = excluded.fields, hlc = excluded.hlc, node = excluded.node,
-		     tombstone = excluded.tombstone, search = excluded.search, updated = now()
+		     tombstone = excluded.tombstone, search = excluded.search, updated = now(),
+		     reported = excluded.reported, external = excluded.external
 		  WHERE coalesce(artifacts.hlc, 0) < excluded.hlc`,
 		a.ID, a.Type, a.Kind, a.Project, a.OwnerUser, a.Title, a.Body, a.Discovery,
 		a.Status, a.Severity, pq.Array(a.Tags), pq.Array(a.UserTags), pq.Array(a.Related),
 		a.Visibility, a.FilePath, fields, a.HLC, a.Node, a.Tombstone, searchText(a),
-		nullTime(a.Created))
+		nullTime(a.Created), a.Reported, external)
 	if err != nil {
 		return 0, fmt.Errorf("store: sync apply artifact %s: %w", a.ID, err)
 	}

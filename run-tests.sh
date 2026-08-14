@@ -20,6 +20,14 @@
 # tested inside one database - a merge that is only ever asked to merge a row
 # with itself is not a merge - so the gate stands up a second node beside the
 # first and drives the real `flowy sync` between them.
+#
+# Phase 6 adds the forge bridge, and runs it against MockForge: there is no
+# GitHub in here, no credential and no network, and a gate that needed one would
+# be a gate that leaves issues in somebody's repository. So the node is started
+# with FLOWY_FORGE=mock and the checks drive the fake through the mock's own
+# control routes. A `gh` that records being run is put on PATH first, so that
+# selecting the mock is a choice rather than the only option - and so that
+# "GhClient was not invoked" is a fact the gate can check rather than assume.
 
 set -euo pipefail
 
@@ -40,8 +48,10 @@ PGSOCK5A="$WORK/sock5a"
 PGSOCK5B="$WORK/sock5b"
 NODE5A_LOG="$WORK/nodeA.log"
 NODE5B_LOG="$WORK/nodeB.log"
+# Phase 6: where the gate's fake gh writes when something runs it.
+GH_CANARY="$WORK/gh-invoked"
 readonly ROOT WORK PGDATA PGSOCK PGLOG SERVE_LOG MCP_LOG DBNAME
-readonly PGDATA5A PGDATA5B PGSOCK5A PGSOCK5B NODE5A_LOG NODE5B_LOG
+readonly PGDATA5A PGDATA5B PGSOCK5A PGSOCK5B NODE5A_LOG NODE5B_LOG GH_CANARY
 
 PG_BIN=""
 PGPORT=""
@@ -2181,6 +2191,285 @@ the_two_databases_agree_row_for_row() {
 		"$common"
 }
 
+# ------------------------------------------------------------ phase 6 helpers
+#
+# The forge bridge, driven over HTTP against the mock forge the node selected at
+# startup. The mock is in that process, so the gate plays the other side of the
+# conversation - the reviewer who closes an issue and the reviewer who comments
+# on it - through the mock's own control routes, which exist only when the mock
+# is what FLOWY_FORGE picked.
+
+# forge_file TOKEN ARTIFACT REPO - file an artifact as an issue.
+forge_file() {
+	api POST "$1" /api/forge/file "$(jq -nc --arg a "$2" --arg r "$3" '{artifact: $a, repo: $r}')"
+}
+
+# forge_status TOKEN ARTIFACT - refresh the issue's state.
+forge_status() { api GET "$1" "/api/forge/status?artifact=$2"; }
+
+# forge_sync TOKEN ARTIFACT - one turn of the reviewer loop, both ways.
+forge_sync() {
+	api POST "$1" /api/forge/sync "$(jq -nc --arg a "$2" '{artifact: $a}')"
+}
+
+# mock_state TOKEN REPO NUMBER STATE - the reviewer closes the issue.
+mock_state() {
+	api POST "$1" /api/forge/mock/state \
+		"$(jq -nc --arg r "$2" --argjson n "$3" --arg s "$4" '{repo: $r, number: $n, state: $s}')"
+}
+
+# mock_comment TOKEN REPO NUMBER AUTHOR BODY - the reviewer says something.
+mock_comment() {
+	api POST "$1" /api/forge/mock/comment \
+		"$(jq -nc --arg r "$2" --argjson n "$3" --arg a "$4" --arg b "$5" \
+			'{repo: $r, number: $n, author: $a, body: $b}')"
+}
+
+# mock_issue TOKEN REPO NUMBER - what the forge holds, comments and all.
+mock_issue() { api GET "$1" "/api/forge/mock/issue?repo=$2&number=$3"; }
+
+# say_in_thread TOKEN BODY THREAD - a reply in the issue's thread, posted
+# through the ordinary chat endpoint. Nothing about it is forge-aware: that is
+# the point of threading an issue into the chat.
+say_in_thread() {
+	api POST "$1" /api/chat/forge/say "$(jq -nc --arg b "$2" --arg t "$3" '{body: $b, thread: $t}')"
+}
+
+# ------------------------------------------------------------- phase 6 checks
+
+the_node_selected_the_mock() {
+	recall
+	api GET "$TOKEN_A" /api/forge || return 1
+	want_eq "status" "$API_STATUS" 200 || return 1
+	want_eq "the forge" "$(jqv .forge)" mock || return 1
+	want_eq "and why" "$(jqv .why)" "FLOWY_FORGE=mock" || return 1
+	# The choice is a choice: gh is installed and was not picked.
+	want_eq "gh is on PATH" "$(jqv .available.gh)" true || return 1
+	want_eq "the mock's control surface is up" "$(jqv .mock)" true || return 1
+	api GET "$TOKEN_A" /api/node || return 1
+	want_eq "the node reports the phase" "$(jqv .phase)" 6 || return 1
+	want_eq "and its forge" "$(jqv .forge)" mock || return 1
+	printf 'FLOWY_FORGE=mock selected MockForge, with gh installed beside it\n'
+}
+
+an_unknown_forge_is_refused_at_startup() {
+	local out
+	if out="$(DATABASE_URL="$DATABASE_URL" ./flowy serve -forge bitbucket -addr 127.0.0.1:1 2>&1)"; then
+		printf 'flowy serve -forge bitbucket started anyway:\n%s\n' "$out" >&2
+		return 1
+	fi
+	printf '%s\n' "$out" | tail -1
+}
+
+# The bug lives in pc, which nobody holds a grant into - the pb -> pa grant
+# Phase 1 issued would otherwise be what lets B read it, and then the permission
+# check below would be testing the grant rather than the bridge.
+a_files_the_carburettor_bug() {
+	recall
+	local id
+	id="$(new_artifact "$TOKEN_A_PC" bug "the carburettor floods on a cold start")" || return 1
+	remember FORGEBUG "$id"
+	forge_file "$TOKEN_A_PC" "$id" o/r || return 1
+	want_eq "status" "$API_STATUS" 200 || return 1
+	want_eq "the forge" "$(jqv .external.forge)" mock || return 1
+	want_eq "the repo" "$(jqv .external.repo)" o/r || return 1
+	want_eq "the issue is numbered" "$(jqv '.external.number > 0')" true || return 1
+	want_eq "and has a url" \
+		"$(jqv '.external.url | test("^https://.*/o/r/issues/[0-9]+$")')" true || return 1
+	want_eq "it is open" "$(jqv .external.state)" open || return 1
+	want_eq "the artifact is reported" "$(jqv .artifact.reported)" true || return 1
+	want_eq "the filing is an event" "$(jqv .event.type)" forge || return 1
+	want_eq "that says what it did" "$(jqv .event.body)" "filed o/r#$(jqv .external.number)" || return 1
+	remember ISSUE "$(jqv .external.number)"
+	remember FORGETHREAD "$(jqv .external.thread)"
+	printf 'filed %s as o/r#%s in thread %s\n' "$id" "$(jqv .external.number)" "$(jqv .external.thread)"
+}
+
+# The ref is on the artifact, not in the response: an ordinary read of the
+# artifact carries it, which is how anything else finds out where a bug went.
+the_link_is_on_the_artifact() {
+	recall
+	api GET "$TOKEN_A_PC" "/api/artifact/$FORGEBUG" || return 1
+	want_eq "status" "$API_STATUS" 200 || return 1
+	want_eq "reported" "$(jqv .reported)" true || return 1
+	want_eq "the repo" "$(jqv .external.repo)" o/r || return 1
+	want_eq "the number" "$(jqv .external.number)" "$ISSUE" || return 1
+	want_eq "the state" "$(jqv .external.state)" open || return 1
+	printf '%s -> o/r#%s\n' "$FORGEBUG" "$ISSUE"
+}
+
+filing_the_same_artifact_twice_is_refused() {
+	recall
+	forge_file "$TOKEN_A_PC" "$FORGEBUG" o/r || return 1
+	want_eq "a second filing" "$API_STATUS" 409 || return 1
+	want_eq "and it hands back the issue there already is" "$(jqv .external.number)" "$ISSUE" || return 1
+	printf 'already filed as o/r#%s\n' "$ISSUE"
+}
+
+a_repo_that_is_not_a_repo_is_refused() {
+	recall
+	local id
+	id="$(new_artifact "$TOKEN_A_PC" bug "the wiper motor stalls")" || return 1
+	forge_file "$TOKEN_A_PC" "$id" "not-a-repo" || return 1
+	want_eq "a repo with no owner" "$API_STATUS" 400 || return 1
+	forge_sync "$TOKEN_A_PC" "$id" || return 1
+	want_eq "and an artifact nobody filed has nothing to sync" "$API_STATUS" 400 || return 1
+	api GET "$TOKEN_A_PC" "/api/artifact/$id" || return 1
+	want_eq "neither wrote a link" "$(jqv '.external == null')" true || return 1
+	want_eq "nor marked it reported" "$(jqv .reported)" false || return 1
+	printf 'nothing was filed\n'
+}
+
+# The permission story is the ordinary one: reading the artifact is what makes
+# somebody a participant, and B cannot read this one.
+a_stranger_cannot_file_or_sync_it() {
+	recall
+	forge_file "$TOKEN_B" "$FORGEBUG" o/r || return 1
+	want_eq "file" "$API_STATUS" 404 || return 1
+	forge_status "$TOKEN_B" "$FORGEBUG" || return 1
+	want_eq "status" "$API_STATUS" 404 || return 1
+	forge_sync "$TOKEN_B" "$FORGEBUG" || return 1
+	want_eq "sync" "$API_STATUS" 404 || return 1
+	printf 'B gets 404 on all three, the same as on the artifact itself\n'
+}
+
+the_issue_is_closed_on_the_forge() {
+	recall
+	mock_state "$TOKEN_A_PC" o/r "$ISSUE" closed || return 1
+	want_eq "status" "$API_STATUS" 200 || return 1
+	want_eq "the issue is closed" "$(jqv .state)" closed || return 1
+	printf 'o/r#%s closed by the reviewer\n' "$ISSUE"
+}
+
+a_closed_issue_moves_the_artifact_to_done() {
+	recall
+	forge_status "$TOKEN_A_PC" "$FORGEBUG" || return 1
+	want_eq "status" "$API_STATUS" 200 || return 1
+	want_eq "the state read back" "$(jqv .state)" closed || return 1
+	want_eq "the artifact moved" "$(jqv .moved)" true || return 1
+	want_eq "to done" "$(jqv .status)" "done" || return 1
+	want_eq "and the link remembers the state" "$(jqv .external.state)" closed || return 1
+
+	# The move is in the same trail every other move is in, and it says where it
+	# came from - it is the one transition the workflow itself would refuse.
+	api GET "$TOKEN_A_PC" "/api/artifact/$FORGEBUG/history" || return 1
+	want_eq "one move" "$(jqv '.events | length')" 1 || return 1
+	want_eq "open->done" "$(jqv '.events[0].body')" "open->done" || return 1
+	want_eq "via the forge" "$(jqv '.events[0].meta.via')" forge || return 1
+	want_eq "naming the issue" "$(jqv '.events[0].meta.number')" "$ISSUE" || return 1
+	printf 'closed on the forge -> done here, recorded as open->done via forge\n'
+}
+
+refreshing_a_closed_issue_moves_nothing() {
+	recall
+	api GET "$TOKEN_A_PC" "/api/artifact/$FORGEBUG" || return 1
+	local before
+	before="$(jqv .hlc)"
+	forge_status "$TOKEN_A_PC" "$FORGEBUG" || return 1
+	want_eq "status" "$API_STATUS" 200 || return 1
+	want_eq "nothing moved" "$(jqv .moved)" false || return 1
+	want_eq "and it is still done" "$(jqv .status)" "done" || return 1
+	api GET "$TOKEN_A_PC" "/api/artifact/$FORGEBUG" || return 1
+	want_eq "the artifact was not even touched" "$(jqv .hlc)" "$before" || return 1
+	printf 'a poll that finds nothing new writes nothing\n'
+}
+
+the_reviewer_comments_on_the_issue() {
+	recall
+	mock_comment "$TOKEN_A_PC" o/r "$ISSUE" reviewer "does it flimberwock at 3000rpm?" || return 1
+	want_eq "status" "$API_STATUS" 200 || return 1
+	want_eq "by the reviewer" "$(jqv .author)" reviewer || return 1
+	remember REVIEWCOMMENT "$(jqv .id)"
+	printf 'comment %s by reviewer\n' "$(jqv .id)"
+}
+
+the_comment_becomes_an_event_in_the_thread() {
+	recall
+	forge_sync "$TOKEN_A_PC" "$FORGEBUG" || return 1
+	want_eq "status" "$API_STATUS" 200 || return 1
+	want_eq "one comment came in" "$(jqv .pulled)" 1 || return 1
+	want_eq "and nothing went out" "$(jqv .pushed)" 0 || return 1
+	want_eq "it is chat, like everything else in the thread" "$(jqv '.events[0].type')" chat || return 1
+	want_eq "said by a synthetic external principal" "$(jqv '.events[0].actor')" "forge:reviewer" || return 1
+	want_eq "carrying what was said" "$(jqv '.events[0].body')" "does it flimberwock at 3000rpm?" || return 1
+	want_eq "in the artifact's thread" "$(jqv '.events[0].thread')" "$FORGETHREAD" || return 1
+	want_eq "naming the comment it came from" \
+		"$(jqv '.events[0].meta.forge_comment')" "$REVIEWCOMMENT" || return 1
+	want_eq "and the artifact it is about" "$(jqv '.events[0].artifact')" "$FORGEBUG" || return 1
+
+	# It is an ordinary chat event, so the ordinary chat endpoint reads it.
+	api GET "$TOKEN_A_PC" "/api/chat/forge?thread=$FORGETHREAD" || return 1
+	want_eq "the room has the reviewer in it" \
+		"$(jqv '[.events[] | select(.actor == "forge:reviewer")] | length')" 1 || return 1
+	printf 'forge:reviewer said it, in thread %s\n' "$FORGETHREAD"
+}
+
+a_reply_in_the_thread_reaches_the_forge() {
+	recall
+	say_in_thread "$TOKEN_A_PC" "yes, and it flimberwocks louder above 4000rpm" "$FORGETHREAD" || return 1
+	want_eq "the reply was said" "$API_STATUS" 200 || return 1
+
+	forge_sync "$TOKEN_A_PC" "$FORGEBUG" || return 1
+	want_eq "status" "$API_STATUS" 200 || return 1
+	want_eq "nothing new came in" "$(jqv .pulled)" 0 || return 1
+	want_eq "and the reply went out" "$(jqv .pushed)" 1 || return 1
+
+	mock_issue "$TOKEN_A_PC" o/r "$ISSUE" || return 1
+	want_eq "the forge received it, posted as the node" \
+		"$(jqv '[.comments[] | select(.author == "flowy"
+		         and (.body | test("flimberwocks louder above 4000rpm")))] | length')" 1 || return 1
+	want_eq "attributed to whoever wrote it here" \
+		"$(jqv '[.comments[] | select(.author == "flowy" and (.body | test("alice")))] | length')" 1 || return 1
+	printf 'the reply is on o/r#%s\n' "$ISSUE"
+}
+
+# The comment the node pushed must not come back in as a comment to thread, or
+# the loop would echo forever.
+a_pushed_reply_does_not_come_back() {
+	recall
+	forge_sync "$TOKEN_A_PC" "$FORGEBUG" || return 1
+	want_eq "our own comment is not new" "$(jqv .pulled)" 0 || return 1
+	api GET "$TOKEN_A_PC" "/api/chat/forge?thread=$FORGETHREAD" || return 1
+	want_eq "nobody said it twice" \
+		"$(jqv '[.events[] | select(.body | test("flimberwocks louder"))] | length')" 1 || return 1
+	printf 'the loop does not echo\n'
+}
+
+syncing_with_nothing_new_is_a_no_op() {
+	recall
+	api GET "$TOKEN_A_PC" "/api/chat/forge?thread=$FORGETHREAD" || return 1
+	local events comments hlc
+	events="$(jqv '.events | length')"
+	mock_issue "$TOKEN_A_PC" o/r "$ISSUE" || return 1
+	comments="$(jqv '.comments | length')"
+	api GET "$TOKEN_A_PC" "/api/artifact/$FORGEBUG" || return 1
+	hlc="$(jqv .hlc)"
+
+	local i
+	for i in 1 2; do
+		forge_sync "$TOKEN_A_PC" "$FORGEBUG" || return 1
+		want_eq "sync $i pulled" "$(jqv .pulled)" 0 || return 1
+		want_eq "sync $i pushed" "$(jqv .pushed)" 0 || return 1
+	done
+
+	api GET "$TOKEN_A_PC" "/api/chat/forge?thread=$FORGETHREAD" || return 1
+	want_eq "no new events" "$(jqv '.events | length')" "$events" || return 1
+	mock_issue "$TOKEN_A_PC" o/r "$ISSUE" || return 1
+	want_eq "no new comments" "$(jqv '.comments | length')" "$comments" || return 1
+	api GET "$TOKEN_A_PC" "/api/artifact/$FORGEBUG" || return 1
+	want_eq "and the artifact was not written at all" "$(jqv .hlc)" "$hlc" || return 1
+	printf 'twice over: %s events, %s comments, the same clock reading\n' "$events" "$comments"
+}
+
+gh_was_never_invoked() {
+	if [ -s "$GH_CANARY" ]; then
+		printf 'gh was run, and the mock should have been the only forge in this run:\n' >&2
+		cat "$GH_CANARY" >&2
+		return 1
+	fi
+	printf 'gh is on PATH and was never invoked\n'
+}
+
 # ---------------------------------------------------------------- environment
 
 say "environment"
@@ -2205,6 +2494,23 @@ printf 'work:     %s\n' "$WORK"
 if [ -d "$ROOT/vendor" ]; then
 	export GOFLAGS="${GOFLAGS:-} -mod=vendor"
 fi
+
+# Phase 6 runs against the mock forge, and it has to be the mock because
+# FLOWY_FORGE says so rather than because there was nothing else to pick. So the
+# gate puts a `gh` on PATH: a script that records having been run and then
+# refuses. Every forge check below goes through the mock, and this file staying
+# empty at the end is what says GhClient was never invoked.
+mkdir -p "$WORK/bin"
+cat >"$WORK/bin/gh" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"$GH_CANARY"
+printf 'the gate has no GitHub and no credential for one\n' >&2
+exit 1
+EOF
+chmod +x "$WORK/bin/gh"
+PATH="$WORK/bin:$PATH"
+export PATH
+printf 'forge:    FLOWY_FORGE=mock, with a refusing gh at %s\n' "$WORK/bin/gh"
 
 # --------------------------------------------------------------------- console
 #
@@ -2283,7 +2589,7 @@ check "two users, their agents and their tokens are seeded" seeded_ok
 
 say "live node"
 HTTP_PORT="$(free_port 8787)"
-DATABASE_URL="$DATABASE_URL" FLOWY_NODE=gate FLOWY_OPERATOR="${USER_OP:-}" \
+DATABASE_URL="$DATABASE_URL" FLOWY_NODE=gate FLOWY_OPERATOR="${USER_OP:-}" FLOWY_FORGE=mock \
 	./flowy serve -addr "127.0.0.1:$HTTP_PORT" >"$SERVE_LOG" 2>&1 &
 SERVE_PID=$!
 printf 'flowy serve pid %s on 127.0.0.1:%s\n' "$SERVE_PID" "$HTTP_PORT"
@@ -2637,6 +2943,60 @@ check "psql sees both cursors on both nodes" psql5_counts "$DSN5A" \
 
 check "node A survived the run" kill -0 "$NODE5A_PID"
 check "node B survived the run" kill -0 "$NODE5B_PID"
+
+# ------------------------------------------------------------------- phase 6
+#
+# The forge bridge, on the first node. Everything here runs against MockForge -
+# the gate has no GitHub, no credential and no network - so what is being tested
+# is the node's half: what filing writes, what a closed issue does to an
+# artifact, and that the reviewer loop carries a comment in and a reply out
+# exactly once. The gh and glab argv and their parsing are covered by the unit
+# tests above; the real path runs on a host that has the CLI and a login.
+
+say "the forge, and which one"
+check "FLOWY_FORGE=mock selects the mock, with gh installed beside it" the_node_selected_the_mock
+check "a forge nobody has heard of is refused at startup" an_unknown_forge_is_refused_at_startup
+
+say "filing"
+check "A files a bug as an issue, and the link lands on the artifact" a_files_the_carburettor_bug
+check "an ordinary read of the artifact carries the link" the_link_is_on_the_artifact
+check "filing the same artifact twice is a conflict, not a second issue" \
+	filing_the_same_artifact_twice_is_refused
+check "a repo that is not owner/name files nothing" a_repo_that_is_not_a_repo_is_refused
+check "a principal who cannot read the artifact gets 404 on all three" \
+	a_stranger_cannot_file_or_sync_it
+
+say "the issue closes"
+check "the reviewer closes it on the forge" the_issue_is_closed_on_the_forge
+check "a closed issue moves the artifact to done, and the trail says via forge" \
+	a_closed_issue_moves_the_artifact_to_done
+check "a refresh that finds nothing new writes nothing" refreshing_a_closed_issue_moves_nothing
+
+say "the reviewer loop"
+check "the reviewer comments on the issue" the_reviewer_comments_on_the_issue
+check "sync threads it into the artifact's thread as an event" \
+	the_comment_becomes_an_event_in_the_thread
+check "a reply in that thread is pushed out as a comment" a_reply_in_the_thread_reaches_the_forge
+check "and does not come back in as one" a_pushed_reply_does_not_come_back
+check "a sync with nothing new changes nothing, twice over" syncing_with_nothing_new_is_a_no_op
+check "gh was never invoked" gh_was_never_invoked
+
+say "the forge, as a second client"
+check "psql sees the artifact filed and marked reported" psql_counts \
+	"SELECT count(*) FROM artifacts WHERE reported = true AND external IS NOT NULL"
+check "psql sees the issue in the link" psql_counts \
+	"SELECT count(*) FROM artifacts WHERE external::text LIKE '%o/r%'"
+check "psql sees the filing in the event log" psql_counts \
+	"SELECT count(*) FROM events WHERE type = 'forge' AND body LIKE 'filed o/r#%'"
+check "psql sees the comment that came in from the forge" psql_counts \
+	"SELECT count(*) FROM events WHERE type = 'chat' AND room = 'forge' AND actor = 'forge:reviewer'"
+check "psql sees the reply that went out, in the same thread" psql_counts \
+	"SELECT count(*) FROM events e
+	   JOIN events f ON f.thread = e.thread AND f.actor = 'forge:reviewer'
+	  WHERE e.type = 'chat' AND e.room = 'forge' AND e.actor <> 'forge:reviewer'"
+check "psql sees the status move the forge caused" psql_counts \
+	"SELECT count(*) FROM events WHERE type = 'status' AND body = 'open->done'
+	   AND meta::text LIKE '%forge%'"
 
 # ------------------------------------------------------------------- verdict
 

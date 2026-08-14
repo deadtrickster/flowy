@@ -16,6 +16,7 @@ import (
 
 	_ "github.com/lib/pq"
 
+	"github.com/deadtrickster/flowy/internal/forge"
 	"github.com/deadtrickster/flowy/internal/store"
 )
 
@@ -34,6 +35,15 @@ type server struct {
 	started  time.Time
 	// console is the embedded single-page app, opened once by routes().
 	console *console
+	// forge is the issue tracker this node speaks to, chosen once at startup by
+	// FLOWY_FORGE or by which CLI is installed. It is nil when there is
+	// neither, and forgeWhy says which of those happened.
+	forge    forge.ForgeClient
+	forgeWhy string
+	// mockForge is the same client when it is the in-process fake, and nil
+	// otherwise. It is what gates the mock's control routes: they exist exactly
+	// when the fake does.
+	mockForge *forge.MockForge
 }
 
 // serve runs the node's HTTP server until it is interrupted.
@@ -44,6 +54,9 @@ func serve(args []string) error {
 	node := fs.String("node", envOr("FLOWY_NODE", defaultNode()), "name of this node, stamped onto every row")
 	operator := fs.String("operator", os.Getenv("FLOWY_OPERATOR"),
 		"user id that may use ?scope=all on this node (default $FLOWY_OPERATOR)")
+	forgeKind := fs.String("forge", os.Getenv("FLOWY_FORGE"),
+		"issue tracker: gh|glab|mock, or empty to use whichever CLI is installed "+
+			"(default $FLOWY_FORGE)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -74,6 +87,26 @@ func serve(args []string) error {
 	}
 
 	srv := &server{db: db, node: *node, operator: *operator, started: time.Now()}
+
+	// Which forge this node speaks to is decided once, here, and only by
+	// looking: nothing is executed, so a node that comes up with `gh` installed
+	// and no credential has still not touched GitHub. A node with no forge
+	// starts anyway and answers 503 on /api/forge/* - not being able to file a
+	// bug is not a reason to refuse to hold one.
+	client, why, err := forge.Select(*forgeKind)
+	switch {
+	case errors.Is(err, forge.ErrNoForge):
+		log.Printf("forge: none (%s); /api/forge/* will answer 503", why)
+	case err != nil:
+		return err
+	default:
+		srv.forge = client
+		if mock, ok := client.(*forge.MockForge); ok {
+			srv.mockForge = mock
+		}
+		log.Printf("forge: %s (%s)", client.Kind(), why)
+	}
+	srv.forgeWhy = why
 
 	// Listen before announcing, so a port clash is an error rather than a
 	// health check that never comes up.
@@ -141,6 +174,10 @@ var apiRoutes = []string{
 	"POST /api/task/{id}/state",
 	"PUT /api/me/auto_delegate",
 	"POST /api/grants",
+	"GET /api/forge",
+	"POST /api/forge/file",
+	"GET /api/forge/status",
+	"POST /api/forge/sync",
 	"GET /api/sync/pull",
 	"POST /api/sync/push",
 	"GET /api/peers",
@@ -187,6 +224,19 @@ func (s *server) routes() http.Handler {
 	api.HandleFunc("POST /api/task/{id}/state", s.handleTaskState)
 	api.HandleFunc("PUT /api/me/auto_delegate", s.handleAutoDelegate)
 	api.HandleFunc("POST /api/grants", s.handleCreateGrant)
+	// The forge bridge. Every one of them is gated on reading the artifact, so
+	// the permission story is the one the rest of the API already has.
+	api.HandleFunc("GET /api/forge", s.handleForgeCapability)
+	api.HandleFunc("POST /api/forge/file", s.handleForgeFile)
+	api.HandleFunc("GET /api/forge/status", s.handleForgeStatus)
+	api.HandleFunc("POST /api/forge/sync", s.handleForgeSync)
+	// The mock's control surface, and only when the mock is what this node
+	// selected: on a node talking to GitHub these routes do not exist.
+	if s.mockForge != nil {
+		api.HandleFunc("POST /api/forge/mock/state", s.handleMockState)
+		api.HandleFunc("POST /api/forge/mock/comment", s.handleMockComment)
+		api.HandleFunc("GET /api/forge/mock/issue", s.handleMockIssue)
+	}
 	// Replication. A peer is a client like any other: it holds a token, it
 	// resolves to a principal, and it pulls what that principal may read.
 	api.HandleFunc("GET /api/sync/pull", s.handleSyncPull)
@@ -260,11 +310,16 @@ func (s *server) handleVersion(w http.ResponseWriter, _ *http.Request) {
 //
 // GET /api/node
 func (s *server) handleNode(w http.ResponseWriter, _ *http.Request) {
+	forgeKind := ""
+	if s.forge != nil {
+		forgeKind = s.forge.Kind()
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"node":    s.node,
 		"version": version,
-		"phase":   5,
+		"phase":   6,
 		"console": s.console != nil && s.console.index != nil,
+		"forge":   forgeKind,
 		"routes":  append([]string{"GET /healthz", "GET /version"}, apiRoutes...),
 	})
 }

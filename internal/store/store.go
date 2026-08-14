@@ -193,11 +193,17 @@ type Artifact struct {
 	Visibility string          `json:"visibility"`
 	FilePath   string          `json:"file_path"`
 	Fields     json.RawMessage `json:"fields,omitempty"`
-	HLC        int64           `json:"hlc"`
-	Node       string          `json:"node"`
-	Tombstone  bool            `json:"tombstone"`
-	Created    time.Time       `json:"created"`
-	Updated    time.Time       `json:"updated"`
+	// Reported and External are the forge link: whether this artifact has been
+	// filed as an issue somewhere, and where. Both are written only by the
+	// forge endpoints - see SetArtifactExternal - so an ordinary update of the
+	// artifact carries them forward untouched.
+	Reported  bool         `json:"reported"`
+	External  *ExternalRef `json:"external,omitempty"`
+	HLC       int64        `json:"hlc"`
+	Node      string       `json:"node"`
+	Tombstone bool         `json:"tombstone"`
+	Created   time.Time    `json:"created"`
+	Updated   time.Time    `json:"updated"`
 }
 
 // InsertArtifact writes an artifact, stamping id/hlc/node when unset.

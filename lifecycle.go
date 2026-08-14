@@ -222,15 +222,28 @@ func (s *server) handleArtifactHistory(w http.ResponseWriter, r *http.Request) {
 func (s *server) appendStatusEvent(
 	r *http.Request, art *store.Artifact, from, to string,
 ) (*store.Event, error) {
+	return s.appendStatusEventVia(r, art, from, to, nil)
+}
+
+// appendStatusEventVia is appendStatusEvent with extra meta on the event. Phase
+// 6 uses it to mark the one move that does not come from the workflow: an issue
+// closed on a forge moves its artifact to done, and the trail has to say so.
+func (s *server) appendStatusEventVia(
+	r *http.Request, art *store.Artifact, from, to string, extra map[string]string,
+) (*store.Event, error) {
 	p := principalOf(r)
 	actor, kind := chatActor(p)
 
-	meta, err := json.Marshal(map[string]string{
+	fields := map[string]string{
 		"actor_kind": kind,
 		"actor_user": p.UserID,
 		"from":       from,
 		"to":         to,
-	})
+	}
+	for k, v := range extra {
+		fields[k] = v
+	}
+	meta, err := json.Marshal(fields)
 	if err != nil {
 		return nil, err
 	}

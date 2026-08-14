@@ -1,0 +1,671 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/deadtrickster/flowy/internal/forge"
+	"github.com/deadtrickster/flowy/internal/store"
+	"github.com/deadtrickster/flowy/internal/ulid"
+)
+
+// The forge bridge.
+//
+// A node's bugs are artifacts and the world's bugs are issues on GitHub or
+// GitLab, and Phase 6 is the join between them. It is three operations:
+//
+//   - file, which opens an issue from an artifact and writes the link back onto
+//     it as an external ref;
+//   - status, which reads the issue's state and moves the artifact to done when
+//     the issue is closed or merged;
+//   - sync, which is the reviewer loop: every new comment on the issue becomes
+//     an event in the artifact's thread, and every reply written in that thread
+//     since the last push goes back out as a comment.
+//
+// All three are gated on reading the artifact and nothing more. Reading is what
+// makes somebody a participant here, the same as it does for the lifecycle: an
+// assignee in another project can move a shared bug through the workflow, and
+// they can answer its reviewer too.
+//
+// Filing is separate and explicit, because it is the one operation that is
+// visible outside this machine. Nothing files an artifact because it looked
+// like a bug.
+const (
+	// forgeRoom is the room an issue's conversation lands in when the artifact
+	// has no handoff thread of its own. It is a room like any other.
+	forgeRoom = "forge"
+	// forgeEventType is what the bridge's own moves are logged as - filed,
+	// state changes - as opposed to the conversation, which is chat.
+	forgeEventType = "forge"
+	// forgeActorPrefix names the synthetic principal a comment from the forge
+	// is attributed to: forge:octocat is the octocat who wrote it over there,
+	// and is deliberately not a users row - they have no token here, they
+	// cannot read anything, and the only thing the node knows about them is the
+	// login the forge printed.
+	forgeActorPrefix = "forge:"
+)
+
+// forgeExternalActor is the actor a comment by author becomes.
+func forgeExternalActor(author string) string {
+	if author == "" {
+		author = "unknown"
+	}
+	return forgeActorPrefix + author
+}
+
+// isForgeActor reports whether an event came in from a forge. Those are never
+// pushed back out: a comment that came from the issue does not belong on the
+// issue a second time, and a loop that echoes is not a loop anybody wants.
+func isForgeActor(actor string) bool { return strings.HasPrefix(actor, forgeActorPrefix) }
+
+// forgeClient returns the node's forge, or answers 503 and reports false. A
+// node with no gh, no glab and no FLOWY_FORGE is a perfectly good node - it
+// simply cannot file anything, and it says so rather than pretending.
+func (s *server) forgeClient(w http.ResponseWriter) (forge.ForgeClient, bool) {
+	if s.forge == nil {
+		writeJSON(w, http.StatusServiceUnavailable,
+			errorBody("no forge on this node: "+s.forgeWhy+
+				" (set FLOWY_FORGE=gh|glab|mock, or install gh)"))
+		return nil, false
+	}
+	return s.forge, true
+}
+
+// handleForgeCapability says which forge this node would use and why, and which
+// CLIs it can see. It is the quickest answer to "why did filing that bug go
+// nowhere", and it is what the gate asserts to show that FLOWY_FORGE=mock
+// really did select the fake.
+//
+// GET /api/forge
+func (s *server) handleForgeCapability(w http.ResponseWriter, _ *http.Request) {
+	kind := ""
+	if s.forge != nil {
+		kind = s.forge.Kind()
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"forge":     kind,
+		"why":       s.forgeWhy,
+		"available": forge.Available(),
+		"mock":      s.mockForge != nil,
+	})
+}
+
+// forgeFileRequest is the body of a filing.
+type forgeFileRequest struct {
+	Artifact string `json:"artifact"`
+	Repo     string `json:"repo"`
+}
+
+// handleForgeFile opens an issue for an artifact and writes the link back onto
+// it.
+//
+// An artifact that is already filed is a conflict rather than a second issue:
+// filing twice is how a tracker ends up with two issues nobody closes, and the
+// caller that wanted the link already has it in the error.
+//
+// POST /api/forge/file  {artifact, repo}
+func (s *server) handleForgeFile(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	var req forgeFileRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody("bad request body: "+err.Error()))
+		return
+	}
+	if req.Artifact == "" {
+		writeJSON(w, http.StatusBadRequest, errorBody("artifact is required"))
+		return
+	}
+	if !forge.ValidRepo(req.Repo) {
+		writeJSON(w, http.StatusBadRequest, errorBody("repo must be owner/name"))
+		return
+	}
+	client, ok := s.forgeClient(w)
+	if !ok {
+		return
+	}
+	art, ok := s.readableArtifact(w, r, req.Artifact)
+	if !ok {
+		return
+	}
+	if art.External != nil {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error":    "already filed as " + art.External.Repo + "#" + strconv.Itoa(art.External.Number),
+			"external": art.External,
+		})
+		return
+	}
+
+	number, issueURL, err := client.FileIssue(ctx, req.Repo, forgeIssueTitle(art), forgeIssueBody(art))
+	if err != nil {
+		// The forge refused, or is not there. That is not this node being
+		// broken, so it is not a 500: nothing here has changed.
+		writeJSON(w, http.StatusBadGateway, errorBody("forge: "+err.Error()))
+		return
+	}
+
+	// The comment cursor starts at the filing, like the push cursor below: the
+	// reviewer loop carries what is said about the issue from the moment it
+	// existed, and there is nothing before that to carry.
+	filed := time.Now().UTC()
+	ref := &store.ExternalRef{
+		Forge:  client.Kind(),
+		Repo:   req.Repo,
+		Number: number,
+		URL:    issueURL,
+		State:  forge.StateOpen,
+		Thread: s.forgeThread(ctx, art),
+		Author: forge.SelfAuthor,
+		Since:  filed,
+		Filed:  filed,
+	}
+
+	// The filing goes in the thread, and its reading becomes the push cursor:
+	// the reviewer loop carries what was said after the issue existed, not the
+	// whole conversation that led to it being filed.
+	event, err := s.appendForgeEvent(r, art, ref, "filed "+ref.Repo+"#"+strconv.Itoa(number), nil)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
+		return
+	}
+	ref.Pushed = event.SeqHLC
+
+	if err := s.db.SetArtifactExternal(ctx, art, ref, true); err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"artifact": art,
+		"external": ref,
+		"event":    event,
+	})
+}
+
+// handleForgeStatus refreshes an issue's state, and moves the artifact to done
+// when the issue is finished.
+//
+// The move is deliberately not a workflow transition. The lifecycle refuses
+// shortcuts because a status that can jump is a status nobody trusts - but the
+// forge is the authority on its own issue, and an artifact still claiming
+// in-progress about an issue somebody closed a week ago is worse than a jump.
+// The move is recorded as a status event like every other, with via=forge in
+// its meta, so the trail says who really moved it.
+//
+// GET /api/forge/status?artifact=
+func (s *server) handleForgeStatus(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	client, ok := s.forgeClient(w)
+	if !ok {
+		return
+	}
+	art, ref, ok := s.filedArtifact(w, r, r.URL.Query().Get("artifact"))
+	if !ok {
+		return
+	}
+
+	state, err := client.GetState(ctx, ref.Repo, ref.Number)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, errorBody("forge: "+err.Error()))
+		return
+	}
+
+	was := statusOf(art)
+	moved := false
+	if forge.Terminal(state) && lifecycleTypes[art.Type] && !terminalStatus[was] {
+		if err := s.db.SetArtifactStatus(ctx, art, statusDone); err != nil {
+			writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
+			return
+		}
+		if _, err := s.appendStatusEventVia(r, art, was, statusDone, map[string]string{
+			"via":    forgeEventType,
+			"forge":  ref.Forge,
+			"repo":   ref.Repo,
+			"number": strconv.Itoa(ref.Number),
+			"state":  state,
+		}); err != nil {
+			writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
+			return
+		}
+		moved = true
+	}
+
+	// Only write when something actually changed: a status poll that finds
+	// nothing new should not bump the artifact's clock and make every peer
+	// merge a row that says the same thing.
+	if state != ref.State || moved {
+		ref.State = state
+		if err := s.db.SetArtifactExternal(ctx, art, ref, art.Reported); err != nil {
+			writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
+			return
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"artifact": art,
+		"external": ref,
+		"state":    state,
+		"status":   statusOf(art),
+		"moved":    moved,
+	})
+}
+
+// forgeSyncRequest is the body of a sync.
+type forgeSyncRequest struct {
+	Artifact string `json:"artifact"`
+}
+
+// handleForgeSync is the reviewer loop, in both directions.
+//
+// In: every comment on the issue that has not been threaded in yet becomes a
+// chat event in the artifact's thread, written by a synthetic external
+// principal named for whoever wrote it on the forge. The node's own comments
+// are skipped, which is what stops the loop echoing.
+//
+// Out: every reply in that thread newer than the push cursor goes to the forge
+// as a comment, attributed to whoever wrote it here.
+//
+// It is idempotent. Both cursors live on the external ref, both only move
+// forward, and a sync that finds nothing new writes nothing at all - not even a
+// clock bump.
+//
+// POST /api/forge/sync  {artifact}
+func (s *server) handleForgeSync(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	var req forgeSyncRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody("bad request body: "+err.Error()))
+		return
+	}
+	client, ok := s.forgeClient(w)
+	if !ok {
+		return
+	}
+	art, ref, ok := s.filedArtifact(w, r, req.Artifact)
+	if !ok {
+		return
+	}
+
+	threaded, err := s.forgePullComments(r, art, ref, client)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, errorBody("forge: "+err.Error()))
+		return
+	}
+	pushed, err := s.forgePushReplies(r, ref, client)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, errorBody("forge: "+err.Error()))
+		return
+	}
+
+	if len(threaded) > 0 || pushed > 0 {
+		if err := s.db.SetArtifactExternal(ctx, art, ref, art.Reported); err != nil {
+			writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"artifact": art.ID,
+		"external": ref,
+		"thread":   ref.Thread,
+		"pulled":   len(threaded),
+		"pushed":   pushed,
+		"events":   threaded,
+	})
+}
+
+// forgePullComments threads the issue's new comments into the artifact's thread
+// and advances the comment cursor over them.
+func (s *server) forgePullComments(
+	r *http.Request, art *store.Artifact, ref *store.ExternalRef, client forge.ForgeClient,
+) ([]*store.Event, error) {
+	ctx := r.Context()
+	comments, err := client.ListComments(ctx, ref.Repo, ref.Number, ref.Since)
+	if err != nil {
+		return nil, err
+	}
+
+	self := ref.Author
+	if self == "" {
+		self = forge.SelfAuthor
+	}
+
+	out := []*store.Event{}
+	for _, c := range comments {
+		if c.Author == self {
+			// Ours, from an earlier push. Skipped rather than recorded as seen:
+			// there is nothing to remember about a comment this node wrote, and
+			// remembering it would be a write on a sync that changed nothing.
+			continue
+		}
+		if ref.AlreadySeen(c.ID, c.At) {
+			continue
+		}
+		event, err := s.threadForgeComment(r, art, ref, c)
+		if err != nil {
+			return nil, err
+		}
+		ref.MarkSeen(c.ID, c.At)
+		if event.SeqHLC > ref.Pushed {
+			// The comment is in the thread now, and the push side has already
+			// accounted for it - it must not be pushed back out.
+			ref.Pushed = event.SeqHLC
+		}
+		out = append(out, event)
+	}
+	return out, nil
+}
+
+// threadForgeComment writes one comment from the forge into the thread as an
+// ordinary chat event, so the console renders it with the chat it already had
+// and the permission filter treats it like every other message.
+func (s *server) threadForgeComment(
+	r *http.Request, art *store.Artifact, ref *store.ExternalRef, c forge.Comment,
+) (*store.Event, error) {
+	meta, err := json.Marshal(map[string]string{
+		"actor_kind":    "external",
+		"forge":         ref.Forge,
+		"repo":          ref.Repo,
+		"number":        strconv.Itoa(ref.Number),
+		"author":        c.Author,
+		"forge_comment": c.ID,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	parents := []string{}
+	if last, err := s.db.LatestThreadEvent(r.Context(), ref.Thread); err == nil {
+		parents = append(parents, last.ID)
+	} else if !errors.Is(err, store.ErrNotFound) {
+		return nil, err
+	}
+
+	e := &store.Event{
+		Type:     chatEventType,
+		Project:  art.Project,
+		Room:     forgeRoom,
+		Thread:   ref.Thread,
+		Parents:  parents,
+		Actor:    forgeExternalActor(c.Author),
+		Artifact: art.ID,
+		Body:     c.Body,
+		Meta:     json.RawMessage(meta),
+	}
+	if err := s.db.AppendEvent(r.Context(), e); err != nil {
+		return nil, err
+	}
+	return e, nil
+}
+
+// forgePushReplies sends everything said in the thread since the last push out
+// to the issue, and moves the cursor over everything it looked at - including
+// what it decided not to send, which is why a second sync sends nothing.
+func (s *server) forgePushReplies(
+	r *http.Request, ref *store.ExternalRef, client forge.ForgeClient,
+) (int, error) {
+	ctx := r.Context()
+	events, err := s.db.ThreadEvents(ctx, ref.Thread)
+	if err != nil {
+		return 0, err
+	}
+
+	pushed, high := 0, ref.Pushed
+	for _, e := range events {
+		if e.SeqHLC <= ref.Pushed {
+			continue
+		}
+		if e.SeqHLC > high {
+			high = e.SeqHLC
+		}
+		// Only the conversation goes out. A status move or a task handoff is
+		// this node's bookkeeping, and the issue's reviewer did not ask for it.
+		if e.Type != chatEventType || isForgeActor(e.Actor) {
+			continue
+		}
+		if strings.TrimSpace(e.Body) == "" {
+			continue
+		}
+		if err := client.Comment(ctx, ref.Repo, ref.Number, s.forgeReplyBody(ctx, e)); err != nil {
+			// Stop at the first refusal and keep the cursor where it was, so
+			// the replies that did not make it are still pending rather than
+			// silently dropped.
+			ref.Pushed = high
+			return pushed, err
+		}
+		pushed++
+	}
+	ref.Pushed = high
+	return pushed, nil
+}
+
+// forgeReplyBody is what a reply looks like on the issue. It is attributed,
+// because the credential that posts it is the node's and the person who wrote
+// it is not - a comment that arrives as "flowy" with no name on it is a comment
+// the reviewer cannot answer.
+func (s *server) forgeReplyBody(ctx context.Context, e *store.Event) string {
+	return "**" + s.forgeAuthorName(ctx, e.Actor) + "** via flowy:\n\n" + e.Body
+}
+
+// forgeAuthorName is the handle behind an actor id, or the id when there is no
+// handle to be had - an agent, or a user this node does not hold.
+func (s *server) forgeAuthorName(ctx context.Context, actor string) string {
+	if user, err := s.db.GetUser(ctx, actor); err == nil && user.Handle != "" {
+		return user.Handle
+	}
+	if agent, err := s.db.GetAgent(ctx, actor); err == nil {
+		if user, err := s.db.GetUser(ctx, agent.UserID); err == nil && user.Handle != "" {
+			return user.Handle + "'s " + agent.Kind + " agent"
+		}
+	}
+	return actor
+}
+
+// forgeThread decides where an issue's conversation lands. An artifact that has
+// been handed to somebody already has a thread with both of them in it, and the
+// reviewer's comments belong in it rather than in a second thread beside it.
+// Otherwise the link opens one.
+func (s *server) forgeThread(ctx context.Context, art *store.Artifact) string {
+	if task, err := s.db.LatestTaskForArtifact(ctx, art.ID); err == nil && task.Thread != "" {
+		return task.Thread
+	}
+	return ulid.NewString()
+}
+
+// forgeIssueTitle is what the issue is called: the artifact's title, or
+// something that at least says what it is when it has none.
+func forgeIssueTitle(art *store.Artifact) string {
+	if title := strings.TrimSpace(art.Title); title != "" {
+		return title
+	}
+	return art.Type + " " + art.ID
+}
+
+// forgeIssueBody is the artifact, written out for somebody who cannot read this
+// node: the body, what was discovered, and where it came from.
+func forgeIssueBody(art *store.Artifact) string {
+	parts := []string{}
+	if body := strings.TrimSpace(art.Body); body != "" {
+		parts = append(parts, body)
+	}
+	if disc := strings.TrimSpace(art.Discovery); disc != "" {
+		parts = append(parts, "**Discovery**\n\n"+disc)
+	}
+	parts = append(parts, "---\nFiled by flowy from "+art.Type+" `"+art.ID+"`.")
+	return strings.Join(parts, "\n\n")
+}
+
+// appendForgeEvent records a move of the bridge itself - a filing - in the
+// thread the issue's conversation uses.
+func (s *server) appendForgeEvent(
+	r *http.Request, art *store.Artifact, ref *store.ExternalRef, body string, extra map[string]string,
+) (*store.Event, error) {
+	p := principalOf(r)
+	actor, kind := chatActor(p)
+
+	fields := map[string]string{
+		"actor_kind": kind,
+		"actor_user": p.UserID,
+		"forge":      ref.Forge,
+		"repo":       ref.Repo,
+		"number":     strconv.Itoa(ref.Number),
+		"url":        ref.URL,
+	}
+	for k, v := range extra {
+		fields[k] = v
+	}
+	meta, err := json.Marshal(fields)
+	if err != nil {
+		return nil, err
+	}
+
+	parents := []string{}
+	if last, err := s.db.LatestThreadEvent(r.Context(), ref.Thread); err == nil {
+		parents = append(parents, last.ID)
+	} else if !errors.Is(err, store.ErrNotFound) {
+		return nil, err
+	}
+
+	e := &store.Event{
+		Type:     forgeEventType,
+		Project:  art.Project,
+		Room:     forgeRoom,
+		Thread:   ref.Thread,
+		Parents:  parents,
+		Actor:    actor,
+		Artifact: art.ID,
+		Body:     body,
+		Meta:     json.RawMessage(meta),
+	}
+	if err := s.db.AppendEvent(r.Context(), e); err != nil {
+		return nil, err
+	}
+	return e, nil
+}
+
+// readableArtifact reads the artifact the request names and answers 404 itself
+// when the principal may not see it - which is the whole of the permission
+// story here: file, status and sync are all gated on the ordinary read.
+func (s *server) readableArtifact(
+	w http.ResponseWriter, r *http.Request, id string,
+) (*store.Artifact, bool) {
+	if strings.TrimSpace(id) == "" {
+		writeJSON(w, http.StatusBadRequest, errorBody("artifact is required"))
+		return nil, false
+	}
+	art, err := s.db.ReadArtifact(r.Context(), principalOf(r), id, false)
+	if errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, errorBody("no such artifact"))
+		return nil, false
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
+		return nil, false
+	}
+	return art, true
+}
+
+// filedArtifact is readableArtifact plus the link: an artifact nobody has filed
+// has no state to read and no comments to thread.
+func (s *server) filedArtifact(
+	w http.ResponseWriter, r *http.Request, id string,
+) (*store.Artifact, *store.ExternalRef, bool) {
+	art, ok := s.readableArtifact(w, r, id)
+	if !ok {
+		return nil, nil, false
+	}
+	if art.External == nil {
+		writeJSON(w, http.StatusBadRequest,
+			errorBody("artifact "+art.ID+" has not been filed: POST /api/forge/file first"))
+		return nil, nil, false
+	}
+	ref := art.External
+	if ref.Thread == "" {
+		// A link written before there was a thread, or one that arrived from a
+		// peer without one. Give it one rather than dropping the comments.
+		ref.Thread = s.forgeThread(r.Context(), art)
+	}
+	return art, ref, true
+}
+
+// --------------------------------------------------------------- the mock
+//
+// The mock forge's control surface, which is how a test plays the other side:
+// the reviewer who closes an issue, the reviewer who comments on it, and the
+// reader who checks what the node pushed.
+//
+// These routes are registered only when the mock is the selected forge, so on a
+// node talking to GitHub they do not exist at all - there is no path here that
+// could be used to make a real forge lie.
+
+// mockIssueRequest addresses one issue on the mock forge.
+type mockIssueRequest struct {
+	Repo   string `json:"repo"`
+	Number int    `json:"number"`
+	State  string `json:"state"`
+	Author string `json:"author"`
+	Body   string `json:"body"`
+}
+
+// handleMockState moves an issue on the mock forge - what a reviewer closing it
+// looks like from in here.
+//
+// POST /api/forge/mock/state  {repo, number, state}
+func (s *server) handleMockState(w http.ResponseWriter, r *http.Request) {
+	var req mockIssueRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody("bad request body: "+err.Error()))
+		return
+	}
+	issue, err := s.mockForge.SetState(req.Repo, req.Number, req.State)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, errorBody(err.Error()))
+		return
+	}
+	writeJSON(w, http.StatusOK, issue)
+}
+
+// handleMockComment says something on a mock issue as somebody else.
+//
+// POST /api/forge/mock/comment  {repo, number, author, body}
+func (s *server) handleMockComment(w http.ResponseWriter, r *http.Request) {
+	var req mockIssueRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody("bad request body: "+err.Error()))
+		return
+	}
+	if req.Author == "" || strings.TrimSpace(req.Body) == "" {
+		writeJSON(w, http.StatusBadRequest, errorBody("author and body are required"))
+		return
+	}
+	comment, err := s.mockForge.AddComment(req.Repo, req.Number, req.Author, req.Body)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, errorBody(err.Error()))
+		return
+	}
+	writeJSON(w, http.StatusOK, comment)
+}
+
+// handleMockIssue reads a mock issue back, comments and all - which is how a
+// test asserts that a reply written here reached the forge.
+//
+// GET /api/forge/mock/issue?repo=&number=
+func (s *server) handleMockIssue(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	number, err := strconv.Atoi(q.Get("number"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody("number must be an integer"))
+		return
+	}
+	issue, err := s.mockForge.Issue(q.Get("repo"), number)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, errorBody(err.Error()))
+		return
+	}
+	writeJSON(w, http.StatusOK, issue)
+}

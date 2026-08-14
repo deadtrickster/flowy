@@ -1,4 +1,4 @@
-# flowy - Handoff Fabric node (Phase 5)
+# flowy - Handoff Fabric node (Phase 6)
 
 The host-side node: one Go binary, one Postgres-wire database, and the schema
 spine every later phase rides on. Phase 0 was the skeleton - a server that
@@ -42,6 +42,18 @@ nobody granted the peer access to never leaves the node it was written on.
 `flowy sync --peer <url> --token <t>` is the whole of the driver, and being
 offline just means syncing later.
 
+Phase 6 is the forge bridge: **a bug here becomes an issue on GitHub or GitLab,
+and the two conversations stay one conversation**. Filing shells out to that
+forge's own CLI - `gh`, or `glab` - so the credential stays where it already
+is, and writes the issue back onto the artifact as an external ref. A closed or
+merged issue moves the artifact to `done`. And the reviewer loop runs both ways:
+every new comment on the issue is threaded into the artifact's chat thread as an
+event by a synthetic external principal, and every reply written in that thread
+since the last push goes back out as a comment. It is idempotent - both cursors
+live on the ref and only move forward - and the gate drives all of it against an
+in-process `MockForge`, because a gate that needed a GitHub token would be a
+gate that leaves issues in somebody's repository.
+
 ## Run the gate
 
 ```sh
@@ -65,6 +77,15 @@ Phase 5 stands up **two more clusters and two more nodes** inside the same run -
 `DATABASE_URL`s, seeded with the same principals so a peer can authenticate -
 and drives the real `flowy sync` between them. Everything it creates is torn
 down by the same trap, including both extra clusters.
+
+Phase 6 runs the node with `FLOWY_FORGE=mock`, so every forge check goes through
+the in-process fake: **no network, no credential, no CLI, and nothing left
+behind in a real repository**. The gate puts a `gh` of its own on `PATH` first -
+a script that records having been run and then refuses - so that selecting the
+mock is a choice rather than the only option, and so `gh was never invoked` is a
+fact the run checks rather than assumes. The real `gh`/`glab` argv and the
+parsing of what they print are covered by unit tests with the runner injected;
+the real path itself runs on a host that has the CLI and a login.
 
 `npm ci` is the one step that wants the network, and only when the package cache
 is cold; the Go build never does, because the module's one dependency is
@@ -131,6 +152,7 @@ override it:
 | `FLOWY_NODE` | `-node` | the hostname |
 | `FLOWY_OPERATOR` | `-operator` | empty; nobody may use `?scope=all` |
 | `FLOWY_TOKEN` | - | the bearer token `flowy mcp` uses over stdio |
+| `FLOWY_FORGE` | `-forge` | empty; `gh` if it is on `PATH`, else `glab`, else no forge |
 
 `GET /healthz` (add `?counts=1` for per-table row counts), `GET /version` and
 `GET /` are open - a health check that needs a credential stops working at the
@@ -324,6 +346,10 @@ and deletes are tombstones.
 | `GET /api/sync/pull?since=&limit=` | the delta a peer may read: `{artifacts, events, tasks, grants, hwm}`, ordered by the clock, tombstones included |
 | `POST /api/sync/push` | merge a peer's delta: upsert by id, append-only events, last-writer-wins by `hlc` |
 | `GET /api/peers` | replication bookmarks and their cursors; the operator only |
+| `GET /api/forge` | which forge this node speaks to, why, and which CLIs it can see |
+| `POST /api/forge/file` | file an artifact as an issue. Body: `artifact`, `repo`. Returns `{artifact, external, event}`. `409` if it is already filed, `404` if you cannot read it, `502` if the forge refused |
+| `GET /api/forge/status?artifact=` | refresh the issue's state; a closed or merged issue moves the artifact to `done`. Returns `{artifact, external, state, status, moved}` |
+| `POST /api/forge/sync` | one turn of the reviewer loop: thread new comments in, push new replies out. Body: `artifact`. Returns `{external, pulled, pushed, events}` |
 | `GET /api/whoami` | the principal this token resolves to |
 | `GET /api/node` | this node, its version and its routes |
 
@@ -543,6 +569,119 @@ handed the same rows out of band, the way two machines are handed the same key.
 `GET /api/peers` shows the bookmarks, and only to this node's operator: a peer's
 cursor is not something one principal's token should reveal to another.
 
+## The forge bridge
+
+A node holds bugs; the world holds an issue tracker. Phase 6 is the join, and it
+is one interface with three implementations:
+
+```go
+type ForgeClient interface {
+	Kind() string                                                        // gh|glab|mock
+	FileIssue(ctx, repo, title, body string) (number int, url string, err error)
+	GetState(ctx, repo string, number int) (string, error)               // open|closed|merged
+	Comment(ctx, repo string, number int, body string) error
+	ListComments(ctx, repo string, number int, since time.Time) ([]Comment, error)
+}
+```
+
+**`GhClient` shells out to the forge's own CLI.** There is no HTTP client and no
+token in the process: `gh` and `glab` are already logged in on the machine, and
+being logged in twice is how a node ends up with a credential it cannot rotate.
+One type serves both forges, because they differ in argv and in the JSON they
+print and in nothing else that matters here:
+
+| | GitHub (`gh`) | GitLab (`glab`) |
+| --- | --- | --- |
+| file | `gh issue create --repo R --title T --body B` | `glab issue create --repo R --title T --description B --yes` |
+| state | `gh issue view N --repo R --json state,url` | `glab issue view N --repo R -F json` |
+| comment | `gh issue comment N --repo R --body B` | `glab issue note N --repo R --message B` |
+| read comments | `gh api repos/R/issues/N/comments?since=...` | `glab api projects/<urlencoded R>/issues/N/notes` |
+
+Neither create command has a `--json`, so the issue number is read off the end
+of the URL the CLI prints. `state` is normalised on the way in - `OPEN`,
+`opened`, `CLOSED`, `merged` all become one of three words - and GitLab's system
+notes ("changed the description") are dropped, because they are the forge
+talking to itself rather than somebody reviewing the issue.
+
+**`MockForge` is a map in this process**, with the same interface and a small
+control surface - close an issue, comment on it as somebody else, read back what
+the node pushed - exposed over HTTP as `/api/forge/mock/*` **only when the mock
+is the selected forge**. On a node talking to GitHub those routes do not exist.
+It is what the gate drives: the questions worth asking here are the node's, not
+GitHub's.
+
+**Which one a node uses is decided once, at startup.** `FLOWY_FORGE=gh|glab|mock`
+names it; naming one that is not installed is an error at startup rather than a
+surprise at the first filing; naming one that does not exist refuses to start at
+all. With `FLOWY_FORGE` unset it is capability detection - `gh` if it is on
+`PATH`, else `glab`, else nothing - and detection only *looks the binaries up*,
+so a node that comes up with `gh` installed and no credential has still not
+touched GitHub. A node with no forge starts anyway and answers `503` with the
+reason on `/api/forge/*`: not being able to file a bug is not a reason to refuse
+to hold one. `GET /api/forge` says which of these happened.
+
+**The link is a column on the artifact**, `artifacts.external jsonb`, next to
+`reported boolean`:
+
+```json
+{"forge":"mock","repo":"o/r","number":7,"url":"https://.../o/r/issues/7","state":"open",
+ "thread":"01M0...","author":"flowy","since":"2026-08-14T22:21:06Z","seen":["c1"],
+ "pushed":117096190244421632,"filed":"2026-08-14T22:21:06Z"}
+```
+
+It is a column rather than a table because it is a property of the artifact and
+travels with it: federation replicates artifacts last-writer-wins by `hlc`, so a
+bug filed on one node and pulled by another arrives already carrying the issue it
+was filed as, cursors and all - no second table to merge, and neither node
+double-posts the same reply. Both columns are written by `SetArtifactExternal`
+alone and are not in the ordinary upsert's column list, so editing the title of
+a filed bug cannot unfile it.
+
+**Permission is the ordinary one**: all three endpoints are gated on reading the
+artifact, and reading is what makes somebody a participant - the same rule that
+lets an assignee in another project move a shared bug through the workflow lets
+them answer its reviewer. Anything else is `404`, not `403`, so a probe cannot
+learn that an id exists by trying to file it. Filing is separate and explicit
+because it is the one operation visible outside this machine: nothing files an
+artifact because it looked like a bug, and filing one twice is a `409` carrying
+the issue there already is rather than a second issue nobody closes.
+
+**A closed issue moves the artifact to `done`, and that move is the one
+transition the workflow itself would refuse.** The lifecycle has no shortcuts on
+purpose, but the forge is the authority on its own issue, and an artifact still
+claiming `in-progress` about an issue somebody closed a week ago is worse than a
+jump. It is recorded as a `status` event like every other move, with `via:
+forge` and the issue in its meta, so the trail says where it came from. A
+refresh that finds nothing new writes nothing at all - not even a clock bump,
+which would make every peer merge a row that says the same thing.
+
+**The reviewer loop**, one `POST /api/forge/sync`, in both directions:
+
+- **in** - every comment newer than the ref's cursor becomes a `chat` event in
+  the artifact's thread, in room `forge`, written by `forge:<login>`: a
+  synthetic external principal, deliberately not a `users` row - they hold no
+  token here, they can read nothing, and the only thing the node knows about
+  them is the login the forge printed. The comment id goes into the event's meta
+  and the cursor advances over it.
+- **out** - every reply in that thread above the push cursor goes to the issue
+  as a comment, attributed (`**alice** via flowy:`) because the credential
+  posting it is the node's and the person who wrote it is not. Status moves and
+  task handoffs stay here: the reviewer did not ask for this node's bookkeeping.
+- **the loop does not echo.** Comments written under the node's own login are
+  skipped on the way in, and events written by a `forge:` actor are skipped on
+  the way out.
+- **idempotent.** `since` plus a capped list of seen comment ids handles a forge
+  whose timestamps have one-second resolution; the push cursor moves over
+  everything it *looked at*, including what it decided not to send. A sync with
+  nothing new returns `pulled: 0, pushed: 0` and leaves the artifact's `hlc`
+  exactly where it was.
+
+The thread is the one the artifact already has: if it has been assigned, the
+issue's conversation lands in the handoff thread the two people are already
+talking in, so the reviewer's question arrives where the work is being discussed
+rather than in a second thread beside it. Otherwise filing opens one, and the
+filing itself is the first event in it.
+
 ## The console
 
 `web/` is a React 19 + TypeScript app built by Vite, styled with Tailwind CSS v4
@@ -648,6 +787,11 @@ every table:
 | `tasks` | handoffs: one artifact, from one user to another, with a thread and a state of `open`\|`delegated`\|`done` |
 | `peers` | replication bookmarks: `pull_cursor`, `pushed_cursor` and `last_seen`, one row per peer, neither cursor ever moving backwards |
 
+Phase 6 adds two columns to `artifacts` rather than a table: `reported boolean`
+and `external jsonb`, the link to an issue on a forge and the two cursors the
+reviewer loop keeps. They are written only by the forge endpoints, replicate
+with the row they are on, and are indexed by `reported` for "what have I filed".
+
 An artifact with `project` NULL is personal to `owner_user`; `visibility` is
 `personal`, `project` or `shared`. `kind` narrows `type` without multiplying it -
 a memory item is `type='memory'` with a kind of `note`, `todo`, `feature` or
@@ -711,6 +855,18 @@ what a status trail is.
 - `chat.go` - the room view of the event log: `say`, the room read, the long
   poll and the inbox. It adds one field to `store.EventQuery` (`NotActors`) and
   otherwise reuses the log's cursor, DAG and permission filter as they are.
+- `internal/forge` - the forge bridge's client half: the `ForgeClient`
+  interface, `GhClient` (which serves both `gh` and `glab`, with the runner as a
+  field so the argv and the parsing are unit-testable without a binary or a
+  credential), `MockForge`, and `Select`, which is the whole of the startup
+  decision.
+- `forge.go`, `internal/store/forge.go` - the node half. `forge.go` is the three
+  endpoints, the capability answer and the mock's control routes; the store side
+  is the `ExternalRef`, its two cursors, the one write that sets them, and the
+  lookup that finds an artifact's existing handoff thread. Both reuse what was
+  there: a threaded comment is a Phase 3 chat event, the status move is Phase
+  4's status event with one extra meta field, and the link replicates because it
+  is a column on a row Phase 5 already merges.
 - `console.go`, `web/` - the console and its serving. `console.go` embeds
   `web/dist`, serves hashed assets immutably and falls back to `index.html` for
   every other non-API path; `web/` is the React app itself.
@@ -910,6 +1066,39 @@ the real `flowy sync`:
   task joined to its share, the personal artifact on A and only on A, and both
   cursors on both nodes
 
+Then the forge bridge, against `MockForge`:
+
+- `FLOWY_FORGE=mock` selects the mock **while `gh` is on `PATH`** - the node
+  reports `forge: mock`, `why: FLOWY_FORGE=mock`, `available.gh: true` - and a
+  forge nobody has heard of (`-forge bitbucket`) is refused at startup
+- filing a bug writes an external ref - `{forge: mock, repo: o/r, number, url,
+  state: open}` - marks the artifact `reported`, and logs a `forge` event saying
+  `filed o/r#N`. An ordinary `GET /api/artifact/{id}` carries the ref, so the
+  link is on the row rather than in one response
+- filing the same artifact twice is `409` **carrying the issue there already
+  is**; a repo that is not `owner/name` files nothing and leaves no link; an
+  artifact nobody filed has nothing to sync
+- a principal who cannot read the artifact gets `404` on all three endpoints -
+  file, status and sync - the same as on the artifact itself
+- the reviewer closes the issue on the forge: `GET /api/forge/status` moves the
+  artifact to `done` and writes `open->done` into the status trail with `via:
+  forge` and the issue number in its meta. A second refresh moves nothing and
+  **leaves the artifact's `hlc` untouched**
+- the reviewer comments: one sync threads it in as a `chat` event in the
+  artifact's thread, actor `forge:reviewer`, carrying the comment id in its
+  meta - and it reads back through the ordinary `GET /api/chat/forge?thread=`
+- a reply said in that thread through the ordinary chat endpoint is pushed out
+  on the next sync: the mock forge has it, posted as `flowy`, attributed to the
+  person who wrote it here. It does not come back in as a comment on the sync
+  after that
+- a sync with nothing new is a no-op, **twice over**: `pulled: 0`, `pushed: 0`,
+  the same number of events in the thread, the same number of comments on the
+  issue, and the artifact at exactly the same clock reading
+- **`gh` was never invoked**: the script the gate put on `PATH` recorded nothing
+- `psql` sees the artifact `reported` with its `external` link, the filing in
+  the event log, the comment that came in from the forge, the reply that went
+  out in the same thread, and the status move the forge caused
+
 The last thing the gate does is ask git whether the tree it just tested is the
 tree on disk: uncommitted changes, or nothing ever committed, is a failure.
 `web/node_modules` and everything vite writes into `web/dist` are ignored, so
@@ -935,20 +1124,33 @@ else. It is quarantined there because it is meant to be deleted: when SereneDB
 brings vectors, that section goes and `store.SearchArtifacts` becomes a vector
 query. Nothing above it depends on anything below it.
 
-## Phase 5 status
+## Phase 6 status
 
-Green. `./run-tests.sh` reports `passed: 178 failed: 0` with Go 1.22, Node 22.14
-and Postgres 16 - the 139 checks Phases 0 to 4 ended with (one of them now
-`flowy fuse` alone, since `sync` left the stub list), plus 40 for federation:
-two clusters, two nodes, and the replication, conflict, permission-filter,
-tombstone and cursor checks above. Phases 0 to 4 stayed green
-throughout, and mostly by construction - replication reuses the permission
-filter rather than reimplementing it, the merge is the schema's `hlc` and
-tombstone columns doing what they were put there for in Phase 0, and the only
-change to an existing file outside the routing table was seeding the clock at
-startup.
+Green. `./run-tests.sh` reports `passed: 200 failed: 0` with Go 1.22, Node 22.14
+and Postgres 16 - the 178 checks Phases 0 to 5 ended with, plus 22 for the forge
+bridge: capability selection, filing, the conflict and permission cases, the
+close-to-done move, the reviewer loop in both directions, the no-op sync, the
+untouched `gh`, and six `psql` checks over what all of it wrote. Phases 0 to 5
+stayed green throughout, and mostly by construction - the three endpoints are
+gated on the permission filter that was already there, a threaded comment is a
+Phase 3 chat event, the status move is Phase 4's status event with one more meta
+field, and the link replicates because Phase 5 already merges the row it sits
+on.
 
-Not here yet: `flowy fuse` still prints its placeholder. Sync is a command you
+Not here yet, on the forge bridge: the real `gh`/`glab` path is coded and its
+argv and parsing are unit-tested, but **it has never run against GitHub or
+GitLab from in here** - this environment has no CLI, no credential and no
+network, so that half is exercised on a host that has them. There is no
+webhook and no poller either: `status` and `sync` are calls somebody (or a cron
+entry) makes, so an issue closed on GitHub moves the artifact when the node is
+next asked. Filing takes only a repo - no labels, no assignee, no milestone -
+pull requests are read only as a `merged` state on the issue endpoint rather
+than tracked in their own right, and an artifact can hold one link, so the same
+bug cannot be filed into two trackers. The console has no forge view: the
+external ref is JSON on the artifact and the threaded comments show up as
+ordinary chat, which is most of the value but not the link.
+
+Not here yet, elsewhere: `flowy fuse` still prints its placeholder. Sync is a command you
 run rather than a loop the node keeps - there is no daemon, no schedule and no
 push notification, so two nodes converge when somebody (or a cron entry) says
 so. `users` and `agents` do not replicate either, so a person who exists on one

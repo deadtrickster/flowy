@@ -39,7 +39,7 @@ func searchText(a *Artifact) string {
 // artifactColumns is the read list, in the order scanArtifact expects.
 const artifactColumns = `id, type, kind, project, owner_user, title, body, discovery, status,
 	severity, tags, user_tags, related, visibility, file_path, fields, hlc, node,
-	tombstone, created, updated`
+	tombstone, created, updated, reported, external`
 
 // scanner is what both *sql.Row and *sql.Rows satisfy.
 type scanner interface{ Scan(dest ...any) error }
@@ -51,13 +51,13 @@ func scanArtifact(sc scanner, rank *float64) (*Artifact, error) {
 		typeCol, kind, project, owner, title, body sql.NullString
 		disc, status, severity, vis, filePath      sql.NullString
 		nodeCol                                    sql.NullString
-		fields                                     []byte
+		fields, external                           []byte
 		clockVal                                   sql.NullInt64
-		tomb                                       sql.NullBool
+		tomb, reported                             sql.NullBool
 	)
 	dest := []any{&a.ID, &typeCol, &kind, &project, &owner, &title, &body, &disc, &status, &severity,
 		pq.Array(&a.Tags), pq.Array(&a.UserTags), pq.Array(&a.Related), &vis, &filePath,
-		&fields, &clockVal, &nodeCol, &tomb, &a.Created, &a.Updated}
+		&fields, &clockVal, &nodeCol, &tomb, &a.Created, &a.Updated, &reported, &external}
 	if rank != nil {
 		dest = append(dest, rank)
 	}
@@ -72,9 +72,17 @@ func scanArtifact(sc scanner, rank *float64) (*Artifact, error) {
 	a.OwnerUser, a.Title, a.Body = owner.String, title.String, body.String
 	a.Discovery, a.Status, a.Severity = disc.String, status.String, severity.String
 	a.Visibility, a.FilePath, a.Node = vis.String, filePath.String, nodeCol.String
-	a.HLC, a.Tombstone = clockVal.Int64, tomb.Bool
+	a.HLC, a.Tombstone, a.Reported = clockVal.Int64, tomb.Bool, reported.Bool
 	if len(fields) > 0 {
 		a.Fields = json.RawMessage(fields)
+	}
+	// A forge link that will not parse is a link this node cannot act on, and
+	// it is not a reason to fail the read of the artifact it is attached to.
+	if len(external) > 0 {
+		var ref ExternalRef
+		if err := json.Unmarshal(external, &ref); err == nil && ref.Repo != "" {
+			a.External = &ref
+		}
 	}
 	return &a, nil
 }
@@ -85,6 +93,10 @@ func scanArtifact(sc scanner, rank *float64) (*Artifact, error) {
 // nodes. Personal artifacts are forced to have no project, which is what makes
 // the personal floor in CanRead an invariant of the data rather than a promise
 // of the API.
+//
+// reported and external are not in the column list and are not in the ON
+// CONFLICT clause: the forge link is written by SetArtifactExternal alone, so
+// editing the title of a bug that has been filed cannot unfile it.
 func (d *DB) UpsertArtifact(ctx context.Context, a *Artifact) error {
 	if a.Visibility == "" {
 		a.Visibility = "project"
