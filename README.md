@@ -1,4 +1,4 @@
-# flowy - Handoff Fabric node (Phase 2)
+# flowy - Handoff Fabric node (Phase 3)
 
 The host-side node: one Go binary, one Postgres-wire database, and the schema
 spine every later phase rides on. Phase 0 was the skeleton - a server that
@@ -16,27 +16,40 @@ server with two transports and one set of handlers, so Claude Code, GLM,
 opencode and Claude on the web all hit the same rows in the same store, under
 the same permission filter.
 
+Phase 3 puts people back in the loop: **chat over the same event DAG, and a
+React console served by the binary**. A message is an event of type `chat` in a
+room - same log, same `seq_hlc` cursor, same `parents` DAG, same permission
+filter - so a human in the message box and an agent over MCP are writing to one
+place. The console is path-routed, embedded with `go:embed`, and served by
+`flowy serve` itself.
+
 ## Run the gate
 
 ```sh
 ./run-tests.sh
 ```
 
-It needs `go`, a Postgres installation (`initdb`, `pg_ctl`, `psql`), and `curl`
-and `jq` for the HTTP checks - no network, no running database, no systemd. It
-creates a throwaway cluster in a temp directory on a free port, loads
-`schema.sql`, builds
-the binary, runs the unit tests, starts `flowy serve`, runs the live checks
-against it, then tears the whole thing down in a trap. It prints PASS or FAIL
-per check and ends with `passed: N failed: M`, exiting non-zero if anything
-failed. Phase 2 adds an MCP section to it: the gate starts `flowy mcp --http` on
-a free port, does a real handshake against it, and separately pipes JSON-RPC
-into `flowy mcp` on stdin - both transports, one store.
+It needs `go`, `node` >= 20 with `npm`, a Postgres installation (`initdb`,
+`pg_ctl`, `psql`), and `curl` and `jq` for the HTTP checks - no running
+database, no systemd. It builds the console first (`npm ci`, Biome, `vite
+build`), because `flowy serve` embeds `web/dist`; then it creates a throwaway
+cluster in a temp directory on a free port, loads `schema.sql`, builds the
+binary, runs the unit tests, starts `flowy serve`, runs the live checks against
+it, and tears the whole thing down in a trap. It prints PASS or FAIL per check
+and ends with `passed: N failed: M`, exiting non-zero if anything failed. Phase
+2 added an MCP section - `flowy mcp --http` on a free port and JSON-RPC piped
+into `flowy mcp` on stdin, both transports, one store - and Phase 3 adds the
+chat, watcher, inbox and console-routing checks.
+
+`npm ci` is the one step that wants the network, and only when the package cache
+is cold; the Go build never does, because the module's one dependency is
+vendored.
 
 On Ubuntu the dependencies are:
 
 ```sh
 apt-get install -y golang-go postgresql postgresql-client curl jq git
+curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs
 ```
 
 ## Run the node
@@ -44,16 +57,23 @@ apt-get install -y golang-go postgresql postgresql-client curl jq git
 ```sh
 export DATABASE_URL='postgres://user@127.0.0.1:5432/flowy?sslmode=disable'
 psql "$DATABASE_URL" -f schema.sql
-go build -o flowy .
-./flowy serve                      # or: ./flowy serve -addr 127.0.0.1:8787
-curl -s 127.0.0.1:8787/healthz     # {"ok":true,...}
+(cd web && npm ci && npm run build)   # the console, into web/dist
+go build -o flowy .                   # which go:embed compiles in
+./flowy serve                         # or: ./flowy serve -addr 127.0.0.1:8787
+curl -s 127.0.0.1:8787/healthz        # {"ok":true,...}
+open http://127.0.0.1:8787/           # the console
 ```
+
+`go build` works without the console build - `web/dist` holds a tracked
+`.gitkeep` so the embed pattern always matches - and a binary built that way
+serves the API and answers `503` with a hint at every console path. Nothing
+guesses: the log line at startup says which of the two you have.
 
 ## Subcommands
 
 | command | what it does |
 | --- | --- |
-| `flowy serve` | HTTP server, wired to the store |
+| `flowy serve` | HTTP server, wired to the store, serving the embedded console |
 | `flowy mcp` | MCP server: shared memory over stdio, or `--http :PORT` |
 | `flowy fuse` | prints `fuse: not yet` (artifacts as a filesystem) |
 | `flowy sync` | prints `sync: not yet` (peer replication over `seq_hlc`) |
@@ -247,8 +267,13 @@ and deletes are tombstones.
 | `GET /api/search?q=&type=&kind=&project=` | `{"query":..., "artifacts":[{..., "rank":...}]}`, ranked and permission-filtered |
 | `POST /api/events` | append. Body: `type` (required), `room`, `thread`, `parents`, `actor`, `artifact`, `body`, `meta`. `id` is a ULID, `seq_hlc` comes from the clock, the project is the principal's |
 | `GET /api/events?thread=&since=&room=&type=` | `{"events":[...]}` with `seq_hlc > since`, in log order, permission-filtered |
+| `POST /api/chat/{room}/say` | say something. Body: `body` (required), `thread?`, `parents?`. Returns the event |
+| `GET /api/chat/{room}?since=&thread=` | `{"room","events":[...],"since","cursor"}` with `seq_hlc > since`, in log order |
+| `GET /api/chat/{room}/wait?cursor=&window=` | long poll: blocks up to 25s for events after `cursor`, returns them or an empty list |
+| `GET /api/inbox?since=&room=` | chat you may see and did not write, across rooms |
 | `POST /api/grants` | issue a capability: `{from_project,to_project}` for a project-wide one, `{artifact,subject}` for a share |
 | `GET /api/whoami` | the principal this token resolves to |
+| `GET /api/node` | this node, its version and its routes |
 
 On `project` in a create, absent, `null` and a string are three different
 things: absent means the home project, `null` means none, which is what personal
@@ -262,6 +287,87 @@ hands back the last value it saw.
 A tombstoned artifact still answers a `GET` by id, marked `"tombstone": true` -
 that is how the delete replicates - but it is gone from every list and every
 search.
+
+## Chat, over the event DAG
+
+There is no chat table. A message is a row in `events` with `type = 'chat'`, a
+`room`, a `thread` and the same `parents text[]` every other event carries, so
+it inherits the log's cursor, its DAG and its permission filter instead of
+getting a second set of its own.
+
+- **Who is speaking is the token's business.** A human posts as their user, an
+  agent as its agent - `POST /api/chat/{room}/say` takes no actor field, so a
+  message cannot be put in somebody else's mouth. The node stamps
+  `meta.actor_kind` (`user` or `agent`) and, for an agent, `meta.actor_user`,
+  which is what lets a console tell a person from the agent working for them
+  without a join per message.
+- **Rooms are scoped by project.** The room is the `room` column and the project
+  is the principal's, so `pa` and `pc` may both have a `general` and neither
+  reads the other's - unless a grant says otherwise, exactly as for artifacts.
+- **Branches are `parents`.** No parents opens a thread, one continues it,
+  several merge. A reply that names a parent and no thread inherits that
+  parent's thread, so answering a message cannot fork a second thread by
+  accident. Two replies to one message are two lanes, which is what the console
+  draws.
+- **The watcher contract is a finite window.** `GET /api/chat/{room}/wait`
+  blocks for up to 25 seconds (`?window=<seconds>` shortens it) and then returns
+  an empty list rather than hanging: a poll always returns, and a client loops.
+  It polls the store rather than using `LISTEN`/`NOTIFY`, which is Postgres the
+  engine and would not survive the move to SereneDB.
+- **The inbox is what you did not write.** `GET /api/inbox` is every chat event
+  the principal may read whose actor is neither their user nor their agent,
+  filtered in SQL so `since` and the limit still count the rows the caller gets.
+
+```sh
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"body":"deploy looks wrong"}' 127.0.0.1:8787/api/chat/general/say
+curl -s -H "Authorization: Bearer $TOKEN" '127.0.0.1:8787/api/chat/general?since=0'
+curl -s -H "Authorization: Bearer $TOKEN" '127.0.0.1:8787/api/chat/general/wait?cursor=123'
+```
+
+## The console
+
+`web/` is a React 19 + TypeScript app built by Vite, styled with Tailwind CSS v4
+(`@tailwindcss/vite`, `tailwindcss-animate`) and shadcn/ui components, animated
+with framer-motion, drawing thread DAGs with react-flow (`@xyflow/react`), and
+linted and formatted by Biome. `npm run build` produces `web/dist`, which
+`console.go` compiles into the binary with `go:embed`.
+
+**Routing is by path, through the History API.** Every view is a URL somebody
+can bookmark or send:
+
+| path | view |
+| --- | --- |
+| `/` | overview: who this token is, the inbox, a way into any room |
+| `/chat/:room` | the room: messages, the human message box, the thread DAG |
+| `/p/:project/:type/:id` | one artifact |
+| `/metrics` | node counts, a stub over `/healthz?counts=1` |
+
+Which means the server has to answer with the app for all of them: `flowy serve`
+serves `web/dist` and falls back to `index.html` for **any** non-`/api` GET, so
+a reload of `/chat/general` lands back on the room. Unknown `/api/*` paths still
+`404` in JSON - a client that asked for JSON and got a 200 of HTML would have to
+parse the app to find out it had a typo.
+
+The chat view posts as the person holding the token and keeps up by looping the
+long poll: `GET /api/chat/{room}` once, then `GET .../wait?cursor=` until the
+view goes away, which aborts the request in flight. A failed poll backs off two
+seconds rather than spinning. Selecting a message makes the next thing you say
+a reply to it - the new message names it in `parents`, and the DAG on the right
+grows a lane.
+
+Auth is a bearer token pasted into the sidebar and kept in `localStorage`; it
+goes out as `Authorization` on every `/api` call. There is no login, because the
+node has no session - a token is minted by the operator and this console only
+carries it.
+
+```sh
+cd web
+npm ci
+npm run dev      # vite on :5173, proxying /api to 127.0.0.1:8787
+npm run check    # biome
+npm run build    # -> web/dist, which go:embed picks up
+```
 
 ## Search, and why it is temporary
 
@@ -347,6 +453,12 @@ direction and task inbox.
   `flowy://instructions` resource. A transport hands a request to `handle()`
   and writes back what it returns, so a tool cannot behave one way over stdio
   and another over HTTP.
+- `chat.go` - the room view of the event log: `say`, the room read, the long
+  poll and the inbox. It adds one field to `store.EventQuery` (`NotActors`) and
+  otherwise reuses the log's cursor, DAG and permission filter as they are.
+- `console.go`, `web/` - the console and its serving. `console.go` embeds
+  `web/dist`, serves hashed assets immutably and falls back to `index.html` for
+  every other non-API path; `web/` is the React app itself.
 
 ## What the gate asserts
 
@@ -429,8 +541,43 @@ Then Phase 2, against `flowy mcp --http` on a free port and against
 - `psql` sees the memory rows, the shared item in `pa`, and the `memory.write`
   events
 
+Then Phase 3 - the frontend build, the chat API, and the console as it is
+actually served:
+
+- `npm ci`, `biome check .` and `vite build` all succeed, and `web/dist/index.html`
+  holds an app root and references a hashed JS asset that is really in the build
+- the built bundle **mounts**: `web/scripts/render-check.mjs` loads it in jsdom at
+  `/chat/general` with no token and asserts the app painted the shell and the
+  room view. A bundle that is served and throws on mount looks identical from
+  the outside otherwise
+- A says a message and then a reply naming it in `parents`: the room reads back
+  in order, the edge survives, `seq_hlc` advances, and the reply inherits the
+  thread
+- A's **agent** says one in the same room: the actor is the agent, `meta` marks
+  it as one and still carries the person it works for, and the room's three
+  messages split two human and one agent
+- `wait?cursor=` returns only what is newer; a caught-up poll **blocks** and
+  wakes with a message posted a second later; a poll of a quiet room returns an
+  empty list when its window runs out rather than hanging
+- A's inbox excludes A's own messages and contains the agent's; the agent
+  token's inbox excludes both its own and its user's
+- A **in `pc`**, with no grant into `pa`, sees none of `pa`'s `general` - and
+  its own `general` is a different room holding only its own message. B, holding
+  the grant Phase 1 issued, does see `pa`'s room and not `pc`'s
+- `GET /` is `200 text/html` with the app root and the bundle; the bundle is
+  served next to it; `/chat/general`, `/p/pa/bug/01H` and `/metrics` all return
+  the same index; `GET /api/does-not-exist` is `404` in JSON with a token and
+  `401` without one
+- the console, signed in with a real token against the live node, **fetches the
+  room and renders it**: the same jsdom mount, pointed at the running server,
+  waits for A's first message to appear on screen
+- `psql` sees the chat rows in the same `events` table, a reply carrying its
+  parent, and two projects with a room called `general`
+
 The last thing the gate does is ask git whether the tree it just tested is the
 tree on disk: uncommitted changes, or nothing ever committed, is a failure.
+`web/node_modules` and everything vite writes into `web/dist` are ignored, so
+what the gate builds does not count as a change to the tree.
 
 ## Deployment
 
@@ -452,14 +599,22 @@ else. It is quarantined there because it is meant to be deleted: when SereneDB
 brings vectors, that section goes and `store.SearchArtifacts` becomes a vector
 query. Nothing above it depends on anything below it.
 
-## Phase 2 status
+## Phase 3 status
 
-Green. `./run-tests.sh` reports `passed: 79 failed: 0` on Ubuntu 24.04 with Go
-1.22 and Postgres 16 - the 21 Phase 0 checks, the 37 Phase 1 checks, and 21
-more for the MCP endpoint. Phase 1 stayed green throughout: the memory tools are
-the Phase 1 store, principal and permission filter with an MCP surface on top,
-not a second path to the same rows.
+Green. `./run-tests.sh` reports `passed: 103 failed: 0` with Go 1.22, Node
+22.14 and Postgres 16 - the 79 checks Phases 0 to 2 ended with, plus 24 for the
+console build, chat, the watcher, the inbox, room scoping and the served
+routes. Phases 0 to 2 stayed green throughout: chat is the Phase 1 event log
+with a room view on it, and the console is a client of the API that was already
+there, not a second path to the rows.
 
-Not here yet: `flowy fuse` and `flowy sync` still print their placeholder, and
-the HTTP transport answers `POST /mcp` only - there is no server-initiated SSE
-stream, because nothing in this phase pushes.
+Not here yet: `flowy fuse` and `flowy sync` still print their placeholder; the
+MCP HTTP transport answers `POST /mcp` only, with no server-initiated SSE
+stream; `/metrics` is a stub over `/healthz`; and the console has no MCP-side
+view of memory yet - it reads chat and artifacts.
+
+Two things worth knowing about the shape of the console: the bundle is one
+600 kB chunk (react-flow and framer-motion are most of it) because nothing is
+code-split yet, and there is no browser in the delivery environment, so the
+console is exercised by mounting the shipped bundle in jsdom - which runs the
+real code and the real API calls, but does not lay anything out.

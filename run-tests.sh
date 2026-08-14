@@ -916,17 +916,395 @@ one_store_both_transports() {
 	printf 'the stdio write is readable over http: %s\n' "$MEM_STDIO"
 }
 
+# ------------------------------------------------------------ phase 3 helpers
+#
+# Chat is the event log seen from the side, so these checks are written the same
+# way the Phase 1 log checks are: over the wire, as two principals, asserting
+# what each of them gets back rather than what the store holds.
+
+# chat_len [SELECT] - how many chat events the last response returned,
+# optionally narrowed by a jq select expression.
+chat_len() {
+	if [ $# -eq 0 ]; then
+		printf '%s' "$API_BODY" | jq '.events | length'
+	else
+		printf '%s' "$API_BODY" | jq "[.events[] | select($1)] | length"
+	fi
+}
+
+# say_in_background ROOM TOKEN BODY - posts a message after a second, from a
+# subshell, so a long poll has something to wake up for. Prints the pid.
+say_in_background() {
+	local room=$1 token=$2 body=$3
+	(
+		sleep 1
+		curl --silent --show-error -X POST \
+			-H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
+			--data-binary "$(jq -nc --arg b "$body" '{body: $b}')" \
+			"http://127.0.0.1:$HTTP_PORT/api/chat/$room/say" >/dev/null
+	) &
+	printf '%s\n' "$!"
+}
+
+# ------------------------------------------------------------- phase 3 checks
+
+# A human posts as themselves, and a reply names the message it answers: that
+# edge is the whole DAG, and it is what a branch is made of.
+a_says_two_messages() {
+	recall
+	api POST "$TOKEN_A" /api/chat/general/say '{"body": "first thing said in the room"}' || return 1
+	want_eq "say status" "$API_STATUS" 200 || return 1
+	want_eq "type" "$(jqv .type)" chat || return 1
+	want_eq "room" "$(jqv .room)" general || return 1
+	want_eq "the message landed in pa" "$(jqv .project)" pa || return 1
+	want_eq "a human posts as the user" "$(jqv .actor)" "$USER_A" || return 1
+	want_eq "and is marked as one" "$(jqv .meta.actor_kind)" user || return 1
+	want_eq "an opening message has no parents" "$(jqv '.parents | length')" 0 || return 1
+	local first thread
+	first="$(jqv .id)"
+	thread="$(jqv .thread)"
+	if [ -z "$thread" ] || [ "$thread" = null ]; then
+		printf 'the message got no thread\n' >&2
+		return 1
+	fi
+	remember CHAT_M1 "$first"
+	remember CHAT_THREAD "$thread"
+	remember CHAT_M1_SEQ "$(jqv .seq_hlc)"
+
+	api POST "$TOKEN_A" /api/chat/general/say \
+		"{\"body\": \"a reply that names the first\", \"parents\": [\"$first\"]}" || return 1
+	want_eq "say status" "$API_STATUS" 200 || return 1
+	want_eq "the reply's parent" "$(jqv '.parents | join(",")')" "$first" || return 1
+	want_eq "a reply stays in the thread it answers" "$(jqv .thread)" "$thread" || return 1
+	remember CHAT_M2 "$(jqv .id)"
+	remember CHAT_M2_SEQ "$(jqv .seq_hlc)"
+	printf 'thread %s: %s <- %s\n' "$thread" "$first" "$(jqv .id)"
+}
+
+room_reads_back_in_order() {
+	recall
+	api GET "$TOKEN_A" /api/chat/general || return 1
+	want_eq "room status" "$API_STATUS" 200 || return 1
+	want_eq "room" "$(jqv .room)" general || return 1
+	want_eq "messages in the room" "$(chat_len)" 2 || return 1
+	want_eq "first" "$(jqv '.events[0].id')" "$CHAT_M1" || return 1
+	want_eq "second" "$(jqv '.events[1].id')" "$CHAT_M2" || return 1
+	want_eq "the edge survived the round trip" \
+		"$(jqv '.events[1].parents | join(",")')" "$CHAT_M1" || return 1
+	if [ "$(jqv '.events[1].seq_hlc')" -le "$(jqv '.events[0].seq_hlc')" ]; then
+		printf 'the reply did not advance seq_hlc\n' >&2
+		return 1
+	fi
+	want_eq "the cursor to ask with next" "$(jqv .cursor)" "$CHAT_M2_SEQ" || return 1
+	printf 'two messages, in seq_hlc order, cursor %s\n' "$(jqv .cursor)"
+}
+
+# The same room, the same project, a different kind of speaker.
+an_agent_says_one() {
+	recall
+	api POST "$TOKEN_A_AGENT" /api/chat/general/say \
+		'{"body": "the agent answering in the same room"}' || return 1
+	want_eq "say status" "$API_STATUS" 200 || return 1
+	want_eq "an agent posts as the agent" "$(jqv .actor)" "$AGENT_A" || return 1
+	want_eq "and is marked as one" "$(jqv .meta.actor_kind)" agent || return 1
+	want_eq "with the person it works for still on the message" \
+		"$(jqv .meta.actor_user)" "$USER_A" || return 1
+	remember CHAT_M3 "$(jqv .id)"
+	remember CHAT_M3_SEQ "$(jqv .seq_hlc)"
+	printf 'agent %s said %s\n' "$AGENT_A" "$(jqv .id)"
+}
+
+human_and_agent_are_distinguishable() {
+	recall
+	api GET "$TOKEN_A" /api/chat/general || return 1
+	want_eq "messages in the room" "$(chat_len)" 3 || return 1
+	want_eq "said by the human" "$(chat_len '.meta.actor_kind == "user"')" 2 || return 1
+	want_eq "said by the agent" "$(chat_len '.meta.actor_kind == "agent"')" 1 || return 1
+	want_eq "the agent's message is not attributed to the person" \
+		"$(chat_len ".meta.actor_kind == \"agent\" and .actor == \"$USER_A\"")" 0 || return 1
+	printf 'two human messages and one agent message, told apart by actor and meta\n'
+}
+
+wait_returns_only_what_is_newer() {
+	recall
+	api GET "$TOKEN_A" "/api/chat/general/wait?cursor=$CHAT_M2_SEQ" || return 1
+	want_eq "wait status" "$API_STATUS" 200 || return 1
+	want_eq "messages after the cursor" "$(chat_len)" 1 || return 1
+	want_eq "which one" "$(jqv '.events[0].id')" "$CHAT_M3" || return 1
+	want_eq "the cursor moved to it" "$(jqv .cursor)" "$CHAT_M3_SEQ" || return 1
+	printf 'cursor %s leaves exactly the agent message\n' "$CHAT_M2_SEQ"
+}
+
+# The watcher contract, first half: a poll that is caught up blocks, and returns
+# as soon as somebody says something.
+wait_blocks_until_something_is_said() {
+	recall
+	local poster start elapsed
+	poster="$(say_in_background general "$TOKEN_A" "said while the watcher was waiting")"
+	start=$SECONDS
+	api GET "$TOKEN_A" "/api/chat/general/wait?cursor=$CHAT_M3_SEQ" || return 1
+	elapsed=$((SECONDS - start))
+	wait "$poster" 2>/dev/null || true
+
+	want_eq "wait status" "$API_STATUS" 200 || return 1
+	want_eq "messages the watcher woke up for" "$(chat_len)" 1 || return 1
+	want_eq "what it heard" "$(jqv '.events[0].body')" "said while the watcher was waiting" || return 1
+	if [ "$elapsed" -ge 20 ]; then
+		printf 'the poll took %ss, so it timed out rather than woke up\n' "$elapsed" >&2
+		return 1
+	fi
+	remember CHAT_M4_SEQ "$(jqv .cursor)"
+	printf 'woke after %ss with the message that was posted mid-poll\n' "$elapsed"
+}
+
+# The other half: the window is finite and the poll returns empty rather than
+# hanging on the client forever.
+wait_returns_on_timeout() {
+	recall
+	local start elapsed
+	start=$SECONDS
+	api GET "$TOKEN_A" '/api/chat/quiet/wait?cursor=0&window=2' || return 1
+	elapsed=$((SECONDS - start))
+	want_eq "wait status" "$API_STATUS" 200 || return 1
+	want_eq "messages in a room nobody wrote to" "$(chat_len)" 0 || return 1
+	want_eq "the cursor is handed straight back" "$(jqv .cursor)" 0 || return 1
+	if [ "$elapsed" -lt 1 ] || [ "$elapsed" -gt 15 ]; then
+		printf 'a 2s window returned after %ss\n' "$elapsed" >&2
+		return 1
+	fi
+	printf 'empty after %ss, which is the window, not an error\n' "$elapsed"
+}
+
+# An inbox is what you have not seen, so it is everything you may read that you
+# did not write.
+inbox_excludes_the_callers_own() {
+	recall
+	api GET "$TOKEN_A" '/api/inbox?since=0' || return 1
+	want_eq "inbox status" "$API_STATUS" 200 || return 1
+	want_eq "A's own messages in A's inbox" "$(chat_len ".actor == \"$USER_A\"")" 0 || return 1
+	want_eq "the agent's message in A's inbox" "$(chat_len ".id == \"$CHAT_M3\"")" 1 || return 1
+	want_eq "everything in an inbox is chat" "$(chat_len '.type != "chat"')" 0 || return 1
+	printf 'A hears the agent and not themselves\n'
+}
+
+# An agent token is the person and the agent at once, so its inbox drops both.
+agent_inbox_excludes_both_identities() {
+	recall
+	api GET "$TOKEN_A_AGENT" '/api/inbox?since=0' || return 1
+	want_eq "inbox status" "$API_STATUS" 200 || return 1
+	want_eq "the agent's own message" "$(chat_len ".id == \"$CHAT_M3\"")" 0 || return 1
+	want_eq "its user's messages" "$(chat_len ".actor == \"$USER_A\"")" 0 || return 1
+	printf "the agent's inbox holds none of its own work\n"
+}
+
+# A room is scoped by project, not by name and not by person: the same user, in
+# a project with no grant into pa, gets nothing - and their own room called
+# general is a different room.
+another_project_sees_none_of_the_room() {
+	recall
+	api GET "$TOKEN_A_PC" /api/chat/general || return 1
+	want_eq "room status" "$API_STATUS" 200 || return 1
+	want_eq "pa's messages, read from pc" "$(chat_len)" 0 || return 1
+
+	api POST "$TOKEN_A_PC" /api/chat/general/say '{"body": "a different room of the same name"}' || return 1
+	want_eq "say status" "$API_STATUS" 200 || return 1
+	want_eq "it landed in pc" "$(jqv .project)" pc || return 1
+	# Local, not recalled: remember only writes the file the next check reads.
+	local pc_message
+	pc_message="$(jqv .id)"
+	remember CHAT_PC "$pc_message"
+
+	api GET "$TOKEN_A_PC" /api/chat/general || return 1
+	want_eq "what pc's general holds" "$(chat_len)" 1 || return 1
+	want_eq "which is only its own" "$(jqv '.events[0].id')" "$pc_message" || return 1
+
+	api GET "$TOKEN_A" /api/chat/general || return 1
+	want_eq "and pa cannot see it either" "$(chat_len ".id == \"$pc_message\"")" 0 || return 1
+	printf 'two rooms called general, one per project, neither reading the other\n'
+}
+
+# The positive control: B is in another project too, but holds the grant Phase 1
+# issued, so the room is readable exactly as far as the grant reaches.
+a_granted_project_does_see_the_room() {
+	recall
+	api GET "$TOKEN_B" /api/chat/general || return 1
+	want_eq "room status" "$API_STATUS" 200 || return 1
+	if [ "$(chat_len)" -lt 3 ]; then
+		printf "B holds a grant into pa and sees %s of pa's messages\n" "$(chat_len)" >&2
+		return 1
+	fi
+	want_eq "and not pc's room of the same name" "$(chat_len ".id == \"$CHAT_PC\"")" 0 || return 1
+	printf 'the grant reaches the room, and stops at the project it names\n'
+}
+
+# ---------------------------------------------------- phase 3 console helpers
+
+# The three steps of the frontend build, each its own check so a failure names
+# which one. They run in the command substitution `check` puts them in, so the
+# cd is theirs alone.
+npm_ci() {
+	cd "$ROOT/web" || return 1
+	npm ci --no-audit --no-fund --prefer-offline --loglevel=error
+	printf 'installed %s packages from package-lock.json\n' \
+		"$(find node_modules -maxdepth 2 -name package.json | wc -l)"
+}
+
+biome_check() {
+	cd "$ROOT/web" || return 1
+	npx --no-install @biomejs/biome check .
+}
+
+npm_build() {
+	cd "$ROOT/web" || return 1
+	npm run build
+}
+
+# The built bundle, mounted in a dom. An index that is served and a bundle that
+# throws on mount look identical from the outside, so this one runs the app.
+console_mounts() {
+	cd "$ROOT/web" || return 1
+	node scripts/render-check.mjs
+}
+
+# The same mount, signed in, against the live node: the console fetches the room
+# over the API and renders what Phase 3's chat checks put in it.
+console_renders_the_room() {
+	recall
+	cd "$ROOT/web" || return 1
+	node scripts/render-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" \
+		"first thing said in the room"
+}
+
+# www PATH - a plain browser-style GET of the console, with no token: the app
+# has to load before it can ask for one. Status lands in WWW_STATUS, body in
+# WWW_BODY and the content type in WWW_TYPE.
+www() {
+	local out
+	out="$(curl --silent --show-error -w '\n%{http_code} %{content_type}' \
+		"http://127.0.0.1:$HTTP_PORT$1")" || return 1
+	local tail="${out##*$'\n'}"
+	WWW_BODY="${out%$'\n'*}"
+	WWW_STATUS="${tail%% *}"
+	WWW_TYPE="${tail#* }"
+}
+
+# bundle_ref prints the hashed script the index loads.
+bundle_ref() {
+	printf '%s' "$1" | grep -o '/assets/[A-Za-z0-9_.-]*\.js' | head -n 1
+}
+
+# ------------------------------------------------------ phase 3 console checks
+
+# The build is a real one: an index that loads a hashed bundle, not a shell that
+# would still be there if vite had produced nothing.
+console_build_is_hashed() {
+	local index="$ROOT/web/dist/index.html" ref
+	if [ ! -f "$index" ]; then
+		printf 'web/dist/index.html does not exist; the frontend build did not run\n' >&2
+		return 1
+	fi
+	if ! grep -q 'id="root"' "$index"; then
+		printf 'web/dist/index.html has no app root\n' >&2
+		return 1
+	fi
+	ref="$(bundle_ref "$(cat "$index")")"
+	if [ -z "$ref" ]; then
+		printf 'web/dist/index.html references no hashed js asset:\n' >&2
+		cat "$index" >&2
+		return 1
+	fi
+	if [ ! -f "$ROOT/web/dist$ref" ]; then
+		printf 'the index references %s, which is not in the build\n' "$ref" >&2
+		return 1
+	fi
+	printf 'index.html -> %s (%s bytes)\n' "$ref" "$(wc -c <"$ROOT/web/dist$ref")"
+}
+
+serves_the_console_at_root() {
+	www / || return 1
+	want_eq "status" "$WWW_STATUS" 200 || return 1
+	case "$WWW_TYPE" in
+	text/html*) ;;
+	*)
+		printf '/ came back as %q, want text/html\n' "$WWW_TYPE" >&2
+		return 1
+		;;
+	esac
+	if ! printf '%s' "$WWW_BODY" | grep -q 'id="root"'; then
+		printf '/ served something without the app root:\n%s\n' "$WWW_BODY" >&2
+		return 1
+	fi
+	local ref
+	ref="$(bundle_ref "$WWW_BODY")"
+	if [ -z "$ref" ]; then
+		printf '/ served an index that loads no bundle:\n%s\n' "$WWW_BODY" >&2
+		return 1
+	fi
+	remember BUNDLE "$ref"
+	printf '/ -> 200 %s, loading %s\n' "$WWW_TYPE" "$ref"
+}
+
+# The deep link is the point of routing by path: /chat/general is a route in the
+# app, and a reload of it has to come back as the app.
+spa_fallback_serves_the_same_index() {
+	recall
+	local root_body
+	www / || return 1
+	root_body="$WWW_BODY"
+	www /chat/general || return 1
+	want_eq "status" "$WWW_STATUS" 200 || return 1
+	want_eq "body" "$WWW_BODY" "$root_body" || return 1
+	www /p/pa/bug/01H || return 1
+	want_eq "a deep artifact link is the app too" "$WWW_STATUS" 200 || return 1
+	www /metrics || return 1
+	want_eq "and so is a route that only renders a stub" "$WWW_STATUS" 200 || return 1
+	printf 'deep links survive a reload\n'
+}
+
+console_bundle_is_served() {
+	recall
+	www "$BUNDLE" || return 1
+	want_eq "status" "$WWW_STATUS" 200 || return 1
+	case "$WWW_TYPE" in
+	*javascript*) ;;
+	*)
+		printf '%s came back as %q, want a javascript type\n' "$BUNDLE" "$WWW_TYPE" >&2
+		return 1
+		;;
+	esac
+	printf '%s -> 200 %s\n' "$BUNDLE" "$WWW_TYPE"
+}
+
+# The fallback stops at the API. A client that asked for JSON and got the app
+# back with a 200 would have to parse HTML to find out it had a typo.
+unknown_api_paths_still_404() {
+	recall
+	want_status 404 GET "$TOKEN_A" /api/does-not-exist || return 1
+	if [ "$(jqv .error)" = null ]; then
+		printf 'the API 404 was not JSON:\n%s\n' "$API_BODY" >&2
+		return 1
+	fi
+	want_status 401 GET "" /api/does-not-exist || return 1
+	printf 'unknown api paths 404 as json, and 401 first without a token\n'
+}
+
 # ---------------------------------------------------------------- environment
 
 say "environment"
-for tool in go curl jq; do
+for tool in go curl jq node npm; do
 	if ! command -v "$tool" >/dev/null 2>&1; then
 		printf '%s is not on PATH\n' "$tool" >&2
 		exit 1
 	fi
 done
+node_major="$(node -v | sed 's/^v\([0-9]*\).*/\1/')"
+if [ "$node_major" -lt 20 ]; then
+	printf 'node %s is too old; the console needs node >= 20\n' "$(node -v)" >&2
+	exit 1
+fi
 PG_BIN="$(find_pg_bin)"
 printf 'go:       %s\n' "$(go version)"
+printf 'node:     %s (npm %s)\n' "$(node -v)" "$(npm -v)"
 printf 'postgres: %s\n' "$("$PG_BIN/postgres" --version)"
 printf 'work:     %s\n' "$WORK"
 
@@ -934,6 +1312,19 @@ printf 'work:     %s\n' "$WORK"
 if [ -d "$ROOT/vendor" ]; then
 	export GOFLAGS="${GOFLAGS:-} -mod=vendor"
 fi
+
+# --------------------------------------------------------------------- console
+#
+# The console is built first, because `flowy serve` embeds web/dist with
+# go:embed: the Go build below compiles whatever this leaves behind, so a stale
+# or missing build would be baked into the binary the rest of the run tests.
+
+say "console"
+check "npm ci" npm_ci
+check "biome check web/" biome_check
+check "vite build" npm_build
+check "the build is an index that loads a hashed bundle" console_build_is_hashed
+check "the console mounts in a dom and renders the room view" console_mounts
 
 # ------------------------------------------------------------------- postgres
 
@@ -1125,6 +1516,39 @@ check "what stdio wrote, http reads: one store" one_store_both_transports
 
 check "the mcp server survived the run" kill -0 "$MCP_PID"
 
+# ------------------------------------------------------------------- phase 3
+#
+# Chat, and the console that reads it. The messages are events of type 'chat' in
+# the same log Phase 1 walked, so what these checks are really asserting is that
+# a room is a view of the log and inherits its cursor, its DAG and its
+# permission filter rather than getting its own.
+
+say "chat"
+check "A says a message and then a reply that names it" a_says_two_messages
+check "the room reads back in order, with the edge intact" room_reads_back_in_order
+check "A's agent says one in the same room" an_agent_says_one
+check "a human message and an agent message are told apart" human_and_agent_are_distinguishable
+
+say "the watcher"
+check "wait?cursor= returns only what is newer" wait_returns_only_what_is_newer
+check "a caught-up poll blocks until somebody says something" wait_blocks_until_something_is_said
+check "and returns empty when the window runs out" wait_returns_on_timeout
+
+say "the inbox"
+check "the inbox excludes the caller's own messages" inbox_excludes_the_callers_own
+check "an agent's inbox excludes its user's messages too" agent_inbox_excludes_both_identities
+
+say "rooms are scoped by project"
+check "a project with no grant sees none of the room" another_project_sees_none_of_the_room
+check "a project that holds a grant does" a_granted_project_does_see_the_room
+
+say "the console, served"
+check "GET / is the app" serves_the_console_at_root
+check "the hashed bundle is served next to it" console_bundle_is_served
+check "any non-api path falls back to the same index" spa_fallback_serves_the_same_index
+check "unknown api paths are still 404" unknown_api_paths_still_404
+check "the console reads the room over the api and renders it" console_renders_the_room
+
 say "database, as a second client"
 check "psql sees the seeded tokens" psql_counts \
 	"SELECT count(*) FROM tokens WHERE project IN ('pa', 'pb', 'pc') OR agent_id IS NOT NULL"
@@ -1140,6 +1564,12 @@ check "psql sees a shared memory item in pa" psql_counts \
 	"SELECT count(*) FROM artifacts WHERE type = 'memory' AND visibility = 'shared' AND project = 'pa'"
 check "psql sees the memory writes in the event log" psql_counts \
 	"SELECT count(*) FROM events WHERE type = 'memory.write'"
+check "psql sees the chat messages in the same log" psql_counts \
+	"SELECT count(*) FROM events WHERE type = 'chat' AND room = 'general' AND project = 'pa'"
+check "psql sees a reply carrying its parent" psql_counts \
+	"SELECT count(*) FROM events WHERE type = 'chat' AND array_length(parents, 1) = 1"
+check "psql sees both rooms called general, one per project" psql_counts \
+	"SELECT count(DISTINCT project) FROM events WHERE type = 'chat' AND room = 'general'"
 
 check "node survived the run" kill -0 "$SERVE_PID"
 

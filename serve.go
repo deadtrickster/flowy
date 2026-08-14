@@ -32,6 +32,8 @@ type server struct {
 	// node and grant somebody a view of everything there.
 	operator string
 	started  time.Time
+	// console is the embedded single-page app, opened once by routes().
+	console *console
 }
 
 // serve runs the node's HTTP server until it is interrupted.
@@ -116,8 +118,13 @@ var apiRoutes = []string{
 	"GET /api/search",
 	"POST /api/events",
 	"GET /api/events",
+	"POST /api/chat/{room}/say",
+	"GET /api/chat/{room}",
+	"GET /api/chat/{room}/wait",
+	"GET /api/inbox",
 	"POST /api/grants",
 	"GET /api/whoami",
+	"GET /api/node",
 }
 
 // routes wires the node's surface: an open operational corner, and everything
@@ -132,7 +139,9 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("GET /version", s.handleVersion)
 	// No method on the catch-all: "GET /" would be more permissive on paths and
 	// less permissive on methods than "/api/", which the mux refuses to rank.
-	mux.HandleFunc("/", s.handleRoot)
+	// Everything that is not /api/ and not operational is the console, which
+	// answers its own 404s by rendering a route that does not exist.
+	mux.Handle("/", s.consoleHandler())
 
 	api := http.NewServeMux()
 	api.HandleFunc("POST /api/artifacts", s.handleCreateArtifact)
@@ -142,8 +151,17 @@ func (s *server) routes() http.Handler {
 	api.HandleFunc("GET /api/search", s.handleSearch)
 	api.HandleFunc("POST /api/events", s.handleAppendEvent)
 	api.HandleFunc("GET /api/events", s.handleListEvents)
+	api.HandleFunc("POST /api/chat/{room}/say", s.handleChatSay)
+	api.HandleFunc("GET /api/chat/{room}", s.handleChatRead)
+	api.HandleFunc("GET /api/chat/{room}/wait", s.handleChatWait)
+	api.HandleFunc("GET /api/inbox", s.handleInbox)
 	api.HandleFunc("POST /api/grants", s.handleCreateGrant)
 	api.HandleFunc("GET /api/whoami", s.handleWhoami)
+	api.HandleFunc("GET /api/node", s.handleNode)
+	// A path under /api/ that nothing claims is a 404 in JSON. Without this it
+	// would be net/http's plain-text 404, which a client parsing JSON reads as
+	// a broken server rather than as a typo in a URL.
+	api.HandleFunc("/api/", s.handleAPINotFound)
 
 	// One mount, so nothing under /api/ can be added later without the token
 	// check - including a method or a path this mux does not know, which has to
@@ -200,22 +218,39 @@ func (s *server) handleVersion(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"version": version, "node": s.node})
 }
 
-func (s *server) handleRoot(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
-		return
-	}
-	if r.Method != http.MethodGet {
-		w.Header().Set("Allow", "GET")
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
-		return
-	}
+// handleNode describes the node and its surface. It used to answer at /, which
+// is the console's now: a machine-readable index of the API belongs under the
+// API, behind the same token as the rest of it.
+//
+// GET /api/node
+func (s *server) handleNode(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"node":    s.node,
 		"version": version,
-		"phase":   2,
+		"phase":   3,
+		"console": s.console != nil && s.console.index != nil,
 		"routes":  append([]string{"GET /healthz", "GET /version"}, apiRoutes...),
 	})
+}
+
+// handleAPINotFound answers the API's own 404s, in JSON.
+func (s *server) handleAPINotFound(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusNotFound, errorBody("no such endpoint: "+r.Method+" "+r.URL.Path))
+}
+
+// consoleHandler opens the embedded console once, at wiring time, and logs
+// whether there is one - a node serving the API with no app in front of it is a
+// perfectly good node, but it should say so at startup rather than at the first
+// browser.
+func (s *server) consoleHandler() http.Handler {
+	c, built := newConsole()
+	s.console = c
+	if built {
+		log.Printf("console: serving the embedded build, SPA fallback on non-/api paths")
+	} else {
+		log.Printf("console: not built into this binary (cd web && npm ci && npm run build)")
+	}
+	return c
 }
 
 func writeJSON(w http.ResponseWriter, code int, body any) {

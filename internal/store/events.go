@@ -46,13 +46,19 @@ func scanEvent(sc scanner) (*Event, error) {
 // EventQuery narrows a read of the log. Since pages by seq_hlc, which is the
 // same cursor peer replication will use: strictly greater, so a caller can hand
 // back the last value it saw.
+//
+// NotActors drops events written by the named actors. It is what an inbox is:
+// everything you may see that you did not write yourself. It is a filter in the
+// query rather than a loop over the result, so paging by Since and Limit still
+// counts the rows the caller actually gets.
 type EventQuery struct {
-	Thread   string
-	Room     string
-	Type     string
-	Since    int64
-	ScopeAll bool
-	Limit    int
+	Thread    string
+	Room      string
+	Type      string
+	Since     int64
+	NotActors []string
+	ScopeAll  bool
+	Limit     int
 }
 
 func (q EventQuery) limit() int {
@@ -80,6 +86,11 @@ func (d *DB) ListEvents(ctx context.Context, p *Principal, q EventQuery) ([]*Eve
 	}
 	if q.Since > 0 {
 		where += " AND e.seq_hlc > " + a.next(q.Since)
+	}
+	for _, actor := range q.NotActors {
+		if actor != "" {
+			where += " AND coalesce(e.actor, '') <> " + a.next(actor)
+		}
 	}
 
 	query := `SELECT ` + eventColumns + `

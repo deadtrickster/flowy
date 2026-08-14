@@ -1,0 +1,74 @@
+@import "tailwindcss";
+@import "@xyflow/react/dist/style.css";
+@plugin "tailwindcss-animate";
+
+/* The console is dark, once. A theme that flips would be a second palette to
+   keep honest, and the thing this app is for - watching a room while an agent
+   works in it - is looked at in the dark. */
+@theme {
+  --color-background: oklch(0.17 0.012 265);
+  --color-foreground: oklch(0.94 0.008 265);
+  --color-card: oklch(0.21 0.014 265);
+  --color-card-foreground: oklch(0.94 0.008 265);
+  --color-popover: oklch(0.21 0.014 265);
+  --color-popover-foreground: oklch(0.94 0.008 265);
+  --color-primary: oklch(0.72 0.15 250);
+  --color-primary-foreground: oklch(0.16 0.02 265);
+  --color-secondary: oklch(0.28 0.018 265);
+  --color-secondary-foreground: oklch(0.94 0.008 265);
+  --color-muted: oklch(0.26 0.014 265);
+  --color-muted-foreground: oklch(0.68 0.014 265);
+  --color-accent: oklch(0.3 0.02 265);
+  --color-accent-foreground: oklch(0.94 0.008 265);
+  --color-destructive: oklch(0.62 0.19 25);
+  --color-destructive-foreground: oklch(0.97 0.01 25);
+  --color-border: oklch(0.3 0.016 265);
+  --color-input: oklch(0.3 0.016 265);
+  --color-ring: oklch(0.72 0.15 250);
+  --color-agent: oklch(0.78 0.14 155);
+  --color-human: oklch(0.76 0.13 250);
+
+  --radius-lg: 0.6rem;
+  --radius-md: 0.45rem;
+  --radius-sm: 0.3rem;
+
+  --font-sans: ui-sans-serif, system-ui, sans-serif;
+  --font-mono: ui-monospace, "JetBrains Mono", "SFMono-Regular", monospace;
+}
+
+@layer base {
+  * {
+    border-color: var(--color-border);
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+}
+
+/* react-flow draws the thread DAG. Its own stylesheet assumes a light page, so
+   the handful of surfaces it paints are pointed back at the theme. */
+.react-flow__background {
+  background-color: var(--color-background);
+}
+
+.react-flow__edge-path {
+  stroke: var(--color-border);
+  stroke-width: 1.5;
+}
+
+.react-flow__controls-button {
+  background-color: var(--color-card);
+  border-color: var(--color-border);
+  color: var(--color-foreground);
+  fill: currentColor;
+}

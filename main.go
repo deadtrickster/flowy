@@ -3,7 +3,8 @@
 // Phase 0 is the skeleton and the schema spine, Phase 1 the typed API and the
 // permission filter, Phase 2 the MCP surface: shared memory that every agent -
 // Claude Code, GLM, opencode, Claude on the web - reads and writes over one
-// store.
+// store. Phase 3 is chat over the same event DAG and the console that reads it,
+// embedded in this binary.
 package main
 
 import (
@@ -16,7 +17,8 @@ const usage = `flowy - Handoff Fabric node
 usage: flowy <command> [flags]
 
 commands:
-  serve    run the HTTP server (env: DATABASE_URL, FLOWY_ADDR, FLOWY_NODE)
+  serve    run the HTTP server and the embedded console
+           (env: DATABASE_URL, FLOWY_ADDR, FLOWY_NODE, FLOWY_OPERATOR)
   mcp      MCP server for agents: stdio by default, --http :PORT for a remote
            client (env: DATABASE_URL, FLOWY_TOKEN, FLOWY_NODE)
   fuse     FUSE mount of artifacts (not yet)
@@ -26,7 +28,7 @@ commands:
 `
 
 // version is the node's build version.
-const version = "0.3.0-phase2"
+const version = "0.4.0-phase3"
 
 func main() {
 	if len(os.Args) < 2 {
