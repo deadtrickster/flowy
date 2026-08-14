@@ -1,3 +1,7 @@
 # build output; the gate rebuilds it every run
 /flowy
 /smoke
+*.test
+
+# the harness writes these into the project root while it runs the gate
+.firecode-*

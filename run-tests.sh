@@ -712,15 +712,13 @@ printf 'passed: %d failed: %d\n' "$passed" "$failed"
 [ "$failed" -eq 0 ] || exit 1
 
 # The tree that gets copied out has to be the tree that was tested, so the last
-# word is git's. Two ways it can fail: nothing was ever committed, or something
-# was changed after the last commit and the green run above describes a tree
-# that is not the one on disk. Build output is in .gitignore and does not count.
-if [ -n "$(git -C . status --porcelain 2>/dev/null)" ]; then
-	echo "FAIL: uncommitted tree"
-	git -C . status --short | indent
-	exit 1
-fi
-git -C . rev-parse HEAD >/dev/null 2>&1 || {
-	echo "FAIL: uncommitted tree"
+# word is git's. Two ways it can fail: nothing was ever committed, or a tracked
+# file was changed after the last commit and the green run above describes a
+# tree that is not the one on disk. Untracked files do not count - the harness
+# writes its own verify artifacts (.firecode-*) into the project root while this
+# script is running, and those are not part of what was tested.
+# shellcheck disable=SC2015  # intended: the block runs if any of the three fails
+git rev-parse HEAD >/dev/null 2>&1 && git diff --quiet && git diff --cached --quiet || {
+	echo "FAIL: uncommitted tracked changes"
 	exit 1
 }
