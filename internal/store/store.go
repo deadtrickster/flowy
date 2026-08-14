@@ -165,9 +165,14 @@ func (d *DB) GetAgent(ctx context.Context, id string) (*Agent, error) {
 // Artifact is anything the node holds that is worth naming: a transcript, a
 // memory, a bug, a note. A nil Project means the artifact is personal to
 // OwnerUser.
+//
+// Kind narrows Type without multiplying it: a memory item is an artifact of
+// type 'memory' whose kind is note|todo|feature|handoff, so one table, one
+// permission filter and one search index serve all of them.
 type Artifact struct {
 	ID         string          `json:"id"`
 	Type       string          `json:"type"`
+	Kind       string          `json:"kind,omitempty"`
 	Project    *string         `json:"project"`
 	OwnerUser  string          `json:"owner_user"`
 	Title      string          `json:"title"`
@@ -199,13 +204,13 @@ func (d *DB) InsertArtifact(ctx context.Context, a *Artifact) error {
 		fields = []byte(a.Fields)
 	}
 	err := d.sql.QueryRowContext(ctx,
-		`INSERT INTO artifacts (id, type, project, owner_user, title, body, discovery,
+		`INSERT INTO artifacts (id, type, kind, project, owner_user, title, body, discovery,
 		                        status, severity, tags, user_tags, related, visibility,
 		                        file_path, fields, hlc, node, tombstone, search)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
-		         `+fmt.Sprintf(artifactSearchSQL, 19)+`)
+		         $19, `+fmt.Sprintf(artifactSearchSQL, 20)+`)
 		 RETURNING created, updated`,
-		a.ID, a.Type, a.Project, a.OwnerUser, a.Title, a.Body, a.Discovery,
+		a.ID, a.Type, a.Kind, a.Project, a.OwnerUser, a.Title, a.Body, a.Discovery,
 		a.Status, a.Severity, pq.Array(a.Tags), pq.Array(a.UserTags), pq.Array(a.Related),
 		a.Visibility, a.FilePath, fields, a.HLC, a.Node, a.Tombstone, searchText(a)).
 		Scan(&a.Created, &a.Updated)

@@ -77,11 +77,13 @@ CREATE TABLE IF NOT EXISTS grants (
 
 -- Everything a node holds that is worth naming.
 -- type: transcript|memory|chat|bug|feature|note
+-- kind narrows a type: a memory is a note|todo|feature|handoff.
 -- visibility: personal|project|shared
 -- project NULL means the artifact is personal to owner_user.
 CREATE TABLE IF NOT EXISTS artifacts (
     id         text PRIMARY KEY,
     type       text,
+    kind       text,
     project    text,
     owner_user text,
     title      text,
@@ -147,6 +149,13 @@ CREATE INDEX IF NOT EXISTS artifacts_project_type_idx ON artifacts (project, typ
 CREATE INDEX IF NOT EXISTS artifacts_owner_idx        ON artifacts (owner_user);
 CREATE INDEX IF NOT EXISTS artifacts_hlc_idx          ON artifacts (hlc);
 CREATE INDEX IF NOT EXISTS artifacts_updated_idx      ON artifacts (updated);
+
+-- Phase 2 stores shared memory as artifacts of type 'memory', narrowed by kind.
+-- The column is in the CREATE TABLE above; the ALTER is here so a database that
+-- was created by an earlier phase picks it up on the next load.
+ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS kind text;
+
+CREATE INDEX IF NOT EXISTS artifacts_type_kind_idx    ON artifacts (type, kind);
 
 CREATE INDEX IF NOT EXISTS events_thread_idx          ON events (thread);
 CREATE INDEX IF NOT EXISTS events_seq_hlc_idx         ON events (seq_hlc);

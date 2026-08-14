@@ -37,7 +37,7 @@ func searchText(a *Artifact) string {
 }
 
 // artifactColumns is the read list, in the order scanArtifact expects.
-const artifactColumns = `id, type, project, owner_user, title, body, discovery, status,
+const artifactColumns = `id, type, kind, project, owner_user, title, body, discovery, status,
 	severity, tags, user_tags, related, visibility, file_path, fields, hlc, node,
 	tombstone, created, updated`
 
@@ -48,13 +48,14 @@ type scanner interface{ Scan(dest ...any) error }
 func scanArtifact(sc scanner, rank *float64) (*Artifact, error) {
 	var (
 		a                                          Artifact
-		typeCol, project, owner, title, body, disc sql.NullString
-		status, severity, vis, filePath, nodeCol   sql.NullString
+		typeCol, kind, project, owner, title, body sql.NullString
+		disc, status, severity, vis, filePath      sql.NullString
+		nodeCol                                    sql.NullString
 		fields                                     []byte
 		clockVal                                   sql.NullInt64
 		tomb                                       sql.NullBool
 	)
-	dest := []any{&a.ID, &typeCol, &project, &owner, &title, &body, &disc, &status, &severity,
+	dest := []any{&a.ID, &typeCol, &kind, &project, &owner, &title, &body, &disc, &status, &severity,
 		pq.Array(&a.Tags), pq.Array(&a.UserTags), pq.Array(&a.Related), &vis, &filePath,
 		&fields, &clockVal, &nodeCol, &tomb, &a.Created, &a.Updated}
 	if rank != nil {
@@ -67,7 +68,8 @@ func scanArtifact(sc scanner, rank *float64) (*Artifact, error) {
 		p := project.String
 		a.Project = &p
 	}
-	a.Type, a.OwnerUser, a.Title, a.Body = typeCol.String, owner.String, title.String, body.String
+	a.Type, a.Kind = typeCol.String, kind.String
+	a.OwnerUser, a.Title, a.Body = owner.String, title.String, body.String
 	a.Discovery, a.Status, a.Severity = disc.String, status.String, severity.String
 	a.Visibility, a.FilePath, a.Node = vis.String, filePath.String, nodeCol.String
 	a.HLC, a.Tombstone = clockVal.Int64, tomb.Bool
@@ -108,13 +110,14 @@ func (d *DB) UpsertArtifact(ctx context.Context, a *Artifact) error {
 		fields = []byte(a.Fields)
 	}
 	err := d.sql.QueryRowContext(ctx,
-		`INSERT INTO artifacts (id, type, project, owner_user, title, body, discovery,
+		`INSERT INTO artifacts (id, type, kind, project, owner_user, title, body, discovery,
 		                        status, severity, tags, user_tags, related, visibility,
 		                        file_path, fields, hlc, node, tombstone, search)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
-		         `+fmt.Sprintf(artifactSearchSQL, 19)+`)
+		         $19, `+fmt.Sprintf(artifactSearchSQL, 20)+`)
 		 ON CONFLICT (id) DO UPDATE SET
-		     type = excluded.type, project = excluded.project, owner_user = excluded.owner_user,
+		     type = excluded.type, kind = excluded.kind, project = excluded.project,
+		     owner_user = excluded.owner_user,
 		     title = excluded.title, body = excluded.body, discovery = excluded.discovery,
 		     status = excluded.status, severity = excluded.severity, tags = excluded.tags,
 		     user_tags = excluded.user_tags, related = excluded.related,
@@ -122,7 +125,7 @@ func (d *DB) UpsertArtifact(ctx context.Context, a *Artifact) error {
 		     fields = excluded.fields, hlc = excluded.hlc, node = excluded.node,
 		     tombstone = excluded.tombstone, search = excluded.search, updated = now()
 		 RETURNING created, updated`,
-		a.ID, a.Type, a.Project, a.OwnerUser, a.Title, a.Body, a.Discovery,
+		a.ID, a.Type, a.Kind, a.Project, a.OwnerUser, a.Title, a.Body, a.Discovery,
 		a.Status, a.Severity, pq.Array(a.Tags), pq.Array(a.UserTags), pq.Array(a.Related),
 		a.Visibility, a.FilePath, fields, a.HLC, a.Node, a.Tombstone, searchText(a)).
 		Scan(&a.Created, &a.Updated)
@@ -135,12 +138,16 @@ func (d *DB) UpsertArtifact(ctx context.Context, a *Artifact) error {
 // ArtifactQuery narrows a list or a search. Every field is optional; the
 // permission filter is not, and is added by the methods below.
 type ArtifactQuery struct {
-	Type     string
-	Project  string
-	Status   string
-	Query    string // free text; SearchArtifacts only
-	ScopeAll bool   // ?scope=all - honoured only for the operator principal
-	Limit    int
+	Type       string
+	Kind       string   // one kind
+	Kinds      []string // any of these kinds; ORed with nothing, ANDed with the rest
+	Project    string
+	Status     string
+	NotStatus  string // exclude one status - what "still open" means for a todo
+	Visibility string // personal|project|shared - the memory scopes
+	Query      string // free text; SearchArtifacts only
+	ScopeAll   bool   // ?scope=all - honoured only for the operator principal
+	Limit      int
 }
 
 const defaultLimit = 200
@@ -164,6 +171,23 @@ func (q ArtifactQuery) narrow(a *args, alias string) string {
 	}
 	if q.Status != "" {
 		where += " AND " + alias + ".status = " + a.next(q.Status)
+	}
+	if q.Kind != "" {
+		where += " AND " + alias + ".kind = " + a.next(q.Kind)
+	}
+	if len(q.Kinds) > 0 {
+		holders := make([]string, 0, len(q.Kinds))
+		for _, k := range q.Kinds {
+			holders = append(holders, a.next(k))
+		}
+		where += " AND " + alias + ".kind IN (" + strings.Join(holders, ", ") + ")"
+	}
+	if q.Visibility != "" {
+		where += " AND " + alias + ".visibility = " + a.next(q.Visibility)
+	}
+	if q.NotStatus != "" {
+		// coalesce, because a row that was never given a status is not done.
+		where += " AND coalesce(" + alias + ".status, '') <> " + a.next(q.NotStatus)
 	}
 	return where
 }

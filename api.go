@@ -21,6 +21,7 @@ const maxBody = 8 << 20
 type artifactRequest struct {
 	ID         string          `json:"id"`
 	Type       string          `json:"type"`
+	Kind       string          `json:"kind"`
 	Project    json.RawMessage `json:"project"`
 	OwnerUser  string          `json:"owner_user"`
 	Title      string          `json:"title"`
@@ -121,6 +122,7 @@ func (s *server) handleCreateArtifact(w http.ResponseWriter, r *http.Request) {
 	art := &store.Artifact{
 		ID:         req.ID,
 		Type:       req.Type,
+		Kind:       req.Kind,
 		Project:    project,
 		OwnerUser:  owner,
 		Title:      req.Title,
@@ -175,6 +177,7 @@ func (req *artifactRequest) fillFrom(old *store.Artifact) {
 		}
 	}
 	setIfEmpty(&req.Type, old.Type)
+	setIfEmpty(&req.Kind, old.Kind)
 	setIfEmpty(&req.Title, old.Title)
 	setIfEmpty(&req.Body, old.Body)
 	setIfEmpty(&req.Discovery, old.Discovery)
@@ -208,6 +211,7 @@ func (s *server) handleListArtifacts(w http.ResponseWriter, r *http.Request) {
 
 	list, err := s.db.ListArtifacts(r.Context(), p, store.ArtifactQuery{
 		Type:     q.Get("type"),
+		Kind:     q.Get("kind"),
 		Project:  q.Get("project"),
 		Status:   q.Get("status"),
 		ScopeAll: scopeAll(r, p),
@@ -282,6 +286,7 @@ func (s *server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	hits, err := s.db.SearchArtifacts(r.Context(), p, store.ArtifactQuery{
 		Query:    query,
 		Type:     q.Get("type"),
+		Kind:     q.Get("kind"),
 		Project:  q.Get("project"),
 		Status:   q.Get("status"),
 		ScopeAll: scopeAll(r, p),

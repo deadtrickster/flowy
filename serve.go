@@ -213,7 +213,7 @@ func (s *server) handleRoot(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"node":    s.node,
 		"version": version,
-		"phase":   1,
+		"phase":   2,
 		"routes":  append([]string{"GET /healthz", "GET /version"}, apiRoutes...),
 	})
 }

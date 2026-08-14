@@ -9,6 +9,11 @@
 # curl and jq rather than from inside the process, because the thing being
 # tested is what a second agent holding a second token can and cannot see - and
 # that is only true if it is true over the wire.
+#
+# Phase 2 adds the MCP endpoint: the same store, reached the way an agent reaches
+# it. Both transports are exercised - JSON-RPC over POST /mcp and JSON-RPC over
+# a subprocess's pipes - and an item written over one is read back over the
+# other, which is the whole of the "one shared memory" claim.
 
 set -euo pipefail
 
@@ -20,23 +25,29 @@ PGDATA="$WORK/pgdata"
 PGSOCK="$WORK/sock"
 PGLOG="$WORK/postgres.log"
 SERVE_LOG="$WORK/serve.log"
+MCP_LOG="$WORK/mcp.log"
 DBNAME="flowy"
-readonly ROOT WORK PGDATA PGSOCK PGLOG SERVE_LOG DBNAME
+readonly ROOT WORK PGDATA PGSOCK PGLOG SERVE_LOG MCP_LOG DBNAME
 
 PG_BIN=""
 PGPORT=""
 HTTP_PORT=""
+MCP_PORT=""
 SERVE_PID=""
+MCP_PID=""
 passed=0
 failed=0
 
 cleanup() {
 	local status=$?
 	set +e
-	if [ -n "$SERVE_PID" ] && kill -0 "$SERVE_PID" 2>/dev/null; then
-		kill "$SERVE_PID" 2>/dev/null
-		wait "$SERVE_PID" 2>/dev/null
-	fi
+	local pid
+	for pid in "$SERVE_PID" "$MCP_PID"; do
+		if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+			kill "$pid" 2>/dev/null
+			wait "$pid" 2>/dev/null
+		fi
+	done
 	if [ -n "$PG_BIN" ] && [ -d "$PGDATA" ]; then
 		"$PG_BIN/pg_ctl" -D "$PGDATA" -m immediate -w stop >/dev/null 2>&1
 	fi
@@ -188,8 +199,8 @@ hits() {
 	fi
 }
 
-# stub_says checks that a Phase 0 stub subcommand prints its placeholder and
-# exits zero.
+# stub_says checks that a subcommand that is still a stub prints its
+# placeholder and exits zero. mcp left this list in Phase 2.
 stub_says() {
 	local sub="$1" out
 	out="$(./flowy "$sub")"
@@ -522,6 +533,389 @@ scope_all_works_for_the_operator() {
 	printf 'scope=all opens the whole node to the operator, and only on request\n'
 }
 
+# --------------------------------------------------------- phase 2 mcp helpers
+#
+# The MCP checks are driven over the wire as well, for the same reason the
+# Phase 1 ones are: what is being tested is what a second agent, holding a
+# second token, gets back from a JSON-RPC call - and that is only true if it is
+# true over the transport an agent actually connects with.
+
+# mcp METHOD TOKEN [PARAMS] - one JSON-RPC request against the HTTP transport.
+# The whole response lands in MCP_BODY. An empty TOKEN sends no Authorization
+# header, which is how the initialize and unauthenticated checks are written.
+mcp() {
+	local method=$1 token=$2 params=${3-}
+	[ -n "$params" ] || params='{}'
+	local req
+	req="$(jq -nc --arg m "$method" --argjson p "$params" \
+		'{jsonrpc: "2.0", id: 1, method: $m, params: $p}')" || return 1
+	local -a curl_args=(--silent --show-error -X POST
+		-H 'Content-Type: application/json' --data-binary "$req")
+	if [ -n "$token" ]; then
+		curl_args+=(-H "Authorization: Bearer $token")
+	fi
+	MCP_BODY="$(curl "${curl_args[@]}" "http://127.0.0.1:$MCP_PORT/mcp")" || return 1
+}
+
+# rv EXPR - a value out of the last JSON-RPC response.
+rv() { printf '%s' "$MCP_BODY" | jq -r "$1"; }
+
+# tool NAME TOKEN [ARGS] - one tools/call. TOOL_JSON holds the tool's output,
+# already unwrapped from the MCP content envelope; TOOL_ERR is empty when the
+# call succeeded and holds the message when it did not - protocol error or tool
+# error, because to the agent asking they are both "it did not happen".
+tool() {
+	local name=$1 token=$2 args=${3-}
+	[ -n "$args" ] || args='{}'
+	local params
+	params="$(jq -nc --arg n "$name" --argjson a "$args" '{name: $n, arguments: $a}')" || return 1
+	mcp tools/call "$token" "$params" || return 1
+	TOOL_ERR="$(printf '%s' "$MCP_BODY" |
+		jq -r '.error.message // (if .result.isError then .result.content[0].text else "" end)')"
+	TOOL_JSON="$(printf '%s' "$MCP_BODY" |
+		jq -r 'if .error or .result.isError then "null" else .result.content[0].text end')"
+}
+
+# tv EXPR - a value out of the last tool output.
+tv() { printf '%s' "$TOOL_JSON" | jq -r "$1"; }
+
+# want_tool NAME TOKEN ARGS - the call has to succeed.
+want_tool() {
+	tool "$@" || return 1
+	if [ -n "$TOOL_ERR" ]; then
+		printf '%s failed: %s\n' "$1" "$TOOL_ERR" >&2
+		return 1
+	fi
+}
+
+# want_tool_fails NAME TOKEN ARGS WANT_SUBSTRING - the call has to fail, with a
+# message that says what it is allowed to say.
+want_tool_fails() {
+	local want=$4
+	tool "$1" "$2" "$3" || return 1
+	if [ -z "$TOOL_ERR" ]; then
+		printf '%s was allowed, want it refused: %s\n' "$1" "$TOOL_JSON" >&2
+		return 1
+	fi
+	case "$TOOL_ERR" in
+	*"$want"*) ;;
+	*)
+		printf '%s failed with %q, want something containing %q\n' "$1" "$TOOL_ERR" "$want" >&2
+		return 1
+		;;
+	esac
+	printf '%s refused: %s\n' "$1" "$TOOL_ERR"
+}
+
+# ------------------------------------------------------------- phase 2 checks
+
+# initialize is the one call that works without a token: a client has to be able
+# to find out what this server is, and read its instructions, before it holds a
+# credential.
+mcp_handshake() {
+	mcp initialize "" \
+		'{"protocolVersion": "2024-11-05", "capabilities": {},
+		  "clientInfo": {"name": "gate", "version": "0"}}' || return 1
+	want_eq "protocol version" "$(rv .result.protocolVersion)" 2024-11-05 || return 1
+	want_eq "server name" "$(rv .result.serverInfo.name)" flowy || return 1
+	if [ -z "$(rv .result.serverInfo.version)" ] || [ "$(rv .result.serverInfo.version)" = null ]; then
+		printf 'initialize returned no server version\n' >&2
+		return 1
+	fi
+
+	local instructions
+	instructions="$(rv .result.instructions)"
+	if [ "${#instructions}" -lt 500 ]; then
+		printf 'initialize returned %s bytes of instructions, want a real document\n' \
+			"${#instructions}" >&2
+		return 1
+	fi
+	# The instructions are the point of the endpoint, not decoration: an agent
+	# that reads them has to come away knowing the scopes and the tools.
+	local word
+	for word in personal project shared mem_write mem_search todos; do
+		case "$instructions" in
+		*"$word"*) ;;
+		*)
+			printf 'the instructions never mention %s\n' "$word" >&2
+			return 1
+			;;
+		esac
+	done
+	printf 'flowy %s, protocol %s, %s bytes of instructions\n' \
+		"$(rv .result.serverInfo.version)" "$(rv .result.protocolVersion)" "${#instructions}"
+}
+
+mcp_tools_list() {
+	mcp tools/list "$TOKEN_A" || return 1
+	local name
+	for name in mem_write mem_read mem_search mem_list todos; do
+		want_eq "$name in tools/list" \
+			"$(rv "[.result.tools[] | select(.name == \"$name\")] | length")" 1 || return 1
+		if [ "$(rv "[.result.tools[] | select(.name == \"$name\" and (.inputSchema.type == \"object\"))] | length")" != 1 ]; then
+			printf '%s has no object input schema\n' "$name" >&2
+			return 1
+		fi
+	done
+	printf 'tools: %s\n' "$(rv '[.result.tools[].name] | join(", ")')"
+}
+
+# The same text, twice: a client that ignores initialize.instructions can read
+# the resource instead, and must not get a different document.
+mcp_instructions_resource() {
+	mcp initialize "" '{}' || return 1
+	local from_initialize from_resource
+	from_initialize="$(rv .result.instructions)"
+
+	mcp resources/list "$TOKEN_A" || return 1
+	want_eq "flowy://instructions is listed" \
+		"$(rv '[.result.resources[] | select(.uri == "flowy://instructions")] | length')" 1 || return 1
+
+	mcp resources/read "$TOKEN_A" '{"uri": "flowy://instructions"}' || return 1
+	want_eq "resource uri" "$(rv '.result.contents[0].uri')" flowy://instructions || return 1
+	from_resource="$(rv '.result.contents[0].text')"
+	if [ "$from_resource" != "$from_initialize" ]; then
+		printf 'the resource and initialize.instructions disagree (%s vs %s bytes)\n' \
+			"${#from_resource}" "${#from_initialize}" >&2
+		return 1
+	fi
+	printf 'flowy://instructions is the same %s bytes initialize returned\n' "${#from_resource}"
+}
+
+# No principal, no tools. This is the whole of the authentication story on the
+# MCP surface: the token names a (user, agent, project) triple and without one
+# there is nobody to filter the store for.
+mcp_unauthenticated() {
+	tool mem_list "" '{}' || return 1
+	want_eq "error code with no token" "$(rv .error.code)" -32001 || return 1
+	case "$(rv .error.message)" in
+	*unauthenticated*) ;;
+	*)
+		printf 'the error says %q, which does not say it was unauthenticated\n' "$(rv .error.message)" >&2
+		return 1
+		;;
+	esac
+
+	tool mem_write no-such-token '{"title": "should not land"}' || return 1
+	want_eq "error code with an unknown token" "$(rv .error.code)" -32001 || return 1
+	printf 'tools/call is refused without a principal: %s\n' "$(rv .error.message)"
+}
+
+mcp_unknown_tool() {
+	tool no_such_tool "$TOKEN_A" '{}' || return 1
+	want_eq "error code" "$(rv .error.code)" -32602 || return 1
+	printf 'unknown tool: %s\n' "$(rv .error.message)"
+}
+
+# scope=personal is the default and the floor. flimsyquark appears in the body
+# and nowhere else, so anything that finds the item found it by searching the
+# body.
+a_writes_personal_memory() {
+	recall
+	want_tool mem_write "$TOKEN_A" '{
+		"title": "how the gate stands postgres up",
+		"body": "initdb into the work directory, trust auth, a flimsyquark of a port",
+		"tags": ["gate", "postgres"]
+	}' || return 1
+	want_eq "type" "$(tv .item.type)" memory || return 1
+	want_eq "kind defaults to note" "$(tv .item.kind)" note || return 1
+	want_eq "scope defaults to personal" "$(tv .item.visibility)" personal || return 1
+	want_eq "a personal item has no project" "$(tv .item.project)" null || return 1
+	want_eq "owner" "$(tv .item.owner_user)" "$USER_A" || return 1
+	if [ "$(tv .item.hlc)" -le 0 ]; then
+		printf 'the item came back with hlc %s, want a stamped clock\n' "$(tv .item.hlc)" >&2
+		return 1
+	fi
+	remember MEM_PERSONAL "$(tv .item.id)"
+	printf 'personal memory %s, hlc %s, node %s\n' "$(tv .item.id)" "$(tv .item.hlc)" "$(tv .item.node)"
+}
+
+a_searches_own_memory() {
+	recall
+	want_tool mem_search "$TOKEN_A" '{"q": "flimsyquark"}' || return 1
+	want_eq "hits" "$(tv .count)" 1 || return 1
+	want_eq "the hit" "$(tv '.items[0].id')" "$MEM_PERSONAL" || return 1
+	if ! printf '%s' "$TOOL_JSON" | jq -e '.items[0].rank > 0' >/dev/null; then
+		printf 'the hit ranked %s, want a positive score\n' "$(tv '.items[0].rank')" >&2
+		return 1
+	fi
+	printf 'flimsyquark appears only in the body and ranked %s\n' "$(tv '.items[0].rank')"
+}
+
+a_reads_own_memory() {
+	recall
+	want_tool mem_read "$TOKEN_A" "{\"id\": \"$MEM_PERSONAL\"}" || return 1
+	want_eq "id" "$(tv .item.id)" "$MEM_PERSONAL" || return 1
+	want_eq "tags" "$(tv '.item.tags | join(",")')" gate,postgres || return 1
+	printf '%s: %s\n' "$MEM_PERSONAL" "$(tv .item.title)"
+}
+
+a_lists_own_memory() {
+	recall
+	want_tool mem_list "$TOKEN_A" '{"kind": "note"}' || return 1
+	want_eq "the item is listed once" \
+		"$(printf '%s' "$TOOL_JSON" | jq "[.items[] | select(.id == \"$MEM_PERSONAL\")] | length")" 1 || return 1
+	if [ "$(printf '%s' "$TOOL_JSON" | jq '[.items[] | select(.type != "memory")] | length')" != 0 ]; then
+		printf 'mem_list returned something that is not a memory item\n' >&2
+		return 1
+	fi
+	printf 'mem_list returns %s memory item(s), newest first\n' "$(tv .count)"
+}
+
+# The grant the Phase 1 checks issued is still there; this states it again so
+# the shared-memory checks below do not depend on reading the section above.
+pb_holds_a_grant_on_pa() {
+	recall
+	api POST "$TOKEN_A" /api/grants '{"from_project": "pb", "to_project": "pa"}' || return 1
+	want_eq "grant status" "$API_STATUS" 200 || return 1
+	printf 'pb may read pa (grant %s)\n' "$(jqv .id)"
+}
+
+# The floor, on the memory surface: B holds a grant on A's project and it still
+# does not reach A's personal memory, by id or by search. The message is the
+# same one a missing id gets, so B cannot learn that the item exists.
+b_cannot_reach_personal_memory() {
+	recall
+	want_tool_fails mem_read "$TOKEN_B" "{\"id\": \"$MEM_PERSONAL\"}" "no such memory item" || return 1
+	want_tool_fails mem_read "$TOKEN_B_AGENT" "{\"id\": \"$MEM_PERSONAL\"}" "no such memory item" || return 1
+	want_tool mem_search "$TOKEN_B" '{"q": "flimsyquark"}' || return 1
+	want_eq "B's hits for flimsyquark" "$(tv .count)" 0 || return 1
+	printf "a grant reaches neither B's read nor B's search of a personal item\n"
+}
+
+# And the other half: an item written at scope=shared is exactly what the grant
+# is for. wobblethorn is in the body only.
+a_writes_shared_memory() {
+	recall
+	want_tool mem_write "$TOKEN_A" '{
+		"title": "handoff: the parser work is half done",
+		"body": "the wobblethorn branch parses headers but not continuations",
+		"scope": "shared", "kind": "handoff", "tags": ["parser", "handoff"]
+	}' || return 1
+	want_eq "visibility" "$(tv .item.visibility)" shared || return 1
+	want_eq "project" "$(tv .item.project)" pa || return 1
+	want_eq "kind" "$(tv .item.kind)" handoff || return 1
+	remember MEM_SHARED "$(tv .item.id)"
+	printf 'shared memory %s in pa\n' "$(tv .item.id)"
+}
+
+# This is the shared-memory proof: a second agent identity, holding a second
+# token, in a second project, reads what the first one wrote - through the same
+# store, over the same protocol.
+b_agent_reads_shared_memory() {
+	recall
+	want_tool mem_read "$TOKEN_B_AGENT" "{\"id\": \"$MEM_SHARED\"}" || return 1
+	want_eq "id" "$(tv .item.id)" "$MEM_SHARED" || return 1
+	want_eq "visibility" "$(tv .item.visibility)" shared || return 1
+	printf "B's agent reads A's shared memory: %s\n" "$(tv .item.title)"
+}
+
+b_agent_searches_shared_memory() {
+	recall
+	want_tool mem_search "$TOKEN_B_AGENT" '{"q": "wobblethorn"}' || return 1
+	want_eq "hits" "$(tv .count)" 1 || return 1
+	want_eq "the hit" "$(tv '.items[0].id')" "$MEM_SHARED" || return 1
+	want_tool todos "$TOKEN_B_AGENT" '{}' || return 1
+	want_eq "the handoff is outstanding work for B too" \
+		"$(printf '%s' "$TOOL_JSON" | jq "[.items[] | select(.id == \"$MEM_SHARED\")] | length")" 1 || return 1
+	printf "B's search finds it, and it shows up in B's todos as a handoff\n"
+}
+
+# A todo is outstanding until it is done, and mem_write with an id is how it
+# stops being outstanding - without restating the item.
+todos_open_and_done() {
+	recall
+	want_tool mem_write "$TOKEN_A" '{
+		"title": "mount the artifacts over FUSE",
+		"body": "phase 3 work, noted so it is not lost",
+		"scope": "project", "kind": "todo"
+	}' || return 1
+	local todo
+	todo="$(tv .item.id)"
+	want_eq "project" "$(tv .item.project)" pa || return 1
+
+	want_tool todos "$TOKEN_A" '{}' || return 1
+	want_eq "the todo is outstanding" \
+		"$(printf '%s' "$TOOL_JSON" | jq "[.items[] | select(.id == \"$todo\")] | length")" 1 || return 1
+	if [ "$(printf '%s' "$TOOL_JSON" | jq '[.items[] | select(.kind == "note")] | length')" != 0 ]; then
+		printf 'todos returned a note, which is not outstanding work\n' >&2
+		return 1
+	fi
+
+	want_tool mem_write "$TOKEN_A" "{\"id\": \"$todo\", \"status\": \"done\"}" || return 1
+	want_eq "the title survived an update that did not restate it" \
+		"$(tv .item.title)" "mount the artifacts over FUSE" || return 1
+	want_eq "kind survived too" "$(tv .item.kind)" todo || return 1
+
+	want_tool todos "$TOKEN_A" '{}' || return 1
+	want_eq "the done todo is gone from todos" \
+		"$(printf '%s' "$TOOL_JSON" | jq "[.items[] | select(.id == \"$todo\")] | length")" 0 || return 1
+	remember MEM_TODO "$todo"
+	printf 'todo %s: outstanding, then done, then out of the list\n' "$todo"
+}
+
+# The other transport, and the same handlers behind it: a client that launches
+# `flowy mcp` as a subprocess speaks newline-delimited JSON-RPC over its pipes.
+# The token comes from the environment there, because there are no headers.
+stdio_transport() {
+	recall
+	local init notif call out line1 line2
+	# One message per line, so every one of these is built compact: a newline
+	# inside a message is a framing error on this transport, not whitespace.
+	init="$(jq -nc '{jsonrpc: "2.0", id: 1, method: "initialize",
+	                 params: {protocolVersion: "2024-11-05", capabilities: {},
+	                          clientInfo: {name: "gate", version: "0"}}}')" || return 1
+	# A notification has no id and must not be answered at all.
+	notif="$(jq -nc '{jsonrpc: "2.0", method: "notifications/initialized"}')" || return 1
+	call="$(jq -nc '{jsonrpc: "2.0", id: 2, method: "tools/call",
+	                 params: {name: "mem_write",
+	                          arguments: {title: "written over the stdio transport",
+	                                      body: "this one carries the word splutterfig",
+	                                      scope: "personal", tags: ["stdio"]}}}')" || return 1
+
+	out="$(printf '%s\n%s\n%s\n' "$init" "$notif" "$call" |
+		FLOWY_TOKEN="$TOKEN_A" ./flowy mcp 2>"$WORK/mcp-stdio.log")" || {
+		printf 'flowy mcp exited non-zero:\n' >&2
+		cat "$WORK/mcp-stdio.log" >&2
+		return 1
+	}
+	want_eq "one response per request, and none for the notification" \
+		"$(printf '%s\n' "$out" | wc -l)" 2 || return 1
+
+	line1="$(printf '%s\n' "$out" | sed -n 1p)"
+	line2="$(printf '%s\n' "$out" | sed -n 2p)"
+	want_eq "the first response is the handshake" \
+		"$(printf '%s' "$line1" | jq -r .result.serverInfo.name)" flowy || return 1
+	want_eq "it carries the same protocol version" \
+		"$(printf '%s' "$line1" | jq -r .result.protocolVersion)" 2024-11-05 || return 1
+	if [ "$(printf '%s' "$line1" | jq -r '.result.instructions | length')" -lt 500 ]; then
+		printf 'the stdio handshake returned no instructions\n' >&2
+		return 1
+	fi
+
+	local item
+	item="$(printf '%s' "$line2" | jq -r '.result.content[0].text' | jq -r .item.id)"
+	if [ -z "$item" ] || [ "$item" = null ]; then
+		printf 'the stdio tools/call returned no item:\n%s\n' "$line2" >&2
+		return 1
+	fi
+	remember MEM_STDIO "$item"
+	printf 'stdio: handshake and mem_write %s, over pipes\n' "$item"
+}
+
+# One store. The item was written by a process talking over pipes and is read
+# back by a client talking JSON-RPC to a socket - which is the whole claim the
+# MCP endpoint makes.
+one_store_both_transports() {
+	recall
+	want_tool mem_search "$TOKEN_A" '{"q": "splutterfig"}' || return 1
+	want_eq "hits over http for what stdio wrote" "$(tv .count)" 1 || return 1
+	want_eq "the hit" "$(tv '.items[0].id')" "$MEM_STDIO" || return 1
+	want_tool mem_read "$TOKEN_A" "{\"id\": \"$MEM_STDIO\"}" || return 1
+	want_eq "title" "$(tv .item.title)" "written over the stdio transport" || return 1
+	printf 'the stdio write is readable over http: %s\n' "$MEM_STDIO"
+}
+
 # ---------------------------------------------------------------- environment
 
 say "environment"
@@ -616,7 +1010,7 @@ check "healthz reports the spine tables" \
 check "spine tables exist" "$WORK/smoke" schema
 
 say "subcommand stubs"
-for sub in mcp fuse sync; do
+for sub in fuse sync; do
 	check "flowy $sub is a stub" stub_says "$sub"
 done
 
@@ -689,6 +1083,48 @@ say "scope=all"
 check "scope=all does nothing for a principal who is not the operator" scope_all_ignored_for_others
 check "scope=all shows the operator the whole node" scope_all_works_for_the_operator
 
+# ------------------------------------------------------------------- phase 2
+#
+# Shared memory, over MCP. The same store and the same permission filter the
+# Phase 1 checks just walked, reached the way an agent reaches it.
+
+say "mcp server"
+MCP_PORT="$(free_port 8788)"
+DATABASE_URL="$DATABASE_URL" FLOWY_NODE=gate \
+	./flowy mcp --http "127.0.0.1:$MCP_PORT" >"$MCP_LOG" 2>&1 &
+MCP_PID=$!
+printf 'flowy mcp pid %s on 127.0.0.1:%s\n' "$MCP_PID" "$MCP_PORT"
+check "flowy mcp --http comes up" "$WORK/smoke" healthz "http://127.0.0.1:$MCP_PORT/healthz"
+
+say "the mcp handshake"
+check "initialize answers without a token, with serverInfo and instructions" mcp_handshake
+check "tools/list offers the five memory tools" mcp_tools_list
+check "flowy://instructions serves the same document" mcp_instructions_resource
+check "tools/call without a principal is refused" mcp_unauthenticated
+check "an unknown tool is refused" mcp_unknown_tool
+
+say "shared memory: writing and recalling"
+check "A writes a memory item, personal by default" a_writes_personal_memory
+check "A finds it by a word that appears only in the body" a_searches_own_memory
+check "A reads it back by id" a_reads_own_memory
+check "A lists it, and mem_list returns nothing but memory" a_lists_own_memory
+
+say "shared memory: the scope gate"
+check "pb holds a read grant on pa" pb_holds_a_grant_on_pa
+check "B cannot read or search A's personal memory, grant or no grant" b_cannot_reach_personal_memory
+check "A writes a memory at scope=shared" a_writes_shared_memory
+check "a second agent identity reads it" b_agent_reads_shared_memory
+check "and finds it by search, and in its todos" b_agent_searches_shared_memory
+
+say "todos"
+check "a todo is outstanding until it is done" todos_open_and_done
+
+say "the stdio transport"
+check "flowy mcp speaks JSON-RPC over pipes" stdio_transport
+check "what stdio wrote, http reads: one store" one_store_both_transports
+
+check "the mcp server survived the run" kill -0 "$MCP_PID"
+
 say "database, as a second client"
 check "psql sees the seeded tokens" psql_counts \
 	"SELECT count(*) FROM tokens WHERE project IN ('pa', 'pb', 'pc') OR agent_id IS NOT NULL"
@@ -698,15 +1134,27 @@ check "psql sees the tombstone still in the table, not deleted" psql_counts \
 	"SELECT count(*) FROM artifacts WHERE tombstone = true AND type = 'bug'"
 check "psql sees the search vector populated" psql_counts \
 	"SELECT count(*) FROM artifacts WHERE search @@ plainto_tsquery('english', 'flimberwock')"
+check "psql sees the memory the mcp endpoint wrote" psql_counts \
+	"SELECT count(*) FROM artifacts WHERE type = 'memory' AND kind IN ('note', 'todo', 'handoff')"
+check "psql sees a shared memory item in pa" psql_counts \
+	"SELECT count(*) FROM artifacts WHERE type = 'memory' AND visibility = 'shared' AND project = 'pa'"
+check "psql sees the memory writes in the event log" psql_counts \
+	"SELECT count(*) FROM events WHERE type = 'memory.write'"
 
 check "node survived the run" kill -0 "$SERVE_PID"
 
 # ------------------------------------------------------------------- verdict
 
 say "result"
-if [ "$failed" -ne 0 ] && [ -f "$SERVE_LOG" ]; then
-	printf 'serve log:\n'
-	indent <"$SERVE_LOG"
+if [ "$failed" -ne 0 ]; then
+	if [ -f "$SERVE_LOG" ]; then
+		printf 'serve log:\n'
+		indent <"$SERVE_LOG"
+	fi
+	if [ -f "$MCP_LOG" ]; then
+		printf 'mcp log:\n'
+		indent <"$MCP_LOG"
+	fi
 fi
 printf 'passed: %d failed: %d\n' "$passed" "$failed"
 [ "$failed" -eq 0 ] || exit 1

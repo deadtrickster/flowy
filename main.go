@@ -1,7 +1,9 @@
 // Command flowy is the host-side Handoff Fabric node.
 //
-// Phase 0 is the skeleton and the schema spine: a server that answers /healthz
-// against the database, and stubs for the surfaces later phases fill in.
+// Phase 0 is the skeleton and the schema spine, Phase 1 the typed API and the
+// permission filter, Phase 2 the MCP surface: shared memory that every agent -
+// Claude Code, GLM, opencode, Claude on the web - reads and writes over one
+// store.
 package main
 
 import (
@@ -15,7 +17,8 @@ usage: flowy <command> [flags]
 
 commands:
   serve    run the HTTP server (env: DATABASE_URL, FLOWY_ADDR, FLOWY_NODE)
-  mcp      MCP surface for agents (not yet)
+  mcp      MCP server for agents: stdio by default, --http :PORT for a remote
+           client (env: DATABASE_URL, FLOWY_TOKEN, FLOWY_NODE)
   fuse     FUSE mount of artifacts (not yet)
   sync     peer replication (not yet)
   version  print the version and exit
@@ -23,7 +26,7 @@ commands:
 `
 
 // version is the node's build version.
-const version = "0.2.0-phase1"
+const version = "0.3.0-phase2"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -38,7 +41,10 @@ func main() {
 			os.Exit(1)
 		}
 	case "mcp":
-		fmt.Println("mcp: not yet")
+		if err := mcpCmd(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "flowy mcp: %v\n", err)
+			os.Exit(1)
+		}
 	case "fuse":
 		fmt.Println("fuse: not yet")
 	case "sync":
