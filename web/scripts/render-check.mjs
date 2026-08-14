@@ -40,9 +40,16 @@ const virtualConsole = new VirtualConsole();
 virtualConsole.on("jsdomError", (err) => problems.push(err.message));
 virtualConsole.on("error", (...args) => problems.push(args.join(" ")));
 
+//   node scripts/render-check.mjs [BASE_URL TOKEN EXPECTED_TEXT [PATH]]
+//
+// PATH is the route to mount at, and defaults to the room view. Phase 4 passes
+// /inbox, which is the same app at another deep link: the check is that the
+// route the server falls back to is a route the bundle can actually paint.
+const [base, token, expected, path = "/chat/general"] = process.argv.slice(2);
+
 const dom = new JSDOM(index, {
   // A deep link, because that is the path the server's SPA fallback exists for.
-  url: "http://127.0.0.1:8787/chat/general",
+  url: `http://127.0.0.1:8787${path}`,
   pretendToBeVisual: true,
   virtualConsole,
 });
@@ -103,11 +110,8 @@ window.ResizeObserver = globalThis.ResizeObserver;
 window.Element.prototype.scrollIntoView = () => {};
 
 // With a node to talk to, the check goes further: sign in with a real token and
-// wait for the room to fill from the API. Without one it stays offline and only
+// wait for the view to fill from the API. Without one it stays offline and only
 // asserts the app mounts.
-//
-//   node scripts/render-check.mjs [BASE_URL TOKEN EXPECTED_TEXT]
-const [base, token, expected] = process.argv.slice(2);
 if (base && token) {
   const upstream = globalThis.fetch;
   // The bundle asks for /api/... , which is relative to the page in a browser
@@ -124,7 +128,7 @@ const root = window.document.getElementById("root");
 const rendered = () => root?.textContent ?? "";
 
 if (expected) {
-  // The room is filled by a fetch and then kept up to date by a long poll, so
+  // The view is filled by a fetch and then kept up to date by a long poll, so
   // the text arrives a beat after the mount does.
   const deadline = Date.now() + 15000;
   while (!rendered().includes(expected) && Date.now() < deadline) {
@@ -133,8 +137,14 @@ if (expected) {
 }
 
 const text = rendered();
-const want = ["flowy", "#general", "bearer token", "thread"];
-if (expected) want.push(expected, "watching");
+// The frame is on every route; the rest of the list is what this one route has
+// to have painted for the check to mean anything.
+const want = ["flowy", "inbox"];
+if (path === "/chat/general") {
+  want.push("#general", "bearer token", "thread");
+  if (expected) want.push("watching");
+}
+if (expected) want.push(expected);
 const missing = want.filter((phrase) => !text.includes(phrase));
 
 if (problems.length > 0) {
@@ -146,9 +156,9 @@ if (!root || root.children.length === 0) {
   process.exit(1);
 }
 if (missing.length > 0) {
-  console.error(`the room view is missing ${missing.join(", ")} - it rendered:\n${text}`);
+  console.error(`${path} is missing ${missing.join(", ")} - it rendered:\n${text}`);
   process.exit(1);
 }
 
-console.log(`mounted ${bundle} at /chat/general: ${text.slice(0, 140).replace(/\s+/g, " ")}`);
+console.log(`mounted ${bundle} at ${path}: ${text.slice(0, 140).replace(/\s+/g, " ")}`);
 process.exit(0);

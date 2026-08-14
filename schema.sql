@@ -123,7 +123,19 @@ CREATE TABLE IF NOT EXISTS events (
     created  timestamptz DEFAULT now()
 );
 
--- Handoffs. state: open|accepted|done|dropped.
+-- Handoffs. One row is one assignment: this artifact, from this person to that
+-- one, with the chat thread it opened and where it got to.
+--
+-- state: open|delegated|done.
+--   open      - handed over, waiting for the person
+--   delegated - handed on to that person's agent (assignee_agent), which is what
+--               users.auto_delegate does at assignment time
+--   done      - finished, by either side
+--
+-- The share that lets to_user read the artifact is a grants row written by the
+-- same operation and carrying the same hlc reading; the conversation is the
+-- events whose thread is this row's. A task names both and owns neither, so
+-- each keeps the permission filter it already had.
 CREATE TABLE IF NOT EXISTS tasks (
     id             text PRIMARY KEY,
     artifact       text,
@@ -167,6 +179,17 @@ CREATE INDEX IF NOT EXISTS grants_to_project_idx      ON grants (to_project);
 CREATE INDEX IF NOT EXISTS grants_from_project_idx    ON grants (from_project);
 CREATE INDEX IF NOT EXISTS tasks_to_user_state_idx    ON tasks (to_user, state);
 CREATE INDEX IF NOT EXISTS tasks_artifact_idx         ON tasks (artifact);
+
+-- The event filter asks one more question since Phase 4: is this event's thread
+-- a thread some task of mine opened. That is a lookup by thread on every read of
+-- the log, so it gets its own index.
+CREATE INDEX IF NOT EXISTS tasks_thread_idx           ON tasks (thread);
+CREATE INDEX IF NOT EXISTS tasks_from_user_idx        ON tasks (from_user);
+CREATE INDEX IF NOT EXISTS tasks_assignee_agent_idx   ON tasks (assignee_agent);
+
+-- A status trail is read by artifact and by type: "every status move on this
+-- bug, in order".
+CREATE INDEX IF NOT EXISTS events_artifact_type_idx   ON events (artifact, type);
 
 -- The permission filter asks two questions of grants on every read: is there a
 -- project-wide grant along this edge, and is this one artifact shared with this

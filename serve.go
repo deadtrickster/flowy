@@ -115,6 +115,8 @@ var apiRoutes = []string{
 	"GET /api/artifacts",
 	"GET /api/artifact/{id}",
 	"POST /api/artifact/{id}/delete",
+	"POST /api/artifact/{id}/status",
+	"GET /api/artifact/{id}/history",
 	"GET /api/search",
 	"POST /api/events",
 	"GET /api/events",
@@ -122,6 +124,12 @@ var apiRoutes = []string{
 	"GET /api/chat/{room}",
 	"GET /api/chat/{room}/wait",
 	"GET /api/inbox",
+	"GET /api/inbox/tasks",
+	"POST /api/assign",
+	"GET /api/task/{id}",
+	"POST /api/task/{id}/delegate",
+	"POST /api/task/{id}/state",
+	"PUT /api/me/auto_delegate",
 	"POST /api/grants",
 	"GET /api/whoami",
 	"GET /api/node",
@@ -148,6 +156,8 @@ func (s *server) routes() http.Handler {
 	api.HandleFunc("GET /api/artifacts", s.handleListArtifacts)
 	api.HandleFunc("GET /api/artifact/{id}", s.handleGetArtifact)
 	api.HandleFunc("POST /api/artifact/{id}/delete", s.handleDeleteArtifact)
+	api.HandleFunc("POST /api/artifact/{id}/status", s.handleArtifactStatus)
+	api.HandleFunc("GET /api/artifact/{id}/history", s.handleArtifactHistory)
 	api.HandleFunc("GET /api/search", s.handleSearch)
 	api.HandleFunc("POST /api/events", s.handleAppendEvent)
 	api.HandleFunc("GET /api/events", s.handleListEvents)
@@ -155,6 +165,14 @@ func (s *server) routes() http.Handler {
 	api.HandleFunc("GET /api/chat/{room}", s.handleChatRead)
 	api.HandleFunc("GET /api/chat/{room}/wait", s.handleChatWait)
 	api.HandleFunc("GET /api/inbox", s.handleInbox)
+	// Assignment and the handoff it opens. /api/inbox/tasks is a longer pattern
+	// than /api/inbox, so the mux ranks it first and the two do not collide.
+	api.HandleFunc("GET /api/inbox/tasks", s.handleInboxTasks)
+	api.HandleFunc("POST /api/assign", s.handleAssign)
+	api.HandleFunc("GET /api/task/{id}", s.handleGetTask)
+	api.HandleFunc("POST /api/task/{id}/delegate", s.handleDelegateTask)
+	api.HandleFunc("POST /api/task/{id}/state", s.handleTaskState)
+	api.HandleFunc("PUT /api/me/auto_delegate", s.handleAutoDelegate)
 	api.HandleFunc("POST /api/grants", s.handleCreateGrant)
 	api.HandleFunc("GET /api/whoami", s.handleWhoami)
 	api.HandleFunc("GET /api/node", s.handleNode)
@@ -227,7 +245,7 @@ func (s *server) handleNode(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"node":    s.node,
 		"version": version,
-		"phase":   3,
+		"phase":   4,
 		"console": s.console != nil && s.console.index != nil,
 		"routes":  append([]string{"GET /healthz", "GET /version"}, apiRoutes...),
 	})

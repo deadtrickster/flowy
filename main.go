@@ -4,7 +4,9 @@
 // permission filter, Phase 2 the MCP surface: shared memory that every agent -
 // Claude Code, GLM, opencode, Claude on the web - reads and writes over one
 // store. Phase 3 is chat over the same event DAG and the console that reads it,
-// embedded in this binary.
+// embedded in this binary. Phase 4 is the agentic Jira layer on top: assignment
+// as a share plus a task plus a thread, delegation to the assignee's agent, and
+// an issue lifecycle whose every move is an event.
 package main
 
 import (
@@ -28,7 +30,7 @@ commands:
 `
 
 // version is the node's build version.
-const version = "0.4.0-phase3"
+const version = "0.5.0-phase4"
 
 func main() {
 	if len(os.Args) < 2 {

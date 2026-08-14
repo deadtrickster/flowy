@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
+import { StatusControl } from "@/components/StatusControl";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { type Artifact, api } from "@/lib/api";
+import { type Artifact, LIFECYCLE_TYPES, api } from "@/lib/api";
 import { useSession } from "@/lib/session";
 
 /**
@@ -77,6 +78,11 @@ export function ArtifactView() {
               </div>
             </CardHeader>
             <CardContent className="flex flex-col gap-3">
+              {/* Only the types that have a lifecycle get the control. A
+                  transcript has no status to move, and the node would say so. */}
+              {LIFECYCLE_TYPES.includes(artifact.type) ? (
+                <StatusControl artifact={artifact} onMoved={setArtifact} />
+              ) : null}
               <pre className="whitespace-pre-wrap break-words font-sans text-sm">
                 {artifact.body}
               </pre>

@@ -136,6 +136,16 @@ func ArtifactFilterSQL(p *Principal, alias string, a *args, scopeAll bool) strin
 // EventFilterSQL narrows the event log the same way, on the event's project.
 // Events carry no visibility column, so the floor is the project-less event: it
 // belongs to whoever wrote it, and only they read it back.
+//
+// The second half is the assignment thread. A handoff crosses a project
+// boundary by definition - the whole point of it is that somebody in another
+// project now has the work - so a thread that a task names is readable by the
+// two people the task is between and by the agent it was delegated to,
+// whichever project each of them writes from. Without it an assignment would
+// open a conversation only one side could read, which is not a conversation.
+//
+// It is a widening and it is deliberately narrow: it reaches only events whose
+// thread is named by a tasks row, and only for the parties named on that row.
 func EventFilterSQL(p *Principal, alias string, a *args, scopeAll bool) string {
 	if p == nil {
 		return "FALSE"
@@ -148,16 +158,21 @@ func EventFilterSQL(p *Principal, alias string, a *args, scopeAll bool) string {
 	project := a.next(p.Project)
 
 	return strings.NewReplacer("{a}", alias, "{user}", user, "{agent}", agent, "{project}", project).Replace(
-		`(CASE WHEN {a}.project IS NULL
-		       THEN ({a}.actor = {user} AND {user} <> '')
-		         OR ({a}.actor = {agent} AND {agent} <> '')
-		       ELSE {a}.project = {project} AND {project} <> ''
-		         OR EXISTS (SELECT 1 FROM grants g
-		                     WHERE coalesce(g.tombstone, false) = false
-		                       AND g.artifact IS NULL
-		                       AND g.from_project = {project} AND {project} <> ''
-		                       AND g.to_project = {a}.project)
-		  END)`)
+		`((CASE WHEN {a}.project IS NULL
+		        THEN ({a}.actor = {user} AND {user} <> '')
+		          OR ({a}.actor = {agent} AND {agent} <> '')
+		        ELSE {a}.project = {project} AND {project} <> ''
+		          OR EXISTS (SELECT 1 FROM grants g
+		                      WHERE coalesce(g.tombstone, false) = false
+		                        AND g.artifact IS NULL
+		                        AND g.from_project = {project} AND {project} <> ''
+		                        AND g.to_project = {a}.project)
+		   END)
+		  OR EXISTS (SELECT 1 FROM tasks t
+		              WHERE t.thread = {a}.thread AND coalesce({a}.thread, '') <> ''
+		                AND (t.from_user = {user} AND {user} <> ''
+		                  OR t.to_user = {user} AND {user} <> ''
+		                  OR t.assignee_agent = {agent} AND {agent} <> '')))`)
 }
 
 // PrincipalForToken resolves a bearer token. A token that names only an agent

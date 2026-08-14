@@ -1,4 +1,4 @@
-import { Activity, Hash, Home as HomeIcon } from "lucide-react";
+import { Activity, Hash, Home as HomeIcon, Inbox as InboxIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import { NavLink } from "react-router-dom";
 
@@ -29,6 +29,10 @@ export function Shell({ children }: { children: ReactNode }) {
           <NavLink to="/" className={navClass} end>
             <HomeIcon className="h-4 w-4" />
             overview
+          </NavLink>
+          <NavLink to="/inbox" className={navClass}>
+            <InboxIcon className="h-4 w-4" />
+            inbox
           </NavLink>
           <NavLink to="/metrics" className={navClass}>
             <Activity className="h-4 w-4" />

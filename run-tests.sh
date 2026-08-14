@@ -1288,6 +1288,366 @@ unknown_api_paths_still_404() {
 	printf 'unknown api paths 404 as json, and 401 first without a token\n'
 }
 
+# ------------------------------------------------------------ phase 4 helpers
+#
+# Assignment, delegation and the issue lifecycle, driven over HTTP the way the
+# permission checks are: what is being tested is what the other side of a
+# handoff can see and do, and that is only true if it is true over the wire.
+
+# new_artifact TOKEN TYPE TITLE - creates one and prints its id.
+new_artifact() {
+	local token=$1 type=$2 title=$3
+	api POST "$token" /api/artifacts \
+		"$(jq -nc --arg t "$type" --arg ti "$title" '{type: $t, title: $ti, body: $ti}')" || return 1
+	if [ "$API_STATUS" != 200 ]; then
+		printf 'creating a %s came back %s:\n%s\n' "$type" "$API_STATUS" "$API_BODY" >&2
+		return 1
+	fi
+	jqv .id
+}
+
+# assign_as TOKEN ARTIFACT TO_USER [MESSAGE] - one assignment. The response
+# lands in API_BODY like any other.
+assign_as() {
+	local token=$1 artifact=$2 to=$3 msg=${4-}
+	local body
+	body="$(jq -nc --arg a "$artifact" --arg u "$to" --arg n "$msg" \
+		'{artifact: $a, to_user: $u} + (if $n == "" then {} else {note: $n} end)')"
+	api POST "$token" /api/assign "$body"
+}
+
+# move_status TOKEN ARTIFACT STATUS - one lifecycle transition.
+move_status() {
+	api POST "$1" "/api/artifact/$2/status" "$(jq -nc --arg s "$3" '{status: $s}')"
+}
+
+# task_state TOKEN TASK STATE - one task state move.
+task_state() {
+	api POST "$1" "/api/task/$2/state" "$(jq -nc --arg s "$3" '{state: $s}')"
+}
+
+# ------------------------------------------------------------- phase 4 checks
+
+# The artifact the handoff is about. It lives in pc, which nobody holds a grant
+# into - the pb -> pa grant Phase 1 issued would otherwise be what lets B read
+# it, and then the assignment would prove nothing.
+a_creates_the_gearbox_bug() {
+	recall
+	local id
+	id="$(new_artifact "$TOKEN_A_PC" bug "the gearbox whines under load")" || return 1
+	remember GEARBOX "$id"
+	printf 'bug %s in pc\n' "$id"
+}
+
+b_cannot_read_the_gearbox() {
+	recall
+	want_status 404 GET "$TOKEN_B" "/api/artifact/$GEARBOX"
+}
+
+# One request writes three rows: the share, the task, and the message that opens
+# the thread. All three come back, so a client knows what it just created.
+a_assigns_the_gearbox_to_b() {
+	recall
+	assign_as "$TOKEN_A_PC" "$GEARBOX" "$USER_B" "please take the gearbox" || return 1
+	want_eq "status" "$API_STATUS" 200 || return 1
+	want_eq "the task is about the gearbox" "$(jqv .artifact)" "$GEARBOX" || return 1
+	want_eq "handed over by A" "$(jqv .from_user)" "$USER_A" || return 1
+	want_eq "handed to B" "$(jqv .to_user)" "$USER_B" || return 1
+	want_eq "in the artifact's project" "$(jqv .project)" pc || return 1
+	want_eq "the share names the artifact" "$(jqv .grant.artifact)" "$GEARBOX" || return 1
+	want_eq "and is subject to B" "$(jqv .grant.subject)" "$USER_B" || return 1
+	want_eq "the opening message is chat" "$(jqv .opening.type)" chat || return 1
+	# One operation: the three rows carry the same clock reading.
+	want_eq "share and task share a reading" "$(jqv .grant.hlc)" "$(jqv .hlc)" || return 1
+	want_eq "and so does the opening message" "$(jqv .opening.seq_hlc)" "$(jqv .hlc)" || return 1
+	remember TASK1 "$(jqv .id)"
+	remember THREAD1 "$(jqv .thread)"
+	printf 'task %s in thread %s\n' "$(jqv .id)" "$(jqv .thread)"
+}
+
+# The share landed: B reads an artifact in a project B is not in and holds no
+# project-wide grant into.
+b_reads_the_gearbox_now() {
+	recall
+	api GET "$TOKEN_B" "/api/artifact/$GEARBOX" || return 1
+	want_eq "status" "$API_STATUS" 200 || return 1
+	want_eq "title" "$(jqv .title)" "the gearbox whines under load" || return 1
+	printf 'B reads %s across the project boundary\n' "$GEARBOX"
+}
+
+the_task_is_in_bs_inbox() {
+	recall
+	api GET "$TOKEN_B" /api/inbox/tasks || return 1
+	want_eq "status" "$API_STATUS" 200 || return 1
+	local mine
+	mine="$(printf '%s' "$API_BODY" | jq --arg id "$TASK1" '[.tasks[] | select(.id == $id)]')"
+	want_eq "the task is there once" "$(printf '%s' "$mine" | jq 'length')" 1 || return 1
+	want_eq "with its artifact" "$(printf '%s' "$mine" | jq -r '.[0].artifact')" "$GEARBOX" || return 1
+	want_eq "its thread" "$(printf '%s' "$mine" | jq -r '.[0].thread')" "$THREAD1" || return 1
+	want_eq "its state" "$(printf '%s' "$mine" | jq -r '.[0].state')" delegated || return 1
+	want_eq "and the title of the work" \
+		"$(printf '%s' "$mine" | jq -r '.[0].artifact_title')" "the gearbox whines under load" || return 1
+	printf 'inbox: %s\n' "$(printf '%s' "$mine" | jq -rc '.[0] | {state, artifact_title}')"
+}
+
+# The thread is the conversation, and both sides are in it - B is in another
+# project and reads it anyway, because the task names it.
+the_thread_opened_with_a_message() {
+	recall
+	api GET "$TOKEN_B" "/api/chat/handoffs?thread=$THREAD1" || return 1
+	want_eq "status" "$API_STATUS" 200 || return 1
+	want_eq "one message so far" "$(jqv '.events | length')" 1 || return 1
+	want_eq "said by A" "$(jqv '.events[0].actor')" "$USER_A" || return 1
+	want_eq "and it says what it is" "$(jqv '.events[0].body')" "please take the gearbox" || return 1
+	want_eq "it names the task" "$(jqv '.events[0].meta.task')" "$TASK1" || return 1
+
+	# B answers in the same thread, and A sees the answer: one thread, two
+	# projects, no grant between them.
+	api POST "$TOKEN_B" /api/chat/handoffs/say \
+		"$(jq -nc --arg t "$THREAD1" '{body: "on it", thread: $t}')" || return 1
+	want_eq "B could say something" "$API_STATUS" 200 || return 1
+	api GET "$TOKEN_A" "/api/events?thread=$THREAD1" || return 1
+	want_eq "A sees both halves" "$(jqv '[.events[].body] | join(",")')" "please take the gearbox,on it" || return 1
+	printf 'thread %s carries both sides\n' "$THREAD1"
+}
+
+# auto_delegate defaults to true, so the task arrived already handed on.
+the_new_task_arrived_delegated() {
+	recall
+	api GET "$TOKEN_B" "/api/task/$TASK1" || return 1
+	want_eq "status" "$API_STATUS" 200 || return 1
+	want_eq "state" "$(jqv .state)" delegated || return 1
+	want_eq "assignee agent" "$(jqv .assignee_agent)" "$AGENT_B" || return 1
+	printf 'task %s went straight to agent %s\n' "$TASK1" "$AGENT_B"
+}
+
+b_turns_auto_delegate_off() {
+	recall
+	api PUT "$TOKEN_B" /api/me/auto_delegate '{"on":false}' || return 1
+	want_eq "status" "$API_STATUS" 200 || return 1
+	want_eq "auto_delegate" "$(jqv .auto_delegate)" false || return 1
+	want_eq "it is B's own row" "$(jqv .id)" "$USER_B" || return 1
+	printf 'B now decides case by case\n'
+}
+
+# With the policy off the next assignment waits for the person.
+the_next_assignment_waits_for_b() {
+	recall
+	local id
+	id="$(new_artifact "$TOKEN_A_PC" bug "the sprocket rattles")" || return 1
+	remember SPROCKET "$id"
+	assign_as "$TOKEN_A_PC" "$id" "$USER_B" "and this one too" || return 1
+	want_eq "status" "$API_STATUS" 200 || return 1
+	want_eq "state" "$(jqv .state)" open || return 1
+	want_eq "no agent on it" "$(jqv .assignee_agent)" null || return 1
+	remember TASK2 "$(jqv .id)"
+	remember THREAD2 "$(jqv .thread)"
+	printf 'task %s waits for B\n' "$(jqv .id)"
+}
+
+b_delegates_it_by_hand() {
+	recall
+	api POST "$TOKEN_B" "/api/task/$TASK2/delegate" '{}' || return 1
+	want_eq "status" "$API_STATUS" 200 || return 1
+	want_eq "state" "$(jqv .task.state)" delegated || return 1
+	want_eq "agent" "$(jqv .task.assignee_agent)" "$AGENT_B" || return 1
+	want_eq "the move is in the log" "$(jqv .event.body)" "open->delegated" || return 1
+	want_eq "in the task's own thread" "$(jqv .event.thread)" "$THREAD2" || return 1
+	want_eq "as a child of what was there" "$(jqv '.event.parents | length')" 1 || return 1
+	printf 'B handed it to %s\n' "$AGENT_B"
+}
+
+# Delegation is the receiver's call. The sender is a party to the task and can
+# still read it, so this is 403 rather than 404 - the refusal is about the verb.
+only_the_assignee_delegates() {
+	recall
+	want_status 403 POST "$TOKEN_A" "/api/task/$TASK2/delegate" '{}' || return 1
+	want_status 404 POST "$TOKEN_OP" "/api/task/$TASK2/delegate" '{}' || return 1
+	printf 'the sender cannot delegate, and a stranger cannot see it to try\n'
+}
+
+# An agent token resolves to its user, so B's agent moves B's task.
+bs_agent_finishes_the_task() {
+	recall
+	task_state "$TOKEN_B_AGENT" "$TASK2" "done" || return 1
+	want_eq "status" "$API_STATUS" 200 || return 1
+	want_eq "state" "$(jqv .task.state)" "done" || return 1
+	want_eq "the move is in the log" "$(jqv .event.body)" "delegated->done" || return 1
+	want_eq "written by the agent" "$(jqv .event.actor)" "$AGENT_B" || return 1
+	api GET "$TOKEN_A" "/api/task/$TASK2" || return 1
+	want_eq "and the sender sees it closed" "$(jqv .state)" "done" || return 1
+	printf 'agent %s closed it\n' "$AGENT_B"
+}
+
+an_unknown_state_is_refused() {
+	recall
+	want_status 400 POST "$TOKEN_B" "/api/task/$TASK1/state" '{"state":"frozen"}' || return 1
+	printf 'state must be one of open, delegated, done\n'
+}
+
+# A handoff is between two people. A third - here the node's own operator, who
+# is the most privileged principal there is - cannot see it or touch it.
+a_third_party_sees_no_task() {
+	recall
+	want_status 404 GET "$TOKEN_OP" "/api/task/$TASK1" || return 1
+	want_status 404 POST "$TOKEN_OP" "/api/task/$TASK1/state" '{"state":"done"}' || return 1
+	api GET "$TOKEN_OP" /api/inbox/tasks || return 1
+	want_eq "neither task is in a stranger's inbox" \
+		"$(printf '%s' "$API_BODY" | jq --arg a "$TASK1" --arg b "$TASK2" \
+			'[.tasks[] | select(.id == $a or .id == $b)] | length')" 0 || return 1
+	# And the state it could not move is the state it was.
+	api GET "$TOKEN_B" "/api/task/$TASK1" || return 1
+	want_eq "the task did not move" "$(jqv .state)" delegated || return 1
+	printf 'the operator gets 404 on a handoff it is not party to\n'
+}
+
+assigning_a_personal_artifact_is_refused() {
+	recall
+	api POST "$TOKEN_A" /api/artifacts \
+		'{"type": "note", "title": "a note to self", "visibility": "personal"}' || return 1
+	want_eq "create status" "$API_STATUS" 200 || return 1
+	want_status 400 POST "$TOKEN_A" /api/assign \
+		"$(jq -nc --arg a "$(jqv .id)" --arg u "$USER_B" '{artifact: $a, to_user: $u}')" || return 1
+	printf 'a personal artifact has no project to share it into\n'
+}
+
+assigning_something_unreadable_is_404() {
+	recall
+	# B has a share on the gearbox but not on the sprocket's project as a whole,
+	# and neither on an artifact that does not exist.
+	want_status 404 POST "$TOKEN_B" /api/assign \
+		"$(jq -nc --arg u "$USER_A" '{artifact: "01NOSUCHARTIFACT", to_user: $u}')" || return 1
+	printf 'you cannot hand on what you cannot read\n'
+}
+
+# ------------------------------------------------------------ the lifecycle
+
+gearbox_walks_the_workflow() {
+	recall
+	local from=open to
+	for to in triaged in-progress in-review "done"; do
+		move_status "$TOKEN_A_PC" "$GEARBOX" "$to" || return 1
+		want_eq "moving to $to" "$API_STATUS" 200 || return 1
+		want_eq "the artifact says $to" "$(jqv .artifact.status)" "$to" || return 1
+		want_eq "the event records the move" "$(jqv .event.body)" "$from->$to" || return 1
+		want_eq "as a status event" "$(jqv .event.type)" status || return 1
+		want_eq "naming the artifact" "$(jqv .event.artifact)" "$GEARBOX" || return 1
+		want_eq "and the actor" "$(jqv .event.actor)" "$USER_A" || return 1
+		from="$to"
+	done
+	printf 'open -> triaged -> in-progress -> in-review -> done\n'
+}
+
+history_reads_in_order() {
+	recall
+	api GET "$TOKEN_A_PC" "/api/artifact/$GEARBOX/history" || return 1
+	want_eq "status" "$API_STATUS" 200 || return 1
+	want_eq "the trail" "$(jqv '[.events[].body] | join(",")')" \
+		"open->triaged,triaged->in-progress,in-progress->in-review,in-review->done" || return 1
+	want_eq "each move names the one before it" \
+		"$(printf '%s' "$API_BODY" | jq '[range(1; (.events | length)) as $i
+			| .events[$i].parents[0] == .events[$i - 1].id] | all')" true || return 1
+	want_eq "the first opens the trail" "$(jqv '.events[0].parents | length')" 0 || return 1
+	want_eq "current status" "$(jqv .status)" "done" || return 1
+	want_eq "and done is terminal" "$(jqv '.next | length')" 0 || return 1
+	printf '%s\n' "$(jqv '[.events[].body] | join(" ")')"
+}
+
+nothing_moves_out_of_a_terminal_status() {
+	recall
+	move_status "$TOKEN_A_PC" "$GEARBOX" triaged || return 1
+	want_eq "a move out of done" "$API_STATUS" 409 || return 1
+	api GET "$TOKEN_A_PC" "/api/artifact/$GEARBOX" || return 1
+	want_eq "and the artifact did not move" "$(jqv .status)" "done" || return 1
+	printf 'done is where it stops\n'
+}
+
+the_workflow_has_no_shortcuts() {
+	recall
+	local id
+	id="$(new_artifact "$TOKEN_A_PC" bug "the belt slips")" || return 1
+	move_status "$TOKEN_A_PC" "$id" in-review || return 1
+	want_eq "open straight to in-review" "$API_STATUS" 409 || return 1
+	move_status "$TOKEN_A_PC" "$id" nowhere || return 1
+	want_eq "and a status nobody has heard of" "$API_STATUS" 400 || return 1
+	api GET "$TOKEN_A_PC" "/api/artifact/$id/history" || return 1
+	want_eq "neither wrote an event" "$(jqv '.events | length')" 0 || return 1
+	want_eq "an artifact with no status reads as open" "$(jqv .status)" open || return 1
+	printf 'a status that can jump is a status nobody trusts\n'
+}
+
+a_wont_fix_is_a_terminal_exit() {
+	recall
+	local id
+	id="$(new_artifact "$TOKEN_A_PC" feature "dark mode for the console")" || return 1
+	move_status "$TOKEN_A_PC" "$id" triaged || return 1
+	want_eq "triaged" "$API_STATUS" 200 || return 1
+	move_status "$TOKEN_A_PC" "$id" wont-fix || return 1
+	want_eq "and out of the line" "$API_STATUS" 200 || return 1
+	want_eq "the move" "$(jqv .event.body)" "triaged->wont-fix" || return 1
+	api GET "$TOKEN_A_PC" "/api/artifact/$id/history" || return 1
+	want_eq "the trail" "$(jqv '[.events[].body] | join(",")')" "open->triaged,triaged->wont-fix" || return 1
+	want_eq "nowhere left to go" "$(jqv '.next | length')" 0 || return 1
+	printf 'wont-fix is an exit, not a step\n'
+}
+
+# The assignee moves the status of work that is not in their project, because
+# the share the assignment wrote is what makes them a participant.
+the_assignee_moves_the_status() {
+	recall
+	move_status "$TOKEN_B" "$SPROCKET" triaged || return 1
+	want_eq "B moves a bug in pa" "$API_STATUS" 200 || return 1
+	want_eq "the actor is B" "$(jqv .event.actor)" "$USER_B" || return 1
+	api GET "$TOKEN_B" "/api/artifact/$SPROCKET/history" || return 1
+	want_eq "and B reads the trail back" "$(jqv '[.events[].body] | join(",")')" "open->triaged" || return 1
+	api GET "$TOKEN_A_PC" "/api/artifact/$SPROCKET/history" || return 1
+	want_eq "so does A, the same trail" "$(jqv '[.events[].body] | join(",")')" "open->triaged" || return 1
+	printf 'one trail, both sides\n'
+}
+
+a_stranger_cannot_move_a_status() {
+	recall
+	# Another artifact in pc, shared with nobody: B has a share on the gearbox
+	# and none on this, and a status you cannot read is a status you cannot move.
+	local id
+	id="$(new_artifact "$TOKEN_A_PC" bug "the shaft is bent")" || return 1
+	want_status 404 POST "$TOKEN_B" "/api/artifact/$id/status" '{"status":"triaged"}' || return 1
+	want_status 404 GET "$TOKEN_B" "/api/artifact/$id/history" || return 1
+	printf 'an artifact you cannot read has no status you can move\n'
+}
+
+only_the_types_with_a_lifecycle_have_one() {
+	recall
+	local id
+	id="$(new_artifact "$TOKEN_A_PC" transcript "a session")" || return 1
+	want_status 400 POST "$TOKEN_A_PC" "/api/artifact/$id/status" '{"status":"triaged"}' || return 1
+	printf 'a transcript has no status to move\n'
+}
+
+# ---------------------------------------------------- phase 4 console checks
+
+# The inbox, mounted against the live node as B: the task the assignment wrote
+# has to be on the screen, with its state, or the view is a shell.
+console_renders_the_inbox() {
+	recall
+	cd "$ROOT/web" || return 1
+	node scripts/render-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_B" \
+		"the gearbox whines under load" /inbox
+}
+
+serves_the_inbox_route() {
+	recall
+	local root_body
+	www / || return 1
+	root_body="$WWW_BODY"
+	www /inbox || return 1
+	want_eq "status" "$WWW_STATUS" 200 || return 1
+	want_eq "the inbox is the app" "$WWW_BODY" "$root_body" || return 1
+	www "/task/$TASK1" || return 1
+	want_eq "and so is a task link" "$WWW_STATUS" 200 || return 1
+	printf '/inbox -> 200, and a task deep link with it\n'
+}
+
 # ---------------------------------------------------------------- environment
 
 say "environment"
@@ -1542,12 +1902,53 @@ say "rooms are scoped by project"
 check "a project with no grant sees none of the room" another_project_sees_none_of_the_room
 check "a project that holds a grant does" a_granted_project_does_see_the_room
 
+# ------------------------------------------------------------------- phase 4
+#
+# Assignment, delegation and the issue lifecycle. An assignment is a share plus
+# a task plus a thread written as one operation, so the checks below are mostly
+# about what the other side can suddenly do: read the artifact, answer in the
+# thread, hand the work to an agent, close it.
+
+say "assignment"
+check "A creates a bug in pc, which nobody has a grant into" a_creates_the_gearbox_bug
+check "B cannot read it" b_cannot_read_the_gearbox
+check "A assigns it to B: a share, a task and a thread in one operation" a_assigns_the_gearbox_to_b
+check "the share landed - B reads the artifact now" b_reads_the_gearbox_now
+check "the task is in B's inbox, with the work it is about" the_task_is_in_bs_inbox
+check "the thread opened with a message, and both sides are in it" the_thread_opened_with_a_message
+check "a personal artifact cannot be assigned" assigning_a_personal_artifact_is_refused
+check "neither can an artifact the caller cannot read" assigning_something_unreadable_is_404
+
+say "delegation"
+check "auto_delegate is on, so the task arrived already delegated" the_new_task_arrived_delegated
+check "B turns auto_delegate off" b_turns_auto_delegate_off
+check "the next assignment waits for B instead" the_next_assignment_waits_for_b
+check "B hands it to their agent" b_delegates_it_by_hand
+check "the sender cannot delegate somebody else's work" only_the_assignee_delegates
+check "B's agent closes the task" bs_agent_finishes_the_task
+check "a state that is not one of the three is refused" an_unknown_state_is_refused
+
+say "a handoff is between two people"
+check "a third party gets 404 on the task and cannot move it" a_third_party_sees_no_task
+
+say "the issue lifecycle"
+check "open -> triaged -> in-progress -> in-review -> done, each one an event" gearbox_walks_the_workflow
+check "history returns the trail in order, chained by parents" history_reads_in_order
+check "nothing moves out of a terminal status" nothing_moves_out_of_a_terminal_status
+check "the workflow has no shortcuts and no invented statuses" the_workflow_has_no_shortcuts
+check "wont-fix is a terminal exit from anywhere in the line" a_wont_fix_is_a_terminal_exit
+check "the assignee moves the status of work in another project" the_assignee_moves_the_status
+check "an artifact you cannot read has no status you can move" a_stranger_cannot_move_a_status
+check "only the types with a lifecycle have one" only_the_types_with_a_lifecycle_have_one
+
 say "the console, served"
 check "GET / is the app" serves_the_console_at_root
 check "the hashed bundle is served next to it" console_bundle_is_served
 check "any non-api path falls back to the same index" spa_fallback_serves_the_same_index
 check "unknown api paths are still 404" unknown_api_paths_still_404
 check "the console reads the room over the api and renders it" console_renders_the_room
+check "GET /inbox is the app, and so is a task link" serves_the_inbox_route
+check "the console renders B's inbox with the task in it" console_renders_the_inbox
 
 say "database, as a second client"
 check "psql sees the seeded tokens" psql_counts \
@@ -1570,6 +1971,27 @@ check "psql sees a reply carrying its parent" psql_counts \
 	"SELECT count(*) FROM events WHERE type = 'chat' AND array_length(parents, 1) = 1"
 check "psql sees both rooms called general, one per project" psql_counts \
 	"SELECT count(DISTINCT project) FROM events WHERE type = 'chat' AND room = 'general'"
+
+check "psql sees the tasks the assignments wrote" psql_counts \
+	"SELECT count(*) FROM tasks WHERE project = 'pc' AND from_user <> to_user"
+check "psql sees a task delegated to an agent" psql_counts \
+	"SELECT count(*) FROM tasks WHERE state = 'delegated' AND assignee_agent IS NOT NULL"
+check "psql sees a task that was closed" psql_counts \
+	"SELECT count(*) FROM tasks WHERE state = 'done'"
+check "psql sees the per-artifact share an assignment writes" psql_counts \
+	"SELECT count(*) FROM grants g JOIN tasks t ON t.artifact = g.artifact AND t.to_user = g.subject"
+check "psql sees the assignment threads in the chat log" psql_counts \
+	"SELECT count(*) FROM events WHERE type = 'chat' AND room = 'handoffs'"
+check "psql sees the task moves in the same threads" psql_counts \
+	"SELECT count(*) FROM events e JOIN tasks t ON t.thread = e.thread WHERE e.type = 'task'"
+check "psql sees the status trail" psql_counts \
+	"SELECT count(*) FROM events WHERE type = 'status' AND body = 'open->triaged'"
+check "psql sees a status event carrying its predecessor" psql_counts \
+	"SELECT count(*) FROM events WHERE type = 'status' AND array_length(parents, 1) = 1"
+check "psql sees the artifact ended where the trail says" psql_counts \
+	"SELECT count(*) FROM artifacts WHERE status = 'done' AND type = 'bug' AND project = 'pc'"
+check "psql sees auto_delegate switched off for one user" psql_counts \
+	"SELECT count(*) FROM users WHERE auto_delegate = false"
 
 check "node survived the run" kill -0 "$SERVE_PID"
 

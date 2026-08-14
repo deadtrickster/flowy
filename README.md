@@ -1,4 +1,4 @@
-# flowy - Handoff Fabric node (Phase 3)
+# flowy - Handoff Fabric node (Phase 4)
 
 The host-side node: one Go binary, one Postgres-wire database, and the schema
 spine every later phase rides on. Phase 0 was the skeleton - a server that
@@ -22,6 +22,16 @@ room - same log, same `seq_hlc` cursor, same `parents` DAG, same permission
 filter - so a human in the message box and an agent over MCP are writing to one
 place. The console is path-routed, embedded with `go:embed`, and served by
 `flowy serve` itself.
+
+Phase 4 is the agentic Jira layer: **assignment, delegation and an issue
+lifecycle**. Assigning an artifact is one operation that writes three rows under
+one clock reading - a share, so the assignee can read the work at all; a task,
+which is the state of the handoff; and a thread, opened with a message, so the
+conversation about it is the same log as everything else. If the assignee's
+`auto_delegate` is on, the task arrives already handed to their agent. And a
+bug moves `open -> triaged -> in-progress -> in-review -> done`, with `wont-fix`
+and `duplicate` as terminal exits, every move appending an event that names the
+one before it.
 
 ## Run the gate
 
@@ -264,6 +274,8 @@ and deletes are tombstones.
 | `GET /api/artifacts?type=&kind=&project=&status=` | `{"artifacts":[...]}`, permission-filtered, newest first, tombstones omitted |
 | `GET /api/artifact/{id}` | the artifact, or `404` if it is missing **or** out of reach |
 | `POST /api/artifact/{id}/delete` | tombstone it and bump the clock past the write it removes |
+| `POST /api/artifact/{id}/status` | move it through the lifecycle. Body: `status`. Returns `{artifact, event}`. `409` on a move the workflow does not allow, `404` on one you cannot read |
+| `GET /api/artifact/{id}/history` | `{"artifact","status","next":[...],"events":[...]}` - the status trail in order, and where it may go from here |
 | `GET /api/search?q=&type=&kind=&project=` | `{"query":..., "artifacts":[{..., "rank":...}]}`, ranked and permission-filtered |
 | `POST /api/events` | append. Body: `type` (required), `room`, `thread`, `parents`, `actor`, `artifact`, `body`, `meta`. `id` is a ULID, `seq_hlc` comes from the clock, the project is the principal's |
 | `GET /api/events?thread=&since=&room=&type=` | `{"events":[...]}` with `seq_hlc > since`, in log order, permission-filtered |
@@ -271,6 +283,12 @@ and deletes are tombstones.
 | `GET /api/chat/{room}?since=&thread=` | `{"room","events":[...],"since","cursor"}` with `seq_hlc > since`, in log order |
 | `GET /api/chat/{room}/wait?cursor=&window=` | long poll: blocks up to 25s for events after `cursor`, returns them or an empty list |
 | `GET /api/inbox?since=&room=` | chat you may see and did not write, across rooms |
+| `POST /api/assign` | hand work over. Body: `artifact`, `to_user`, `note?`. Returns the task, plus the `grant` and the `opening` message it wrote |
+| `GET /api/inbox/tasks?state=` | `{"tasks":[...]}` assigned to you or your agent, newest first, with the artifact's title and type joined in |
+| `GET /api/task/{id}` | the task, to a party to it. `404` to anybody else, including the operator |
+| `POST /api/task/{id}/delegate` | hand it to the assignee's agent. Body: `agent?`. Only the assignee may |
+| `POST /api/task/{id}/state` | move it: `open`\|`delegated`\|`done`. Either party may. Returns `{task, event}` |
+| `PUT /api/me/auto_delegate` | `{on: bool}` - your standing answer to inbound work |
 | `POST /api/grants` | issue a capability: `{from_project,to_project}` for a project-wide one, `{artifact,subject}` for a share |
 | `GET /api/whoami` | the principal this token resolves to |
 | `GET /api/node` | this node, its version and its routes |
@@ -325,6 +343,91 @@ curl -s -H "Authorization: Bearer $TOKEN" '127.0.0.1:8787/api/chat/general?since
 curl -s -H "Authorization: Bearer $TOKEN" '127.0.0.1:8787/api/chat/general/wait?cursor=123'
 ```
 
+## Assignment, delegation and the lifecycle
+
+Handing work to somebody who is not in your project needs three things to be
+true at once, so `POST /api/assign` writes all three under **one clock
+reading**:
+
+1. a **share** - a `grants` row for this one artifact, subject to the assignee.
+   A task pointing at something the other side gets a `404` on is not a handoff,
+   it is a riddle;
+2. a **task** - the `tasks` row, which is the state of the handoff and the only
+   thing either side has to poll;
+3. a **thread** - opened with a chat message, in the `handoffs` room, so the
+   conversation about the work is in the same log as everything else rather
+   than in a comment field.
+
+They are written in that order for the same reason they share a reading: a node
+that dies halfway leaves a share nobody is using, which is harmless and visible,
+rather than a task whose artifact the assignee cannot open.
+
+- **You assign what you can read, not what you own.** Passing on a bug that was
+  shared with you is the ordinary case, and the share it writes gives away no
+  more than the caller already had - read, on that one artifact. A personal
+  artifact cannot be assigned at all: it has no project to share it into, and
+  the personal floor in the permission filter would refuse it anyway.
+- **Delegation is the receiver's call.** `auto_delegate` on the user row is a
+  standing answer to inbound work - on, and the task arrives already
+  `delegated` to that person's agent. Off, and it waits at `open` until they
+  say so with `POST /api/task/{id}/delegate`. The sender cannot delegate on
+  their behalf: that is a `403`, and it is the one refusal here that is not a
+  `404`, because the sender may legitimately see the task.
+- **A handoff is between two people.** `tasks` reads are filtered on the row -
+  `from_user`, `to_user`, or the agent it was delegated to - and not on the
+  project. Nobody else can read one, move one or find one in an inbox, including
+  this node's operator, for whom `?scope=all` does not reach tasks at all.
+- **The thread crosses the boundary the task crosses.** The event permission
+  filter has one extra clause since Phase 4: an event whose `thread` is named by
+  a `tasks` row is readable by the parties to that task, whichever project each
+  of them writes from. Without it an assignment would open a conversation only
+  one side could read, which is not a conversation.
+- **The thread is the audit trail too.** A task's own moves are appended to the
+  same thread as `type='task'` events, chained by `parents`, so "delegated it,
+  then asked a question, then closed it" reads top to bottom without joining
+  anything.
+
+The lifecycle is the other half. `POST /api/artifact/{id}/status` moves an issue
+along one line and no further:
+
+```
+open -> triaged -> in-progress -> in-review -> done
+   \________________|______________|_____________/
+                    v
+            wont-fix | duplicate      (terminal exits, from anywhere in the line)
+```
+
+- Nothing skips a step. A status that can jump is a status nobody trusts -
+  `in-review` has to mean the work happened - so `open -> in-review` is a `409`
+  that names what the workflow would allow instead.
+- Nothing moves out of `done`, `wont-fix` or `duplicate`. An issue that comes
+  back is worked on again, and the trail should say so rather than rewind.
+- An artifact with no status at all reads as `open`, so a fresh bug is at the
+  start of the line without anybody having had to say so.
+- Only `bug`, `feature`, `note` and `task` have a lifecycle. A transcript has no
+  status to move, and a memory item's `status` is `mem_write`'s own - neither is
+  dragged into this.
+- **Every move is an event.** `type='status'`, naming the artifact and the
+  actor, with a body of `open->triaged` and the previous status event as its
+  parent. The chain is what `GET /api/artifact/{id}/history` returns, in order.
+  It lands in the **artifact's** project rather than the actor's, so an assignee
+  moving a shared bug from another project does not fork its history into a
+  second log, and the history read is gated on reading the artifact rather than
+  on each event.
+- Whoever can read it can move it. That is the point of the assignment: the
+  share is what makes the assignee a participant, and a participant who cannot
+  say "I am working on this" has to ask somebody else to say it for them.
+
+```sh
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"artifact":"01H...","to_user":"01H...","note":"can you take this"}' \
+  127.0.0.1:8787/api/assign
+curl -s -H "Authorization: Bearer $TOKEN" 127.0.0.1:8787/api/inbox/tasks
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"status":"triaged"}' 127.0.0.1:8787/api/artifact/01H.../status
+curl -s -H "Authorization: Bearer $TOKEN" 127.0.0.1:8787/api/artifact/01H.../history
+```
+
 ## The console
 
 `web/` is a React 19 + TypeScript app built by Vite, styled with Tailwind CSS v4
@@ -340,7 +443,9 @@ can bookmark or send:
 | --- | --- |
 | `/` | overview: who this token is, the inbox, a way into any room |
 | `/chat/:room` | the room: messages, the human message box, the thread DAG |
-| `/p/:project/:type/:id` | one artifact |
+| `/inbox` | the work assigned to this token: state, delegate and done, and the auto-delegate switch |
+| `/task/:id` | one handoff: the task, and its thread rendered as chat with its DAG |
+| `/p/:project/:type/:id` | one artifact, with the lifecycle control and its history |
 | `/metrics` | node counts, a stub over `/healthz?counts=1` |
 
 Which means the server has to answer with the app for all of them: `flowy serve`
@@ -355,6 +460,17 @@ view goes away, which aborts the request in flight. A failed poll backs off two
 seconds rather than spinning. Selecting a message makes the next thing you say
 a reply to it - the new message names it in `parents`, and the DAG on the right
 grows a lane.
+
+The inbox is tasks rather than messages - `/api/inbox` is the chat you have not
+read, `/api/inbox/tasks` is the work you have not done - and each row carries
+the two things an assignee ever does with a handoff: pass it to their agent, or
+say it is finished. The task view long-polls the same watcher the room does,
+narrowed to the thread, so a reply from the other side arrives without a reload.
+
+The lifecycle control draws its options from `next` in `GET /history` rather
+than from a copy of the workflow kept in the browser. A console that knows the
+rules itself is a console that disagrees with the server the first time they
+change, and the disagreement shows up as a button that does nothing.
 
 Auth is a bearer token pasted into the sidebar and kept in `localStorage`; it
 goes out as `Authorization` on every `/api` call. There is no login, because the
@@ -413,7 +529,7 @@ every table:
 | `grants` | cross-project capabilities, tombstoned rather than deleted |
 | `artifacts` | transcripts, memories, chats, bugs, features, notes |
 | `events` | the append-only log and its DAG |
-| `tasks` | handoffs between users, optionally assigned to an agent |
+| `tasks` | handoffs: one artifact, from one user to another, with a thread and a state of `open`\|`delegated`\|`done` |
 | `peers` | replication bookmarks, one row per peer node |
 
 An artifact with `project` NULL is personal to `owner_user`; `visibility` is
@@ -422,7 +538,10 @@ a memory item is `type='memory'` with a kind of `note`, `todo`, `feature` or
 `handoff` - so one table, one permission filter and one search index serve all of
 them. Indexes cover the reads the later phases do: artifacts by `(project, type)`
 and `(type, kind)`, events by `thread` and by `seq_hlc`, plus owner, grant
-direction and task inbox.
+direction and task inbox. Phase 4 adds the ones its reads need: `tasks` by
+thread, sender and assignee agent - the event filter asks "is this thread a task
+of mine" on every read of the log - and `events` by `(artifact, type)`, which is
+what a status trail is.
 
 ## Packages
 
@@ -453,6 +572,16 @@ direction and task inbox.
   `flowy://instructions` resource. A transport hands a request to `handle()`
   and writes back what it returns, so a tool cannot behave one way over stdio
   and another over HTTP.
+- `tasks.go`, `lifecycle.go` - Phase 4's handlers. `tasks.go` is assignment,
+  the task inbox, delegation and state; `lifecycle.go` is the workflow table,
+  the transition check and the status trail. Both reuse what was already there:
+  assignment writes a `grants` row through the Phase 1 store and opens the
+  thread through Phase 3's chat event, and a transition is one column and one
+  event.
+- `internal/store/tasks.go`, `internal/store/lifecycle.go` - the task row, the
+  party filter that decides who may read one, the inbox query that joins the
+  artifact in through the ordinary permission filter, and the two status
+  queries.
 - `chat.go` - the room view of the event log: `say`, the room read, the long
   poll and the inbox. It adds one field to `store.EventQuery` (`NotActors`) and
   otherwise reuses the log's cursor, DAG and permission filter as they are.
@@ -571,6 +700,43 @@ actually served:
 - the console, signed in with a real token against the live node, **fetches the
   room and renders it**: the same jsdom mount, pointed at the running server,
   waits for A's first message to appear on screen
+- A creates a bug in `pc`, which nobody holds a grant into, and B gets `404` on
+  it. A assigns it to B, and in one response: the task names the artifact, the
+  sender and the receiver; the grant names the artifact and B; the opening
+  message is a `chat` event; and all three carry the same `hlc` reading
+- **the share landed** - B now reads that artifact across the project boundary,
+  the task is in `GET /api/inbox/tasks` with the artifact's title joined in, and
+  the thread holds the opening message. B answers in it and A, in a third
+  project, reads both halves back in order
+- a personal artifact cannot be assigned, and neither can one the caller cannot
+  read
+- B's `auto_delegate` defaults on, so that first task arrived already
+  `delegated` to B's agent. `PUT /api/me/auto_delegate {"on":false}` flips it,
+  the next assignment stops at `open`, `POST /api/task/{id}/delegate` hands it
+  to the agent and appends `open->delegated` as a child of what was in the
+  thread, and B's **agent token** then closes it - which the sender sees
+- the sender gets `403` delegating somebody else's work; a third party - this
+  node's operator, the most privileged principal there is - gets `404` on the
+  task, `404` moving its state, and an inbox with neither task in it, and the
+  task does not move
+- an issue walks `open -> triaged -> in-progress -> in-review -> done`, each
+  move answering with the artifact and a `status` event whose body is the move;
+  `/history` returns the four in order, each naming the one before it as a
+  parent, with the first opening the trail
+- `done` refuses to move and the artifact stays put; `open -> in-review` is a
+  `409` and a status nobody has heard of is a `400`, and neither writes an
+  event; `triaged -> wont-fix` works and leaves nowhere to go
+- the **assignee** moves the status of a bug in a project they are not in, and
+  both sides read back the same trail; an artifact you cannot read has no status
+  you can move or history you can see; a transcript has no lifecycle at all
+- `GET /inbox` and a `/task/{id}` deep link are the app, and the console -
+  mounted in jsdom against the live node as **B** - renders B's inbox with the
+  assigned bug and its state on screen
+- `psql` sees the tasks, one delegated to an agent and one closed, the
+  per-artifact share joined to the task it was written for, the assignment
+  threads in the chat log, the task moves in the same threads, the status trail
+  with a move carrying its predecessor, and `auto_delegate` switched off for one
+  user
 - `psql` sees the chat rows in the same `events` table, a reply carrying its
   parent, and two projects with a room called `general`
 
@@ -599,19 +765,22 @@ else. It is quarantined there because it is meant to be deleted: when SereneDB
 brings vectors, that section goes and `store.SearchArtifacts` becomes a vector
 query. Nothing above it depends on anything below it.
 
-## Phase 3 status
+## Phase 4 status
 
-Green. `./run-tests.sh` reports `passed: 103 failed: 0` with Go 1.22, Node
-22.14 and Postgres 16 - the 79 checks Phases 0 to 2 ended with, plus 24 for the
-console build, chat, the watcher, the inbox, room scoping and the served
-routes. Phases 0 to 2 stayed green throughout: chat is the Phase 1 event log
-with a room view on it, and the console is a client of the API that was already
-there, not a second path to the rows.
+Green. `./run-tests.sh` reports `passed: 139 failed: 0` with Go 1.22, Node 22.14
+and Postgres 16 - the 103 checks Phases 0 to 3 ended with, plus 36 for
+assignment, delegation, the task inbox, the lifecycle, the status trail and the
+two new console routes. Phases 0 to 3 stayed green throughout: an assignment is
+a Phase 1 grant, a Phase 3 chat event and one new row, and a transition is one
+column and one event.
 
 Not here yet: `flowy fuse` and `flowy sync` still print their placeholder; the
 MCP HTTP transport answers `POST /mcp` only, with no server-initiated SSE
-stream; `/metrics` is a stub over `/healthz`; and the console has no MCP-side
-view of memory yet - it reads chat and artifacts.
+stream; `/metrics` is a stub over `/healthz`; the console has no MCP-side view
+of memory yet, and no screen for making an assignment - it reads the inbox and
+acts on what is in it, and `POST /api/assign` is a call an agent or a curl
+makes. Tasks have no watcher of their own either: the inbox is fetched on load
+and after an action, and only the thread inside a task long-polls.
 
 Two things worth knowing about the shape of the console: the bundle is one
 600 kB chunk (react-flow and framer-motion are most of it) because nothing is

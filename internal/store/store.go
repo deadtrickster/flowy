@@ -13,6 +13,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -113,6 +114,9 @@ func (d *DB) GetUser(ctx context.Context, id string) (*User, error) {
 	err := d.sql.QueryRowContext(ctx,
 		`SELECT id, handle, display, auto_delegate, hlc, node FROM users WHERE id = $1`, id).
 		Scan(&u.ID, &handle, &display, &auto, &clockVal, &nodeCol)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
 	if err != nil {
 		return nil, fmt.Errorf("store: get user %s: %w", id, err)
 	}
@@ -154,6 +158,9 @@ func (d *DB) GetAgent(ctx context.Context, id string) (*Agent, error) {
 	err := d.sql.QueryRowContext(ctx,
 		`SELECT id, user_id, kind, project, hlc, node FROM agents WHERE id = $1`, id).
 		Scan(&a.ID, &userID, &kind, &project, &clockVal, &nodeCol)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
 	if err != nil {
 		return nil, fmt.Errorf("store: get agent %s: %w", id, err)
 	}
