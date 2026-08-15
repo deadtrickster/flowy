@@ -383,6 +383,7 @@ func (d *DB) syncArtifacts(ctx context.Context, p *Principal, since int64, limit
 			return `SELECT ` + artifactColumns + `
 	            FROM artifacts ar
 	           WHERE ` + above("ar.hlc", "ar.id", since, tie, a) + `
+	             AND ` + ReplicableArtifactSQL("ar") + `
 	             AND ` + ArtifactFilterSQL(p, "ar", a, false) + `
 	           ORDER BY ar.hlc, ar.id` + limitSQL(a, lim)
 		},
@@ -440,6 +441,7 @@ func (d *DB) syncNewlyVisible(
 		}
 		return `ar.hlc <= ` + sinceArg + `
 		    AND (` + strings.Join(reach, " OR ") + `)
+		    AND ` + ReplicableArtifactSQL("ar") + `
 		    AND ` + ArtifactFilterSQL(p, "ar", a, false)
 	}
 
@@ -670,6 +672,7 @@ func (d *DB) drainPending(
 	query := `SELECT ` + artifactColumns + `
 	            FROM artifacts ar
 	           WHERE ar.id IN (` + placeholders(a, owed) + `)
+	             AND ` + ReplicableArtifactSQL("ar") + `
 	             AND ` + ArtifactFilterSQL(p, "ar", a, false) + `
 	           ORDER BY ar.hlc, ar.id`
 	rows, err := d.sql.QueryContext(ctx, query, a.vals...)
@@ -1286,10 +1289,22 @@ func (d *DB) authentic(
 // It is the same list POST /api/events refuses by hand - see mintedTypes in
 // api.go, and the test in the server package that holds the two together. A
 // push that could carry them would be the way round that endpoint.
+//
+// The quiesce log is on it for a second reason as well as that one. A hold is a
+// claim that a process on *this* node depends on a resource, and an ack is that
+// process answering; neither is a fact about the fabric, and neither is a thing
+// a peer is in a position to assert on somebody else's behalf. So an
+// announcement travels - it is an artifact, and the whole point of federation
+// scope is that it reaches every node - and the answers to it are settled on
+// the node they were given on, by the node that is waiting for them.
 var mintedEventTypes = map[string]bool{
-	"status": true,
-	"task":   true,
-	"forge":  true,
+	"status":            true,
+	"task":              true,
+	"forge":             true,
+	EventAnnouncement:   true,
+	EventQuiesceHold:    true,
+	EventQuiesceRelease: true,
+	EventQuiesceAck:     true,
 }
 
 // MintedEventType reports whether an event type is one this node's own handlers
@@ -1802,6 +1817,14 @@ func checkArtifact(
 ) (string, error) {
 	if p == nil {
 		return "", nil
+	}
+	// The other half of ReplicableArtifactSQL, on the door rows come in at. A
+	// node-scope announcement is by definition about the node that wrote it, so
+	// arriving over the wire is the one thing it cannot have honestly done -
+	// and a peer that pushes one is telling this node's readers that this node
+	// is going down. Refused whatever else is right about it.
+	if IsLocalAnnouncement(a) {
+		return "announcement " + a.ID + " is node-scope and does not cross a node boundary", nil
 	}
 	pr, err := mayAssert(ctx, tx, p, a.Node, a.OwnerUser)
 	if err != nil {

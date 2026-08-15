@@ -35,14 +35,31 @@ CREATE TABLE IF NOT EXISTS users (
     node          text
 );
 
--- Agents acting for a user. kind: claude|glm|opencode.
+-- Agents acting for a user.
+--
+-- Two different questions, two columns, because they are not the same question
+-- and one of them is a permission:
+--
+--   kind       - which runtime this is: claude|glm|opencode. It says what is on
+--                the other end of the token and nothing about what it may do.
+--   agent_kind - what the agent is for: worker|reviewer|system|monitor. Only
+--                system and monitor may post a federation-scope announcement,
+--                which is the one thing on this node that one agent says and
+--                every node in the fabric then shows to everybody.
+--
+-- agent_kind defaults to 'worker' and is written that way in the CREATE TABLE
+-- as well as in the ALTER below. The default is the point: every agent that
+-- existed before this column did is a worker, every seed that does not mention
+-- it still writes a valid row, and the narrow capability is the one you have to
+-- ask for rather than the one you have to remember to drop.
 CREATE TABLE IF NOT EXISTS agents (
-    id      text PRIMARY KEY,
-    user_id text REFERENCES users (id),
-    kind    text,
-    project text,
-    hlc     bigint,
-    node    text
+    id         text PRIMARY KEY,
+    user_id    text REFERENCES users (id),
+    kind       text,
+    agent_kind text DEFAULT 'worker',
+    project    text,
+    hlc        bigint,
+    node       text
 );
 
 -- Bearer tokens. A token resolves to a principal: the (user, agent, project)
@@ -413,6 +430,22 @@ CREATE INDEX IF NOT EXISTS events_thread_idx          ON events (thread);
 CREATE INDEX IF NOT EXISTS events_seq_hlc_idx         ON events (seq_hlc);
 CREATE INDEX IF NOT EXISTS events_project_type_idx    ON events (project, type);
 CREATE INDEX IF NOT EXISTS events_artifact_idx        ON events (artifact);
+
+-- Phase 9. What an agent is for, as opposed to what it runs. The column is in
+-- the CREATE TABLE above; the ALTER is here so a database created by an earlier
+-- phase picks it up on the next load - and it carries the same default, so the
+-- agents already in that database come back as workers rather than as NULL.
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS agent_kind text DEFAULT 'worker';
+UPDATE agents SET agent_kind = 'worker' WHERE agent_kind IS NULL;
+
+-- Announcements are artifacts of type 'announcement' - one table, one
+-- permission filter, one signature, one merge, exactly as a memory item is an
+-- artifact of type 'memory'. What makes one an announcement rather than a note
+-- is fields->>'scope' (node|project|federation), and that is read on every pull
+-- and every push, because a node-scope announcement must not leave the node.
+-- The severity is severity and the window is status ('active' until it is
+-- 'resolved') plus fields->>'resolved_at'.
+CREATE INDEX IF NOT EXISTS artifacts_announcement_idx ON artifacts (type, status);
 
 CREATE INDEX IF NOT EXISTS agents_user_idx            ON agents (user_id);
 CREATE INDEX IF NOT EXISTS grants_to_project_idx      ON grants (to_project);

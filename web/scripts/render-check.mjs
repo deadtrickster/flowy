@@ -40,12 +40,19 @@ const virtualConsole = new VirtualConsole();
 virtualConsole.on("jsdomError", (err) => problems.push(err.message));
 virtualConsole.on("error", (...args) => problems.push(args.join(" ")));
 
-//   node scripts/render-check.mjs [BASE_URL TOKEN EXPECTED_TEXT [PATH]]
+//   node scripts/render-check.mjs [BASE_URL TOKEN EXPECTED_TEXT [PATH [ABSENT_TEXT]]]
 //
 // PATH is the route to mount at, and defaults to the room view. Phase 4 passes
 // /inbox, which is the same app at another deep link: the check is that the
 // route the server falls back to is a route the bundle can actually paint.
-const [base, token, expected, path = "/chat/general"] = process.argv.slice(2);
+//
+// ABSENT_TEXT is the other half of a banner check: text that must NOT be on the
+// page. It is only meaningful together with EXPECTED_TEXT - "this string is not
+// here" is trivially true of a page that never loaded - so the wait for
+// EXPECTED_TEXT happens first and the absence is asserted against the page that
+// resulted. Phase 9 uses it to check that a resolved announcement is gone,
+// which nothing else here can express: every other assertion is a presence.
+const [base, token, expected, path = "/chat/general", absent] = process.argv.slice(2);
 
 const dom = new JSDOM(index, {
   // A deep link, because that is the path the server's SPA fallback exists for.
@@ -136,6 +143,16 @@ if (expected) {
   }
 }
 
+// The banner polls on a timer of its own, so a string that is on its way off
+// the page needs a beat after the room has filled. Waiting for it to go is the
+// same loop as waiting for it to arrive, with the test the other way round.
+if (absent) {
+  const deadline = Date.now() + 15000;
+  while (rendered().includes(absent) && Date.now() < deadline) {
+    await new Promise((done) => setTimeout(done, 250));
+  }
+}
+
 const text = rendered();
 // The frame is on every route; the rest of the list is what this one route has
 // to have painted for the check to mean anything.
@@ -157,6 +174,10 @@ if (!root || root.children.length === 0) {
 }
 if (missing.length > 0) {
   console.error(`${path} is missing ${missing.join(", ")} - it rendered:\n${text}`);
+  process.exit(1);
+}
+if (absent && text.includes(absent)) {
+  console.error(`${path} still shows ${absent} - it rendered:\n${text}`);
   process.exit(1);
 }
 

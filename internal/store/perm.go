@@ -99,11 +99,22 @@ func ScopeForVisibility(visibility string) string {
 // only principal that ?scope=all obeys, it is decided by local configuration
 // rather than by a row, and it is never consulted by anything that replicates.
 type Principal struct {
-	Token    string `json:"-"`
-	UserID   string `json:"user"`
-	AgentID  string `json:"agent,omitempty"`
-	Project  string `json:"project,omitempty"`
-	Operator bool   `json:"operator,omitempty"`
+	Token   string `json:"-"`
+	UserID  string `json:"user"`
+	AgentID string `json:"agent,omitempty"`
+	// AgentKind is the kind of the agent the token names, when it names one:
+	// worker|reviewer|system|monitor. It comes off the agents row at the same
+	// time as the user and the project do, because it is part of the same
+	// answer - what this token is - and a capability read on a second query is
+	// a capability that can be read against a row that has since changed.
+	//
+	// A token that names no agent has no kind: a person is not an agent, and
+	// the one thing the kind unlocks - a federation-scope announcement - is
+	// deliberately something a machine posts and not something a person can
+	// post by holding their own credential.
+	AgentKind string `json:"agent_kind,omitempty"`
+	Project   string `json:"project,omitempty"`
+	Operator  bool   `json:"operator,omitempty"`
 }
 
 // Grant is a capability row: a project-wide edge when Artifact is empty, a
@@ -381,12 +392,14 @@ func (d *DB) PrincipalForToken(ctx context.Context, token string) (*Principal, e
 		p                        Principal
 		userID, agentID, project sql.NullString
 		agentUser, agentProject  sql.NullString
+		agentKind                sql.NullString
 	)
 	err := d.sql.QueryRowContext(ctx,
-		`SELECT t.token, t.user_id, t.agent_id, t.project, a.user_id, a.project
+		`SELECT t.token, t.user_id, t.agent_id, t.project, a.user_id, a.project,
+		        coalesce(a.agent_kind, 'worker')
 		   FROM tokens t LEFT JOIN agents a ON a.id = t.agent_id
 		  WHERE t.token = $1`, token).
-		Scan(&p.Token, &userID, &agentID, &project, &agentUser, &agentProject)
+		Scan(&p.Token, &userID, &agentID, &project, &agentUser, &agentProject, &agentKind)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -395,6 +408,13 @@ func (d *DB) PrincipalForToken(ctx context.Context, token string) (*Principal, e
 	}
 
 	p.UserID, p.AgentID, p.Project = userID.String, agentID.String, project.String
+	// Only a token that actually names an agent carries a kind. The coalesce in
+	// the query fires on the LEFT JOIN's empty side too, so without this a
+	// person's own token would come back as a worker - which reads as "an agent
+	// of the least privileged kind" rather than as "not an agent".
+	if p.AgentID != "" {
+		p.AgentKind = agentKind.String
+	}
 	if p.UserID == "" {
 		p.UserID = agentUser.String
 	}

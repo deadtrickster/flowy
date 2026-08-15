@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 
+import { AnnouncementBanner } from "@/components/AnnouncementBanner";
 import { MessageBox } from "@/components/MessageBox";
 import { MessageList } from "@/components/MessageList";
 import { ThreadDag } from "@/components/ThreadDag";
@@ -113,6 +114,14 @@ export function ChatRoom() {
             {events.length} message{events.length === 1 ? "" : "s"}
           </span>
         </header>
+
+        {/*
+          Above the transport, not in it. An announcement that the node is
+          going down is not a message somebody said in this room - it does not
+          belong in the log, it must not scroll away with it, and it has to be
+          the same on every route that shows it.
+        */}
+        <AnnouncementBanner />
 
         {error ? (
           <div className="border-destructive/40 border-b bg-destructive/10 px-4 py-2 text-destructive text-xs">

@@ -609,6 +609,37 @@ func seedPrincipals(ctx context.Context, db *store.DB) error {
 	}
 	out = append(out, "PROJECT_C=pc", "TOKEN_A_PC="+pcToken)
 
+	// A system agent for user A, in pa. It is a second agent for a person who
+	// already has one rather than a fourth principal, because what is being
+	// seeded is a capability and not a person: the difference between
+	// TOKEN_A_AGENT and TOKEN_A_SYSTEM is the agent kind and nothing else, so a
+	// check that one is refused a federation announcement and the other is not
+	// is a check about the kind.
+	systemAgent := &store.Agent{
+		UserID: userIDs["A"], Kind: "claude", AgentKind: store.AgentKindSystem, Project: "pa",
+	}
+	if err := db.InsertAgent(ctx, systemAgent); err != nil {
+		return err
+	}
+	systemToken := "tAsys-" + ulid.NewString()
+	if err := db.InsertToken(ctx, &store.Principal{
+		Token: systemToken, AgentID: systemAgent.ID,
+	}); err != nil {
+		return err
+	}
+	out = append(out, "AGENT_A_SYSTEM="+systemAgent.ID, "TOKEN_A_SYSTEM="+systemToken)
+
+	// And the kind has to survive the round trip through the token, or every
+	// check below it is testing the default rather than the column.
+	sys, err := db.PrincipalForToken(ctx, systemToken)
+	if err != nil {
+		return fmt.Errorf("resolve the system agent's token: %w", err)
+	}
+	if sys.AgentKind != store.AgentKindSystem {
+		return fmt.Errorf("the system agent's token resolved to kind %q, want %q",
+			sys.AgentKind, store.AgentKindSystem)
+	}
+
 	// Sanity: an agent token has to resolve to its user and its project, or
 	// every check that runs as an agent is testing the wrong principal.
 	for token, want := range agentTokens {

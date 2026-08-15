@@ -340,6 +340,34 @@ export interface ActivityPage {
   query: string;
 }
 
+/**
+ * Announcement is an artifact of type 'announcement'. The scope, the resource
+ * and the mode live in fields, which is a jsonb column the node signs as part
+ * of the row - so what the banner reads is what the posting node wrote, even
+ * when the announcement arrived through a peer.
+ */
+export interface AnnouncementFields {
+  scope: "node" | "project" | "federation";
+  resource?: string;
+  mode?: "drain" | "pause" | "ack-required";
+  resolved_at?: string;
+}
+
+export interface Announcement extends Artifact {
+  fields?: AnnouncementFields;
+}
+
+/** Quiesce is what an announcement is still waiting for before it may resolve. */
+export interface Quiesce {
+  announcement: string;
+  resource: string;
+  mode: string;
+  holders: string[];
+  acked: string[];
+  pending: string[];
+  state: "held" | "released";
+}
+
 /** ApiError carries the status, because 401 and 404 mean different things to the UI. */
 export class ApiError extends Error {
   readonly status: number;
@@ -537,6 +565,23 @@ export const api = {
     const query = search.toString();
     return request<ActivityPage>(`/api/activity${query ? `?${query}` : ""}`);
   },
+
+  /**
+   * announcements is what the banner reads: the ones that are still active and
+   * that this token may see. The node decides both - which is why the banner
+   * has no filter of its own.
+   */
+  announcements: () => request<{ announcements: Announcement[] }>("/api/announcements"),
+
+  /** quiesce is who an announcement is still waiting on. */
+  quiesce: (id: string) => request<Quiesce>(`/api/announcement/${encodeURIComponent(id)}/quiesce`),
+
+  /** ack says this principal has seen the announcement and is out of the way. */
+  ack: (id: string) =>
+    request<{ quiesce: Quiesce; event: FlowyEvent }>(
+      `/api/announcement/${encodeURIComponent(id)}/ack`,
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" },
+    ),
 
   /** post says something into the timeline: into a room, or into a run's thread. */
   postActivity: (post: { kind: string; body: string; room?: string; thread?: string }) =>

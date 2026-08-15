@@ -188,25 +188,74 @@ func (d *DB) GetUser(ctx context.Context, id string) (*User, error) {
 	return &u, nil
 }
 
-// Agent is a coding agent acting for a user. Kind is claude|glm|opencode.
-type Agent struct {
-	ID      string `json:"id"`
-	UserID  string `json:"user_id"`
-	Kind    string `json:"kind"`
-	Project string `json:"project"`
-	HLC     int64  `json:"hlc"`
-	Node    string `json:"node"`
+// The agent kinds: what an agent is for, as opposed to what it runs.
+//
+// Only AgentKindSystem and AgentKindMonitor may post a federation-scope
+// announcement. Everything else about an agent is the same whichever of these
+// it is - the kind is a capability and not a role hierarchy, and a reviewer is
+// no more privileged than a worker.
+const (
+	AgentKindWorker   = "worker"
+	AgentKindReviewer = "reviewer"
+	AgentKindSystem   = "system"
+	AgentKindMonitor  = "monitor"
+)
+
+// agentKinds is the closed set. An agent record carrying anything else is
+// refused on the way in rather than coalesced to worker: a kind nothing
+// implements is a typo, and a typo that silently becomes the default is a
+// system agent somebody thinks they created and did not.
+var agentKinds = map[string]bool{
+	AgentKindWorker:   true,
+	AgentKindReviewer: true,
+	AgentKindSystem:   true,
+	AgentKindMonitor:  true,
 }
 
-// InsertAgent writes an agent, stamping id/hlc/node when unset.
+// AgentKindOK reports whether kind is one this node implements. Empty is one:
+// it is what a row written before the column existed reads back as, and the
+// coalesce below makes it a worker.
+func AgentKindOK(kind string) bool { return kind == "" || agentKinds[kind] }
+
+// MayAnnounceFederation reports whether an agent of this kind may post an
+// announcement that travels the whole fabric.
+func MayAnnounceFederation(kind string) bool {
+	return kind == AgentKindSystem || kind == AgentKindMonitor
+}
+
+// Agent is a coding agent acting for a user. Kind is the runtime -
+// claude|glm|opencode - and AgentKind is what the agent is for:
+// worker|reviewer|system|monitor, defaulting to worker.
+type Agent struct {
+	ID        string `json:"id"`
+	UserID    string `json:"user_id"`
+	Kind      string `json:"kind"`
+	AgentKind string `json:"agent_kind"`
+	Project   string `json:"project"`
+	HLC       int64  `json:"hlc"`
+	Node      string `json:"node"`
+}
+
+// ErrBadAgentKind is an agent record naming a kind this node does not implement.
+var ErrBadAgentKind = errors.New("store: agent_kind must be worker, reviewer, system or monitor")
+
+// InsertAgent writes an agent, stamping id/hlc/node when unset. An agent with
+// no kind is a worker, which is what makes every existing seed and every row
+// written before the column existed still valid.
 func (d *DB) InsertAgent(ctx context.Context, a *Agent) error {
 	if err := d.stamp(&a.ID, &a.HLC, &a.Node); err != nil {
 		return err
 	}
+	if !AgentKindOK(a.AgentKind) {
+		return ErrBadAgentKind
+	}
+	if a.AgentKind == "" {
+		a.AgentKind = AgentKindWorker
+	}
 	_, err := d.sql.ExecContext(ctx,
-		`INSERT INTO agents (id, user_id, kind, project, hlc, node)
-		 VALUES ($1, $2, $3, $4, $5, $6)`,
-		a.ID, a.UserID, a.Kind, a.Project, a.HLC, a.Node)
+		`INSERT INTO agents (id, user_id, kind, agent_kind, project, hlc, node)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		a.ID, a.UserID, a.Kind, a.AgentKind, a.Project, a.HLC, a.Node)
 	if err != nil {
 		return fmt.Errorf("store: insert agent: %w", err)
 	}
@@ -216,13 +265,14 @@ func (d *DB) InsertAgent(ctx context.Context, a *Agent) error {
 // GetAgent reads an agent by id.
 func (d *DB) GetAgent(ctx context.Context, id string) (*Agent, error) {
 	var (
-		a                              Agent
-		userID, kind, project, nodeCol sql.NullString
-		clockVal                       sql.NullInt64
+		a                                         Agent
+		userID, kind, agentKind, project, nodeCol sql.NullString
+		clockVal                                  sql.NullInt64
 	)
 	err := d.sql.QueryRowContext(ctx,
-		`SELECT id, user_id, kind, project, hlc, node FROM agents WHERE id = $1`, id).
-		Scan(&a.ID, &userID, &kind, &project, &clockVal, &nodeCol)
+		`SELECT id, user_id, kind, coalesce(agent_kind, 'worker'), project, hlc, node
+		   FROM agents WHERE id = $1`, id).
+		Scan(&a.ID, &userID, &kind, &agentKind, &project, &clockVal, &nodeCol)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -230,7 +280,7 @@ func (d *DB) GetAgent(ctx context.Context, id string) (*Agent, error) {
 		return nil, fmt.Errorf("store: get agent %s: %w", id, err)
 	}
 	a.UserID, a.Kind, a.Project, a.Node = userID.String, kind.String, project.String, nodeCol.String
-	a.HLC = clockVal.Int64
+	a.AgentKind, a.HLC = agentKind.String, clockVal.Int64
 	return &a, nil
 }
 

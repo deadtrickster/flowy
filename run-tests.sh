@@ -2408,7 +2408,7 @@ the_node_selected_the_mock() {
 	want_eq "gh is on PATH" "$(jqv .available.gh)" true || return 1
 	want_eq "the mock's control surface is up" "$(jqv .mock)" true || return 1
 	api GET "$TOKEN_A" /api/node || return 1
-	want_eq "the node reports the phase" "$(jqv .phase)" 8 || return 1
+	want_eq "the node reports the phase" "$(jqv .phase)" 9 || return 1
 	want_eq "and its forge" "$(jqv .forge)" mock || return 1
 	printf 'FLOWY_FORGE=mock selected MockForge, with gh installed beside it\n'
 }
@@ -8177,9 +8177,23 @@ the_collector_reassembles_the_two_halves() {
 	esac
 	spans="$(printf '%s' "$out" | jq '.spans | length')"
 	want_at_least "spans in the collected trace" "$spans" 2 || return 1
-	# In one order, on one clock.
-	if [ "$(printf '%s' "$out" | jq '[.spans[].started] | . == sort')" != "true" ]; then
-		printf 'the collected spans are not in start order\n' >&2
+	# In one order, on one clock - compared as instants rather than as the
+	# strings they arrive as.
+	#
+	# A start time is RFC3339 with a fraction whose length varies, because Go
+	# trims trailing zeros on the way out: a span at .641000000 is written
+	# "…31.641Z" and one at .641500000 is written "…31.6415Z". As strings the
+	# first sorts after the second ('Z' is above '5'); as instants it is before
+	# it. So the string form said "not in start order" about a collector that
+	# had ordered them correctly, on whichever runs a span happened to land on a
+	# trailing zero - which is roughly one in ten. The fraction is padded to
+	# nine digits first, and then the comparison is the one it was always
+	# meant to be.
+	if [ "$(printf '%s' "$out" | jq '[.spans[].started
+		| capture("^(?<whole>[^.Z]+)(\\.(?<frac>[0-9]+))?Z?$")
+		| .whole + "." + (((.frac // "") + "000000000")[0:9])] | . == sort')" != "true" ]; then
+		printf 'the collected spans are not in start order: %s\n' \
+			"$(printf '%s' "$out" | jq -c '[.spans[].started]')" >&2
 		return 1
 	fi
 	# Every source is named, so a half that could not be reached would be
@@ -8294,6 +8308,423 @@ check "the metrics tab mounts and renders what the node measured" \
 	console_renders_the_metrics_tab
 check "the traces tab mounts" console_renders_the_traces_tab
 check "the activity timeline mounts and renders what was said" console_renders_the_timeline
+
+# ---------------------------------------------------------------- phase 9
+#
+# Announcements, system agents and the quiesce protocol.
+#
+# An announcement is an artifact of type 'announcement', so everything the
+# fabric already promises about an artifact is what this phase leans on: the
+# signature, the permission filter, the merge. What is new is three things, and
+# each is checked as a property rather than as a call that returns 200.
+#
+#   scope     - a node announcement does not leave the node, a federation one
+#               travels. Both doors are checked, and the federation one is
+#               checked over the two nodes Phase 5 already stood up rather than
+#               over a third pair: two nodes on two clusters is expensive, and a
+#               second pair fighting the first for ports is how the last attempt
+#               at this made the whole federation phase fail from clean.
+#   kind      - a worker agent cannot post to the fabric and a system agent can,
+#               and the generic artifact endpoint will not write one either. A
+#               capability that has a second door has no capability.
+#   quiesce   - a maintenance announcement that names a resource holds it, and
+#               resolving is refused while it is held. The refusal is the whole
+#               protocol: without it the acks are a report.
+#
+# It runs last on purpose. It writes announcements into pa on the single node
+# and into pa on nodeA, and the metrics checks above count that corpus.
+
+# ----------------------------------------------------------- phase 9 helpers
+
+# render_room EXPECTED [ABSENT] - the built console, signed in as A, against the
+# live single node: the room has to paint EXPECTED and must not be showing
+# ABSENT. The absence is asserted after the wait for EXPECTED, so it is a
+# statement about a page that loaded.
+render_room() {
+	recall
+	cd "$ROOT/web" || return 1
+	node scripts/render-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" \
+		"$1" /chat/general "${2:-}"
+}
+
+# quiesce_of ID - read an announcement's quiesce as A, leaving it in API_BODY.
+quiesce_of() { api GET "$TOKEN_A" "/api/announcement/$1/quiesce"; }
+
+# ------------------------------------------------------------- phase 9 checks
+
+# The column exists, it defaults, and the default is what every agent that was
+# seeded without asking for a kind came back as.
+the_agent_kind_defaults_to_worker() {
+	recall
+	want_eq "agents with no kind at all" \
+		"$(scalar "SELECT count(*) FROM agents WHERE agent_kind IS NULL")" 0 || return 1
+	want_eq "the agent the seed did not give a kind" \
+		"$(scalar "SELECT agent_kind FROM agents WHERE id = '$AGENT_A'")" worker || return 1
+	want_eq "the one it did" \
+		"$(scalar "SELECT agent_kind FROM agents WHERE id = '$AGENT_A_SYSTEM'")" system || return 1
+	# And the runtime column is untouched: they are different questions.
+	want_eq "the runtime of the system agent" \
+		"$(scalar "SELECT kind FROM agents WHERE id = '$AGENT_A_SYSTEM'")" claude || return 1
+
+	# The kind reaches the principal, which is where the capability is read.
+	api GET "$TOKEN_A_SYSTEM" /api/whoami || return 1
+	want_eq "whoami agent" "$(jqv .agent)" "$AGENT_A_SYSTEM" || return 1
+	want_eq "whoami agent_kind" "$(jqv .agent_kind)" system || return 1
+	want_eq "whoami user" "$(jqv .user)" "$USER_A" || return 1
+	api GET "$TOKEN_A_AGENT" /api/whoami || return 1
+	want_eq "the ordinary agent's kind" "$(jqv .agent_kind)" worker || return 1
+	# A person is not an agent of the least privileged kind - they are not an
+	# agent, and the field is absent rather than defaulted.
+	api GET "$TOKEN_A" /api/whoami || return 1
+	want_eq "a person's kind" "$(jqv .agent_kind)" null || return 1
+	printf 'worker by default, system where the seed asked for it, and it reaches the principal\n'
+}
+
+# The capability, and the second door it must not have.
+only_a_system_agent_announces_to_the_fabric() {
+	recall
+	want_status 403 POST "$TOKEN_A_AGENT" /api/announcements \
+		'{"scope":"federation","severity":"warning","title":"a worker speaks for everybody"}' ||
+		return 1
+	want_status 403 POST "$TOKEN_A" /api/announcements \
+		'{"scope":"federation","severity":"warning","title":"and so does the person"}' || return 1
+	# The operator is a person too. Being the operator of this node is not being
+	# a machine that speaks for the fabric.
+	want_status 403 POST "$TOKEN_OP" /api/announcements \
+		'{"scope":"federation","severity":"warning","title":"and so does the operator"}' || return 1
+
+	want_status 200 POST "$TOKEN_A_SYSTEM" /api/announcements \
+		'{"scope":"federation","severity":"info","title":"a system agent may say quibblenock"}' ||
+		return 1
+	want_eq "the scope it landed with" "$(jqv .announcement.fields.scope)" federation || return 1
+	want_eq "the status it opened in" "$(jqv .announcement.status)" active || return 1
+	remember FED_NOTICE "$(jqv .announcement.id)"
+
+	# And there is no way round it through the endpoint that writes artifacts,
+	# where the scope would be a blob nobody checks.
+	want_status 403 POST "$TOKEN_A_AGENT" /api/artifacts \
+		'{"type":"announcement","title":"round the side","fields":{"scope":"federation"}}' || return 1
+	want_eq "rows it wrote" \
+		"$(scalar "SELECT count(*) FROM artifacts WHERE title = 'round the side'")" 0 || return 1
+
+	# A worker may still say something about its own node, which is what makes
+	# the refusal above about the scope rather than about the agent.
+	want_status 200 POST "$TOKEN_A_AGENT" /api/announcements \
+		'{"scope":"node","severity":"info","title":"a worker may still say this much"}' || return 1
+	printf 'federation is the system agent alone, and only through its own endpoint\n'
+}
+
+# What a well-formed announcement is. Each of these is a 400 rather than a row
+# that describes a reach the node does not implement.
+an_announcement_says_what_it_is() {
+	recall
+	want_status 400 POST "$TOKEN_A_SYSTEM" /api/announcements \
+		'{"scope":"everywhere","severity":"info","title":"a scope nobody implements"}' || return 1
+	want_status 400 POST "$TOKEN_A_SYSTEM" /api/announcements \
+		'{"scope":"node","severity":"catastrophic","title":"a severity nobody implements"}' || return 1
+	want_status 400 POST "$TOKEN_A_SYSTEM" /api/announcements \
+		'{"scope":"node","severity":"maintenance","title":"no title","resource":"x","mode":"soon"}' ||
+		return 1
+	want_status 400 POST "$TOKEN_A_SYSTEM" /api/announcements \
+		'{"scope":"node","severity":"maintenance","title":""}' || return 1
+	# A notice does not hold a resource: quiescing is a property of a change, and
+	# an info announcement that could hold things would be a way to stop other
+	# people's work by describing it.
+	want_status 400 POST "$TOKEN_A_SYSTEM" /api/announcements \
+		'{"scope":"node","severity":"info","title":"a notice that stops the world","resource":"the-world"}' ||
+		return 1
+	# And a mode with nothing to quiesce says nothing.
+	want_status 400 POST "$TOKEN_A_SYSTEM" /api/announcements \
+		'{"scope":"node","severity":"maintenance","title":"a mode and no resource","mode":"drain"}' ||
+		return 1
+	printf 'scope, severity, mode and the pairing of a resource with a change\n'
+}
+
+# The quiesce log is minted by the endpoints that do the thing. An ack anybody
+# can type is a gate anybody can open, and a hold anybody can type is a way to
+# stop somebody else's release by claiming to depend on it.
+the_quiesce_log_is_not_something_a_client_types() {
+	recall
+	local kind
+	for kind in quiesce.ack quiesce.hold quiesce.release announcement; do
+		want_status 403 POST "$TOKEN_A_AGENT" /api/events \
+			"{\"type\":\"$kind\",\"body\":\"consider it done\"}" || return 1
+	done
+	printf 'the four minted types are refused to a client writing events by hand\n'
+}
+
+# The banner: what the node wants everybody to know, above the conversation.
+the_console_banner_shows_an_active_announcement() {
+	recall
+	want_status 200 POST "$TOKEN_A_SYSTEM" /api/announcements \
+		'{"scope":"node","severity":"maintenance","title":"the store goes down at grumblewick",
+		  "body":"back in ten minutes"}' || return 1
+	remember BANNER_ANN "$(jqv .announcement.id)"
+	render_room "the store goes down at grumblewick"
+}
+
+# And it clears when the announcement is resolved, because what clears it is the
+# announcement's own state and not this browser's.
+the_banner_clears_when_the_announcement_is_resolved() {
+	recall
+	want_status 200 POST "$TOKEN_A" "/api/announcement/$BANNER_ANN/resolve" '{}' || return 1
+	want_eq "the status it left in" "$(jqv .announcement.status)" resolved || return 1
+	if [ -z "$(jqv .announcement.fields.resolved_at)" ] ||
+		[ "$(jqv .announcement.fields.resolved_at)" = null ]; then
+		printf 'the resolved announcement carries no resolved_at, so it has no window\n' >&2
+		return 1
+	fi
+	# It is out of the active list, and still a row - the window closed, the
+	# announcement did not vanish.
+	api GET "$TOKEN_A" /api/announcements || return 1
+	want_eq "it is still offered as active" \
+		"$(printf '%s' "$API_BODY" | jq '[.announcements[] | select(.id == "'"$BANNER_ANN"'")] | length')" \
+		0 || return 1
+	want_eq "and the row is still there" \
+		"$(scalar "SELECT count(*) FROM artifacts WHERE id = '$BANNER_ANN' AND status = 'resolved'")" \
+		1 || return 1
+	# The federation notice from earlier is still active, so the page below has
+	# certainly loaded its banner: the absence is a statement about a banner
+	# that rendered, not about a page that did not.
+	render_room "a system agent may say quibblenock" "the store goes down at grumblewick"
+}
+
+# The quiesce protocol, under ack-required: only an answer clears the resource.
+an_ack_required_announcement_holds_its_resource() {
+	recall
+	# A worker agent depends on the thing that is about to be taken away.
+	want_status 200 POST "$TOKEN_A_AGENT" /api/quiesce/hold \
+		'{"resource":"flimberwock-index"}' || return 1
+
+	want_status 200 POST "$TOKEN_A_SYSTEM" /api/announcements \
+		'{"scope":"node","severity":"maintenance","title":"reindexing flimberwock",
+		  "resource":"flimberwock-index","mode":"ack-required"}' || return 1
+	remember QUIESCE_ANN "$(jqv .announcement.id)"
+	local ann
+	ann="$(jqv .announcement.id)"
+
+	quiesce_of "$ann" || return 1
+	want_eq "the state before anybody answers" "$(jqv .state)" held || return 1
+	want_eq "how many it is waiting on" "$(jqv '.pending | length')" 1 || return 1
+	want_eq "and which" "$(jqv '.pending[0]')" "$AGENT_A" || return 1
+
+	# The change does not proceed while the resource is held. This refusal is
+	# the protocol - everything else about a quiesce is a report.
+	want_status 409 POST "$TOKEN_A" "/api/announcement/$ann/resolve" '{}' || return 1
+	want_eq "and the announcement is still open" \
+		"$(scalar "SELECT status FROM artifacts WHERE id = '$ann'")" active || return 1
+
+	# Letting go quietly is not an answer under ack-required: the mode asked to
+	# be acknowledged, and a process that went away has acknowledged nothing.
+	want_status 200 POST "$TOKEN_A_AGENT" /api/quiesce/release \
+		'{"resource":"flimberwock-index"}' || return 1
+	quiesce_of "$ann" || return 1
+	want_eq "still held after a bare release" "$(jqv .state)" held || return 1
+	printf 'flimberwock-index is held against %s, and the resolve is refused\n' "$AGENT_A"
+}
+
+# ... and releases it when the dependent answers.
+and_releases_it_when_the_dependent_acks() {
+	recall
+	want_status 200 POST "$TOKEN_A_AGENT" "/api/announcement/$QUIESCE_ANN/ack" '{}' || return 1
+	want_eq "the state the ack left it in" "$(jqv .quiesce.state)" released || return 1
+	want_eq "nothing pending" "$(jqv '.quiesce.pending | length')" 0 || return 1
+
+	want_status 200 POST "$TOKEN_A" "/api/announcement/$QUIESCE_ANN/resolve" '{}' || return 1
+	want_eq "the announcement closed" "$(jqv .announcement.status)" resolved || return 1
+	want_eq "the ack is in the log" \
+		"$(scalar "SELECT count(*) FROM events
+		            WHERE type = 'quiesce.ack' AND artifact = '$QUIESCE_ANN'
+		              AND actor = '$AGENT_A'")" 1 || return 1
+	printf 'acked, released, resolved - in that order and no other\n'
+}
+
+# Under drain, letting go IS the answer. Same machinery, different mode, and the
+# difference is the point of having modes at all.
+a_drain_announcement_releases_when_the_holder_lets_go() {
+	recall
+	want_status 200 POST "$TOKEN_A_AGENT" /api/quiesce/hold \
+		'{"resource":"zibbleflax-queue"}' || return 1
+	want_status 200 POST "$TOKEN_A_SYSTEM" /api/announcements \
+		'{"scope":"node","severity":"breaking","title":"the queue format changes",
+		  "resource":"zibbleflax-queue","mode":"drain"}' || return 1
+	local ann
+	ann="$(jqv .announcement.id)"
+
+	quiesce_of "$ann" || return 1
+	want_eq "held while the queue is in use" "$(jqv .state)" held || return 1
+	want_status 409 POST "$TOKEN_A" "/api/announcement/$ann/resolve" '{}' || return 1
+
+	want_status 200 POST "$TOKEN_A_AGENT" /api/quiesce/release \
+		'{"resource":"zibbleflax-queue"}' || return 1
+	quiesce_of "$ann" || return 1
+	want_eq "draining is the answer drain asked for" "$(jqv .state)" released || return 1
+	want_status 200 POST "$TOKEN_A" "/api/announcement/$ann/resolve" '{}' || return 1
+	printf 'drain releases on a release; ack-required does not\n'
+}
+
+# ------------------------------------------ phase 9 across the two Phase 5 nodes
+#
+# The same two nodes Phase 5 stood up, still running, still holding each other's
+# keys. Nothing new is started here.
+
+a_system_agent_announces_across_the_fabric() {
+	recall5
+	# The worker agent's token was copied to both nodes with everything else,
+	# and it is still not a token that speaks for the fabric.
+	want_napi 403 "$N5_PORT_A" POST "$N5_TOKEN_A_AGENT" /api/announcements \
+		'{"scope":"federation","severity":"warning","title":"a worker speaks for the fabric"}' ||
+		return 1
+
+	want_napi 200 "$N5_PORT_A" POST "$N5_TOKEN_A_SYSTEM" /api/announcements \
+		'{"scope":"federation","severity":"breaking","title":"the wire format changes on thrumbleaxe day",
+		  "body":"every node in the fabric"}' || return 1
+	want_eq "the node that wrote it" "$(jqv .announcement.node)" nodeA || return 1
+	remember5 FED_ANN "$(jqv .announcement.id)"
+	remember5 FED_ANN_HLC "$(jqv .announcement.hlc)"
+
+	want_napi 200 "$N5_PORT_A" POST "$N5_TOKEN_A_SYSTEM" /api/announcements \
+		'{"scope":"node","severity":"warning","title":"nodeA reboots at midnight",
+		  "body":"this node and no other"}' || return 1
+	remember5 LOCAL_ANN "$(jqv .announcement.id)"
+
+	# Both are on A, in the same project, with the same visibility. From here on
+	# the only thing that differs between them is the scope.
+	want_napi 200 "$N5_PORT_A" GET "$N5_TOKEN_A" /api/announcements || return 1
+	want_eq "A sees both of them" \
+		"$(printf '%s' "$API_BODY" | jq '[.announcements[] | select(.type == "announcement")] | length >= 2')" \
+		true || return 1
+	printf 'a federation announcement and a node one, both in pa on nodeA\n'
+}
+
+the_scope_decides_what_crosses_the_boundary() {
+	recall5
+	sync_round || return 1
+
+	# The federation one is on B, under nodeA's name, with the scope it was
+	# written with - which is inside the signature, so a relay could not have
+	# widened a node announcement into this on the way past.
+	want_napi 200 "$N5_PORT_B" GET "$N5_TOKEN_A" "/api/artifact/$FED_ANN" || return 1
+	want_eq "the title" "$(jqv .title)" "the wire format changes on thrumbleaxe day" || return 1
+	want_eq "the node that wrote it" "$(jqv .node)" nodeA || return 1
+	want_eq "the scope it carries" "$(jqv .fields.scope)" federation || return 1
+	want_eq "the severity" "$(jqv .severity)" breaking || return 1
+	# And under nodeA's signature, not B's copy of it.
+	want_eq "the signature came with it" \
+		"$(scalar5 "$N5_DSN_B" "SELECT count(*) FROM artifacts
+		                         WHERE id = '$FED_ANN' AND node = 'nodeA' AND sig IS NOT NULL")" \
+		1 || return 1
+
+	# The node one is not on B, and not as a row B is merely hiding either.
+	want_napi 404 "$N5_PORT_B" GET "$N5_TOKEN_A" "/api/artifact/$LOCAL_ANN" || return 1
+	want_eq "rows for it in B's table" \
+		"$(scalar5 "$N5_DSN_B" "SELECT count(*) FROM artifacts WHERE id = '$LOCAL_ANN'")" 0 || return 1
+
+	# The first door: A's pull does not offer it, however much of the delta the
+	# peer asks for. The federation one is in the same page, so what is missing
+	# is the scope rule rather than the cursor.
+	want_napi 200 "$N5_PORT_A" GET "$N5_TOKEN_B" \
+		"/api/sync/pull?since=$((FED_ANN_HLC - 1))" || return 1
+	want_eq "the node announcement in the delta" \
+		"$(printf '%s' "$API_BODY" | jq '[.artifacts[] | select(.id == "'"$LOCAL_ANN"'")] | length')" \
+		0 || return 1
+	want_eq "the federation one in the same delta" \
+		"$(printf '%s' "$API_BODY" | jq '[.artifacts[] | select(.id == "'"$FED_ANN"'")] | length')" \
+		1 || return 1
+	printf 'the federation announcement replicated; the node one did not leave nodeA\n'
+}
+
+# The second door. This row is correctly signed by nodeA, whose key B has
+# pinned, and pushed by the principal B takes deltas from - so authenticity and
+# authorisation both pass, and it is refused anyway.
+a_pushed_node_announcement_is_refused_at_the_door() {
+	recall5
+	napi "$N5_PORT_B" GET "" /healthz || return 1
+	local hlc id delta
+	hlc="$(jqv .hlc)"
+	id="pushed-node-ann-$$"
+	delta="$(printf '{"artifacts":[{"id":"%s","type":"announcement","kind":"node","project":"pb","owner_user":"%s","title":"nodeB is going down, says nodeA","body":"","status":"active","severity":"breaking","visibility":"shared","fields":{"scope":"node"},"hlc":%d,"node":"nodeA","tombstone":false}],"events":[],"tasks":[],"grants":[],"hwm":0}' \
+		"$id" "$N5_USER_B" "$((hlc + 65536))" | sign5 "$N5_DSN_A" nodeA)" || return 1
+
+	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_B" /api/sync/push "$delta" || return 1
+	want_eq "artifacts refused" "$(jqv '.refused.artifacts')" 1 || return 1
+	want_eq "artifacts applied" "$(jqv '.applied.artifacts')" 0 || return 1
+	want_eq "rows in B's table for it" \
+		"$(scalar5 "$N5_DSN_B" "SELECT count(*) FROM artifacts WHERE id = '$id'")" 0 || return 1
+	case "$(jqv '.reasons[0]')" in
+	*node-scope*) ;;
+	*)
+		printf 'it was refused, but not as a node-scope announcement: %s\n' "$(jqv '.reasons[0]')" >&2
+		return 1
+		;;
+	esac
+	printf 'a properly signed node announcement is still refused at the push door\n'
+}
+
+# A federation announcement is the one message on this fabric that one process
+# says and every node then shows to everybody, so it is the one worth forging.
+# It is signed by a node nobody here has ever heard of, wearing nodeA's name.
+a_forged_federation_announcement_is_refused() {
+	recall5
+	napi "$N5_PORT_B" GET "" /healthz || return 1
+	local hlc id delta
+	hlc="$(jqv .hlc)"
+	id="forged-ann-$$"
+	delta="$(printf '{"artifacts":[{"id":"%s","type":"announcement","kind":"federation","project":"pb","owner_user":"%s","title":"every node is being decommissioned","body":"","status":"active","severity":"breaking","visibility":"shared","fields":{"scope":"federation"},"hlc":%d,"node":"nodeA","tombstone":false}],"events":[],"tasks":[],"grants":[],"hwm":0}' \
+		"$id" "$N5_USER_B" "$((hlc + 65536))" | sign_seed "$(seed_of announcement-forger)")" || return 1
+
+	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_B" /api/sync/push "$delta" || return 1
+	want_eq "artifacts refused" "$(jqv '.refused.artifacts')" 1 || return 1
+	want_eq "artifacts applied" "$(jqv '.applied.artifacts')" 0 || return 1
+	want_eq "rows in B's table for it" \
+		"$(scalar5 "$N5_DSN_B" "SELECT count(*) FROM artifacts WHERE id = '$id'")" 0 || return 1
+	# And nobody is being shown it: the banner reads the active list, and the
+	# forgery is not in it.
+	want_napi 200 "$N5_PORT_B" GET "$N5_TOKEN_B" /api/announcements || return 1
+	want_eq "the forgery in B's banner" \
+		"$(printf '%s' "$API_BODY" | jq '[.announcements[] | select(.id == "'"$id"'")] | length')" \
+		0 || return 1
+	printf 'the forged federation announcement was refused: %s\n' "$(jqv '.reasons[0]')"
+}
+
+say "system agents: what an agent is for, as opposed to what it runs"
+check "an agent with no kind is a worker, and the kind reaches the principal" \
+	the_agent_kind_defaults_to_worker
+check "a kind nothing implements is refused, and a person is not an agent" \
+	go test -count=1 -run TestAnAgentWithNoKindIsAWorker ./internal/store
+check "only a system agent posts to the fabric, and only through its own door" \
+	only_a_system_agent_announces_to_the_fabric
+
+say "announcements: scope, severity and a window"
+check "an announcement says what it is, or it is refused" an_announcement_says_what_it_is
+check "the quiesce log is minted, not typed" the_quiesce_log_is_not_something_a_client_types
+check "the console banner shows an active announcement above the room" \
+	the_console_banner_shows_an_active_announcement
+check "and clears when it is resolved, with the window on the row" \
+	the_banner_clears_when_the_announcement_is_resolved
+
+say "quiesce: the change waits for the people it is about to affect"
+check "an ack-required maintenance announcement holds its resource" \
+	an_ack_required_announcement_holds_its_resource
+check "and releases it when the dependent acks" and_releases_it_when_the_dependent_acks
+check "a drain announcement releases when the holder lets go" \
+	a_drain_announcement_releases_when_the_holder_lets_go
+
+say "announcements across the two nodes phase 5 stood up"
+check "a system agent posts one to the fabric and one to its own node" \
+	a_system_agent_announces_across_the_fabric
+check "the federation one replicates and the node one does not" \
+	the_scope_decides_what_crosses_the_boundary
+check "a node announcement pushed by a peer is refused at the door" \
+	a_pushed_node_announcement_is_refused_at_the_door
+check "neither door offers nor takes a node-scope announcement" \
+	go test -count=1 -run TestANodeAnnouncementCrossesNeitherDoor ./internal/store
+check "an unreadable scope does not travel" \
+	go test -count=1 -run TestAnUnreadableScopeDoesNotTravel ./internal/store
+check "a forged federation announcement is refused on merge" \
+	a_forged_federation_announcement_is_refused
+check "node A survived the announcements" kill -0 "$NODE5A_PID"
+check "node B survived the announcements" kill -0 "$NODE5B_PID"
 
 # ------------------------------------------------------------------- verdict
 

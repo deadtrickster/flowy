@@ -82,6 +82,18 @@ func (s *server) handleCreateArtifact(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorBody("type is required"))
 		return
 	}
+	// An announcement is an artifact, and this is the endpoint that writes
+	// artifacts - which would make the capability check on POST /api/announcements
+	// a suggestion. The scope lives in fields, and fields is a blob this handler
+	// takes as it is given, so a worker agent could have posted a federation
+	// announcement here by typing the type out. Announcements have their own
+	// door, and this is the sign on this one.
+	if req.Type == store.AnnouncementType {
+		writeJSON(w, http.StatusForbidden, errorBody(
+			"an announcement is posted through POST /api/announcements, "+
+				"which is where its scope is checked"))
+		return
+	}
 
 	project, err := req.project(p)
 	if err != nil {
@@ -402,6 +414,14 @@ var mintedTypes = map[string]bool{
 	statusEventType: true,
 	taskEventType:   true,
 	forgeEventType:  true,
+	// The quiesce log. An ack is what releases a resource and lets a
+	// maintenance change proceed, so an ack anybody can type is a gate anybody
+	// can open - and a hold anybody can type is a way to stop somebody else's
+	// release by claiming to depend on it.
+	store.EventAnnouncement:   true,
+	store.EventQuiesceHold:    true,
+	store.EventQuiesceRelease: true,
+	store.EventQuiesceAck:     true,
 }
 
 // handleAppendEvent appends to the log. The log is append-only: there is no

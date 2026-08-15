@@ -681,7 +681,14 @@ and deletes are tombstones.
 | `POST /api/forge/file` | file an artifact as an issue. Body: `artifact`, `repo`. Returns `{artifact, external, event}`. `409` if it is already filed, `404` if you cannot read it, `502` if the forge refused |
 | `GET /api/forge/status?artifact=` | refresh the issue's state; a closed or merged issue moves the artifact to `done`. Returns `{artifact, external, state, status, moved}` |
 | `POST /api/forge/sync` | one turn of the reviewer loop: thread new comments in, push new replies out. Body: `artifact`. Returns `{external, pulled, pushed, events}` |
-| `GET /api/whoami` | the principal this token resolves to |
+| `POST /api/announcements` | post an announcement. Body: `scope` (`node`\|`project`\|`federation`, default `project`), `severity` (`info`\|`warning`\|`maintenance`\|`breaking`, default `info`), `title` (required), `body`, `resource?`, `mode?` (`drain`\|`pause`\|`ack-required`). `403` for `federation` unless the token is a `system` or `monitor` agent |
+| `GET /api/announcements?status=` | the active announcements this token may read, worst severity first. `status=resolved` or `status=all` for the rest. This is what the console banner reads |
+| `GET /api/announcement/{id}/quiesce` | `{resource, mode, holders, acked, pending, state}` - who the change is still waiting on. `400` if it names no resource |
+| `POST /api/announcement/{id}/ack` | this principal has seen it and is out of the way. Returns `{quiesce, event}` |
+| `POST /api/announcement/{id}/resolve` | close the window. `409` while the quiesce is `held`, with the pending list in the body; the owner only |
+| `POST /api/quiesce/hold` | `{resource}` - this principal depends on that resource, so a maintenance announcement naming it knows who to wait for |
+| `POST /api/quiesce/release` | `{resource}` - and has let it go. Under `drain` and `pause` that is the answer; under `ack-required` it is not |
+| `GET /api/whoami` | the principal this token resolves to, including `agent_kind` when the token names an agent |
 | `GET /api/node` | this node, its version and its routes |
 
 On `project` in a create, absent, `null` and a string are three different
@@ -1070,6 +1077,123 @@ share they are said to have given - and those rows are applied, at either merge
 door, because that is exactly what pinning it said. So pin only nodes whose
 operator you trust with your users' identities.
 
+## Announcements, system agents and the quiesce protocol
+
+An announcement is how a node tells the people and the agents working on it that
+something is changing: a release is going out, a store is coming down, the wire
+format moves next week.
+
+It is an artifact of type `announcement` and not a table of its own, for the same
+reason a memory item is not: one table means one permission filter, one canonical
+encoding, one signature and one merge, and every property the fabric already
+promises about an artifact is then a property of an announcement without a line
+of code saying so. In particular **a federation announcement is unforgeable
+because every artifact is** - the merge verifies the signature of the node named
+on the row before it looks at anything else, and that signature covers the type,
+the severity, the status and the `fields` blob the scope lives in.
+
+What makes an artifact an announcement:
+
+| column | holds |
+| --- | --- |
+| `type` | `announcement` |
+| `severity` | `info`\|`warning`\|`maintenance`\|`breaking` |
+| `status` | `active` until it is `resolved` - that pair is the window |
+| `fields` | `{"scope":..., "resource":..., "mode":..., "resolved_at":...}` |
+| `kind` | a copy of the scope, so "every federation announcement" is a column read. Nothing decides by it |
+
+### Scope, and the two doors
+
+`scope` is how far the announcement is meant to travel, and the one place
+travelling happens is replication - so that is where it is enforced, on both
+doors rather than on one:
+
+- **node** - stays here. `SyncPull` does not offer it (nor does the
+  newly-visible rescan, nor the `sync_pending` drain), and a peer that pushes
+  one is refused with the reason. The predicate is written once as SQL for the
+  pull side and once as Go for the push side, next to each other in
+  `internal/store/announce.go`, because this project's history is a list of
+  rules that were on one door and not the other.
+- **project**, **federation** - replicate under the permission rules every other
+  artifact replicates under. Scope says how far an announcement is *meant* to go;
+  the permission filter still says who may read it, and those are different
+  questions. There is no widening: an announcement does not get a way round the
+  filter, so a federation one reaches the peers that can read the project it was
+  posted in.
+
+A `fields` blob that is absent, malformed, or carries a scope nothing implements
+reads as node scope. That is the end of the decision that does not hand somebody
+else's readers an announcement.
+
+### Who may post one
+
+`agents` now answers two questions instead of one. `kind` is the runtime -
+`claude`\|`glm`\|`opencode` - and says nothing about what the agent may do.
+`agent_kind` is what the agent is *for*:
+
+| agent_kind | |
+| --- | --- |
+| `worker` | the default, and what every agent written before the column existed reads back as |
+| `reviewer` | no more privileged than a worker; the kind is a capability, not a hierarchy |
+| `system` | may post a federation-scope announcement |
+| `monitor` | the same |
+
+The column carries `DEFAULT 'worker'` in the `CREATE TABLE` and in the `ALTER`,
+and `InsertAgent` applies it too, so every existing seed and every existing row
+is a worker rather than a NULL. A kind nothing implements is refused on the way
+in instead of being coalesced: a typo that silently becomes the default is a
+system agent somebody thinks they created and did not.
+
+Federation scope is refused to a worker agent, to a reviewer, to a person
+holding their own token, and to the operator - being the operator of this node
+is not being a machine that speaks for the fabric. And `POST /api/artifacts`
+refuses `type: announcement` outright: the scope lives in a blob that endpoint
+takes as it is given, so without that refusal the capability check would have had
+a second door and no capability.
+
+### Quiesce
+
+A `maintenance` or `breaking` announcement may name a `resource` and a `mode`,
+and then the change does not proceed until the dependents holding that resource
+have answered:
+
+| mode | what clears a holder |
+| --- | --- |
+| `drain` | finish and let go. A `POST /api/quiesce/release` is the answer |
+| `pause` | stop now and let go. The same |
+| `ack-required` | only `POST /api/announcement/{id}/ack`. Letting the resource go quietly is not an acknowledgement, and a process that went away has not answered |
+
+A dependent registers with `POST /api/quiesce/hold {"resource": ...}`, which
+writes a `quiesce.hold` event. `GET /api/announcement/{id}/quiesce` reports
+`holders`, `acked`, `pending` and a `state` of `held` or `released`.
+
+**The enforcement is that `POST /api/announcement/{id}/resolve` answers `409`
+while the state is `held`**, with the pending list in the body. That refusal is
+the protocol; without it the modes and the acks would be a report rather than a
+gate. An announcement that names no resource has no quiesce and resolves
+straight away.
+
+Only `maintenance` and `breaking` may hold a resource. A notice that could
+quiesce something would be a way to stop other people's work by describing it.
+
+The four quiesce event types - `announcement`, `quiesce.hold`,
+`quiesce.release`, `quiesce.ack` - are minted by the endpoints that do the
+thing, on both wire paths: `POST /api/events` refuses them and so does the
+merge. An ack anybody can type is a gate anybody can open, and a hold anybody
+can type is a way to stop somebody else's release by claiming to depend on it.
+That has a consequence worth stating plainly: **the announcement travels the
+fabric and the answers to it do not**. A hold is a claim that a process on *this*
+node depends on a resource, and a node waits for its own dependents.
+
+### The banner
+
+The console reads `GET /api/announcements` and paints the active ones above the
+room - above the chat transport, not in it. An announcement that the node is
+going down is not something somebody said in a room: it must not scroll away
+with the log, and it is the same on every route that shows it. There is no
+dismiss button, because what clears the banner is the announcement's own state
+and not this browser's: resolve it and it goes.
+
 ## The forge bridge
 
 A node holds bugs; the world holds an issue tracker. Phase 6 is the join, and it
@@ -1217,6 +1341,15 @@ serves `web/dist` and falls back to `index.html` for **any** non-`/api` GET, so
 a reload of `/chat/general` lands back on the room. Unknown `/api/*` paths still
 `404` in JSON - a client that asked for JSON and got a 200 of HTML would have to
 parse the app to find out it had a typo.
+
+Above the room, and above the transport rather than in it, is the announcement
+banner: the active announcements this token may read, worst severity first, with
+an ack button on the ones that are quiescing something. It polls its own list on
+a slow timer - an announcement is not chat - and it has no dismiss, because what
+clears it is the announcement being resolved and not this browser being told to
+forget it. A read that fails renders nothing at all: a banner that appears over
+the top of your work to say it could not read itself is worse than one that
+stays quiet, and the room below it reports the same failure already.
 
 The chat view posts as the person holding the token and keeps up by looping the
 long poll: `GET /api/chat/{room}` once, then `GET .../wait?cursor=` until the
@@ -1423,7 +1556,7 @@ every table:
 | table | holds |
 | --- | --- |
 | `users` | people; `auto_delegate` decides whether work can go straight to an agent |
-| `agents` | agents acting for a user; `kind` is `claude`\|`glm`\|`opencode` |
+| `agents` | agents acting for a user; `kind` is the runtime (`claude`\|`glm`\|`opencode`), `agent_kind` is what it is for (`worker`\|`reviewer`\|`system`\|`monitor`, default `worker`) |
 | `tokens` | bearer token to `(user, agent, project)`; local, never replicated |
 | `grants` | cross-project capabilities, tombstoned rather than deleted |
 | `artifacts` | transcripts, memories, chats, bugs, features, notes |
@@ -1542,6 +1675,17 @@ what a status trail is.
   party filter that decides who may read one, the inbox query that joins the
   artifact in through the ordinary permission filter, and the two status
   queries.
+- `announce.go`, `internal/store/announce.go` - announcements and quiesce.
+  `announce.go` is the handlers: the scope check against the principal's agent
+  kind, what a well-formed announcement is, and the `409` that holds a resolve
+  while a resource is held. `internal/store/announce.go` is the domain - the
+  scopes, severities and modes as closed sets, the fields blob, the write that
+  puts the announcement and its log entry in one transaction, the quiesce
+  accounting over the event log, and the node-scope predicate in both the SQL
+  the pull door reads and the Go the push door reads, written next to each other.
+- `web/src/components/AnnouncementBanner.tsx` - the banner. It reads the active
+  list and paints it; it has no filter and no dismiss of its own, because both
+  of those belong to the node.
 - `chat.go` - the room view of the event log: `say`, the room read, the long
   poll and the inbox. It adds one field to `store.EventQuery` (`NotActors`) and
   otherwise reuses the log's cursor, DAG and permission filter as they are.
@@ -2011,6 +2155,48 @@ And Phase 8, on the same live node and across the two federated ones:
   reach is reported with the reason rather than silently left out
 - the metrics tab, the traces tab and the timeline mount in a real DOM against
   the live node and render what it measured, what it did, and what was said
+
+Announcements, system agents and quiesce:
+
+- an agent seeded without a kind reads back as `worker`, no `agents` row is left
+  with a NULL kind, the runtime column is untouched, and the kind reaches the
+  principal: `/api/whoami` says `system` for the system agent's token, `worker`
+  for the ordinary one, and nothing at all for a person's - a person is not an
+  agent of the least privileged sort. A kind nothing implements is refused
+- a worker agent, a person and the operator are each refused federation scope,
+  and the system agent is not - while the same worker agent may still post about
+  its own node, so what was refused is the scope and not the agent.
+  `POST /api/artifacts` refuses
+  `type: announcement`, so the capability has one door and not two
+- a scope, a severity or a mode nothing implements is a `400`; so is a notice
+  that tries to quiesce a resource, and a mode with no resource to apply to
+- the four minted quiesce types are refused to a client writing events by hand,
+  and the endpoint's list and the store's are held together by a test
+- the console banner paints an active announcement above the room in a real DOM
+  against the live node, and **is gone from the same page once it is resolved** -
+  asserted as an absence on a page that had certainly loaded its banner, because
+  a string that is missing from a page that never rendered proves nothing. The
+  resolved row is still in the table, carrying the `resolved_at` that closes its
+  window
+- an `ack-required` maintenance announcement **holds** its resource: the quiesce
+  names the holder, `resolve` answers `409`, the announcement stays `active`, and
+  a bare release does not clear it. The ack does, and then the resolve goes
+  through - in that order and no other
+- a `drain` announcement releases on a release, which is the answer that mode
+  asked for. Same machinery, different mode
+- across the two nodes Phase 5 already stood up, with nothing new started: a
+  system agent on nodeA posts one federation announcement and one node
+  announcement, in the same project with the same visibility, so that scope is
+  the only thing that differs between them. After a sync the federation one is on
+  nodeB under nodeA's name, nodeA's signature and the scope it was written with;
+  the node one is a `404` there and is not a row nodeB is merely hiding. **Both
+  doors are checked**: nodeA's pull does not offer it in a delta that carries the
+  federation one, and a node announcement pushed at nodeB - correctly signed by
+  nodeA, whose key nodeB has pinned, by the principal nodeB takes deltas from -
+  is refused as node-scope rather than applied
+- a forged federation announcement, wearing nodeA's name and signed by a node
+  nobody has heard of, is refused on merge, writes no row, and is in nobody's
+  banner
 
 The last thing the gate does is ask git whether the tree it just tested is the
 tree on disk: uncommitted changes, or nothing ever committed, is a failure.
@@ -3391,6 +3577,45 @@ The exception is the `SEARCH` section at the bottom of `schema.sql` - a
 else. It is quarantined there because it is meant to be deleted: when SereneDB
 brings vectors, that section goes and `store.SearchArtifacts` becomes a vector
 query. Nothing above it depends on anything below it.
+
+## Phase 9 status
+
+Green from clean. `./run-tests.sh` reports `passed: 377 failed: 0` on a machine
+with nothing of a previous run left on it - the 359 Phase 8 ended with, every one
+of them still green, plus the 18 Phase 9 adds:
+
+- three on the agent kind: the default that makes every existing seed still
+  valid and the principal it reaches, the closed set and the person who is not
+  an agent, and the capability that has one door;
+- two on what a well-formed announcement is and on the quiesce log being minted
+  rather than typed;
+- two on the console banner: what it paints, and its being gone once the
+  announcement is resolved;
+- three on quiesce: the ack-required hold and its `409`, the ack that releases
+  it, and the drain that releases on a release instead;
+- eight across the two nodes Phase 5 already stood up: the post, the scope that
+  decides what crosses, the push door, the two store-level door tests, the
+  forgery, and both nodes still running afterwards.
+
+The last attempt at this phase broke the federation bring-up and did not see it,
+because a node left running from an earlier attempt was still bound to the ports
+the gate reaches for. So the run above is the one that counts: every process from
+every earlier attempt stopped first, and the ports checked empty before it
+started. A green that only reproduces in the shell it was produced in is not a
+green.
+
+Nothing existing changed shape. `agents` gains a column with a default rather
+than a required field, `POST /api/artifacts` gains one refusal, and the
+replication doors gain one predicate that is a no-op for every row that is not
+an announcement.
+
+One existing check was fixed rather than added to. "the collector reassembles
+both halves into one waterfall" asserted that the spans came back in start order
+by string-sorting their RFC3339 times, and Go trims trailing zeros on the way
+out - so `…31.641Z` sorts after the strictly later `…31.6415Z`, and the check
+failed on a collector that had ordered them correctly, about one run in ten. It
+now pads the fraction to nine digits and compares instants. The collector was
+never wrong; the assertion was.
 
 ## Phase 8 status
 

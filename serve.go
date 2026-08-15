@@ -241,6 +241,13 @@ var apiRoutes = []string{
 	"POST /api/task/{id}/state",
 	"PUT /api/me/auto_delegate",
 	"POST /api/grants",
+	"POST /api/announcements",
+	"GET /api/announcements",
+	"GET /api/announcement/{id}/quiesce",
+	"POST /api/announcement/{id}/ack",
+	"POST /api/announcement/{id}/resolve",
+	"POST /api/quiesce/hold",
+	"POST /api/quiesce/release",
 	"GET /api/forge",
 	"POST /api/forge/file",
 	"GET /api/forge/status",
@@ -316,6 +323,18 @@ func (s *server) routes() http.Handler {
 	api.HandleFunc("POST /api/task/{id}/state", s.handleTaskState)
 	api.HandleFunc("PUT /api/me/auto_delegate", s.handleAutoDelegate)
 	api.HandleFunc("POST /api/grants", s.handleCreateGrant)
+	// Phase 9. Announcements, and the quiesce a maintenance one can hold.
+	// Posting is capability-gated on the agent kind rather than on the route,
+	// because the gate is per scope and not per endpoint: anybody may say
+	// something about this node, and only a system or monitor agent may say it
+	// to the whole fabric.
+	api.HandleFunc("POST /api/announcements", s.handleCreateAnnouncement)
+	api.HandleFunc("GET /api/announcements", s.handleListAnnouncements)
+	api.HandleFunc("GET /api/announcement/{id}/quiesce", s.handleQuiesce)
+	api.HandleFunc("POST /api/announcement/{id}/ack", s.handleAckAnnouncement)
+	api.HandleFunc("POST /api/announcement/{id}/resolve", s.handleResolveAnnouncement)
+	api.HandleFunc("POST /api/quiesce/hold", s.handleHoldResource)
+	api.HandleFunc("POST /api/quiesce/release", s.handleReleaseResource)
 	// The forge bridge. Every one of them is gated on reading the artifact, so
 	// the permission story is the one the rest of the API already has.
 	api.HandleFunc("GET /api/forge", s.handleForgeCapability)
@@ -447,7 +466,7 @@ func (s *server) handleNode(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"node":    s.node,
 		"version": version,
-		"phase":   8,
+		"phase":   9,
 		"console": s.console != nil && s.console.index != nil,
 		"forge":   forgeKind,
 		"routes":  append([]string{"GET /healthz", "GET /version"}, apiRoutes...),
