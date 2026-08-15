@@ -19,18 +19,27 @@ import (
 // A node syncs with a peer by reading the peer's rows since a cursor and
 // applying them locally, and by handing the peer its own rows since a second
 // cursor. Both halves go through the same two pieces of code: SyncPull, which
-// is a permission-filtered read of every replicated table, and SyncApply, which
-// is the merge.
+// is a permission-filtered read of every replicated table, and syncApply, which
+// is the merge - reached as SyncApplyFrom on the half this node asked for and
+// as SyncApplyAs on the half that turned up, because those are not the same
+// question about provenance. See syncMode.
 //
 // The merge rules, which are the whole of the consistency story:
 //
 //   - events are append-only, so an event that is already here is already
 //     right: insert when the id is new, ignore it otherwise. Nothing about an
 //     event is ever updated, including by replication.
-//   - artifacts, tasks and grants are last-writer-wins by hlc. An incoming row
-//     replaces the local one only when its hlc is strictly greater, so the two
-//     nodes pick the same winner whichever order the rows arrive in and however
-//     many times they arrive. A tombstone is a column on the row rather than an
+//   - artifacts, tasks and grants are last-writer-wins by hlc, and by node name
+//     when two readings tie. An incoming row replaces the local one when it
+//     orders after it, so the two nodes pick the same winner whichever order the
+//     rows arrive in and however many times they arrive. The tie matters:
+//     a packed hlc carries a wall reading and a logical counter and nothing
+//     about who made it, so two nodes writing in the same millisecond with the
+//     same counter produce two readings that are equal and two rows that are
+//     not. Comparing on the hlc alone, each node refuses the other's row and
+//     they stay different forever, silently. The node name is the tiebreak that
+//     makes the order total, and any order both sides agree on will do. A
+//     tombstone is a column on the row rather than an
 //     absence, so a delete wins over an older write for exactly the same
 //     reason - and loses to a newer one, which is what makes an edit after a
 //     delete on another node come back rather than vanish.
@@ -654,21 +663,52 @@ const maxReasons = 8
 // lifts this node's clock past everything it will ever write again.
 var ErrBadReading = errors.New("store: clock reading is not believable")
 
-// SyncApply merges a delta this node went and fetched into it, and reports how
-// many rows of each table it actually changed. A row that lost its merge - an
-// older artifact, an event that is already here - is received and not applied,
-// which is what makes a second push of the same set report zeros.
+// syncMode says how much of a delta's provenance this node can take on trust,
+// which is not the same question in the two directions.
+//
+// modePush is a delta that arrived unasked at POST /api/sync/push. Nothing here
+// was chosen by this node, so every row has to be one the pushing principal
+// could have written one at a time over the API: it is their own claim about
+// their own work.
+//
+// modePull is a delta this node went and fetched from a peer its operator
+// named, with a token that resolves on both sides. What comes back is by
+// construction the set of rows that principal may read there, and most of those
+// rows are other people's - a project mate's artifact, the log of a thread, the
+// share that opened it. Refusing them is refusing federation. So the pull check
+// is a different one: a pulled row has to land inside the world that principal
+// already has here - its project, the projects a live grant reaches, the
+// artifacts shared to it, the threads it is party to - and it may not rewrite
+// what is already here in a way that principal could not have caused.
+//
+// The two cannot be the same rule, and the proof is in the gate: the share a
+// handoff writes on one node and the share a hostile peer invents are the same
+// row, pushed by the same principal. One has to be applied and the other
+// refused, and nothing in an unsigned row tells them apart. What decides it is
+// who asked: rows we went and fetched from a peer we chose, or rows that turned
+// up. Closing the gap for good needs signed rows, which is a bigger change than
+// a check.
+type syncMode int
+
+const (
+	modePush syncMode = iota
+	modePull
+)
+
+// SyncApply merges a delta into this node with no principal at all, and reports
+// how many rows of each table it actually changed. A row that lost its merge -
+// an older artifact, an event that is already here - is received and not
+// applied, which is what makes a second push of the same set report zeros.
 //
 // The whole set lands in one transaction: a peer's page is either applied or
 // not, so a driver that dies mid-page resumes from a cursor that still
 // describes the database.
 //
-// It does not filter by principal, because there is none: this is the pull
-// side, run by this node's own operator against a peer they named and hold a
-// token for. What arrives unasked - POST /api/sync/push - goes through
-// SyncApplyAs instead.
+// It is this node's own administration - a local merge, and the operator's
+// token, which already reads everything here through ?scope=all. Everything
+// that comes off a wire goes through SyncApplyAs or SyncApplyFrom.
 func (d *DB) SyncApply(ctx context.Context, in *SyncSet) (map[string]int, error) {
-	res, err := d.syncApply(ctx, nil, in)
+	res, err := d.syncApply(ctx, nil, modePush, in)
 	if err != nil {
 		return nil, err
 	}
@@ -694,10 +734,54 @@ func (d *DB) SyncApplyAs(ctx context.Context, p *Principal, in *SyncSet) (*SyncR
 	if p.Operator {
 		p = nil
 	}
-	return d.syncApply(ctx, p, in)
+	return d.syncApply(ctx, p, modePush, in)
 }
 
-func (d *DB) syncApply(ctx context.Context, p *Principal, in *SyncSet) (*SyncResult, error) {
+// SyncApplyFrom merges a delta this node pulled from a peer, as the principal
+// the pull token resolves to.
+//
+// The pull side used to merge whatever came back with no check of any kind: a
+// peer trusted to be read from was thereby trusted to write anything at all,
+// including a grant that opens a project up to itself, which the next pull then
+// carries out of the door. A correct peer is unaffected by this - every row it
+// serves is one that principal may read there, and it lands here in the same
+// world - and anything else is refused and counted.
+func (d *DB) SyncApplyFrom(ctx context.Context, p *Principal, in *SyncSet) (*SyncResult, error) {
+	if p == nil {
+		return nil, errors.New("store: sync apply without a principal")
+	}
+	if p.Operator {
+		p = nil
+	}
+	return d.syncApply(ctx, p, modePull, in)
+}
+
+// syncRow is one row of a delta with the three questions the merge asks of it:
+// whether applying it would change anything at all, whether the principal that
+// handed it over had any business writing it, and what writing it does.
+type syncRow struct {
+	table string
+	hlc   int64
+	node  string
+	// settled is a row that needs nothing further: applied, or ignored because
+	// it loses its merge.
+	settled   bool
+	why       string
+	unchanged func(context.Context, *sql.Tx) (bool, error)
+	check     func(context.Context, *sql.Tx) (string, error)
+	apply     func(context.Context, *sql.Tx) (int, error)
+}
+
+// syncPasses is how many times the merge walks the rows it has not settled.
+//
+// A delta is a set and not a sequence: an artifact can need the share that
+// opens it, and a share can need the artifact it shares, and one page carries
+// both. One pass in a fixed order decides one of those orders and refuses the
+// other, so the merge goes round again over what it refused and stops as soon
+// as a pass changes nothing.
+const syncPasses = 3
+
+func (d *DB) syncApply(ctx context.Context, p *Principal, mode syncMode, in *SyncSet) (*SyncResult, error) {
 	res := &SyncResult{
 		Applied: map[string]int{"artifacts": 0, "events": 0, "tasks": 0, "grants": 0},
 		Refused: map[string]int{"artifacts": 0, "events": 0, "tasks": 0, "grants": 0},
@@ -716,72 +800,152 @@ func (d *DB) syncApply(ctx context.Context, p *Principal, in *SyncSet) (*SyncRes
 	}
 	defer tx.Rollback() //nolint:errcheck // rolled back only when Commit did not happen
 
-	refuse := func(table, why string) {
-		res.Refused[table]++
-		if len(res.Reasons) < maxReasons {
-			res.Reasons = append(res.Reasons, why)
+	// Grants first: a grant is what makes the rows that follow readable, and a
+	// row that lands in a project this principal has no reach into is refused.
+	// Then artifacts, which a task is about, then tasks, which open a thread,
+	// then the events in it.
+	rows := make([]*syncRow, 0, in.Len())
+	for i := range in.Grants {
+		g := &in.Grants[i]
+		rows = append(rows, &syncRow{
+			table: "grants", hlc: g.HLC, node: g.Node,
+			unchanged: func(ctx context.Context, tx *sql.Tx) (bool, error) {
+				return loses(ctx, tx, "grants", g.ID, g.HLC, g.Node)
+			},
+			check: func(ctx context.Context, tx *sql.Tx) (string, error) {
+				return checkGrant(ctx, tx, p, mode, g)
+			},
+			apply: func(ctx context.Context, tx *sql.Tx) (int, error) { return applyGrant(ctx, tx, g) },
+		})
+	}
+	for _, art := range in.Artifacts {
+		rows = append(rows, &syncRow{
+			table: "artifacts", hlc: art.HLC, node: art.Node,
+			unchanged: func(ctx context.Context, tx *sql.Tx) (bool, error) {
+				return loses(ctx, tx, "artifacts", art.ID, art.HLC, art.Node)
+			},
+			check: func(ctx context.Context, tx *sql.Tx) (string, error) {
+				return checkArtifact(ctx, tx, p, mode, art)
+			},
+			apply: func(ctx context.Context, tx *sql.Tx) (int, error) { return applyArtifact(ctx, tx, art) },
+		})
+	}
+	for _, t := range in.Tasks {
+		rows = append(rows, &syncRow{
+			table: "tasks", hlc: t.HLC, node: t.Node,
+			unchanged: func(ctx context.Context, tx *sql.Tx) (bool, error) {
+				return loses(ctx, tx, "tasks", t.ID, t.HLC, t.Node)
+			},
+			check: func(ctx context.Context, tx *sql.Tx) (string, error) {
+				return checkTask(ctx, tx, p, mode, t)
+			},
+			apply: func(ctx context.Context, tx *sql.Tx) (int, error) { return applyTask(ctx, tx, t) },
+		})
+	}
+	for _, e := range in.Events {
+		rows = append(rows, &syncRow{
+			table: "events", hlc: e.SeqHLC, node: e.Node,
+			unchanged: func(ctx context.Context, tx *sql.Tx) (bool, error) {
+				return eventIsHere(ctx, tx, e.ID)
+			},
+			check: func(ctx context.Context, tx *sql.Tx) (string, error) {
+				return checkEventRow(ctx, tx, p, mode, e)
+			},
+			apply: func(ctx context.Context, tx *sql.Tx) (int, error) { return applyEvent(ctx, tx, e) },
+		})
+	}
+
+	for pass := 0; pass < syncPasses; pass++ {
+		moved := false
+		for _, row := range rows {
+			if row.settled {
+				continue
+			}
+			// A row that loses its merge is not a write, so it is not a
+			// refusal either: it is a delta being replayed. Deciding that
+			// first is what keeps a peer's own rows coming back at it from
+			// being reported - and retried - as rows it was refused.
+			old, err := row.unchanged(ctx, tx)
+			if err != nil {
+				return nil, err
+			}
+			if old {
+				row.settled, row.why = true, ""
+				continue
+			}
+			why, err := row.check(ctx, tx)
+			if err != nil {
+				return nil, err
+			}
+			if why != "" {
+				row.why = why
+				continue
+			}
+			n, err := row.apply(ctx, tx)
+			if err != nil {
+				return nil, err
+			}
+			res.Applied[row.table] += n
+			d.observe(row.hlc, row.node)
+			row.settled, row.why, moved = true, "", true
+		}
+		if !moved {
+			break
 		}
 	}
 
-	for _, art := range in.Artifacts {
-		if why, err := checkArtifact(ctx, tx, p, art); err != nil {
-			return nil, err
-		} else if why != "" {
-			refuse("artifacts", why)
+	for _, row := range rows {
+		if row.settled {
 			continue
 		}
-		n, err := applyArtifact(ctx, tx, art)
-		if err != nil {
-			return nil, err
+		res.Refused[row.table]++
+		if len(res.Reasons) < maxReasons {
+			res.Reasons = append(res.Reasons, row.why)
 		}
-		res.Applied["artifacts"] += n
-		d.observe(art.HLC, art.Node)
-	}
-	for _, e := range in.Events {
-		if why := checkEvent(p, e); why != "" {
-			refuse("events", why)
-			continue
-		}
-		n, err := applyEvent(ctx, tx, e)
-		if err != nil {
-			return nil, err
-		}
-		res.Applied["events"] += n
-		d.observe(e.SeqHLC, e.Node)
-	}
-	for _, t := range in.Tasks {
-		if why, err := checkTask(ctx, tx, p, t); err != nil {
-			return nil, err
-		} else if why != "" {
-			refuse("tasks", why)
-			continue
-		}
-		n, err := applyTask(ctx, tx, t)
-		if err != nil {
-			return nil, err
-		}
-		res.Applied["tasks"] += n
-		d.observe(t.HLC, t.Node)
-	}
-	for i := range in.Grants {
-		if why, err := checkGrant(ctx, tx, p, &in.Grants[i]); err != nil {
-			return nil, err
-		} else if why != "" {
-			refuse("grants", why)
-			continue
-		}
-		n, err := applyGrant(ctx, tx, &in.Grants[i])
-		if err != nil {
-			return nil, err
-		}
-		res.Applied["grants"] += n
-		d.observe(in.Grants[i].HLC, in.Grants[i].Node)
 	}
 
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("store: sync apply: %w", err)
 	}
 	return res, nil
+}
+
+// loses reports whether the row already here wins the merge against the reading
+// and node offered, so that applying the incoming row would change nothing.
+//
+// It is the same total order the upsert's WHERE clause uses, asked before the
+// row is judged rather than after: replaying a delta is not a write and must
+// not be reported as a refusal, or a peer whose rows come back at it holds its
+// cursor forever on rows it already has.
+func loses(ctx context.Context, tx *sql.Tx, table, id string, hlc int64, node string) (bool, error) {
+	var (
+		here sql.NullInt64
+		who  sql.NullString
+	)
+	err := tx.QueryRowContext(ctx,
+		`SELECT coalesce(hlc, 0), coalesce(node, '') FROM `+table+` WHERE id = $1`, id).
+		Scan(&here, &who)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("store: sync merge %s %s: %w", table, id, err)
+	}
+	if here.Int64 > hlc {
+		return true, nil
+	}
+	return here.Int64 == hlc && who.String >= node, nil
+}
+
+// eventIsHere reports whether the log already holds this event. The log is
+// append-only, so an id that is here is a row that is already right.
+func eventIsHere(ctx context.Context, tx *sql.Tx, id string) (bool, error) {
+	var here bool
+	if err := tx.QueryRowContext(ctx,
+		`SELECT EXISTS (SELECT 1 FROM events WHERE id = $1)`, id).Scan(&here); err != nil {
+		return false, fmt.Errorf("store: sync merge event %s: %w", id, err)
+	}
+	return here, nil
 }
 
 // checkReadings refuses a delta carrying a reading no clock could have made:
@@ -884,24 +1048,147 @@ func checkEvent(p *Principal, e *Event) string {
 	return ""
 }
 
-// checkArtifact answers why p may not push art, or "" when it may.
+// checkEventRow answers why p may not hand this node e, or "" when it may.
 //
-// Two rules, and they are the two ways a pushed artifact escalates:
+// A pushed event is p's own claim about p's own work, so it is checked against
+// what POST /api/events would have allowed - see checkEvent. A pulled one is
+// somebody else's, carried by a principal that may read it, so what is checked
+// is where it lands: an event in a project this principal has no reach into is
+// a peer writing into a corner of this node it has nothing to do with.
 //
-//   - a personal row belongs to its owner. Nobody else pushes one, because
-//     nobody else can read one, and a push of somebody else's would be a write
+// Both ways, a thread is checked as well. Writing into a thread is not a way
+// round reading it: the tasks clause in EventFilterSQL shows a thread's events
+// to the parties, so a message dropped into somebody else's conversation is
+// read by exactly the people whose conversation it is not.
+func checkEventRow(
+	ctx context.Context, tx *sql.Tx, p *Principal, mode syncMode, e *Event,
+) (string, error) {
+	if p == nil {
+		return "", nil
+	}
+	if mode == modePush {
+		if why := checkEvent(p, e); why != "" {
+			return why, nil
+		}
+	} else {
+		ok, err := eventReadable(ctx, tx, p, e)
+		if err != nil {
+			return "", err
+		}
+		if !ok {
+			return "event " + e.ID + " lands where you read nothing", nil
+		}
+	}
+	return threadClosed(ctx, tx, p, e.Thread, "event "+e.ID)
+}
+
+// eventReadable reports whether p could read e as it would land, by running the
+// read filter over the incoming values rather than over a stored row.
+func eventReadable(ctx context.Context, tx *sql.Tx, p *Principal, e *Event) (bool, error) {
+	a := &args{}
+	project := a.next(nullText(e.Project))
+	actor := a.next(e.Actor)
+	thread := a.next(e.Thread)
+	filter := EventFilterSQL(p, "e", a, false)
+	var ok sql.NullBool
+	err := tx.QueryRowContext(ctx,
+		`SELECT `+filter+`
+		   FROM (SELECT `+project+`::text AS project, `+actor+`::text AS actor,
+		                `+thread+`::text AS thread) e`, a.vals...).Scan(&ok)
+	if err != nil {
+		return false, fmt.Errorf("store: sync check event %s: %w", e.ID, err)
+	}
+	return ok.Valid && ok.Bool, nil
+}
+
+// threadClosed answers why p may not write into thread, or "" when it may.
+//
+// The rule is the one checkTask has always used for a task's thread: a thread
+// holding an event p cannot read is a conversation p is not in. A thread with
+// nothing in it is nobody's yet and is allowed - there is nothing there to
+// learn, and every conversation starts as one.
+func threadClosed(
+	ctx context.Context, tx *sql.Tx, p *Principal, thread, what string,
+) (string, error) {
+	if p == nil || thread == "" {
+		return "", nil
+	}
+	hidden, err := threadHidden(ctx, tx, p, thread)
+	if err != nil {
+		return "", err
+	}
+	if hidden {
+		return what + " is in thread " + thread + ", which you cannot read", nil
+	}
+	return "", nil
+}
+
+// querier is what both *sql.DB and *sql.Tx satisfy, so one thread test serves
+// the merge and the handlers that write into a thread over the API.
+type querier interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// ThreadHidden reports whether thread holds an event p may not read. It is the
+// read half of "you cannot write into a conversation you cannot see", and the
+// endpoints that append to a thread ask it before they write.
+func (d *DB) ThreadHidden(ctx context.Context, p *Principal, thread string) (bool, error) {
+	return threadHidden(ctx, d.sql, p, thread)
+}
+
+// threadHidden is the same question against whatever is in hand: the merge asks
+// it inside its transaction, the handlers ask it of the pool.
+func threadHidden(ctx context.Context, q querier, p *Principal, thread string) (bool, error) {
+	if p == nil {
+		return true, nil
+	}
+	if thread == "" {
+		return false, nil
+	}
+	a := &args{}
+	threadArg := a.next(thread)
+	events := EventFilterSQL(p, "e", a, false)
+	var hidden bool
+	err := q.QueryRowContext(ctx,
+		`SELECT EXISTS (SELECT 1 FROM events e
+		                 WHERE e.thread = `+threadArg+`
+		                   AND NOT coalesce((`+events+`), false))`, a.vals...).Scan(&hidden)
+	if err != nil {
+		return false, fmt.Errorf("store: read thread %s: %w", thread, err)
+	}
+	return hidden, nil
+}
+
+// nullText is a project column that may not be there: NULL rather than the
+// empty string, because the read filter asks `project IS NULL` to mean personal
+// and an empty string is not that.
+func nullText(s *string) any {
+	if s == nil {
+		return nil
+	}
+	return *s
+}
+
+// checkArtifact answers why p may not hand this node a, or "" when it may.
+//
+// Three rules, and they are the three ways a replicated artifact escalates:
+//
+//   - a personal row belongs to its owner. Nobody else carries one, because
+//     nobody else can read one, and a copy of somebody else's would be a write
 //     into a place no read of theirs can reach.
-//   - a row that is already here is only overwritten by its owner. That is the
-//     rule POST /api/artifacts keeps, and it has to be the rule here too:
-//     applying a row replaces every column of the one it lands on - owner_user,
-//     project and visibility included - so anything less than ownership is a
-//     way to take a row over and then share it onwards. Being able to read it
-//     is not enough; a read-share is a read.
-//
-// A row that is not here yet is allowed: that is ordinary replication, and a
-// row invented in a project the pusher cannot read is a row the pusher still
-// cannot read.
-func checkArtifact(ctx context.Context, tx *sql.Tx, p *Principal, a *Artifact) (string, error) {
+//   - a row lands where the principal could have reached it: its own project, a
+//     project a live grant opens to it, or an artifact shared to it. Without
+//     this, a peer invents a row in any project it likes - including one it has
+//     never been let into - and the row is then real for every node downstream.
+//   - a row that is already here does not change hands and does not move
+//     project. Applying a row replaces every column of the one it lands on, so
+//     without this a share is a way to take a row over: re-owned, re-projected
+//     and then handed on. Being able to read it is not enough. On a push it is
+//     stricter still - the row has to be the pusher's own, which is the rule
+//     POST /api/artifacts keeps.
+func checkArtifact(
+	ctx context.Context, tx *sql.Tx, p *Principal, mode syncMode, a *Artifact,
+) (string, error) {
 	if p == nil {
 		return "", nil
 	}
@@ -909,20 +1196,72 @@ func checkArtifact(ctx context.Context, tx *sql.Tx, p *Principal, a *Artifact) (
 		if a.OwnerUser == "" || a.OwnerUser != p.UserID {
 			return "artifact " + a.ID + " is personal and not yours", nil
 		}
+	} else {
+		ok, err := artifactReadable(ctx, tx, p, a)
+		if err != nil {
+			return "", err
+		}
+		if !ok {
+			return "artifact " + a.ID + " would land in project " + *a.Project +
+				", which you cannot reach", nil
+		}
 	}
-	var owner sql.NullString
+
+	var (
+		owner   sql.NullString
+		project sql.NullString
+	)
 	err := tx.QueryRowContext(ctx,
-		`SELECT coalesce(owner_user, '') FROM artifacts WHERE id = $1`, a.ID).Scan(&owner)
+		`SELECT coalesce(owner_user, ''), project FROM artifacts WHERE id = $1`, a.ID).
+		Scan(&owner, &project)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
 	if err != nil {
 		return "", fmt.Errorf("store: sync check artifact %s: %w", a.ID, err)
 	}
-	if owner.String == "" || owner.String != p.UserID {
+	if owner.String != a.OwnerUser {
+		return "artifact " + a.ID + " belongs to " + owner.String +
+			", and a merge does not change hands", nil
+	}
+	was, now := "", ""
+	if project.Valid {
+		was = project.String
+	}
+	if a.Project != nil {
+		now = *a.Project
+	}
+	if was != now {
+		return "artifact " + a.ID + " is in project " + was +
+			", and a merge does not move it to " + now, nil
+	}
+	if mode == modePush && (owner.String == "" || owner.String != p.UserID) {
 		return "artifact " + a.ID + " is already here and is not yours to rewrite", nil
 	}
 	return "", nil
+}
+
+// artifactReadable reports whether p could read a as it would land, by running
+// the read filter over the incoming values rather than over a stored row. That
+// is the "land where the API would put it" rule, which for a peer is wider than
+// one project: what it may reach is what a grant says it may reach.
+func artifactReadable(ctx context.Context, tx *sql.Tx, p *Principal, a *Artifact) (bool, error) {
+	q := &args{}
+	id := q.next(a.ID)
+	project := q.next(nullText(a.Project))
+	owner := q.next(a.OwnerUser)
+	vis := q.next(a.Visibility)
+	filter := ArtifactFilterSQL(p, "ar", q, false)
+	var ok sql.NullBool
+	err := tx.QueryRowContext(ctx,
+		`SELECT `+filter+`
+		   FROM (SELECT `+id+`::text AS id, `+project+`::text AS project,
+		                `+owner+`::text AS owner_user, `+vis+`::text AS visibility) ar`, q.vals...).
+		Scan(&ok)
+	if err != nil {
+		return false, fmt.Errorf("store: sync check artifact %s: %w", a.ID, err)
+	}
+	return ok.Valid && ok.Bool, nil
 }
 
 // checkTask answers why p may not push t.
@@ -933,40 +1272,66 @@ func checkArtifact(ctx context.Context, tx *sql.Tx, p *Principal, a *Artifact) (
 // stranger, naming themselves on both sides and somebody else's thread, is a
 // way to read that conversation. It is checked the way POST /api/assign is:
 //
-//   - a task that is already here is rewritten only by a party to it, so a
-//     handoff cannot be reassigned by somebody who guessed its id;
-//   - a new one has to be a handoff the pusher could have made. They are the
-//     side handing the work over, the artifact is one they may read and is not
-//     personal, and the thread is one they can already read - a thread nobody
-//     has said anything in yet is a thread there is nothing to learn from.
-func checkTask(ctx context.Context, tx *sql.Tx, p *Principal, t *Task) (string, error) {
+//   - a task that is already here is moved only by a party to it, and only in
+//     the ways a party can move it over the API: the state and the agent it was
+//     delegated to. The thread, the artifact and the two people are the shape
+//     of the handoff, and a party that could re-point them would be handing
+//     itself - or anybody - a read on any conversation on this node, which is
+//     the same escalation as inventing the row in the first place;
+//   - a new one has to be a handoff the principal is in. On a push they are the
+//     side handing the work over, which is what POST /api/assign requires; on a
+//     pull they may also be the side it was handed to, because that is how a
+//     handoff made on another node arrives. Either way the artifact is one they
+//     may read and is not personal, and the thread is one they can already
+//     read - a thread nobody has said anything in yet is a thread there is
+//     nothing to learn from.
+func checkTask(
+	ctx context.Context, tx *sql.Tx, p *Principal, mode syncMode, t *Task,
+) (string, error) {
 	if p == nil {
 		return "", nil
 	}
-	own := &args{}
-	idArg := own.next(t.ID)
-	party := taskPartySQL(p, "t", own)
-	var mine bool
+	var (
+		exists                             bool
+		thread, artifact, fromUser, toUser sql.NullString
+		assignee                           sql.NullString
+	)
 	err := tx.QueryRowContext(ctx,
-		`SELECT EXISTS (SELECT 1 FROM tasks t WHERE t.id = `+idArg+` AND `+party+`)`,
-		own.vals...).Scan(&mine)
-	if err != nil {
+		`SELECT coalesce(thread, ''), coalesce(artifact, ''), coalesce(from_user, ''),
+		        coalesce(to_user, ''), coalesce(assignee_agent, '')
+		   FROM tasks WHERE id = $1`, t.ID).
+		Scan(&thread, &artifact, &fromUser, &toUser, &assignee)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+	case err != nil:
 		return "", fmt.Errorf("store: sync check task %s: %w", t.ID, err)
-	}
-	if mine {
-		return "", nil
-	}
-	var exists bool
-	if err := tx.QueryRowContext(ctx,
-		`SELECT EXISTS (SELECT 1 FROM tasks WHERE id = $1)`, t.ID).Scan(&exists); err != nil {
-		return "", fmt.Errorf("store: sync check task %s: %w", t.ID, err)
-	}
-	if exists {
-		return "task " + t.ID + " is already here and you are not a party to it", nil
+	default:
+		exists = true
 	}
 
-	if p.UserID == "" || t.FromUser != p.UserID {
+	if exists {
+		here := &Task{
+			Thread: thread.String, Artifact: artifact.String,
+			FromUser: fromUser.String, ToUser: toUser.String, AssigneeAgent: assignee.String,
+		}
+		if !taskParty(p, here) {
+			return "task " + t.ID + " is already here and you are not a party to it", nil
+		}
+		if t.Thread != here.Thread || t.Artifact != here.Artifact ||
+			t.FromUser != here.FromUser || t.ToUser != here.ToUser {
+			return "task " + t.ID + " is a party's to move, not to re-point: " +
+				"the thread, the artifact and the two people are how it was handed over", nil
+		}
+		return "", nil
+	}
+
+	switch {
+	case p.UserID == "":
+		return "task " + t.ID + " is a handoff and this token names no user", nil
+	case mode == modePush && t.FromUser != p.UserID:
 		return "task " + t.ID + " hands over work as " + t.FromUser + ", which is not you", nil
+	case mode == modePull && !taskParty(p, t):
+		return "task " + t.ID + " is a handoff between other people", nil
 	}
 
 	shareable := &args{}
@@ -986,23 +1351,18 @@ func checkTask(ctx context.Context, tx *sql.Tx, p *Principal, t *Task) (string, 
 		return "task " + t.ID + " is about " + t.Artifact + ", which is not yours to hand over", nil
 	}
 
-	if t.Thread != "" {
-		thread := &args{}
-		threadArg := thread.next(t.Thread)
-		events := EventFilterSQL(p, "e", thread, false)
-		var hidden bool
-		err = tx.QueryRowContext(ctx,
-			`SELECT EXISTS (SELECT 1 FROM events e
-			                 WHERE e.thread = `+threadArg+`
-			                   AND NOT coalesce((`+events+`), false))`, thread.vals...).Scan(&hidden)
-		if err != nil {
-			return "", fmt.Errorf("store: sync check task %s: %w", t.ID, err)
-		}
-		if hidden {
-			return "task " + t.ID + " names thread " + t.Thread + ", which you cannot read", nil
-		}
+	return threadClosed(ctx, tx, p, t.Thread, "task "+t.ID)
+}
+
+// taskParty reports whether p is one of the three people a task is between: the
+// side handing the work over, the side it went to, or the agent it was
+// delegated to. It is taskPartySQL's rule, in Go, for a row that is in hand.
+func taskParty(p *Principal, t *Task) bool {
+	if p == nil || t == nil {
+		return false
 	}
-	return "", nil
+	return p.UserID != "" && (t.FromUser == p.UserID || t.ToUser == p.UserID) ||
+		p.AgentID != "" && t.AssigneeAgent == p.AgentID
 }
 
 // checkGrant answers why p may not push g. It is the rule POST /api/grants
@@ -1020,9 +1380,33 @@ func checkTask(ctx context.Context, tx *sql.Tx, p *Principal, t *Task) (string, 
 //     that merely claims to have come from the owner is a claim the pusher
 //     wrote, and believing it lets anybody share anybody's artifact with
 //     themselves.
-func checkGrant(ctx context.Context, tx *sql.Tx, p *Principal, g *Grant) (string, error) {
+//
+// A pulled grant is not that. Federation is capabilities travelling: the share
+// a handoff wrote on one node is how the other side reads the artifact on this
+// one, and it was written by the owner, who is not the principal carrying it.
+// So a pulled grant is checked twice over instead - it has to be one this
+// principal could have been handed at all, which is the reach GrantFilterSQL
+// replicates by, and if it says this principal signed it then it has to be one
+// this principal could have issued. What that leaves is a peer naming somebody
+// else as the grantor, which no unsigned row can rule out.
+func checkGrant(
+	ctx context.Context, tx *sql.Tx, p *Principal, mode syncMode, g *Grant,
+) (string, error) {
 	if p == nil {
 		return "", nil
+	}
+	if mode == modePull {
+		reaches := g.ToProject != "" && g.ToProject == p.Project ||
+			g.FromProject != "" && g.FromProject == p.Project ||
+			g.Subject != "" && g.Subject == p.UserID ||
+			g.GrantedBy != "" && g.GrantedBy == p.UserID
+		if !reaches {
+			return "grant " + g.ID + " is between other people and other projects", nil
+		}
+		if g.GrantedBy == "" || g.GrantedBy != p.UserID {
+			return "", nil
+		}
+		// Signed by this principal, so it is judged as one of theirs.
 	}
 	if g.Artifact == "" {
 		if g.ToProject == "" || g.ToProject != p.Project {
@@ -1122,7 +1506,9 @@ func applyArtifact(ctx context.Context, tx *sql.Tx, a *Artifact) (int, error) {
 		     fields = excluded.fields, hlc = excluded.hlc, node = excluded.node,
 		     tombstone = excluded.tombstone, search = excluded.search, updated = now(),
 		     reported = excluded.reported, external = excluded.external
-		  WHERE coalesce(artifacts.hlc, 0) < excluded.hlc`,
+		  WHERE coalesce(artifacts.hlc, 0) < excluded.hlc
+		     OR (coalesce(artifacts.hlc, 0) = excluded.hlc
+		         AND coalesce(artifacts.node, '') < excluded.node)`,
 		a.ID, a.Type, a.Kind, a.Project, a.OwnerUser, a.Title, a.Body, a.Discovery,
 		a.Status, a.Severity, pq.Array(a.Tags), pq.Array(a.UserTags), pq.Array(a.Related),
 		a.Visibility, a.FilePath, fields, a.HLC, a.Node, a.Tombstone, searchText(a),
@@ -1173,7 +1559,9 @@ func applyTask(ctx context.Context, tx *sql.Tx, t *Task) (int, error) {
 		     to_user = excluded.to_user, project = excluded.project, state = excluded.state,
 		     assignee_agent = excluded.assignee_agent, thread = excluded.thread,
 		     hlc = excluded.hlc, node = excluded.node
-		  WHERE coalesce(tasks.hlc, 0) < excluded.hlc`,
+		  WHERE coalesce(tasks.hlc, 0) < excluded.hlc
+		     OR (coalesce(tasks.hlc, 0) = excluded.hlc
+		         AND coalesce(tasks.node, '') < excluded.node)`,
 		t.ID, t.Artifact, t.FromUser, t.ToUser, t.Project, t.State,
 		t.AssigneeAgent, t.Thread, t.HLC, t.Node)
 	if err != nil {
@@ -1197,7 +1585,9 @@ func applyGrant(ctx context.Context, tx *sql.Tx, g *Grant) (int, error) {
 		     subject = excluded.subject, artifact = excluded.artifact, cap = excluded.cap,
 		     granted_by = excluded.granted_by, hlc = excluded.hlc, node = excluded.node,
 		     tombstone = excluded.tombstone
-		  WHERE coalesce(grants.hlc, 0) < excluded.hlc`,
+		  WHERE coalesce(grants.hlc, 0) < excluded.hlc
+		     OR (coalesce(grants.hlc, 0) = excluded.hlc
+		         AND coalesce(grants.node, '') < excluded.node)`,
 		g.ID, g.FromProject, g.ToProject, g.Subject, g.Artifact, g.Cap,
 		g.GrantedBy, g.HLC, g.Node, g.Tombstone)
 	if err != nil {

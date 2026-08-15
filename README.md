@@ -349,7 +349,7 @@ and deletes are tombstones.
 | `PUT /api/me/auto_delegate` | `{on: bool}` - your standing answer to inbound work |
 | `POST /api/grants` | issue a capability: `{from_project,to_project}` for a project-wide one, `{artifact,subject}` for a share |
 | `GET /api/sync/pull?since=&limit=` | the delta a peer may read: `{artifacts, events, tasks, grants, hwm}`, ordered by the clock, tombstones included |
-| `POST /api/sync/push` | merge a peer's delta: upsert by id, append-only events, last-writer-wins by `hlc` |
+| `POST /api/sync/push` | merge a peer's delta: upsert by id, append-only events, last-writer-wins by `hlc` and `node`. Rows the pushing principal could not have written are refused and counted |
 | `GET /api/peers` | replication bookmarks and their cursors; the operator only |
 | `GET /api/forge` | which forge this node speaks to, why, and which CLIs it can see |
 | `POST /api/forge/file` | file an artifact as an issue. Body: `artifact`, `repo`. Returns `{artifact, external, event}`. `409` if it is already filed, `404` if you cannot read it, `502` if the forge refused |
@@ -509,10 +509,20 @@ flowy sync --peer https://box.local:8787 --token "$TOKEN"
 {"peer":"https://box.local:8787","node":"laptop","peer_node":"box","as":"01H...",
  "pulled":{"artifacts":3,"events":11,"tasks":1,"grants":0},
  "applied":{"artifacts":3,"events":11,"tasks":1,"grants":0},
+ "refused":{"artifacts":0,"events":0,"tasks":0,"grants":0},
  "pushed":{"artifacts":1,"events":4,"tasks":0,"grants":1},
  "peer_applied":{"artifacts":1,"events":4,"tasks":0,"grants":1},
+ "peer_refused":{"artifacts":0,"events":0,"tasks":0,"grants":0},
  "pull_cursor":117094...,"pushed_cursor":117094...}
 ```
+
+`refused` is what this node would not take from the peer and `peer_refused` is
+what the peer would not take from this one, both with `reasons` beside them when
+either is non-zero. Neither should ever be anything but zero between two nodes
+that trust each other, which is why they are in the report rather than in a log:
+a peer quietly having half its delta dropped is exactly what a cursor hides.
+`pushed_cursor` does not move past a page the peer refused, so those rows are
+offered again next time rather than lost.
 
 **Replication is permission-filtered, and that is the whole design.** A peer
 authenticates as a principal exactly like an agent does - it holds a bearer
@@ -530,7 +540,7 @@ The two endpoints:
 | route | what it does |
 | --- | --- |
 | `GET /api/sync/pull?since=<hlc>&limit=` | `{artifacts, events, tasks, grants, hwm, node}` - every row the requesting principal may read whose `hlc`/`seq_hlc` is **strictly greater** than `since`, ordered by the clock. Tombstones included: a delete has to travel, and it travels as a row |
-| `POST /api/sync/push` | body `{artifacts, events, tasks, grants}`; upserts each by id and answers with what it received and what that actually changed |
+| `POST /api/sync/push` | body `{artifacts, events, tasks, grants}`; upserts each by id and answers with what it received, what that actually changed, and what it refused - with the reasons |
 
 `hwm` is the cursor the caller may store once it has applied the page. It is the
 greatest reading in the set, except when a table filled its page - then it is
@@ -544,11 +554,17 @@ whether a row arrived by pull or by push:
 - **events are append-only.** Insert when the id is new, ignore it otherwise.
   Nothing about an event is ever updated, including by replication, so a thread
   arrives with its `parents` DAG exactly as it was written.
-- **artifacts, tasks and grants are last-writer-wins by `hlc`.** An incoming row
-  replaces the local one **only** when `incoming.hlc > local.hlc` - the `WHERE`
-  on the upsert is the only place that is decided. Both nodes therefore pick the
-  same winner whichever order the rows arrive in and however many times they
-  arrive, which is what makes a push idempotent rather than merely repeatable.
+- **artifacts, tasks and grants are last-writer-wins by `hlc`, and by `node`
+  when two readings tie.** An incoming row replaces the local one when
+  `incoming.hlc > local.hlc`, or when the readings are equal and
+  `incoming.node > local.node` - the `WHERE` on the upsert is the only place
+  that is decided. The tiebreak is what makes the order total: a packed reading
+  carries a wall clock and a logical counter and nothing about who made it, so
+  two nodes writing in the same millisecond produce equal readings and different
+  rows, and comparing on the reading alone leaves each node refusing the other's
+  forever. Both nodes therefore pick the same winner whichever order the rows
+  arrive in and however many times they arrive, which is what makes a push
+  idempotent rather than merely repeatable.
 - **an hlc is never lowered**, and a tombstone is a column rather than an
   absence, so a delete beats an older write for exactly the same reason - and
   loses to a newer one, which is what makes an edit made after a delete on
@@ -1171,6 +1187,23 @@ And the second slice, the same way - one check per defect the re-review found:
   artifacts it opened, over successive pulls
 - `checkEvent` row by row in the store, and the endpoint's minted types and the
   store's are asserted to be one list
+- a peer that answers a pull with four rows written straight into its own
+  database - a grant into a project nothing opens, and the artifact, event and
+  task that lean on it - has all four refused, and none of them land
+- a pushed artifact cannot be filed into a project the pusher cannot reach, and
+  one of the pusher's own cannot be walked from one project into another
+- a party to a task cannot push it back with its thread swapped for a
+  conversation it may not read, and still reads that thread as empty afterwards
+- a message into a thread the speaker cannot read is `403` on both endpoints
+  that write one, and saying something without naming a thread still opens one
+- two rows at the same reading from differently-named nodes have a winner, and
+  the loser is ignored rather than refused
+- a status refresh by somebody who can read the artifact but does not own it is
+  `403`, and the owner's own refresh still goes through
+- a push the peer refused leaves the pushed cursor where it was, the next run
+  offers the same rows again, and the cursor moves once the peer takes them
+- a reader cannot tombstone an artifact it does not own, in the store rather
+  than in the handler
 
 The last thing the gate does is ask git whether the tree it just tested is the
 tree on disk: uncommitted changes, or nothing ever committed, is a failure.
@@ -1183,8 +1216,8 @@ A review found ten defects, and this slice fixes all ten. Each one has a check
 in `run-tests.sh` that fails on the code as it was and passes on the code as it
 is - the run below verifies that by reverting the source and leaving the checks
 in place, which is the only way to know a regression test is testing anything.
-A re-review of this slice found ten more, mostly in the push gate it added;
-those are the section after this one.
+A re-review of this slice found ten more, mostly in the push gate it added, and
+a third round found eight behind those - the two sections after this one.
 
 Two of them change how a node is configured, so they are worth reading before
 upgrading one:
@@ -1381,6 +1414,127 @@ written, and `ListComments` never offered it again. It is stamped before the
 round trip. The mock can now be told to record a comment as part of opening an
 issue, which is that window made deterministic rather than raced for.
 
+## The third round of security fixes
+
+The second round was reviewed again, and the first thing it found was the shape
+of the first two: both had put their checks on the **push** endpoint, and the
+driver's **pull** half went straight round them. Eight more defects. Same rule
+as before: one check in `run-tests.sh` per defect, each verified by reverting
+the source and leaving the checks in place.
+
+Nothing here changes how a node is configured. `FLOWY_PEERS` and
+`FLOWY_FORGE_REPOS` mean what they meant.
+
+One thing did change in the model, and it is worth stating before the list.
+**A push and a pull are not checked by the same rule, and they cannot be.** A
+push is a principal's claim about its own work, so every row has to be one that
+principal could have written over the API. A pull is a peer this node's operator
+named answering with the rows that principal may read *there*, and most of those
+are other people's - a project mate's artifact, the log of a thread, the share
+that opened it. Refusing them is refusing federation. The proof that one rule
+cannot serve both is in the gate: the share a handoff writes on one node and the
+share a hostile peer invents are the same row, carried by the same principal,
+and nothing in an unsigned row tells them apart. What decides it is who asked.
+So the pull check is a different question - does this row land inside the world
+this principal already has here, and does it leave what is already here alone -
+and the residual is that a peer you pull from can still hand you a capability
+signed with somebody else's name. Closing that needs signed rows, which is a
+bigger change than a check.
+
+**HIGH - the pull side applied a peer's rows with no check at all.**
+`pullFromPeer` called `SyncApply`, which takes no principal, and every check in
+`syncApply` short-circuits on a nil one. So a peer this node was willing to read
+from was a peer that could write anything into it: a forged grant lands, the
+project it names is readable by whoever the peer says, and the next pull carries
+that project out of the door. The driver already resolves the replication
+principal for the push half - what it may hand over is what that principal may
+read here - and it now passes it to the pull half too, through `SyncApplyFrom`.
+The gate plays the hostile peer by writing four rows straight into node B's
+database, none of which B's own API would have taken, and pulling them: all four
+are refused and none of them land.
+
+**HIGH - a replicated artifact did not have to land anywhere in particular.**
+`checkArtifact` applied the "land where the API would put it" rule to rows that
+were already here and to nothing else, so a *new* row could name any project at
+all and any owner at all - including a project the peer has never been let into,
+which is then real for every node downstream. And an owned row could be
+re-projected, which walks an artifact out of the project that was reading it and
+into one that was not. A row now has to be readable by the principal carrying it
+as it would land - its own project, a project a live grant opens to it, or an
+artifact shared to it - and a row that is already here does not change hands and
+does not change project, either way round.
+
+**HIGH - a party could re-point its own task.** `checkTask` returned early for a
+pusher who is already a party to the task, and `applyTask` replaces every
+column - thread included. A task row is a read capability: the tasks clause in
+`EventFilterSQL` shows a thread's events to the parties. So the person a handoff
+was made *to* could push their own task back with `thread` swapped for any
+conversation on the node and read it from then on. A party may still move the
+two things `POST /api/task/{id}/state` and `/delegate` move - the state and the
+agent - and the thread, the artifact and the two people are now refused: they
+are the shape of the handoff and not a party's to change.
+
+**MEDIUM - writing into a thread needed no read on it.** `handleChatSay`,
+`POST /api/events` and `checkEvent` all took a caller-named thread as given. A
+thread id is a guess anybody can make and the tasks clause shows a thread to the
+parties, so a message dropped into somebody else's conversation was read by
+exactly the people whose conversation it is not, over a thread the speaker
+cannot see. All three ask `ThreadHidden` now - a thread holding an event the
+caller may not read is closed to them, `403` - and a thread with nothing in it
+is still nobody's, which is what every conversation starts as. Leaving `thread`
+out still opens one of your own.
+
+**MEDIUM - last-writer-wins had no last writer when the readings tied.** The
+upsert compared `coalesce(hlc, 0) < excluded.hlc`, and `hlc.Pack` folds a wall
+reading and a logical counter into an int64 with nothing about the node in it.
+Two nodes writing in the same millisecond with the same counter therefore
+produce two equal readings and two different rows, and each node refuses the
+other's: they differ from then on, permanently and silently. The comparison is
+total now - `hlc <` or `hlc =` and `node <` - in `applyArtifact`, `applyTask`
+and `applyGrant` alike. Any order both sides agree on would do; the node name is
+the one thing already on every row.
+
+**MEDIUM - `GET /api/forge/status` was gated on readability.** Filing and
+syncing are the owner's because they spend this node's forge credential outside
+the building. A refresh does the same, and it writes: a terminal issue moves the
+artifact to `done` and signs a status event. It was open to anybody who could
+read the artifact, so a read-share was enough to make the node act. It calls
+`forgeOwner` now, like the other two. Everyone who can read the artifact can
+still read it, and still sees the state the last refresh found.
+
+**MEDIUM/LOW - the push cursor moved past rows the peer refused.**
+`pushToPeer` advanced `pushed_cursor` to the page's high water mark whatever
+came back, so a refused row was never offered again: the two nodes differ and
+nothing says so. The bookmark now stays where it is when the peer refused
+anything, and the run stops pushing - the next one hands the same page over,
+which clears a refusal that was only about the order things arrived in and
+leaves a real one in the report where somebody can read it. What makes that
+terminate rather than wedge is the other half of the change: a row that *loses*
+its merge is ignored rather than refused, because replaying a delta is not a
+write. A peer's own rows coming back at it are not a refusal, so they do not
+hold the cursor.
+
+**LOW - the delete trusted a read.** `TombstoneArtifact` read the artifact,
+checked the owner and then updated by id alone - two statements with a gap
+between them, and a merge landing in that gap changes the owner. The delete
+would then go ahead on the strength of a read of somebody else's row. The
+`UPDATE` names the caller as well as the id now, so the row it finds is the row
+it was allowed to find, and no rows affected is `ErrNotFound` - which also makes
+the rule the store's rather than a promise the handler happens to keep.
+
+### The merge, after all three rounds
+
+`syncApply` is one loop over the rows of a delta, in the order grants,
+artifacts, tasks, events - a grant is what makes the rows that follow readable,
+and a task is what opens a thread. It goes round again over whatever it refused
+and stops when a pass changes nothing, because a delta is a set rather than a
+sequence: one page can carry an artifact that needs the share that opens it and
+a share that needs the artifact it shares, and a single pass in a fixed order
+would refuse one of them for being in the wrong place. Each row is asked three
+things in turn: would applying it change anything at all (if not, it is neither
+applied nor refused), may this principal write it (which is the question above,
+and the answer differs by direction), and then it is applied.
+
 ## Deployment
 
 The store speaks the Postgres wire and nothing else. The spine of `schema.sql`
@@ -1403,10 +1557,11 @@ query. Nothing above it depends on anything below it.
 
 ## Phase 6 status
 
-Green. `./run-tests.sh` reports `passed: 224 failed: 0` with Go 1.22, Node 22.14
+Green. `./run-tests.sh` reports `passed: 232 failed: 0` with Go 1.22, Node 22.14
 and Postgres 16 - the 200 checks Phase 6 ended with, all still green, plus the
-12 the first security slice added and the 12 the second one did: one per defect
-above, each of them verified to fail on the source it fixes. Phase 6's own 22 were: capability selection, filing, the conflict and permission cases, the
+12 the first security slice added, the 12 the second one did and the 8 from the
+third: one per defect above, each of them verified to fail on the source it
+fixes. Phase 6's own 22 were: capability selection, filing, the conflict and permission cases, the
 close-to-done move, the reviewer loop in both directions, the no-op sync, the
 untouched `gh`, and six `psql` checks over what all of it wrote. Phases 0 to 5
 stayed green throughout, and mostly by construction - the three endpoints are

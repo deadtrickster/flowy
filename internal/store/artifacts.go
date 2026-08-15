@@ -319,19 +319,38 @@ func (d *DB) ReadArtifact(ctx context.Context, p *Principal, id string, scopeAll
 // TombstoneArtifact marks an artifact deleted and bumps its clock, so the
 // delete orders after the writes it removes and can replicate as a row rather
 // than as an absence. It returns ErrNotFound when p cannot read the artifact.
+//
+// The update names the caller as well as the id, and a delete is the owner's.
+// Two reasons, and the second is the one that bites: the read and the update
+// are not one statement, so a merge can land between them and change the row's
+// owner, and the delete would then be carried out on the strength of a read of
+// somebody else's artifact. The predicate is in the statement that writes, so
+// the row it finds is the row it was allowed to find - and when it finds none,
+// that is ErrNotFound, which is what a read of a row the caller may not touch
+// says too.
 func (d *DB) TombstoneArtifact(ctx context.Context, p *Principal, id string) (*Artifact, error) {
 	art, err := d.ReadArtifact(ctx, p, id, false)
 	if err != nil {
 		return nil, err
 	}
+	if p == nil || p.UserID == "" {
+		return nil, ErrNotFound
+	}
 	art.Tombstone = true
 	art.HLC = d.clock.Pack()
 	art.Node = d.node
-	_, err = d.sql.ExecContext(ctx,
+	res, err := d.sql.ExecContext(ctx,
 		`UPDATE artifacts SET tombstone = true, hlc = $2, node = $3, updated = now()
-		  WHERE id = $1`, art.ID, art.HLC, art.Node)
+		  WHERE id = $1 AND coalesce(owner_user, '') = $4`, art.ID, art.HLC, art.Node, p.UserID)
 	if err != nil {
 		return nil, fmt.Errorf("store: tombstone artifact %s: %w", id, err)
+	}
+	n, err := affectedRows(res)
+	if err != nil {
+		return nil, fmt.Errorf("store: tombstone artifact %s: %w", id, err)
+	}
+	if n == 0 {
+		return nil, ErrNotFound
 	}
 	return art, nil
 }

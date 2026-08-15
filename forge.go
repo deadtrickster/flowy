@@ -283,6 +283,15 @@ func (s *server) handleForgeStatus(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// A refresh is not a read. It spends this node's forge credential on a
+	// repository the caller does not have to hold one for, and it writes: a
+	// terminal issue moves the artifact to done and records a status event
+	// under the caller's name. Filing and syncing are the owner's for exactly
+	// those reasons, and so is this - everyone else who can read the artifact
+	// can still read it, and can still see the state the last refresh found.
+	if !s.forgeOwner(w, r, art) {
+		return
+	}
 	// The repository comes off the link on the artifact, and a link is a
 	// replicated column: a peer can write one that names any repository at all.
 	// So the operator's list is checked here too, exactly as filing and syncing

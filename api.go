@@ -279,6 +279,12 @@ func (s *server) handleDeleteArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 
 	art, err = s.db.TombstoneArtifact(r.Context(), p, id)
+	if errors.Is(err, store.ErrNotFound) {
+		// The row changed hands between the read and the delete - a merge
+		// landing mid-request - so the delete found nothing of the caller's.
+		writeJSON(w, http.StatusNotFound, errorBody("no such artifact"))
+		return
+	}
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
 		return
@@ -366,6 +372,14 @@ func (s *server) handleAppendEvent(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusForbidden,
 			errorBody("a "+req.Type+" event is written by the endpoint that does the thing, "+
 				"not by hand"))
+		return
+	}
+
+	// A thread the caller named is a thread the caller has to be able to read.
+	// The tasks clause in the event filter shows a thread to the parties to the
+	// task that names it, so appending to one that is closed to you is a way to
+	// put words in front of people whose conversation you cannot see.
+	if req.Thread != "" && !s.mayWriteThread(w, r, req.Thread) {
 		return
 	}
 

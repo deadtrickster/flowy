@@ -75,6 +75,33 @@ func roomOf(r *http.Request) (string, bool) {
 	return room, true
 }
 
+// mayWriteThread reports whether the principal may say something in a thread it
+// named itself, and answers 403 when it may not.
+//
+// Writing into a thread is not a way round reading it. A thread id is a guess
+// anybody can make, and the tasks clause in the event filter shows a thread's
+// events to the parties to the task that names it - so a message dropped into
+// somebody else's conversation is read by exactly the people whose conversation
+// it is not, over a thread the speaker cannot see. The rule is the one the
+// merge applies to a pushed event and a pushed task: a thread holding anything
+// the caller may not read is closed to them. A thread with nothing in it is
+// nobody's yet, and every conversation starts as one.
+func (s *server) mayWriteThread(w http.ResponseWriter, r *http.Request, thread string) bool {
+	p := principalOf(r)
+	hidden, err := s.db.ThreadHidden(r.Context(), p, thread)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
+		return false
+	}
+	if hidden {
+		writeJSON(w, http.StatusForbidden,
+			errorBody("thread "+thread+" is a conversation you cannot read; "+
+				"leave thread out and this starts one of its own"))
+		return false
+	}
+	return true
+}
+
 // handleChatSay appends a message to a room.
 //
 // POST /api/chat/{room}/say  {body, thread?, parents?}
@@ -114,6 +141,8 @@ func (s *server) handleChatSay(w http.ResponseWriter, r *http.Request) {
 		if req.Thread == "" {
 			req.Thread = ulid.NewString()
 		}
+	} else if !s.mayWriteThread(w, r, req.Thread) {
+		return
 	}
 
 	actor, kind := chatActor(p)

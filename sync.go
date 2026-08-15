@@ -199,9 +199,11 @@ type syncReport struct {
 	As           string         `json:"as"`
 	Pulled       map[string]int `json:"pulled"`
 	Applied      map[string]int `json:"applied"`
+	Refused      map[string]int `json:"refused"`
 	Pushed       map[string]int `json:"pushed"`
 	PeerApplied  map[string]int `json:"peer_applied"`
 	PeerRefused  map[string]int `json:"peer_refused"`
+	Reasons      []string       `json:"reasons,omitempty"`
 	PullCursor   int64          `json:"pull_cursor"`
 	PushedCursor int64          `json:"pushed_cursor"`
 }
@@ -280,13 +282,13 @@ func syncCmd(args []string) error {
 	client := &http.Client{Timeout: syncTimeout}
 	report := syncReport{
 		Peer: base, Node: *node, As: principal.UserID,
-		Pulled: zeroCounts(), Applied: zeroCounts(),
+		Pulled: zeroCounts(), Applied: zeroCounts(), Refused: zeroCounts(),
 		Pushed: zeroCounts(), PeerApplied: zeroCounts(), PeerRefused: zeroCounts(),
 		PullCursor: bookmark.PullCursor, PushedCursor: bookmark.PushedCursor,
 	}
 
 	if *pull {
-		if err := pullFromPeer(ctx, db, client, base, *token, *limit, &report); err != nil {
+		if err := pullFromPeer(ctx, db, client, base, *token, *limit, principal, &report); err != nil {
 			return err
 		}
 	}
@@ -310,8 +312,16 @@ func syncCmd(args []string) error {
 // pullFromPeer reads pages from the peer and applies each one before asking for
 // the next, advancing the cursor as it goes: interrupt it and what it has
 // already applied stays applied.
+//
+// Each page is merged as the principal the replication token resolves to here,
+// which is the same principal the peer filtered the page for. It used to be
+// merged as nobody at all, and that made being willing to read from a peer the
+// same as being willing to let it write anything: one forged grant in a page
+// this node asked for, and the project it names is readable by whoever the peer
+// says - which the next pull then carries out of the door. A peer that answers
+// with what it should is unaffected; anything else is refused and counted.
 func pullFromPeer(ctx context.Context, db *store.DB, client *http.Client,
-	base, token string, limit int, report *syncReport,
+	base, token string, limit int, principal *store.Principal, report *syncReport,
 ) error {
 	cursor := report.PullCursor
 	for page := 0; page < syncPages; page++ {
@@ -329,12 +339,14 @@ func pullFromPeer(ctx context.Context, db *store.DB, client *http.Client,
 		}
 		report.PeerNode = got.Node
 
-		applied, err := db.SyncApply(ctx, got.SyncSet)
+		res, err := db.SyncApplyFrom(ctx, principal, got.SyncSet)
 		if err != nil {
 			return err
 		}
 		addCounts(report.Pulled, got.SyncSet.Counts())
-		addCounts(report.Applied, applied)
+		addCounts(report.Applied, res.Applied)
+		addCounts(report.Refused, res.Refused)
+		report.Reasons = append(report.Reasons, res.Reasons...)
 
 		// A page that carries rows but no higher cursor cannot be paged past;
 		// stop rather than ask for it again forever.
@@ -377,6 +389,23 @@ func pushToPeer(ctx context.Context, db *store.DB, client *http.Client,
 		addCounts(report.Pushed, set.Counts())
 		addCounts(report.PeerApplied, got.Applied)
 		addCounts(report.PeerRefused, got.Refused)
+		report.Reasons = append(report.Reasons, got.Reasons...)
+
+		// The peer would not take part of what it was handed. The cursor is a
+		// promise that everything below it has been offered and dealt with, and
+		// a refused row was not: moving past it is how those rows are never
+		// sent again and the two nodes quietly differ. So the bookmark stays
+		// where it is and this run stops pushing. The next one hands the same
+		// page over - which clears a refusal that was only about the order
+		// things arrived in, and leaves a real one in the report where somebody
+		// can read it, rather than dropping the row on the floor.
+		//
+		// A row the peer already holds is not a refusal: it loses its merge and
+		// is ignored, so a page coming back at the node that wrote it does not
+		// wedge the cursor here.
+		if refused := count(got.Refused); refused > 0 {
+			break
+		}
 
 		if set.HWM <= cursor {
 			break
@@ -450,6 +479,16 @@ func peerBase(raw string) (string, error) {
 
 func zeroCounts() map[string]int {
 	return map[string]int{"artifacts": 0, "events": 0, "tasks": 0, "grants": 0}
+}
+
+// count adds a report's tables up, which is how a caller asks "did anything at
+// all happen" of a per-table count.
+func count(m map[string]int) int {
+	n := 0
+	for _, v := range m {
+		n += v
+	}
+	return n
 }
 
 func addCounts(into, from map[string]int) {

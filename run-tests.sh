@@ -3739,6 +3739,395 @@ say "federation, again"
 check "a grant that opens a project carries more of it than one page (MED 6)" \
 	a_project_grant_carries_more_than_a_page
 
+# ------------------------------------------------- the third round of fixes
+#
+# The re-review of the second round: the push side was checked and the pull side
+# went straight round it, and seven more behind that. One check each, and every
+# one of them fails on the code as it was.
+
+# psql5_do DSN SQL - a statement against one of the two federated databases.
+# It is how the gate plays a peer that answers a pull with rows nothing on that
+# node would ever have accepted over its own API.
+psql5_do() { psql -v ON_ERROR_STOP=1 -q -d "$1" -c "$2"; }
+
+# sync5_flags DSN NODE PORT TOKEN FLAGS... - sync5 with the driver's own flags,
+# so a check can drive one half of the exchange on its own.
+sync5_flags() {
+	local dsn=$1 node=$2 port=$3 token=$4
+	shift 4
+	SYNC_REPORT="$(DATABASE_URL="$dsn" FLOWY_NODE="$node" \
+		"$ROOT/flowy" sync --peer "http://127.0.0.1:$port" --token "$token" "$@")" || return 1
+}
+
+# HIGH 1. The pull side merged whatever came back with no check of any kind:
+# every check short-circuited on a nil principal and the driver handed it one.
+# Being willing to read from a peer was therefore being willing to let it write
+# anything - and the first thing a peer writes is a grant, which is a project
+# the next pull carries back out.
+a_pulled_forgery_is_refused() {
+	recall5
+	local hlc gid aid eid tid
+	hlc="$(forged_hlc "$N5_PORT_B")" || return 1
+	gid="pull-grant-$$"
+	aid="pull-art-$$"
+	eid="pull-ev-$$"
+	tid="pull-task-$$"
+
+	# Node B answers the way a hostile peer would: four rows written straight
+	# into its database, none of which its own API would have taken. The grant
+	# is the one that matters - it opens pz to pb, which is what makes B serve
+	# the other three to the principal replication runs as. pz is a project
+	# neither node has ever heard of, so nothing but this grant reaches it.
+	psql5_do "$N5_DSN_B" "INSERT INTO grants
+	    (id, from_project, to_project, cap, granted_by, hlc, node, tombstone)
+	    VALUES ('$gid', 'pb', 'pz', 'read', '$N5_USER_B', $((hlc + 1)), 'forger', false)" || return 1
+	psql5_do "$N5_DSN_B" "INSERT INTO artifacts
+	    (id, type, project, owner_user, title, body, visibility, hlc, node, tombstone)
+	    VALUES ('$aid', 'note', 'pz', '$N5_USER_A', 'forged into pz', 'wibblesnatch',
+	            'project', $((hlc + 2)), 'forger', false)" || return 1
+	psql5_do "$N5_DSN_B" "INSERT INTO events
+	    (id, type, project, room, thread, parents, actor, seq_hlc, node, body)
+	    VALUES ('$eid', 'chat', 'pz', 'pz/quiet', '$eid', '{}', '$N5_USER_A',
+	            $((hlc + 3)), 'forger', 'said by nobody')" || return 1
+	psql5_do "$N5_DSN_B" "INSERT INTO tasks
+	    (id, artifact, from_user, to_user, project, state, thread, hlc, node)
+	    VALUES ('$tid', '$aid', '$N5_USER_A', '$N5_USER_B', 'pz', 'open', '$eid',
+	            $((hlc + 4)), 'forger')" || return 1
+
+	# The peer really does hand all four over, so what follows is a check of the
+	# merge rather than of the peer being unable to say it.
+	want_napi 200 "$N5_PORT_B" GET "$N5_TOKEN_B" "/api/sync/pull?since=$hlc" || return 1
+	want_eq "rows the peer served" \
+		"$(printf '%s' "$API_BODY" |
+			jq '[.artifacts[].id, .events[].id, .tasks[].id, .grants[].id] |
+			     map(select(. == "'"$gid"'" or . == "'"$aid"'" or . == "'"$eid"'" or . == "'"$tid"'")) |
+			     length')" 4 || return 1
+
+	sync5_flags "$N5_DSN_A" nodeA "$N5_PORT_B" "$N5_TOKEN_B" --push=false || return 1
+	local refused
+	refused="$(printf '%s' "$SYNC_REPORT" | jq '[.refused[]] | add')"
+	if [ "$refused" -lt 4 ]; then
+		printf 'nodeA refused %s rows, want at least the four forged ones: %s\n' \
+			"$refused" "$SYNC_REPORT" >&2
+		return 1
+	fi
+
+	want_eq "the forged grant on nodeA" \
+		"$(scalar5 "$N5_DSN_A" "SELECT count(*) FROM grants WHERE id = '$gid'")" 0 || return 1
+	want_eq "the forged artifact on nodeA" \
+		"$(scalar5 "$N5_DSN_A" "SELECT count(*) FROM artifacts WHERE id = '$aid'")" 0 || return 1
+	want_eq "the forged event on nodeA" \
+		"$(scalar5 "$N5_DSN_A" "SELECT count(*) FROM events WHERE id = '$eid'")" 0 || return 1
+	want_eq "the forged task on nodeA" \
+		"$(scalar5 "$N5_DSN_A" "SELECT count(*) FROM tasks WHERE id = '$tid'")" 0 || return 1
+
+	# And pz on nodeA is still nothing to do with pb, which is what the grant
+	# was for.
+	want_napi 200 "$N5_PORT_A" GET "$N5_TOKEN_B" "/api/artifacts" || return 1
+	want_eq "pz artifacts the peer principal can see on nodeA" \
+		"$(hits '.project == "pz"')" 0 || return 1
+
+	# The forgery goes back out of the peer, so nothing after this is running
+	# against a poisoned node B.
+	psql5_do "$N5_DSN_B" "DELETE FROM tasks WHERE id = '$tid';
+	                      DELETE FROM events WHERE id = '$eid';
+	                      DELETE FROM artifacts WHERE id = '$aid';
+	                      DELETE FROM grants WHERE id = '$gid'" || return 1
+	printf 'four forged rows served, four refused, none of them on nodeA\n'
+}
+
+# HIGH 2. A new artifact was taken whatever project it named and whoever it said
+# owned it - the "land where the API would put it" rule was only ever applied to
+# rows that were already here - and an owned row could be re-projected, which is
+# a row walked out of the project that was reading it.
+a_pushed_artifact_lands_where_it_may() {
+	recall5
+	local new hlc delta id
+	new="pushed-into-pz-$$"
+	hlc="$(forged_hlc "$N5_PORT_B")" || return 1
+
+	# pz is a project nothing on either node opens to anybody.
+	delta="$(jq -nc --arg i "$new" --arg b "$N5_USER_B" --argjson h "$hlc" '
+		{events: [], tasks: [], grants: [], hwm: 0, artifacts: [
+		  {id: $i, type: "note", project: "pz", owner_user: $b, title: "filed in pz",
+		   body: "by somebody with no business in pz", visibility: "project",
+		   hlc: $h, node: "forger", tombstone: false, reported: false}]}')"
+	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_B" /api/sync/push "$delta" || return 1
+	want_eq "artifacts refused" "$(jqv '.refused.artifacts')" 1 || return 1
+	want_eq "artifacts applied" "$(jqv '.applied.artifacts')" 0 || return 1
+	want_eq "rows in B's table for it" \
+		"$(scalar5 "$N5_DSN_B" "SELECT count(*) FROM artifacts WHERE id = '$new'")" 0 || return 1
+
+	# And a row of the pusher's own does not move project either. pa is a
+	# project the pusher really can read, so what refuses this is the move
+	# rather than the reach.
+	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_B" /api/artifacts \
+		'{"type":"note","title":"the peer own row","body":"grimsbyfeather"}' || return 1
+	id="$(jqv .id)"
+	want_eq "the project it landed in" "$(jqv .project)" pb || return 1
+	hlc="$(forged_hlc "$N5_PORT_B")" || return 1
+	delta="$(jq -nc --arg i "$id" --arg b "$N5_USER_B" --argjson h "$hlc" '
+		{events: [], tasks: [], grants: [], hwm: 0, artifacts: [
+		  {id: $i, type: "note", project: "pa", owner_user: $b, title: "the peer own row",
+		   body: "grimsbyfeather", visibility: "project", hlc: $h, node: "forger",
+		   tombstone: false, reported: false}]}')"
+	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_B" /api/sync/push "$delta" || return 1
+	want_eq "the re-projection refused" "$(jqv '.refused.artifacts')" 1 || return 1
+	want_eq "the re-projection applied" "$(jqv '.applied.artifacts')" 0 || return 1
+	want_eq "the project it is still in" \
+		"$(scalar5 "$N5_DSN_B" "SELECT project FROM artifacts WHERE id = '$id'")" pb || return 1
+	printf 'a row into pc was refused, and %s did not walk from pb into pa\n' "$id"
+}
+
+# HIGH 3. A task that was already here was let through whole if the pusher was a
+# party to it, and applying a task replaces every column - including the thread,
+# which the tasks clause in the event filter turns into a read. So a party could
+# re-point their own handoff at any conversation on the node and read it.
+a_party_cannot_re_point_its_task() {
+	recall5
+	local thread art task hlc delta
+	# A conversation in pz, which is a project no token here names and no grant
+	# reaches. It goes in as a row because there is no principal to write it as,
+	# which is the point: it is somebody else's conversation.
+	thread="victim-thread-$$"
+	hlc="$(forged_hlc "$N5_PORT_B")" || return 1
+	psql5_do "$N5_DSN_B" "INSERT INTO events
+	    (id, type, project, room, thread, parents, actor, seq_hlc, node, body)
+	    VALUES ('$thread', 'chat', 'pz', 'pz/quiet', '$thread', '{}', '$N5_USER_A',
+	            $hlc, 'nodeB', 'the pz thing the assignee may not read')" || return 1
+
+	# A real handoff to the peer, made the way the API makes one.
+	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_A" /api/artifacts \
+		'{"type":"bug","title":"the handoff that gets re-pointed","body":"clatterpike"}' || return 1
+	art="$(jqv .id)"
+	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_A" /api/assign \
+		"$(jq -nc --arg a "$art" --arg u "$N5_USER_B" '{artifact: $a, to_user: $u, note: "yours"}')" ||
+		return 1
+	task="$(jqv .id)"
+	want_eq "who it is for" "$(jqv .to_user)" "$N5_USER_B" || return 1
+	want_napi 200 "$N5_PORT_B" GET "$N5_TOKEN_B" "/api/events?thread=$thread" || return 1
+	want_eq "what the assignee can read of pz to begin with" \
+		"$(printf '%s' "$API_BODY" | jq '.events | length')" 0 || return 1
+	local was
+	was="$(scalar5 "$N5_DSN_B" "SELECT thread FROM tasks WHERE id = '$task'")" || return 1
+
+	# The assignee pushes its own task back with the thread swapped for the one
+	# it wants to read.
+	hlc="$(forged_hlc "$N5_PORT_B")" || return 1
+	delta="$(jq -nc --arg t "$task" --arg a "$art" --arg f "$N5_USER_A" --arg u "$N5_USER_B" \
+		--arg th "$thread" --argjson h "$hlc" '
+		{artifacts: [], events: [], grants: [], hwm: 0, tasks: [
+		  {id: $t, artifact: $a, from_user: $f, to_user: $u, project: "pa", state: "open",
+		   assignee_agent: "", thread: $th, hlc: $h, node: "forger"}]}')"
+	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_B" /api/sync/push "$delta" || return 1
+	want_eq "tasks refused" "$(jqv '.refused.tasks')" 1 || return 1
+	want_eq "tasks applied" "$(jqv '.applied.tasks')" 0 || return 1
+	want_eq "the thread the task still names" \
+		"$(scalar5 "$N5_DSN_B" "SELECT thread FROM tasks WHERE id = '$task'")" "$was" || return 1
+
+	# Which is the whole point: the conversation is still somebody else's.
+	want_napi 200 "$N5_PORT_B" GET "$N5_TOKEN_B" "/api/events?thread=$thread" || return 1
+	want_eq "what the assignee can read of it now" \
+		"$(printf '%s' "$API_BODY" | jq '.events | length')" 0 || return 1
+	printf 'task %s could not be re-pointed at thread %s, which still reads back empty\n' \
+		"$task" "$thread"
+}
+
+# MEDIUM 4. Writing into a thread needed no read on it. A thread id is a guess
+# anybody can make and the tasks clause shows a thread to the parties, so a
+# message dropped into somebody else's conversation was read by exactly the
+# people whose conversation it is not.
+a_message_does_not_enter_a_thread_it_cannot_read() {
+	recall
+	local thread
+	api POST "$TOKEN_A_PC" /api/events \
+		'{"type":"note","room":"pc/quiet","body":"the pc conversation"}' || return 1
+	want_eq "status" "$API_STATUS" 200 || return 1
+	thread="$(jqv .thread)"
+
+	want_status 403 POST "$TOKEN_B" /api/chat/general/say \
+		"$(jq -nc --arg t "$thread" '{body: "let me in", thread: $t}')" || return 1
+	want_status 403 POST "$TOKEN_B" /api/events \
+		"$(jq -nc --arg t "$thread" '{type: "note", room: "pb/bugs", thread: $t, body: "or here"}')" ||
+		return 1
+
+	# Nothing landed, and the thread is what it was.
+	api GET "$TOKEN_A_PC" "/api/events?thread=$thread" || return 1
+	want_eq "events in the thread" "$(printf '%s' "$API_BODY" | jq '.events | length')" 1 || return 1
+	want_eq "the one that is there" "$(jqv '.events[0].body')" "the pc conversation" || return 1
+
+	# Saying something without naming a thread still works, and starts one.
+	api POST "$TOKEN_B" /api/chat/general/say '{"body":"then I will start my own"}' || return 1
+	want_eq "status" "$API_STATUS" 200 || return 1
+	if [ "$(jqv .thread)" = "$thread" ]; then
+		printf 'a fresh message joined %s anyway\n' "$thread" >&2
+		return 1
+	fi
+	printf 'thread %s is closed to the speaker who cannot read it, and a fresh one is not\n' "$thread"
+}
+
+# MEDIUM 5. Two nodes writing in the same millisecond with the same logical
+# counter produce two equal readings and two different rows, and a merge that
+# compares on the reading alone has each node refusing the other's row forever.
+# The node name is the tiebreak, and it has to be the same tiebreak on both.
+a_tied_reading_still_has_a_winner() {
+	recall5
+	local id hlc delta
+	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_B" /api/artifacts \
+		'{"type":"note","title":"written on nodeB","body":"snaffleburr"}' || return 1
+	id="$(jqv .id)"
+	hlc="$(jqv .hlc)"
+	want_eq "the node that wrote it" "$(jqv .node)" nodeB || return 1
+
+	# The same reading, from a node whose name sorts after nodeB: it wins.
+	delta="$(jq -nc --arg i "$id" --arg b "$N5_USER_B" --argjson h "$hlc" '
+		{events: [], tasks: [], grants: [], hwm: 0, artifacts: [
+		  {id: $i, type: "note", project: "pb", owner_user: $b, title: "written on zz",
+		   body: "snaffleburr", visibility: "project", hlc: $h, node: "zz-node",
+		   tombstone: false, reported: false}]}')"
+	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_B" /api/sync/push "$delta" || return 1
+	want_eq "the tie applied" "$(jqv '.applied.artifacts')" 1 || return 1
+	want_eq "the tie refused" "$(jqv '.refused.artifacts')" 0 || return 1
+	want_eq "the title now" \
+		"$(scalar5 "$N5_DSN_B" "SELECT title FROM artifacts WHERE id = '$id'")" "written on zz" ||
+		return 1
+	want_eq "and the reading it is at" \
+		"$(scalar5 "$N5_DSN_B" "SELECT hlc FROM artifacts WHERE id = '$id'")" "$hlc" || return 1
+
+	# The same reading from a node whose name sorts before it loses, and losing
+	# is not being refused: it is a delta being replayed.
+	delta="$(jq -nc --arg i "$id" --arg b "$N5_USER_B" --argjson h "$hlc" '
+		{events: [], tasks: [], grants: [], hwm: 0, artifacts: [
+		  {id: $i, type: "note", project: "pb", owner_user: $b, title: "written on aa",
+		   body: "snaffleburr", visibility: "project", hlc: $h, node: "aa-node",
+		   tombstone: false, reported: false}]}')"
+	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_B" /api/sync/push "$delta" || return 1
+	want_eq "the losing side applied" "$(jqv '.applied.artifacts')" 0 || return 1
+	want_eq "the losing side refused" "$(jqv '.refused.artifacts')" 0 || return 1
+	want_eq "the title after it" \
+		"$(scalar5 "$N5_DSN_B" "SELECT title FROM artifacts WHERE id = '$id'")" "written on zz" ||
+		return 1
+	printf 'at %s, zz-node beats nodeB and aa-node loses to it - the same way round on any node\n' \
+		"$hlc"
+}
+
+# MEDIUM 6. A status refresh spends this node's forge credential and writes: it
+# moves the artifact to done and signs a status event. It was gated on being
+# able to read the artifact, so a read-share was enough to make the node act
+# outside itself - which filing and syncing have never allowed.
+forge_status_is_the_owners() {
+	recall
+	local id was
+	id="$(new_artifact "$TOKEN_A_PC" bug "the wipers judder on the return stroke")" || return 1
+	forge_file "$TOKEN_A_PC" "$id" o/r || return 1
+	want_eq "filed" "$API_STATUS" 200 || return 1
+	api POST "$TOKEN_A_PC" /api/grants \
+		"$(jq -nc --arg a "$id" --arg s "$USER_B" '{artifact: $a, subject: $s}')" || return 1
+	want_eq "shared with B" "$API_STATUS" 200 || return 1
+	want_status 200 GET "$TOKEN_B" "/api/artifact/$id" || return 1
+	was="$(jqv .status)"
+
+	want_status 403 GET "$TOKEN_B" "/api/forge/status?artifact=$id" || return 1
+	case "$API_BODY" in
+	*"only the owner"*) ;;
+	*)
+		printf 'the refusal does not say it is the owner: %s\n' "$API_BODY" >&2
+		return 1
+		;;
+	esac
+	# The owner's own refresh still goes through, so what is being tested is who
+	# may ask rather than the endpoint being broken.
+	forge_status "$TOKEN_A_PC" "$id" || return 1
+	want_eq "the owner's refresh" "$API_STATUS" 200 || return 1
+	api GET "$TOKEN_B" "/api/artifact/$id" || return 1
+	want_eq "the status the reader still sees" "$(jqv .status)" "$was" || return 1
+	printf 'a reader may read %s and may not spend the node credential on it\n' "$id"
+}
+
+# MEDIUM/LOW 7. The push cursor moved to the high water mark whatever the peer
+# said, so a row the peer refused was never offered again: the two nodes differ
+# from then on and nothing says so.
+a_refused_push_does_not_move_the_cursor() {
+	recall5
+	local peer before after art
+	peer="http://127.0.0.1:$N5_PORT_B"
+	before="$(scalar5 "$N5_DSN_A" "SELECT pushed_cursor FROM peers WHERE peer = '$peer'")" || return 1
+
+	# A share only its owner could have written: node B refuses it from this
+	# pusher, which is the rule the second round put in.
+	want_napi 200 "$N5_PORT_A" POST "$N5_TOKEN_A_PC" /api/artifacts \
+		'{"type":"note","title":"the pc one that gets shared","body":"cloddlewhisk"}' || return 1
+	art="$(jqv .id)"
+	want_napi 200 "$N5_PORT_A" POST "$N5_TOKEN_A_PC" /api/grants \
+		"$(jq -nc --arg a "$art" --arg s "$N5_USER_B" '{artifact: $a, subject: $s}')" || return 1
+
+	sync5_flags "$N5_DSN_A" nodeA "$N5_PORT_B" "$N5_TOKEN_B" --pull=false || return 1
+	local refused sent
+	refused="$(printf '%s' "$SYNC_REPORT" | jq '[.peer_refused[]] | add')"
+	if [ "$refused" -lt 1 ]; then
+		printf 'the peer refused nothing, so there is no cursor to hold: %s\n' "$SYNC_REPORT" >&2
+		return 1
+	fi
+	after="$(scalar5 "$N5_DSN_A" "SELECT pushed_cursor FROM peers WHERE peer = '$peer'")" || return 1
+	want_eq "the cursor after a refused page" "$after" "$before" || return 1
+
+	# And the next push offers the same rows again rather than skipping them.
+	sync5_flags "$N5_DSN_A" nodeA "$N5_PORT_B" "$N5_TOKEN_B" --pull=false || return 1
+	sent="$(printf '%s' "$SYNC_REPORT" | jq '[.pushed[]] | add')"
+	if [ "$sent" -lt 1 ]; then
+		printf 'the second push offered nothing, so the refused rows were dropped: %s\n' \
+			"$SYNC_REPORT" >&2
+		return 1
+	fi
+	after="$(scalar5 "$N5_DSN_A" "SELECT pushed_cursor FROM peers WHERE peer = '$peer'")" || return 1
+	want_eq "the cursor after the second refused page" "$after" "$before" || return 1
+
+	# A full exchange settles it: the pull half carries the rows the other way,
+	# and once the peer holds them the push has nothing to be refused for.
+	sync_round || return 1
+	sync_round || return 1
+	after="$(scalar5 "$N5_DSN_A" "SELECT pushed_cursor FROM peers WHERE peer = '$peer'")" || return 1
+	if [ "$after" -le "$before" ]; then
+		printf 'the cursor never came unstuck: %s -> %s\n' "$before" "$after" >&2
+		return 1
+	fi
+	want_eq "the share reached the peer in the end" \
+		"$(scalar5 "$N5_DSN_B" "SELECT count(*) FROM artifacts WHERE id = '$art'")" 1 || return 1
+	printf 'held at %s while the peer refused, and moved to %s once it did not\n' "$before" "$after"
+}
+
+say "the pull side is not a way in"
+check "a peer that answers a pull with rows it invented is refused (HIGH 1)" \
+	a_pulled_forgery_is_refused
+
+say "a replicated artifact lands where it may"
+check "a pushed artifact cannot be filed into a project the pusher cannot reach (HIGH 2)" \
+	a_pushed_artifact_lands_where_it_may
+
+say "a task is a read, and a party does not re-point it"
+check "a party cannot swap its task's thread for one it may not read (HIGH 3)" \
+	a_party_cannot_re_point_its_task
+
+say "you cannot write into a conversation you cannot see"
+check "a message into a thread the speaker cannot read is refused (MED 4)" \
+	a_message_does_not_enter_a_thread_it_cannot_read
+
+say "the merge order is total"
+check "two rows at the same reading have a winner, the same one on every node (MED 5)" \
+	a_tied_reading_still_has_a_winner
+
+say "the forge, a third time"
+check "a status refresh is the owner's, not every reader's (MED 6)" \
+	forge_status_is_the_owners
+
+say "a refused row is not a dropped row"
+check "a push the peer refused does not move the cursor past it (MED/LOW 7)" \
+	a_refused_push_does_not_move_the_cursor
+
+say "the delete says whose it is"
+check "a reader cannot tombstone an artifact it does not own (LOW 8)" \
+	go test -count=1 -run TestTombstoneNamesTheOwner ./internal/store
+
 # ------------------------------------------------------------------- verdict
 
 say "result"
