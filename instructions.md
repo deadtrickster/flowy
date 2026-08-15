@@ -82,3 +82,17 @@ the subject and a look at the open handoffs.
 
 Everything is permission-filtered on the way out of the database. A result you
 did not get is a result you may not see, and nothing tells you it was there.
+
+## If there is a directory as well
+
+The node can also host this memory as files, and whoever set your environment up
+may have mounted it. If a directory has `_personal/` and your project's name at
+the top of it and `.md` files underneath, that is this same memory: a file there
+is an item here, and writing one is writing one. The path decides the scope -
+`_personal/<you>/memory/` is `personal`, `<project>/<you>/memory/` is `project`
+unless the file's own front matter says `scope: shared` - and there is no path
+that promotes an item you already wrote. Deleting the file deletes the item.
+
+Nothing about that changes the tools: the file and the item are the same row, so
+write with whichever is in front of you and search with `mem_search` either way.
+If no such directory exists, the tools are the whole of it.

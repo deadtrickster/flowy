@@ -80,7 +80,23 @@ failed=0
 cleanup() {
 	local status=$?
 	set +e
-	local pid data
+	local pid data mountpoint pidfile
+	# The fuse mounts first, and by reading /proc rather than by remembering:
+	# a mountpoint inside $WORK that is still attached when the rm -rf below
+	# runs is a directory that cannot be removed and a server process that
+	# outlives this script. Phase 7 mounts under $WORK and nothing else here
+	# does, so anything of type fuse under it is ours.
+	while read -r mountpoint; do
+		fusermount3 -u "$mountpoint" >/dev/null 2>&1 ||
+			fusermount -u "$mountpoint" >/dev/null 2>&1
+	done < <(awk -v work="$WORK/" '$3 ~ /^fuse\./ && index($2, work) == 1 {print $2}' /proc/self/mounts)
+	for pidfile in "$WORK"/*.pid; do
+		[ -f "$pidfile" ] || continue
+		pid="$(cat "$pidfile" 2>/dev/null)"
+		if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+			kill "$pid" 2>/dev/null
+		fi
+	done
 	for pid in "$SERVE_PID" "$MCP_PID" "$NODE5A_PID" "$NODE5B_PID"; do
 		if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
 			kill "$pid" 2>/dev/null
@@ -241,18 +257,6 @@ hits() {
 	else
 		printf '%s' "$API_BODY" | jq "[.artifacts[] | select($1)] | length"
 	fi
-}
-
-# stub_says checks that a subcommand that is still a stub prints its
-# placeholder and exits zero. mcp left this list in Phase 2.
-stub_says() {
-	local sub="$1" out
-	out="$(./flowy "$sub")"
-	if [ "$out" != "$sub: not yet" ]; then
-		printf 'flowy %s printed %q, want %q\n' "$sub" "$out" "$sub: not yet" >&2
-		return 1
-	fi
-	printf '%s\n' "$out"
 }
 
 # ------------------------------------------------------------ phase 1 checks
@@ -3275,6 +3279,150 @@ a_project_grant_carries_more_than_a_page() {
 	printf 'both old pc artifacts crossed, in %s pages of one row\n' "$pages"
 }
 
+# ------------------------------------------------------------ phase 7 fuse
+#
+# The mount is a real mount. There is a /dev/fuse in this VM and a fusermount3
+# on PATH, so these checks attach a filesystem to a directory, write files into
+# it with the shell, read them back, delete one, and unmount - and then ask the
+# store, over psql and over the API, whether what happened to the files
+# happened to the memory. A gate that exercised the tree in process would be
+# testing the tree and not the mount.
+
+# fuse_needs_telling: the command mounts nothing unless it is told where, and
+# refuses a token it cannot resolve. Both are exit codes rather than mounts.
+fuse_needs_telling() {
+	local out
+	if out="$(./flowy fuse 2>&1)"; then
+		printf 'flowy fuse with no arguments succeeded, printing %q\n' "$out" >&2
+		return 1
+	fi
+	case "$out" in
+	*--mount*) ;;
+	*)
+		printf 'flowy fuse said %q, want it to name --mount\n' "$out" >&2
+		return 1
+		;;
+	esac
+	local first="$out"
+
+	mkdir -p "$WORK/never-mounted"
+	if out="$(DATABASE_URL="$DATABASE_URL" ./flowy fuse --mount "$WORK/never-mounted" \
+		--token no-such-token 2>&1)"; then
+		printf 'flowy fuse mounted with an unknown token\n' >&2
+		return 1
+	fi
+	if fuse_is_mounted "$WORK/never-mounted"; then
+		printf 'a refused mount left a filesystem attached\n' >&2
+		return 1
+	fi
+	printf '%s / %s\n' "$first" "$out"
+}
+
+# fuse_is_mounted PATH - is there a fuse filesystem attached there.
+#
+# By the type field, not by looking for the word: /proc/self/mounts also holds
+# fusectl at /sys/fs/fuse/connections, and a grep for "fuse" finds that on every
+# machine that has ever loaded the module.
+fuse_is_mounted() {
+	awk -v want="$1" '$2 == want && $3 ~ /^fuse\./ { found = 1 } END { exit !found }' \
+		/proc/self/mounts
+}
+
+# fuse_mounts_here - the fuse filesystems attached under $WORK, one per line.
+# Phase 7 mounts there and nothing else in this run does.
+fuse_mounts_here() {
+	awk -v work="$WORK/" '$3 ~ /^fuse\./ && index($2, work) == 1 { print $2 }' /proc/self/mounts
+}
+
+# fuse_unmount PATH - detach, whatever state it is in.
+fuse_unmount() {
+	fusermount3 -u "$1" >/dev/null 2>&1 ||
+		fusermount -u "$1" >/dev/null 2>&1 ||
+		true
+}
+
+# fuse_start MOUNT TOKEN LOG PIDFILE [flags...] - mount in the background and
+# wait for the kernel to have finished the handshake.
+#
+# The pid goes in a file because every check runs inside a command substitution
+# of its own, so a variable set in one is gone by the next; the log goes in a
+# file because a background process holding the substitution's stdout open is a
+# check that never returns.
+fuse_start() {
+	local mountpoint=$1 token=$2 log=$3 pidfile=$4
+	shift 4
+	mkdir -p "$mountpoint"
+	DATABASE_URL="$DATABASE_URL" FLOWY_NODE=gate \
+		./flowy fuse --mount "$mountpoint" --token "$token" "$@" >"$log" 2>&1 &
+	printf '%s\n' "$!" >"$pidfile"
+
+	local i
+	for i in $(seq 1 100); do
+		if [ -d "$mountpoint/_personal" ]; then
+			return 0
+		fi
+		sleep 0.1
+	done
+	printf 'the mount at %s never came up:\n' "$mountpoint" >&2
+	indent <"$log" >&2
+	return 1
+}
+
+# fuse_stop MOUNT PIDFILE - SIGTERM, wait, and make sure nothing is left
+# attached. This is the ordinary unmount: the process is asked to go and does
+# its own fusermount.
+fuse_stop() {
+	local mountpoint=$1 pidfile=$2 pid="" i
+	[ -f "$pidfile" ] && pid="$(cat "$pidfile")"
+	if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+		kill -TERM "$pid" 2>/dev/null
+		for i in $(seq 1 100); do
+			kill -0 "$pid" 2>/dev/null || break
+			sleep 0.1
+		done
+	fi
+	fuse_unmount "$mountpoint"
+	rm -f "$pidfile"
+	if fuse_is_mounted "$mountpoint"; then
+		printf '%s is still mounted after being asked to stop\n' "$mountpoint" >&2
+		return 1
+	fi
+}
+
+# fuse_kill MOUNT PIDFILE - the crash. SIGKILL leaves the kernel holding a
+# connection to a server that is gone, which is exactly the state a node that
+# died mid-write comes back from, so the mountpoint is cleared by hand
+# afterwards the way a person would have to.
+fuse_kill() {
+	local mountpoint=$1 pidfile=$2 pid="" i
+	[ -f "$pidfile" ] && pid="$(cat "$pidfile")"
+	if [ -n "$pid" ]; then
+		kill -9 "$pid" 2>/dev/null
+		for i in $(seq 1 100); do
+			kill -0 "$pid" 2>/dev/null || break
+			sleep 0.1
+		done
+	fi
+	fuse_unmount "$mountpoint"
+	rm -f "$pidfile"
+}
+
+# fuse_await SQL - the write is behind, so the assertion waits for it: poll a
+# counting query until it says at least one, for ten seconds.
+fuse_await() {
+	local i n
+	for i in $(seq 1 100); do
+		n="$(psql -v ON_ERROR_STOP=1 -tAc "$1")" || return 1
+		if [ -n "$n" ] && [ "$n" -ge 1 ]; then
+			printf '%s\n' "$n"
+			return 0
+		fi
+		sleep 0.1
+	done
+	printf 'nothing ever satisfied this within ten seconds:\n%s\n' "$1" >&2
+	return 1
+}
+
 # ---------------------------------------------------------------- environment
 
 say "environment"
@@ -3416,9 +3564,12 @@ check "healthz answers when counts are asked for" \
 	"$WORK/smoke" healthz "http://127.0.0.1:$HTTP_PORT/healthz?counts=1"
 check "spine tables exist" "$WORK/smoke" schema
 
-say "subcommand stubs"
-# fuse is the last one: mcp left this list in Phase 2 and sync in Phase 5.
-check "flowy fuse is a stub" stub_says fuse
+say "subcommands"
+# There are no stubs left: mcp left this list in Phase 2, sync in Phase 5 and
+# fuse in Phase 7. What is checked instead is that the last one refuses to do
+# anything by accident - a mount is opt-in, and a `flowy fuse` with nothing said
+# mounts nothing rather than picking a directory.
+check "flowy fuse mounts nothing unless it is told where" fuse_needs_telling
 
 say "identifiers and clocks"
 check "10000 ulids unique and strictly increasing" "$WORK/smoke" ulid
@@ -6509,6 +6660,610 @@ check "a row whose date was moved is refused over the wire (HIGH 2)" \
 say "an identity is self-signed, is never rotated, and is pinned where that is required"
 check "a key served for a node that did not sign it, and a second key for a known one (MED 3)" \
 	go test -count=1 -run TestAServedIdentityIsSelfSignedAndNeverRotates ./internal/store
+
+# ---------------------------------------------------------------- phase 7: fuse
+#
+# The agent filesystem. Everything above this line ran with nothing mounted,
+# which is the first thing this section asserts: FUSE is additive, the node does
+# not know it exists until somebody runs `flowy fuse`, and the 300-odd checks
+# that have already passed are the evidence for that rather than a claim about
+# it.
+#
+# What follows mounts for real - one process, one directory, /dev/fuse - and
+# then does file operations from the shell and asks the store what happened.
+
+FUSE_MNT="$WORK/fuse-a"
+FUSE_MNT_B="$WORK/fuse-b"
+FUSE_LOG="$WORK/fuse-a.log"
+FUSE_LOG_B="$WORK/fuse-b.log"
+FUSE_PID_FILE="$WORK/fuse-a.pid"
+FUSE_PID_FILE_B="$WORK/fuse-b.pid"
+readonly FUSE_MNT FUSE_MNT_B FUSE_LOG FUSE_LOG_B FUSE_PID_FILE FUSE_PID_FILE_B
+
+# The words below appear nowhere else in this run, so a search that finds one
+# found the file it was written into.
+FUSE_WORD=flumdiddle
+FUSE_SHARED_WORD=gribbleflax
+FUSE_CRASH_WORD=snorkbeetle
+readonly FUSE_WORD FUSE_SHARED_WORD FUSE_CRASH_WORD
+
+# This VM has FUSE. If it did not, every check below would fail for one reason,
+# and it is worth saying which.
+fuse_is_available() {
+	if [ ! -c /dev/fuse ]; then
+		printf 'there is no /dev/fuse here, so nothing can be mounted\n' >&2
+		return 1
+	fi
+	if ! command -v fusermount3 >/dev/null 2>&1 && ! command -v fusermount >/dev/null 2>&1; then
+		printf 'there is no fusermount on PATH\n' >&2
+		return 1
+	fi
+	printf '/dev/fuse and %s\n' "$(command -v fusermount3 || command -v fusermount)"
+}
+
+# Nothing has been mounted yet, and memory has been working for three thousand
+# lines. That is what "opt-in" means, said as an assertion.
+fuse_off_is_the_default() {
+	recall
+	if [ -n "$(fuse_mounts_here)" ]; then
+		printf 'a fuse filesystem is attached and this run did not attach one:\n%s\n' \
+			"$(fuse_mounts_here)" >&2
+		return 1
+	fi
+	# And memory works, with nothing mounted, exactly as it has all run.
+	want_tool mem_write "$TOKEN_A" \
+		'{"title": "written with no mount anywhere", "body": "the fuse-off path"}' || return 1
+	local id
+	id="$(tv .item.id)"
+	want_tool mem_read "$TOKEN_A" "{\"id\": \"$id\"}" || return 1
+	want_eq "the item reads back" "$(tv .item.id)" "$id" || return 1
+	printf 'no fuse filesystem attached, and memory item %s written and read anyway\n' "$id"
+}
+
+fuse_mounts() {
+	recall
+	fuse_start "$FUSE_MNT" "$TOKEN_A" "$FUSE_LOG" "$FUSE_PID_FILE" || return 1
+	if ! fuse_is_mounted "$FUSE_MNT"; then
+		printf '%s is not in /proc/self/mounts after the mount\n' "$FUSE_MNT" >&2
+		return 1
+	fi
+	# The path is the scope: the personal floor and the project this token is
+	# for, and no directory for a project it has no business in.
+	local listing dir
+	listing="$(ls "$FUSE_MNT")"
+	case "$listing" in
+	*_personal*) ;;
+	*)
+		printf 'the root holds %q, want the personal floor in it\n' "$listing" >&2
+		return 1
+		;;
+	esac
+	case "$listing" in
+	*pa*) ;;
+	*)
+		printf 'the root holds %q, want project pa in it\n' "$listing" >&2
+		return 1
+		;;
+	esac
+	for dir in "_personal/$USER_A/memory" "_personal/$USER_A/note" "pa/$USER_A/memory"; do
+		if [ ! -d "$FUSE_MNT/$dir" ]; then
+			printf '%s is not a directory in the mount\n' "$dir" >&2
+			return 1
+		fi
+	done
+	# The negotiated protocol level, read back off the server rather than
+	# assumed from what was asked for.
+	if ! grep -q 'FUSE 7\.' "$FUSE_LOG"; then
+		printf 'the mount never reported what it negotiated:\n' >&2
+		indent <"$FUSE_LOG" >&2
+		return 1
+	fi
+	grep 'mounted' "$FUSE_LOG" | head -1
+}
+
+# A file written into the mount is a memory item in the store: one artifact,
+# signed, with the scope its directory named, and one event that records it.
+fuse_write_lands_in_the_store() {
+	recall
+	cat >"$FUSE_MNT/_personal/$USER_A/memory/decisions.md" <<EOF
+---
+title: the write-behind queue is the durability
+tags: phase7, fuse
+---
+A $FUSE_WORD is what we called it while we were building it.
+EOF
+	fuse_await "SELECT count(*) FROM artifacts
+	             WHERE type = 'memory' AND file_path = 'decisions.md'
+	               AND owner_user = '$USER_A'" >/dev/null || return 1
+
+	local id
+	id="$(scalar "SELECT id FROM artifacts WHERE file_path = 'decisions.md' AND owner_user = '$USER_A'")"
+	remember FUSE_ITEM "$id"
+	want_eq "the item is memory" \
+		"$(scalar "SELECT type FROM artifacts WHERE id = '$id'")" memory || return 1
+	want_eq "the path decided the scope" \
+		"$(scalar "SELECT visibility FROM artifacts WHERE id = '$id'")" personal || return 1
+	want_eq "and the personal floor is a property of the row" \
+		"$(scalar "SELECT coalesce(project, 'NULL') FROM artifacts WHERE id = '$id'")" NULL || return 1
+	want_eq "the front matter became the title" \
+		"$(scalar "SELECT title FROM artifacts WHERE id = '$id'")" \
+		"the write-behind queue is the durability" || return 1
+	want_eq "the tags came off the header" \
+		"$(scalar "SELECT array_to_string(tags, ',') FROM artifacts WHERE id = '$id'")" \
+		"phase7,fuse" || return 1
+	want_eq "the row is signed, like every other write" \
+		"$(scalar "SELECT sig IS NOT NULL FROM artifacts WHERE id = '$id'")" t || return 1
+	want_eq "one event records the write" \
+		"$(scalar "SELECT count(*) FROM events WHERE artifact = '$id'")" 1 || return 1
+	want_eq "and it says what it was" \
+		"$(scalar "SELECT type FROM events WHERE artifact = '$id'")" memory.write || return 1
+	want_eq "the intent was applied" \
+		"$(scalar "SELECT count(*) FROM fs_intents WHERE artifact = '$id' AND applied IS NOT NULL")" \
+		1 || return 1
+	printf 'decisions.md is memory item %s\n' "$id"
+}
+
+# Indexed, which is the whole claim: the tsvector is written by the same
+# statement, so the agents that never mount anything find it.
+fuse_write_is_indexed() {
+	recall
+	want_tool mem_search "$TOKEN_A" "{\"q\": \"$FUSE_WORD\"}" || return 1
+	want_eq "mem_search finds the file" "$(tv .count)" 1 || return 1
+	want_eq "and it is the right item" "$(tv '.items[0].id')" "$FUSE_ITEM" || return 1
+
+	api GET "$TOKEN_A" "/api/search?q=$FUSE_WORD" || return 1
+	want_eq "the API finds it too" "$(hits)" 1 || return 1
+	want_eq "the same item" "$(jqv '.artifacts[0].id')" "$FUSE_ITEM" || return 1
+
+	want_tool mem_read "$TOKEN_A" "{\"id\": \"$FUSE_ITEM\"}" || return 1
+	want_eq "and mem_read has it" "$(tv .item.id)" "$FUSE_ITEM" || return 1
+	printf 'a file in the mount is searchable memory: %s\n' "$FUSE_ITEM"
+}
+
+fuse_reads_back_what_was_written() {
+	recall
+	local body
+	body="$(cat "$FUSE_MNT/_personal/$USER_A/memory/decisions.md")"
+	case "$body" in
+	*"$FUSE_WORD"*) ;;
+	*)
+		printf 'the file read back as:\n%s\n' "$body" >&2
+		return 1
+		;;
+	esac
+	case "$body" in
+	*"scope: personal"*) ;;
+	*)
+		printf 'the header does not say what scope it is:\n%s\n' "$body" >&2
+		return 1
+		;;
+	esac
+	case "$body" in
+	*"id: $FUSE_ITEM"*) ;;
+	*)
+		printf 'the header does not name the row:\n%s\n' "$body" >&2
+		return 1
+		;;
+	esac
+	# The name it was written under is the name it has, rather than the ULID of
+	# the row - which is what the items written by the memory tool, in the same
+	# directory, are called.
+	local listed
+	listed="$(ls "$FUSE_MNT/_personal/$USER_A/memory")"
+	case "$listed" in
+	*decisions.md*) ;;
+	*)
+		printf 'the directory holds %q, want decisions.md in it\n' "$listed" >&2
+		return 1
+		;;
+	esac
+	printf '%s bytes of header and body, listed as decisions.md\n' "${#body}"
+}
+
+# The mount is a view of the store and not a second copy of it: an item written
+# by the memory tool, with no file involved, is a file.
+fuse_shows_what_mem_write_wrote() {
+	recall
+	want_tool mem_write "$TOKEN_A" \
+		'{"title": "written by the tool, not by a file", "body": "and yet here it is"}' || return 1
+	local id path
+	id="$(tv .item.id)"
+	path="$FUSE_MNT/_personal/$USER_A/memory/$id.md"
+	if [ ! -f "$path" ]; then
+		printf 'mem_write item %s is not in the mount:\n%s\n' \
+			"$id" "$(ls "$FUSE_MNT/_personal/$USER_A/memory")" >&2
+		return 1
+	fi
+	case "$(cat "$path")" in
+	*"and yet here it is"*) ;;
+	*)
+		printf 'the file for %s does not hold the item body\n' "$id" >&2
+		return 1
+		;;
+	esac
+	remember FUSE_TOOL_ITEM "$id"
+	printf 'mem_write item %s reads as %s.md\n' "$id" "$id"
+}
+
+# A file in a project directory is that project's, and the header chooses
+# between the two scopes that are that project. This one says shared, so the
+# grant pb holds on pa reaches it - and the agent on the other side of that
+# grant sees it without mounting anything at all.
+fuse_project_scope_reaches_the_grant() {
+	recall
+	cat >"$FUSE_MNT/pa/$USER_A/memory/handoff.md" <<EOF
+---
+title: how the parser work is handed over
+scope: shared
+kind: handoff
+---
+Whoever picks it up should know about the $FUSE_SHARED_WORD.
+EOF
+	fuse_await "SELECT count(*) FROM artifacts
+	             WHERE file_path = 'handoff.md' AND owner_user = '$USER_A'" >/dev/null || return 1
+
+	local id
+	id="$(scalar "SELECT id FROM artifacts WHERE file_path = 'handoff.md' AND owner_user = '$USER_A'")"
+	remember FUSE_SHARED_ITEM "$id"
+	want_eq "it lives in pa" \
+		"$(scalar "SELECT project FROM artifacts WHERE id = '$id'")" pa || return 1
+	want_eq "at the scope the header asked for" \
+		"$(scalar "SELECT visibility FROM artifacts WHERE id = '$id'")" shared || return 1
+	want_eq "with the kind the header asked for" \
+		"$(scalar "SELECT kind FROM artifacts WHERE id = '$id'")" handoff || return 1
+
+	want_tool mem_search "$TOKEN_B" "{\"q\": \"$FUSE_SHARED_WORD\"}" || return 1
+	want_eq "B finds it across the grant" "$(tv .count)" 1 || return 1
+	want_eq "and it is the file A wrote" "$(tv '.items[0].id')" "$id" || return 1
+	printf 'handoff.md is shared item %s, and B reads it over the grant\n' "$id"
+}
+
+# A default in a project directory is the narrower of the two scopes, and the
+# narrower one is the one a grant does not reach.
+fuse_project_default_is_the_narrow_scope() {
+	recall
+	cat >"$FUSE_MNT/pa/$USER_A/memory/internal.md" <<'EOF'
+---
+title: for the project and nobody else
+---
+A quibblewrap stays in pa.
+EOF
+	fuse_await "SELECT count(*) FROM artifacts
+	             WHERE file_path = 'internal.md' AND owner_user = '$USER_A'" >/dev/null || return 1
+	local id
+	id="$(scalar "SELECT id FROM artifacts WHERE file_path = 'internal.md' AND owner_user = '$USER_A'")"
+	want_eq "the default scope in a project directory" \
+		"$(scalar "SELECT visibility FROM artifacts WHERE id = '$id'")" project-only || return 1
+	want_tool mem_search "$TOKEN_B" '{"q": "quibblewrap"}' || return 1
+	want_eq "and the grant does not reach it" "$(tv .count)" 0 || return 1
+	remember FUSE_NARROW_ITEM "$id"
+	printf 'internal.md is project-only: %s\n' "$id"
+}
+
+# A second mount, of a second principal, is a second view of the same store -
+# and it is the permission filter, not a copy of the rules.
+fuse_second_principal_sees_only_what_it_may() {
+	recall
+	fuse_start "$FUSE_MNT_B" "$TOKEN_B" "$FUSE_LOG_B" "$FUSE_PID_FILE_B" || return 1
+
+	local wrong=""
+	if [ ! -f "$FUSE_MNT_B/pa/$USER_A/memory/handoff.md" ]; then
+		wrong="the shared file is not in B's mount"
+	fi
+	if [ -f "$FUSE_MNT_B/pa/$USER_A/memory/internal.md" ]; then
+		wrong="the project-only file is in B's mount"
+	fi
+	if [ -e "$FUSE_MNT_B/_personal/$USER_A" ]; then
+		wrong="A's personal directory is in B's mount"
+	fi
+	if [ -f "$FUSE_MNT_B/pa/$USER_A/memory/decisions.md" ]; then
+		wrong="A's personal file is in B's mount"
+	fi
+	# And B cannot write into A's directory: being able to read a file is not
+	# being able to change it.
+	if printf 'x\n' >"$FUSE_MNT_B/pa/$USER_A/memory/evil.md" 2>/dev/null; then
+		wrong="B wrote a file into A's directory"
+	fi
+	fuse_stop "$FUSE_MNT_B" "$FUSE_PID_FILE_B" || return 1
+	if [ -n "$wrong" ]; then
+		printf '%s\n' "$wrong" >&2
+		return 1
+	fi
+	printf "B's mount holds the shared file and nothing else of A's\n"
+}
+
+# The refusals, in one place. Every one of them is an errno on a real syscall.
+fuse_refuses_what_it_should() {
+	recall
+	local failures="" out
+	# A directory here is a scope, not something to create.
+	if mkdir "$FUSE_MNT/invented" 2>/dev/null; then
+		failures="$failures; mkdir at the root was allowed"
+	fi
+	# A project this token has no business in has no directory at all.
+	if [ -d "$FUSE_MNT/pb" ]; then
+		failures="$failures; project pb is in A's mount"
+	fi
+	# A dotfile is an editor's leavings, not a memory item.
+	if printf 'x\n' >"$FUSE_MNT/_personal/$USER_A/memory/.swap.md" 2>/dev/null; then
+		failures="$failures; a dotfile was accepted"
+	fi
+	# The floor cannot be left by saying so in the file - and the refusal is on
+	# the close, which is where a write-behind filesystem has to put it. cp
+	# rather than a redirection, because cp looks at what close said and the
+	# shell does not.
+	# shellcheck disable=SC2216  # cp /dev/stdin does read stdin, and it is what
+	# looks at close(2) - see above
+	if out="$(printf -- '---\ntitle: promote me\nscope: shared\n---\nbody\n' |
+		cp /dev/stdin "$FUSE_MNT/_personal/$USER_A/memory/promote.md" 2>&1)"; then
+		failures="$failures; a personal file asking for scope shared was accepted"
+	fi
+	case "$out" in
+	*"failed to close"*) ;;
+	*)
+		failures="$failures; the promotion was refused somewhere other than the close: $out"
+		;;
+	esac
+	if [ -n "$(psql -v ON_ERROR_STOP=1 -tAc \
+		"SELECT id FROM artifacts WHERE file_path = 'promote.md'")" ]; then
+		failures="$failures; the refused promotion was written anyway"
+	fi
+
+	if [ -n "$failures" ]; then
+		printf '%s\n' "${failures#; }" >&2
+		return 1
+	fi
+	printf 'mkdir, a project that is not this one, a dotfile and a promotion: all refused\n'
+}
+
+# The same bytes twice are one write. The queue is at-least-once and the store
+# is deduped by hash, and this is the pair of them meeting.
+fuse_the_same_bytes_are_one_write() {
+	recall
+	local before after
+	before="$(scalar "SELECT count(*) FROM events WHERE artifact = '$FUSE_ITEM'")"
+	cat >"$FUSE_MNT/_personal/$USER_A/memory/decisions.md" <<EOF
+---
+title: the write-behind queue is the durability
+tags: phase7, fuse
+---
+A $FUSE_WORD is what we called it while we were building it.
+EOF
+	# Two intents now, and the second one is the duplicate: wait for it to come
+	# off the queue rather than for a row that is not going to change.
+	fuse_await "SELECT count(*) FROM fs_intents
+	             WHERE artifact = '$FUSE_ITEM' AND applied IS NOT NULL
+	            HAVING count(*) >= 2" >/dev/null || return 1
+	after="$(scalar "SELECT count(*) FROM events WHERE artifact = '$FUSE_ITEM'")"
+	want_eq "events after saving the same bytes again" "$after" "$before" || return 1
+	want_eq "and still one artifact" \
+		"$(scalar "SELECT count(*) FROM artifacts WHERE id = '$FUSE_ITEM'")" 1 || return 1
+	printf 'two intents, one write, %s event(s)\n' "$after"
+}
+
+# unlink is a delete. It is the one write the mount does inline, because a
+# caller is entitled to be told whether the thing is gone.
+fuse_unlink_tombstones_the_item() {
+	recall
+	rm "$FUSE_MNT/_personal/$USER_A/memory/decisions.md" || return 1
+	want_eq "the row is tombstoned" \
+		"$(scalar "SELECT tombstone FROM artifacts WHERE id = '$FUSE_ITEM'")" t || return 1
+	if [ -e "$FUSE_MNT/_personal/$USER_A/memory/decisions.md" ]; then
+		printf 'the file is still in the mount after the unlink\n' >&2
+		return 1
+	fi
+	# Gone through every other door, and told in the words an id that never
+	# existed gets.
+	want_tool_fails mem_read "$TOKEN_A" "{\"id\": \"$FUSE_ITEM\"}" "no such memory item" || return 1
+	want_status 404 GET "$TOKEN_A" "/api/artifact/$FUSE_ITEM" || return 1
+	want_tool mem_search "$TOKEN_A" "{\"q\": \"$FUSE_WORD\"}" || return 1
+	want_eq "and it is out of the index" "$(tv .count)" 0 || return 1
+	printf '%s is gone from the mount, the store and the search\n' "$FUSE_ITEM"
+}
+
+# The mount is stateless: unmount, mount again, and the files are the files,
+# because they were never anywhere but the store.
+fuse_remount_shows_the_same_items() {
+	recall
+	fuse_stop "$FUSE_MNT" "$FUSE_PID_FILE" || return 1
+	if [ -n "$(ls -A "$FUSE_MNT")" ]; then
+		printf 'the mountpoint is not empty after the unmount: %s\n' "$(ls -A "$FUSE_MNT")" >&2
+		return 1
+	fi
+	fuse_start "$FUSE_MNT" "$TOKEN_A" "$FUSE_LOG" "$FUSE_PID_FILE" || return 1
+
+	if [ ! -f "$FUSE_MNT/pa/$USER_A/memory/handoff.md" ]; then
+		printf 'the shared file is not in the remount:\n%s\n' "$(find "$FUSE_MNT" -type f)" >&2
+		return 1
+	fi
+	case "$(cat "$FUSE_MNT/pa/$USER_A/memory/handoff.md")" in
+	*"$FUSE_SHARED_WORD"*) ;;
+	*)
+		printf 'the remounted file does not hold what was written to it\n' >&2
+		return 1
+		;;
+	esac
+	if [ -e "$FUSE_MNT/_personal/$USER_A/memory/decisions.md" ]; then
+		printf 'the deleted file came back with the remount\n' >&2
+		return 1
+	fi
+	# The item written by mem_write is still a file, and the one written as a
+	# file is still an item: one store, two doors.
+	if [ ! -f "$FUSE_MNT/_personal/$USER_A/memory/$FUSE_TOOL_ITEM.md" ]; then
+		printf 'the tool-written item is not in the remount\n' >&2
+		return 1
+	fi
+	printf 'the same items are there, and the deleted one is not\n'
+}
+
+# Deleting a file whose write is still on the queue takes the write off the
+# queue. Nothing else would: the intent names a row that does not exist yet, so
+# there is no tombstone for the apply to refuse against, and the item the caller
+# just deleted would appear a second later.
+fuse_deleting_a_queued_write_takes_it_off_the_queue() {
+	recall
+	fuse_stop "$FUSE_MNT" "$FUSE_PID_FILE" || return 1
+	fuse_start "$FUSE_MNT" "$TOKEN_A" "$FUSE_LOG" "$FUSE_PID_FILE" --no-drain || return 1
+
+	cat >"$FUSE_MNT/_personal/$USER_A/memory/doomed.md" <<'EOF'
+---
+title: written and then deleted before it was ever stored
+---
+A blatherfen nobody should ever find.
+EOF
+	want_eq "it is on the queue" "$(scalar "SELECT count(*) FROM fs_intents WHERE name = 'doomed.md' AND applied IS NULL")" 1 || return 1
+	rm "$FUSE_MNT/_personal/$USER_A/memory/doomed.md" || return 1
+	want_eq "and the delete took it off" "$(scalar "SELECT count(*) FROM fs_intents WHERE name = 'doomed.md' AND applied IS NULL")" 0 || return 1
+
+	fuse_stop "$FUSE_MNT" "$FUSE_PID_FILE" || return 1
+	local out
+	out="$(DATABASE_URL="$DATABASE_URL" FLOWY_NODE=gate ./flowy fuse --reconcile 2>&1)" || {
+		printf '%s\n' "$out" >&2
+		return 1
+	}
+	want_eq "and a reconcile does not bring it back" "$(scalar "SELECT count(*) FROM artifacts WHERE file_path = 'doomed.md'")" 0 || return 1
+	want_tool mem_search "$TOKEN_A" '{"q": "blatherfen"}' || return 1
+	want_eq "there is nothing to find" "$(tv .count)" 0 || return 1
+	printf 'the queued write was cancelled by the unlink: %s\n' "$out"
+}
+
+# The crash. A mount with no drainer queues the write and never applies it,
+# which is the state a node that died between the close and the store write
+# comes back from - and here it really is killed, with SIGKILL, so nothing it
+# might have done on the way out can be doing the work.
+fuse_crash_between_the_close_and_the_write() {
+	recall
+	fuse_start "$FUSE_MNT" "$TOKEN_A" "$FUSE_LOG" "$FUSE_PID_FILE" --no-drain || return 1
+
+	cat >"$FUSE_MNT/_personal/$USER_A/memory/crash.md" <<EOF
+---
+title: closed before the crash
+---
+The $FUSE_CRASH_WORD was written and the node died.
+EOF
+	# The file reads back through the mount before the store has it: the write
+	# is behind, the file is not.
+	case "$(cat "$FUSE_MNT/_personal/$USER_A/memory/crash.md")" in
+	*"$FUSE_CRASH_WORD"*) ;;
+	*)
+		printf 'the queued file does not read back through the mount\n' >&2
+		return 1
+		;;
+	esac
+	want_eq "the intent is on the queue" \
+		"$(scalar "SELECT count(*) FROM fs_intents WHERE name = 'crash.md' AND applied IS NULL")" \
+		1 || return 1
+	want_eq "and the store has nothing" \
+		"$(scalar "SELECT count(*) FROM artifacts WHERE file_path = 'crash.md'")" 0 || return 1
+
+	local id
+	id="$(scalar "SELECT artifact FROM fs_intents WHERE name = 'crash.md' AND applied IS NULL")"
+	remember FUSE_CRASH_ITEM "$id"
+
+	fuse_kill "$FUSE_MNT" "$FUSE_PID_FILE"
+	want_eq "the store still has nothing after the kill" \
+		"$(scalar "SELECT count(*) FROM artifacts WHERE id = '$id'")" 0 || return 1
+	want_eq "and the intent is still pending" \
+		"$(scalar "SELECT count(*) FROM fs_intents WHERE artifact = '$id' AND applied IS NULL")" \
+		1 || return 1
+	printf 'killed with crash.md queued and nothing written: %s\n' "$id"
+}
+
+# The replay. Reconcile applies what the crash left, exactly once - and doing it
+# again does nothing at all, which is the difference between at-least-once
+# delivery and at-least-once writing.
+fuse_reconcile_replays_exactly_once() {
+	recall
+	local out again clock
+	out="$(DATABASE_URL="$DATABASE_URL" FLOWY_NODE=gate ./flowy fuse --reconcile 2>&1)" || {
+		printf '%s\n' "$out" >&2
+		return 1
+	}
+	want_eq "one artifact" \
+		"$(scalar "SELECT count(*) FROM artifacts WHERE id = '$FUSE_CRASH_ITEM'")" 1 || return 1
+	want_eq "not a partial one" \
+		"$(scalar "SELECT title FROM artifacts WHERE id = '$FUSE_CRASH_ITEM'")" \
+		"closed before the crash" || return 1
+	want_eq "one event" \
+		"$(scalar "SELECT count(*) FROM events WHERE artifact = '$FUSE_CRASH_ITEM'")" 1 || return 1
+	want_eq "signed like any other write" \
+		"$(scalar "SELECT sig IS NOT NULL FROM artifacts WHERE id = '$FUSE_CRASH_ITEM'")" t || return 1
+
+	clock="$(scalar "SELECT hlc FROM artifacts WHERE id = '$FUSE_CRASH_ITEM'")"
+	again="$(DATABASE_URL="$DATABASE_URL" FLOWY_NODE=gate ./flowy fuse --reconcile 2>&1)" || {
+		printf '%s\n' "$again" >&2
+		return 1
+	}
+	want_eq "the second reconcile applies nothing" \
+		"$(scalar "SELECT count(*) FROM events WHERE artifact = '$FUSE_CRASH_ITEM'")" 1 || return 1
+	want_eq "and does not rewrite the row" \
+		"$(scalar "SELECT hlc FROM artifacts WHERE id = '$FUSE_CRASH_ITEM'")" "$clock" || return 1
+	want_eq "nothing is left on the queue" \
+		"$(scalar "SELECT count(*) FROM fs_intents WHERE applied IS NULL")" 0 || return 1
+
+	# And it is indexed, from a replay as much as from a live write.
+	want_tool mem_search "$TOKEN_A" "{\"q\": \"$FUSE_CRASH_WORD\"}" || return 1
+	want_eq "the replayed item is searchable" "$(tv .count)" 1 || return 1
+	printf '%s / %s\n' "$out" "$again"
+}
+
+# And with everything unmounted, the node is the node it was before any of this:
+# the memory tools and the API read and write the same store, including the
+# items that arrived as files.
+fuse_off_again_and_everything_still_works() {
+	recall
+	fuse_stop "$FUSE_MNT" "$FUSE_PID_FILE" || return 1
+	if [ -n "$(fuse_mounts_here)" ]; then
+		printf 'a fuse filesystem is still attached at the end of the section:\n%s\n' \
+			"$(fuse_mounts_here)" >&2
+		return 1
+	fi
+
+	want_tool mem_write "$TOKEN_A" \
+		'{"title": "written after the mount went away", "body": "a wobblesprocket"}' || return 1
+	local id
+	id="$(tv .item.id)"
+	want_tool mem_search "$TOKEN_A" '{"q": "wobblesprocket"}' || return 1
+	want_eq "memory still writes and searches with nothing mounted" "$(tv .count)" 1 || return 1
+
+	# The items that came in as files are still there, still readable by the
+	# tools, still searchable - they were always rows.
+	want_tool mem_read "$TOKEN_A" "{\"id\": \"$FUSE_CRASH_ITEM\"}" || return 1
+	want_eq "the replayed file is still an item" "$(tv .item.id)" "$FUSE_CRASH_ITEM" || return 1
+	api GET "$TOKEN_A" "/api/artifact/$FUSE_SHARED_ITEM" || return 1
+	want_eq "and the shared one answers the API" "$API_STATUS" 200 || return 1
+	want_eq "with the scope its path gave it" "$(jqv .visibility)" shared || return 1
+	printf 'no mount, and memory item %s written, %s and %s read\n' \
+		"$id" "$FUSE_CRASH_ITEM" "$FUSE_SHARED_ITEM"
+}
+
+say "fuse: memory as files, and only if you ask"
+check "there is a /dev/fuse and a fusermount here" fuse_is_available
+check "nothing is mounted, and memory works anyway" fuse_off_is_the_default
+check "flowy fuse mounts, and says what it negotiated" fuse_mounts
+check "a file written into the mount is an item in the store" fuse_write_lands_in_the_store
+check "and mem_search and the API find it" fuse_write_is_indexed
+check "and it reads back through the mount" fuse_reads_back_what_was_written
+check "an item written by mem_write is a file" fuse_shows_what_mem_write_wrote
+check "a file in a project directory carries the scope its header asked for" \
+	fuse_project_scope_reaches_the_grant
+check "and the default in a project is the scope a grant does not reach" \
+	fuse_project_default_is_the_narrow_scope
+check "a second principal's mount holds what that principal may read" \
+	fuse_second_principal_sees_only_what_it_may
+check "a scope, a directory and a name that are not allowed are refused" \
+	fuse_refuses_what_it_should
+check "saving the same bytes again is not a second write" fuse_the_same_bytes_are_one_write
+check "unlink tombstones the item, everywhere" fuse_unlink_tombstones_the_item
+check "unmount and mount again: the same items, from the store" \
+	fuse_remount_shows_the_same_items
+check "deleting a file whose write is still queued takes the write off the queue" \
+	fuse_deleting_a_queued_write_takes_it_off_the_queue
+check "a kill between the close and the store write leaves the intent pending" \
+	fuse_crash_between_the_close_and_the_write
+check "reconcile replays it exactly once, and again is nothing" \
+	fuse_reconcile_replays_exactly_once
+check "with nothing mounted, memory is memory" fuse_off_again_and_everything_still_works
 
 # ------------------------------------------------------------------- verdict
 

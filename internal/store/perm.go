@@ -43,6 +43,54 @@ const (
 	VisibilityShared      = "shared"
 )
 
+// MemScopes are the scopes an agent chooses between, in the order they widen:
+// personal is the floor no grant reaches through, project is everyone in the
+// project and nobody else, shared is the project plus whoever holds a grant or
+// a share.
+var MemScopes = []string{"personal", "project", "shared"}
+
+// memScopeVisibility is the visibility each scope is stored as.
+//
+// project is not stored as 'project'. That value has always meant "the project,
+// and whoever the project's grants reach", because it is what an artifact
+// written over the API gets by default - so an item written at scope=project
+// was readable by exactly the people the scope said it was not.
+// VisibilityProjectOnly is the value that means what the scope says.
+//
+// It is here rather than beside the tool that first needed it because it is not
+// one surface's opinion any more: mem_write chooses a scope from an argument
+// and the FUSE mount chooses one from a path plus a line of front matter, and
+// two tables mapping the same three words to the same three columns are two
+// tables that will disagree one day about which of them means "the project and
+// nobody else".
+var memScopeVisibility = map[string]string{
+	"personal": VisibilityPersonal,
+	"project":  VisibilityProjectOnly,
+	"shared":   VisibilityShared,
+}
+
+// VisibilityForScope is the visibility a scope is stored as. Anything that is
+// not one of the scopes is passed through: an item written before this
+// distinction existed carries a visibility that is not a scope, and reading it
+// back is not the moment to change what it means.
+func VisibilityForScope(scope string) string {
+	if v, ok := memScopeVisibility[scope]; ok {
+		return v
+	}
+	return scope
+}
+
+// ScopeForVisibility names the scope a visibility is, for a message an agent
+// reads and for the front matter of a file in the mount.
+func ScopeForVisibility(visibility string) string {
+	for scope, v := range memScopeVisibility {
+		if v == visibility {
+			return scope
+		}
+	}
+	return visibility
+}
+
 // Principal is the identity a request acts as: a (user, agent, project) triple
 // resolved from a bearer token. Project is the principal's home project, the
 // one it reads without needing a grant.

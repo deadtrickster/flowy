@@ -1,4 +1,4 @@
-# flowy - Handoff Fabric node (Phase 6.5)
+# flowy - Handoff Fabric node (Phase 7)
 
 The host-side node: one Go binary, one Postgres-wire database, and the schema
 spine every later phase rides on. Phase 0 was the skeleton - a server that
@@ -67,6 +67,19 @@ signature does not verify under the key of the node named on it. Keys travel by
 operator pin or trust-on-first-use, a node's key never changes over the wire,
 and `FLOWY_REQUIRE_PINNED_PEERS` narrows a deployment to nodes its operator
 named by hand.
+
+Phase 7 is the file layer: **`flowy fuse` mounts a principal's memory as files,
+so an agent writes memory where it already writes files**. The path is the
+scope - `/<project>/<user>/<type>/<id>.md`, with `_personal` for the floor -
+and a file closed in one of those directories is a memory item in the store,
+signed, indexed and searchable by every agent that never mounts anything. The
+close does not wait for that: it writes an intent down - the path, the bytes and
+their hash - and answers, and a drainer applies intents to the store one
+transaction each, deduped by hash, replaying whatever a crash left behind the
+next time the mount starts. It is **opt-in and personal by default**: nothing
+mounts until somebody runs the command, a file with no project in its path is
+its owner's alone and no save promotes it, and with nothing mounted the node is
+exactly the node the six phases above describe.
 
 ## Run the gate
 
@@ -152,7 +165,7 @@ both empty by default. See [The security fixes](#the-security-fixes).
 | --- | --- |
 | `flowy serve` | HTTP server, wired to the store, serving the embedded console |
 | `flowy mcp` | MCP server: shared memory over stdio, or `--http :PORT` |
-| `flowy fuse` | prints `fuse: not yet` (artifacts as a filesystem) |
+| `flowy fuse` | mount this principal's memory as files: `--mount <dir>`, or `--reconcile` to apply what an earlier mount queued |
 | `flowy sync` | replicate with a peer: `--peer <url> --token <t>`, pull then push |
 | `flowy identity` | this node's signing key, the keys it holds, and how a key gets in |
 | `flowy sign` | sign a replication delta read on stdin |
@@ -201,6 +214,19 @@ by this node's stored key, or by the key a `--seed` makes. It leaves the `node`
 column of each row exactly as it found it, because a row says which node wrote
 it and signing is not the place to decide that. `--identity` puts the signer's
 own self-signed identity on the delta, the way a page from that node carries it.
+
+`flowy fuse` mounts one principal's memory, and takes the token that says
+whose:
+
+| flag | what it is |
+| --- | --- |
+| `--mount` | directory to mount on; it has to exist |
+| `--token` | bearer token, or `$FLOWY_TOKEN`; the mount is that principal's view |
+| `--reconcile` | apply the writes an earlier mount queued and exit, mounting nothing |
+| `--no-drain` | mount without a drainer: writes are queued and left there |
+| `-dsn` | this node's database, default `$DATABASE_URL` |
+| `-node` | this node's name, default `$FLOWY_NODE` or the hostname |
+| `--debug` | log the FUSE protocol traffic |
 
 `mcp` and `serve` read their configuration from the environment, and flags
 override it:
@@ -315,6 +341,176 @@ Claude Code, opencode and anything else that launches a server as a subprocess:
 A remote client - Claude on the web - takes the URL of a node running
 `flowy mcp --http` and a bearer token. Same store, same tokens, same filter;
 the only difference is which end of the pipe the JSON-RPC arrives on.
+
+## The agent filesystem
+
+```sh
+./flowy fuse --mount ~/memory --token tA-01J...
+```
+
+Phase 2 gave every agent one shared memory over MCP. This puts a file layer on
+top of it, for the agents that write files whether or not anybody gave them a
+tool: a directory tree whose paths are the scopes, whose files are the memory
+items, and whose writes land in the same store, through the same permission
+filter, indexed the same way.
+
+It is on top and not underneath. Memory works whole with nothing mounted -
+`mem_write`, `mem_search`, the API, the console, the merge - and the node does
+not know this exists until somebody runs the command.
+
+### The path is the scope
+
+```
+~/memory/
+  _personal/<user>/memory/<name>.md     the floor: no project, owner only
+  _personal/<user>/note/<name>.md
+  <project>/<user>/memory/<name>.md     that project's memory
+  <project>/<user>/note/<name>.md
+```
+
+A directory here is not a container, it is a question the permission filter has
+already answered. `/<project>` is listed only if the principal may read
+something in it, `/<project>/<user>` holds that person's items and only the ones
+this principal may read, and `_personal` is the reserved name of the floor -
+rows with no project at all, which are their owner's and nobody's else however
+many grants exist. A project that is genuinely called `_personal` is skipped in
+the listing and said so in the log, because one name cannot mean two things.
+
+Writing follows from the same idea, and it is the mem_write rule with a path
+instead of an argument: you write under your own user directory, in the project
+your token is for, or on your own floor. There is no path that means "promote
+this". A personal item does not become a project item by being saved somewhere
+else, and a project item is not taken out of its project by being saved on the
+floor - both are refused at the door and again inside the transaction that
+would do the write.
+
+A file is the item, with a short header for what a body cannot carry:
+
+```markdown
+---
+title: the write-behind queue is the durability
+id: 01M02Z8BYQ7C4FXRYMRF3JG5A5
+scope: personal
+kind: note
+tags: phase7, fuse
+updated: 2026-08-15T15:04:44Z
+---
+
+The store write does not happen in the callback.
+```
+
+`id` and `updated` are printed for whoever is reading and ignored on the way
+back in: the row a file writes is the row its path names, and a header that
+could redirect it would be a way into a directory the writer was refused. A file
+with no header at all is a note whose title is its first line - an agent that
+has never heard of any of this writes something this can read. Inside a project
+directory `scope:` chooses between `project` (the project and nobody else, which
+is the default because it is the narrower) and `shared` (the project plus
+whoever its grants reach); on the floor it may only say `personal`. A `kind:` or
+a `scope:` that is not one of the words is refused rather than defaulted, and
+the refusal arrives on the `close(2)`.
+
+A new file may be called anything: the name is kept in `artifacts.file_path`, so
+`decisions.md` reads back as `decisions.md` rather than as a ULID nobody typed.
+An item written by `mem_write`, which has no name of its own, is `<id>.md`.
+Deleting a file tombstones the item - that one write is inline, because a caller
+is entitled to be told whether the thing is gone.
+
+### Write-behind, and what a crash leaves
+
+A `close(2)` cannot wait for a signed, indexed, transactional write and then
+report a database error to an agent that has already moved on. So the mount does
+not do the write in the callback:
+
+1. **close** writes an intent to `fs_intents` - the path, the bytes, their
+   sha256 - and answers. That row is committed before the callback returns, and
+   it is the durability point: from here the write will happen, this run or the
+   next one.
+2. **the drainer** takes intents oldest first and applies each one in a single
+   transaction: the artifact, the `memory.write` event that records it, the
+   search vector, and the intent's own `applied` stamp. One transaction, so
+   there is no state in between for a crash to leave behind.
+3. **the next mount reconciles** before it serves a single callback, which is
+   what makes step 1 worth anything: whatever the last run did not finish is
+   finished first.
+
+That is at-least-once delivery, and at-least-once delivery of a write is not the
+same as writing once. The apply compares the intent's hash against the last one
+applied for the same row and skips a write the store already has, so a replay
+after a crash is one artifact and one event, and saving a file again with
+nothing changed is nothing at all. Two more things it will not do: a queued
+write does not resurrect an item deleted since the file was closed, and it does
+not apply to a row that has changed owner or home underneath it.
+
+Deleting a file is the one case where the queue is written rather than read.
+`rm` on a file whose write has not been drained cancels that write: the intent
+names a row that does not exist yet, so there is no tombstone for the apply to
+refuse against, and without the cancel the item somebody just deleted would
+appear a second later.
+
+`flowy fuse --reconcile` is step 3 on its own, for a queue whose mount is not
+coming back. It takes no token, deliberately: every intent carries the owner,
+the actor, the project and the scope decided when the file was closed by a
+principal that had already been checked, so replaying one needs no credential
+and must not be able to acquire one. What it can still do is refuse.
+
+Reads go the other way and are not cached at all - every entry and attribute
+timeout is zero, and files are opened `FOPEN_DIRECT_IO`. The store changes under
+this process constantly (another agent's `mem_write`, the API, a merge from a
+peer), so a cached lookup is this mount telling the kernel something that was
+true a moment ago. The mount is a view: unmount it and mount it again and the
+same items are there, because they were never anywhere else.
+
+### The four things a FUSE filesystem gets wrong
+
+They are worth naming, because each one is a specific decision in
+`internal/agentfs` rather than a general intention:
+
+- **Exactly one reply per callback.** Every operation returns a `syscall.Errno`
+  and the go-fuse `fs` layer turns exactly one of those into exactly one reply.
+  The path that would otherwise not reply is the panicking one, so every
+  callback that touches the store goes through `op()`, which recovers, logs and
+  answers `EIO`. A panic in a callback takes the mount down and leaves the
+  kernel holding a request nobody will ever answer; no store error is unwrapped
+  into a callback, and every one of them is mapped to an errno.
+- **Ask what was negotiated, do not trust what was asked for.** go-fuse does not
+  put `FUSE_ATOMIC_O_TRUNC` in the flags it agrees to at INIT, so the kernel
+  does not pass `O_TRUNC` through to `Open`: it opens the file and then sends a
+  separate `SETATTR` with the size and, on the kernels measured here, without a
+  file handle. Believing the documented shape of `open(O_TRUNC)` instead of
+  reading the trace is how a rewrite ends up with the tail of the previous
+  content still on the end of it. A size is taken on the handle it names, on the
+  handles the node already has open, and - for a kernel that sends it the other
+  way round - as a mark for the open about to happen. The protocol level itself
+  is read back off the server after the mount and the mount refuses to serve
+  below 7.12, which is a sentence rather than an `EIO`.
+- **Names are bytes.** A filename off the kernel is not a Go string with a
+  guarantee attached. It is checked as bytes - no slash, no NUL, no control
+  bytes, not `.` or `..`, at most 255 - and then, explicitly, for being valid
+  UTF-8, because the name ends up in a text column and a text column in a UTF-8
+  database refuses invalid UTF-8 with a driver error halfway through a
+  transaction. A refusal at the door is a name the agent can fix. A leading dot
+  is refused too: editors drop `.swp` and `.#` files beside the one they are
+  writing, and a memory item that exists because vim was open is worse than no
+  file at all.
+- **Know the dispatch model.** go-fuse runs a goroutine per request and bounds
+  only the background ones; synchronous reads and writes are not bounded at all.
+  So the bound is in this package, sized to the connection pool the store opens,
+  rather than assumed from the library. Every callback also carries a deadline:
+  a filesystem call that never returns is a process in uninterruptible sleep,
+  and a database that has stopped answering should be an errno.
+
+### Mounting it for an agent
+
+The mount is private: no `allow_other`, so the kernel refuses every other uid,
+root included, before a callback here is reached. Point an agent at a directory
+under it and it has memory:
+
+```sh
+mkdir -p ~/memory
+flowy fuse --mount ~/memory --token "$FLOWY_TOKEN" &
+ls ~/memory/_personal/$USER_ID/memory
+```
 
 ## Identity
 
@@ -1073,6 +1269,18 @@ The second security slice adds one more local table beside `peers`:
 Like `peers` it is bookkeeping about replication rather than fabric state, so it
 carries no `hlc`, replicates nowhere, and means nothing on another node.
 
+Phase 7 adds one more of the same kind:
+
+| table | holds |
+| --- | --- |
+| `fs_intents` | one file write, written down before it happens: the mount path, the artifact id, the owner, the actor, the scope, the name, the bytes and their sha256, and `applied` - NULL until the drainer has turned it into a row |
+
+It is the queue behind the FUSE mount and it is local for the same reasons: no
+`hlc`, no signature, never replicated. A peer has no business knowing what a
+file on this machine was called or when it was closed. The artifact the drainer
+writes out of it is the fabric row, and that one is stamped and signed like
+every other.
+
 An artifact with `project` NULL is personal to `owner_user`; `visibility` is
 `personal`, `project` or `shared`. `kind` narrows `type` without multiplying it -
 a memory item is `type='memory'` with a kind of `note`, `todo`, `feature` or
@@ -1161,6 +1369,22 @@ what a status trail is.
   there: a threaded comment is a Phase 3 chat event, the status move is Phase
   4's status event with one extra meta field, and the link replicates because it
   is a column on a row Phase 5 already merges.
+- `internal/agentfs` - the FUSE filesystem. `agentfs.go` is the tree (four
+  directory levels, each one more of the scope fixed) and the enqueue a close
+  performs; `file.go` is one artifact seen as a file, its handles and the
+  truncate the kernel splits off the open; `format.go` is the front matter and
+  the rules for a filename, which are byte rules; `drain.go` is the drainer;
+  `mount.go` is the mount, the negotiated protocol check and the unmount. It
+  holds no memory of its own: the tree is rebuilt from the store on every
+  lookup, and the only state is what has been closed and not yet drained.
+- `internal/store/agentfs.go` - the store's half. The scope reads the mount's
+  directories are made of, all of them narrowed by `ArtifactFilterSQL` rather
+  than by a second reach rule, and the intent queue: enqueue, the pending read,
+  and the one transaction that writes the artifact, its event and the applied
+  stamp together - with the hash dedup, the ownership check and the personal
+  floor evaluated inside it.
+- `fuse.go` - `flowy fuse`: the flags, the principal the mount acts as, the
+  reconcile that needs no token, and the signal handling that unmounts.
 - `console.go`, `web/` - the console and its serving. `console.go` embeds
   `web/dist`, serves hashed assets immutably and falls back to `index.html` for
   every other non-API path; `web/` is the React app itself.
@@ -1172,7 +1396,8 @@ against a live `flowy serve`:
 
 - `/healthz` comes up and reports `ok:true` with the database up
 - the eight spine tables exist
-- `fuse` prints its placeholder and exits zero
+- `flowy fuse` with nothing said mounts nothing and says it wants `--mount`,
+  and a mount asked for with a token that does not resolve attaches nothing
 - 10000 ULIDs are unique and strictly increasing - sorted order equals
   generation order
 - 8 goroutines minting 5000 HLC readings each produce 40000 distinct values,
@@ -1491,6 +1716,58 @@ And the second slice, the same way - one check per defect the re-review found:
 - an assignment whose task cannot be written leaves neither the share nor the
   opening message behind, and a status move whose entry cannot be written does
   not move the status
+
+Then Phase 7, which mounts a real filesystem in the machine the gate is running
+on - `/dev/fuse`, `fusermount3`, one `flowy fuse` process per mount - and does
+its file operations from the shell:
+
+- before anything is mounted, nothing of type `fuse.*` is attached under the
+  gate's work directory, and `mem_write` and `mem_read` work anyway: everything
+  above this point in the gate ran with no mount at all, which is what opt-in
+  means said as an assertion
+- `flowy fuse --mount` attaches, and logs the protocol it negotiated rather than
+  the one it asked for; `_personal`, the token's project, and `<user>/memory`
+  and `<user>/note` under each are directories
+- a file written into `_personal/<A>/memory/decisions.md` becomes one artifact:
+  `type=memory`, `visibility=personal`, `project` NULL, the title and tags off
+  the front matter, `file_path` the name it was written under, a signature, and
+  exactly one `memory.write` event - with the intent marked applied
+- `mem_search`, `GET /api/search` and `mem_read` all find it, so a file is
+  indexed memory and not a file
+- it reads back through the mount with its header, its scope and its id
+- an item written by `mem_write`, with no file involved, is a file in the mount:
+  the mount is a view of the store rather than a second copy of it
+- a file in a project directory saying `scope: shared` lands in that project as
+  `shared`, with the kind its header asked for, and the agent on the other side
+  of the `pa -> pb` grant finds it by search without mounting anything
+- a file in a project directory saying nothing lands `project-only`, and that
+  same grant does not reach it
+- a second mount, of a second principal, holds the shared file and none of the
+  first principal's personal or project-only ones, and cannot write into the
+  first principal's directory
+- `mkdir` at the root, a project this token has no business in, a dotfile, and a
+  personal file asking for `scope: shared` are all refused - the last one on the
+  `close(2)`, where a write-behind filesystem has to put it, with nothing
+  written
+- saving the same bytes again queues a second intent and writes nothing: one
+  artifact, one event
+- `rm` tombstones the item, and it is `404` through `mem_read`, `404` through
+  the API, and out of the search index
+- unmounting empties the mountpoint, and mounting again shows the same items -
+  including the one written by the tool - and not the deleted one
+- a file written into a `--no-drain` mount and then deleted before anything
+  could drain it takes its own write off the queue, and a reconcile afterwards
+  does not bring it back
+- a mount started with `--no-drain`, written to, and then killed with `SIGKILL`
+  leaves the intent pending and the store with nothing: the file still reads
+  back through the mount before the crash, because the write is behind and the
+  file is not
+- `flowy fuse --reconcile` replays it into exactly one artifact with the right
+  title, exactly one event and a signature; running it again writes nothing and
+  does not move the row's clock; the queue ends empty and the replayed item is
+  searchable
+- with everything unmounted again, `mem_write`, `mem_search`, `mem_read` and the
+  API still work, and the items that arrived as files are still items
 
 The last thing the gate does is ask git whether the tree it just tested is the
 tree on disk: uncommitted changes, or nothing ever committed, is a failure.
@@ -2761,10 +3038,20 @@ else. It is quarantined there because it is meant to be deleted: when SereneDB
 brings vectors, that section goes and `store.SearchArtifacts` becomes a vector
 query. Nothing above it depends on anything below it.
 
-## Phase 6.5 status
+## Phase 7 status
 
-Green. `./run-tests.sh` reports `passed: 311 failed: 0` with Go 1.22, Node
-22.14 and Postgres 16 - the 200 checks Phase 6 ended with, all still green,
+Green. `./run-tests.sh` reports `passed: 329 failed: 0` with Go 1.22, Node
+22.14 and Postgres 16 - the 311 Phase 6.5 ended with, one of which changed
+rather than went away (`flowy fuse` was a stub that printed a placeholder and is
+now a command that refuses to mount anything it was not told to mount), plus the
+18 Phase 7 adds: a real mount in this machine, a file that becomes an indexed
+item, the read back, an item written by the tool showing up as a file, the two
+project scopes and the grant that reaches one of them, a second principal's
+mount, the four refusals, the same bytes written twice, the unlink, the
+remount, the queued write cancelled by deleting its file, a `SIGKILL` between
+the close and the store write, the reconcile that replays it exactly once, and
+memory still being memory with nothing mounted.
+Phase 6.5's own 311 were: the 200 checks Phase 6 ended with, all still green,
 plus the 12 the first security slice added, the 12 the second one did, the 8
 from the third, the 8 from the fourth, the 10 from the fifth, the 6 from the
 sixth, the 6 from the seventh - one per defect, and two for the `project-only`
@@ -2826,7 +3113,20 @@ bug cannot be filed into two trackers. The console has no forge view: the
 external ref is JSON on the artifact and the threaded comments show up as
 ordinary chat, which is most of the value but not the link.
 
-Not here yet, elsewhere: `flowy fuse` still prints its placeholder. Sync is a command you
+Not here yet, on the agent filesystem: there is no `rename`, so `mv` inside the
+mount is `ENOTSUP` - renaming a file would be renaming a row, and it is not
+clear yet whether that should also be a `memory.write`. A file opened and closed
+with nothing written to it is not a write, so `touch` leaves nothing behind and
+`> file` does not empty an item (`rm` is how one goes away). Two mounts of the
+same principal on one machine share the queue and would each drain it, which is
+safe - the apply is one transaction and the loser sees the row already gone -
+but nothing coordinates them. The mount serves one principal, decided by the
+token at mount time: there is no way to hold two tokens at once, and the
+operator's `?scope=all` deliberately does not reach in. Nothing has been
+measured for throughput; the shape it is built for is an agent writing a note,
+not a build tree.
+
+Not here yet, elsewhere: sync is a command you
 run rather than a loop the node keeps - there is no daemon, no schedule and no
 push notification, so two nodes converge when somebody (or a cron entry) says
 so. `users` and `agents` do not replicate either, so a person who exists on one

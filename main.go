@@ -13,7 +13,11 @@
 // state is read back, and the comments on it and the replies here are one
 // conversation. Phase 6.5 signs what replicates: every row carries the ed25519
 // signature of the node that wrote it, and a merge verifies that before it
-// asks whether the principal handing it over was allowed to.
+// asks whether the principal handing it over was allowed to. Phase 7 is the
+// file layer: `flowy fuse` mounts a principal's memory as files, so an agent
+// writes memory where it already writes files and it lands in the store,
+// indexed and searchable. It is opt-in, and everything above works whole
+// without it.
 package main
 
 import (
@@ -31,7 +35,11 @@ commands:
            FLOWY_FORGE=gh|glab|mock)
   mcp      MCP server for agents: stdio by default, --http :PORT for a remote
            client (env: DATABASE_URL, FLOWY_TOKEN, FLOWY_NODE)
-  fuse     FUSE mount of artifacts (not yet)
+  fuse     mount this principal's memory as files, so an agent writes memory
+           where it already writes files
+           (flowy fuse --mount <dir> [--token <t>]; --reconcile applies what an
+           earlier mount queued and exits; env: DATABASE_URL, FLOWY_TOKEN,
+           FLOWY_NODE)
   sync     replicate with a peer: pull its delta, apply it, push ours
            (flowy sync --peer <url> --token <t>; env: DATABASE_URL, FLOWY_NODE,
            FLOWY_TOKEN)
@@ -43,7 +51,7 @@ commands:
 `
 
 // version is the node's build version.
-const version = "0.7.1-phase6.5"
+const version = "0.7.2-phase7"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -63,7 +71,10 @@ func main() {
 			os.Exit(1)
 		}
 	case "fuse":
-		fmt.Println("fuse: not yet")
+		if err := fuseCmd(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "flowy fuse: %v\n", err)
+			os.Exit(1)
+		}
 	case "sync":
 		if err := syncCmd(os.Args[2:]); err != nil {
 			fmt.Fprintf(os.Stderr, "flowy sync: %v\n", err)

@@ -224,6 +224,59 @@ CREATE TABLE IF NOT EXISTS sync_pending (
     PRIMARY KEY (principal, artifact)
 );
 
+-- Phase 7. What a file written into the FUSE mount says should happen to the
+-- store, written down before it happens.
+--
+-- A close(2) on a file in the mount cannot wait for a signed, indexed,
+-- transactional write and then report a database error to an agent that has
+-- already moved on. So the mount does not do the write in the callback: it
+-- records the intent here - the path, the bytes and their hash - and answers.
+-- A drainer applies the intents afterwards, in one transaction each, and only
+-- then marks the row applied.
+--
+-- That ordering is the whole point. The row is committed before the callback
+-- returns, so a node that dies between the close and the store write comes back
+-- with the intent still pending and replays it: at-least-once delivery, with
+-- the artifact, its event and this row's applied stamp in one transaction, so
+-- a crash in the middle leaves neither half. Replaying is safe because the
+-- drainer compares hash against the last intent it applied for the same
+-- artifact and skips a write the store already has, which is what turns
+-- at-least-once into exactly one write.
+--
+-- Local, like tokens and sync_pending: no hlc, no node signature, never
+-- replicated. It is this node's queue of work on its own store, and a peer has
+-- no business knowing what a file here was called or when it was closed. The
+-- artifact the drainer writes out of it is the fabric row, and that one is
+-- stamped and signed like every other.
+CREATE TABLE IF NOT EXISTS fs_intents (
+    id         text PRIMARY KEY,
+    node       text,
+    -- The mount-relative path the write came in on: <project>/<user>/<type>/<name>.
+    -- Kept whole so a pending queue can be read by a person.
+    path       text,
+    -- The row it is a write of. Minted when the file was new, so a replay after
+    -- a crash writes the same id rather than a second artifact.
+    artifact   text,
+    owner_user text,
+    -- Who the event the drainer writes will name: the agent when the mount was
+    -- opened with an agent's token, the user otherwise. It is on the row so
+    -- that a reconcile after a restart writes the same attribution the close
+    -- would have, without needing the token that is long gone.
+    actor      text,
+    -- NULL is the personal floor, exactly as it is on artifacts.
+    project    text,
+    type       text,
+    visibility text,
+    -- The name the file has in the mount, which is what artifacts.file_path
+    -- holds for a row that came in through here.
+    name       text,
+    -- sha256 of content, hex. The dedup key.
+    hash       text,
+    content    text,
+    applied    timestamptz,
+    created    timestamptz DEFAULT now()
+);
+
 CREATE INDEX IF NOT EXISTS artifacts_project_type_idx ON artifacts (project, type);
 CREATE INDEX IF NOT EXISTS artifacts_owner_idx        ON artifacts (owner_user);
 CREATE INDEX IF NOT EXISTS artifacts_hlc_idx          ON artifacts (hlc);
@@ -289,6 +342,14 @@ CREATE INDEX IF NOT EXISTS grants_artifact_subject_idx ON grants (artifact, subj
 
 CREATE INDEX IF NOT EXISTS tokens_user_idx            ON tokens (user_id);
 CREATE INDEX IF NOT EXISTS tokens_agent_idx           ON tokens (agent_id);
+
+-- The drainer asks two questions and nothing else: what is still pending, in
+-- the order it was written, and what was the last thing applied for this
+-- artifact. One index each. No partial index on applied IS NULL: a predicate
+-- index is a property of the planner rather than of the wire, and the queue is
+-- short enough that the plain one is the same answer.
+CREATE INDEX IF NOT EXISTS fs_intents_applied_idx     ON fs_intents (applied, created);
+CREATE INDEX IF NOT EXISTS fs_intents_artifact_idx    ON fs_intents (artifact, applied);
 
 -- ------------------------------------------------------------------- SEARCH
 -- Everything below this line is Postgres full text and is expected to be

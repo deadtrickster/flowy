@@ -22,22 +22,12 @@ const memoryType = "memory"
 // The scopes, in the order they widen: personal is the floor no grant reaches
 // through, project is everyone in the project and nobody else, shared is the
 // project plus whoever holds a grant or a share.
-var memScopes = []string{"personal", "project", "shared"}
-
-// scopeVisibility is the visibility each scope is stored as.
 //
-// project is not stored as 'project'. That value has always meant "the project,
-// and whoever the project's grants reach", because it is what an artifact
-// written over the API gets by default and a cross-project grant has always
-// reached those - so an item written here at scope=project was readable by
-// exactly the people the scope said it was not, and an agent choosing the
-// narrower of two scopes got the wider one. The store has a value that means
-// what this scope says, and this is what writes it.
-var scopeVisibility = map[string]string{
-	"personal": store.VisibilityPersonal,
-	"project":  store.VisibilityProjectOnly,
-	"shared":   store.VisibilityShared,
-}
+// The list and the visibility each scope is stored as live in the store, beside
+// the visibilities themselves - see store.MemScopes and VisibilityForScope. The
+// FUSE mount takes a scope from a path and a line of front matter rather than
+// from a tool argument, and it has to reach the same three columns these do.
+var memScopes = store.MemScopes
 
 // The kinds. todos looks at the last three.
 var memKinds = []string{"note", "todo", "feature", "handoff"}
@@ -447,26 +437,12 @@ func memQuery(scope, kind string, limit int) (store.ArtifactQuery, error) {
 	return q, nil
 }
 
-// visibilityOf is the visibility a scope is stored as. Anything that is not one
-// of the scopes is passed through: an item written before this distinction
-// existed carries a visibility that is not a scope, and reading it back is not
-// the moment to change what it means.
-func visibilityOf(scope string) string {
-	if v, ok := scopeVisibility[scope]; ok {
-		return v
-	}
-	return scope
-}
+// visibilityOf is the visibility a scope is stored as, and scopeOf names the
+// scope a visibility is, for a message an agent reads. Both are the store's
+// mapping and not a second one.
+func visibilityOf(scope string) string { return store.VisibilityForScope(scope) }
 
-// scopeOf names the scope a visibility is, for a message an agent reads.
-func scopeOf(visibility string) string {
-	for scope, v := range scopeVisibility {
-		if v == visibility {
-			return scope
-		}
-	}
-	return visibility
-}
+func scopeOf(visibility string) string { return store.ScopeForVisibility(visibility) }
 
 // oneOf validates an enumerated argument, substituting fallback when it is
 // absent. A misspelled scope is refused rather than defaulted: defaulting it
