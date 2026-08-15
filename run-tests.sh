@@ -5573,14 +5573,17 @@ check "a saturated clock refuses a reading rather than repeating one (LOW 4)" \
 # ROBUSTNESS. web/dist holds a tracked placeholder so that `//go:embed
 # all:web/dist` in console.go matches something on a tree where the console has
 # never been built - a pattern that matches nothing is a compile error, not an
-# empty directory. The placeholder was zero bytes, which is the natural way to
-# write one and the one way to write one that does not survive: a packing path
-# that skips empty entries drops the file, the directory goes with it, and `go
-# build` in that copy fails on the embed with nothing in the tree to say why.
+# empty directory.
 #
-# So the check is the whole sentence: the commit carries one file under web/dist,
-# it is not empty, and the committed tree builds on its own - no node_modules, no
-# vite output, no network.
+# The check is one sentence: the commit carries one file under web/dist, it is
+# not empty, and the committed tree builds on its own - no node_modules, no vite
+# output, no network. Non-empty is asserted because the placeholder's own bytes
+# have to match what the postbuild step writes back, and because a file that
+# says what it is for is worth more than one that says nothing; it is not, as
+# the last round of this claimed, what makes the file survive being copied out
+# of the sandbox. That was an overclaim. The copy was dropping the file for
+# reasons of its own and the fix for it lives in the harness that does the
+# copying, not here.
 the_committed_tree_builds_with_no_console_build() {
 	local tree="$WORK/committed" keep
 	rm -rf "$tree"
@@ -5593,8 +5596,8 @@ the_committed_tree_builds_with_no_console_build() {
 		return 1
 	fi
 	if [ ! -s "$keep" ]; then
-		printf 'web/dist/.gitkeep is committed empty, and an empty file is what a\n' >&2
-		printf 'packing path drops - the embed then has nothing to match\n' >&2
+		printf 'web/dist/.gitkeep is committed empty; it is meant to carry the line\n' >&2
+		printf 'that says what it is for, and the postbuild step writes that back\n' >&2
 		return 1
 	fi
 	want_eq "files committed under web/dist" "$(git -C "$ROOT" ls-files web/dist | wc -l)" 1 ||
@@ -5821,6 +5824,324 @@ check "a parent that is missing or out of reach is refused on both write paths (
 say "the tree that is handed over is a tree that builds"
 check "the committed tree builds with no console build in it (ROBUSTNESS)" \
 	the_committed_tree_builds_with_no_console_build
+
+# ------------------------------------------- the tenth round of security fixes
+#
+# The re-review certified the core again - the filter is still a WHERE clause
+# with nothing filtered after the fact, the SQL is still parameterised, the
+# clock and the ids still fail loud, the tombstone and TOCTOU holes are still
+# shut - and found one real leak and four pieces of hardening around it.
+#
+# The leak is the event filter's project-wide grant branch: it asked for a live
+# edge into the event's project and nothing else, so an artifact behind the
+# personal or project-only floor was refused row by row and handed over event by
+# event. The rest are places where the node says more than it should, answers
+# less than it was asked for, or lets a boundary move without saying so.
+#
+# They run last, against the node the earlier phases left standing.
+
+# HIGH 1. The event filter's project-wide branch had no floor. The share branch
+# beside it joins artifacts and refuses a personal or project-only one; this one
+# joined nothing, so a principal of pb holding the pb -> pa grant read every
+# event in pa - the chat about a project-only design, the status trail it mints,
+# the bodies and the meta - over /api/events, the inbox, a room read and a
+# replication pull, which is how a federated peer came to hold event bodies it
+# could never have pulled row by row.
+an_event_about_a_floored_artifact_stays_behind_the_floor() {
+	recall
+	local art word chatter open_id trail ids mine id
+	word="grithersnap"
+	chatter="hollowmarch"
+
+	# A project-only note in pa. pb holds the project-wide grant Phase 1 issued,
+	# and the floor is exactly what that grant does not reach.
+	want_status 200 POST "$TOKEN_A" /api/artifacts \
+		"$(jq -nc --arg w "$word" '{type: "note", title: "the design nobody outside pa sees",
+			body: ("the word is " + $w), visibility: "project-only"}')" || return 1
+	art="$(jqv .id)"
+	want_eq "the visibility it landed at" "$(jqv .visibility)" project-only || return 1
+
+	# Row by row, B is refused. That is the control, and it has always held.
+	want_status 404 GET "$TOKEN_B" "/api/artifact/$art" || return 1
+
+	# Three events name it: a message about it, the status trail the node mints
+	# itself, and a message naming A's personal item, which is the other floor.
+	want_status 200 POST "$TOKEN_A" /api/events \
+		"$(jq -nc --arg a "$art" --arg w "$word" '{type: "chat", room: "padesign", artifact: $a,
+			body: ("about the " + $w + " design")}')" || return 1
+	want_status 200 POST "$TOKEN_A" "/api/artifact/$art/status" '{"status": "triaged"}' || return 1
+	want_status 200 POST "$TOKEN_A" /api/events \
+		"$(jq -nc --arg a "$MEM_PERSONAL" --arg w "$word" '{type: "chat", room: "padesign",
+			artifact: $a, body: ("and the " + $w + " note I keep to myself")}')" || return 1
+
+	# And one that names no artifact at all: project chatter, which is what the
+	# grant is for and which must still cross it.
+	want_status 200 POST "$TOKEN_A" /api/events \
+		"$(jq -nc --arg w "$chatter" '{type: "chat", room: "padesign",
+			body: ("standup: " + $w)}')" || return 1
+	open_id="$(jqv .id)"
+
+	trail="$(scalar "SELECT count(*) FROM events WHERE artifact = '$art'")" || return 1
+	want_eq "events in the log naming the project-only note" "$trail" 2 || return 1
+	# Every event in the log that names either floored artifact - the two above
+	# and, for the personal item, the memory.write entries earlier phases left -
+	# and, separately, the ones this check wrote into its own room, which is what
+	# pa itself has to still be able to read.
+	ids="$(scalar "SELECT string_agg(id, ' ') FROM events
+	                WHERE artifact IN ('$art', '$MEM_PERSONAL')")" || return 1
+	mine="$(scalar "SELECT string_agg(id, ' ') FROM events
+	                 WHERE artifact IN ('$art', '$MEM_PERSONAL') AND room = 'padesign'")" || return 1
+
+	# What B gets: the log, the inbox, the room and a replication pull. None of
+	# them carries an event about either floored artifact, by id or by word.
+	local path
+	for path in "/api/events?limit=1000" "/api/inbox?limit=1000" \
+		"/api/chat/padesign?limit=1000" "/api/sync/pull?since=0&limit=5000"; do
+		api GET "$TOKEN_B" "$path" || return 1
+		want_eq "status of $path for B" "$API_STATUS" 200 || return 1
+		for id in $ids; do
+			if printf '%s' "$API_BODY" | grep -qF "$id"; then
+				printf 'B read %s over %s: an event about an artifact B is refused\n' \
+					"$id" "$path" >&2
+				return 1
+			fi
+		done
+		if printf '%s' "$API_BODY" | grep -qF "$word"; then
+			printf 'B read the body of a floored event over %s\n' "$path" >&2
+			return 1
+		fi
+	done
+
+	# The widening the grant is for is untouched: the event that names no
+	# artifact still crosses, over the same two surfaces.
+	api GET "$TOKEN_B" "/api/events?limit=1000" || return 1
+	want_eq "the project event B may read" \
+		"$(printf '%s' "$API_BODY" | jq "[.events[] | select(.id == \"$open_id\")] | length")" 1 ||
+		return 1
+	api GET "$TOKEN_B" "/api/sync/pull?since=0&limit=5000" || return 1
+	want_eq "and the same event on a pull" \
+		"$(printf '%s' "$API_BODY" | jq "[.events[] | select(.id == \"$open_id\")] | length")" 1 ||
+		return 1
+
+	# And pa reads its own log as it always did - the floor narrows the grant,
+	# not the project the events are in.
+	api GET "$TOKEN_A" "/api/events?room=padesign&limit=1000" || return 1
+	for id in $mine $open_id; do
+		want_eq "pa's own read of $id" \
+			"$(printf '%s' "$API_BODY" | jq "[.events[] | select(.id == \"$id\")] | length")" 1 ||
+			return 1
+	done
+	printf 'the %s events about %s stay in pa; the one that names no artifact crosses\n' \
+		"$trail" "$art"
+}
+
+# MED 2. Every 500 carried err.Error() into the body: the store's wrapped chain
+# ending in a lib/pq diagnostic - table names, column names, constraint names,
+# a fragment of the statement - handed to any principal holding any token, a
+# minimal federated peer included. The operator needs all of it and gets it in
+# the log; the caller gets a stable string and a reference to quote.
+#
+# The failure is forced with a CHECK constraint added and dropped around the one
+# request, which is the least this can disturb: no trigger, no procedure, no
+# schema of ours changed, and the statement that fails is a perfectly ordinary
+# INSERT whose error is exactly the kind that used to go out.
+a_failed_write_answers_internal_error() {
+	recall
+	local title status body ref forbidden
+	title="boom-$$-$(date +%s)"
+
+	psql_do "ALTER TABLE artifacts ADD CONSTRAINT flowy_gate_boom CHECK (title <> '$title')" ||
+		return 1
+	api POST "$TOKEN_A" /api/artifacts \
+		"$(jq -nc --arg t "$title" '{type: "note", title: $t, body: "this write cannot land"}')"
+	status="$API_STATUS"
+	body="$API_BODY"
+	psql_do "ALTER TABLE artifacts DROP CONSTRAINT flowy_gate_boom" || return 1
+
+	want_eq "status of a write the store could not do" "$status" 500 || return 1
+	want_eq "what the body says" "$(printf '%s' "$body" | jq -r .error)" "internal error" || return 1
+
+	# Nothing about the database, and nothing about the statement.
+	for forbidden in pq constraint flowy_gate_boom "store:" relation column INSERT; do
+		if printf '%s' "$body" | grep -qF "$forbidden"; then
+			printf 'the 500 body said %q:\n%s\n' "$forbidden" "$body" >&2
+			return 1
+		fi
+	done
+
+	# The operator's half: a reference in the body, and the whole chain under it
+	# in the log.
+	ref="$(printf '%s' "$body" | jq -r .ref)"
+	if [ -z "$ref" ] || [ "$ref" = null ]; then
+		printf 'the 500 carried no reference to grep for:\n%s\n' "$body" >&2
+		return 1
+	fi
+	if ! grep -q "ref=$ref" "$SERVE_LOG"; then
+		printf 'nothing in the serve log carries ref=%s\n' "$ref" >&2
+		return 1
+	fi
+	if ! grep "ref=$ref" "$SERVE_LOG" | grep -q flowy_gate_boom; then
+		printf 'the log line for ref=%s does not carry the error it stands for:\n%s\n' \
+			"$ref" "$(grep "ref=$ref" "$SERVE_LOG")" >&2
+		return 1
+	fi
+
+	# And the refused write wrote nothing.
+	want_eq "rows the failed write left behind" \
+		"$(scalar "SELECT count(*) FROM artifacts WHERE title = '$title'")" 0 || return 1
+	printf 'a failed write answers "internal error" with ref=%s, and the log has the rest\n' "$ref"
+}
+
+# MED 3. limit() returned the default for an absent limit and for one over the
+# cap, so ?limit=5000 got 200 rows with nothing said about it - and a short page
+# means "that is all of them" everywhere else here, so a caller reading one
+# stopped at 200 believing it had the lot. Over the cap is now the cap.
+#
+# The rows are inserted and deleted here rather than written over the API: what
+# is being tested is the paging arithmetic, and 1100 of anything is not
+# something to leave in a database the checks after this one read.
+a_limit_over_the_cap_is_the_cap() {
+	recall
+	local artifacts events defaulted asked
+	psql_do "INSERT INTO artifacts (id, type, owner_user, title, body, visibility, hlc, node, tombstone)
+	         SELECT 'limitcap-ar-' || lpad(g::text, 5, '0'), 'note', '$USER_A',
+	                'limit cap row ' || g, 'paging', 'personal', g, 'gate', false
+	           FROM generate_series(1, 1100) g" || return 1
+	psql_do "INSERT INTO events (id, type, project, room, thread, parents, actor, seq_hlc, node, body)
+	         SELECT 'limitcap-ev-' || lpad(g::text, 5, '0'), 'chat', 'pa', 'limitcap',
+	                'limitcap-ev-' || lpad(g::text, 5, '0'), '{}', '$USER_A', g, 'gate', 'paging'
+	           FROM generate_series(1, 1100) g" || return 1
+
+	# Asked for five thousand: the cap, not the default.
+	api GET "$TOKEN_A" "/api/artifacts?limit=5000" || return 1
+	artifacts="$(hits)"
+	api GET "$TOKEN_A" "/api/events?room=limitcap&limit=5000" || return 1
+	events="$(printf '%s' "$API_BODY" | jq '.events | length')"
+
+	# Asked for nothing, and asked for something in between: unchanged.
+	api GET "$TOKEN_A" /api/artifacts || return 1
+	defaulted="$(hits)"
+	api GET "$TOKEN_A" "/api/artifacts?limit=250" || return 1
+	asked="$(hits)"
+
+	psql_do "DELETE FROM artifacts WHERE id LIKE 'limitcap-ar-%'" || return 1
+	psql_do "DELETE FROM events WHERE id LIKE 'limitcap-ev-%'" || return 1
+
+	want_eq "artifacts for limit=5000" "$artifacts" 1000 || return 1
+	want_eq "events for limit=5000" "$events" 1000 || return 1
+	want_eq "artifacts for no limit at all" "$defaulted" 200 || return 1
+	want_eq "artifacts for limit=250" "$asked" 250 || return 1
+	printf 'over the cap is the cap (1000), absent is the default (200), in between is asked for\n'
+}
+
+# LOW 4. decodeJSON decoded one value and never asked whether the reader was
+# exhausted, so everything after the first JSON value was dropped without a
+# word. DisallowUnknownFields - the whole strict-input guarantee - only ever
+# looked inside the value it decoded, and silently dropped input is how a row
+# gets written at a visibility nobody asked for.
+a_body_with_a_second_json_value_is_refused() {
+	recall
+	local before after
+
+	before="$(scalar "SELECT count(*) FROM artifacts")" || return 1
+
+	want_status 400 POST "$TOKEN_A" /api/artifacts \
+		'{"type":"note","title":"the first value"}{"type":"note","title":"the second","visibility":"personal"}' ||
+		return 1
+	want_eq "what it says" "$(jqv .error | cut -d: -f1)" "bad request body" || return 1
+	# Not only objects: anything at all after the first value.
+	want_status 400 POST "$TOKEN_A" /api/artifacts '{"type":"note","title":"and a stray number"} 7' ||
+		return 1
+	want_status 400 POST "$TOKEN_A" /api/artifacts '{"type":"note","title":"and a stray word"} nope' ||
+		return 1
+	# The same door on the other write paths.
+	want_status 400 POST "$TOKEN_A" /api/chat/general/say '{"body":"one"}{"body":"two"}' || return 1
+	want_status 400 POST "$TOKEN_A" /api/events \
+		'{"type":"chat","room":"general","body":"one"}{"type":"chat","room":"general","body":"two"}' ||
+		return 1
+
+	after="$(scalar "SELECT count(*) FROM artifacts")" || return 1
+	want_eq "artifacts the refusals wrote" "$((after - before))" 0 || return 1
+	want_eq "events the refusals wrote" \
+		"$(scalar "SELECT count(*) FROM events WHERE body IN ('one', 'two')")" 0 || return 1
+
+	# One value, with the whitespace a client is entitled to send around it, is
+	# still a body.
+	want_status 200 POST "$TOKEN_A" /api/artifacts '
+		{"type":"note","title":"just the one value"}
+	' || return 1
+	want_eq "the title that went through" "$(jqv .title)" "just the one value" || return 1
+	printf 'a second JSON value is a 400 on every write path, and one value still goes through\n'
+}
+
+# MED 5. mem_write's update path filled in a project whenever the update named a
+# non-personal scope, so mem_write {id, scope: "shared"} on a personal item
+# moved it into the caller's project as shared - owner-initiated, so not an
+# escalation, but a floor crossed with nothing said about it, and the refusal
+# POST /api/artifacts gives for the same move was right there to copy.
+mem_write_will_not_promote_a_personal_item() {
+	recall
+	local id scope
+	want_tool mem_write "$TOKEN_A" '{
+		"title": "the one that stays mine",
+		"body": "snickerdoodlethrum is the word",
+		"scope": "personal"
+	}' || return 1
+	id="$(tv .item.id)"
+	want_eq "the visibility it landed at" "$(tv .item.visibility)" personal || return 1
+	want_eq "and its project" "$(tv .item.project)" null || return 1
+
+	for scope in shared project; do
+		want_tool_fails mem_write "$TOKEN_A" \
+			"$(jq -nc --arg i "$id" --arg s "$scope" '{id: $i, scope: $s}')" \
+			"create it there instead" || return 1
+	done
+
+	# It is where it was, and it is still nobody else's: B holds the grant into
+	# pa and reads neither the item nor the word.
+	want_tool mem_read "$TOKEN_A" "{\"id\": \"$id\"}" || return 1
+	want_eq "the visibility afterwards" "$(tv .item.visibility)" personal || return 1
+	want_eq "the project afterwards" "$(tv .item.project)" null || return 1
+	want_eq "rows of it that ever got a project" \
+		"$(scalar "SELECT count(*) FROM artifacts WHERE id = '$id' AND project IS NOT NULL")" 0 ||
+		return 1
+	want_tool_fails mem_read "$TOKEN_B_AGENT" "{\"id\": \"$id\"}" "no such memory item" || return 1
+	want_tool mem_search "$TOKEN_B_AGENT" '{"q": "snickerdoodlethrum"}' || return 1
+	want_eq "B's hits for it" "$(tv .count)" 0 || return 1
+
+	# An update that leaves the scope alone still works, and so does writing a
+	# new item at a scope - the refusal is about moving a floor, not about
+	# updates or about scopes.
+	want_tool mem_write "$TOKEN_A" \
+		"$(jq -nc --arg i "$id" '{id: $i, title: "edited, and still mine"}')" || return 1
+	want_eq "the title after an ordinary edit" "$(tv .item.title)" "edited, and still mine" || return 1
+	want_eq "the project after an ordinary edit" "$(tv .item.project)" null || return 1
+	want_tool mem_write "$TOKEN_A" '{"title": "a new one, written shared", "scope": "shared"}' || return 1
+	want_eq "where a new shared item lands" "$(tv .item.project)" pa || return 1
+	printf 'memory %s cannot be promoted out of the personal floor by an edit\n' "$id"
+}
+
+say "an event is no more readable than the artifact it names"
+check "a project-wide grant does not reach events about a floored artifact (HIGH 1)" \
+	an_event_about_a_floored_artifact_stays_behind_the_floor
+check "the event filter and the artifact filter agree on the same rows (HIGH 1)" \
+	go test -count=1 -run TestEventFilterInheritsTheArtifactFloor ./internal/store
+
+say "a 500 says that it failed and nothing else"
+check "a write the store could not do answers an opaque body (MED 2)" \
+	a_failed_write_answers_internal_error
+
+say "a page that was asked for is the page that comes back"
+check "a limit over the cap is the cap, not the default (MED 3)" \
+	a_limit_over_the_cap_is_the_cap
+
+say "a request body is one JSON value"
+check "anything after the first value is a 400 on every write path (LOW 4)" \
+	a_body_with_a_second_json_value_is_refused
+
+say "a memory item does not leave the personal floor by being edited"
+check "mem_write cannot promote a personal item into a project (MED 5)" \
+	mem_write_will_not_promote_a_personal_item
 
 # ------------------------------------------------------------------- verdict
 

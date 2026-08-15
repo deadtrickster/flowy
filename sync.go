@@ -86,7 +86,7 @@ func (s *server) handleSyncPull(w http.ResponseWriter, r *http.Request) {
 		Limit: intParam(q.Get("limit")),
 	})
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
+		serverError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, pullResponse{SyncSet: set, Node: s.node})
@@ -155,7 +155,7 @@ func (s *server) handleSyncPush(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
+		serverError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, pushResponse{
@@ -182,7 +182,7 @@ func (s *server) handleListPeers(w http.ResponseWriter, r *http.Request) {
 	}
 	peers, err := s.db.ListPeers(r.Context())
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
+		serverError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"node": s.node, "peers": peers})

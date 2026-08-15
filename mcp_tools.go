@@ -279,8 +279,21 @@ func memWrite(ctx context.Context, m *mcpServer, p *store.Principal, raw json.Ra
 				scopeOf(visibility))
 		}
 		if home == nil || *home == "" {
-			// A create, or an update of an item that had no project until now:
-			// a personal one being given a scope. Either way it lands here.
+			// An item with no project is its owner's and nobody else's - the
+			// read filter's first branch, whatever the visibility column says.
+			// Giving it one hands the row to a project, and an update does not
+			// do that: naming a scope on an edit used to be enough, so
+			// {id, scope: "shared"} on a personal item moved it into the
+			// caller's project as shared with nothing said about it - the same
+			// silent widening POST /api/artifacts refuses in the same words.
+			// An update that stays personal is fine, and a new item written at
+			// a scope is what the scope is for.
+			if a.ID != "" {
+				return nil, fmt.Errorf("memory item %s has no project and is its owner's alone; "+
+					"an update cannot move it into %s as %s - create it there instead",
+					a.ID, p.Project, scopeOf(visibility))
+			}
+			// A create: it lands where the token writes.
 			here := p.Project
 			home = &here
 		}

@@ -2337,10 +2337,10 @@ authenticity is checked before its authority and keys do not rotate, and both
 sync doors hold the push, the pull, the minted types, the ownership and the
 project floor. What came out around it is four hardening defects - **four places
 where something was accepted, stored or started without being held to the rule
-the rest of the node keeps** - and one packaging defect that is not a security
-question at all and breaks the build for whoever receives the tree. Same rule as
-the rounds before: one check in `run-tests.sh` per defect, each verified to fail
-on the source it fixes.
+the rest of the node keeps** - and one note about the `go:embed` placeholder,
+which is not a security question at all. Same rule as the rounds before: one
+check in `run-tests.sh` per defect, each verified to fail on the source it
+fixes.
 
 Nothing here changes how a node is configured.
 
@@ -2393,18 +2393,91 @@ those edges as structure. Both write paths now check the whole list in one
 filtered query, and a parent that is missing and a parent that is out of reach
 get the same answer, which is the answer a read of it would give.
 
-**ROBUSTNESS - the placeholder that keeps `go:embed` satisfied was zero bytes.**
-`console.go` embeds `web/dist` so that `flowy serve` is one file, and a tree
-where the console has never been built needs something in that directory or the
-pattern matches nothing and the build fails. `web/dist/.gitkeep` is that
-something, and being empty is the natural way to write a placeholder and the one
-way to write one that does not survive: a packing path that skips zero-length
-entries drops the file, the directory goes with it, and `go build` in that copy
-dies on the embed with nothing in the tree to say why. It has a line of text in
-it now, `npm run build`'s postbuild step writes the same bytes back after vite
-empties the directory, and the gate exports the commit and builds it - no
-`node_modules`, no vite output, no network - so the tree that is handed over is
-a tree that is known to build.
+**ROBUSTNESS - the `go:embed` placeholder, and a correction to what was claimed
+for it.** `console.go` embeds `web/dist` so that `flowy serve` is one file, and a
+tree where the console has never been built needs something in that directory or
+the pattern matches nothing and the build fails. `web/dist/.gitkeep` is that
+something. It carries a line of text saying what it is for, `npm run build`'s
+postbuild step writes the same bytes back after vite empties the directory, and
+the gate exports the commit and builds it - no `node_modules`, no vite output, no
+network - so the tree that is handed over is a tree that is known to build.
+
+The correction: this round was written up as having fixed the file being lost
+when the tree is copied out of the sandbox, by making the placeholder non-empty.
+It did not. The copy was dropping the file for reasons of its own, and the fix
+for that landed in the harness that does the copying - `firecode`, which now
+feeds `git ls-files` to `rsync --files-from` - not in this repo. Non-empty
+placeholder and non-empty check both stay, because a placeholder that says what
+it is for is worth having and the postbuild step has to write back exactly what
+is committed. Neither of them delivers anything.
+
+## The tenth round of security fixes
+
+The re-review certified the core again - the filter is a `WHERE` clause with
+nothing filtered after the fact, the SQL is parameterised throughout, the clock
+and the ids fail loud, the tombstone and TOCTOU holes are shut, and nothing
+renders unescaped - and found one real leak with four pieces of hardening around
+it. Same rule as the rounds before: one check in `run-tests.sh` per defect, each
+verified to fail on the source it fixes.
+
+Nothing here changes how a node is configured.
+
+**HIGH - the event filter's project-wide grant branch had no floor.**
+`ArtifactFilterSQL` floors `personal` and `project-only`: no grant reaches
+through either. `EventFilterSQL`'s per-artifact share branch carries the same
+floor - it joins `artifacts` and refuses one behind it. The branch beside it did
+not. A live project-wide edge into the event's project was the whole test, so a
+principal of `pb` holding the `pb -> pa` grant was correctly refused
+`GET /api/artifact/{id}` for pa's personal and project-only artifacts and then
+read **every event about them**: the chat threads, the status trails, the forge
+entries, bodies and meta, over `GET /api/events`, `GET /api/inbox`, a room read
+and `GET /api/sync/pull` - which is a federated peer holding, for good, event
+bodies it could never have pulled row by row. That is the filter's own
+documented invariant broken: an artifact behind the floor is meant to be no more
+readable event by event than it is row by row. The branch now asks the same
+question the share branch asks - an event that **names** an artifact inherits
+that artifact's floor - while an event that names none is project chatter and
+still crosses, which is what the grant is for.
+
+**MEDIUM - every `500` echoed the raw error.** `writeJSON(w, 500,
+errorBody(err.Error()))` was the pattern everywhere, and what it wrote out was
+the store's wrapped chain - `store: create artifact: pq: new row for relation
+"artifacts" violates check constraint "..."` - table names, column names,
+constraint names and statement fragments, to any principal holding any token,
+including a federated peer with the most minimal credential here. The forge
+handlers could add a child process's stderr on top. A `500` now says `internal
+error` and a short `ref`; the whole chain goes to the log under the same `ref`,
+which is what the operator greps. `ErrNotFound` and `ErrTaken` are unchanged -
+they were never this path - and one case still says something specific: an issue
+filed on a tracker before the write here failed names its number, because that
+number is the only way anyone finds it again.
+
+**MEDIUM - a limit over the cap silently became the default.** `limit()`
+returned 200 both for an absent limit and for one over 1000, so `?limit=5000`
+got 200 rows with nothing said about it - and a short page means "that was all
+of them" everywhere else here, so a caller reading one stopped at 200 believing
+it had everything. Over the cap is now the cap.
+
+**LOW - a body could carry a second JSON value.** The decoder read one value and
+never asked whether the reader was exhausted, so
+`{"type":"bug"}{"type":"x","visibility":"personal"}` decoded as the first object
+and dropped the rest on the floor. `DisallowUnknownFields` - the whole
+strict-input guarantee, and the reason a misspelled `visibilty` is an error
+rather than a default - only ever looked inside the value it decoded. Anything
+after the first value is now the same `400` every other malformed body gets.
+
+**MEDIUM - `mem_write` could promote a personal item into a project.**
+`POST /api/artifacts` refuses to give a project-less row a project on update -
+"has no project and is its owner's alone; an update cannot move it into ... -
+create it there instead". `mem_write`'s update path had no such refusal: the
+home came back `nil` for a personal item and was filled in with the token's
+project whenever the update named a non-personal scope, so `mem_write {id,
+scope: "shared"}` moved a personal item into the caller's project as shared with
+nothing said about it. Owner-initiated, so not an escalation, but a floor
+crossed silently - the exact "quietly written at the wrong visibility" mistake
+the rest of this model is built to refuse. It is refused now, in the same words
+the API uses. An update that leaves the scope alone is untouched, and a new item
+written at a scope is what a scope is for.
 
 ## Deployment
 
@@ -2428,7 +2501,7 @@ query. Nothing above it depends on anything below it.
 
 ## Phase 6.5 status
 
-Green. `./run-tests.sh` reports `passed: 289 failed: 0` with Go 1.22, Node
+Green. `./run-tests.sh` reports `passed: 295 failed: 0` with Go 1.22, Node
 22.14 and Postgres 16 - the 200 checks Phase 6 ended with, all still green,
 plus the 12 the first security slice added, the 12 the second one did, the 8
 from the third, the 8 from the fourth, the 10 from the fifth, the 6 from the
@@ -2445,8 +2518,12 @@ the 4 the eighth round adds - the pulled share, the minted task, the two blind
 updates and the saturated clock - and the 7 the ninth adds: the grant cap at
 both doors, the memory write that cannot log itself, `flowy mcp` under a real
 SIGTERM and its loop under a cancelled context, parents on both write paths,
-and the committed tree built from a `git archive` with no console build in it.
-Each is verified to fail on the source it fixes. Five of the older checks
+and the committed tree built from a `git archive` with no console build in it,
+and the 6 the tenth adds: the event floor over the wire and again as a Go test
+holding the two filters together, the opaque `500`, the limit that clamps to the
+cap, the second JSON value refused on every write path, and the memory item that
+cannot be promoted out of the personal floor by an edit. Each is verified to
+fail on the source it fixes. Five of the older checks
 changed with the fixes rather than around them: a reply to a message its
 speaker cannot read is refused outright now rather than quietly opening a
 thread of its own, which is the same rule one step earlier, a deleted artifact

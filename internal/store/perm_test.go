@@ -140,6 +140,142 @@ func TestCanReadMatchesSQL(t *testing.T) {
 	}
 }
 
+// TestEventFilterInheritsTheArtifactFloor is TestCanReadMatchesSQL's other
+// half: the two read surfaces over the same artifact have to agree.
+//
+// A project-wide grant into px let a principal of py read every event in px,
+// with no join to artifacts and no visibility test at all - so the artifact
+// behind the personal or project-only floor was refused row by row and handed
+// over event by event: the chat about it, its status trail, the forge entries
+// naming it, bodies and meta included, over /api/events, the inbox, a room read
+// and a replication pull. The share branch has carried the floor since it was
+// written; this is the same floor on the branch beside it.
+//
+// The widening the grant is actually for still works: an event that names no
+// artifact is project chatter, and it stays readable across the edge.
+func TestEventFilterInheritsTheArtifactFloor(t *testing.T) {
+	ctx, db := open(t)
+
+	px := "floorpx-" + ulid.NewString()
+	py := "floorpy-" + ulid.NewString()
+
+	alice := &User{Handle: "ev-alice-" + ulid.NewString()}
+	bob := &User{Handle: "ev-bob-" + ulid.NewString()}
+	for _, u := range []*User{alice, bob} {
+		if err := db.InsertUser(ctx, u); err != nil {
+			t.Fatalf("insert user: %v", err)
+		}
+	}
+
+	mk := func(project *string, visibility string) *Artifact {
+		a := &Artifact{
+			Type: "note", Project: project, OwnerUser: alice.ID,
+			Title: "t", Body: "b", Visibility: visibility,
+		}
+		if err := db.UpsertArtifact(ctx, a); err != nil {
+			t.Fatalf("upsert artifact: %v", err)
+		}
+		return a
+	}
+	openNote := mk(&px, VisibilityProject)
+	onlyPX := mk(&px, VisibilityProjectOnly)
+	personal := mk(nil, VisibilityPersonal)
+
+	// One live project-wide edge: py may read px. Nothing else.
+	if err := db.InsertGrant(ctx, &Grant{FromProject: py, ToProject: px, GrantedBy: alice.ID}); err != nil {
+		t.Fatalf("insert grant: %v", err)
+	}
+
+	mkEvent := func(artifact, body string) *Event {
+		home := px
+		e := &Event{
+			Type: "chat", Project: &home, Room: px + "/general",
+			Actor: alice.ID, Artifact: artifact, Body: body,
+		}
+		if err := db.AppendEvent(ctx, e); err != nil {
+			t.Fatalf("append event: %v", err)
+		}
+		return e
+	}
+	events := map[string]*Event{
+		"about the open note":      mkEvent(openNote.ID, "readable, and about a readable artifact"),
+		"about the px-only note":   mkEvent(onlyPX.ID, "the design nobody outside px may see"),
+		"about the personal note":  mkEvent(personal.ID, "what alice keeps to herself"),
+		"about nothing in the row": mkEvent("", "project chatter, which the grant is for"),
+	}
+	artifactOf := map[string]*Artifact{
+		"about the open note":     openNote,
+		"about the px-only note":  onlyPX,
+		"about the personal note": personal,
+	}
+
+	reader := &Principal{UserID: bob.ID, Project: py}
+	want := map[string]bool{
+		"about the open note":      true,
+		"about the px-only note":   false,
+		"about the personal note":  false,
+		"about nothing in the row": true,
+	}
+
+	for name, e := range events {
+		_, err := db.ReadEvent(ctx, reader, e.ID)
+		switch {
+		case err == nil && !want[name]:
+			t.Errorf("the event filter let a py principal read the event %s", name)
+		case errors.Is(err, ErrNotFound) && want[name]:
+			t.Errorf("the event filter hid the event %s from a py principal", name)
+		case err != nil && !errors.Is(err, ErrNotFound):
+			t.Fatalf("read event %s: %v", name, err)
+		}
+
+		// And where the event names an artifact, the two surfaces agree: the
+		// event is readable exactly when the row is.
+		if art, ok := artifactOf[name]; ok {
+			_, rowErr := db.ReadArtifact(ctx, reader, art.ID, false)
+			rowOK := rowErr == nil
+			if rowErr != nil && !errors.Is(rowErr, ErrNotFound) {
+				t.Fatalf("read artifact for %s: %v", name, rowErr)
+			}
+			if rowOK != want[name] {
+				t.Errorf("the row for %s reads %v and the event reads %v: the two disagree",
+					name, rowOK, want[name])
+			}
+		}
+	}
+
+	// The list path is the same filter, and it is where a leak actually goes
+	// out: /api/events, the inbox, a room read.
+	listed, err := db.ListEvents(ctx, reader, EventQuery{Room: px + "/general"})
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	got := map[string]bool{}
+	for _, e := range listed {
+		got[e.ID] = true
+	}
+	for name, e := range events {
+		if got[e.ID] != want[name] {
+			t.Errorf("the room read %s the event %s, want %v", listedAs(got[e.ID]), name, want[name])
+		}
+	}
+
+	// Nothing narrowed for the project the events are in: alice reads all four.
+	owner := &Principal{UserID: alice.ID, Project: px}
+	for name, e := range events {
+		if _, err := db.ReadEvent(ctx, owner, e.ID); err != nil {
+			t.Errorf("px could not read its own event %s: %v", name, err)
+		}
+	}
+}
+
+// listedAs is TestEventFilterInheritsTheArtifactFloor's failure wording.
+func listedAs(in bool) string {
+	if in {
+		return "returned"
+	}
+	return "omitted"
+}
+
 // TestScopeAllIsOperatorOnly pins the escape hatch shut for everybody else.
 func TestScopeAllIsOperatorOnly(t *testing.T) {
 	ctx, db := open(t)

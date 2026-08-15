@@ -225,6 +225,18 @@ func ArtifactFilterSQL(p *Principal, alias string, a *args, scopeAll bool) strin
 // behind the personal or project-only floor is no more readable event by event
 // than it is row by row.
 //
+// The project-wide grant carries the same floor, and for the same reason. It
+// did not: the branch asked only that a live edge run from the reader's project
+// into the event's, and then handed over every event in that project - bodies,
+// meta and all - including the events about artifacts the reader is refused row
+// by row. A chat thread about a project-only design, the status trail of a
+// personal note, a forge entry naming either: the grant reached all of it, over
+// /api/events, the inbox, a room read and a replication pull, where a federated
+// peer then held it for good. So an event that names an artifact inherits that
+// artifact's floor - it is readable across the edge only if the artifact is -
+// and an event that names none is project chatter and stays reachable, which is
+// what the grant is for.
+//
 // The last half is the assignment thread. A handoff crosses a project
 // boundary by definition - the whole point of it is that somebody in another
 // project now has the work - so a thread that a task names is readable by the
@@ -254,7 +266,13 @@ func EventFilterSQL(p *Principal, alias string, a *args, scopeAll bool) string {
 		                      WHERE coalesce(g.tombstone, false) = false
 		                        AND g.artifact IS NULL
 		                        AND g.from_project = {project} AND {project} <> ''
-		                        AND g.to_project = {a}.project)
+		                        AND g.to_project = {a}.project
+		                        AND (coalesce({a}.artifact, '') = ''
+		                          OR EXISTS (SELECT 1 FROM artifacts par
+		                                      WHERE par.id = {a}.artifact
+		                                        AND par.project IS NOT NULL
+		                                        AND coalesce(par.visibility, '') <> 'personal'
+		                                        AND coalesce(par.visibility, '') <> 'project-only')))
 		          OR EXISTS (SELECT 1 FROM grants g JOIN artifacts sar ON sar.id = g.artifact
 		                      WHERE coalesce(g.tombstone, false) = false
 		                        AND g.artifact = {a}.artifact

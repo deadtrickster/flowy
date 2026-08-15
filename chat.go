@@ -90,7 +90,7 @@ func (s *server) mayWriteThread(w http.ResponseWriter, r *http.Request, thread s
 	p := principalOf(r)
 	hidden, err := s.db.ThreadHidden(r.Context(), p, thread)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
+		serverError(w, r, err)
 		return false
 	}
 	if hidden {
@@ -116,7 +116,7 @@ func (s *server) mayWriteThread(w http.ResponseWriter, r *http.Request, thread s
 func (s *server) mayNameParents(w http.ResponseWriter, r *http.Request, parents []string) bool {
 	unreadable, err := s.db.UnreadableParents(r.Context(), principalOf(r), parents)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
+		serverError(w, r, err)
 		return false
 	}
 	if len(unreadable) > 0 {
@@ -176,7 +176,7 @@ func (s *server) handleChatSay(w http.ResponseWriter, r *http.Request) {
 			if err == nil && parent.Thread != "" {
 				hidden, err := s.db.ThreadHidden(r.Context(), p, parent.Thread)
 				if err != nil {
-					writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
+					serverError(w, r, err)
 					return
 				}
 				if !hidden {
@@ -194,7 +194,7 @@ func (s *server) handleChatSay(w http.ResponseWriter, r *http.Request) {
 	actor, kind := chatActor(p)
 	meta, err := json.Marshal(map[string]string{"actor_kind": kind, "actor_user": p.UserID})
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
+		serverError(w, r, err)
 		return
 	}
 
@@ -218,7 +218,7 @@ func (s *server) handleChatSay(w http.ResponseWriter, r *http.Request) {
 		Meta:    json.RawMessage(meta),
 	}
 	if err := s.db.AppendEvent(r.Context(), e); err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
+		serverError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, e)
@@ -245,7 +245,7 @@ func (s *server) handleChatRead(w http.ResponseWriter, r *http.Request) {
 
 	list, err := s.readRoom(r, room, q.Get("thread"), since, intParam(q.Get("limit")))
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
+		serverError(w, r, err)
 		return
 	}
 	writeChatEvents(w, room, since, list)
@@ -275,7 +275,7 @@ func (s *server) handleChatWait(w http.ResponseWriter, r *http.Request) {
 	for {
 		list, err := s.readRoom(r, room, thread, cursor, intParam(q.Get("limit")))
 		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
+			serverError(w, r, err)
 			return
 		}
 		if len(list) > 0 || !time.Now().Before(deadline) {
@@ -317,7 +317,7 @@ func (s *server) handleInbox(w http.ResponseWriter, r *http.Request) {
 		Limit:     intParam(q.Get("limit")),
 	})
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
+		serverError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{

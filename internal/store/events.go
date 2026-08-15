@@ -151,12 +151,7 @@ type EventQuery struct {
 	Limit     int
 }
 
-func (q EventQuery) limit() int {
-	if q.Limit > 0 && q.Limit <= 1000 {
-		return q.Limit
-	}
-	return defaultLimit
-}
+func (q EventQuery) limit() int { return clampLimit(q.Limit) }
 
 // ListEvents returns the events p may read, in log order. The log is
 // append-only, so this is the only read it needs: ordering by seq_hlc then id

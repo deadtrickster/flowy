@@ -35,7 +35,7 @@ func (s *server) authenticate(next http.Handler) http.Handler {
 			return
 		}
 		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
+			serverError(w, r, err)
 			return
 		}
 		if p.UserID == "" && p.AgentID == "" {

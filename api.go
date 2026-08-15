@@ -46,10 +46,25 @@ func decodeJSON(r *http.Request, into any) error {
 
 // decodeJSONLimit is decodeJSON with a different cap, for the one endpoint that
 // takes a page of rows rather than a single one.
+//
+// The body is one JSON value and nothing else. A decoder stops at the end of
+// the first value and says nothing about what follows, so
+// `{"type":"bug"}{"visibility":"personal"}` decoded as the first object and
+// dropped the second on the floor - and DisallowUnknownFields, which is the
+// whole strict-input guarantee, only ever looks inside the value it decoded.
+// Silently dropped input is how a row gets written at a visibility nobody
+// asked for, so anything after the first value is the same 400 a malformed
+// body gets.
 func decodeJSONLimit(r *http.Request, into any, limit int64) error {
 	dec := json.NewDecoder(io.LimitReader(r.Body, limit))
 	dec.DisallowUnknownFields()
-	return dec.Decode(into)
+	if err := dec.Decode(into); err != nil {
+		return err
+	}
+	if dec.More() {
+		return errors.New("unexpected data after the JSON value")
+	}
+	return nil
 }
 
 // handleCreateArtifact creates an artifact, or replaces one the principal owns.
@@ -109,7 +124,7 @@ func (s *server) handleCreateArtifact(w http.ResponseWriter, r *http.Request) {
 			// a caller-chosen id, which is allowed - ids are minted anywhere -
 			// and it is a create even if the id turns out to be taken.
 		case err != nil:
-			writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
+			serverError(w, r, err)
 			return
 		case existing.OwnerUser != p.UserID:
 			writeJSON(w, http.StatusForbidden, errorBody("not the owner of "+req.ID))
@@ -185,7 +200,7 @@ func (s *server) handleCreateArtifact(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusNotFound, errorBody("no such artifact"))
 			return
 		}
-		writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
+		serverError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, art)
@@ -274,7 +289,7 @@ func (s *server) handleListArtifacts(w http.ResponseWriter, r *http.Request) {
 		Limit:    intParam(q.Get("limit")),
 	})
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
+		serverError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"artifacts": list})
@@ -292,7 +307,7 @@ func (s *server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
+		serverError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, art)
@@ -313,7 +328,7 @@ func (s *server) handleDeleteArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
+		serverError(w, r, err)
 		return
 	}
 	if art.OwnerUser != p.UserID {
@@ -329,7 +344,7 @@ func (s *server) handleDeleteArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
+		serverError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, art)
@@ -355,7 +370,7 @@ func (s *server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		Limit:    intParam(q.Get("limit")),
 	})
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
+		serverError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"query": query, "artifacts": hits})
@@ -457,7 +472,7 @@ func (s *server) handleAppendEvent(w http.ResponseWriter, r *http.Request) {
 		Meta:     speakerStripped(req.Meta),
 	}
 	if err := s.db.AppendEvent(r.Context(), e); err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
+		serverError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, e)
@@ -527,7 +542,7 @@ func (s *server) handleListEvents(w http.ResponseWriter, r *http.Request) {
 		Limit:    intParam(q.Get("limit")),
 	})
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
+		serverError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"events": list})
@@ -578,7 +593,7 @@ func (s *server) handleCreateGrant(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
+			serverError(w, r, err)
 			return
 		}
 		if art.OwnerUser != p.UserID {
@@ -625,7 +640,7 @@ func (s *server) handleCreateGrant(w http.ResponseWriter, r *http.Request) {
 		GrantedBy:   p.UserID,
 	}
 	if err := s.db.InsertGrant(r.Context(), g); err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
+		serverError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, g)

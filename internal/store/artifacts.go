@@ -300,12 +300,30 @@ type ArtifactQuery struct {
 
 const defaultLimit = 200
 
-func (q ArtifactQuery) limit() int {
-	if q.Limit > 0 && q.Limit <= 1000 {
-		return q.Limit
+// maxLimit is the most rows one page of a list or a search will hand back,
+// however many were asked for.
+const maxLimit = 1000
+
+// clampLimit turns an asked-for page size into the one that runs: absent means
+// the default, and more than the cap means the cap.
+//
+// Over the cap used to mean the default, which reads as an answer and is not
+// one: a caller asking for 5000 got 200 rows with nothing said about it, and a
+// short page means "that was all of them" everywhere else here - so it stopped
+// at 200 believing it had the lot. Clamping to the cap keeps the ceiling and
+// keeps a short page meaning what it means.
+func clampLimit(asked int) int {
+	switch {
+	case asked <= 0:
+		return defaultLimit
+	case asked > maxLimit:
+		return maxLimit
+	default:
+		return asked
 	}
-	return defaultLimit
 }
+
+func (q ArtifactQuery) limit() int { return clampLimit(q.Limit) }
 
 // narrow appends the caller's filters - the ones that are about what they asked
 // for rather than what they may see.

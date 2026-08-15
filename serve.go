@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -420,6 +422,45 @@ func (s *server) consoleHandler() http.Handler {
 		log.Printf("console: not built into this binary (cd web && npm ci && npm run build)")
 	}
 	return c
+}
+
+// internalError is what a 500 says, and all it says.
+//
+// The store wraps its failures - `store: read artifact: pq: relation "..." does
+// not exist`, constraint names, column names, a fragment of the statement - and
+// every one of those went out in the body verbatim. Any principal holding any
+// token could read the schema off a failing request, and a federated peer with
+// the most minimal credential here could do it too. The operator needs the
+// whole chain and gets it in the log; the caller needs to know the request
+// failed here rather than because of anything they sent, and that is the whole
+// of what this says.
+const internalError = "internal error"
+
+// serverError logs err and answers the opaque 500.
+func serverError(w http.ResponseWriter, r *http.Request, err error) {
+	serverErrorSaying(w, r, err, internalError)
+}
+
+// serverErrorSaying is serverError for a failure the caller has to be told
+// something specific about - the one case being an issue that was filed on a
+// tracker before the write here failed, where the number is the only way anyone
+// finds it again. msg is written by this node, never by the error.
+func serverErrorSaying(w http.ResponseWriter, r *http.Request, err error, msg string) {
+	ref := errorRef()
+	log.Printf("500 %s %s ref=%s: %v", r.Method, r.URL.Path, ref, err)
+	writeJSON(w, http.StatusInternalServerError, map[string]string{"error": msg, "ref": ref})
+}
+
+// errorRef mints the short reference that ties a 500 body to its log line. It
+// is grep bait and nothing else - it names no row and encodes no time - so four
+// bytes of randomness is enough, and a source that fails is not worth failing a
+// request over.
+func errorRef() string {
+	var b [4]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "unlogged"
+	}
+	return hex.EncodeToString(b[:])
 }
 
 func writeJSON(w http.ResponseWriter, code int, body any) {

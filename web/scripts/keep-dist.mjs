@@ -6,13 +6,13 @@
  * embeds web/dist with `//go:embed all:web/dist`, and a pattern that matches
  * nothing is a build error rather than an empty directory.
  *
- * It is written with a line of text in it rather than as a zero-byte file. A
- * placeholder only has to exist, so being empty looks like the natural way to
- * write one - but an empty file is exactly what tooling that moves a tree
- * around drops: archivers and copy paths that skip zero-length entries leave
- * the directory behind, and the next `go build` in that copy fails on the
- * embed with nothing in the tree to say why. One line of content survives all
- * of them, and says what the file is for.
+ * It is written with a line of text in it rather than as a zero-byte file
+ * because a placeholder that says what it is for is worth more to whoever finds
+ * it than an empty one. That is the whole of the reason. It was once written up
+ * as a fix for the file being lost when this tree is copied out of the sandbox
+ * it is built in - it is not one, and it never was: the copy was dropping the
+ * file for reasons of its own, and the fix for that lives in the harness that
+ * does the copying, not in this repo.
  *
  * The bytes here are the bytes committed at web/dist/.gitkeep. If they drift
  * apart, every build leaves the tree dirty, and the gate's last check says so.
@@ -24,8 +24,9 @@ import { fileURLToPath } from "node:url";
 
 const keep = [
   "# keeps web/dist present so //go:embed all:web/dist builds before `npm run`",
-  "# build has run. Not empty on purpose: a zero-byte file does not survive",
-  "# every way this tree is copied around, and losing it breaks `go build`.",
+  "# build has run. It has a line in it so that it says what it is for, which",
+  "# is the only claim it makes: getting this tree copied somewhere intact is",
+  "# not this file's job.",
   "# See .gitignore, which tracks this one file and ignores everything vite",
   "# writes beside it, and console.go, which embeds the directory.",
   "",

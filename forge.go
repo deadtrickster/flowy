@@ -247,7 +247,7 @@ func (s *server) handleForgeFile(w http.ResponseWriter, r *http.Request) {
 	// whole conversation that led to it being filed.
 	event, err := s.forgeEvent(r, art, ref, "filed "+ref.Repo+"#"+strconv.Itoa(number), nil)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
+		serverError(w, r, err)
 		return
 	}
 
@@ -261,9 +261,9 @@ func (s *server) handleForgeFile(w http.ResponseWriter, r *http.Request) {
 	// failure names it: whoever reads this error is the only one who can go and
 	// look, and telling them "internal error" would lose the number.
 	if err := s.db.LinkArtifactExternal(ctx, art, ref, true, event); err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody(
+		serverErrorSaying(w, r, err,
 			"filed as "+ref.Repo+"#"+strconv.Itoa(number)+" ("+issueURL+
-				"), and this node could not record it: "+err.Error()))
+				"), and this node could not record it")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -356,14 +356,14 @@ func (s *server) handleForgeStatus(w http.ResponseWriter, r *http.Request) {
 			"state":  state,
 		})
 		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
+			serverError(w, r, err)
 			return
 		}
 		// The move and the entry that says the forge made it, together: a
 		// status the trail cannot account for is worse here than anywhere else,
 		// because this is the one move nobody in the fabric made.
 		if err := s.db.MoveArtifactStatus(ctx, art, statusDone, event); err != nil {
-			writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
+			serverError(w, r, err)
 			return
 		}
 		moved = true
@@ -375,7 +375,7 @@ func (s *server) handleForgeStatus(w http.ResponseWriter, r *http.Request) {
 	if state != ref.State || moved {
 		ref.State = state
 		if err := s.db.SetArtifactExternal(ctx, art, ref, art.Reported); err != nil {
-			writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
+			serverError(w, r, err)
 			return
 		}
 	}
@@ -455,7 +455,7 @@ func (s *server) handleForgeSync(w http.ResponseWriter, r *http.Request) {
 	// posted the ones that had already arrived a second time.
 	if len(threaded) > 0 || pushed > 0 {
 		if err := s.db.SetArtifactExternal(ctx, art, ref, art.Reported); err != nil {
-			writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
+			serverError(w, r, err)
 			return
 		}
 	}
@@ -748,7 +748,7 @@ func (s *server) readableArtifact(
 		return nil, false
 	}
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
+		serverError(w, r, err)
 		return nil, false
 	}
 	return art, true

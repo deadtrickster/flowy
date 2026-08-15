@@ -145,7 +145,7 @@ func (s *server) handleArtifactStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
+		serverError(w, r, err)
 		return
 	}
 	if !lifecycleTypes[art.Type] {
@@ -167,14 +167,14 @@ func (s *server) handleArtifactStatus(w http.ResponseWriter, r *http.Request) {
 
 	event, err := s.statusEvent(r, art, from, to)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
+		serverError(w, r, err)
 		return
 	}
 	// The move and the entry that records it are one write. A status with no
 	// entry behind it is a lifecycle nobody can audit, and it is not something
 	// anything here would ever notice or repair.
 	if err := s.db.MoveArtifactStatus(ctx, art, to, event); err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
+		serverError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"artifact": art, "event": event})
@@ -200,13 +200,13 @@ func (s *server) handleArtifactHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
+		serverError(w, r, err)
 		return
 	}
 
 	events, err := s.db.ArtifactEvents(ctx, art.ID, statusEventType)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
+		serverError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{

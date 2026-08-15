@@ -92,7 +92,7 @@ func (s *server) handleAssign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
+		serverError(w, r, err)
 		return
 	}
 	// The personal floor again: a personal artifact has no project to share it
@@ -119,7 +119,7 @@ func (s *server) handleAssign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
+		serverError(w, r, err)
 		return
 	}
 
@@ -158,7 +158,7 @@ func (s *server) handleAssign(w http.ResponseWriter, r *http.Request) {
 			// what it would have done with auto_delegate off.
 			agent = nil
 		case err != nil:
-			writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
+			serverError(w, r, err)
 			return
 		default:
 			task.AssigneeAgent = agent.ID
@@ -167,7 +167,7 @@ func (s *server) handleAssign(w http.ResponseWriter, r *http.Request) {
 	}
 	opening, err := s.assignmentOpening(r, task, art, req.Note)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
+		serverError(w, r, err)
 		return
 	}
 
@@ -177,7 +177,7 @@ func (s *server) handleAssign(w http.ResponseWriter, r *http.Request) {
 	// or a handoff nobody was told about. Nothing came back to finish it, and
 	// the half replicated on its own.
 	if err := s.db.WriteAssignment(ctx, grant, task, opening); err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
+		serverError(w, r, err)
 		return
 	}
 
@@ -247,7 +247,7 @@ func (s *server) handleInboxTasks(w http.ResponseWriter, r *http.Request) {
 		Limit: intParam(q.Get("limit")),
 	})
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
+		serverError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"tasks": list})
@@ -316,7 +316,7 @@ func (s *server) handleDelegateTask(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
+		serverError(w, r, err)
 		return
 	}
 	// An agent acts for exactly one user, so handing a task to somebody else's
@@ -336,11 +336,11 @@ func (s *server) handleDelegateTask(w http.ResponseWriter, r *http.Request) {
 	// and the half that landed replicated on its own, so every peer held it.
 	event, err := s.taskEvent(r, task, was+"->"+task.State, agent.ID)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
+		serverError(w, r, err)
 		return
 	}
 	if err := s.db.UpdateTaskEvent(ctx, task, event); err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
+		serverError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"task": task, "event": event})
@@ -387,11 +387,11 @@ func (s *server) handleTaskState(w http.ResponseWriter, r *http.Request) {
 	// is in and the record of it getting there are one fact.
 	event, err := s.taskEvent(r, task, was+"->"+task.State, "")
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
+		serverError(w, r, err)
 		return
 	}
 	if err := s.db.UpdateTaskEvent(r.Context(), task, event); err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
+		serverError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"task": task, "event": event})
@@ -427,7 +427,7 @@ func (s *server) handleAutoDelegate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
+		serverError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, user)
@@ -442,7 +442,7 @@ func (s *server) taskParty(w http.ResponseWriter, r *http.Request) (*store.Task,
 		return nil, false
 	}
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
+		serverError(w, r, err)
 		return nil, false
 	}
 	return task, true
