@@ -6209,6 +6209,245 @@ say "one grant does not buy a project's worth of statements"
 check "the newly-visible rescan reads and writes in batches (MED 3)" \
 	go test -count=1 -run TestNewlyVisibleRescanIsBoundedAndBatched ./internal/store
 
+# ---------------------------------------------------------------- iteration 12
+#
+# The floor iteration 10 put on the event filter's grant branches was not on the
+# branch beside them - the home-project one, which every reader in the event's
+# own project takes and which grants nothing conditionally. So it is not fixed
+# branch by branch this time: the artifact's read rule has one definition,
+# artifactReachSQL, and both the artifact filter and the event filter evaluate
+# it. The other two are a filing that could be raced into orphaning an issue,
+# and an error the chat path threw away.
+
+# HIGH 1. A per-artifact share was a way to publish somebody else's artifact to
+# a whole project. The share reaches the subject and nobody else - the row is
+# refused to every one of their project mates - but their events land in their
+# home project, and the home branch hands every event in a project to everybody
+# in it with no test on the artifact named. So the body and the meta went to the
+# project, over /api/events, the inbox, a room read and a replication pull,
+# while /api/artifact/{id}/history answered those same readers 404.
+#
+# pa is the project with two people in it: A, and the operator, who is a second
+# person there and not a second token for the first.
+an_event_in_your_project_is_no_wider_than_the_artifact() {
+	recall
+	local word theirs ours ev ours_ev open_ev path id
+	word="quillshadow"
+
+	# B's artifact, in pb, shared to A by name. Nothing joins pa to pb, so it is
+	# A's to read through the share and nobody else's in pa.
+	theirs="$(new_artifact "$TOKEN_B" bug "the fault only A was shown")" || return 1
+	want_status 200 POST "$TOKEN_B" /api/grants \
+		"$(jq -nc --arg a "$theirs" --arg s "$USER_A" '{artifact: $a, subject: $s}')" || return 1
+	want_status 200 GET "$TOKEN_A" "/api/artifact/$theirs" || return 1
+	want_status 404 GET "$TOKEN_OP" "/api/artifact/$theirs" || return 1
+
+	# A names it on an event, which lands in pa: that is where A's writes land,
+	# and it is the whole of how a pb artifact's events got into pa.
+	want_status 200 POST "$TOKEN_A" /api/events \
+		"$(jq -nc --arg a "$theirs" --arg w "$word" '{type: "chat", room: "quillroom",
+			artifact: $a, body: ("what pb showed me: " + $w)}')" || return 1
+	ev="$(jqv .id)"
+	want_eq "the project the event landed in" "$(jqv .project)" pa || return 1
+
+	# Two controls in the same room: an event about pa's own artifact, and one
+	# about nothing at all. The project is not narrowed by any of this.
+	ours="$(new_artifact "$TOKEN_A" note "pa's own, and pa's to read")" || return 1
+	want_status 200 POST "$TOKEN_A" /api/events \
+		"$(jq -nc --arg a "$ours" '{type: "chat", room: "quillroom", artifact: $a,
+			body: "about one of our own"}')" || return 1
+	ours_ev="$(jqv .id)"
+	want_status 200 POST "$TOKEN_A" /api/events \
+		'{"type": "chat", "room": "quillroom", "body": "and the standup"}' || return 1
+	open_ev="$(jqv .id)"
+
+	# Every surface the log leaves by, read as the other person in pa.
+	for path in "/api/events?limit=1000" "/api/inbox?limit=1000" \
+		"/api/chat/quillroom?limit=1000" "/api/sync/pull?since=0&limit=5000"; do
+		api GET "$TOKEN_OP" "$path" || return 1
+		want_eq "status of $path for the operator" "$API_STATUS" 200 || return 1
+		if printf '%s' "$API_BODY" | grep -qF "$ev"; then
+			printf 'a pa mate read %s over %s: an event about an artifact they are refused\n' \
+				"$ev" "$path" >&2
+			return 1
+		fi
+		if printf '%s' "$API_BODY" | grep -qF "$word"; then
+			printf 'a pa mate read the body of %s over %s\n' "$ev" "$path" >&2
+			return 1
+		fi
+	done
+
+	# And the project still works: both controls cross to the same reader.
+	for path in "/api/events?limit=1000" "/api/chat/quillroom?limit=1000"; do
+		api GET "$TOKEN_OP" "$path" || return 1
+		for id in "$ours_ev" "$open_ev"; do
+			want_eq "the operator's read of $id over $path" \
+				"$(printf '%s' "$API_BODY" | jq "[.events[] | select(.id == \"$id\")] | length")" 1 ||
+				return 1
+		done
+	done
+
+	# The person the share was made to reads their own event, as they always did.
+	api GET "$TOKEN_A" "/api/chat/quillroom?limit=1000" || return 1
+	for id in "$ev" "$ours_ev" "$open_ev"; do
+		want_eq "A's own read of $id" \
+			"$(printf '%s' "$API_BODY" | jq "[.events[] | select(.id == \"$id\")] | length")" 1 ||
+			return 1
+	done
+	printf 'event %s about the shared %s stays with A; the two that name pa rows cross\n' \
+		"$ev" "$theirs"
+}
+
+# MED 2. Filing is a read, a round trip to the forge and a write, and only the
+# first two ever asked whether the artifact had been filed. Two filings could be
+# inside all three at once: both minted a real issue and both wrote the link, so
+# the second overwrote the first and issue #1 was left open on the tracker with
+# no row pointing at it - no state sync, no reply push, and nothing to find it
+# by. The link is now written under `external IS NULL`, so one of the two
+# matches no row and is answered the same 409 the up-front read gives.
+two_filings_at_once_leave_one_link() {
+	recall
+	local id body one two s1 s2 b1 b2 won lost winner trail
+	id="$(new_artifact "$TOKEN_A_PC" bug "the one two requests file at once")" || return 1
+	body="$(jq -nc --arg a "$id" '{artifact: $a, repo: "o/r"}')"
+	one="$WORK/file-one"
+	two="$WORK/file-two"
+
+	# Both in flight before either can have written.
+	curl --silent --show-error -X POST -H "Authorization: Bearer $TOKEN_A_PC" \
+		-H 'Content-Type: application/json' --data-binary "$body" -w '\n%{http_code}' \
+		"http://127.0.0.1:$HTTP_PORT/api/forge/file" >"$one" 2>&1 &
+	local first=$!
+	curl --silent --show-error -X POST -H "Authorization: Bearer $TOKEN_A_PC" \
+		-H 'Content-Type: application/json' --data-binary "$body" -w '\n%{http_code}' \
+		"http://127.0.0.1:$HTTP_PORT/api/forge/file" >"$two" 2>&1 &
+	local second=$!
+	wait "$first" || return 1
+	wait "$second" || return 1
+
+	s1="$(tail -n1 "$one")"
+	s2="$(tail -n1 "$two")"
+	b1="$(sed '$d' "$one")"
+	b2="$(sed '$d' "$two")"
+
+	# One of them filed it. The other is refused, whichever door refused it.
+	case "$s1$s2" in
+	200409) won="$b1" lost="$b2" ;;
+	409200) won="$b2" lost="$b1" ;;
+	200200)
+		printf 'both filings reported success: one of the two issues is unreferenced\n%s\n%s\n' \
+			"$b1" "$b2" >&2
+		return 1
+		;;
+	*)
+		printf 'two filings answered %s and %s:\n%s\n%s\n' "$s1" "$s2" "$b1" "$b2" >&2
+		return 1
+		;;
+	esac
+
+	winner="$(printf '%s' "$won" | jq -r .external.number)"
+	if [ -z "$winner" ] || [ "$winner" = null ]; then
+		printf 'the filing that succeeded named no issue:\n%s\n' "$won" >&2
+		return 1
+	fi
+
+	# The row names the issue that won, and it is the only trail entry: the
+	# loser's filing entry went back out with its transaction.
+	want_status 200 GET "$TOKEN_A_PC" "/api/artifact/$id" || return 1
+	want_eq "the issue the artifact names" "$(jqv .external.number)" "$winner" || return 1
+	trail="$(scalar "SELECT count(*) FROM events WHERE artifact = '$id' AND type = 'forge'")" ||
+		return 1
+	want_eq "filing entries in the trail" "$trail" 1 || return 1
+
+	# The refusal names the link that won, so the caller is told which issue it
+	# has. If this one lost late - after its own issue was open - it says so and
+	# names that issue too, which is the only record anybody gets of it.
+	want_eq "the issue the refusal points at" \
+		"$(printf '%s' "$lost" | jq -r .external.number)" "$winner" || return 1
+	case "$(printf '%s' "$lost" | jq -r .error)" in
+	*"which nothing points at"*)
+		local orphan
+		orphan="$(printf '%s' "$lost" | jq -r '.error | capture("#(?<n>[0-9]+) [(]").n')"
+		if [ "$orphan" = "$winner" ]; then
+			printf 'the refusal named the winning issue as the orphan:\n%s\n' "$lost" >&2
+			return 1
+		fi
+		api GET "$TOKEN_OP" "/api/forge/mock/issue?repo=o/r&number=$orphan" || return 1
+		want_eq "the orphaned issue is on the forge" "$API_STATUS" 200 || return 1
+		printf 'one link (#%s), and the issue #%s the loser opened is named in its 409\n' \
+			"$winner" "$orphan"
+		;;
+	*)
+		printf 'one link (#%s); the second filing was refused before it opened anything\n' "$winner"
+		;;
+	esac
+}
+
+# LOW 3. A reply that names a parent and no thread inherits the parent's thread.
+# The read of that parent treated every error as "cannot read it": a parent that
+# is not readable is a deliberate fresh thread, but a store that could not answer
+# - a dropped connection, a statement timeout - silently forked the conversation
+# instead, minting a thread while the DAG edge still pointed at the parent, and
+# nothing said the store had been unreachable. ThreadHidden six lines below has
+# always told the two apart.
+#
+# The failure is forced on one row and put back immediately: created is NULL for
+# the length of one request, which the scan cannot turn into an event and which
+# is not "no such row" either. The id-only read the parents check does is
+# unaffected, so the request gets all the way to the line under test.
+a_parent_the_store_cannot_read_is_a_500() {
+	recall
+	local parent created before after status body thread
+	want_status 200 POST "$TOKEN_A" /api/chat/brokenparent/say \
+		'{"body": "the message that gets answered"}' || return 1
+	parent="$(jqv .id)"
+	thread="$(jqv .thread)"
+
+	created="$(scalar "SELECT created FROM events WHERE id = '$parent'")" || return 1
+	before="$(scalar "SELECT count(*) FROM events WHERE room = 'brokenparent'")" || return 1
+	psql_do "UPDATE events SET created = NULL WHERE id = '$parent'" || return 1
+	api POST "$TOKEN_A" /api/chat/brokenparent/say \
+		"$(jq -nc --arg p "$parent" '{body: "an answer that must not fork the thread",
+			parents: [$p]}')"
+	status="$API_STATUS"
+	body="$API_BODY"
+	after="$(scalar "SELECT count(*) FROM events WHERE room = 'brokenparent'")" || return 1
+	psql_do "UPDATE events SET created = '$created' WHERE id = '$parent'" || return 1
+
+	want_eq "status when the store could not read the parent" "$status" 500 || return 1
+	want_eq "what it says" "$(printf '%s' "$body" | jq -r .error)" "internal error" || return 1
+	want_eq "messages the refusal wrote" "$((after - before))" 0 || return 1
+	want_eq "threads it minted" \
+		"$(scalar "SELECT count(DISTINCT thread) FROM events WHERE room = 'brokenparent'")" 1 ||
+		return 1
+
+	# And with the row readable again the same request goes through, and lands in
+	# the thread it answers rather than in one of its own.
+	want_status 200 POST "$TOKEN_A" /api/chat/brokenparent/say \
+		"$(jq -nc --arg p "$parent" '{body: "and now it answers", parents: [$p]}')" || return 1
+	want_eq "the thread the reply landed in" "$(jqv .thread)" "$thread" || return 1
+	printf 'a parent the store could not read is a 500, and no thread was forked\n'
+}
+
+say "the event floor and the artifact floor are one rule"
+check "a share to one person is not a broadcast to their project (HIGH 1)" \
+	an_event_in_your_project_is_no_wider_than_the_artifact
+check "the home-project branch inherits the artifact floor (HIGH 1)" \
+	go test -count=1 -run TestEventFilterHomeProjectInheritsTheArtifactFloor ./internal/store
+check "an event never reaches further than the artifact it names (HIGH 1)" \
+	go test -count=1 -run TestEventFloorMatchesTheArtifactFloor ./internal/store
+
+say "one artifact, one issue, however many people ask at once"
+check "two filings at once leave one link and name the loser's issue (MED 2)" \
+	two_filings_at_once_leave_one_link
+check "the link is written under external IS NULL (MED 2)" \
+	go test -count=1 -run 'TestOnlyOneFilingWinsTheLink|TestTwoFilingsAtOnceLeaveOneLink' \
+	./internal/store
+
+say "a store that cannot answer is not an answer"
+check "a parent the store could not read is a 500, not a new thread (LOW 3)" \
+	a_parent_the_store_cannot_read_is_a_500
+
 # ------------------------------------------------------------------- verdict
 
 say "result"

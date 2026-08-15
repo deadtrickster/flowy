@@ -205,10 +205,7 @@ func (s *server) handleForgeFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if art.External != nil {
-		writeJSON(w, http.StatusConflict, map[string]any{
-			"error":    "already filed as " + art.External.Repo + "#" + strconv.Itoa(art.External.Number),
-			"external": art.External,
-		})
+		writeAlreadyFiled(w, art.External, "")
 		return
 	}
 
@@ -260,7 +257,23 @@ func (s *server) handleForgeFile(w http.ResponseWriter, r *http.Request) {
 	// The issue itself is already open, and no rollback here closes it. So a
 	// failure names it: whoever reads this error is the only one who can go and
 	// look, and telling them "internal error" would lose the number.
+	//
+	// The check at the top of this handler, the round trip above and this write
+	// are three steps, and a second filing of the same artifact can be inside
+	// all three at once. Only one of them writes the link - the statement
+	// carries `external IS NULL` - and the one that does not is answered the
+	// same 409 that check gives, naming the link that won and the issue this
+	// call opened for nothing, which is the only record of it there will be.
 	if err := s.db.LinkArtifactExternal(ctx, art, ref, true, event); err != nil {
+		if errors.Is(err, store.ErrAlreadyFiled) {
+			log.Printf("forge: %s was filed by another request while this one was "+
+				"opening %s#%d (%s); that issue is now unreferenced",
+				art.ID, ref.Repo, number, issueURL)
+			writeAlreadyFiled(w, s.filedLink(ctx, r, art.ID),
+				"and this call opened "+ref.Repo+"#"+strconv.Itoa(number)+" ("+issueURL+
+					"), which nothing points at")
+			return
+		}
 		serverErrorSaying(w, r, err,
 			"filed as "+ref.Repo+"#"+strconv.Itoa(number)+" ("+issueURL+
 				"), and this node could not record it")
@@ -271,6 +284,35 @@ func (s *server) handleForgeFile(w http.ResponseWriter, r *http.Request) {
 		"external": ref,
 		"event":    event,
 	})
+}
+
+// writeAlreadyFiled is the one answer a second filing gets, whether the first
+// one landed before this request started or during it: 409, the link that is on
+// the artifact, and nothing invented. also is appended to the message when there
+// is something more to say about this particular attempt.
+func writeAlreadyFiled(w http.ResponseWriter, ref *store.ExternalRef, also string) {
+	said := "already filed"
+	if ref != nil {
+		said += " as " + ref.Repo + "#" + strconv.Itoa(ref.Number)
+	}
+	if also != "" {
+		said += ", " + also
+	}
+	writeJSON(w, http.StatusConflict, map[string]any{"error": said, "external": ref})
+}
+
+// filedLink re-reads the link that is on an artifact now, for the request that
+// lost a race to write one. It is read back rather than assumed: what the caller
+// needs is the issue that survived, and this request's own ref is the one that
+// did not. A read that fails answers nothing rather than something untrue - the
+// 409 stands either way.
+func (s *server) filedLink(ctx context.Context, r *http.Request, id string) *store.ExternalRef {
+	art, err := s.db.ReadArtifact(ctx, principalOf(r), id, false)
+	if err != nil {
+		log.Printf("forge: cannot read back the link that won on %s: %v", id, err)
+		return nil
+	}
+	return art.External
 }
 
 // forgeSelfLogin is the login this node's own comments appear under on the

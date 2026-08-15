@@ -168,6 +168,46 @@ func (a *args) next(v any) string {
 	return fmt.Sprintf("$%d", len(a.vals))
 }
 
+// artifactReachSQL is the read rule for one artifact row, as a boolean SQL
+// fragment over the table aliased as alias, given the placeholders that already
+// hold the principal's user id and home project.
+//
+// It is the definition, and it has exactly one copy on purpose. Two read
+// surfaces cover an artifact - the row itself and the events that name it - and
+// while each carried its own hand-written idea of the floor they drifted: the
+// event filter's grant branches were given an approximation of this rule, its
+// home-project branch was given none at all, and an artifact refused row by row
+// was handed over event by event by whichever branch had been missed. Both
+// callers now evaluate this, so there is no second rule left to forget.
+//
+// CASE, not OR, so the personal branch is a floor: when it is taken the grant
+// tests are not merely false, they are not reachable. 'project-only' is the
+// same shape one step down - the project and nothing else - because a scope
+// that is documented as narrower than 'shared' and reaches exactly as far is a
+// scope that lies to whoever chose it.
+//
+// The grants subqueries alias the table as `g`. A caller splicing this inside
+// its own `grants g` scope would shadow that alias, so the event filter puts
+// this in a clause of its own rather than inside one.
+func artifactReachSQL(alias, user, project string) string {
+	return strings.NewReplacer("{a}", alias, "{user}", user, "{project}", project).Replace(
+		`(CASE WHEN {a}.visibility = 'personal' OR {a}.project IS NULL
+		       THEN {a}.owner_user = {user} AND {user} <> ''
+		       WHEN {a}.visibility = 'project-only'
+		       THEN {a}.project = {project} AND {project} <> ''
+		       ELSE {a}.project = {project} AND {project} <> ''
+		         OR EXISTS (SELECT 1 FROM grants g
+		                     WHERE coalesce(g.tombstone, false) = false
+		                       AND g.artifact IS NULL
+		                       AND g.from_project = {project} AND {project} <> ''
+		                       AND g.to_project = {a}.project)
+		         OR EXISTS (SELECT 1 FROM grants g
+		                     WHERE coalesce(g.tombstone, false) = false
+		                       AND g.artifact = {a}.id
+		                       AND g.subject = {user} AND {user} <> '')
+		  END)`)
+}
+
 // ArtifactFilterSQL returns a boolean SQL fragment that is true for exactly the
 // artifacts CanRead would allow, for the table aliased as alias. Its parameters
 // are appended to a.
@@ -188,61 +228,49 @@ func ArtifactFilterSQL(p *Principal, alias string, a *args, scopeAll bool) strin
 	}
 	user := a.next(p.UserID)
 	project := a.next(p.Project)
-
-	// CASE, not OR, so the personal branch is a floor: when it is taken the
-	// grant tests are not merely false, they are not reachable. 'project-only'
-	// is the same shape one step down - the project and nothing else - because
-	// a scope that is documented as narrower than 'shared' and reaches exactly
-	// as far is a scope that lies to whoever chose it.
-	return strings.NewReplacer("{a}", alias, "{user}", user, "{project}", project).Replace(
-		`(CASE WHEN {a}.visibility = 'personal' OR {a}.project IS NULL
-		       THEN {a}.owner_user = {user} AND {user} <> ''
-		       WHEN {a}.visibility = 'project-only'
-		       THEN {a}.project = {project} AND {project} <> ''
-		       ELSE {a}.project = {project} AND {project} <> ''
-		         OR EXISTS (SELECT 1 FROM grants g
-		                     WHERE coalesce(g.tombstone, false) = false
-		                       AND g.artifact IS NULL
-		                       AND g.from_project = {project} AND {project} <> ''
-		                       AND g.to_project = {a}.project)
-		         OR EXISTS (SELECT 1 FROM grants g
-		                     WHERE coalesce(g.tombstone, false) = false
-		                       AND g.artifact = {a}.id
-		                       AND g.subject = {user} AND {user} <> '')
-		  END)`)
+	return artifactReachSQL(alias, user, project)
 }
 
 // EventFilterSQL narrows the event log the same way, on the event's project.
 // Events carry no visibility column, so the floor is the project-less event: it
 // belongs to whoever wrote it, and only they read it back.
 //
-// The share of one artifact reaches the events about it, which is the clause
-// ArtifactFilterSQL has and this one did not. A cross-project share let the
-// subject read the artifact and its history - /api/artifact/{id}/history is
-// gated on the artifact read - and not one event about it anywhere else, so the
-// two read surfaces disagreed about the same rows. It is the artifact's own
-// branch, joined: a share only reaches what a share can reach, so an artifact
-// behind the personal or project-only floor is no more readable event by event
-// than it is row by row.
+// A project-bearing event is two questions, and it is one AND because both have
+// to be answered:
 //
-// The project-wide grant carries the same floor, and for the same reason. It
-// did not: the branch asked only that a live edge run from the reader's project
-// into the event's, and then handed over every event in that project - bodies,
-// meta and all - including the events about artifacts the reader is refused row
-// by row. A chat thread about a project-only design, the status trail of a
-// personal note, a forge entry naming either: the grant reached all of it, over
-// /api/events, the inbox, a room read and a replication pull, where a federated
-// peer then held it for good. So an event that names an artifact inherits that
-// artifact's floor - it is readable across the edge only if the artifact is -
-// and an event that names none is project chatter and stays reachable, which is
-// what the grant is for.
+//  1. Does the reader reach the event's project at all? Their own project does;
+//     a live project-wide edge into it does; and a live share of the artifact
+//     the event names does, because a share of one artifact carries the events
+//     about it - /api/artifact/{id}/history is gated on reading the artifact
+//     rather than on reading each event, so without that clause the two read
+//     surfaces disagreed about the same rows.
+//  2. Does the reader reach the artifact the event names? An event that names
+//     one inherits that artifact's floor, and the test is artifactReachSQL -
+//     ArtifactFilterSQL's own branches, on the named row. An event that names
+//     none is chatter and stops at question 1, which is what the grant and the
+//     project are for.
+//
+// The second question is why this is written the way it is. It used to be
+// asked branch by branch, in wording of each branch's own: the project-wide
+// grant carried an approximation of the floor, the share carried the same
+// approximation, and the home-project branch - the one every reader in the
+// event's own project takes - carried nothing. So an artifact shared into a
+// project by name was refused row by row to everybody else in that project and
+// handed to them event by event: the sharer names it on an event, the event
+// lands in their home project because that is where their writes land, and the
+// whole project reads the body while /api/artifact/{id}/history 404s at them.
+// It replicated from there, permanently. One rule, evaluated once, in a clause
+// no branch can skip, is what stops a fourth branch being written without it.
 //
 // The last half is the assignment thread. A handoff crosses a project
 // boundary by definition - the whole point of it is that somebody in another
 // project now has the work - so a thread that a task names is readable by the
 // two people the task is between and by the agent it was delegated to,
 // whichever project each of them writes from. Without it an assignment would
-// open a conversation only one side could read, which is not a conversation.
+// open a conversation only one side could read, which is not a conversation. A
+// party naming their own artifact in their own handoff thread is disclosure by
+// a party rather than a way round the floor, so this clause is deliberately
+// left outside the AND.
 //
 // It is a widening and it is deliberately narrow: it reaches only events whose
 // thread is named by a tasks row, and only for the parties named on that row.
@@ -257,30 +285,30 @@ func EventFilterSQL(p *Principal, alias string, a *args, scopeAll bool) string {
 	agent := a.next(p.AgentID)
 	project := a.next(p.Project)
 
+	// The floor, in the artifact filter's own words rather than in a copy of
+	// them. An event naming an artifact this node has never seen is not
+	// readable across a project boundary on the strength of the name alone.
+	floor := `(coalesce({a}.artifact, '') = ''
+		           OR EXISTS (SELECT 1 FROM artifacts par
+		                       WHERE par.id = {a}.artifact
+		                         AND ` + artifactReachSQL("par", user, project) + `))`
+
 	return strings.NewReplacer("{a}", alias, "{user}", user, "{agent}", agent, "{project}", project).Replace(
 		`((CASE WHEN {a}.project IS NULL
 		        THEN ({a}.actor = {user} AND {user} <> '')
 		          OR ({a}.actor = {agent} AND {agent} <> '')
-		        ELSE {a}.project = {project} AND {project} <> ''
-		          OR EXISTS (SELECT 1 FROM grants g
-		                      WHERE coalesce(g.tombstone, false) = false
-		                        AND g.artifact IS NULL
-		                        AND g.from_project = {project} AND {project} <> ''
-		                        AND g.to_project = {a}.project
-		                        AND (coalesce({a}.artifact, '') = ''
-		                          OR EXISTS (SELECT 1 FROM artifacts par
-		                                      WHERE par.id = {a}.artifact
-		                                        AND par.project IS NOT NULL
-		                                        AND coalesce(par.visibility, '') <> 'personal'
-		                                        AND coalesce(par.visibility, '') <> 'project-only')))
-		          OR EXISTS (SELECT 1 FROM grants g JOIN artifacts sar ON sar.id = g.artifact
-		                      WHERE coalesce(g.tombstone, false) = false
-		                        AND g.artifact = {a}.artifact
-		                        AND coalesce({a}.artifact, '') <> ''
-		                        AND g.subject = {user} AND {user} <> ''
-		                        AND sar.project IS NOT NULL
-		                        AND coalesce(sar.visibility, '') <> 'personal'
-		                        AND coalesce(sar.visibility, '') <> 'project-only')
+		        ELSE ({a}.project = {project} AND {project} <> ''
+		               OR EXISTS (SELECT 1 FROM grants g
+		                           WHERE coalesce(g.tombstone, false) = false
+		                             AND g.artifact IS NULL
+		                             AND g.from_project = {project} AND {project} <> ''
+		                             AND g.to_project = {a}.project)
+		               OR EXISTS (SELECT 1 FROM grants g
+		                           WHERE coalesce(g.tombstone, false) = false
+		                             AND g.artifact = {a}.artifact
+		                             AND coalesce({a}.artifact, '') <> ''
+		                             AND g.subject = {user} AND {user} <> ''))
+		             AND ` + floor + `
 		   END)
 		  OR EXISTS (SELECT 1 FROM tasks t
 		              WHERE t.thread = {a}.thread AND coalesce({a}.thread, '') <> ''

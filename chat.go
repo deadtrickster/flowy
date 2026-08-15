@@ -204,9 +204,25 @@ func (s *server) handleChatSay(w http.ResponseWriter, r *http.Request) {
 		// caller never named a thread, and answering 403 to a request that
 		// mentioned no thread would say that the parent's is one worth
 		// guessing. It starts a fresh thread instead.
+		//
+		// A parent that is not readable and a store that could not answer are
+		// not the same thing, and this used to treat them as one: any error at
+		// all meant "start a fresh thread". So a dropped connection or a
+		// statement timeout silently forked the conversation - a new thread id,
+		// the DAG edge still pointing at the parent, the reply sitting where
+		// nobody looking at the thread will find it - and nothing said the
+		// store had been unreachable. ThreadHidden below has always told the
+		// two apart; this asks the same question.
 		if len(req.Parents) > 0 {
 			parent, err := s.db.ReadEvent(r.Context(), p, req.Parents[0])
-			if err == nil && parent.Thread != "" {
+			switch {
+			case errors.Is(err, store.ErrNotFound):
+				// Deliberate: a fresh thread, and no 403 for a thread the
+				// caller never named.
+			case err != nil:
+				serverError(w, r, err)
+				return
+			case parent.Thread != "":
 				hidden, err := s.db.ThreadHidden(r.Context(), p, parent.Thread)
 				if err != nil {
 					serverError(w, r, err)

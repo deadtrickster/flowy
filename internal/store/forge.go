@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -135,6 +136,12 @@ func (r *ExternalRef) AlreadySeen(id string, at time.Time) bool {
 	return !r.Since.IsZero() && !at.IsZero() && at.Before(r.Since)
 }
 
+// ErrAlreadyFiled is what a filing returns when the artifact acquired a forge
+// link between the handler's read and this write. It is deliberately not
+// ErrNotFound: the row is there, and what the caller has to be told is that
+// somebody else's issue is the one on it now.
+var ErrAlreadyFiled = errors.New("store: artifact is already filed")
+
 // SetArtifactExternal writes an artifact's forge link and its reported flag,
 // and nothing else.
 //
@@ -142,6 +149,10 @@ func (r *ExternalRef) AlreadySeen(id string, at time.Time) bool {
 // not: filing a bug changes two columns, and replacing the row would make it
 // look to every peer like a rewrite of the whole artifact. The clock does move,
 // because the link is part of what replicates.
+//
+// This is the update path - a state refresh, a pushed reply's cursor - so it
+// writes over the link that is there. The first filing goes through
+// LinkArtifactExternal, which will not.
 func (d *DB) SetArtifactExternal(
 	ctx context.Context, art *Artifact, ref *ExternalRef, reported bool,
 ) error {
@@ -149,7 +160,7 @@ func (d *DB) SetArtifactExternal(
 	if err != nil {
 		return fmt.Errorf("store: set external ref of %s: %w", art.ID, err)
 	}
-	return d.setArtifactExternal(ctx, d.sql, art, ref, reported, at)
+	return d.setArtifactExternal(ctx, d.sql, art, ref, reported, at, false)
 }
 
 // setArtifactExternal is the one statement, against whatever is in hand and at
@@ -160,8 +171,21 @@ func (d *DB) SetArtifactExternal(
 // and an owner's delete can land between them. LinkArtifactExternal wraps this
 // and the entry that records the filing in one transaction, so a link refused
 // here takes its event back out with it.
+//
+// unfiledOnly is the same discipline one column further: the predicate that
+// decides whether this may be the first filing lives in the statement that
+// writes it. The handler reads art.External up front and refuses a second
+// filing, but the read, a round trip to the forge and this write are three
+// steps, and a second filing gets through all three in the gap. Both then
+// opened a real issue and both then wrote the link, so the second overwrote
+// the first: the artifact named issue #2 and issue #1 was live on the tracker
+// with no row anywhere pointing at it - nothing syncs its state, nothing
+// pushes a reply to it, and nobody finds it again. Under this predicate the
+// loser matches no row, its transaction takes its filing entry back out with
+// it, and the handler answers it the same 409 the up-front read gives.
 func (d *DB) setArtifactExternal(
 	ctx context.Context, q execer, art *Artifact, ref *ExternalRef, reported bool, at int64,
+	unfiledOnly bool,
 ) error {
 	var raw any
 	if ref != nil {
@@ -181,10 +205,14 @@ func (d *DB) setArtifactExternal(
 	if err := d.signArtifact(ctx, art); err != nil {
 		return err
 	}
+	unfiled := ""
+	if unfiledOnly {
+		unfiled = " AND external IS NULL"
+	}
 	res, err := q.ExecContext(ctx,
 		`UPDATE artifacts SET external = $2, reported = $3, hlc = $4, node = $5, sig = $6,
 		        updated = now()
-		  WHERE id = $1 AND coalesce(tombstone, false) = false`,
+		  WHERE id = $1 AND coalesce(tombstone, false) = false`+unfiled,
 		art.ID, raw, art.Reported, art.HLC, art.Node, art.Sig)
 	if err != nil {
 		return fmt.Errorf("store: set external ref of %s: %w", art.ID, err)
@@ -194,9 +222,37 @@ func (d *DB) setArtifactExternal(
 		return fmt.Errorf("store: set external ref of %s: %w", art.ID, err)
 	}
 	if n == 0 {
+		// Two reasons the row did not match, and they are different answers:
+		// it went away, or somebody else filed it first. Asked here rather than
+		// guessed, and in the same transaction as the write that lost.
+		if unfiledOnly {
+			filed, err := isFiled(ctx, q, art.ID)
+			if err != nil {
+				return err
+			}
+			if filed {
+				return fmt.Errorf("store: set external ref: %w: artifact %s",
+					ErrAlreadyFiled, art.ID)
+			}
+		}
 		return fmt.Errorf("store: set external ref: %w: artifact %s", ErrNotFound, art.ID)
 	}
 	return nil
+}
+
+// isFiled reports whether a live artifact already carries a forge link.
+func isFiled(ctx context.Context, q execer, id string) (bool, error) {
+	var filed bool
+	err := q.QueryRowContext(ctx,
+		`SELECT external IS NOT NULL FROM artifacts
+		  WHERE id = $1 AND coalesce(tombstone, false) = false`, id).Scan(&filed)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("store: read external ref of %s: %w", id, err)
+	}
+	return filed, nil
 }
 
 // LinkArtifactExternal records that an artifact has been filed: the event that
@@ -214,6 +270,11 @@ func (d *DB) setArtifactExternal(
 // a call to another machine and cannot be rolled back, so the order is: file,
 // then record both halves together, and a failure here is reported with the
 // issue it could not record - see handleForgeFile.
+//
+// It is the first filing and only the first: the link is written under
+// `external IS NULL`, so two filings racing through the handler's up-front
+// check end with one link and one ErrAlreadyFiled rather than with the second
+// quietly overwriting the first.
 func (d *DB) LinkArtifactExternal(
 	ctx context.Context, art *Artifact, ref *ExternalRef, reported bool, e *Event,
 ) error {
@@ -230,7 +291,7 @@ func (d *DB) LinkArtifactExternal(
 		if err := d.appendEvent(ctx, tx, e); err != nil {
 			return err
 		}
-		return d.setArtifactExternal(ctx, tx, art, ref, reported, at)
+		return d.setArtifactExternal(ctx, tx, art, ref, reported, at, true)
 	})
 }
 

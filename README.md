@@ -363,12 +363,21 @@ In the order they are applied:
    or a share of that one artifact to that one user (`artifact` = the id,
    `subject` = the reader). Tombstoned grants count for nothing.
 
-Events are narrowed by `EventFilterSQL`, which is the same rule read off an
-event's own columns: an event with no project belongs to whoever wrote it, an
-event in your project is yours, a project-wide grant along the edge reaches it,
-a **share of the artifact reaches the events about that artifact** - the same
-reach the artifact itself has, floors included - and the parties to a task read
-the thread that task names, whichever project each of them writes from.
+Events are narrowed by `EventFilterSQL`, which asks two questions and takes both
+answers. First, does the reader reach the event's project at all: an event with
+no project belongs to whoever wrote it, an event in your project is yours, a
+project-wide grant along the edge reaches it, and a **share of the artifact
+reaches the events about that artifact**. Second, if the event names an
+artifact, does the reader reach that artifact - and that test is
+`artifactReachSQL`, which is `ArtifactFilterSQL`'s own branches evaluated on the
+named row, so an event never reaches further than the artifact it is about,
+floors included. An event that names no artifact is chatter and stops at the
+first question. Beside the two, the parties to a task read the thread that task
+names, whichever project each of them writes from.
+
+The floor is one definition on purpose. It was written branch by branch twice
+and missed a branch both times - see the tenth and twelfth rounds of security
+fixes below.
 
 `?scope=all` bypasses the filter, and only for the node's operator - the user id
 in `-operator`/`FLOWY_OPERATOR`. Operator-ness is local configuration, not a
@@ -2564,6 +2573,76 @@ than a growing `OFFSET`, which would re-scan what it had already handed back -
 and the three `sync_pending` writes go out as one multi-row statement per batch.
 Every id is still written down: the debt has to be complete, or the reader is
 quietly short of the rows the grant opened. What is bounded is each statement.
+
+## The twelfth round of security fixes
+
+The re-review certified the core clean again and found three defects. The first
+is the tenth round's leak on the branch the tenth round did not touch, so it is
+not fixed branch by branch this time: the artifact's read rule has exactly one
+definition now, and both filters evaluate it. Same rule as the rounds before:
+one check in `run-tests.sh` per defect, each verified to fail on the source it
+fixes.
+
+Nothing here changes how a node is configured.
+
+**HIGH - the event filter's home-project branch had no artifact floor.** The
+tenth round put the floor on the two grant branches and the branch beside them -
+`ELSE {a}.project = {project}` - kept none, which is the widest of the three:
+every reader in the event's own project takes it, and it hands over every event
+in that project unconditionally. So a per-artifact share was a way to publish
+somebody else's artifact to a whole project. Artifact `x` lives in `pq`; `u`, who
+works in `pp`, holds a share of it by name and nobody else in `pp` reaches it.
+`u` posts `{type: note, artifact: x, body: ...}` - `mayNameArtifact` passes,
+because `u` really can read `x` - and `handleAppendEvent` puts the event in `u`'s
+home project, `pp`. Every other principal of `pp` then reads that body and its
+meta over `GET /api/events`, `GET /api/inbox`, a room read and
+`GET /api/sync/pull`, while `GET /api/artifact/x` and
+`GET /api/artifact/x/history` answer them `404`. The two read surfaces disagree
+and the wider one wins, and it replicates from there for good.
+
+The fix is the arrangement rather than the branch. `artifactReachSQL` is the
+artifact read rule - personal floor, project match, `project-only` floor, live
+project-wide grant, live per-artifact share - as one SQL fragment over one
+alias. `ArtifactFilterSQL` is now that fragment, and `EventFilterSQL` evaluates
+the same fragment on the artifact an event names, in a clause **outside** the
+`CASE`, so no branch of the event filter can be reached without it and a fourth
+branch cannot be written without it either. Two consequences worth stating: an
+event naming an artifact in a project the reader has an edge into is now
+readable only if the reader really reaches that artifact, rather than if the
+artifact merely was not behind a floor - a tightening of the tenth round's
+approximation; and the tasks clause is deliberately left outside the `AND`,
+because a party naming their own artifact in their own handoff thread is
+disclosure by a party, not a way round the floor.
+`TestEventFloorMatchesTheArtifactFloor` is `TestCanReadMatchesSQL`'s shape for
+the second surface and holds the arrangement in place.
+
+**MEDIUM - concurrent filings could orphan an issue on the tracker.** Filing is
+three steps - read the artifact, open the issue over the network, write the link
+back - and only the read looked at whether the artifact had been filed already.
+`setArtifactExternal`'s `UPDATE` was `WHERE id = $1 AND coalesce(tombstone,
+false) = false`, with nothing about `external`. Two filings by the owner could
+be inside all three steps at once: both passed the up-front check, both minted a
+real issue, and both wrote - so the second overwrote the first, and issue #1 was
+left open on the tracker with no row anywhere pointing at it. Nothing syncs its
+state, nothing pushes a reply to it, and nobody finds it again. The link is now
+written under `AND external IS NULL`, and no rows affected is `ErrAlreadyFiled`
+rather than success: the loser's transaction takes its filing entry back out
+with it and the handler answers the same `409` the up-front check gives, naming
+the link that won and the issue this call opened for nothing - which is the only
+record of that issue anybody gets. It is the discipline `TombstoneArtifact` and
+`UpsertArtifact` already keep: the predicate that decides a write lives in the
+statement that writes.
+
+**LOW - `handleChatSay` swallowed a real `ReadEvent` error.** A reply that names
+parents and no thread inherits the parent's thread, and the read of that parent
+was `if err == nil` - so `ErrNotFound` and a dropped connection or a statement
+timeout were the same answer. For the first, a fresh thread is the deliberate
+answer and stays that way: the caller named no thread, and a `403` would say the
+parent's is one worth guessing. For the second it silently forked the
+conversation - a new thread minted, the DAG edge still pointing at the parent,
+the reply sitting where nobody reading the thread will find it - and nothing
+said the store had been unreachable. The `ThreadHidden` call six lines below has
+always told the two apart; this asks the same question and `500`s.
 
 ## Deployment
 

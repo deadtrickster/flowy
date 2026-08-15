@@ -276,6 +276,251 @@ func listedAs(in bool) string {
 	return "omitted"
 }
 
+// TestEventFilterHomeProjectInheritsTheArtifactFloor is the same rule on the
+// branch every reader in the event's own project takes.
+//
+// The floor was written onto the two grant branches and not onto this one, and
+// this one is the widest of the three: it hands over every event in the
+// project, unconditionally, to everybody in it. So a per-artifact share was a
+// way to publish somebody else's artifact to a whole project. u in pp holds a
+// share of x, which lives in pq and is nobody else's in pp to read; u names x on
+// an event; the event lands in pp because that is where u's writes land; and
+// every other principal of pp then reads its body and its meta while
+// /api/artifact/{x}/history answers them 404. It replicates from there.
+//
+// Nothing narrows for events that name no artifact, or that name pp's own.
+func TestEventFilterHomeProjectInheritsTheArtifactFloor(t *testing.T) {
+	ctx, db := open(t)
+
+	pp := "homefloor-pp-" + ulid.NewString()
+	pq := "homefloor-pq-" + ulid.NewString()
+
+	sharer := &User{Handle: "hf-owner-" + ulid.NewString()}
+	holder := &User{Handle: "hf-holder-" + ulid.NewString()}
+	mate := &User{Handle: "hf-mate-" + ulid.NewString()}
+	for _, u := range []*User{sharer, holder, mate} {
+		if err := db.InsertUser(ctx, u); err != nil {
+			t.Fatalf("insert user: %v", err)
+		}
+	}
+
+	// The artifact is in pq and shared to one person in pp, by name. Nobody
+	// else in pp reaches it: there is no edge between the two projects.
+	theirs := &Artifact{
+		Type: "bug", Project: &pq, OwnerUser: sharer.ID,
+		Title: "the fault in pq", Body: "sprocketwhistle", Visibility: VisibilityShared,
+	}
+	if err := db.UpsertArtifact(ctx, theirs); err != nil {
+		t.Fatalf("upsert artifact: %v", err)
+	}
+	ours := &Artifact{
+		Type: "note", Project: &pp, OwnerUser: holder.ID,
+		Title: "pp's own", Body: "b", Visibility: VisibilityProject,
+	}
+	if err := db.UpsertArtifact(ctx, ours); err != nil {
+		t.Fatalf("upsert artifact: %v", err)
+	}
+	if err := db.InsertGrant(ctx, &Grant{
+		Artifact: theirs.ID, Subject: holder.ID, FromProject: pq, ToProject: pq,
+		GrantedBy: sharer.ID,
+	}); err != nil {
+		t.Fatalf("insert share: %v", err)
+	}
+
+	// Everything the holder writes lands in the holder's home project, which is
+	// the whole of how the shared artifact's events got into pp.
+	home := pp
+	mkEvent := func(artifact, body string) *Event {
+		e := &Event{
+			Type: "chat", Project: &home, Room: pp + "-general",
+			Actor: holder.ID, Artifact: artifact, Body: body,
+		}
+		if err := db.AppendEvent(ctx, e); err != nil {
+			t.Fatalf("append event: %v", err)
+		}
+		return e
+	}
+	events := map[string]*Event{
+		"about the artifact shared to one of us": mkEvent(theirs.ID, "sprocketwhistle, in full"),
+		"about pp's own artifact":                mkEvent(ours.ID, "our own trail"),
+		"about nothing in the row":               mkEvent("", "project chatter"),
+	}
+	want := map[string]bool{
+		"about the artifact shared to one of us": false,
+		"about pp's own artifact":                true,
+		"about nothing in the row":               true,
+	}
+
+	// A principal of pp who holds no share: a project mate, and nothing more.
+	reader := &Principal{UserID: mate.ID, Project: pp}
+	if _, err := db.ReadArtifact(ctx, reader, theirs.ID, false); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("the fixture is wrong: a pp mate reads the pq artifact row: %v", err)
+	}
+
+	for name, e := range events {
+		_, err := db.ReadEvent(ctx, reader, e.ID)
+		switch {
+		case err == nil && !want[name]:
+			t.Errorf("a pp mate read the event %s: the artifact behind it is refused to them", name)
+		case errors.Is(err, ErrNotFound) && want[name]:
+			t.Errorf("the event %s is hidden from a pp mate, which narrows the project", name)
+		case err != nil && !errors.Is(err, ErrNotFound):
+			t.Fatalf("read event %s: %v", name, err)
+		}
+	}
+
+	// The list path is where it actually goes out: /api/events, the inbox, a
+	// room read and a replication pull are all this one query.
+	listed, err := db.ListEvents(ctx, reader, EventQuery{Room: pp + "-general"})
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	got := map[string]bool{}
+	for _, e := range listed {
+		got[e.ID] = true
+		if e.Body == "sprocketwhistle, in full" {
+			t.Errorf("the room read handed a pp mate the body of %s", e.ID)
+		}
+	}
+	for name, e := range events {
+		if got[e.ID] != want[name] {
+			t.Errorf("the room read %s the event %s, want %v", listedAs(got[e.ID]), name, want[name])
+		}
+	}
+
+	// And the share still does what a share does: the person it was made to
+	// reads the artifact and every event about it.
+	subject := &Principal{UserID: holder.ID, Project: pp}
+	if _, err := db.ReadArtifact(ctx, subject, theirs.ID, false); err != nil {
+		t.Fatalf("the share does not reach the artifact it shares: %v", err)
+	}
+	for name, e := range events {
+		if _, err := db.ReadEvent(ctx, subject, e.ID); err != nil {
+			t.Errorf("the holder of the share could not read the event %s: %v", name, err)
+		}
+	}
+}
+
+// TestEventFloorMatchesTheArtifactFloor is TestCanReadMatchesSQL's shape for the
+// second read surface: whatever the event filter's branches say, an event that
+// names an artifact is never readable by somebody the artifact itself is not.
+//
+// It is a matrix rather than a case, because the leak has now been written
+// twice - once on the grant branch, once on the branch beside it - and both
+// times it was a branch that did not ask. The event filter evaluates
+// artifactReachSQL, which is ArtifactFilterSQL's own rule, in a clause outside
+// the CASE, so a fourth branch cannot be added without it. This holds that
+// arrangement: every principal, every artifact, every project an event about it
+// could land in.
+func TestEventFloorMatchesTheArtifactFloor(t *testing.T) {
+	ctx, db := open(t)
+
+	px := "matrix-px-" + ulid.NewString()
+	py := "matrix-py-" + ulid.NewString()
+
+	alice := &User{Handle: "mx-alice-" + ulid.NewString()}
+	bob := &User{Handle: "mx-bob-" + ulid.NewString()}
+	carol := &User{Handle: "mx-carol-" + ulid.NewString()}
+	for _, u := range []*User{alice, bob, carol} {
+		if err := db.InsertUser(ctx, u); err != nil {
+			t.Fatalf("insert user: %v", err)
+		}
+	}
+
+	mk := func(project *string, visibility, owner string) *Artifact {
+		a := &Artifact{
+			Type: "note", Project: project, OwnerUser: owner,
+			Title: "t", Body: "b", Visibility: visibility,
+		}
+		if err := db.UpsertArtifact(ctx, a); err != nil {
+			t.Fatalf("upsert artifact: %v", err)
+		}
+		return a
+	}
+	artifacts := map[string]*Artifact{
+		"alice's px note":      mk(&px, VisibilityProject, alice.ID),
+		"alice's shared px":    mk(&px, VisibilityShared, alice.ID),
+		"alice's px-only note": mk(&px, VisibilityProjectOnly, alice.ID),
+		"bob's py note":        mk(&py, VisibilityProject, bob.ID),
+		"alice's personal":     mk(nil, VisibilityPersonal, alice.ID),
+		"bob's personal":       mk(nil, VisibilityPersonal, bob.ID),
+	}
+	// py may read px, and one px artifact is shared to bob by name.
+	for _, g := range []*Grant{
+		{FromProject: py, ToProject: px, GrantedBy: alice.ID},
+		{
+			Artifact: artifacts["alice's shared px"].ID, Subject: bob.ID,
+			FromProject: px, ToProject: px, GrantedBy: alice.ID,
+		},
+	} {
+		if err := db.InsertGrant(ctx, g); err != nil {
+			t.Fatalf("insert grant: %v", err)
+		}
+	}
+
+	// An event about each artifact in each project, written by somebody whose
+	// writes land there. No thread, so the tasks clause cannot decide anything
+	// here: what is under test is the floor.
+	room := "matrix-" + ulid.NewString()
+	type placed struct {
+		event   *Event
+		project string
+		about   *Artifact
+	}
+	var log []placed
+	for name, art := range artifacts {
+		for project, actor := range map[string]string{px: alice.ID, py: bob.ID} {
+			home := project
+			e := &Event{
+				Type: "chat", Project: &home, Room: room, Actor: actor,
+				Artifact: art.ID, Body: "about " + name + " in " + project,
+			}
+			if err := db.AppendEvent(ctx, e); err != nil {
+				t.Fatalf("append event: %v", err)
+			}
+			log = append(log, placed{event: e, project: project, about: art})
+		}
+	}
+
+	principals := map[string]*Principal{
+		"alice in px":    {UserID: alice.ID, Project: px},
+		"bob in py":      {UserID: bob.ID, Project: py},
+		"carol in px":    {UserID: carol.ID, Project: px},
+		"stranger in pz": {UserID: ulid.NewString(), Project: "matrix-pz-" + ulid.NewString()},
+	}
+
+	for pName, p := range principals {
+		for _, row := range log {
+			_, rowErr := db.ReadArtifact(ctx, p, row.about.ID, false)
+			if rowErr != nil && !errors.Is(rowErr, ErrNotFound) {
+				t.Fatalf("read artifact as %s: %v", pName, rowErr)
+			}
+			readsArtifact := rowErr == nil
+
+			_, evErr := db.ReadEvent(ctx, p, row.event.ID)
+			if evErr != nil && !errors.Is(evErr, ErrNotFound) {
+				t.Fatalf("read event as %s: %v", pName, evErr)
+			}
+			readsEvent := evErr == nil
+
+			// The rule, in one line: naming an artifact never reaches further
+			// than the artifact does.
+			if readsEvent && !readsArtifact {
+				t.Errorf("%s reads the event %q and not the artifact it names: "+
+					"the event filter reaches past the artifact filter",
+					pName, row.event.Body)
+			}
+			// And in the reader's own project the two are the same answer: an
+			// event about something they can read is theirs to read, and the
+			// project does not narrow it.
+			if row.project == p.Project && readsArtifact != readsEvent {
+				t.Errorf("%s reads the artifact %v and the event about it %v, in their own project",
+					pName, readsArtifact, readsEvent)
+			}
+		}
+	}
+}
+
 // TestScopeAllIsOperatorOnly pins the escape hatch shut for everybody else.
 func TestScopeAllIsOperatorOnly(t *testing.T) {
 	ctx, db := open(t)
