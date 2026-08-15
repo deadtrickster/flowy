@@ -337,33 +337,34 @@ func (d *DB) GetEvent(ctx context.Context, id string) (*Event, error) {
 }
 
 // ThreadEvents reads one thread in log order.
+//
+// One statement, like ListEvents: it used to read the thread's ids and then
+// fetch each event by id, which is a query per message. The console's thread
+// pane and the forge's reviewer loop both walk whole threads, so that was the
+// length of the conversation in round trips every time either of them ran, and
+// the rows in between could move under it.
+//
+// It asks who wants it no more than GetEvent does - the callers that need the
+// filter use ListEvents with a thread.
 func (d *DB) ThreadEvents(ctx context.Context, thread string) ([]*Event, error) {
 	rows, err := d.sql.QueryContext(ctx,
-		`SELECT id FROM events WHERE thread = $1 ORDER BY seq_hlc, id`, thread)
+		`SELECT `+eventColumns+` FROM events e WHERE e.thread = $1 ORDER BY e.seq_hlc, e.id`,
+		thread)
 	if err != nil {
 		return nil, fmt.Errorf("store: thread %s: %w", thread, err)
 	}
 	defer rows.Close()
 
-	var ids []string
+	out := []*Event{}
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
+		e, err := scanEvent(rows)
+		if err != nil {
 			return nil, fmt.Errorf("store: thread %s: %w", thread, err)
 		}
-		ids = append(ids, id)
+		out = append(out, e)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("store: thread %s: %w", thread, err)
-	}
-
-	out := make([]*Event, 0, len(ids))
-	for _, id := range ids {
-		e, err := d.GetEvent(ctx, id)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, e)
 	}
 	return out, nil
 }

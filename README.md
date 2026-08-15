@@ -306,6 +306,13 @@ In the order they are applied:
    or a share of that one artifact to that one user (`artifact` = the id,
    `subject` = the reader). Tombstoned grants count for nothing.
 
+Events are narrowed by `EventFilterSQL`, which is the same rule read off an
+event's own columns: an event with no project belongs to whoever wrote it, an
+event in your project is yours, a project-wide grant along the edge reaches it,
+a **share of the artifact reaches the events about that artifact** - the same
+reach the artifact itself has, floors included - and the parties to a task read
+the thread that task names, whichever project each of them writes from.
+
 `?scope=all` bypasses the filter, and only for the node's operator - the user id
 in `-operator`/`FLOWY_OPERATOR`. Operator-ness is local configuration, not a
 column: it is a fact about who runs this machine, and it must never be a row
@@ -703,7 +710,10 @@ them answer its reviewer. Anything else is `404`, not `403`, so a probe cannot
 learn that an id exists by trying to file it. Filing is separate and explicit
 because it is the one operation visible outside this machine: nothing files an
 artifact because it looked like a bug, and filing one twice is a `409` carrying
-the issue there already is rather than a second issue nobody closes.
+the issue there already is rather than a second issue nobody closes. What a sync
+*sends* is the same decision one step later - the replies that go out are the
+owner's own, an agent of theirs, or the operator's - because reading an artifact
+is not permission to publish it and neither is answering in its thread.
 
 **A closed issue moves the artifact to `done`, and that move is the one
 transition the workflow itself would refuse.** The lifecycle has no shortcuts on
@@ -722,10 +732,14 @@ which would make every peer merge a row that says the same thing.
   token here, they can read nothing, and the only thing the node knows about
   them is the login the forge printed. The comment id goes into the event's meta
   and the cursor advances over it.
-- **out** - every reply in that thread above the push cursor goes to the issue
-  as a comment, attributed (`**alice** via flowy:`) because the credential
-  posting it is the node's and the person who wrote it is not. Status moves and
-  task handoffs stay here: the reviewer did not ask for this node's bookkeeping.
+- **out** - every reply *the owner wrote* in that thread above the push cursor
+  goes to the issue as a comment, attributed (`**alice** via flowy:`) because
+  the credential posting it is the node's and the person who wrote it is not.
+  Everyone else who can reach that thread - a project mate, the assignee, the
+  agent working on it - can say what they like in it and none of it leaves the
+  building: publishing is the owner's, or the operator's, exactly as filing is.
+  Status moves and task handoffs stay here too: the reviewer did not ask for
+  this node's bookkeeping.
 - **the loop does not echo.** Comments written under the node's own login are
   skipped on the way in, and events written by a `forge:` actor are skipped on
   the way out.
@@ -1889,6 +1903,88 @@ task does not exist, replicating outwards from here. That is the half-write
 `RowsAffected` now and returns `ErrNotFound`, which rolls the transaction back
 with the entry in it.
 
+## The seventh round of security fixes
+
+The sixth round was reviewed again, deeply. The core came back clean - no SQL
+injection anywhere, `CanRead`, the SQL filters and the sync mirror agreeing row
+for row, every route authenticated, the HLC and the ULIDs correct, every page
+tie-safe on `(hlc, id)`, every multi-row write in one transaction with
+`RowsAffected` checked - and six more came out from behind it. The theme is a
+rule that is right about one surface and silent about the next: who may **write**
+standing in for who may **publish**, an update that says **nothing** about scope
+being read as a request to change it, and one artifact's share reaching the row
+but not the log. Same rule as before: one check in `run-tests.sh` per defect,
+each verified to fail on the source it fixes.
+
+Nothing here changes how a node is configured.
+
+**HIGH - a project mate's message was published to the public issue.**
+`forgePushReplies` forwarded every `chat` event in a filed artifact's thread to
+the forge, gated only on the *caller* of `POST /api/forge/sync` being the owner.
+But who may write in that thread is a far wider set - `mayWriteThread` plus the
+project and task clauses of `EventFilterSQL` admit any project mate and any
+party to the task - so somebody else could `POST /api/chat/say` into the forge
+thread with any body they liked, and the owner's next sync posted it to the
+issue over the node's `gh` credential, under the node's name, where it cannot be
+taken back. That is the exact thing `forgeOwner` says it exists to stop:
+*reading an artifact is not permission to publish it... none of that leaves the
+building*. The push side keeps the same predicate now - the artifact's owner, an
+agent acting for them, the operator, or an agent acting for the operator - and
+what anybody else says stays here, with the cursor stepping over it exactly as
+it steps over a status move. Held back is not queued: a second sync does not
+send it either.
+
+**MEDIUM - updating a projectless artifact adopted the caller's project.** A row
+with no project is its owner's and nobody else's - the read filter's first
+branch, and a floor no grant reaches through. `fillFrom` carried the old project
+forward only when it was **not** nil, and an absent project field means "the
+principal's home project", so a bare `{"id": ..., "type": "note"}` from a token
+that has one moved the row into that project: what was owner-only became
+project-readable, on a request that said nothing about scope at all. Three
+changes, one rule. `fillFrom` carries `null` forward like any other value; an
+update that would give a projectless row a project while it keeps a non-personal
+visibility is refused outright, the same shape `handleAssign` refuses; and the
+store's floor now fires for **any** row with no project rather than only for the
+two project-scoped visibilities, so `shared` over a `NULL` project is written as
+`personal` instead of describing a reach it does not have.
+
+**LOW - the artifact and the event surfaces disagreed about a share.**
+`ArtifactFilterSQL` has a per-artifact share clause and `EventFilterSQL` did
+not, so a cross-project share let the subject read the artifact and its status
+trail - `GET /api/artifact/{id}/history` is gated on the artifact read - and not
+one event about it through `GET /api/events` or the chat. Two reads of the same
+rows, two answers. The event filter carries the clause now, joined to the
+artifact so a share reaches only what a share can reach: an artifact behind the
+personal or the `project-only` floor is no more readable event by event than it
+is row by row. The tasks clause stays as the wider rule it always was.
+
+**LOW - reading a thread was a query per message.** `ThreadEvents` selected the
+thread's ids and then `GetEvent`'d each one. The console's thread pane and the
+forge's reviewer loop both walk whole threads, so a conversation cost its own
+length in round trips every time either ran, and the rows could move underneath
+it in between. It is one statement now, ordered by `(seq_hlc, id)` and scanned
+like `ListEvents`. The check counts the statements that reach the wire through a
+counting `database/sql` driver, because the events come back the same either way
+and the count is the only thing that tells the two apart.
+
+**LOW - an oversized pull answer was a parse error, forever.** The driver read a
+peer's answer through `io.LimitReader(resp.Body, maxSyncBody)`, so a page over
+64 MB was cut mid-JSON and surfaced as a syntax error with no cause in it - and
+because the cursor only moves on a page that decoded, the next run asked for the
+same page and was cut in the same place, for good. It reads one byte past the
+limit now and says *the answer exceeds 64 MB*, naming the peer, which is the
+answer the push side has always given through `decodeJSONLimit`. An operator can
+act on that; they cannot act on `invalid character 'x'`.
+
+**LOW - a non-JSON error body crashed the console's error path.**
+`web/src/lib/api.ts` parsed every body as JSON before it looked at the status, so
+a proxy's HTML page or a plain-text 502 - the state a real deployment is in
+whenever the node is down - threw `Unexpected token '<'`, a `SyntaxError` with no
+status on it, past every caller that handles `ApiError`. The parse has its own
+`try` now and falls back to `new ApiError(response.status, ...)` with the first
+of the body on it, or the status line when there is nothing to quote. The node's
+own JSON errors are untouched, which the check asserts beside the fix.
+
 ## Deployment
 
 The store speaks the Postgres wire and nothing else. The spine of `schema.sql`
@@ -1911,12 +2007,13 @@ query. Nothing above it depends on anything below it.
 
 ## Phase 6 status
 
-Green. `./run-tests.sh` reports `passed: 256 failed: 0` with Go 1.22, Node 22.14
+Green. `./run-tests.sh` reports `passed: 262 failed: 0` with Go 1.22, Node 22.14
 and Postgres 16 - the 200 checks Phase 6 ended with, all still green, plus the
 12 the first security slice added, the 12 the second one did, the 8 from the
-third, the 8 from the fourth, the 10 from the fifth and the 6 from the sixth:
-one per defect above, and two for the `project-only` handoff because it is
-refused at two doors. Each is verified to fail on the source it fixes. Four of
+third, the 8 from the fourth, the 10 from the fifth, the 6 from the sixth - one
+per defect, and two for the `project-only` handoff because it is refused at two
+doors - and the 6 from the seventh, one per defect above. Each is verified to
+fail on the source it fixes. Four of
 the older checks changed with the fixes rather than around them: a deleted
 artifact now reads as `404` on both nodes with the tombstone asserted through
 `psql`, the `?counts=1` health check no longer claims to be reporting the spine

@@ -4967,6 +4967,202 @@ say "an update that matched nothing is not a write"
 check "moving a task that is not here appends no entry for it (LOW 5)" \
 	go test -count=1 -run TestUpdateTaskEventNeedsTheTaskToBeThere ./internal/store
 
+# --------------------------------------------------------- security fixes, 7
+#
+# Six more, each with the check that fails without it.
+
+# HIGH 1. forgePushReplies forwarded every chat event in a filed artifact's
+# thread to the issue, gated only on the sync's caller being the owner. Who may
+# write in that thread is a much wider set - any project mate, any party to the
+# task - so a mate's message went out over the node's forge credential, under
+# the node's name, on a public issue. Reading an artifact is not permission to
+# publish it, and neither is answering in its thread.
+only_the_owners_replies_reach_the_forge() {
+	recall
+	local id thread filed bseq pushed
+	id="$(new_artifact "$TOKEN_A_PC" bug "the alternator whines at idle")" || return 1
+
+	# Hand it to B first, so the issue's conversation is the handoff thread and
+	# B is a party to it: somebody who may write here and may not publish.
+	assign_as "$TOKEN_A_PC" "$id" "$USER_B" "have a look at this one" || return 1
+	want_eq "the handoff" "$API_STATUS" 200 || return 1
+	thread="$(jqv .thread)"
+	forge_file "$TOKEN_A_PC" "$id" o/r || return 1
+	want_eq "filing status" "$API_STATUS" 200 || return 1
+	filed="$(jqv .external.number)"
+	want_eq "the issue's thread is the handoff's" "$(jqv .external.thread)" "$thread" || return 1
+
+	# B answers, which is an ordinary message in a conversation B is part of.
+	say_in_thread "$TOKEN_B" "quibberflax - I will take it tomorrow" "$thread" || return 1
+	want_eq "B could say it" "$API_STATUS" 200 || return 1
+	bseq="$(jqv .seq_hlc)"
+
+	forge_sync "$TOKEN_A_PC" "$id" || return 1
+	want_eq "sync status" "$API_STATUS" 200 || return 1
+	want_eq "what the sync sent out" "$(jqv .pushed)" 0 || return 1
+	mock_issue "$TOKEN_OP" o/r "$filed" || return 1
+	want_eq "B's words on the public issue" \
+		"$(jqv '[.comments[] | select(.body | test("quibberflax"))] | length')" 0 || return 1
+
+	# It is still a message here: held back is not deleted.
+	api GET "$TOKEN_A_PC" "/api/chat/forge?thread=$thread" || return 1
+	want_eq "B's message in the thread" \
+		"$(jqv '[.events[] | select(.body | test("quibberflax"))] | length')" 1 || return 1
+
+	# The owner's own reply goes out, so the refusal is about who said it.
+	say_in_thread "$TOKEN_A_PC" "thanks - it also snickerbolts on the overrun" "$thread" || return 1
+	want_eq "the owner could say it" "$API_STATUS" 200 || return 1
+	forge_sync "$TOKEN_A_PC" "$id" || return 1
+	want_eq "what the second sync sent out" "$(jqv .pushed)" 1 || return 1
+	pushed="$(jqv .external.pushed)"
+	if [ "$pushed" -le "$bseq" ]; then
+		printf 'the push cursor stopped behind the message it skipped: %s <= %s\n' \
+			"$pushed" "$bseq" >&2
+		return 1
+	fi
+	mock_issue "$TOKEN_OP" o/r "$filed" || return 1
+	want_eq "the owner's reply reached the issue" \
+		"$(jqv '[.comments[] | select(.body | test("snickerbolts on the overrun"))] | length')" \
+		1 || return 1
+	want_eq "and B's still did not" \
+		"$(jqv '[.comments[] | select(.body | test("quibberflax"))] | length')" 0 || return 1
+
+	# And the skipped one is not queued for the next sync either.
+	forge_sync "$TOKEN_A_PC" "$id" || return 1
+	want_eq "a third sync sends nothing" "$(jqv .pushed)" 0 || return 1
+	printf 'o/r#%s carries the owner alone; the cursor went past %s to %s\n' "$filed" "$bseq" "$pushed"
+}
+
+# MED 2. An artifact with no project is its owner's and nobody else's, whatever
+# the visibility column says. An update that left the project field out was
+# read as "the principal's home project", so a bare {id, type} from a token that
+# has one handed the row to that project - on a request that said nothing about
+# scope at all.
+an_update_does_not_adopt_the_callers_project() {
+	recall
+	local id legacy
+	api POST "$TOKEN_A" /api/artifacts '{
+		"type": "note", "title": "mine alone", "body": "thrundlewick",
+		"visibility": "shared", "project": null
+	}' || return 1
+	want_eq "create status" "$API_STATUS" 200 || return 1
+	id="$(jqv .id)"
+	want_eq "the project it landed in" "$(jqv .project)" null || return 1
+	# The floor is a property of the row now, not only of the read filter.
+	want_eq "the visibility a projectless row keeps" "$(jqv .visibility)" personal || return 1
+	want_status 404 GET "$TOKEN_B" "/api/artifact/$id" || return 1
+
+	# The bare update. It says nothing about scope, so it changes nothing.
+	api POST "$TOKEN_A" /api/artifacts "$(jq -nc --arg i "$id" '{id: $i, type: "note"}')" || return 1
+	want_eq "the update status" "$API_STATUS" 200 || return 1
+	want_eq "the project after a bare update" "$(jqv .project)" null || return 1
+	want_eq "the visibility after it" "$(jqv .visibility)" personal || return 1
+	want_eq "the title it kept" "$(jqv .title)" "mine alone" || return 1
+	want_eq "rows of it that ever landed in a project" \
+		"$(scalar "SELECT count(*) FROM artifacts WHERE id = '$id' AND project IS NOT NULL")" \
+		0 || return 1
+	want_status 404 GET "$TOKEN_B" "/api/artifact/$id" || return 1
+
+	# A row written the way replication can still deliver one: NULL project with
+	# a non-personal visibility on it. Asking for a project is refused rather
+	# than taken, and a bare update leaves it where it is.
+	legacy="$(scalar "SELECT 'legacy-' || md5(random()::text)")" || return 1
+	psql_do "INSERT INTO artifacts (id, type, project, owner_user, title, body, visibility,
+	                                hlc, node)
+	         VALUES ('$legacy', 'note', NULL, '$USER_A', 'the one that arrived', 'blimberwatt',
+	                 'shared', 1, 'peer')" || return 1
+	api POST "$TOKEN_A" /api/artifacts \
+		"$(jq -nc --arg i "$legacy" '{id: $i, type: "note", project: "pa"}')" || return 1
+	want_eq "asking for a project outright" "$API_STATUS" 400 || return 1
+	want_eq "the project it is still in" \
+		"$(scalar "SELECT coalesce(project, 'none') FROM artifacts WHERE id = '$legacy'")" \
+		none || return 1
+
+	api POST "$TOKEN_A" /api/artifacts \
+		"$(jq -nc --arg i "$legacy" '{id: $i, type: "note", title: "edited, not moved"}')" || return 1
+	want_eq "the bare update status" "$API_STATUS" 200 || return 1
+	want_eq "the project it kept" "$(jqv .project)" null || return 1
+	want_eq "and the visibility it was corrected to" "$(jqv .visibility)" personal || return 1
+	want_eq "the edit that was asked for" "$(jqv .title)" "edited, not moved" || return 1
+	printf '%s and %s stayed out of pa through an update\n' "$id" "$legacy"
+}
+
+# LOW 3. A cross-project share let the subject read the artifact and its status
+# trail - /api/artifact/{id}/history is gated on the artifact read - and not one
+# event about it anywhere else, because the event filter had no per-artifact
+# share clause. Two read surfaces, two answers about the same rows.
+a_share_reaches_the_events_about_it() {
+	recall
+	local id thread other othread
+	id="$(new_artifact "$TOKEN_A_PC" bug "the clutch judders in the wet")" || return 1
+	move_status "$TOKEN_A_PC" "$id" triaged || return 1
+	want_eq "the status move" "$API_STATUS" 200 || return 1
+	thread="$(jqv .event.thread)"
+	api POST "$TOKEN_A_PC" /api/events \
+		"$(jq -nc --arg a "$id" --arg t "$thread" \
+			'{type: "chat", room: "forge", artifact: $a, thread: $t,
+			  body: "wobblethwack - it is worse above 60"}')" || return 1
+	want_eq "the message about it" "$API_STATUS" 200 || return 1
+
+	# B is in pb, which holds no grant into pc: the share of this one artifact
+	# is the only thing that can be doing any work here.
+	want_status 200 POST "$TOKEN_A_PC" /api/grants \
+		"$(jq -nc --arg a "$id" --arg s "$USER_B" '{artifact: $a, subject: $s}')" || return 1
+	want_status 200 GET "$TOKEN_B" "/api/artifact/$id" || return 1
+	api GET "$TOKEN_B" "/api/artifact/$id/history" || return 1
+	want_eq "the trail the artifact surface shows" "$(jqv '.events | length')" 1 || return 1
+
+	# The same events, read as events.
+	api GET "$TOKEN_B" "/api/events?thread=$thread" || return 1
+	want_eq "status" "$API_STATUS" 200 || return 1
+	want_eq "the status move B can see" \
+		"$(jqv '[.events[] | select(.type == "status")] | length')" 1 || return 1
+	want_eq "and what was said about it" \
+		"$(jqv '[.events[] | select(.body | test("wobblethwack"))] | length')" 1 || return 1
+
+	# An artifact in the same project that was never shared is still nothing to
+	# B, which is what says the share is doing this and not the widening.
+	other="$(new_artifact "$TOKEN_A_PC" bug "the one nobody shared")" || return 1
+	move_status "$TOKEN_A_PC" "$other" triaged || return 1
+	othread="$(jqv .event.thread)"
+	want_status 404 GET "$TOKEN_B" "/api/artifact/$other" || return 1
+	api GET "$TOKEN_B" "/api/events?thread=$othread" || return 1
+	want_eq "events about the unshared one" "$(jqv '.events | length')" 0 || return 1
+	printf 'the share of %s reaches its events; %s stays out of reach\n' "$id" "$other"
+}
+
+# LOW 6. The console parsed every error body as JSON before it looked at the
+# status, so a proxy's HTML 502 became "Unexpected token '<'" - a SyntaxError
+# with no status on it, thrown past every caller that handles ApiError.
+console_reports_the_status_not_the_parse_error() {
+	cd "$ROOT/web" || return 1
+	node scripts/api-error-check.mjs
+}
+
+say "answering in a thread is not publishing"
+check "a project mate's reply is not sent to the forge (HIGH 1)" \
+	only_the_owners_replies_reach_the_forge
+
+say "an update that says nothing about scope changes nothing about scope"
+check "a projectless artifact is not adopted into the caller's project (MED 2)" \
+	an_update_does_not_adopt_the_callers_project
+
+say "one share, one answer"
+check "a share reaches the events about the artifact (LOW 3)" \
+	a_share_reaches_the_events_about_it
+
+say "a thread is one read"
+check "ThreadEvents is a single query, in (seq_hlc, id) order (LOW 4)" \
+	go test -count=1 -run TestThreadEventsIsOneQuery ./internal/store
+
+say "a peer that answers with too much is told so"
+check "an oversized pull answer is a named error, not a parse error (LOW 5)" \
+	go test -count=1 -run 'TestPeerAnswerRefusesAnOversizedPage|TestPullFromAPeerThatAnswersTooMuchSaysSo' .
+
+say "a body that is not json still has a status"
+check "a non-json error body becomes an ApiError with the status (LOW 6)" \
+	console_reports_the_status_not_the_parse_error
+
 # ------------------------------------------------------------------- verdict
 
 say "result"

@@ -200,10 +200,14 @@ func (d *DB) fill(a *Artifact) {
 	if a.Visibility == "personal" {
 		a.Project = nil
 	}
-	if a.Project == nil && projectScoped(a.Visibility) {
+	if a.Project == nil {
 		// A row with no project cannot be a project artifact: there is no
-		// project to read it.
-		a.Visibility = "personal"
+		// project to read it. That is true of 'shared' and of anything else
+		// written over a NULL project, not only of the two project-scoped
+		// visibilities - CanRead and ArtifactFilterSQL both stop at the owner
+		// on project IS NULL whatever the column says, so the column says it
+		// too rather than describing a reach the row does not have.
+		a.Visibility = VisibilityPersonal
 	}
 	// A fresh reading on every write, including an update - the previous
 	// value is what a peer already saw.

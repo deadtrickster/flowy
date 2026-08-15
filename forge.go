@@ -115,6 +115,34 @@ func (s *server) forgeOwner(w http.ResponseWriter, r *http.Request, art *store.A
 	return false
 }
 
+// forgeMayPublish reports whether what actor said may leave this node over the
+// node's own credential. It is forgeOwner's rule, applied to an event's author
+// rather than to the caller holding the token: the owner of the artifact, an
+// agent acting for them, this node's operator, or an agent acting for the
+// operator.
+//
+// The two are asked in different places for the same reason. Who may write in
+// an artifact's thread is a wide set - any project mate, any party to the task,
+// see mayWriteThread and EventFilterSQL - and none of that leaves the building.
+// Who may publish is the narrow one, and a sync run by the owner must not carry
+// somebody else's words out with it.
+func (s *server) forgeMayPublish(ctx context.Context, art *store.Artifact, actor string) bool {
+	if actor == "" {
+		return false
+	}
+	if actor == art.OwnerUser || (s.operator != "" && actor == s.operator) {
+		return true
+	}
+	// An agent posts as itself, so the owner's agent is an actor id that is not
+	// the owner's. It reaches exactly what its user reaches - the same rule
+	// PrincipalForToken keeps for a token that names only an agent.
+	agent, err := s.db.GetAgent(ctx, actor)
+	if err != nil {
+		return false
+	}
+	return agent.UserID == art.OwnerUser || (s.operator != "" && agent.UserID == s.operator)
+}
+
 // forgeRepoAllowed reports whether this node files into repo, and answers 403
 // when it does not.
 //
@@ -373,8 +401,9 @@ type forgeSyncRequest struct {
 // principal named for whoever wrote it on the forge. The node's own comments
 // are skipped, which is what stops the loop echoing.
 //
-// Out: every reply in that thread newer than the push cursor goes to the forge
-// as a comment, attributed to whoever wrote it here.
+// Out: every reply the owner wrote in that thread newer than the push cursor
+// goes to the forge as a comment, attributed to whoever wrote it here. What
+// anybody else said in the thread stays here - see forgePushReplies.
 //
 // It is idempotent. Both cursors live on the external ref, both only move
 // forward, and a sync that finds nothing new writes nothing at all - not even a
@@ -416,7 +445,7 @@ func (s *server) handleForgeSync(w http.ResponseWriter, r *http.Request) {
 	pushed := 0
 	var pushErr error
 	if pullErr == nil {
-		pushed, pushErr = s.forgePushReplies(r, ref, client)
+		pushed, pushErr = s.forgePushReplies(r, art, ref, client)
 	}
 
 	// The cursors describe what actually happened: every comment that reached
@@ -550,8 +579,16 @@ func (s *server) threadForgeComment(
 // ref away on the error - the ones that had gone out were sent again on the
 // next sync. Either way the issue is wrong, and the second way is wrong in
 // public.
+//
+// What goes out is the owner's half of the conversation and nothing else. The
+// thread is open to everyone the artifact is - a project mate, the assignee,
+// the agent working on it - and every one of them can say something in it. That
+// is a conversation here; on the issue it would be this node publishing a
+// stranger's words under a credential they do not hold and cannot take back,
+// which is the one thing forgeOwner exists to stop. So a reply from anybody
+// else stays here, and the cursor passes it exactly as it passes a status move.
 func (s *server) forgePushReplies(
-	r *http.Request, ref *store.ExternalRef, client forge.ForgeClient,
+	r *http.Request, art *store.Artifact, ref *store.ExternalRef, client forge.ForgeClient,
 ) (int, error) {
 	ctx := r.Context()
 	events, err := s.db.ThreadEvents(ctx, ref.Thread)
@@ -568,6 +605,13 @@ func (s *server) forgePushReplies(
 		// this node's bookkeeping, and the issue's reviewer did not ask for it.
 		// Nothing left this node, so the cursor may pass it either way.
 		if e.Type != chatEventType || isForgeActor(e.Actor) || strings.TrimSpace(e.Body) == "" {
+			ref.Pushed = e.SeqHLC
+			continue
+		}
+		// And only what the owner said. Nothing left this node, so the cursor
+		// may pass this one too - a reply held back is held back for good, not
+		// queued for the next sync to send.
+		if !s.forgeMayPublish(ctx, art, e.Actor) {
 			ref.Pushed = e.SeqHLC
 			continue
 		}

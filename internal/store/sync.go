@@ -1158,12 +1158,17 @@ func eventReadable(ctx context.Context, tx *sql.Tx, p *Principal, e *Event) (boo
 	project := a.next(nullText(e.Project))
 	actor := a.next(e.Actor)
 	thread := a.next(e.Thread)
+	// artifact is one of the filter's columns too - the share of one artifact
+	// reaches the events about it - so the synthetic row carries it, or the
+	// filter would be asked about a column that is not there.
+	artifact := a.next(e.Artifact)
 	filter := EventFilterSQL(p, "e", a, false)
 	var ok sql.NullBool
 	err := tx.QueryRowContext(ctx,
 		`SELECT `+filter+`
 		   FROM (SELECT `+project+`::text AS project, `+actor+`::text AS actor,
-		                `+thread+`::text AS thread) e`, a.vals...).Scan(&ok)
+		                `+thread+`::text AS thread, `+artifact+`::text AS artifact) e`,
+		a.vals...).Scan(&ok)
 	if err != nil {
 		return false, fmt.Errorf("store: sync check event %s: %w", e.ID, err)
 	}

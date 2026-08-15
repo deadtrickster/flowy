@@ -458,7 +458,7 @@ func peerRequest(ctx context.Context, client *http.Client, method, url, token st
 	}
 	defer resp.Body.Close()
 
-	answer, err := io.ReadAll(io.LimitReader(resp.Body, maxSyncBody))
+	answer, err := peerAnswer(resp.Body, maxSyncBody)
 	if err != nil {
 		return fmt.Errorf("%s %s: %w", method, url, err)
 	}
@@ -471,6 +471,28 @@ func peerRequest(ctx context.Context, client *http.Client, method, url, token st
 			method, url, short(string(answer)), err)
 	}
 	return nil
+}
+
+// peerAnswer reads a peer's answer, and says so when it does not fit rather
+// than reading part of one.
+//
+// The limit used to be a LimitReader on its own, which cuts the body mid-JSON
+// and hands the rest of the driver a parse error with no cause in it - and
+// because the cursor only moves on a page that decoded, the next run asked for
+// the same page and was cut in the same place, for good. One byte past the
+// limit is the whole difference between "the peer sent too much" and "the peer
+// sent nonsense", and the operator is the one who can act on it: the push side
+// has answered this way all along, through decodeJSONLimit.
+func peerAnswer(body io.Reader, limit int64) ([]byte, error) {
+	answer, err := io.ReadAll(io.LimitReader(body, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(answer)) > limit {
+		return nil, fmt.Errorf("the answer exceeds %d MB and was not read: "+
+			"the peer is not paging its delta", limit>>20)
+	}
+	return answer, nil
 }
 
 // peerBase normalises a peer URL to a scheme and host with no trailing slash,

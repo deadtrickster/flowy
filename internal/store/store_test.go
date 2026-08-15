@@ -2,13 +2,19 @@ package store
 
 import (
 	"context"
+	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"os"
+	"sort"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/lib/pq"
 
+	"github.com/deadtrickster/flowy/internal/hlc"
 	"github.com/deadtrickster/flowy/internal/ulid"
 )
 
@@ -412,5 +418,148 @@ func TestArrayContainment(t *testing.T) {
 	}
 	if len(found) != 1 || found[0] != child.ID {
 		t.Fatalf("children of %s came back as %v, want [%s]", parent.ID, found, child.ID)
+	}
+}
+
+// countingDriver is lib/pq with a tally of the statements that reach the wire.
+// It exists so a test can say "one query", which is the only way to hold a read
+// to that: a loop of GetEvent calls and one statement return the same events,
+// and only the count tells them apart.
+type countingDriver struct{ n *int64 }
+
+func (d countingDriver) Open(name string) (driver.Conn, error) {
+	c, err := pq.Driver{}.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	return countingConn{Conn: c, n: d.n}, nil
+}
+
+type countingConn struct {
+	driver.Conn
+	n *int64
+}
+
+func (c countingConn) QueryContext(
+	ctx context.Context, query string, args []driver.NamedValue,
+) (driver.Rows, error) {
+	atomic.AddInt64(c.n, 1)
+	return c.Conn.(driver.QueryerContext).QueryContext(ctx, query, args)
+}
+
+var (
+	countedQueries int64
+	countingOnce   sync.Once
+)
+
+// openCounting is open(t) over the counting driver.
+func openCounting(t *testing.T) (context.Context, *DB, *int64) {
+	t.Helper()
+
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		t.Skip("DATABASE_URL is not set; run ./run-tests.sh for the live checks")
+	}
+	countingOnce.Do(func() {
+		sql.Register("postgres-counting", countingDriver{n: &countedQueries})
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	t.Cleanup(cancel)
+
+	pool, err := sql.Open("postgres-counting", dsn)
+	if err != nil {
+		t.Fatalf("open counting pool: %v", err)
+	}
+	t.Cleanup(func() { pool.Close() })
+	if err := pool.PingContext(ctx); err != nil {
+		t.Fatalf("ping: %v", err)
+	}
+	return ctx, &DB{sql: pool, clock: hlc.New("count-node"), node: "count-node"}, &countedQueries
+}
+
+// TestThreadEventsIsOneQuery holds the thread read to a single statement.
+//
+// It used to select the thread's ids and then GetEvent each one, which is a
+// query per message - and the console's thread pane and the forge's reviewer
+// loop both walk whole threads. The rows come back the same either way, so the
+// count is the check; the order and the payload are asserted beside it, because
+// a single query that scans the wrong columns is not the same read.
+func TestThreadEventsIsOneQuery(t *testing.T) {
+	ctx, db, queries := openCounting(t)
+
+	thread := ulid.NewString()
+	base := db.Clock().Pack()
+	// Two events share a reading, so the id half of the (seq_hlc, id) order is
+	// exercised rather than assumed.
+	written := []*Event{
+		{Type: "chat", Room: "r", Thread: thread, SeqHLC: base + 3, Actor: "u1", Body: "third"},
+		{Type: "chat", Room: "r", Thread: thread, SeqHLC: base + 1, Actor: "u1", Body: "first"},
+		{Type: "chat", Room: "r", Thread: thread, SeqHLC: base + 2, Actor: "u2", Body: "second a"},
+		{
+			Type: "chat", Room: "r", Thread: thread, SeqHLC: base + 2, Actor: "u2",
+			Body: "second b", Meta: json.RawMessage(`{"actor_kind":"user"}`),
+		},
+	}
+	for _, e := range written {
+		if err := db.AppendEvent(ctx, e); err != nil {
+			t.Fatalf("append: %v", err)
+		}
+	}
+
+	want := make([]*Event, len(written))
+	copy(want, written)
+	sort.Slice(want, func(i, j int) bool {
+		if want[i].SeqHLC != want[j].SeqHLC {
+			return want[i].SeqHLC < want[j].SeqHLC
+		}
+		return want[i].ID < want[j].ID
+	})
+
+	atomic.StoreInt64(queries, 0)
+	got, err := db.ThreadEvents(ctx, thread)
+	if err != nil {
+		t.Fatalf("thread events: %v", err)
+	}
+	if n := atomic.LoadInt64(queries); n != 1 {
+		t.Errorf("reading a thread of %d took %d queries, want 1", len(written), n)
+	}
+
+	if len(got) != len(want) {
+		t.Fatalf("thread came back with %d events, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i].ID != want[i].ID {
+			t.Fatalf("event %d is %s, want %s (seq_hlc, id order)", i, got[i].ID, want[i].ID)
+		}
+		if got[i].Body != want[i].Body || got[i].Actor != want[i].Actor ||
+			got[i].SeqHLC != want[i].SeqHLC || got[i].Thread != thread ||
+			got[i].Room != want[i].Room || got[i].Type != want[i].Type {
+			t.Fatalf("event %d read back as %+v, want %+v", i, got[i], want[i])
+		}
+		if got[i].Parents == nil {
+			t.Fatalf("event %d came back with nil parents", i)
+		}
+	}
+	for i := range want {
+		if got[i].ID != written[3].ID {
+			continue
+		}
+		var meta map[string]string
+		if err := json.Unmarshal(got[i].Meta, &meta); err != nil {
+			t.Fatalf("meta read back as %q: %v", got[i].Meta, err)
+		}
+		if meta["actor_kind"] != "user" {
+			t.Fatalf("meta read back as %v", meta)
+		}
+	}
+
+	// An empty thread is an empty page, not a nil one.
+	empty, err := db.ThreadEvents(ctx, ulid.NewString())
+	if err != nil {
+		t.Fatalf("empty thread: %v", err)
+	}
+	if empty == nil || len(empty) != 0 {
+		t.Fatalf("an empty thread came back as %v", empty)
 	}
 }

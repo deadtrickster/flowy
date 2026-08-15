@@ -176,15 +176,41 @@ function authHeader(): HeadersInit {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
+/** statusText is what an error says when the body said nothing usable. */
+function statusText(response: Response): string {
+  return `${response.status} ${response.statusText}`.trim();
+}
+
+/**
+ * parseBody reads the body as JSON, and turns a body that is not JSON into an
+ * ApiError carrying the status.
+ *
+ * Not JSON at all is a proxy's HTML error page, or a plain-text 502 from
+ * something standing in front of the node. Parsing it throws a SyntaxError that
+ * says where the '<' was and nothing about what happened, and that is what the
+ * console showed instead of the status. What is kept of the body is the first
+ * of it - enough to recognise whatever sent it, short enough for a toast.
+ */
+function parseBody(text: string, response: Response) {
+  if (!text) {
+    return {};
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new ApiError(response.status, text.trim().slice(0, 200) || statusText(response));
+  }
+}
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(path, {
     ...init,
     headers: { ...authHeader(), ...(init.headers ?? {}) },
   });
   const text = await response.text();
-  const body = text ? JSON.parse(text) : {};
+  const body = parseBody(text, response);
   if (!response.ok) {
-    throw new ApiError(response.status, body?.error ?? `${response.status} ${response.statusText}`);
+    throw new ApiError(response.status, body?.error ?? statusText(response));
   }
   return body as T;
 }

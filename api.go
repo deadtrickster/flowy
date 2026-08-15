@@ -123,6 +123,21 @@ func (s *server) handleCreateArtifact(w http.ResponseWriter, r *http.Request) {
 				writeJSON(w, http.StatusBadRequest, errorBody(err.Error()))
 				return
 			}
+			// A row with no project is its owner's and nobody else's, whatever
+			// the visibility column says - the read filter's first branch, and
+			// the personal floor's whole promise. Giving it one is not an edit
+			// of a field, it is handing the row to a project, so an update
+			// does not do it: the same refusal an assignment of a personal
+			// artifact gets. Say personal and it stays personal, or write it
+			// in the project it belongs to.
+			if existing.Project == nil && project != nil &&
+				req.Visibility != store.VisibilityPersonal {
+				writeJSON(w, http.StatusBadRequest,
+					errorBody("artifact "+req.ID+" has no project and is its owner's alone; "+
+						"an update cannot move it into "+*project+
+						" as "+req.Visibility+" - create it there instead"))
+				return
+			}
 		}
 	}
 
@@ -229,8 +244,17 @@ func (req *artifactRequest) fillFrom(old *store.Artifact) {
 	if len(req.Fields) == 0 {
 		req.Fields = old.Fields
 	}
-	if len(req.Project) == 0 && old.Project != nil {
-		req.Project, _ = json.Marshal(*old.Project)
+	// None is a value too, and it is carried forward like any other. Absent
+	// means "the principal's home project", so an update that said nothing
+	// about the project - a bare {id, type} - used to move a row nobody but its
+	// owner could read into the caller's project, on a request that said
+	// nothing about scope at all.
+	if len(req.Project) == 0 {
+		if old.Project != nil {
+			req.Project, _ = json.Marshal(*old.Project)
+		} else {
+			req.Project = json.RawMessage("null")
+		}
 	}
 }
 

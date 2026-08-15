@@ -42,12 +42,6 @@ const (
 	VisibilityShared      = "shared"
 )
 
-// projectScoped reports whether a visibility needs a project to mean anything.
-// A row with none is personal, whatever it was written as.
-func projectScoped(visibility string) bool {
-	return visibility == VisibilityProject || visibility == VisibilityProjectOnly
-}
-
 // Principal is the identity a request acts as: a (user, agent, project) triple
 // resolved from a bearer token. Project is the principal's home project, the
 // one it reads without needing a grant.
@@ -182,7 +176,16 @@ func ArtifactFilterSQL(p *Principal, alias string, a *args, scopeAll bool) strin
 // Events carry no visibility column, so the floor is the project-less event: it
 // belongs to whoever wrote it, and only they read it back.
 //
-// The second half is the assignment thread. A handoff crosses a project
+// The share of one artifact reaches the events about it, which is the clause
+// ArtifactFilterSQL has and this one did not. A cross-project share let the
+// subject read the artifact and its history - /api/artifact/{id}/history is
+// gated on the artifact read - and not one event about it anywhere else, so the
+// two read surfaces disagreed about the same rows. It is the artifact's own
+// branch, joined: a share only reaches what a share can reach, so an artifact
+// behind the personal or project-only floor is no more readable event by event
+// than it is row by row.
+//
+// The last half is the assignment thread. A handoff crosses a project
 // boundary by definition - the whole point of it is that somebody in another
 // project now has the work - so a thread that a task names is readable by the
 // two people the task is between and by the agent it was delegated to,
@@ -212,6 +215,14 @@ func EventFilterSQL(p *Principal, alias string, a *args, scopeAll bool) string {
 		                        AND g.artifact IS NULL
 		                        AND g.from_project = {project} AND {project} <> ''
 		                        AND g.to_project = {a}.project)
+		          OR EXISTS (SELECT 1 FROM grants g JOIN artifacts sar ON sar.id = g.artifact
+		                      WHERE coalesce(g.tombstone, false) = false
+		                        AND g.artifact = {a}.artifact
+		                        AND coalesce({a}.artifact, '') <> ''
+		                        AND g.subject = {user} AND {user} <> ''
+		                        AND sar.project IS NOT NULL
+		                        AND coalesce(sar.visibility, '') <> 'personal'
+		                        AND coalesce(sar.visibility, '') <> 'project-only')
 		   END)
 		  OR EXISTS (SELECT 1 FROM tasks t
 		              WHERE t.thread = {a}.thread AND coalesce({a}.thread, '') <> ''
