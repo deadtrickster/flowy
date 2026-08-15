@@ -50,8 +50,36 @@ commands:
   help     print this message
 `
 
-// version is the node's build version.
-const version = "0.7.2-phase7"
+// release is the version of the code: the phase it belongs to, bumped by hand
+// when a phase or a round of security work lands.
+const release = "0.7.3-fix14"
+
+// buildStamp names the build itself, and the build sets it:
+//
+//	go build -ldflags "-X main.buildStamp=$(git rev-parse --short HEAD)" .
+//
+// A version that is only the release is a version that cannot answer the
+// question this kind of work asks - which build refused that row, which build
+// is this peer running - because half a dozen distinct binaries report the same
+// string. The stamp is what changes when the code does. A build with no flags,
+// or `go run`, says "src", which is honest rather than a commit it is not.
+var buildStamp = "src"
+
+// version is what /healthz, GET /version, the MCP serverInfo, the sync handshake
+// and `flowy version` report: the release and the build under it, joined by a
+// plus - 0.7.3-fix14+3305508.
+var version = versionOf(release, buildStamp)
+
+// versionOf joins a release and a build stamp. It is a function so that the
+// scheme is one line rather than a string literal repeated wherever a version
+// is made, and so a test can ask whether two builds really do report two
+// versions.
+func versionOf(release, stamp string) string {
+	if stamp == "" {
+		return release
+	}
+	return release + "+" + stamp
+}
 
 func main() {
 	if len(os.Args) < 2 {

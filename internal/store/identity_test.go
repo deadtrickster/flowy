@@ -206,7 +206,7 @@ func TestAServedIdentityIsSelfSignedAndNeverRotates(t *testing.T) {
 	notSelfSigned := NodeIdentity{NodeID: third, PublicKey: publicOf(testKey(third))}
 	notSelfSigned.Sig = signBytes(relay, canonicalIdentity(third, notSelfSigned.PublicKey))
 
-	res, err := db.syncApply(ctx, nil, modePull, &SyncSet{
+	res, err := db.syncApply(ctx, nil, &SyncSet{
 		Identities: []NodeIdentity{notSelfSigned},
 	})
 	if err != nil {
@@ -232,7 +232,7 @@ func TestAServedIdentityIsSelfSignedAndNeverRotates(t *testing.T) {
 	rotated := NodeIdentity{NodeID: known, PublicKey: publicOf(impostor)}
 	rotated.Sig = signIdentity(impostor, &rotated)
 
-	res, err = db.syncApply(ctx, nil, modePull, &SyncSet{Identities: []NodeIdentity{rotated}})
+	res, err = db.syncApply(ctx, nil, &SyncSet{Identities: []NodeIdentity{rotated}})
 	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}
@@ -254,7 +254,7 @@ func TestAServedIdentityIsSelfSignedAndNeverRotates(t *testing.T) {
 	// First contact, which is the residual: an unknown node's self-signed
 	// identity is taken on trust with the flag off.
 	tofu := "tofu-" + ulid.NewString()
-	res, err = db.syncApply(ctx, nil, modePull, &SyncSet{
+	res, err = db.syncApply(ctx, nil, &SyncSet{
 		Identities: []NodeIdentity{identityOfNode(tofu)},
 	})
 	if err != nil {
@@ -281,7 +281,7 @@ func TestAServedIdentityIsSelfSignedAndNeverRotates(t *testing.T) {
 	}
 	SignArtifact(strictKey, row)
 
-	res, err = db.syncApply(ctx, nil, modePull, &SyncSet{
+	res, err = db.syncApply(ctx, nil, &SyncSet{
 		Identities: []NodeIdentity{identityOfNode(strict)}, Artifacts: []*Artifact{row},
 	})
 	if err != nil {
@@ -303,7 +303,7 @@ func TestAServedIdentityIsSelfSignedAndNeverRotates(t *testing.T) {
 	if err := db.PinIdentity(ctx, strict, publicOf(strictKey)); err != nil {
 		t.Fatalf("pin: %v", err)
 	}
-	res, err = db.syncApply(ctx, nil, modePull, &SyncSet{
+	res, err = db.syncApply(ctx, nil, &SyncSet{
 		Identities: []NodeIdentity{identityOfNode(strict)}, Artifacts: []*Artifact{row},
 	})
 	if err != nil {

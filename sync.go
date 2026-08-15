@@ -129,7 +129,9 @@ func (s *server) isPeer(p *store.Principal) bool {
 //
 // Two gates, and both of them are here because a push used to have neither: the
 // caller has to be a peer this node's operator named, and every row it carries
-// has to be one that caller could have written over the API - see SyncApplyAs.
+// has to be one that caller may assert - their own, or a third party's from a
+// node this node's operator pinned, which is the same rule a pull runs. See
+// SyncApplyAs and mayAssert.
 //
 // POST /api/sync/push
 func (s *server) handleSyncPush(w http.ResponseWriter, r *http.Request) {

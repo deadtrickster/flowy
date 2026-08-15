@@ -1,9 +1,11 @@
 package store
 
 import (
+	"context"
 	"crypto/ed25519"
 	"encoding/json"
 	"errors"
+	"sort"
 	"sync/atomic"
 	"testing"
 
@@ -618,14 +620,22 @@ func TestSyncApplyObservesTheClockAfterTheCommit(t *testing.T) {
 // TestPushedNewArtifactIsThePushersOwn holds the push rule for a row that is
 // not here yet.
 //
-// checkArtifact's third rule is the one that stops a merge changing hands, and
-// on a push it is stricter: the row has to be the pusher's own. But it was
-// written against the row already in the table, and a new id matches nothing -
-// so the check returned early and the rule never fired. A peer could push a
-// brand new artifact into any project it can reach with anybody at all in
-// owner_user: authorship forged at the door, replicated onward from here, and
-// the name it forged then holding the update and tombstone rights that column
-// carries.
+// checkArtifact's change-hands rule stops a merge handing a row over, and the
+// push door's version of it was stricter: the row had to be the pusher's own.
+// But it was written against the row already in the table, and a new id matches
+// nothing - so the check returned early and the rule never fired. A peer could
+// push a brand new artifact into any project it can reach with anybody at all
+// in owner_user: authorship forged at the door, replicated onward from here,
+// and the name it forged then holding the update and tombstone rights that
+// column carries.
+//
+// Since the fourteenth round the question is asked of the row rather than of
+// what it lands on, and by the one predicate both doors run - mayAssert. The
+// forgeries here are therefore authored on a node whose key merely arrived on
+// the page, which is what a peer inventing owners really has: signing a row as
+// a node the operator pinned takes that node's private key. A pinned node's
+// relay of somebody else's row is the legitimate case and lands at either door -
+// see TestBothDoorsRefuseAndApplyTheSameRows.
 //
 // The pusher's own new row still lands, which is what a push is for.
 func TestPushedNewArtifactIsThePushersOwn(t *testing.T) {
@@ -635,15 +645,28 @@ func TestPushedNewArtifactIsThePushersOwn(t *testing.T) {
 	pusher := &Principal{UserID: "u-" + ulid.NewString(), Project: project}
 	at := packed(t, db)
 
-	forged := remote(ulid.NewString(), at+1, &project, "u-somebody-else", "signed by somebody else")
-	own := remote(ulid.NewString(), at+2, &project, pusher.UserID, "the pusher's own")
+	// A node nobody here pinned, whose key rides in on the page it serves.
+	relay := "relay-" + ulid.NewString()
+	relayKey := testKey(relay)
+	invented := func(hlc int64, owner, title string) *Artifact {
+		art := remote(ulid.NewString(), hlc, &project, owner, title)
+		art.Node = relay
+		SignArtifact(relayKey, art)
+		return art
+	}
+
+	forged := invented(at+1, "u-somebody-else", "signed by somebody else")
 	// And the unsigned one, which is the same forgery with the name left out:
 	// a row nobody here can be said to own.
-	unsigned := remote(ulid.NewString(), at+3, &project, "", "signed by nobody")
+	unsigned := invented(at+3, "", "signed by nobody")
+	own := remote(ulid.NewString(), at+2, &project, pusher.UserID, "the pusher's own")
+	own.Node = relay
+	SignArtifact(relayKey, own)
 
-	res, err := db.SyncApplyAs(ctx, pusher, fromPeer(t, ctx, db, &SyncSet{
-		Artifacts: []*Artifact{forged, own, unsigned},
-	}))
+	res, err := db.SyncApplyAs(ctx, pusher, &SyncSet{
+		Identities: []NodeIdentity{identityOfNode(relay)},
+		Artifacts:  []*Artifact{forged, own, unsigned},
+	})
 	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}
@@ -1120,9 +1143,9 @@ func TestEventCannotNameAnArtifactItCannotRead(t *testing.T) {
 	// The same claim at both merge doors: pushed as my own work, and pulled as
 	// a page a peer served.
 	doors := []struct {
-		name string
-		mode syncMode
-	}{{"push", modePush}, {"pull", modePull}}
+		name  string
+		apply func(context.Context, *Principal, *SyncSet) (*SyncResult, error)
+	}{{"push", db.SyncApplyAs}, {"pull", db.SyncApplyFrom}}
 	for i, door := range doors {
 		injected := &Event{
 			ID: ulid.NewString(), Type: "chat", Project: &home, Room: "general",
@@ -1131,15 +1154,7 @@ func TestEventCannotNameAnArtifactItCannotRead(t *testing.T) {
 		}
 		set := fromPeer(t, ctx, db, &SyncSet{Events: []*Event{injected}})
 
-		var (
-			res *SyncResult
-			err error
-		)
-		if door.mode == modePush {
-			res, err = db.SyncApplyAs(ctx, p, set)
-		} else {
-			res, err = db.SyncApplyFrom(ctx, p, set)
-		}
+		res, err := door.apply(ctx, p, set)
 		if err != nil {
 			t.Fatalf("%s the injected event: %v", door.name, err)
 		}
@@ -1322,7 +1337,8 @@ func TestNewlyVisibleRescanIsBoundedAndBatched(t *testing.T) {
 // point of the exercise. So it is answered with the one thing this node decides
 // for itself - whether its operator pinned the key of the node that authored
 // the row - which is the rule the event door has kept since the attribution fix
-// and is now the rule for artifacts and grants too. See pulledParty.
+// and is now the rule for artifacts and grants too, on both doors. See
+// mayAssert, and TestBothDoorsRefuseAndApplyTheSameRows for the doors agreeing.
 func TestPulledRowsAreTheAuthoringPartysToAssert(t *testing.T) {
 	ctx, db := open(t)
 
@@ -1498,4 +1514,263 @@ func TestAPulledRewriteOfAnothersArtifactNeedsAPinnedNode(t *testing.T) {
 		t.Errorf("%s's artifact reads %q/%q, want %q/%q",
 			alice, held.Title, held.Body, real.Title, real.Body)
 	}
+}
+
+// TestBothDoorsRefuseAndApplyTheSameRows is the control the fourteenth round
+// was written against, and it is one delta offered two ways.
+//
+// The two merge doors used to run two different partial rules, and the sets of
+// forgeries they refused were nearly disjoint rather than nested. A forged
+// owner was refused on push and applied on pull; a share the artifact's real
+// owner wrote on another node was applied on pull and refused on push; a grant
+// out of this principal's project was refused on push and applied on pull. Each
+// door covered the other's hole, and a peer picks its door: whatever one of
+// them will not take, it offers to the other, and last-writer-wins makes what
+// lands permanent and pushes it onward.
+//
+// So the same signed bytes go in at both doors here and the refusals have to
+// match, row for row and reason for reason. Then the same rows, authored on a
+// node the operator pinned, go in at both doors and have to land: that is
+// federation, and a rule that refuses it is not a fix.
+func TestBothDoorsRefuseAndApplyTheSameRows(t *testing.T) {
+	ctx, db := open(t)
+
+	home := "px-" + ulid.NewString()   // where this principal writes
+	theirs := "py-" + ulid.NewString() // the far side of a share
+	other := "pz-" + ulid.NewString()  // a second project this node holds a principal in
+
+	me := &User{Handle: "me-" + ulid.NewString()}
+	alice := &User{Handle: "alice-" + ulid.NewString()}
+	bob := &User{Handle: "bob-" + ulid.NewString()}
+	for _, u := range []*User{me, alice, bob} {
+		if err := db.InsertUser(ctx, u); err != nil {
+			t.Fatalf("insert user: %v", err)
+		}
+	}
+	// The tokens are what make home and other projects this node is in, which
+	// is what the grant-direction rule asks about.
+	for _, tok := range []*Principal{
+		{Token: "t-" + ulid.NewString(), UserID: me.ID, Project: home},
+		{Token: "t-" + ulid.NewString(), UserID: bob.ID, Project: other},
+	} {
+		if err := db.InsertToken(ctx, tok); err != nil {
+			t.Fatalf("insert token: %v", err)
+		}
+	}
+	p := &Principal{UserID: me.ID, Project: home}
+
+	// Alice's artifact, already here: what a share and a handoff are about, so
+	// that nothing but provenance is left to refuse the rows below.
+	fixture := &Artifact{
+		Type: "bug", Project: &home, OwnerUser: alice.ID,
+		Title: "alice's own work", Body: "thistledown", Visibility: VisibilityProject,
+	}
+	if err := db.UpsertArtifact(ctx, fixture); err != nil {
+		t.Fatalf("upsert the fixture: %v", err)
+	}
+
+	relay := "relay-" + ulid.NewString() // a key that merely arrived on a page
+	relayKey := testKey(relay)
+	origin := "origin-" + ulid.NewString() // a key the operator pinned
+	originKey := pinTestNode(t, ctx, db, origin)
+
+	// One delta, four row types, every one of them asserting alice: an artifact
+	// she is said to own, a grant she is said to have given, a handoff she is
+	// said to have made, a message she is said to have sent.
+	asAlice := func(node string, key ed25519.PrivateKey, at int64) *SyncSet {
+		art := &Artifact{
+			ID: ulid.NewString(), Type: "note", Project: &home, OwnerUser: alice.ID,
+			Visibility: VisibilityProject, Title: "alice never wrote this", Body: "grindlecap",
+			HLC: at + 1, Node: node,
+		}
+		SignArtifact(key, art)
+		grant := Grant{
+			ID: ulid.NewString(), FromProject: theirs, ToProject: home, Artifact: fixture.ID,
+			Subject: me.ID, Cap: CapRead, GrantedBy: alice.ID, HLC: at + 2, Node: node,
+		}
+		SignGrant(key, &grant)
+		task := &Task{
+			ID: ulid.NewString(), Artifact: fixture.ID, FromUser: alice.ID, ToUser: bob.ID,
+			Project: home, State: TaskOpen, Thread: ulid.NewString(), HLC: at + 3, Node: node,
+		}
+		SignTask(key, task)
+		e := &Event{
+			ID: ulid.NewString(), Type: "chat", Project: &home, Room: "general", Parents: []string{},
+			Actor: alice.ID, Body: "nor this", SeqHLC: at + 4, Node: node,
+			Meta: json.RawMessage(`{"actor_kind":"user","actor_user":"` + alice.ID + `"}`),
+		}
+		SignEvent(key, e)
+		return &SyncSet{
+			Identities: []NodeIdentity{identityOfNode(node)},
+			Artifacts:  []*Artifact{art}, Grants: []Grant{grant},
+			Tasks: []*Task{task}, Events: []*Event{e},
+		}
+	}
+
+	tables := []string{"artifacts", "grants", "tasks", "events"}
+	at := packed(t, db)
+
+	// The control: the same bytes, offered at each door.
+	forged := asAlice(relay, relayKey, at)
+	pushed, err := db.SyncApplyAs(ctx, p, forged)
+	if err != nil {
+		t.Fatalf("push the forged delta: %v", err)
+	}
+	pulled, err := db.SyncApplyFrom(ctx, p, forged)
+	if err != nil {
+		t.Fatalf("pull the forged delta: %v", err)
+	}
+	sameRefusals(t, "the forged delta", pushed, pulled, tables)
+	for _, table := range tables {
+		if pushed.Refused[table] != 1 || pushed.Applied[table] != 0 {
+			t.Errorf("%s from unpinned %s: applied %d and refused %d at both doors, want 0 and 1: %+v",
+				table, relay, pushed.Applied[table], pushed.Refused[table], pushed.Reasons)
+		}
+	}
+	if n := rows(t, db, "artifacts", forged.Artifacts[0].ID); n != 0 {
+		t.Errorf("an artifact owned by %s arrived from unpinned %s (%d rows)", alice.ID, relay, n)
+	}
+	if n := grantRows(t, db, forged.Grants[0].ID); n != 0 {
+		t.Errorf("a share on %s's say-so arrived from unpinned %s (%d rows)", alice.ID, relay, n)
+	}
+	if n := rows(t, db, "tasks", forged.Tasks[0].ID); n != 0 {
+		t.Errorf("a handoff on %s's say-so arrived from unpinned %s (%d rows)", alice.ID, relay, n)
+	}
+	if _, err := db.GetEvent(ctx, forged.Events[0].ID); err == nil {
+		t.Errorf("an event under %s's name arrived from unpinned %s", alice.ID, relay)
+	}
+
+	// And the legitimate relay, at both doors. Two deltas of the same shape
+	// rather than one offered twice: a row that landed at the first door wins
+	// its own merge at the second, and a row that changes nothing is not a row
+	// that was applied.
+	for i, door := range []struct {
+		name  string
+		apply func(context.Context, *Principal, *SyncSet) (*SyncResult, error)
+	}{{"push", db.SyncApplyAs}, {"pull", db.SyncApplyFrom}} {
+		real := asAlice(origin, originKey, at+int64(i+1)*100)
+		res, err := door.apply(ctx, p, real)
+		if err != nil {
+			t.Fatalf("%s the relayed delta: %v", door.name, err)
+		}
+		for _, table := range tables {
+			if res.Applied[table] != 1 || res.Refused[table] != 0 {
+				t.Errorf("a relayed %s from pinned %s applied %d and was refused %d at the %s door, "+
+					"want 1 and 0: %+v", table, origin, res.Applied[table], res.Refused[table],
+					door.name, res.Reasons)
+			}
+		}
+		got, err := db.GetArtifact(ctx, real.Artifacts[0].ID)
+		if err != nil {
+			t.Fatalf("the relayed artifact is not here after the %s: %v", door.name, err)
+		}
+		if got.OwnerUser != alice.ID {
+			t.Errorf("the relayed artifact came out owned by %q, want %q", got.OwnerUser, alice.ID)
+		}
+	}
+
+	// The grant whose direction is wrong, which each door used to catch in a
+	// different case: one opening this principal's own project with a grantor
+	// who is nobody here, and one opening another project this node is in on
+	// the carrier's own say-so. Both are refused at both doors, and being
+	// authored on a pinned node does not save them - a node is believed about
+	// who wrote a row, not about who may open a project up.
+	for _, g := range []Grant{{
+		ID: ulid.NewString(), FromProject: theirs, ToProject: home, Cap: CapRead,
+		GrantedBy: "u-stranger-" + ulid.NewString(), HLC: at + 300, Node: origin,
+	}, {
+		ID: ulid.NewString(), FromProject: home, ToProject: other, Cap: CapRead,
+		GrantedBy: me.ID, HLC: at + 301, Node: origin,
+	}} {
+		SignGrant(originKey, &g)
+		set := &SyncSet{Grants: []Grant{g}}
+		pushed, err := db.SyncApplyAs(ctx, p, set)
+		if err != nil {
+			t.Fatalf("push the misdirected grant: %v", err)
+		}
+		pulled, err := db.SyncApplyFrom(ctx, p, set)
+		if err != nil {
+			t.Fatalf("pull the misdirected grant: %v", err)
+		}
+		sameRefusals(t, "the grant opening "+g.ToProject, pushed, pulled, tables)
+		if pushed.Refused["grants"] != 1 || pushed.Applied["grants"] != 0 {
+			t.Errorf("a grant opening %s granted by %s applied %d and was refused %d, want 0 and 1: %+v",
+				g.ToProject, g.GrantedBy, pushed.Applied["grants"], pushed.Refused["grants"],
+				pushed.Reasons)
+		}
+		if n := grantRows(t, db, g.ID); n != 0 {
+			t.Errorf("the grant opening %s is here (%d rows)", g.ToProject, n)
+		}
+	}
+
+	// And the meta, which is the second place an event says who is speaking. A
+	// pinned node is believed about its own users; it is not believed when it
+	// renames a row whose actor this node can resolve to somebody else.
+	renamed := &Event{
+		ID: ulid.NewString(), Type: "chat", Project: &home, Room: "general", Parents: []string{},
+		Actor: alice.ID, Body: "alice speaking, rendered as bob", SeqHLC: at + 400, Node: origin,
+		Meta: json.RawMessage(`{"actor_kind":"user","actor_user":"` + bob.ID + `"}`),
+	}
+	SignEvent(originKey, renamed)
+	set := &SyncSet{Events: []*Event{renamed}}
+	pushed, err = db.SyncApplyAs(ctx, p, set)
+	if err != nil {
+		t.Fatalf("push the renamed event: %v", err)
+	}
+	pulled, err = db.SyncApplyFrom(ctx, p, set)
+	if err != nil {
+		t.Fatalf("pull the renamed event: %v", err)
+	}
+	sameRefusals(t, "the renamed event", pushed, pulled, tables)
+	if pushed.Refused["events"] != 1 || pushed.Applied["events"] != 0 {
+		t.Errorf("an event of %s's whose meta says %s applied %d and was refused %d, want 0 and 1: %+v",
+			alice.ID, bob.ID, pushed.Applied["events"], pushed.Refused["events"], pushed.Reasons)
+	}
+	if _, err := db.GetEvent(ctx, renamed.ID); err == nil {
+		t.Errorf("the meta rename is in the log")
+	}
+}
+
+// sameRefusals asserts that two merges of the same delta refused the same rows
+// for the same reasons, which is the whole of what the fourteenth round is
+// about: a door that refuses less than the other is the door a forgery is
+// offered at.
+func sameRefusals(t *testing.T, what string, push, pull *SyncResult, tables []string) {
+	t.Helper()
+	refused := 0
+	for _, table := range tables {
+		if push.Refused[table] != pull.Refused[table] {
+			t.Errorf("%s: the push door refused %d of %s and the pull door %d",
+				what, push.Refused[table], table, pull.Refused[table])
+		}
+		if push.Applied[table] != pull.Applied[table] {
+			t.Errorf("%s: the push door applied %d of %s and the pull door %d",
+				what, push.Applied[table], table, pull.Applied[table])
+		}
+		refused += push.Refused[table]
+	}
+	if refused == 0 {
+		t.Errorf("%s: neither door refused anything, so the doors agree about nothing", what)
+	}
+	if !sameStrings(push.Reasons, pull.Reasons) {
+		t.Errorf("%s: the doors refused for different reasons:\n push: %v\n pull: %v",
+			what, push.Reasons, pull.Reasons)
+	}
+}
+
+// sameStrings compares two reason lists as sets: the same refusals, whatever
+// order the merge settled them in.
+func sameStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	left, right := append([]string{}, a...), append([]string{}, b...)
+	sort.Strings(left)
+	sort.Strings(right)
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
 }

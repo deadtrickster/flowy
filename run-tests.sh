@@ -169,6 +169,21 @@ free_port() {
 	return 1
 }
 
+# go_build builds the node the way a release build does: with the commit it was
+# built from linked into the version string, so that what /healthz, the MCP
+# serverInfo and `flowy version` report names this build and not just the phase
+# it belongs to. A tree with no git and no commits still builds; the version
+# then says "src", which is what an unstamped build honestly is.
+go_build() {
+	local stamp
+	stamp="$(git -C "$ROOT" rev-parse --short=7 HEAD 2>/dev/null || true)"
+	if [ -z "$stamp" ]; then
+		go build -o "$ROOT/flowy" .
+		return
+	fi
+	go build -ldflags "-X main.buildStamp=$stamp" -o "$ROOT/flowy" .
+}
+
 # gofmt_clean checks our own sources; vendor/ is upstream's to format.
 gofmt_clean() {
 	local out
@@ -3012,7 +3027,7 @@ a_read_share_is_not_a_write() {
 # putting the owner's name in the granted_by field.
 a_share_is_only_the_owners_to_hand_over() {
 	recall5
-	local id gid hlc delta
+	local id gid hlc delta seed
 	# A's artifact, in A's project, owned by A and shared with nobody.
 	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_A" /api/artifacts \
 		'{"type":"note","title":"A owns this one too","body":"thrimblewick"}' || return 1
@@ -3020,12 +3035,22 @@ a_share_is_only_the_owners_to_hand_over() {
 	want_eq "who owns it" "$(jqv .owner_user)" "$N5_USER_A" || return 1
 	gid="forged-grant-$$-$(date +%s)"
 	hlc="$(forged_hlc "$N5_PORT_B")" || return 1
+	# Written on a node nobody here pinned, whose key rides in on the page with
+	# it, which is what a peer inventing a grantor actually has: signing as a
+	# node the operator pinned takes that node's private key, and the whole
+	# point of pinning is that somebody decided to believe what that node says
+	# about who did what. So the row is authentic - the signature verifies, the
+	# key is taken on first use - and the grantor on it is still nobody this
+	# node has any reason to believe. The same share authored on a pinned node
+	# is a relay of A's own grant and lands at either door: see the fourteenth
+	# round.
+	seed="$(seed_of share-forger)" || return 1
 	delta="$(jq -nc --arg g "$gid" --arg i "$id" --arg s "$N5_USER_B" --arg o "$N5_USER_A" \
 		--argjson h "$hlc" '
 		{artifacts: [], events: [], tasks: [], hwm: 0, grants: [
 		  {id: $g, from_project: "pa", to_project: "pa", subject: $s, artifact: $i,
-		   cap: "read", granted_by: $o, hlc: $h, node: "nodeA",
-		   tombstone: false}]}' | sign5 "$N5_DSN_A" nodeA)" || return 1
+		   cap: "read", granted_by: $o, hlc: $h, node: "share-forger",
+		   tombstone: false}]}' | sign_seed "$seed" share-forger)" || return 1
 
 	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_B" /api/sync/push "$delta" || return 1
 	want_eq "grants refused" "$(jqv '.refused.grants')" 1 || return 1
@@ -3521,7 +3546,7 @@ printf 'started on port %s\nDATABASE_URL=%s\n' "$PGPORT" "$DATABASE_URL"
 say "build and schema"
 check "schema.sql loads" psql -v ON_ERROR_STOP=1 -q -f "$ROOT/schema.sql"
 check "schema.sql reloads cleanly" psql -v ON_ERROR_STOP=1 -q -f "$ROOT/schema.sql"
-check "go build" go build -o "$ROOT/flowy" .
+check "go build" go_build
 check "go build ./cmd/smoke" go build -o "$WORK/smoke" ./cmd/smoke
 check "gofmt" gofmt_clean
 check "go vet" go vet ./...
@@ -4394,17 +4419,32 @@ forge_status_is_the_owners() {
 # from then on and nothing says so.
 a_refused_push_does_not_move_the_cursor() {
 	recall5
-	local peer before after art
+	local peer before after art bad hlc
 	peer="http://127.0.0.1:$N5_PORT_B"
 	before="$(scalar5 "$N5_DSN_A" "SELECT pushed_cursor FROM peers WHERE peer = '$peer'")" || return 1
 
-	# A share only its owner could have written: node B refuses it from this
-	# pusher, which is the rule the second round put in.
+	# The share the rest of this check follows to the peer: A's own artifact in
+	# pc, handed to B by the person who owns it.
 	want_napi 200 "$N5_PORT_A" POST "$N5_TOKEN_A_PC" /api/artifacts \
 		'{"type":"note","title":"the pc one that gets shared","body":"cloddlewhisk"}' || return 1
 	art="$(jqv .id)"
 	want_napi 200 "$N5_PORT_A" POST "$N5_TOKEN_A_PC" /api/grants \
 		"$(jq -nc --arg a "$art" --arg s "$N5_USER_B" '{artifact: $a, subject: $s}')" || return 1
+
+	# And the row the peer refuses, which is what the cursor is being held
+	# against. It is written straight into node A's store with nothing signed
+	# on it, in a project the replication principal reads - so A really does
+	# offer it and B really does refuse it, on the merge rule that has nothing
+	# to do with which door it arrived at. This used to be the share above: node
+	# B refused it from this pusher and took the same row when it pulled it,
+	# which is the asymmetry the fourteenth round removed. A refusal a check
+	# like this leans on has to be about the row rather than about the door.
+	bad="unsigned-push-$$-$(date +%s)"
+	hlc="$(forged_hlc "$N5_PORT_A")" || return 1
+	psql5_do "$N5_DSN_A" "INSERT INTO artifacts
+	    (id, type, project, owner_user, title, body, visibility, hlc, node, tombstone)
+	    VALUES ('$bad', 'note', 'pb', '$N5_USER_B', 'the one nothing signed', 'wrenchfell',
+	            'project', $hlc, 'nodeA', false)" || return 1
 
 	sync5_flags "$N5_DSN_A" nodeA "$N5_PORT_B" "$N5_TOKEN_B" --pull=false || return 1
 	local refused sent
@@ -4427,8 +4467,10 @@ a_refused_push_does_not_move_the_cursor() {
 	after="$(scalar5 "$N5_DSN_A" "SELECT pushed_cursor FROM peers WHERE peer = '$peer'")" || return 1
 	want_eq "the cursor after the second refused page" "$after" "$before" || return 1
 
-	# A full exchange settles it: the pull half carries the rows the other way,
-	# and once the peer holds them the push has nothing to be refused for.
+	# Take the unsigned row out of A's store, and the same page has nothing on
+	# it for the peer to refuse: the cursor comes unstuck and the rows behind it
+	# - the share and the artifact it opens - reach the peer.
+	psql5_do "$N5_DSN_A" "DELETE FROM artifacts WHERE id = '$bad'" || return 1
 	sync_round || return 1
 	sync_round || return 1
 	after="$(scalar5 "$N5_DSN_A" "SELECT pushed_cursor FROM peers WHERE peer = '$peer'")" || return 1
@@ -6660,6 +6702,115 @@ check "a row whose date was moved is refused over the wire (HIGH 2)" \
 say "an identity is self-signed, is never rotated, and is pinned where that is required"
 check "a key served for a node that did not sign it, and a second key for a known one (MED 3)" \
 	go test -count=1 -run TestAServedIdentityIsSelfSignedAndNeverRotates ./internal/store
+
+# --------------------------------------------------- security fixes, round 14
+#
+# The two merge doors used to run two different partial rules, and the sets of
+# forgeries they refused were nearly disjoint rather than nested: a forged owner
+# was refused on push and taken on pull, a share the artifact's real owner wrote
+# elsewhere was taken on pull and refused on push, a grant out of the carrier's
+# project was refused on push and taken on pull. A peer picks its door. So
+# provenance is one predicate now - see mayAssert - and these checks are the
+# same delta going in both ways.
+
+# a_relay_is_the_same_at_both_doors - a row owned by A, authored on nodeA, at
+# B's push door.
+#
+# B pinned nodeA's key, which is B's operator saying they believe what nodeA
+# says about who did what - including about B's own users. So a row nodeA
+# authored and A owns lands at the push door exactly as it lands at the pull
+# door, and the same row authored on a node nobody pinned is refused at both.
+# That is the whole of the fourteenth round, over the wire.
+a_relay_is_the_same_at_both_doors() {
+	recall5
+	local relayed forged hlc delta seed
+	relayed="relayed-owner-$$-$(date +%s)"
+	forged="unpinned-owner-$$-$(date +%s)"
+	hlc="$(forged_hlc "$N5_PORT_B")" || return 1
+
+	# nodeA is pinned on B, and the row is A's: a relay of somebody B decided to
+	# believe.
+	delta="$(jq -nc --arg i "$relayed" --arg o "$N5_USER_A" --argjson h "$hlc" '
+		{events: [], tasks: [], grants: [], hwm: 0, artifacts: [
+		  {id: $i, type: "note", project: "pb", owner_user: $o, title: "written on nodeA",
+		   body: "cindergrass", visibility: "project", hlc: $h, node: "nodeA",
+		   tombstone: false, reported: false}]}' | sign5 "$N5_DSN_A" nodeA)" || return 1
+	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_B" /api/sync/push "$delta" || return 1
+	want_eq "the relayed row applied" "$(jqv '.applied.artifacts')" 1 || return 1
+	want_eq "the relayed row refused" "$(jqv '.refused.artifacts')" 0 || return 1
+	want_eq "who B has it down as belonging to" \
+		"$(scalar5 "$N5_DSN_B" "SELECT owner_user FROM artifacts WHERE id = '$relayed'")" \
+		"$N5_USER_A" || return 1
+
+	# The same row, the same owner, on a node whose key merely arrives with it.
+	hlc="$(forged_hlc "$N5_PORT_B")" || return 1
+	seed="$(seed_of owner-forger)" || return 1
+	delta="$(jq -nc --arg i "$forged" --arg o "$N5_USER_A" --argjson h "$hlc" '
+		{events: [], tasks: [], grants: [], hwm: 0, artifacts: [
+		  {id: $i, type: "note", project: "pb", owner_user: $o, title: "not written on nodeA",
+		   body: "cindergrass too", visibility: "project", hlc: $h, node: "owner-forger",
+		   tombstone: false, reported: false}]}' | sign_seed "$seed" owner-forger)" || return 1
+	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_B" /api/sync/push "$delta" || return 1
+	want_eq "the unpinned row applied" "$(jqv '.applied.artifacts')" 0 || return 1
+	want_eq "the unpinned row refused" "$(jqv '.refused.artifacts')" 1 || return 1
+	want_eq "rows in B's table for it" \
+		"$(scalar5 "$N5_DSN_B" "SELECT count(*) FROM artifacts WHERE id = '$forged'")" 0 || return 1
+
+	# Out of B again, so the checks that follow are not reading this one's rows.
+	psql5_do "$N5_DSN_B" "DELETE FROM artifacts WHERE id = '$relayed'" || return 1
+	printf 'a relay from pinned nodeA landed and the same row from an unpinned node did not: %s\n' \
+		"$(jqv '.reasons[0]')"
+}
+
+# the_version_names_the_build - two builds of two different commits report two
+# versions, and the version on the wire is the one the binary carries.
+#
+# It was one constant for half a dozen distinct builds, so "which build refused
+# that row" and "what is this peer running" had no answer over the wire - which
+# is the question security work asks first.
+the_version_names_the_build() {
+	recall5
+	local one two served
+	go build -ldflags "-X main.buildStamp=aaaaaaa" -o "$WORK/flowy-stamp-a" . || return 1
+	go build -ldflags "-X main.buildStamp=bbbbbbb" -o "$WORK/flowy-stamp-b" . || return 1
+	one="$("$WORK/flowy-stamp-a" version)" || return 1
+	two="$("$WORK/flowy-stamp-b" version)" || return 1
+	if [ "$one" = "$two" ]; then
+		printf 'two builds of two commits both report %s\n' "$one" >&2
+		return 1
+	fi
+	case "$one" in
+	*+aaaaaaa) ;;
+	*)
+		printf 'the version %s does not carry the stamp it was built with\n' "$one" >&2
+		return 1
+		;;
+	esac
+
+	napi "$N5_PORT_B" GET "" /healthz || return 1
+	served="$(jqv .version)"
+	want_eq "the version /healthz serves" "$served" "$("$ROOT/flowy" version)" || return 1
+	case "$served" in
+	*+*) ;;
+	*)
+		printf 'the version on the wire is %s, which names no build\n' "$served" >&2
+		return 1
+		;;
+	esac
+	printf 'the wire says %s, and another build would say something else\n' "$served"
+}
+
+say "the two merge doors refuse the same forgeries"
+check "one signed delta, refused row for row and reason for reason at both doors (HIGH 1)" \
+	go test -count=1 -run TestBothDoorsRefuseAndApplyTheSameRows ./internal/store
+check "and a relay from a pinned node lands at whichever door it arrives at (HIGH 1)" \
+	a_relay_is_the_same_at_both_doors
+
+say "the version says which build is answering"
+check "two builds report two versions, and the wire carries the build stamp (MED 2)" \
+	the_version_names_the_build
+check "the scheme is release+stamp and nothing is frozen into a literal (MED 2)" \
+	go test -count=1 -run TestTheVersionCarriesABuildStamp .
 
 # ---------------------------------------------------------------- phase 7: fuse
 #

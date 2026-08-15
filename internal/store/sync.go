@@ -21,8 +21,8 @@ import (
 // cursor. Both halves go through the same two pieces of code: SyncPull, which
 // is a permission-filtered read of every replicated table, and syncApply, which
 // is the merge - reached as SyncApplyFrom on the half this node asked for and
-// as SyncApplyAs on the half that turned up, because those are not the same
-// question about provenance. See syncMode.
+// as SyncApplyAs on the half that turned up, which name where a delta came from
+// and run the same rules over it. See the note on the two doors below.
 //
 // The merge rules, which are the whole of the consistency story:
 //
@@ -819,41 +819,34 @@ const maxReasons = 8
 // lifts this node's clock past everything it will ever write again.
 var ErrBadReading = errors.New("store: clock reading is not believable")
 
-// syncMode says how much of a delta's provenance this node can take on trust,
-// which is not the same question in the two directions.
+// The two doors, and why they now ask one question.
 //
-// modePush is a delta that arrived unasked at POST /api/sync/push. Nothing here
-// was chosen by this node, so every row has to be one the pushing principal
-// could have written one at a time over the API: it is their own claim about
-// their own work.
+// A delta arrives one of two ways. POST /api/sync/push is a delta that turned
+// up unasked; a pull is a delta this node went and fetched from a peer its
+// operator named. Those used to be two rules - push asked "could the pushing
+// principal have written this row one at a time over the API", pull asked "does
+// this row land inside the world that principal already has here" - and the two
+// rules were written at different times against different holes. The result was
+// not one rule with two settings. It was two partial implementations that
+// overlapped: a forged owner was refused on push and taken on pull, a share
+// granted by the artifact's real owner was taken on pull and refused on push, a
+// grant out of this principal's project was refused on push and taken on pull.
+// A forgery either door catches is a forgery the other applies, and a delta can
+// be offered at whichever door does not look.
 //
-// modePull is a delta this node went and fetched from a peer its operator
-// named, with a token that resolves on both sides. What comes back is by
-// construction the set of rows that principal may read there, and most of those
-// rows are other people's - a project mate's artifact, the log of a thread, the
-// share that opened it. Refusing them is refusing federation. So the pull check
-// is a different one: a pulled row has to land inside the world that principal
-// already has here - its project, the projects a live grant reaches, the
-// artifacts shared to it, the threads it is party to - and it may not rewrite
-// what is already here in a way that principal could not have caused.
+// So provenance - who a row names as the party behind it - is one predicate,
+// mayAssert, evaluated the same way on both doors for all four row types. The
+// authorisation checks that stand on top of it are the same on both doors too:
+// reach, owner-does-not-change, no-project-move, a grant's direction. What is
+// left of the difference between the doors is the entry point and its
+// bookkeeping, which is where it belongs.
 //
-// The two cannot be the same rule, and the proof is in the gate: the share a
-// handoff writes on one node and the share a hostile peer invents are the same
-// row, pushed by the same principal. What decides it is who asked: rows we went
-// and fetched from a peer we chose, or rows that turned up.
-//
-// Neither of them is the authenticity question, and neither ever was. Both
-// modes now run the signature check first - see authentic - because "may this
+// None of it is the authenticity question, and none of it ever was. Every row
+// goes through the signature check first - see authentic - because "may this
 // principal hand me this row" and "did the node named on this row write it" are
 // different questions with different answers, and a peer that answers the first
 // honestly can still forge the second. Authorisation stops a peer minting
 // beyond its rights; authenticity stops it impersonating a node. Both ship.
-type syncMode int
-
-const (
-	modePush syncMode = iota
-	modePull
-)
 
 // SyncApply merges a delta into this node with no principal at all, and reports
 // how many rows of each table it actually changed. A row that lost its merge -
@@ -868,7 +861,7 @@ const (
 // token, which already reads everything here through ?scope=all. Everything
 // that comes off a wire goes through SyncApplyAs or SyncApplyFrom.
 func (d *DB) SyncApply(ctx context.Context, in *SyncSet) (map[string]int, error) {
-	res, err := d.syncApply(ctx, nil, modePush, in)
+	res, err := d.syncApply(ctx, nil, in)
 	if err != nil {
 		return nil, err
 	}
@@ -876,14 +869,18 @@ func (d *DB) SyncApply(ctx context.Context, in *SyncSet) (map[string]int, error)
 }
 
 // SyncApplyAs merges a delta somebody pushed at this node, as p, and refuses
-// the rows p could not have written one at a time over the API.
+// the rows p had no business handing over.
 //
 // A peer authenticates as a principal, and the rows it hands over are rows that
-// principal is claiming. Without this, a push was a way around every rule the
-// rest of the node keeps: a grant into a project the pusher has no say over, a
-// personal artifact belonging to somebody else, a rewrite of a row the pusher
-// cannot even read. Merging is last-writer-wins, so a forged row with a high
-// enough reading wins and stays won.
+// principal is claiming. Without any check at all, a push was a way around
+// every rule the rest of the node keeps: a grant into a project the pusher has
+// no say over, a personal artifact belonging to somebody else, a rewrite of a
+// row the pusher cannot even read. Merging is last-writer-wins, so a forged row
+// with a high enough reading wins and stays won.
+//
+// It is the same merge SyncApplyFrom runs, under the same rules - see the note
+// on the two doors above. This one exists to name where the delta came from and
+// to be the thing the push endpoint calls.
 //
 // The operator is not filtered: an operator token is this node's own
 // administration, and it already reads everything here through ?scope=all.
@@ -894,7 +891,7 @@ func (d *DB) SyncApplyAs(ctx context.Context, p *Principal, in *SyncSet) (*SyncR
 	if p.Operator {
 		p = nil
 	}
-	return d.syncApply(ctx, p, modePush, in)
+	return d.syncApply(ctx, p, in)
 }
 
 // SyncApplyFrom merges a delta this node pulled from a peer, as the principal
@@ -903,9 +900,11 @@ func (d *DB) SyncApplyAs(ctx context.Context, p *Principal, in *SyncSet) (*SyncR
 // The pull side used to merge whatever came back with no check of any kind: a
 // peer trusted to be read from was thereby trusted to write anything at all,
 // including a grant that opens a project up to itself, which the next pull then
-// carries out of the door. A correct peer is unaffected by this - every row it
-// serves is one that principal may read there, and it lands here in the same
-// world - and anything else is refused and counted.
+// carries out of the door. Then it grew checks of its own, and they were not
+// the push door's - so the same delta, the same bytes, the same signature, was
+// refused one way and applied the other. A correct peer is unaffected either
+// way: every row it serves is one that principal may read there, and it lands
+// here in the same world.
 func (d *DB) SyncApplyFrom(ctx context.Context, p *Principal, in *SyncSet) (*SyncResult, error) {
 	if p == nil {
 		return nil, errors.New("store: sync apply without a principal")
@@ -913,7 +912,7 @@ func (d *DB) SyncApplyFrom(ctx context.Context, p *Principal, in *SyncSet) (*Syn
 	if p.Operator {
 		p = nil
 	}
-	return d.syncApply(ctx, p, modePull, in)
+	return d.syncApply(ctx, p, in)
 }
 
 // syncRow is one row of a delta with the three questions the merge asks of it:
@@ -944,7 +943,7 @@ type syncRow struct {
 // as a pass changes nothing.
 const syncPasses = 3
 
-func (d *DB) syncApply(ctx context.Context, p *Principal, mode syncMode, in *SyncSet) (*SyncResult, error) {
+func (d *DB) syncApply(ctx context.Context, p *Principal, in *SyncSet) (*SyncResult, error) {
 	res := &SyncResult{
 		Applied: map[string]int{
 			"artifacts": 0, "events": 0, "tasks": 0, "grants": 0, tableIdentities: 0,
@@ -1002,7 +1001,7 @@ func (d *DB) syncApply(ctx context.Context, p *Principal, mode syncMode, in *Syn
 				return loses(ctx, tx, "grants", g.ID, g.HLC, g.Node)
 			},
 			check: func(ctx context.Context, tx *sql.Tx) (string, error) {
-				return checkGrant(ctx, tx, p, mode, g)
+				return checkGrant(ctx, tx, p, g)
 			},
 			apply: func(ctx context.Context, tx *sql.Tx) (int, error) { return applyGrant(ctx, tx, g) },
 		})
@@ -1023,7 +1022,7 @@ func (d *DB) syncApply(ctx context.Context, p *Principal, mode syncMode, in *Syn
 				return loses(ctx, tx, "artifacts", art.ID, art.HLC, art.Node)
 			},
 			check: func(ctx context.Context, tx *sql.Tx) (string, error) {
-				return checkArtifact(ctx, tx, p, mode, art, shared)
+				return checkArtifact(ctx, tx, p, art, shared)
 			},
 			apply: func(ctx context.Context, tx *sql.Tx) (int, error) { return applyArtifact(ctx, tx, art) },
 		})
@@ -1038,7 +1037,7 @@ func (d *DB) syncApply(ctx context.Context, p *Principal, mode syncMode, in *Syn
 				return loses(ctx, tx, "tasks", t.ID, t.HLC, t.Node)
 			},
 			check: func(ctx context.Context, tx *sql.Tx) (string, error) {
-				return checkTask(ctx, tx, p, mode, t)
+				return checkTask(ctx, tx, p, t)
 			},
 			apply: func(ctx context.Context, tx *sql.Tx) (int, error) { return applyTask(ctx, tx, t) },
 		})
@@ -1053,7 +1052,7 @@ func (d *DB) syncApply(ctx context.Context, p *Principal, mode syncMode, in *Syn
 				return eventIsHere(ctx, tx, e.ID)
 			},
 			check: func(ctx context.Context, tx *sql.Tx) (string, error) {
-				return checkEventRow(ctx, tx, p, mode, e)
+				return checkEventRow(ctx, tx, p, e)
 			},
 			apply: func(ctx context.Context, tx *sql.Tx) (int, error) { return applyEvent(ctx, tx, e) },
 		})
@@ -1358,46 +1357,58 @@ func metaClaimsAnother(p *Principal, e *Event) string {
 		" is speaking, which is not you"
 }
 
-// pulledAttribution answers why p may not take a pulled event's attribution, or
-// "" when it may.
+// metaOutrunsTheActor answers why a relayed event's meta claims more about who
+// is speaking than the node relaying it has vouched for, or "" when it does
+// not.
 //
-// Signing proves the node wrote the bytes. It does not make the actor column
-// honest: a peer serving a page is a relay, and a hostile one puts a chat event
-// into that page under somebody else's name, signs it with its own perfectly
-// good key, and the row lands rendered everywhere as that person - permanently,
-// because the log is append-only, and onward, because every peer downstream
-// pulls it too. Push refuses this (the actor is the pusher) and POST
-// /api/events refuses it twice (the actor is the token's, and the meta is
-// stripped). The pull door was the one left open.
+// A pinned node is believed about its own users, and that is the whole of what
+// pinning buys: the actor column of a row it authored is taken as written. The
+// meta beside it is a second place an event says who is talking - the console
+// renders actor_kind and actor_user, not the actor column - so a row whose
+// actor is one person and whose meta names another is a claim the node has not
+// made and this one cannot check.
 //
-// So attribution is treated here as what it is - an authenticity question - and
-// answered with the one thing this node knows about a peer: whether its
-// operator pinned that node's key by hand. A pinned node is one somebody
-// decided to believe, and believing it includes believing what it says about
-// who wrote what, which is what makes ordinary federation work: alice's message
-// really does replicate to bob's node with actor=alice. From a node whose key
-// merely arrived on a page - trust on first use, which is nobody's decision -
-// an event may say only what this principal could have said itself.
-//
-// This is the same trust upgrade FLOWY_REQUIRE_PINNED_PEERS expresses for every
-// row, applied to the one column that is a claim about a person.
-func pulledAttribution(ctx context.Context, tx *sql.Tx, p *Principal, e *Event) (string, error) {
-	if p == nil {
+// It is deliberately narrow. An actor this node has never seen is one the
+// pinned node is entitled to describe: agents are not a replicated table, so a
+// message written by alice's agent arrives with an actor id nothing here can
+// resolve and a meta that says which person it acts for, and refusing that
+// would refuse ordinary agent chat. What is refused is a meta that renames a
+// row whose actor this node can resolve to a person of its own.
+func metaOutrunsTheActor(ctx context.Context, tx *sql.Tx, e *Event) (string, error) {
+	speaker, claimed := metaSpeaker(e.Meta)
+	if !claimed || speaker == "" || speaker == e.Actor {
 		return "", nil
 	}
-	_, pinned, ok, err := identityOf(ctx, tx, e.Node)
+	acts, err := agentActsFor(ctx, tx, e.Actor, speaker)
 	if err != nil {
 		return "", err
 	}
-	if ok && pinned {
+	if acts {
 		return "", nil
 	}
-	if !speaksFor(p, e.Actor) {
-		return "event " + e.ID + " says " + named(e.Actor) + " wrote it and arrives from node " +
-			e.Node + ", whose key nobody here pinned: a relay is not a speaker, so pin " +
-			e.Node + " with `flowy identity pin` or this is somebody else's name in your log", nil
+	known, err := isLocalUser(ctx, tx, e.Actor)
+	if err != nil {
+		return "", err
 	}
-	return metaClaimsAnother(p, e), nil
+	if !known {
+		return "", nil
+	}
+	return "event " + e.ID + " is " + named(e.Actor) + "'s and says in its meta that " +
+		named(speaker) + " is speaking", nil
+}
+
+// isLocalUser reports whether a name is somebody this node holds a user row
+// for, which is what makes a meta claim about them checkable here.
+func isLocalUser(ctx context.Context, tx *sql.Tx, user string) (bool, error) {
+	if user == "" {
+		return false, nil
+	}
+	var here bool
+	if err := tx.QueryRowContext(ctx,
+		`SELECT EXISTS (SELECT 1 FROM users WHERE id = $1)`, user).Scan(&here); err != nil {
+		return false, fmt.Errorf("store: read user %s: %w", user, err)
+	}
+	return here, nil
 }
 
 // speaksFor reports whether who is this principal or the agent that acts for
@@ -1410,42 +1421,66 @@ func speaksFor(p *Principal, who string) bool {
 	return p.UserID != "" && who == p.UserID || p.AgentID != "" && who == p.AgentID
 }
 
-// pulledParty is the question push asks of every row, asked on the pull door:
-// is this the row of the party it says it is?
+// provenance is what the one rule answers about one row: on whose word is it
+// being applied?
 //
-// Push answers it with owner-is-sender - the pushing principal writes its own
-// rows and nobody else's - and that answer cannot be used here, because
-// relaying other people's rows is what federation is. Alice's artifact, owned
-// by alice, written on alice's node, is exactly what a pull is for, and a rule
-// of owner-is-puller would refuse it.
+// own is the carrying principal's own word. vouched is a pinned node's. A row
+// needs one of the two, and which one it has decides the rules that follow -
+// see checkEventRow, where a row this principal is claiming is held to what the
+// API would have let them write, and a row a pinned node is vouching for is
+// held to where it may land.
+type provenance struct {
+	own     bool
+	vouched bool
+}
+
+// ok reports whether anybody's word stands behind the row.
+func (pr provenance) ok() bool { return pr.own || pr.vouched }
+
+// mayAssert is the provenance rule, and it is one rule: may a row asserting
+// who - the owner of an artifact, the actor of an event, the grantor of a
+// grant, the side handing a task over - be applied here at all?
 //
-// So the same question gets the other answer this node can give: whether its
-// operator pinned the key of the node that authored the row. A pinned node is
-// one somebody decided to believe, and believing a node includes believing what
-// it says about who wrote what. A node whose key merely turned up on a page -
-// trust on first use, which is nobody's decision - may hand over only what this
-// principal could have handed over itself.
+// There are exactly two answers a node can give, and both doors give the same
+// two:
 //
-// who is the party the row names as the one asserting it: the owner of an
-// artifact, the actor of an event, the grantor of a grant. node is the node the
-// row says authored it, which the signature check has already tied to the bytes
-// - so what is left, and all that is left, is whether that node's word is worth
-// anything here.
+//   - the row is this principal's own, or their agent's. Nobody has to be
+//     trusted about that: the principal is the one carrying the page, and the
+//     row says no more than they could say themselves.
+//   - the row is a third party's, and then it is taken only from an authoring
+//     node the operator pinned. A pinned node is one somebody decided to
+//     believe, and believing a node includes believing what it says about who
+//     wrote what - which is what makes ordinary federation work: alice's
+//     artifact, owned by alice, written on alice's node, is exactly what a sync
+//     is for, and a rule of owner-is-carrier would refuse it. From a node whose
+//     key merely turned up on a page - trust on first use, which is nobody's
+//     decision - a third party's row is refused.
 //
-// Without this a peer serves a page of rows belonging to people who have never
-// heard of it, signed perfectly well with its own key, and they land: an
-// artifact owned by somebody else, a grant somebody else is said to have
-// given - the same delta push refuses row for row, applied in full because it
-// was fetched instead of offered.
-func pulledParty(ctx context.Context, tx *sql.Tx, p *Principal, node, who string) (bool, error) {
-	if p == nil || speaksFor(p, who) {
-		return true, nil
+// It cannot be answered with owner-is-sender, which is what the push door used
+// to answer it with, because relaying other people's rows is what federation
+// is; and it cannot be left unanswered, which is what the pull door used to do
+// for everything except events, because then a peer serves a page of rows
+// belonging to people who have never heard of it, signed perfectly well with
+// its own key, and they land.
+//
+// node is the node the row says authored it, which the signature check has
+// already tied to the bytes - so what is left, and all that is left, is whether
+// that node's word is worth anything here.
+//
+// A nil principal is this node's own administration and asserts what it likes.
+func mayAssert(
+	ctx context.Context, tx *sql.Tx, p *Principal, node, who string,
+) (provenance, error) {
+	if p == nil {
+		return provenance{own: true, vouched: true}, nil
 	}
+	pr := provenance{own: speaksFor(p, who)}
 	_, pinned, ok, err := identityOf(ctx, tx, node)
 	if err != nil {
-		return false, err
+		return provenance{}, err
 	}
-	return ok && pinned, nil
+	pr.vouched = ok && pinned
+	return pr, nil
 }
 
 // relayedBy is the refusal a pulled row gets when the party it names is a third
@@ -1508,45 +1543,62 @@ func checkEvent(p *Principal, e *Event) string {
 	return ""
 }
 
-// checkEventRow answers why p may not hand this node e, or "" when it may.
+// checkEventRow answers why p may not hand this node e, or "" when it may. It
+// is one rule, and both doors run it.
 //
-// A pushed event is p's own claim about p's own work, so it is checked against
-// what POST /api/events would have allowed - see checkEvent. A pulled one is
-// somebody else's, carried by a principal that may read it, so what is checked
-// is where it lands: an event in a project this principal has no reach into is
-// a peer writing into a corner of this node it has nothing to do with.
+// A minted type is refused first and whichever way the row came. It is a claim
+// about this node's own handlers that this node's own handlers did not make:
+// the trail is only worth reading if the only way into it is to have done the
+// thing, and neither a pusher nor a peer serving a page is a handler.
+//
+// Then provenance - mayAssert - and it decides which rule the row is held to,
+// because who is asserting an event is not a detail of it, it is the whole of
+// what an event is:
+//
+//   - the row is this principal's own claim, on nobody's word but theirs. Then
+//     it has to be an event they could have appended over the API: the actor is
+//     them exactly, the meta beside it does not name somebody else, the project
+//     is one they write in, and the type is not minted. That is checkEvent, and
+//     it is what POST /api/events enforces.
+//   - the row is a third party's, and a node the operator pinned authored it.
+//     Then the actor column is taken as written - that is what pinning is for,
+//     and it is how alice's message reaches bob's node under alice's name - and
+//     what is checked instead is where the row lands: an event in a project
+//     this principal has no reach into is a peer writing into a corner of this
+//     node it has nothing to do with. The meta may not outrun the actor.
+//   - neither, and the event is refused. A signature says the node wrote the
+//     bytes and nothing about whether the actor column is honest, so an
+//     unpinned relay's event under somebody else's name would otherwise land
+//     rendered everywhere as that person - permanently, because the log is
+//     append-only, and onward, because the next peer pulls it too.
 //
 // Both ways, a thread is checked as well. Writing into a thread is not a way
 // round reading it: the tasks clause in EventFilterSQL shows a thread's events
 // to the parties, so a message dropped into somebody else's conversation is
 // read by exactly the people whose conversation it is not.
-func checkEventRow(
-	ctx context.Context, tx *sql.Tx, p *Principal, mode syncMode, e *Event,
-) (string, error) {
+func checkEventRow(ctx context.Context, tx *sql.Tx, p *Principal, e *Event) (string, error) {
 	if p == nil {
 		return "", nil
 	}
-	if mode == modePush {
+	if mintedEventTypes[e.Type] {
+		return "a " + e.Type + " event is written by the node that did the thing, " +
+			"not carried in (" + e.ID + ")", nil
+	}
+	pr, err := mayAssert(ctx, tx, p, e.Node, e.Actor)
+	if err != nil {
+		return "", err
+	}
+	switch {
+	case !pr.ok():
+		return "event " + e.ID + " says " + named(e.Actor) + " wrote it and arrives from node " +
+			e.Node + ", whose key nobody here pinned: a relay is not a speaker, so pin " +
+			e.Node + " with `flowy identity pin` or this is somebody else's name in your log", nil
+	case !pr.vouched:
 		if why := checkEvent(p, e); why != "" {
 			return why, nil
 		}
-	} else {
-		// A minted type is refused whichever door it comes in at. checkEvent
-		// refuses it on the push side because it is a claim the pusher is not
-		// entitled to make; here it is refused because it is a claim about
-		// this node's own handlers that this node's own handlers did not make.
-		// The trail is only worth reading if the only way into it is to have
-		// done the thing, and a peer serving a page is not a handler: a pulled
-		// status move, handoff or forge entry is a peer writing this node's
-		// history for it, and every peer downstream then holds it too.
-		if mintedEventTypes[e.Type] {
-			return "a " + e.Type + " event is minted by the node that did the thing, " +
-				"not carried in (" + e.ID + ")", nil
-		}
-		// Who it says it is from, which a signature does not answer: the node
-		// that signed the row is the node that wrote the bytes, not the person
-		// the row names. See pulledAttribution.
-		if why, err := pulledAttribution(ctx, tx, p, e); why != "" || err != nil {
+	default:
+		if why, err := metaOutrunsTheActor(ctx, tx, e); why != "" || err != nil {
 			return why, err
 		}
 		ok, err := eventReadable(ctx, tx, p, e)
@@ -1726,37 +1778,32 @@ func nullText(s *string) any {
 //   - a row that is already here does not change hands and does not move
 //     project. Applying a row replaces every column of the one it lands on, so
 //     without this a share is a way to take a row over: re-owned, re-projected
-//     and then handed on. Being able to read it is not enough. On a push it is
-//     stricter still - the row has to be the pusher's own, which is the rule
-//     POST /api/artifacts keeps.
+//     and then handed on. Being able to read it is not enough.
 //
-// And, on a pull, the fourth: the row is the owner's to assert. Push says the
-// owner is the sender; a pull cannot, because relaying other people's rows is
-// what federation is - so it says instead that a row owned by a third party is
-// taken only from an authoring node the operator pinned. See pulledParty, which
-// is the same rule the event door has kept since the attribution fix, and the
-// gap it was missing: an artifact owned by somebody who has never heard of the
-// peer serving it used to arrive on the reach test alone, forged owner and all,
-// and the name it forged then held the update and tombstone rights the owner
-// column carries.
+// And, before any of them, the fourth: the row is the owner's to assert - see
+// mayAssert. An artifact owned by somebody other than the principal carrying it
+// is taken only from an authoring node the operator pinned, whichever door it
+// arrives at. The push door used to answer this with owner-is-sender and the
+// pull door not to answer it at all, so an artifact owned by somebody who has
+// never heard of the peer serving it was refused one way and applied the other,
+// forged owner and all - and the name it forged then held the update and
+// tombstone rights the owner column carries.
+//
+// It covers the row that is already here as well as the new one, because
+// rewriting somebody else's artifact under a name a hostile relay signs for is
+// the same forgery as inventing it.
 func checkArtifact(
-	ctx context.Context, tx *sql.Tx, p *Principal, mode syncMode, a *Artifact, shared bool,
+	ctx context.Context, tx *sql.Tx, p *Principal, a *Artifact, shared bool,
 ) (string, error) {
 	if p == nil {
 		return "", nil
 	}
-	if mode == modePull {
-		// Before anything about where it lands: whose row it says it is. It
-		// covers the row that is already here as well as the new one, because
-		// rewriting somebody else's artifact under a name a hostile relay signs
-		// for is the same forgery as inventing it.
-		own, err := pulledParty(ctx, tx, p, a.Node, a.OwnerUser)
-		if err != nil {
-			return "", err
-		}
-		if !own {
-			return relayedBy("artifact "+a.ID, a.OwnerUser, a.Node), nil
-		}
+	pr, err := mayAssert(ctx, tx, p, a.Node, a.OwnerUser)
+	if err != nil {
+		return "", err
+	}
+	if !pr.ok() {
+		return relayedBy("artifact "+a.ID, a.OwnerUser, a.Node), nil
 	}
 	if a.Visibility == "personal" || a.Project == nil {
 		if a.OwnerUser == "" || a.OwnerUser != p.UserID {
@@ -1777,20 +1824,15 @@ func checkArtifact(
 		owner   sql.NullString
 		project sql.NullString
 	)
-	err := tx.QueryRowContext(ctx,
+	err = tx.QueryRowContext(ctx,
 		`SELECT coalesce(owner_user, ''), project FROM artifacts WHERE id = $1`, a.ID).
 		Scan(&owner, &project)
 	if errors.Is(err, sql.ErrNoRows) {
-		// Nothing here to take over, so the third rule has nothing to compare
-		// against - but the push half of it still applies, and it was written
-		// against the stored row, so for a new row it never fired. A peer could
-		// push a brand new artifact into any project it can reach with anybody
-		// at all as its owner: authorship forged, replicated onward, and the
-		// name it forged then holding the update and tombstone rights the owner
-		// column carries. A push writes the pusher's own rows.
-		if mode == modePush && (a.OwnerUser == "" || a.OwnerUser != p.UserID) {
-			return "artifact " + a.ID + " would land here as somebody else's row", nil
-		}
+		// Nothing here to take over, so the change-hands rule has nothing to
+		// compare against. What stops a row landing here as somebody else's is
+		// mayAssert above, which asks it of the row rather than of what it
+		// lands on - the old push-side version of this test was written against
+		// the stored row, so for a new id it never fired at all.
 		return "", nil
 	}
 	if err != nil {
@@ -1810,9 +1852,6 @@ func checkArtifact(
 	if was != now {
 		return "artifact " + a.ID + " is in project " + was +
 			", and a merge does not move it to " + now, nil
-	}
-	if mode == modePush && (owner.String == "" || owner.String != p.UserID) {
-		return "artifact " + a.ID + " is already here and is not yours to rewrite", nil
 	}
 	return "", nil
 }
@@ -1889,31 +1928,30 @@ func artifactReadable(ctx context.Context, tx *sql.Tx, p *Principal, a *Artifact
 //     for the assignee, because naming an agent is handing it the thread, and a
 //     state has to be one of the three the lifecycle has;
 //
-//   - a new one has to be a handoff the principal is in. On a push they are the
-//     side handing the work over, which is what POST /api/assign requires; on a
-//     pull they may also be the side it was handed to, because that is how a
-//     handoff made on another node arrives. Either way the artifact is one they
-//     may read and is one that can be shared at all - not personal, and not
-//     'project-only', which no grant reaches through, so a task naming one is a
-//     task whose artifact the assignee gets a 404 on. The thread is one they can
-//     already
-//     read - a thread nobody has said anything in yet is a thread there is
-//     nothing to learn from.
+//   - a new one is a handoff its from_user is asserting, and mayAssert is what
+//     says whether that assertion may be taken: the principal carrying it is
+//     that person, or a node the operator pinned authored the row. The push
+//     door used to ask the first and the pull door a weaker thing - that the
+//     carrier was a party to it, either side - so a handoff between other
+//     people arrived on an unpinned node's say-so through one door and not the
+//     other, and a task is a read capability: the tasks clause in
+//     EventFilterSQL shows the whole thread to from_user, to_user and the agent
+//     it was delegated to.
 //
-//     A pulled task therefore already answers the question pulledParty asks of
-//     the other three row types - it names this principal as a party, on both
-//     branches, so there is no third party's handoff to be carried in on
-//     somebody's say-so - and it needs no pinned-node test beside it.
+//     Either way the artifact is one the carrier may read and is one that can
+//     be shared at all - not personal, and not 'project-only', which no grant
+//     reaches through, so a task naming one is a task whose artifact the
+//     assignee gets a 404 on. The thread is one they can already read - a
+//     thread nobody has said anything in yet is a thread there is nothing to
+//     learn from.
 //
-//     And, whichever door it came in by, from_user is the artifact's owner and
-//     the thread is one nothing has been said in yet. Both are POST
-//     /api/assign's rule: an assignment is the owner's to make and it opens a
-//     fresh thread. Without them a reader of an artifact could mint a task
-//     naming any thread they can read and any local user in to_user, and hand
-//     that user the conversation - a task is a read capability, not a note.
-func checkTask(
-	ctx context.Context, tx *sql.Tx, p *Principal, mode syncMode, t *Task,
-) (string, error) {
+//     And from_user is the artifact's owner and the thread is one nothing has
+//     been said in yet. Both are POST /api/assign's rule: an assignment is the
+//     owner's to make and it opens a fresh thread. Without them a reader of an
+//     artifact could mint a task naming any thread they can read and any local
+//     user in to_user, and hand that user the conversation - a task is a read
+//     capability, not a note.
+func checkTask(ctx context.Context, tx *sql.Tx, p *Principal, t *Task) (string, error) {
 	if p == nil {
 		return "", nil
 	}
@@ -1976,13 +2014,15 @@ func checkTask(
 		return "", nil
 	}
 
-	switch {
-	case p.UserID == "":
+	if p.UserID == "" {
 		return "task " + t.ID + " is a handoff and this token names no user", nil
-	case mode == modePush && t.FromUser != p.UserID:
-		return "task " + t.ID + " hands over work as " + t.FromUser + ", which is not you", nil
-	case mode == modePull && !taskParty(p, t):
-		return "task " + t.ID + " is a handoff between other people", nil
+	}
+	pr, err := mayAssert(ctx, tx, p, t.Node, t.FromUser)
+	if err != nil {
+		return "", err
+	}
+	if !pr.ok() {
+		return relayedBy("task "+t.ID, t.FromUser, t.Node), nil
 	}
 
 	shareable := &args{}
@@ -2075,42 +2115,54 @@ func taskParty(p *Principal, t *Task) bool {
 		p.AgentID != "" && t.AssigneeAgent == p.AgentID
 }
 
-// checkGrant answers why p may not push g. It is the rule POST /api/grants
-// enforces, applied to a row that arrived over the wire instead of in a
-// request body:
+// checkGrant answers why p may not hand this node g, or "" when it may. It is
+// the rule POST /api/grants enforces, applied to a row that arrived over the
+// wire instead of in a request body, and both doors run all of it:
 //
-//   - a project-wide grant opens a project up, so it has to come from a
-//     principal of the project being opened. Without this, a peer writes
-//     itself a grant from its own project into yours and reads it from then
-//     on - and because merging is last-writer-wins, a big enough reading makes
-//     the forgery permanent.
-//   - a share is the owner's to give, and the pusher has to be that owner. The
-//     artifact has to be here, its owner has to be whoever the grant says
-//     granted it, and that has to be the principal handing it over: a grant
-//     that merely claims to have come from the owner is a claim the pusher
-//     wrote, and believing it lets anybody share anybody's artifact with
-//     themselves.
+//   - the cap is one this node implements. It is a property of the row rather
+//     than of who is carrying it, so it is asked first and of everybody: a
+//     grant claiming a capability no reader here would honour is refused
+//     whichever direction it came from. insertGrant holds the same line
+//     locally.
+//   - the grant reaches this principal at all - the reach GrantFilterSQL
+//     replicates by. A capability between other people and other projects is
+//     nobody's business to be carrying, and the push door used to ask nothing
+//     of the sort.
+//   - it is the grantor's to give - see mayAssert. A grant somebody other than
+//     the carrier is said to have given is taken only from an authoring node
+//     the operator pinned. Federation needs that: the share a handoff wrote on
+//     alice's node is how the other side reads the artifact here, and it was
+//     written by alice, who is not the principal carrying it. What it is not is
+//     a licence for an unpinned relay to invent grantors.
+//   - a project-wide grant opens a project up, so its grantor has to be
+//     somebody who holds a principal in the project being opened - which is
+//     POST /api/grants' own rule, where to_project has to be the caller's.
+//     Without it, a peer writes a grant from its own project into one here and
+//     reads it from then on, and because merging is last-writer-wins a big
+//     enough reading makes the forgery permanent. It is asked of every
+//     project-wide grant whose to_project is a project somebody here is in,
+//     rather than only of the ones that name the carrier's own project: a grant
+//     opening a project this node hosts reaches this node's work whether or not
+//     the principal carrying it is in that project, and the push door's version
+//     of this rule - to_project has to be the carrier's own - refused the
+//     wrong things and let the rest through. A grant opening a project nobody
+//     here is in opens nothing here, and refusing it would be refusing
+//     federation.
+//   - a share is the owner's to give: the artifact has to be here, it has to be
+//     one a share can reach at all, and its owner has to be whoever the grant
+//     says granted it. The claim on the row is not what is believed - the
+//     artifact this node holds is - because the share clause in
+//     ArtifactFilterSQL asks only for the artifact and the subject and never
+//     for the grantor, so a share taken on the claim opens a read that is
+//     permanent and travels onward from here.
 //
-// A pulled grant is not quite that. Federation is capabilities travelling: the
-// share a handoff wrote on one node is how the other side reads the artifact on
-// this one, and it was written by the owner, who is not the principal carrying
-// it. So on a pull the carrier is asked only to be somebody the grant could
-// have been handed to at all - the reach GrantFilterSQL replicates by - and the
-// grantor is still asked to be the owner of the artifact that is here. Only the
-// last line of the push rule is dropped, the one that says the carrier is that
-// owner.
-//
-// Dropping the rest of it was the hole: a share whose grantor was anybody other
-// than the puller used to be taken on the reach test alone, and reach is
-// satisfied by naming the puller as the subject.
-func checkGrant(
-	ctx context.Context, tx *sql.Tx, p *Principal, mode syncMode, g *Grant,
-) (string, error) {
-	// The cap is checked first, and on both modes, because it is a property of
-	// the row rather than of who is handing it over: a grant that claims a
-	// capability this node does not implement is refused whoever carries it and
-	// whichever direction it came from. The local door - insertGrant - holds
-	// the same line, so the column cannot say something no reader would honour.
+// The two doors used to disagree about most of that, and not by one rule being
+// a subset of the other: push refused a share the artifact's real owner wrote
+// on another node, which pull applied and federation needs; pull refused a
+// grant into this principal's project without a local opener, which push
+// applied; push refused a grant out of this principal's project, which pull
+// applied. Each hole was covered by the other door, and a peer chooses its door.
+func checkGrant(ctx context.Context, tx *sql.Tx, p *Principal, g *Grant) (string, error) {
 	if !GrantCapOK(g.Cap) {
 		return "grant " + g.ID + " carries cap " + capSaid(g.Cap) +
 			", which is not a capability this node implements", nil
@@ -2118,93 +2170,49 @@ func checkGrant(
 	if p == nil {
 		return "", nil
 	}
-	if mode == modePull {
-		reaches := g.ToProject != "" && g.ToProject == p.Project ||
-			g.FromProject != "" && g.FromProject == p.Project ||
-			g.Subject != "" && g.Subject == p.UserID ||
-			g.GrantedBy != "" && g.GrantedBy == p.UserID
-		if !reaches {
-			return "grant " + g.ID + " is between other people and other projects", nil
+	if !grantReaches(p, g) {
+		return "grant " + g.ID + " is between other people and other projects", nil
+	}
+	pr, err := mayAssert(ctx, tx, p, g.Node, g.GrantedBy)
+	if err != nil {
+		return "", err
+	}
+	if !pr.ok() {
+		return relayedBy("grant "+g.ID, g.GrantedBy, g.Node), nil
+	}
+
+	if g.Artifact == "" {
+		if g.ToProject == "" {
+			return "grant " + g.ID + " opens no project up", nil
 		}
-		// And whose say-so it is. The reach test above asks only that the grant
-		// touches this principal somewhere, and a grant naming this principal's
-		// own project as the one it opens up - or as the one it opens outwards -
-		// touches it while being entirely somebody else's claim.
-		//
-		// The two branches below cover part of that: a grant into this project
-		// needs a grantor who is a principal here, and a share needs a grantor
-		// who owns the artifact. Neither covers a grant *out* of this project,
-		// which is the one that hands this project's work to a peer's, and it
-		// was taken on the strength of the row saying somebody else granted it.
-		//
-		// So the same question every other row type is now asked on this door:
-		// a grant somebody other than the carrier is said to have given is taken
-		// only from an authoring node the operator pinned. Legitimate federation
-		// is untouched - the share a handoff wrote on alice's node is relayed
-		// with alice's node's key, and that node is pinned or it is nobody.
-		by, err := pulledParty(ctx, tx, p, g.Node, g.GrantedBy)
+		hosted, err := projectIsHosted(ctx, tx, g.ToProject)
 		if err != nil {
 			return "", err
 		}
-		if !by {
-			return relayedBy("grant "+g.ID, g.GrantedBy, g.Node), nil
-		}
-		// The one row a peer can write itself. A project-wide grant is a
-		// capability that lands in to_project, and every check above is
-		// satisfied by a grant that names this principal's own project there:
-		// the peer picks a from_project of its own, says anybody at all
-		// granted it, and from the next pull onwards its project reads this
-		// one - permanently, because merging is last-writer-wins.
-		//
-		// Federation never needs that. A grant that opens this project up is
-		// written here, by somebody who is here, and travels outwards. So it
-		// is taken only when the grantor is a principal of the project being
-		// opened, on this node. Grants between other projects, riding a page
-		// this principal may read, are untouched by this: they open nothing
-		// here, and refusing them would be refusing federation.
-		if g.Artifact == "" {
-			if g.ToProject != "" && g.ToProject == p.Project && g.FromProject != p.Project {
-				opener, err := principalOfProject(ctx, tx, g.GrantedBy, g.ToProject)
-				if err != nil {
-					return "", err
-				}
-				if !opener {
-					return "grant " + g.ID + " opens " + g.ToProject + " up, and " +
-						named(g.GrantedBy) + " is nobody here who could", nil
-				}
-			}
-			// Grants between other projects, riding a page this principal may
-			// read, open nothing here.
+		if !hosted {
+			// Nobody here is in the project this grant opens, so there is
+			// nothing of this node's behind it: it is a capability between
+			// other people's projects, riding a page this principal may read,
+			// and refusing it would be refusing federation.
 			return "", nil
 		}
-		// A share of one artifact falls through to the owner test below.
-		//
-		// It used to be taken on the reach test alone whenever somebody other
-		// than this principal was named as the grantor, and the reach test is
-		// satisfied by a grant that names this principal as the subject. So a
-		// peer could serve {artifact: somebody else's, subject: you, granted_by:
-		// anybody} and it merged - and the share clause in ArtifactFilterSQL
-		// asks only for the artifact and the subject, never for the grantor, so
-		// the read it opens is permanent and travels onward from here.
-		//
-		// A signature does not close that: the peer signs its own row with its
-		// own key and the row is authentic. Who may hand out a read on an
-		// artifact is a separate question, and it is answered the same way on
-		// both doors - against the artifact that is here, not against the claim
-		// on the row.
-	}
-	if g.Artifact == "" {
-		if g.ToProject == "" || g.ToProject != p.Project {
-			return "only a principal of " + g.ToProject + " can open it up", nil
+		opener, err := principalOfProject(ctx, tx, g.GrantedBy, g.ToProject)
+		if err != nil {
+			return "", err
+		}
+		if !opener {
+			return "grant " + g.ID + " opens " + g.ToProject + " up, and " +
+				named(g.GrantedBy) + " is nobody here who could", nil
 		}
 		return "", nil
 	}
+
 	var (
 		owner sql.NullString
 		vis   sql.NullString
 		proj  sql.NullString
 	)
-	err := tx.QueryRowContext(ctx,
+	err = tx.QueryRowContext(ctx,
 		`SELECT owner_user, visibility, project FROM artifacts WHERE id = $1`, g.Artifact).
 		Scan(&owner, &vis, &proj)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -2219,18 +2227,20 @@ func checkGrant(
 	if owner.String == "" || owner.String != g.GrantedBy {
 		return "grant " + g.ID + " is not the owner's to give", nil
 	}
-	if mode == modePull {
-		// The owner is not the carrier. A share written on another node by the
-		// owner of an artifact that is here is exactly what federation moves,
-		// and the principal handing the page over is whoever is reading it. So
-		// the grantor is checked against the artifact and the carrier is not
-		// asked to be them.
-		return "", nil
-	}
-	if p.UserID == "" || owner.String != p.UserID {
-		return "grant " + g.ID + " shares " + g.Artifact + ", which is not yours to share", nil
-	}
 	return "", nil
+}
+
+// grantReaches is GrantFilterSQL's rule in Go, asked of a row in hand: does
+// this capability touch the principal carrying it - their project on either
+// side of the edge, themselves as the subject, or themselves as the grantor?
+func grantReaches(p *Principal, g *Grant) bool {
+	if p == nil {
+		return false
+	}
+	return g.ToProject != "" && g.ToProject == p.Project ||
+		g.FromProject != "" && g.FromProject == p.Project ||
+		g.Subject != "" && g.Subject == p.UserID ||
+		g.GrantedBy != "" && g.GrantedBy == p.UserID
 }
 
 // named renders a grantor for a refusal message, so an unsigned row reads as
@@ -2251,6 +2261,30 @@ func named(user string) string {
 // the token behind it cannot, but a name that resolves to nothing here is a
 // grant this node has no way to account for, and the point of the check is that
 // the grantor is somebody this node already knows.
+// projectIsHosted reports whether anybody at all holds a principal in project
+// on this node: a token that sits there, or an agent that does.
+//
+// It is what decides whether a project-wide grant is this node's business. A
+// grant opening a project somebody here is in reaches work this node holds, and
+// its grantor is asked to be one of those principals; a grant opening a project
+// nobody here is in opens nothing here, and is a capability between other
+// people's projects passing through on a page.
+func projectIsHosted(ctx context.Context, tx *sql.Tx, project string) (bool, error) {
+	if project == "" {
+		return false, nil
+	}
+	var hosted bool
+	err := tx.QueryRowContext(ctx,
+		`SELECT EXISTS (SELECT 1 FROM tokens t LEFT JOIN agents a ON a.id = t.agent_id
+		                 WHERE coalesce(nullif(t.project, ''), a.project, '') = $1)
+		     OR EXISTS (SELECT 1 FROM agents ag WHERE coalesce(ag.project, '') = $1)`,
+		project).Scan(&hosted)
+	if err != nil {
+		return false, fmt.Errorf("store: sync check project %s: %w", project, err)
+	}
+	return hosted, nil
+}
+
 func principalOfProject(ctx context.Context, tx *sql.Tx, user, project string) (bool, error) {
 	if user == "" || project == "" {
 		return false, nil

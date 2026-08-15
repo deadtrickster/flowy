@@ -1011,12 +1011,20 @@ recorded there, so every key such a node holds is one its operator named. It
 costs transitive relay, which is the trade a high-security deployment is making
 on purpose.
 
-Pinning also decides what a peer may say about other people. A pulled row whose
-owner, actor or grantor is somebody other than the principal carrying the page
-is taken only when the node that authored it is pinned - see `pulledParty` and
-the thirteenth round below. Federation between two pinned nodes is unaffected;
-a relay whose key merely arrived on a page can hand over only rows the puller
-could have written itself.
+Pinning also decides what a peer may say about other people. A row whose owner,
+actor, grantor or assigner is somebody other than the principal carrying the
+page is taken only when the node that authored it is pinned - see `mayAssert`,
+the thirteenth round below and the fourteenth, which is where that became one
+rule on both merge doors instead of two different partial ones. Federation
+between two pinned nodes is unaffected; a relay whose key merely arrived on a
+page can hand over only rows the carrier could have written itself.
+
+**Pinning a node means trusting everything it says about who did what, including
+about your own users.** A pinned peer can serve rows naming your own users as
+their author - an artifact owned by one of them, a message under their name, a
+share they are said to have given - and those rows are applied, at either merge
+door, because that is exactly what pinning it said. So pin only nodes whose
+operator you trust with your users' identities.
 
 ## The forge bridge
 
@@ -3018,7 +3026,85 @@ marked unpinned. That is the documented residual - a peer can claim a name this
 node has never heard of, under its own key - and pinning, or that flag, is what
 closes it.
 
+## The fourteenth round of security fixes
+
+The lab ran the lying-peer adversary again, with the control the thirteenth
+round earned: the **same signed delta, offered at both doors**. This time both
+doors refused - and not the same rows. About four of seven forgeries died on the
+pull door, three of seven on the push door, and the two sets were nearly
+disjoint. A forgery one door catches is a forgery the other applies, and a peer
+picks its door: whatever push will not take, it offers to pull.
+
+That is a design defect rather than three bugs. The two doors were written at
+different times against different holes, so what looked like one rule with two
+settings was two partial implementations that happened to overlap:
+
+| the row | push used to | pull used to |
+| --- | --- | --- |
+| artifact owned by a third party | refuse (owner-is-sender) | refuse only since the thirteenth round |
+| share whose grantor is the artifact's real owner | refuse (grantor-is-sender) | apply - and federation needs it |
+| project-wide grant *out of* the carrier's project | refuse | apply |
+| project-wide grant *into* the carrier's project with no local opener | apply | refuse |
+| handoff whose `from_user` is a third party | refuse | apply if the carrier is the other party |
+| event under a third party's name | refuse | refuse only since the eleventh round |
+
+**The fix is one predicate.** `mayAssert` - the thirteenth round's `pulledParty`,
+generalised and moved onto both doors - answers one question about every
+replicated row: may a row asserting *this* party be applied here at all? Two
+answers, and no third. It is the carrying principal's own row, or their agent's,
+and nobody has to be trusted about it; or it is a third party's, and then it is
+taken only from an authoring node the **operator pinned**. `syncMode` is gone:
+`checkArtifact`, `checkEventRow`, `checkTask` and `checkGrant` take no mode and
+have no branch on one, so `SyncApplyAs` and `SyncApplyFrom` differ in where the
+delta came from and in nothing else.
+
+The authorisation checks stand on top of it unchanged and on both doors: reach,
+owner-does-not-change, no-project-move, a thread you can read, an artifact you
+can read, an assignment that is the owner's to make into a thread nobody has
+spoken in. Two of them moved rather than changed:
+
+- **a grant's direction.** A project-wide grant's grantor has to hold a
+  principal in `to_project` - the project being opened - which is what POST
+  `/api/grants` requires of the caller. The pull door asked it only when the
+  grant named the carrier's own project, the push door asked something else
+  entirely (`to_project` had to *be* the carrier's project, whoever the grantor
+  was). It is now asked of every project-wide grant whose `to_project` is a
+  project somebody here is in - `projectIsHosted` - because a grant opening a
+  project this node hosts reaches this node's work whether or not the carrier is
+  in it. A grant between two projects nobody here is in opens nothing here and
+  is federation passing through.
+- **an event's meta.** A pinned node's word decides the `actor` column, which is
+  correct by design and is what makes alice's message arrive on bob's node under
+  alice's name. `metaOutrunsTheActor` stops it claiming more than that: a meta
+  naming a speaker who is neither the actor nor the person that actor's agent
+  acts for is refused when this node can resolve the actor to a user of its own.
+  An actor this node has never seen is one the pinned node is entitled to
+  describe - agents do not replicate, so an agent's message arrives with an id
+  nothing here can resolve.
+
+What this rule *costs* is stated where a deployer will read it before they pin
+anything: pinning a node means trusting everything it says about who did what,
+including about your own users. See "Keys, and how a node comes to hold one".
+The push door is more permissive than it was for exactly that case and no other,
+and it was already true of the pull door, which every federating node uses.
+
+**MEDIUM - the version was frozen.** `version` was one constant, and half a
+dozen distinct builds reported the same string on `GET /healthz`, `GET
+/version`, the MCP `serverInfo` and `flowy version`. "Which build refused that
+row" and "what is this peer actually running" are the first questions this kind
+of work asks, and the wire could not answer either. The scheme is now
+**`release+stamp`**: `release` is the phase, bumped by hand, and `stamp` is the
+short commit the build was linked with - `go build -ldflags "-X
+main.buildStamp=$(git rev-parse --short HEAD)"`, which is what `run-tests.sh`
+does. An unstamped build says `+src` rather than claiming a commit it is not.
+
 ## Deployment
+
+**Build it with a stamp.** The version is `release+stamp` - the release is the
+phase and the stamp is the build, so build with `go build -ldflags "-X
+main.buildStamp=$(git rev-parse --short HEAD)"` and `GET /healthz`, `GET
+/version`, the MCP `serverInfo` and `flowy version` all name the commit the
+binary came from. A build with no flags reports `+src`.
 
 The store speaks the Postgres wire and nothing else. The spine of `schema.sql`
 depends on nothing that is Postgres the storage engine - no extensions, no
@@ -3040,8 +3126,12 @@ query. Nothing above it depends on anything below it.
 
 ## Phase 7 status
 
-Green. `./run-tests.sh` reports `passed: 329 failed: 0` with Go 1.22, Node
-22.14 and Postgres 16 - the 311 Phase 6.5 ended with, one of which changed
+Green. `./run-tests.sh` reports `passed: 333 failed: 0` with Go 1.22, Node
+22.14 and Postgres 16 - the 329 Phase 7 ended with, plus the 4 the fourteenth
+round adds: the one delta refused row for row and reason for reason at both
+merge doors, the relay from a pinned node that lands at whichever door it
+arrives at, the two builds that report two versions, and the version scheme's
+own unit test - and of the 329, the 311 Phase 6.5 ended with, one of which changed
 rather than went away (`flowy fuse` was a stub that printed a placeholder and is
 now a command that refuses to mount anything it was not told to mount), plus the
 18 Phase 7 adds: a real mount in this machine, a file that becomes an indexed
@@ -3081,10 +3171,13 @@ thirteenth adds: the pulled row that is not the authoring party's to assert and
 the rewrite of somebody else's artifact, `created` inside the signature as a Go
 test and again over the wire between the two nodes, the date a local write
 signs, and the identity that is self-signed, never rotated and pinned where that
-is required. Each is verified to fail on the source it fixes. Five of the older checks
-changed with the fixes rather than around them: a reply to a message its
-speaker cannot read is refused outright now rather than quietly opening a
-thread of its own, which is the same rule one step earlier, a deleted artifact
+is required. Each is verified to fail on the source it fixes. Six of the older
+checks changed with the fixes rather than around them: the pushed share of
+somebody else's artifact is now authored on a node nobody pinned, because from a
+pinned one it is a relay of the owner's own grant and lands - which is the
+fourteenth round's whole point - a reply to a message its speaker cannot read is
+refused outright now rather than quietly opening a thread of its own, which is
+the same rule one step earlier, a deleted artifact
 now reads as `404` on both nodes with the tombstone asserted through `psql`,
 the `?counts=1` health check no longer claims to be reporting the spine tables
 to nobody in particular, the phase 6 checks drive the mock forge's control

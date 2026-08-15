@@ -87,7 +87,7 @@ func TestAHostilePeerCannotRewriteAnothersRow(t *testing.T) {
 		"not signed at all":                           unsigned,
 		"carrying A's signature over a different row": replayed,
 	} {
-		res, err := db.syncApply(ctx, nil, modePull, &SyncSet{Artifacts: []*Artifact{row}})
+		res, err := db.syncApply(ctx, nil, &SyncSet{Artifacts: []*Artifact{row}})
 		if err != nil {
 			t.Fatalf("%s: apply: %v", what, err)
 		}
@@ -288,7 +288,7 @@ func TestAnIdentityArrivesWithTheRowsItVerifies(t *testing.T) {
 	// self-signature is over the name and the key together.
 	swapped := identityOfNode(nodeC)
 	swapped.PublicKey = publicOf(testKey(nodeC + "-impostor"))
-	res2, err := db.syncApply(ctx, nil, modePull, &SyncSet{Identities: []NodeIdentity{swapped}})
+	res2, err := db.syncApply(ctx, nil, &SyncSet{Identities: []NodeIdentity{swapped}})
 	if err != nil {
 		t.Fatalf("apply the swapped identity: %v", err)
 	}
@@ -325,7 +325,7 @@ func TestAKeyDoesNotRotateOverTheWire(t *testing.T) {
 	}
 	SignArtifact(impostor, row)
 
-	res, err := db.syncApply(ctx, nil, modePull, &SyncSet{
+	res, err := db.syncApply(ctx, nil, &SyncSet{
 		Identities: []NodeIdentity{swap},
 		Artifacts:  []*Artifact{row},
 	})
@@ -394,7 +394,7 @@ func TestRequirePinnedPeersRefusesATrustedOnFirstUseNode(t *testing.T) {
 
 	refused := row(tofu, tofuKey, 2)
 	allowed := row(pinned, pinnedKey, 3)
-	out, err := db.syncApply(ctx, nil, modePull, &SyncSet{
+	out, err := db.syncApply(ctx, nil, &SyncSet{
 		Artifacts: []*Artifact{refused, allowed},
 	})
 	if err != nil {
