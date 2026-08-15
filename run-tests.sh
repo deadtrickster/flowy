@@ -2408,7 +2408,7 @@ the_node_selected_the_mock() {
 	want_eq "gh is on PATH" "$(jqv .available.gh)" true || return 1
 	want_eq "the mock's control surface is up" "$(jqv .mock)" true || return 1
 	api GET "$TOKEN_A" /api/node || return 1
-	want_eq "the node reports the phase" "$(jqv .phase)" 6.5 || return 1
+	want_eq "the node reports the phase" "$(jqv .phase)" 8 || return 1
 	want_eq "and its forge" "$(jqv .forge)" mock || return 1
 	printf 'FLOWY_FORGE=mock selected MockForge, with gh installed beside it\n'
 }
@@ -7415,6 +7415,885 @@ check "a kill between the close and the store write leaves the intent pending" \
 check "reconcile replays it exactly once, and again is nothing" \
 	fuse_reconcile_replays_exactly_once
 check "with nothing mounted, memory is memory" fuse_off_again_and_everything_still_works
+
+# ---------------------------------------------------------------- phase 8
+#
+# Observability: what the fabric measured about itself, what it saw itself do,
+# and what it will not claim. The three things being tested are the three the
+# architecture asks for - a metric is filtered like a read, a verdict is refused
+# where there is not enough history to draw one, and one handoff across two
+# nodes is one trace.
+
+# ----------------------------------------------------------- phase 8 helpers
+#
+# Observability. The claims being tested are not "the endpoint answers" - they
+# are that what it answers is filtered, that what it cannot measure it refuses
+# to guess at, and that one handoff across two nodes is one trace. So most of
+# these read a number as one principal and then read the same number as another,
+# and a few of them go behind the API to psql: a span is this node's own account
+# of what it did, and the only way to know that two nodes agree about a trace id
+# is to look in both databases.
+
+# apih METHOD TOKEN PATH [BODY] - api(), keeping the response headers too. The
+# trace the node ran the request in lands in API_TRACE, which is what makes a
+# trace assertable from outside: the node hands it back on every response.
+apih() {
+	local method=$1 token=$2 path=$3 body=${4-}
+	local -a curl_args=(--silent --show-error -D "$WORK/headers" -X "$method" -w '\n%{http_code}')
+	if [ -n "$token" ]; then
+		curl_args+=(-H "Authorization: Bearer $token")
+	fi
+	if [ -n "$body" ]; then
+		curl_args+=(-H 'Content-Type: application/json' --data-binary "$body")
+	fi
+	local out
+	out="$(curl "${curl_args[@]}" "http://127.0.0.1:$HTTP_PORT$path")" || return 1
+	API_STATUS="${out##*$'\n'}"
+	API_BODY="${out%$'\n'*}"
+	API_TRACE="$(tr -d '\r' <"$WORK/headers" | sed -n 's/^[Tt]race-[Ii]d: //p' | tail -n 1)"
+}
+
+# napih PORT METHOD TOKEN PATH [BODY] - apih against one of the federated nodes.
+napih() {
+	local port=$1
+	shift
+	HTTP_PORT="$port"
+	apih "$@"
+}
+
+# metrics TOKEN [QUERY] - GET /api/metrics as one principal.
+metrics() {
+	api GET "$1" "/api/metrics${2-}" || return 1
+	if [ "$API_STATUS" != "200" ]; then
+		printf 'GET /api/metrics answered %s: %s\n' "$API_STATUS" "$API_BODY" >&2
+		return 1
+	fi
+}
+
+# want_at_least WHAT GOT FLOOR
+want_at_least() {
+	if [ "$(printf '%s' "$2" | tr -dc '0-9-')" = "" ] || [ "$2" -lt "$3" ]; then
+		printf '%s is %q, want at least %s\n' "$1" "$2" "$3" >&2
+		return 1
+	fi
+}
+
+# await_count DSN SQL MIN - a span is written when the operation it describes
+# has finished, which is after the response the client is reading. So the
+# assertions poll rather than assume: ten seconds, a tenth of a second apart.
+await_count() {
+	local dsn=$1 query=$2 want=$3 i n
+	for i in $(seq 1 100); do
+		n="$(psql -v ON_ERROR_STOP=1 -tA -d "$dsn" -c "$query")" || return 1
+		if [ -n "$n" ] && [ "$n" -ge "$want" ]; then
+			printf '%s\n' "$n"
+			return 0
+		fi
+		sleep 0.1
+	done
+	printf 'never reached %s within ten seconds:\n%s\n' "$want" "$query" >&2
+	return 1
+}
+
+# await_spans TOKEN TRACE MIN - the same wait, over the API: poll GET
+# /api/trace/{id} until the trace holds at least MIN spans.
+await_spans() {
+	local token=$1 trace=$2 want=$3 i n
+	for i in $(seq 1 100); do
+		api GET "$token" "/api/trace/$trace" || return 1
+		n="$(jqv '.trace.spans | length')"
+		if [ -n "$n" ] && [ "$n" -ge "$want" ]; then
+			return 0
+		fi
+		sleep 0.1
+	done
+	printf 'trace %s never held %s spans:\n%s\n' "$trace" "$want" "$API_BODY" >&2
+	return 1
+}
+
+# post_activity TOKEN KIND BODY [WHERE_JSON] - one write into the timeline.
+post_activity() {
+	local token=$1 kind=$2 body=$3 where=${4-'{"room":"runs"}'}
+	local payload
+	payload="$(jq -nc --arg k "$kind" --arg b "$body" --argjson w "$where" \
+		'$w + {kind: $k, body: $b}')" || return 1
+	want_status 200 POST "$token" /api/activity "$payload"
+}
+
+# ------------------------------------------------------------- phase 8 checks
+
+# Every group is in the answer, every time - including the ones this principal
+# may not read. A group that is simply absent is indistinguishable from a group
+# that measured nothing.
+metrics_answers_every_group() {
+	recall
+	metrics "$TOKEN_A" || return 1
+	local group
+	for group in node corpus sync collaboration permissions anomalies; do
+		if [ "$(jqv ".groups | has(\"$group\")")" != "true" ]; then
+			printf 'the %s group is missing from the answer\n' "$group" >&2
+			return 1
+		fi
+		if [ "$(jqv ".groups.$group.available")" = "null" ]; then
+			printf 'the %s group does not say whether it was measured\n' "$group" >&2
+			return 1
+		fi
+	done
+	want_eq "whose numbers these are" "$(jqv .scope.user)" "$USER_A" || return 1
+	want_eq "and which project" "$(jqv .scope.project)" pa || return 1
+	printf 'six groups, scope %s\n' "$(jqv .scope.key)"
+}
+
+# The security property: a metric is an aggregate, and an aggregate over rows
+# somebody may not read tells them how many there are. So the number has to be
+# exactly what that principal may list, and a row that is out of their reach has
+# to be out of their total.
+#
+# "another project's numbers" is not the same as "any row with another project
+# on it": B holds a read grant on pa, so some of pa is legitimately B's to count.
+# What is not is a row the grant does not reach - which is what project-only
+# means, and what the assertion below is written on.
+metrics_are_scope_filtered() {
+	recall
+	local a_total b_total a_list b_list
+	metrics "$TOKEN_A" || return 1
+	a_total="$(jqv .groups.corpus.artifacts)"
+	api GET "$TOKEN_A" '/api/artifacts?limit=1000' || return 1
+	a_list="$(printf '%s' "$API_BODY" | jq '.artifacts | length')"
+	want_eq "A's corpus is what A may list" "$a_total" "$a_list" || return 1
+
+	metrics "$TOKEN_B" || return 1
+	want_eq "B's scope" "$(jqv .scope.project)" pb || return 1
+	b_total="$(jqv .groups.corpus.artifacts)"
+	api GET "$TOKEN_B" '/api/artifacts?limit=1000' || return 1
+	b_list="$(printf '%s' "$API_BODY" | jq '.artifacts | length')"
+	want_eq "B's corpus is what B may list" "$b_total" "$b_list" || return 1
+
+	# A row in pa that no grant reaches: A's project's, and nobody else's.
+	want_status 200 POST "$TOKEN_A" /api/artifacts \
+		'{"type":"note","title":"a project-only counting note","visibility":"project-only"}' || return 1
+	metrics "$TOKEN_A" || return 1
+	want_eq "A's total went up by one" "$(jqv .groups.corpus.artifacts)" "$((a_total + 1))" || return 1
+	metrics "$TOKEN_B" || return 1
+	want_eq "and B's did not move" "$(jqv .groups.corpus.artifacts)" "$b_total" || return 1
+	printf 'A counts %s (what A may list), B counts %s; the project-only row is A alone\n' \
+		"$((a_total + 1))" "$b_total"
+}
+
+# A principal of one project cannot read another project's numbers even by
+# asking for them: ?scope=all is the operator's, and for anybody else it is
+# their own view under their own scope key.
+a_stranger_cannot_read_another_projects_metrics() {
+	recall
+	metrics "$TOKEN_B" || return 1
+	local own
+	own="$(jqv .groups.corpus.artifacts)"
+	metrics "$TOKEN_B" '?scope=all' || return 1
+	want_eq "scope=all is not for B" "$(jqv .scope.all)" false || return 1
+	want_eq "B's key is still B's" "$(jqv .scope.key)" "user:$USER_B|project:pb" || return 1
+	want_eq "and the count did not widen" "$(jqv .groups.corpus.artifacts)" "$own" || return 1
+	# The node's own health is not B's to read, and it says so rather than
+	# answering zero.
+	want_eq "node health for B" "$(jqv .groups.node.available)" false || return 1
+	if [ -z "$(jqv '.groups.node.reason // ""')" ]; then
+		printf 'the node group was withheld with no reason given\n' >&2
+		return 1
+	fi
+	want_eq "and no uptime came with it" "$(jqv '.groups.node | has("uptime_s")')" false || return 1
+	want_eq "replication cursors for B" "$(jqv .groups.sync.available)" false || return 1
+	printf 'B asked for the node and was told: %s\n' "$(jqv .groups.node.reason)"
+}
+
+# A personal artifact is its owner's, and the count is too. It is the one that
+# would leak most quietly: nobody expects a total to be a disclosure.
+personal_artifacts_count_only_for_their_owner() {
+	recall
+	metrics "$TOKEN_B" || return 1
+	local before after mine
+	before="$(jqv .groups.corpus.artifacts)"
+	metrics "$TOKEN_A" || return 1
+	mine="$(jqv .groups.corpus.artifacts)"
+
+	want_status 200 POST "$TOKEN_A" /api/artifacts \
+		'{"type":"note","title":"a private counting note","visibility":"personal"}' || return 1
+
+	metrics "$TOKEN_A" || return 1
+	want_eq "A's count went up by one" "$(jqv .groups.corpus.artifacts)" "$((mine + 1))" || return 1
+	want_at_least "A's personal bucket" "$(jqv '.groups.corpus.by_scope.personal // 0')" 1 || return 1
+	metrics "$TOKEN_B" || return 1
+	want_eq "B's count did not move" "$(jqv .groups.corpus.artifacts)" "$before" || return 1
+	after="$(jqv '.groups.corpus.by_scope.personal // 0')"
+	printf "A: %s -> %s artifacts; B: %s, personal bucket %s\n" \
+		"$mine" "$((mine + 1))" "$before" "$after"
+}
+
+# The operator's ?scope=all is the node: the health of the machine, the peers,
+# the bytes on disk, and a corpus that includes what no single principal can
+# read.
+the_operator_scope_all_sees_the_node() {
+	recall
+	metrics "$TOKEN_A" || return 1
+	local a_artifacts
+	a_artifacts="$(jqv .groups.corpus.artifacts)"
+
+	metrics "$TOKEN_OP" '?scope=all' || return 1
+	want_eq "scope=all for the operator" "$(jqv .scope.all)" true || return 1
+	want_eq "the key says so" "$(jqv .scope.key)" "node:all" || return 1
+	want_eq "node health is measured" "$(jqv .groups.node.available)" true || return 1
+	want_eq "the store answers" "$(jqv .groups.node.db.up)" true || return 1
+	want_at_least "the node holds at least what A can read" \
+		"$(jqv .groups.corpus.artifacts)" "$a_artifacts" || return 1
+
+	# The denominator is named, which is the whole of the CPU number meaning
+	# anything on a machine with more than one core.
+	case "$(jqv .groups.node.cpu.of)" in
+	*"one core"*) ;;
+	*)
+		printf 'the cpu share does not name its denominator: %q\n' "$(jqv .groups.node.cpu.of)" >&2
+		return 1
+		;;
+	esac
+	want_at_least "cores reported" "$(jqv .groups.node.cpu.cores)" 1 || return 1
+	want_at_least "resident bytes" "$(jqv .groups.node.memory.rss_bytes)" 1 || return 1
+	want_at_least "the pool's ceiling" "$(jqv .groups.node.pool.max_open)" 1 || return 1
+	want_eq "bytes on disk are the operator's" "$(jqv .groups.corpus.storage.available)" true || return 1
+	printf 'node: %ss up, %s of one core over %ss, %s bytes resident, %s artifacts\n' \
+		"$(jqv '.groups.node.uptime_s | floor')" "$(jqv .groups.node.cpu.core_share)" \
+		"$(jqv '.groups.node.cpu.window_s | floor')" "$(jqv .groups.node.memory.rss_bytes)" \
+		"$(jqv .groups.corpus.artifacts)"
+}
+
+# What is not measured says so. The pull side of replication is the honest case:
+# what a peer holds above our cursor is that peer's high water mark, and this
+# node has not asked it.
+what_was_not_measured_is_not_a_zero() {
+	recall
+	metrics "$TOKEN_OP" '?scope=all' || return 1
+	want_eq "pending pull is not measured" "$(jqv .groups.sync.pending_pull.available)" false || return 1
+	if [ -z "$(jqv '.groups.sync.pending_pull.reason // ""')" ]; then
+		printf 'pending pull is unavailable and gives no reason\n' >&2
+		return 1
+	fi
+	# And the coverage number that does not exist yet: no vector index here, so
+	# embedded is zero and is reported as zero of a named denominator rather
+	# than as a share of an index nothing built.
+	want_eq "embeddings" "$(jqv .groups.corpus.embedding.embedded)" 0 || return 1
+	want_at_least "text-indexed rows" "$(jqv .groups.corpus.embedding.bm25_only)" 1 || return 1
+	printf 'pending pull: %s\n' "$(jqv .groups.sync.pending_pull.reason)"
+}
+
+# The serenedash rule, and the one this whole group exists for: below the
+# minimum sample count there is no verdict. It says how many readings it has and
+# how many it needs, and it does not print a baseline somebody would read as the
+# finding.
+anomalies_refuse_a_verdict_below_the_minimum() {
+	recall
+	metrics "$TOKEN_A" || return 1
+	want_eq "the anomaly pass ran" "$(jqv .groups.anomalies.available)" true || return 1
+	want_at_least "series watched" "$(jqv '.groups.anomalies.series | length')" 1 || return 1
+	want_at_least "the minimum it needs" "$(jqv .groups.anomalies.min_samples)" 2 || return 1
+
+	local refused
+	refused="$(jqv '[.groups.anomalies.series[] | select(.verdict == "insufficient samples")] | length')"
+	want_at_least "series that refused a verdict" "$refused" 1 || return 1
+	# Every refusal says what it has and what it needs, and carries no baseline.
+	if [ "$(jqv '[.groups.anomalies.series[]
+	              | select(.verdict == "insufficient samples")
+	              | select((.reason // "") == "" or (.baseline // 0) != 0)] | length')" != "0" ]; then
+		printf 'a refusal came with a baseline or without a reason:\n%s\n' \
+			"$(jqv .groups.anomalies.series)" >&2
+		return 1
+	fi
+	# And it is a refusal, not a number: nothing in the series claims normality
+	# on no evidence.
+	printf '%s of %s series refused: %s\n' "$refused" \
+		"$(jqv '.groups.anomalies.series | length')" \
+		"$(jqv '.groups.anomalies.series[0].reason')"
+}
+
+# With a history recorded, the verdict is a distance from what this node has
+# actually seen - not a threshold anybody chose. The readings are inserted
+# straight into the local table, which is where the node's own readings go.
+anomalies_judge_against_recorded_history() {
+	recall
+	local key series
+	key="user:$USER_A|project:pa"
+	series="corpus.artifacts"
+	psql -v ON_ERROR_STOP=1 -q -c \
+		"INSERT INTO metric_samples (id, scope, series, value, at)
+		 SELECT 'hist-' || g, '$key', '$series', 1, now() - (g || ' minutes')::interval
+		   FROM generate_series(1, 12) g" || return 1
+
+	metrics "$TOKEN_A" || return 1
+	local verdict reason samples
+	verdict="$(jqv ".groups.anomalies.series[] | select(.series == \"$series\") | .verdict")"
+	reason="$(jqv ".groups.anomalies.series[] | select(.series == \"$series\") | .reason")"
+	samples="$(jqv ".groups.anomalies.series[] | select(.series == \"$series\") | .samples")"
+	want_at_least "readings behind the verdict" "$samples" 12 || return 1
+	want_eq "the verdict" "$verdict" unusual || return 1
+	if [ -z "$reason" ] || [ "$reason" = "null" ]; then
+		printf 'a verdict was drawn with nothing said about what it rests on\n' >&2
+		return 1
+	fi
+	# The history is per scope: B's numbers are not judged against A's.
+	metrics "$TOKEN_B" || return 1
+	want_eq "B's verdict for the same series" \
+		"$(jqv ".groups.anomalies.series[] | select(.series == \"$series\") | .verdict")" \
+		"insufficient samples" || return 1
+	printf 'A: %s (%s readings) - %s; B: still insufficient\n' "$verdict" "$samples" "$reason"
+}
+
+# A refusal is counted, for the principal it was given to, and it names no row.
+refusals_are_counted_for_whoever_was_refused() {
+	recall
+	metrics "$TOKEN_B" || return 1
+	local before
+	before="$(jqv .groups.permissions.denied_24h)"
+
+	# The peers list is the operator's view, so B is refused it.
+	want_status 403 GET "$TOKEN_B" /api/peers || return 1
+	# And a token that is not a token at all.
+	want_status 401 GET "" /api/artifacts || return 1
+
+	metrics "$TOKEN_B" || return 1
+	local after
+	after="$(jqv .groups.permissions.denied_24h)"
+	want_at_least "B's refusals" "$after" "$((before + 1))" || return 1
+	want_at_least "counted under 403" "$(jqv '.groups.permissions.denied_by_status["403"] // 0')" 1 || return 1
+	# The unauthenticated one has no principal, so it is the operator's to see
+	# and nobody else's.
+	metrics "$TOKEN_OP" '?scope=all' || return 1
+	want_at_least "the node's refusals include the 401" \
+		"$(jqv '.groups.permissions.denied_by_status["401"] // 0')" 1 || return 1
+	printf "B was refused %s -> %s time(s) in 24h; the node counted a 401 as well\n" \
+		"$before" "$after"
+}
+
+# The Prometheus endpoint is the same numbers behind the same token, and it
+# writes down which groups it could not read rather than leaving them out.
+prometheus_text_is_the_same_measurements() {
+	recall
+	local out
+	out="$(curl --silent --show-error -H "Authorization: Bearer $TOKEN_OP" \
+		-w '\n%{http_code} %{content_type}' \
+		"http://127.0.0.1:$HTTP_PORT/metrics?scope=all")" || return 1
+	local tail="${out##*$'\n'}" body="${out%$'\n'*}"
+	want_eq "status" "${tail%% *}" 200 || return 1
+	case "${tail#* }" in
+	text/plain*) ;;
+	*)
+		printf 'the scrape came back as %q\n' "${tail#* }" >&2
+		return 1
+		;;
+	esac
+	local name
+	for name in flowy_artifacts flowy_group_available flowy_cpu_core_share flowy_denied_24h; do
+		if ! printf '%s' "$body" | grep -q "^$name{"; then
+			printf 'the scrape has no %s series:\n%s\n' "$name" "$body" >&2
+			return 1
+		fi
+	done
+	# One HELP per family, whatever the labels: a scrape with two is a scrape a
+	# scraper rejects.
+	local dupes
+	dupes="$(printf '%s' "$body" | grep '^# HELP ' | awk '{print $3}' | sort | uniq -d)"
+	if [ -n "$dupes" ]; then
+		printf 'these families are declared twice: %s\n' "$dupes" >&2
+		return 1
+	fi
+	# The scope is a label, so two tokens scraping this node are two series.
+	if ! printf '%s' "$body" | grep -q 'scope="node:all"'; then
+		printf 'the scrape does not say whose numbers it is:\n%s\n' "$body" >&2
+		return 1
+	fi
+	printf '%s series over %s families\n' \
+		"$(printf '%s' "$body" | grep -c '^flowy_')" \
+		"$(printf '%s' "$body" | grep -c '^# HELP ')"
+}
+
+# A browser following the link to /metrics gets the console, because a
+# navigation carries no Authorization header and a scrape does.
+the_metrics_path_is_a_page_as_well() {
+	www /metrics || return 1
+	want_eq "status" "$WWW_STATUS" 200 || return 1
+	case "$WWW_TYPE" in
+	text/html*) ;;
+	*)
+		printf 'an untokened GET /metrics came back as %q\n' "$WWW_TYPE" >&2
+		return 1
+		;;
+	esac
+	printf 'no token: %s bytes of console\n' "${#WWW_BODY}"
+}
+
+# The timeline indexes all four kinds, in log order, and says which is which.
+the_timeline_indexes_every_kind() {
+	recall
+	post_activity "$TOKEN_A" turn "a turn: read the gearbox bug" || return 1
+	local turn
+	turn="$(jqv .id)"
+	post_activity "$TOKEN_A" log "fc run-log: exit status 0, 12s" || return 1
+	post_activity "$TOKEN_A" chat "and a message about it" || return 1
+	post_activity "$TOKEN_A" steer "vm_say: try the other approach" || return 1
+
+	api GET "$TOKEN_A" '/api/activity?room=runs' || return 1
+	want_eq "status" "$API_STATUS" 200 || return 1
+	local kind
+	for kind in turn log chat steer; do
+		want_at_least "$kind items" \
+			"$(printf '%s' "$API_BODY" | jq "[.items[] | select(.kind == \"$kind\")] | length")" 1 ||
+			return 1
+	done
+	# In order, by the same cursor everything else here pages by.
+	if [ "$(printf '%s' "$API_BODY" | jq '[.items[].seq_hlc] | . == sort')" != "true" ]; then
+		printf 'the timeline is not in log order:\n%s\n' \
+			"$(printf '%s' "$API_BODY" | jq -c '[.items[] | {kind, seq_hlc}]')" >&2
+		return 1
+	fi
+	want_at_least "the cursor moved" "$(jqv .cursor)" 1 || return 1
+	remember N8_TURN "$turn"
+	remember N8_THREAD "$(printf '%s' "$API_BODY" | jq -r '.items[0].thread')"
+	printf '%s items, kinds [%s]\n' "$(printf '%s' "$API_BODY" | jq '.items | length')" \
+		"$(printf '%s' "$API_BODY" | jq -r '[.items[].kind] | unique | join(", ")')"
+}
+
+# It is searchable, and searching it is a narrowing of the same filtered read
+# rather than a second index with rules of its own.
+the_timeline_is_searchable() {
+	recall
+	api GET "$TOKEN_A" '/api/activity?q=gearbox' || return 1
+	want_at_least "hits for a word in one item" \
+		"$(printf '%s' "$API_BODY" | jq '.items | length')" 1 || return 1
+	if [ "$(printf '%s' "$API_BODY" | jq '[.items[] | select(.body | test("gearbox"; "i") | not)] | length')" != "0" ]; then
+		printf 'the search returned something that does not contain the word\n' >&2
+		return 1
+	fi
+	api GET "$TOKEN_A" '/api/activity?q=nothing-ever-said-this' || return 1
+	want_eq "a word nobody wrote" "$(printf '%s' "$API_BODY" | jq '.items | length')" 0 || return 1
+	api GET "$TOKEN_A" '/api/activity?kind=steer' || return 1
+	if [ "$(printf '%s' "$API_BODY" | jq '[.items[] | select(.kind != "steer")] | length')" != "0" ]; then
+		printf 'the kind filter let something else through\n' >&2
+		return 1
+	fi
+	want_status 400 GET "$TOKEN_A" '/api/activity?kind=status' || return 1
+	printf 'searched, narrowed, and a kind nobody may post was refused\n'
+}
+
+# And it is filtered. The grant runs pb -> pa, so some of A's project is
+# legitimately B's to read; nothing of B's is A's. So the assertion is written
+# the way round the permission model actually promises: B posts a run of its
+# own, and A - who holds no grant into pb - sees none of it.
+the_timeline_is_scope_filtered() {
+	recall
+	post_activity "$TOKEN_B" log "fc run-log: b-side only, pb" '{"room":"runs"}' || return 1
+	local said
+	said="$(jqv .id)"
+
+	api GET "$TOKEN_B" '/api/activity?q=b-side' || return 1
+	want_at_least "B's own run is on B's timeline" \
+		"$(printf '%s' "$API_BODY" | jq "[.items[] | select(.id == \"$said\")] | length")" 1 || return 1
+
+	api GET "$TOKEN_A" '/api/activity?q=b-side' || return 1
+	want_eq "status" "$API_STATUS" 200 || return 1
+	want_eq "what A sees of B's runs" "$(printf '%s' "$API_BODY" | jq '.items | length')" 0 || return 1
+	api GET "$TOKEN_A" '/api/activity?room=runs' || return 1
+	if [ "$(printf '%s' "$API_BODY" | jq "[.items[] | select(.id == \"$said\")] | length")" != "0" ]; then
+		printf "B's run line is on A's timeline\n" >&2
+		return 1
+	fi
+	remember N8_B_ITEM "$said"
+	printf "A holds nothing of B's runs; B holds %s\n" "$said"
+}
+
+# The message box is everywhere: you post into a run, a branch of one, or a
+# room, from the same place you were reading.
+the_timeline_is_postable_into() {
+	recall
+	post_activity "$TOKEN_A" steer "into the run itself" \
+		"{\"thread\": \"$N8_THREAD\", \"room\": \"runs\"}" || return 1
+	local said
+	said="$(jqv .id)"
+	want_eq "it landed in the run" "$(jqv .thread)" "$N8_THREAD" || return 1
+	want_eq "as a steer" "$(jqv .kind)" steer || return 1
+	want_eq "said by A" "$(jqv .actor_user)" "$USER_A" || return 1
+
+	api GET "$TOKEN_A" "/api/activity?thread=$N8_THREAD" || return 1
+	want_at_least "the run now holds it" \
+		"$(printf '%s' "$API_BODY" | jq "[.items[] | select(.id == \"$said\")] | length")" 1 || return 1
+	# Saying where is required: a message with no destination is not a message.
+	want_status 400 POST "$TOKEN_A" /api/activity '{"kind":"steer","body":"nowhere"}' || return 1
+	printf 'posted %s into run %s\n' "$said" "$N8_THREAD"
+}
+
+# A request is a trace: the permission check that decided who was asking, and
+# the queries that answered under it.
+a_request_is_a_trace() {
+	recall
+	apih GET "$TOKEN_A" /api/artifacts || return 1
+	want_eq "status" "$API_STATUS" 200 || return 1
+	if [ -z "$API_TRACE" ]; then
+		printf 'the node answered without saying which trace it ran in\n' >&2
+		return 1
+	fi
+	local trace="$API_TRACE"
+	# The root span ends after the response is written, so the trace is asked
+	# for until it is there rather than once, immediately.
+	await_spans "$TOKEN_A" "$trace" 3 || return 1
+	want_eq "the trace" "$(jqv .trace.trace_id)" "$trace" || return 1
+	local names
+	names="$(jqv '[.trace.spans[].name] | join(",")')"
+	case "$names" in
+	*principal.resolve*) ;;
+	*)
+		printf 'the trace has no permission check in it: %s\n' "$names" >&2
+		return 1
+		;;
+	esac
+	case "$names" in
+	*artifacts.list*) ;;
+	*)
+		printf 'the trace has no query in it: %s\n' "$names" >&2
+		return 1
+		;;
+	esac
+	want_eq "one node held it" "$(jqv '.trace.nodes | length')" 1 || return 1
+	remember N8_TRACE_A "$trace"
+	printf 'trace %s: %s\n' "$trace" "$names"
+}
+
+# And a trace is filtered like everything else: B may ask for A's trace by id
+# and is handed none of it.
+traces_are_scope_filtered() {
+	recall
+	api GET "$TOKEN_B" "/api/trace/$N8_TRACE_A" || return 1
+	want_eq "status" "$API_STATUS" 200 || return 1
+	want_eq "what B sees of A's trace" "$(jqv '.trace.spans | length')" 0 || return 1
+	api GET "$TOKEN_B" /api/traces || return 1
+	if [ "$(printf '%s' "$API_BODY" | jq "[.traces[] | select(.trace_id == \"$N8_TRACE_A\")] | length")" != "0" ]; then
+		printf "A's trace is in B's list\n" >&2
+		return 1
+	fi
+	# The operator's view of the node has it.
+	api GET "$TOKEN_OP" "/api/trace/$N8_TRACE_A?scope=all" || return 1
+	want_at_least "the operator sees the trace" "$(jqv '.trace.spans | length')" 3 || return 1
+	printf "B: 0 spans of %s; the operator: %s\n" "$N8_TRACE_A" "$(jqv '.trace.spans | length')"
+}
+
+# The four tools an agent already knows from serenedash, answering what that
+# agent's token may read.
+the_mcp_observability_tools_are_offered() {
+	recall
+	mcp tools/list "$TOKEN_A" || return 1
+	local name
+	for name in status activity storage anomalies; do
+		want_eq "$name in tools/list" \
+			"$(rv "[.result.tools[] | select(.name == \"$name\")] | length")" 1 || return 1
+	done
+	printf 'tools: %s\n' "$(rv '[.result.tools[].name] | join(", ")')"
+}
+
+the_mcp_tools_are_scope_filtered() {
+	recall
+	want_tool status "$TOKEN_A" || return 1
+	want_eq "status is A's view" "$(tv .scope.user)" "$USER_A" || return 1
+	want_eq "and the node is not A's to see" "$(tv .groups.node.available)" false || return 1
+	want_at_least "A's messages are counted" "$(tv '.groups.collaboration.messages_24h')" 0 || return 1
+
+	# The corpus a tool reports is the corpus that token may list, over the
+	# same filter and to the row.
+	local token
+	for token in "$TOKEN_A" "$TOKEN_B"; do
+		want_tool storage "$token" || return 1
+		local counted listed
+		counted="$(tv .groups.corpus.artifacts)"
+		api GET "$token" '/api/artifacts?limit=1000' || return 1
+		listed="$(printf '%s' "$API_BODY" | jq '.artifacts | length')"
+		want_eq "storage counts what this token may list" "$counted" "$listed" || return 1
+	done
+
+	want_tool anomalies "$TOKEN_B" || return 1
+	want_at_least "series B has too little history for" \
+		"$(tv '[.groups.anomalies.series[] | select(.verdict == "insufficient samples")] | length')" 1 ||
+		return 1
+
+	# And the timeline the tool reads is the timeline the API reads: B's own run
+	# line is B's, and A holds no grant into pb.
+	want_tool activity "$TOKEN_B" '{"q": "b-side"}' || return 1
+	want_at_least "B finds its own run" "$(tv .count)" 1 || return 1
+	want_tool activity "$TOKEN_A" '{"q": "b-side"}' || return 1
+	want_eq "A finds none of it" "$(tv .count)" 0 || return 1
+	printf 'status, storage, anomalies and activity all answered per token\n'
+}
+
+# The exporter really exports: a collector that is not this node receives an
+# OTLP payload carrying the trace of a request that really was made.
+otlp_export_reaches_a_collector() {
+	recall
+	local cport nport trace
+	cport="$(free_port 8990)"
+	nport="$(free_port "$((cport + 1))")"
+	: >"$WORK/otlp.jsonl"
+
+	"$WORK/smoke" otlp-collector "127.0.0.1:$cport" "$WORK/otlp.jsonl" \
+		>"$WORK/otlp-collector.log" 2>&1 &
+	printf '%s' "$!" >"$WORK/otlp-collector.pid"
+	DATABASE_URL="$DATABASE_URL" FLOWY_NODE=otlp-node FLOWY_OPERATOR="$USER_OP" \
+		FLOWY_OTLP_ENDPOINT="http://127.0.0.1:$cport" \
+		./flowy serve -addr "127.0.0.1:$nport" >"$WORK/otlp-node.log" 2>&1 &
+	printf '%s' "$!" >"$WORK/otlp-node.pid"
+
+	"$WORK/smoke" healthz "http://127.0.0.1:$nport/healthz" >/dev/null || return 1
+	HTTP_PORT="$nport" apih GET "$TOKEN_A" /api/artifacts || return 1
+	trace="$API_TRACE"
+	if [ -z "$trace" ]; then
+		printf 'the exporting node answered without a trace id\n' >&2
+		return 1
+	fi
+
+	local waited=0
+	while [ "$waited" -lt 100 ]; do
+		if grep -q "$trace" "$WORK/otlp.jsonl" 2>/dev/null; then
+			break
+		fi
+		sleep 0.1
+		waited=$((waited + 1))
+	done
+	kill "$(cat "$WORK/otlp-node.pid")" 2>/dev/null
+	kill "$(cat "$WORK/otlp-collector.pid")" 2>/dev/null
+	rm -f "$WORK/otlp-node.pid" "$WORK/otlp-collector.pid"
+
+	if ! grep -q "$trace" "$WORK/otlp.jsonl" 2>/dev/null; then
+		printf 'nothing carrying %s reached the collector:\n' "$trace" >&2
+		cat "$WORK/otlp-node.log" >&2
+		return 1
+	fi
+	# And what arrived is OTLP, not this node's own shape.
+	local spans
+	spans="$(jq -s --arg t "$trace" \
+		'[.[] | .resourceSpans[]? | .scopeSpans[]? | .spans[]? | select(.traceId == $t)] | length' \
+		"$WORK/otlp.jsonl")" || return 1
+	want_at_least "spans of that trace in the payload" "$spans" 1 || return 1
+	local names
+	names="$(jq -s --arg t "$trace" -r \
+		'[.[] | .resourceSpans[]? | .scopeSpans[]? | .spans[]? | select(.traceId == $t) | .name]
+		 | unique | join(", ")' "$WORK/otlp.jsonl")" || return 1
+	printf 'the collector received %s span(s) of %s: %s\n' "$spans" "$trace" "$names"
+}
+
+# --------------------------------------- phase 8 across the two federated nodes
+
+# The claim the architecture makes: a handoff assigned on one node and taken
+# delivery of on another is ONE trace, and the id is the same in both databases.
+#
+# Nothing requests anything of node B when the assignment replicates - what
+# crosses is a delta - so the id travels in the meta of the event that opens the
+# handoff's thread, inside its signature. B reads it back off the thread and
+# records its own spans under it.
+a_handoff_is_one_trace_across_two_nodes() {
+	recall5
+	napih "$N5_PORT_A" POST "$N5_TOKEN_A" /api/artifacts \
+		'{"type":"bug","title":"the traced bug","body":"followed across the fabric","status":"open"}' ||
+		return 1
+	want_eq "status" "$API_STATUS" 200 || return 1
+	local art task trace
+	art="$(jqv .id)"
+
+	napih "$N5_PORT_A" POST "$N5_TOKEN_A" /api/assign \
+		"{\"artifact\":\"$art\",\"to_user\":\"$N5_USER_B\",\"note\":\"traced handoff\"}" || return 1
+	want_eq "status" "$API_STATUS" 200 || return 1
+	task="$(jqv .id)"
+	trace="$API_TRACE"
+	if [ -z "$trace" ]; then
+		printf 'the assignment answered without a trace id\n' >&2
+		return 1
+	fi
+
+	# Assigned on A: A's own account of it.
+	local on_a
+	on_a="$(await_count "$N5_DSN_A" \
+		"SELECT count(*) FROM spans WHERE trace_id = '$trace' AND node = 'nodeA'" 1)" || return 1
+	# And the id rode out on the row, not on a header nobody sent.
+	await_count "$N5_DSN_A" \
+		"SELECT count(*) FROM events WHERE meta ->> 'trace' = '$trace'" 1 >/dev/null || return 1
+
+	sync_round || return 1
+
+	# Delivered to B: B's own account, under the same trace id.
+	local delivered
+	delivered="$(await_count "$N5_DSN_B" \
+		"SELECT count(*) FROM spans
+		  WHERE trace_id = '$trace' AND node = 'nodeB' AND name = 'handoff.deliver'" 1)" || return 1
+
+	# Worked by B: the request that opens the task joins the trace it was
+	# assigned in rather than starting one of its own.
+	napih "$N5_PORT_B" GET "$N5_TOKEN_B" "/api/task/$task" || return 1
+	want_eq "status" "$API_STATUS" 200 || return 1
+	want_eq "the task on B" "$(jqv .id)" "$task" || return 1
+	# Said out loud, on the response: B is working in the trace the handoff was
+	# assigned in on A, not in one of its own.
+	want_eq "the trace B answered in" "$API_TRACE" "$trace" || return 1
+	local worked
+	worked="$(await_count "$N5_DSN_B" \
+		"SELECT count(*) FROM spans
+		  WHERE trace_id = '$trace' AND node = 'nodeB' AND name LIKE 'GET /api/task%'" 1)" || return 1
+
+	# Applying the same delta again does not record the delivery twice.
+	sync_round || return 1
+	local again
+	again="$(scalar5 "$N5_DSN_B" \
+		"SELECT count(*) FROM spans
+		  WHERE trace_id = '$trace' AND node = 'nodeB' AND name = 'handoff.deliver'")" || return 1
+	want_eq "a second sync recorded no second delivery" "$again" "$delivered" || return 1
+
+	remember5 N8_HANDOFF_TRACE "$trace"
+	remember5 N8_HANDOFF_TASK "$task"
+	printf 'trace %s: %s span(s) on nodeA, %s delivery + %s worked on nodeB\n' \
+		"$trace" "$on_a" "$delivered" "$worked"
+}
+
+# And the collector puts the two halves back together into one waterfall, naming
+# every node it reached.
+the_collector_reassembles_the_two_halves() {
+	recall5
+	local out nodes sources spans
+	out="$(DATABASE_URL="$N5_DSN_B" FLOWY_NODE=nodeB FLOWY_OPERATOR="$N5_USER_OP" \
+		"$ROOT/flowy" traces --trace "$N8_HANDOFF_TRACE" \
+		--peer "http://127.0.0.1:$N5_PORT_A" --token "$N5_TOKEN_OP")" || return 1
+
+	nodes="$(printf '%s' "$out" | jq -r '.nodes | sort | join(",")')"
+	case ",$nodes," in
+	*,nodeA,*) ;;
+	*)
+		printf 'the collected trace does not include nodeA: %s\n' "$out" >&2
+		return 1
+		;;
+	esac
+	case ",$nodes," in
+	*,nodeB,*) ;;
+	*)
+		printf 'the collected trace does not include nodeB: %s\n' "$out" >&2
+		return 1
+		;;
+	esac
+	spans="$(printf '%s' "$out" | jq '.spans | length')"
+	want_at_least "spans in the collected trace" "$spans" 2 || return 1
+	# In one order, on one clock.
+	if [ "$(printf '%s' "$out" | jq '[.spans[].started] | . == sort')" != "true" ]; then
+		printf 'the collected spans are not in start order\n' >&2
+		return 1
+	fi
+	# Every source is named, so a half that could not be reached would be
+	# visible rather than silently missing.
+	sources="$(printf '%s' "$out" | jq -r '[.sources[] | "\(.from):\(.spans)"] | join(" ")')"
+	want_at_least "sources collected from" \
+		"$(printf '%s' "$out" | jq '.sources | length')" 2 || return 1
+	if [ "$(printf '%s' "$out" | jq '[.sources[] | select((.error // "") != "")] | length')" != "0" ]; then
+		printf 'a source could not be collected from: %s\n' "$out" >&2
+		return 1
+	fi
+	printf 'one trace, %s spans, nodes [%s], from %s\n' "$spans" "$nodes" "$sources"
+}
+
+# A peer that cannot be reached is named with the reason, rather than leaving a
+# half-trace that reads as the whole of what happened.
+the_collector_says_which_half_it_could_not_reach() {
+	recall5
+	local out
+	out="$(DATABASE_URL="$N5_DSN_B" FLOWY_NODE=nodeB FLOWY_OPERATOR="$N5_USER_OP" \
+		"$ROOT/flowy" traces --trace "$N8_HANDOFF_TRACE" \
+		--peer "http://127.0.0.1:1" --token "$N5_TOKEN_OP")" || return 1
+	if [ "$(printf '%s' "$out" | jq '[.sources[] | select((.error // "") != "")] | length')" != "1" ]; then
+		printf 'an unreachable peer was not reported: %s\n' "$out" >&2
+		return 1
+	fi
+	# What it did reach is still there.
+	want_at_least "the local half" "$(printf '%s' "$out" | jq '.spans | length')" 1 || return 1
+	printf 'unreachable peer reported: %s\n' \
+		"$(printf '%s' "$out" | jq -r '[.sources[] | select((.error // "") != "") | .from] | join(",")')"
+}
+
+# The console: the two new tabs and the timeline mount at their own paths, with
+# a token, against the live node - the same check the room and the inbox get.
+console_renders_the_metrics_tab() {
+	recall
+	cd "$ROOT/web" || return 1
+	node scripts/render-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" \
+		"insufficient samples" /metrics
+}
+
+console_renders_the_traces_tab() {
+	recall
+	cd "$ROOT/web" || return 1
+	node scripts/render-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_OP" "waterfall" /traces
+}
+
+console_renders_the_timeline() {
+	recall
+	cd "$ROOT/web" || return 1
+	node scripts/render-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" \
+		"vm_say: try the other approach" /activity
+}
+
+say "metrics: what was measured, and for whom"
+check "every group is in the answer, and says whether it was measured" \
+	metrics_answers_every_group
+check "the corpus is the caller's corpus, project by project" metrics_are_scope_filtered
+check "a personal artifact counts for its owner and for nobody else" \
+	personal_artifacts_count_only_for_their_owner
+check "a stranger cannot read another project's metrics, scope=all or not" \
+	a_stranger_cannot_read_another_projects_metrics
+check "the operator's scope=all is the node: cpu as a share of one core, rss, pool, disk" \
+	the_operator_scope_all_sees_the_node
+check "what was not measured says so rather than answering zero" \
+	what_was_not_measured_is_not_a_zero
+
+say "anomalies: against recorded history, or not at all"
+check "below the minimum sample count there is no verdict" \
+	anomalies_refuse_a_verdict_below_the_minimum
+check "with a history, the verdict is a distance from it - and it is per scope" \
+	anomalies_judge_against_recorded_history
+check "a refusal is counted for whoever was refused, and names no row" \
+	refusals_are_counted_for_whoever_was_refused
+
+say "the scrape"
+check "GET /metrics is the same measurements in the prometheus format" \
+	prometheus_text_is_the_same_measurements
+check "and without a token it is the console, because a browser sends none" \
+	the_metrics_path_is_a_page_as_well
+
+say "the activity timeline"
+check "turns, run logs, chat and steers are one indexed timeline, in order" \
+	the_timeline_indexes_every_kind
+check "it is searchable, and a kind the node mints cannot be posted" the_timeline_is_searchable
+check "and it is filtered: B holds none of A's runs" the_timeline_is_scope_filtered
+check "the message box is everywhere: post into a run from the timeline" \
+	the_timeline_is_postable_into
+
+say "traces"
+check "a request is a trace: the permission check and the queries under it" \
+	a_request_is_a_trace
+check "a trace is filtered like everything else" traces_are_scope_filtered
+check "the OTLP exporter reaches a collector that is not this node" \
+	otlp_export_reaches_a_collector
+
+say "the observability tools an agent already knows"
+check "status, activity, storage and anomalies are offered" \
+	the_mcp_observability_tools_are_offered
+check "and each answers what that token may read" the_mcp_tools_are_scope_filtered
+
+say "one handoff, two nodes, one trace"
+check "assigned on A, delivered to B, worked on B - the same trace id in both databases" \
+	a_handoff_is_one_trace_across_two_nodes
+check "the collector reassembles both halves into one waterfall" \
+	the_collector_reassembles_the_two_halves
+check "and it names the half it could not reach" \
+	the_collector_says_which_half_it_could_not_reach
+
+say "the console's new tabs"
+check "the metrics tab mounts and renders what the node measured" \
+	console_renders_the_metrics_tab
+check "the traces tab mounts" console_renders_the_traces_tab
+check "the activity timeline mounts and renders what was said" console_renders_the_timeline
 
 # ------------------------------------------------------------------- verdict
 

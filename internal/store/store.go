@@ -22,6 +22,7 @@ import (
 	"github.com/lib/pq"
 
 	"github.com/deadtrickster/flowy/internal/hlc"
+	"github.com/deadtrickster/flowy/internal/otel"
 	"github.com/deadtrickster/flowy/internal/ulid"
 )
 
@@ -344,6 +345,9 @@ type Event struct {
 
 // AppendEvent writes an event, stamping id/seq_hlc/node when unset.
 func (d *DB) AppendEvent(ctx context.Context, e *Event) error {
+	ctx, span := otel.Start(ctx, otel.KindIngest, "event.append")
+	defer span.End()
+	span.SetAttr("event.type", e.Type)
 	return d.appendEvent(ctx, d.sql, e)
 }
 

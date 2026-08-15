@@ -6,9 +6,24 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/lib/pq"
+
+	"github.com/deadtrickster/flowy/internal/otel"
 )
+
+// likeEscaped makes a search term safe to put between two per-cent signs: a
+// caller looking for "100%" or for "a_b" is looking for those characters, not
+// for a wildcard they did not know they had typed.
+//
+// The backslash is LIKE's default escape character on a Postgres-wire store, so
+// it needs no ESCAPE clause - and the backslash itself has to be doubled first,
+// or escaping the other two would introduce the very wildcard it removes.
+func likeEscaped(term string) string {
+	r := strings.NewReplacer(`\`, `\\`, "%", `\%`, "_", `\_`)
+	return r.Replace(term)
+}
 
 // eventColumns is the read list, in the order scanEvent expects.
 const eventColumns = `id, type, project, room, thread, parents, actor, artifact, seq_hlc,
@@ -142,9 +157,20 @@ func (d *DB) UnreadableParents(ctx context.Context, p *Principal, parents []stri
 // query rather than a loop over the result, so paging by Since and Limit still
 // counts the rows the caller actually gets.
 type EventQuery struct {
-	Thread    string
-	Room      string
-	Type      string
+	Thread string
+	Room   string
+	Type   string
+	// Types is any of these types, ORed together and ANDed with the rest. It is
+	// what the activity timeline narrows by: a timeline showing turns and
+	// steers and nothing else is one read, not one read per kind.
+	Types []string
+	// Contains is a plain substring of the body, matched case-insensitively.
+	//
+	// It is deliberately not the full text index: the timeline searches what was
+	// said, including a log line that is half punctuation and an id somebody
+	// pasted, and to_tsquery drops both. lower(body) LIKE lower(...) means the
+	// same thing on any Postgres-wire store, which the index does not.
+	Contains  string
 	Since     int64
 	NotActors []string
 	ScopeAll  bool
@@ -164,6 +190,8 @@ func (q EventQuery) limit() int { return clampLimit(q.Limit) }
 // reader hands back is the last event's reading, so every event at that reading
 // has to have been in the page.
 func (d *DB) ListEvents(ctx context.Context, p *Principal, q EventQuery) ([]*Event, error) {
+	ctx, span := otel.Start(ctx, otel.KindQuery, "events.list")
+	defer span.End()
 	limit := q.limit()
 	return pageOf(ctx, d, "list events", limit,
 		func(a *args, tie *tieAt, lim int) string {
@@ -177,6 +205,17 @@ func (d *DB) ListEvents(ctx context.Context, p *Principal, q EventQuery) ([]*Eve
 			}
 			if q.Type != "" {
 				where += " AND e.type = " + a.next(q.Type)
+			}
+			if len(q.Types) > 0 {
+				holders := make([]string, 0, len(q.Types))
+				for _, t := range q.Types {
+					holders = append(holders, a.next(t))
+				}
+				where += " AND e.type IN (" + strings.Join(holders, ", ") + ")"
+			}
+			if q.Contains != "" {
+				where += " AND lower(coalesce(e.body, '')) LIKE lower(" +
+					a.next("%"+likeEscaped(q.Contains)+"%") + ")"
 			}
 			if q.Since > 0 || tie != nil {
 				where += " AND " + above("e.seq_hlc", "e.id", q.Since, tie, a)

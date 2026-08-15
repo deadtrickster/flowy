@@ -19,7 +19,7 @@ import (
 // branches when two messages name the same parent, and merges when one names
 // two - which is how a human and an agent can answer the same message without
 // either of them losing the other's reply.
-const chatEventType = "chat"
+const chatEventType = store.ChatEventType
 
 // waitWindow is how long a long poll blocks before giving up and answering with
 // nothing. It is finite on purpose: the watcher contract is that a poll always
@@ -239,6 +239,10 @@ func (s *server) handleChatSay(w http.ResponseWriter, r *http.Request) {
 	} else if !s.mayWriteThread(w, r, req.Thread) {
 		return
 	}
+	// A message into a thread that is already part of a trace joins it. On the
+	// far side of a handoff this is what makes "the assignee replied" a span in
+	// the story of the handoff rather than a request nothing connects to.
+	s.adoptThreadTrace(r, req.Thread)
 
 	actor, kind := chatActor(p)
 	meta, err := json.Marshal(map[string]string{"actor_kind": kind, "actor_user": p.UserID})
@@ -264,7 +268,7 @@ func (s *server) handleChatSay(w http.ResponseWriter, r *http.Request) {
 		Parents: req.Parents,
 		Actor:   actor,
 		Body:    req.Body,
-		Meta:    json.RawMessage(meta),
+		Meta:    withTrace(json.RawMessage(meta), traceIDOf(r)),
 	}
 	if err := s.db.AppendEvent(r.Context(), e); err != nil {
 		serverError(w, r, err)

@@ -20,6 +20,7 @@ import (
 	_ "github.com/lib/pq"
 
 	"github.com/deadtrickster/flowy/internal/forge"
+	"github.com/deadtrickster/flowy/internal/otel"
 	"github.com/deadtrickster/flowy/internal/store"
 )
 
@@ -58,6 +59,15 @@ type server struct {
 	// otherwise. It is what gates the mock's control routes: they exist exactly
 	// when the fake does.
 	mockForge *forge.MockForge
+	// cpuMeter turns process CPU time into a share of one core over the window
+	// since it was last read. It is on the server because the window is the gap
+	// between two reads of the metrics endpoint.
+	cpuMeter cpuMeter
+	// tracer records what this node did: one span per request, children for the
+	// permission check, the queries and the legs of replication inside it. It
+	// records into the store and, when the operator configured one, exports to
+	// an OTLP collector. See tracing.go.
+	tracer *otel.Tracer
 }
 
 // serve runs the node's HTTP server until it is interrupted.
@@ -133,7 +143,9 @@ func serve(args []string) error {
 		peers:      commaSet(*peers),
 		forgeRepos: commaSet(*forgeRepos),
 		started:    time.Now(),
+		tracer:     newTracer(*node, db),
 	}
+	defer srv.tracer.Close()
 	if len(srv.peers) > 0 {
 		log.Printf("peers: %d token holder(s) may push replication deltas here", len(srv.peers))
 	} else {
@@ -238,6 +250,11 @@ var apiRoutes = []string{
 	"GET /api/peers",
 	"GET /api/whoami",
 	"GET /api/node",
+	"GET /api/metrics",
+	"GET /api/activity",
+	"POST /api/activity",
+	"GET /api/traces",
+	"GET /api/trace/{id}",
 }
 
 // routes wires the node's surface: an open operational corner, and everything
@@ -250,6 +267,26 @@ func (s *server) routes() http.Handler {
 	// None of these read a row of fabric data.
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.HandleFunc("GET /version", s.handleVersion)
+	// The Prometheus text endpoint. It is at /metrics because that is where a
+	// scraper looks, and it is behind the same token and the same scope filter
+	// as GET /api/metrics: a scrape is a read, and an unauthenticated one would
+	// hand the whole corpus's shape to anybody who asked. A scraper is
+	// configured with a token like any other client.
+	//
+	// /metrics is also a page in the console, and the two share the path the way
+	// they share the name. A request with a bearer token is a scrape and is
+	// answered as one; a request without is a browser following a link, and gets
+	// the app - which then reads GET /api/metrics with the token it holds, over
+	// fetch, where an Authorization header is something a client can set and a
+	// navigation is not.
+	scrape := s.observed(s.authenticate(http.HandlerFunc(s.handlePrometheus)))
+	mux.HandleFunc("GET /metrics", func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := bearerToken(r); !ok {
+			s.console.ServeHTTP(w, r)
+			return
+		}
+		scrape.ServeHTTP(w, r)
+	})
 	// No method on the catch-all: "GET /" would be more permissive on paths and
 	// less permissive on methods than "/api/", which the mux refuses to rank.
 	// Everything that is not /api/ and not operational is the console, which
@@ -312,6 +349,15 @@ func (s *server) routes() http.Handler {
 	api.HandleFunc("GET /api/peers", s.handleListPeers)
 	api.HandleFunc("GET /api/whoami", s.handleWhoami)
 	api.HandleFunc("GET /api/node", s.handleNode)
+	// Phase 8. The fabric watching itself: what it holds, what it did, and what
+	// happened. Every one of them is scope-filtered by the same rules the reads
+	// they aggregate are - a metric is an aggregate, and an aggregate over rows
+	// somebody may not read tells them how many there are.
+	api.HandleFunc("GET /api/metrics", s.handleMetrics)
+	api.HandleFunc("GET /api/activity", s.handleActivity)
+	api.HandleFunc("POST /api/activity", s.handlePostActivity)
+	api.HandleFunc("GET /api/traces", s.handleListTraces)
+	api.HandleFunc("GET /api/trace/{id}", s.handleReadTrace)
 	// A path under /api/ that nothing claims is a 404 in JSON. Without this it
 	// would be net/http's plain-text 404, which a client parsing JSON reads as
 	// a broken server rather than as a typo in a URL.
@@ -320,7 +366,11 @@ func (s *server) routes() http.Handler {
 	// One mount, so nothing under /api/ can be added later without the token
 	// check - including a method or a path this mux does not know, which has to
 	// answer 401 before it answers 404.
-	mux.Handle("/api/", s.authenticate(api))
+	//
+	// observed is outside authenticate, so that resolving the token is a span
+	// inside the request's rather than something that happened before it, and so
+	// that a 401 is counted like every other refusal.
+	mux.Handle("/api/", s.observed(s.authenticate(api)))
 
 	return logRequests(mux)
 }
@@ -397,7 +447,7 @@ func (s *server) handleNode(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"node":    s.node,
 		"version": version,
-		"phase":   6.5,
+		"phase":   8,
 		"console": s.console != nil && s.console.index != nil,
 		"forge":   forgeKind,
 		"routes":  append([]string{"GET /healthz", "GET /version"}, apiRoutes...),

@@ -10,6 +10,7 @@ import (
 
 	"github.com/lib/pq"
 
+	"github.com/deadtrickster/flowy/internal/otel"
 	"github.com/deadtrickster/flowy/internal/ulid"
 )
 
@@ -196,6 +197,8 @@ func (d *DB) upsertArtifact(ctx context.Context, q execer, a *Artifact) error {
 // caller: the id may only exist once fillAt has minted it, and an entry that
 // named anything else would not be a record of this write.
 func (d *DB) WriteMemory(ctx context.Context, a *Artifact, e *Event) error {
+	ctx, span := otel.Start(ctx, otel.KindIngest, "memory.write")
+	defer span.End()
 	at, err := d.clock.Pack()
 	if err != nil {
 		return fmt.Errorf("store: write memory: %w", err)
@@ -226,6 +229,11 @@ func (d *DB) WriteMemory(ctx context.Context, a *Artifact, e *Event) error {
 // The id is the only thing a caller can be told about a row it cannot read, and
 // even that is told as a 404.
 func (d *DB) CreateArtifact(ctx context.Context, a *Artifact) error {
+	ctx, span := otel.Start(ctx, otel.KindIngest, "artifact.create")
+	defer func() {
+		span.SetArtifact(a.ID)
+		span.End()
+	}()
 	if err := d.fill(a); err != nil {
 		return err
 	}
@@ -384,6 +392,8 @@ func (q ArtifactQuery) narrow(a *args, alias string) string {
 // ListArtifacts returns the artifacts p may read, newest first. Tombstoned rows
 // are gone from the list; they stay in the table so the delete can replicate.
 func (d *DB) ListArtifacts(ctx context.Context, p *Principal, q ArtifactQuery) ([]*Artifact, error) {
+	ctx, span := otel.Start(ctx, otel.KindQuery, "artifacts.list")
+	defer span.End()
 	a := &args{}
 	filter := ArtifactFilterSQL(p, "ar", a, q.ScopeAll)
 	query := `SELECT ` + artifactColumns + `
@@ -395,6 +405,7 @@ func (d *DB) ListArtifacts(ctx context.Context, p *Principal, q ArtifactQuery) (
 
 	rows, err := d.sql.QueryContext(ctx, query, a.vals...)
 	if err != nil {
+		span.Fail("the list did not run")
 		return nil, fmt.Errorf("store: list artifacts: %w", err)
 	}
 	defer rows.Close()
@@ -424,6 +435,8 @@ type Ranked struct {
 // artifact the principal cannot see does not occupy a result slot and does not
 // influence anything - filtering afterwards would leak both.
 func (d *DB) SearchArtifacts(ctx context.Context, p *Principal, q ArtifactQuery) ([]Ranked, error) {
+	ctx, span := otel.Start(ctx, otel.KindQuery, "artifacts.search")
+	defer span.End()
 	if strings.TrimSpace(q.Query) == "" {
 		return []Ranked{}, nil
 	}
@@ -473,6 +486,12 @@ func (d *DB) SearchArtifacts(ctx context.Context, p *Principal, q ArtifactQuery)
 // race the writer won. Coming back is a thing to do on purpose, not a side
 // effect of a write that never mentioned it.
 func (d *DB) ReadArtifact(ctx context.Context, p *Principal, id string, scopeAll bool) (*Artifact, error) {
+	// The span names the artifact it is about, which is the link between a
+	// trace and the row the work produced: an agent's transcript, the bug it
+	// filed, the memory it wrote.
+	ctx, span := otel.Start(ctx, otel.KindQuery, "artifact.read")
+	span.SetArtifact(id)
+	defer span.End()
 	a := &args{}
 	idArg := a.next(id)
 	filter := ArtifactFilterSQL(p, "ar", a, scopeAll)

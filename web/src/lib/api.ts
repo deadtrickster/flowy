@@ -136,6 +136,210 @@ export interface NodeCounts {
   counts?: Record<string, number>;
 }
 
+/**
+ * Availability is on every metric group: whether it was measured, and when it
+ * was not, why.
+ *
+ * The console renders the reason wherever it would otherwise render a zero.
+ * "0 artifacts" and "we could not read the artifacts" are different sentences,
+ * and a dashboard that shows the first for the second is a dashboard that says
+ * everything is fine when nothing was looked at.
+ */
+export interface Availability {
+  available: boolean;
+  reason?: string;
+  measured?: string;
+}
+
+export interface MetricScope {
+  user?: string;
+  agent?: string;
+  project?: string;
+  operator: boolean;
+  all: boolean;
+  key: string;
+}
+
+export interface NodeGroup extends Availability {
+  uptime_s?: number;
+  started?: string;
+  build?: string;
+  db?: Availability & { up: boolean; engine: string; latency_ms: number; hlc: number };
+  pool?: Availability & {
+    in_use: number;
+    idle: number;
+    open: number;
+    max_open: number;
+    of: string;
+  };
+  cpu?: Availability & { core_share: number; of: string; window_s: number; cores: number };
+  memory?: Availability & { rss_bytes: number; source: string };
+  traces?: Availability & { kept: number; dropped: number; exporter?: string };
+}
+
+export interface CorpusGroup extends Availability {
+  artifacts: number;
+  events: number;
+  by_type: Record<string, number>;
+  by_scope: Record<string, number>;
+  by_project: Record<string, number>;
+  by_user: Record<string, number>;
+  index: { artifacts: number; text_indexed: number; embedded: number } & Availability;
+  storage: { tables_bytes: Record<string, number>; total_bytes: number } & Availability;
+  growth: { artifacts_24h: number; artifacts_7d: number; events_24h: number; of: string };
+  embedding: Availability & {
+    embedded: number;
+    bm25_only: number;
+    denominator: number;
+    of: string;
+  };
+}
+
+export interface PeerMetrics {
+  peer: string;
+  pull_cursor: number;
+  pushed_cursor: number;
+  last_seen?: string;
+  last_seen_age_s?: number;
+  pending_push: number;
+  conflicts: number;
+  refused: number;
+  applied: number;
+}
+
+export interface SyncGroup extends Availability {
+  peers: PeerMetrics[];
+  local_hwm: number;
+  offline_queue: number;
+  conflicts_total: number;
+  pending_pull: Availability;
+}
+
+export interface CollabGroup extends Availability {
+  messages_24h: number;
+  messages_by_day: { day: string; count: number }[];
+  tasks_by_state: Record<string, number>;
+  open_todos: number;
+  active_rooms_24h: number;
+  active_users_24h: number;
+  active_agents_24h: number;
+  handoffs_in_flight: number;
+  window: string;
+}
+
+export interface PermGroup extends Availability {
+  grants: number;
+  artifact_shares: number;
+  cross_project_grants: number;
+  tombstoned_grants: number;
+  denied_24h: number;
+  denied_by_status: Record<string, number>;
+  window: string;
+}
+
+/** Anomaly is one series' verdict, with what the verdict rests on. */
+export interface Anomaly {
+  series: string;
+  verdict: "normal" | "unusual" | "insufficient samples";
+  latest: number;
+  baseline?: number;
+  sigma?: number;
+  z?: number;
+  samples: number;
+  required: number;
+  reason?: string;
+}
+
+export interface AnomaliesGroup extends Availability {
+  min_samples: number;
+  series: Anomaly[];
+  unusual: number;
+  insufficient: number;
+  basis: string;
+}
+
+export interface Metrics {
+  node: string;
+  version: string;
+  generated: string;
+  scope: MetricScope;
+  groups: {
+    node?: NodeGroup;
+    corpus?: CorpusGroup;
+    sync?: SyncGroup;
+    collaboration?: CollabGroup;
+    permissions?: PermGroup;
+    anomalies?: AnomaliesGroup;
+  };
+}
+
+/** Span is one recorded operation, as the waterfall draws it. */
+export interface Span {
+  span_id: string;
+  trace_id: string;
+  parent_id?: string;
+  name: string;
+  kind: string;
+  node: string;
+  actor?: string;
+  user?: string;
+  project?: string;
+  artifact?: string;
+  status?: string;
+  started: string;
+  ended: string;
+  duration_us: number;
+  attrs?: Record<string, string>;
+}
+
+export interface Trace {
+  trace_id: string;
+  spans: Span[];
+  nodes: string[];
+  root?: string;
+  started: string;
+  ended: string;
+  duration_us: number;
+  errors: number;
+}
+
+export interface TraceSummary {
+  trace_id: string;
+  root: string;
+  spans: number;
+  nodes: string[];
+  started: string;
+  duration_us: number;
+  errors: number;
+}
+
+/** ActivityItem is one line of the timeline: a turn, a log line, a message or a steer. */
+export interface ActivityItem {
+  id: string;
+  kind: "turn" | "log" | "chat" | "steer" | "activity";
+  type: string;
+  actor: string;
+  actor_kind?: string;
+  actor_user?: string;
+  project: string | null;
+  room?: string;
+  thread?: string;
+  artifact?: string;
+  parents: string[];
+  body: string;
+  trace?: string;
+  seq_hlc: number;
+  node: string;
+  created: string;
+}
+
+export interface ActivityPage {
+  items: ActivityItem[];
+  since: number;
+  cursor: number;
+  query: string;
+}
+
 /** ApiError carries the status, because 401 and 404 mean different things to the UI. */
 export class ApiError extends Error {
   readonly status: number;
@@ -305,6 +509,42 @@ export const api = {
    * shows the node and its version and no tiles.
    */
   health: () => request<NodeCounts>("/healthz?counts=1"),
+
+  /**
+   * metrics is the whole set, scope-filtered by the token. all=true asks for
+   * the node's own view and is answered that way only for the operator - for
+   * anybody else it comes back as their own numbers, which the response's scope
+   * block says plainly.
+   */
+  metrics: (all = false) => request<Metrics>(`/api/metrics${all ? "?scope=all" : ""}`),
+
+  /** traces lists the recent traces this token may read. */
+  traces: (all = false) =>
+    request<{ node: string; traces: TraceSummary[] }>(`/api/traces${all ? "?scope=all" : ""}`),
+
+  /** trace reads one trace: this node's spans of it, in start order. */
+  trace: (id: string, all = false) =>
+    request<{ node: string; trace: Trace }>(
+      `/api/trace/${encodeURIComponent(id)}${all ? "?scope=all" : ""}`,
+    ),
+
+  /** activity reads the timeline: turns, logs, chat and steers, oldest first. */
+  activity: (params: { q?: string; kind?: string; room?: string; thread?: string } = {}) => {
+    const search = new URLSearchParams();
+    for (const [key, value] of Object.entries(params)) {
+      if (value) search.set(key, value);
+    }
+    const query = search.toString();
+    return request<ActivityPage>(`/api/activity${query ? `?${query}` : ""}`);
+  },
+
+  /** post says something into the timeline: into a room, or into a run's thread. */
+  postActivity: (post: { kind: string; body: string; room?: string; thread?: string }) =>
+    request<ActivityItem>("/api/activity", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(post),
+    }),
 };
 
 /** isAgent reads the speaker's kind off the message the node stamped it with. */

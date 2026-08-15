@@ -103,10 +103,23 @@ var tools = []tool{
 }
 
 // toolSpecs is what tools/list answers; the handler funcs are not part of it.
-func toolSpecs() []tool { return tools }
+//
+// The observability tools are appended rather than written into the list above
+// so that the memory surface and the watching surface stay two files: one is
+// what an agent stores and recalls, the other is what it asks about the fabric
+// itself.
+func toolSpecs() []tool { return allTools() }
+
+// allTools is every tool this server serves.
+func allTools() []tool {
+	out := make([]tool, 0, len(tools)+len(observabilityTools))
+	out = append(out, tools...)
+	out = append(out, observabilityTools...)
+	return out
+}
 
 func toolByName(name string) (tool, bool) {
-	for _, t := range tools {
+	for _, t := range allTools() {
 		if t.Name == name {
 			return t, true
 		}

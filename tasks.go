@@ -215,6 +215,13 @@ func (s *server) assignmentOpening(
 	if err != nil {
 		return nil, err
 	}
+	// The trace this assignment was made in rides the message that opens the
+	// thread. It is the whole of cross-node tracing: nothing requests anything
+	// of the node the work is going to - what crosses is a delta - so the id
+	// travels on the row, inside its signature, and the far node reads it back
+	// off the thread and continues the same trace. See withTrace and
+	// store.TraceOfThread.
+	metaWithTrace := withTrace(meta, traceIDOf(r))
 
 	// The thread's project is the artifact's, not the sender's: the assignment
 	// is about that artifact, and the two are read by the same people. Either
@@ -230,7 +237,7 @@ func (s *server) assignmentOpening(
 		Actor:    actor,
 		Artifact: art.ID,
 		Body:     body,
-		Meta:     json.RawMessage(meta),
+		Meta:     metaWithTrace,
 	}, nil
 }
 
@@ -262,6 +269,9 @@ func (s *server) handleGetTask(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// Reading a task that was assigned somewhere else joins the trace it was
+	// assigned in, so the two nodes' accounts of one handoff are one trace.
+	s.adoptThreadTrace(r, task.Thread)
 	writeJSON(w, http.StatusOK, task)
 }
 
@@ -286,6 +296,8 @@ func (s *server) handleDelegateTask(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// Working a delivered handoff continues the trace it was assigned in.
+	s.adoptThreadTrace(r, task.Thread)
 	if task.ToUser != p.UserID {
 		writeJSON(w, http.StatusForbidden, errorBody("only the assignee may delegate this task"))
 		return
@@ -361,6 +373,8 @@ func (s *server) handleTaskState(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// Working a delivered handoff continues the trace it was assigned in.
+	s.adoptThreadTrace(r, task.Thread)
 
 	var req stateRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -491,7 +505,11 @@ func (s *server) taskEvent(
 		Actor:    actor,
 		Artifact: task.Artifact,
 		Body:     body,
-		Meta:     json.RawMessage(meta),
+		// The trace goes on every move of a task, not only on the one that
+		// opened it: a handoff delegated on the far node and finished there is
+		// three rows in the thread, and a trace that had only the first would
+		// stop exactly where the interesting part starts.
+		Meta: withTrace(json.RawMessage(meta), traceIDOf(r)),
 	}
 	return e, nil
 }

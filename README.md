@@ -1,4 +1,4 @@
-# flowy - Handoff Fabric node (Phase 7)
+# flowy - Handoff Fabric node (Phase 8)
 
 The host-side node: one Go binary, one Postgres-wire database, and the schema
 spine every later phase rides on. Phase 0 was the skeleton - a server that
@@ -80,6 +80,26 @@ next time the mount starts. It is **opt-in and personal by default**: nothing
 mounts until somebody runs the command, a file with no project in its path is
 its owner's alone and no save promotes it, and with nothing mounted the node is
 exactly the node the six phases above describe.
+
+Phase 8 is the fabric watching itself: **metrics, traces and a timeline, all
+filtered by the same rules the reads they aggregate are**. The store is
+Postgres-wire, so the engine's numbers come from the database and the fabric
+layers its own on top - corpus, sync, collaboration, permissions - and every one
+of them is the caller's: a metric is an aggregate, and an aggregate over rows
+somebody may not read tells them how many there are. `GET /api/metrics` answers
+six groups, a group that could not be measured says why rather than answering
+zero, every rate and share names its denominator, and the anomaly pass refuses a
+verdict below eight recorded readings instead of calling three points a
+baseline. Every operation is an OpenTelemetry span - the MCP call, the
+permission check, the query, the ingest, the leg of replication - and **the
+trace id rides the sync deltas across the node boundary**, in the meta of the
+event that opens a handoff's thread and inside its signature, so a handoff
+assigned on one node and worked on another is one trace in two databases and
+`flowy traces` puts the halves back together. The console gets a metrics tab, a
+trace waterfall, and an activity timeline that indexes every turn, run log line,
+message and steer - searchable, and postable-into, because the moment you find
+the run where something went wrong is the moment you want to say something into
+it.
 
 ## Run the gate
 
@@ -167,6 +187,7 @@ both empty by default. See [The security fixes](#the-security-fixes).
 | `flowy mcp` | MCP server: shared memory over stdio, or `--http :PORT` |
 | `flowy fuse` | mount this principal's memory as files: `--mount <dir>`, or `--reconcile` to apply what an earlier mount queued |
 | `flowy sync` | replicate with a peer: `--peer <url> --token <t>`, pull then push |
+| `flowy traces` | collect one trace from this node and its peers: `--trace <id> [--peer <url>,...]` |
 | `flowy identity` | this node's signing key, the keys it holds, and how a key gets in |
 | `flowy sign` | sign a replication delta read on stdin |
 | `flowy version` | build version |
@@ -187,6 +208,24 @@ has a default:
 It prints one JSON object per run - what it pulled, what that applied, what it
 pushed, what the peer applied, and where both cursors ended up - so a cron entry
 or a shell can read the result back.
+
+`flowy traces` is the collector. It reads this node's spans for a trace out of
+the database, asks each peer for theirs over the same API the console uses, and
+prints one waterfall:
+
+| flag | what it is |
+| --- | --- |
+| `--trace` | the trace id, 32 hex digits, required |
+| `--peer` | comma-separated peer base URLs to collect from as well |
+| `--token` | bearer token, or `$FLOWY_TOKEN`; used here and at each peer |
+| `-dsn` / `-node` | this node's database and name |
+| `--operator` | the user id `scope=all` obeys here, or `$FLOWY_OPERATOR` |
+
+There is nothing to correlate: the trace id is already the same on both sides,
+because it crossed on the rows. What the collector adds is the gathering, and
+the honesty about it - every source is named with how many spans it gave, and a
+peer that could not be reached is named with the reason rather than quietly
+leaving its half out of a trace that then reads as the whole of what happened.
 
 `flowy identity` is the operator's side of row signing:
 
@@ -633,6 +672,11 @@ and deletes are tombstones.
 | `GET /api/sync/pull?since=&limit=` | the delta a peer may read: `{artifacts, events, tasks, grants, hwm}`, ordered by the clock, tombstones included |
 | `POST /api/sync/push` | merge a peer's delta: upsert by id, append-only events, last-writer-wins by `hlc` and `node`. Rows the pushing principal could not have written are refused and counted |
 | `GET /api/peers` | replication bookmarks and their cursors; the operator only |
+| `GET /api/metrics?scope=all` | the six metric groups, filtered to this principal; `scope=all` is the node and is the operator's alone. Every group says whether it was measured, and why not when it was not |
+| `GET /api/activity?q=&kind=&room=&thread=&since=` | the timeline: turns, run logs, chat and steers this token may read, in log order, with a cursor |
+| `POST /api/activity` | post into it. Body: `kind` (`chat`\|`turn`\|`log`\|`steer`), `body`, and `room` and/or `thread`. Same three gates as `say`: the thread, the parents and the artifact all have to be yours to name |
+| `GET /api/traces?since=&limit=` | recent traces this token may read, one summary each |
+| `GET /api/trace/{id}` | one trace, its spans in start order, and the nodes that recorded them |
 | `GET /api/forge` | which forge this node speaks to, why, and which CLIs it can see |
 | `POST /api/forge/file` | file an artifact as an issue. Body: `artifact`, `repo`. Returns `{artifact, external, event}`. `409` if it is already filed, `404` if you cannot read it, `502` if the forge refused |
 | `GET /api/forge/status?artifact=` | refresh the issue's state; a closed or merged issue moves the artifact to `done`. Returns `{artifact, external, state, status, moved}` |
@@ -1164,7 +1208,9 @@ can bookmark or send:
 | `/inbox` | the work assigned to this token: state, delegate and done, and the auto-delegate switch |
 | `/task/:id` | one handoff: the task, and its thread rendered as chat with its DAG |
 | `/p/:project/:type/:id` | one artifact, with the lifecycle control and its history |
-| `/metrics` | node counts, a stub over `/healthz?counts=1` - the counts come back for the operator's token, and the page says so when they do not |
+| `/activity` | the timeline: every turn, run log line, message and steer this token may read, searchable, with the message box on it |
+| `/metrics` | the six metric groups, as this token may see them; a group that could not be measured renders its reason, never a zero |
+| `/traces` | the recent traces, and one of them as a waterfall |
 
 Which means the server has to answer with the app for all of them: `flowy serve`
 serves `web/dist` and falls back to `index.html` for **any** non-`/api` GET, so
@@ -1202,6 +1248,140 @@ npm run dev      # vite on :5173, proxying /api to 127.0.0.1:8787
 npm run check    # biome
 npm run build    # -> web/dist, which go:embed picks up
 ```
+
+## Observability
+
+The fabric watches itself. Because the store is Postgres-wire, the engine's
+numbers come out of the database; the fabric's own - corpus, sync,
+collaboration, permissions - are layered on top of the reads the API already
+does, which is the point: they are the *same* reads, behind the same filter.
+
+Three habits run through all of it, and they are worth naming because each one
+is a way a dashboard usually lies:
+
+- **Report only what was measured.** Nothing here is estimated, extrapolated or
+  defaulted. A group that could not be read carries `available: false` and the
+  reason.
+- **Name the denominator.** `cpu 0.42` is not a number. `0.42 of one core,
+  over the last 37 seconds, on a machine with 4` is. Every rate and every share
+  carries what it is a share of, in the payload, beside the value.
+- **Empty is could-not-read, not all-clear.** The failure mode this is written
+  against is a console showing `0` for "we were not allowed to look". So a
+  group's reason is rendered where its numbers would have been, and even the
+  Prometheus scrape carries `flowy_group_available` per group.
+
+### GET /api/metrics
+
+Six groups, every time, each one able to say it was not measured:
+
+| group | what is in it |
+| --- | --- |
+| `node` | uptime, the DB pool in-use/max, CPU as a share of one core, RSS, whether the store answers and how fast. The operator's: everybody else gets `available:false` and the reason |
+| `corpus` | artifacts by type, scope, project and owner; events; growth over 24h and 7d; index coverage; bytes on disk (operator) |
+| `sync` | per-peer cursors, last-seen age, pending push, the offline queue, conflicts. The operator's, like `GET /api/peers` |
+| `collaboration` | messages in 24h and per day for a week, tasks by state, open todos, active rooms, active people and agents, handoffs in flight |
+| `permissions` | grants you are party to, single-artifact shares, cross-project grants, and what this node refused you in 24h |
+| `anomalies` | one verdict per watched series, against this scope's own recorded history |
+
+**It is scope-filtered, and that is a security property rather than a nicety.**
+A principal of `pa` gets `pa`'s corpus and collaboration numbers and not `pb`'s;
+a personal artifact is counted for its owner and for nobody else; a refusal is
+counted for whoever was refused. `?scope=all` is the node, and it is the
+operator's alone - for anybody else the parameter is simply not there, and the
+answer's `scope` block says whose numbers these are.
+
+`GET /metrics` is the same measurements in the Prometheus exposition format,
+behind the same token and the same filter - a scrape is a read, and an
+unauthenticated one would hand the shape of the whole corpus to anybody who
+asked. The path is shared with the console page: a request with a bearer token
+is a scrape, a request without one is a browser following a link and gets the
+app, which then reads `/api/metrics` over `fetch` with the token it holds.
+
+### Anomalies, and the refusal
+
+The comparison is against **recorded history** - readings this node took of
+itself, at most one a minute, kept per scope so two principals' different
+corpora are never averaged into one baseline - and never against a threshold
+somebody picked. Nothing here says "more than 100 messages is a lot", because
+that is a number about a deployment nobody has seen.
+
+Below `store.MetricMinSamples` readings there is no verdict:
+
+```json
+{ "series": "corpus.artifacts", "verdict": "insufficient samples",
+  "latest": 41, "samples": 3, "required": 8,
+  "reason": "3 of 8 readings recorded; no verdict is drawn below 8" }
+```
+
+Not `"normal"`, and no baseline beside it - a number printed next to the word
+"insufficient" is a number somebody will act on. Above it, the verdict carries
+what it rests on: the mean, the spread, the z, and how many readings made them.
+
+### Traces
+
+Every operation is an OpenTelemetry span: the HTTP request or MCP call, the
+permission check that decided who was asking, the queries that ran under it, the
+ingest, and each leg of replication. `internal/otel` implements the parts
+anything else has to agree with - 16-byte trace ids and 8-byte span ids in hex,
+W3C `traceparent`, and OTLP/HTTP with a JSON body POSTed to
+`<endpoint>/v1/traces` - rather than vendoring the SDK for one span type and one
+exporter. Set `FLOWY_OTLP_ENDPOINT` and the spans go to a collector as well as
+into the store; leave it unset and they are kept here and exported nowhere.
+
+Spans are recorded locally and **not replicated**: a span is this node's account
+of what this node did, and merging somebody else's telemetry into the fabric
+under the fabric's own rules is not what telemetry is. They are read back
+through a filter like everything else - a span is its principal's first, then
+its project's, and then only as far as the artifact it names.
+
+**The trace id rides the sync deltas.** This is the part that makes a handoff
+followable end to end across nodes, and it cannot be done with a header: nothing
+requests anything of the node the work is going to, because what crosses is a
+delta. So the id travels on the row - in the `meta` of the event that opens the
+assignment's thread, which is *inside that event's signature*, so a relay
+holding neither node's key cannot rewrite it. When the delta lands, the
+receiving node records a `handoff.deliver` span under that same trace id, with a
+span id derived from the event's so that applying the same page twice is one
+delivery. When somebody there opens or works the task, the request adopts the
+thread's trace instead of starting a second one - and because a request's child
+spans are held until its root ends, the permission check and the queries come
+with it rather than being stranded in a trace of one.
+
+The result is one trace id in two databases, and `flowy traces --trace <id>
+--peer <url>` is the collector that reassembles them into one waterfall.
+
+### The activity timeline
+
+`GET /api/activity` is every turn, run log line, chat message and steer, in one
+order, searchable. They are four kinds of the same event log - `turn`,
+`run.log`, `chat`, `steer` - so the timeline is one read with the event filter
+in its `WHERE` clause: a run in another project is not on it, a personal item is
+on nobody's but its owner's, and the thread of a handoff is on the timeline of
+the two people it is between. Anything else in the log - a status move, a task
+move, something the forge bridge did - shows as `activity` rather than being
+hidden, because a timeline that quietly omits rows lies about what happened.
+
+It is **postable-into**, which is why the message box is on it and not only in a
+room: `POST /api/activity {kind, body, room?, thread?}` writes into a room, into
+a run's thread, or into a subagent's branch of one, through the same three gates
+`POST /api/chat/{room}/say` keeps. The kinds a client may post are the four; a
+`status` or a `task` event is a claim this node makes by doing the thing, and a
+timeline that let a client write one would be a timeline whose entries mean
+nothing.
+
+### The tools an agent gets
+
+Four MCP tools, named the way serenedash names them, so an agent that already
+knows that vocabulary does not need a second one:
+
+| tool | what it answers |
+| --- | --- |
+| `status` | node health (the operator's), the conversation and work you are party to, replication |
+| `activity` | the timeline: `q`, `kind`, `room`, `thread`, `since` |
+| `storage` | the corpus you may read, its index coverage, and the grants around it |
+| `anomalies` | the verdicts, including the refusals |
+
+Same code as the HTTP endpoints, same filter, same refusal wording.
 
 ## Search, and why it is temporary
 
@@ -1776,6 +1956,61 @@ its file operations from the shell:
   searchable
 - with everything unmounted again, `mem_write`, `mem_search`, `mem_read` and the
   API still work, and the items that arrived as files are still items
+
+And Phase 8, on the same live node and across the two federated ones:
+
+- `GET /api/metrics` answers all six groups, every one of them saying whether it
+  was measured, and the answer names whose numbers they are
+- the corpus a principal is given is exactly the corpus that principal may
+  list - to the row, for two different tokens - and an artifact in `pa` that no
+  grant reaches is counted for `pa` and not for the token holding a grant into it
+- a personal artifact moves its owner's total by one and nobody else's at all
+- a principal that is not the operator gets `available:false` and a reason for
+  node health and for the replication cursors, with no `uptime_s` beside it, and
+  `?scope=all` does not widen a single number for them - the scope key it is
+  answered under is still their own
+- the operator's `?scope=all` is the node: the store answering, the pool's
+  ceiling, resident bytes, and CPU as a share of **one core** with the
+  denominator and the window in the payload
+- what was not measured says so: the pull side of replication names the peer's
+  high water mark as the reason, and embeddings are `0` of a named denominator
+  rather than a share of an index nothing built
+- **anomalies refuse a verdict below the minimum sample count** - the answer is
+  `insufficient samples` with the count it has and the count it needs, and no
+  baseline beside it - and with twelve readings inserted into this node's own
+  history the same series comes back `unusual` with what it rests on, while the
+  other principal's view of that series is still a refusal, because a history is
+  per scope
+- a 403 is counted for the principal it was given to, a 401 with no principal is
+  the operator's to see, and neither records the row that was refused
+- `GET /metrics` is the same measurements in the Prometheus format, one `HELP`
+  per family, labelled with the scope - and without a token it is the console,
+  because a browser following a link sends no `Authorization` header
+- the timeline holds turns, run log lines, chat and steers in log order, is
+  searchable by what was said, refuses a `kind` the node mints by doing the
+  thing, and can be posted into - a steer into a run's thread lands in that
+  thread, as that kind, said by the token that sent it
+- and it is filtered: a run written in `pb` is on `pb`'s timeline and on nobody
+  else's, over the API and through the `activity` tool alike
+- a request is a trace: the permission check that decided who was asking and the
+  queries that ran under it, in one trace, readable back by id - and a second
+  principal asking for that trace by id is handed none of it, while the operator
+  sees all of it
+- the OTLP exporter reaches a collector that is not this node: a real POST to
+  `/v1/traces`, carrying spans of a request that really was made, in the
+  protocol's own shape
+- the four tools an agent already knows - `status`, `activity`, `storage`,
+  `anomalies` - are offered and each answers what that token may read
+- **one handoff is one trace across two nodes**: assigned on A, the trace id on
+  the opening event's `meta` in A's database, delivered to B as a
+  `handoff.deliver` span under the same id after a real sync, and B's request to
+  open the task answering with that same trace on the wire and recording its
+  spans under it. Syncing again records no second delivery
+- `flowy traces --peer` reassembles both halves into one waterfall, in start
+  order, naming both nodes and how many spans each gave - and a peer it cannot
+  reach is reported with the reason rather than silently left out
+- the metrics tab, the traces tab and the timeline mount in a real DOM against
+  the live node and render what it measured, what it did, and what was said
 
 The last thing the gate does is ask git whether the tree it just tested is the
 tree on disk: uncommitted changes, or nothing ever committed, is a failure.
@@ -3118,11 +3353,83 @@ export DATABASE_URL='postgres://user@serenedb-host:5432/flowy?sslmode=disable'
 The gate itself runs against stock Postgres, which is the point: the SQL has to
 be portable enough to pass on both.
 
+**Telemetry is off until it is configured.** `FLOWY_OTLP_ENDPOINT` names a
+collector - `http://localhost:4318`, or the `/v1/traces` URL itself - and
+without it the spans are recorded in this node's own store and exported
+nowhere. Nothing else is needed: the exporter is a bounded queue and one
+goroutine, a collector that is down is logged and the spans are dropped rather
+than retried forever, and how many were dropped is in the `node` group of
+`GET /api/metrics`. Scraping is a read like any other, so a Prometheus job needs
+a token:
+
+```yaml
+scrape_configs:
+  - job_name: flowy
+    authorization: { type: Bearer, credentials: <the operator's token> }
+    params: { scope: [all] }
+    static_configs: [{ targets: ["127.0.0.1:8787"] }]
+```
+
+Three tables grow with the watching and nothing prunes them yet: `spans`,
+`metric_samples` at one row per series per scope per minute, and
+`access_denials` at one row per 401 or 403 - which an unauthenticated flood can
+drive, so it is the one to watch on a node open to the internet. All three are
+local, never replicated, and hold no fabric row, so a dated `DELETE` is a safe
+cron entry:
+
+```sql
+DELETE FROM spans          WHERE started < now() - interval '7 days';
+DELETE FROM metric_samples WHERE at      < now() - interval '30 days';
+DELETE FROM access_denials WHERE at      < now() - interval '30 days';
+```
+
+Deleting the samples costs the anomaly pass its baseline, which it will say -
+`insufficient samples` - rather than papering over.
+
 The exception is the `SEARCH` section at the bottom of `schema.sql` - a
 `tsvector` column and a GIN index, which are Postgres full text and nothing
 else. It is quarantined there because it is meant to be deleted: when SereneDB
 brings vectors, that section goes and `store.SearchArtifacts` becomes a vector
 query. Nothing above it depends on anything below it.
+
+## Phase 8 status
+
+Green. `./run-tests.sh` reports `passed: 359 failed: 0` with Go 1.22, Node 22.14
+and Postgres 16 - the 333 Phase 7 ended with, every one of them still green, plus
+the 26 Phase 8 adds:
+
+- six on the metrics themselves: the groups and what they say about being
+  measured, the corpus that is exactly what its principal may list, the personal
+  artifact that moves one total, the stranger who cannot widen their view by
+  asking, the operator's whole-node view with its denominators, and the numbers
+  that were not measured saying so;
+- three on the anomaly pass: the refusal below the minimum sample count, the
+  verdict once there is a history and the second principal still being refused
+  for the same series, and the refusals counted for whoever was refused;
+- two on the scrape: the Prometheus text, and the same path being the console
+  when nobody sends a token;
+- four on the timeline: the four kinds indexed in order, the search and the kind
+  that cannot be posted, the filter, and the message box posting into a run;
+- three on traces: the shape of one request, the filter over somebody else's
+  trace, and the OTLP payload arriving at a collector that is not this node;
+- two on the tools: the four being offered, and each answering per token;
+- three across the two federated nodes: one trace id in both databases for one
+  handoff, the collector reassembling both halves, and the collector naming the
+  half it could not reach;
+- three on the console: the metrics tab, the traces tab and the timeline
+  mounting in a DOM against the live node.
+
+One existing check changed rather than went away: `GET /api/node` reports phase
+8 where it reported 6.5.
+
+Two defects were found by these checks while they were being written, and both
+are the kind that only a gate finds. The first: `authenticate` resolved the
+principal into a context of its own and handed that to the handler, so a handler
+that joined the trace a handoff arrived in was moving a span that had already
+been written down - and the far node's work sat in a trace of its own. The
+second: the middleware that counts refusals read the principal out of the
+request, which is the context *before* authentication, so every 403 was counted
+as nobody's. Both are fixed, and the checks that found them are in the gate.
 
 ## Phase 7 status
 

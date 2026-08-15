@@ -9,14 +9,18 @@
 //	smoke roundtrip       user, agent, artifact and event insert and read back
 //	smoke personal        a personal artifact (project NULL) inserts and reads back
 //	smoke seed            two principals in two projects, printed as shell vars
+//	smoke otlp-collector  stand in for an OTLP collector: write what is POSTed
+//	                      to /v1/traces into a file, one payload per line
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"sort"
@@ -33,7 +37,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fail("usage: smoke <healthz|ulid|hlc|schema|roundtrip|personal|seed> [args]")
+		fail("usage: smoke <healthz|ulid|hlc|schema|roundtrip|personal|seed|otlp-collector> [args]")
 	}
 
 	var err error
@@ -55,6 +59,11 @@ func main() {
 		err = withDB(checkPersonal)
 	case "seed":
 		err = withDB(seedPrincipals)
+	case "otlp-collector":
+		if len(os.Args) < 4 {
+			fail("usage: smoke otlp-collector <addr> <file>")
+		}
+		err = otlpCollector(os.Args[2], os.Args[3])
 	default:
 		fail("smoke: unknown check %q", os.Args[1])
 	}
@@ -117,6 +126,55 @@ func checkHealthz(url string) error {
 		time.Sleep(250 * time.Millisecond)
 	}
 	return fmt.Errorf("healthz never came up at %s: %v", url, last)
+}
+
+// otlpCollector is the smallest thing that can be called an OTLP collector: it
+// answers POST /v1/traces with 200 and appends each body to a file, one payload
+// per line.
+//
+// The gate needs it because "the exporter works" cannot be asserted from
+// inside the node - the node's own copy of a span is written by the recorder,
+// which is a different path. Something has to receive an HTTP request that
+// really was made, and read the trace id out of the body it really was sent.
+// It exits when it is killed; the gate kills it.
+func otlpCollector(addr, path string) error {
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	var mu sync.Mutex
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /v1/traces", func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(io.LimitReader(r.Body, 8<<20))
+		if err != nil {
+			http.Error(w, "read body", http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if _, err := file.Write(append(bytes.TrimSpace(body), '\n')); err != nil {
+			http.Error(w, "write", http.StatusInternalServerError)
+			return
+		}
+		if err := file.Sync(); err != nil {
+			http.Error(w, "sync", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if _, err := w.Write([]byte(`{}`)); err != nil {
+			return
+		}
+	})
+
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("otlp collector on %s, writing to %s\n", ln.Addr(), path)
+	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	return srv.Serve(ln)
 }
 
 func get(client *http.Client, url string) ([]byte, int, error) {

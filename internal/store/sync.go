@@ -12,6 +12,7 @@ import (
 	"github.com/lib/pq"
 
 	"github.com/deadtrickster/flowy/internal/hlc"
+	"github.com/deadtrickster/flowy/internal/otel"
 )
 
 // Replication, the store half.
@@ -146,6 +147,8 @@ func GrantFilterSQL(p *Principal, alias string, a *args) string {
 // Tombstoned rows are included on purpose: a delete has to travel, and it
 // travels as a row.
 func (d *DB) SyncPull(ctx context.Context, p *Principal, q SyncQuery) (*SyncSet, error) {
+	ctx, span := otel.Start(ctx, otel.KindSync, "sync.delta")
+	defer span.End()
 	if p == nil {
 		return nil, errors.New("store: sync pull without a principal")
 	}
@@ -944,6 +947,8 @@ type syncRow struct {
 const syncPasses = 3
 
 func (d *DB) syncApply(ctx context.Context, p *Principal, in *SyncSet) (*SyncResult, error) {
+	ctx, span := otel.Start(ctx, otel.KindSync, "sync.merge")
+	defer span.End()
 	res := &SyncResult{
 		Applied: map[string]int{
 			"artifacts": 0, "events": 0, "tasks": 0, "grants": 0, tableIdentities: 0,

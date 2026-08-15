@@ -37,6 +37,7 @@ import (
 
 	_ "github.com/lib/pq"
 
+	"github.com/deadtrickster/flowy/internal/otel"
 	"github.com/deadtrickster/flowy/internal/store"
 )
 
@@ -63,6 +64,16 @@ const maxLine = 8 << 20
 type mcpServer struct {
 	db   *store.DB
 	node string
+	// started, tracer and cpu are what the observability tools report about the
+	// process the agent is actually talking to. An MCP server is a process of
+	// its own - `flowy mcp` over a pipe is not `flowy serve` - so "how long has
+	// this been up" has to be this one's answer rather than another's.
+	started time.Time
+	tracer  *otel.Tracer
+	cpu     cpuMeter
+	// operator is the user id this node's operator holds, read from the same
+	// environment variable serve reads. It is what scope=all obeys here.
+	operator string
 }
 
 // mcpCmd runs `flowy mcp`.
@@ -94,7 +105,11 @@ func mcpCmd(args []string) error {
 	}
 	defer db.Close()
 
-	m := &mcpServer{db: db, node: *node}
+	m := &mcpServer{
+		db: db, node: *node, started: startedNow(), operator: mcpOperator(),
+		tracer: newTracer(*node, db),
+	}
+	defer m.tracer.Close()
 	if *httpAddr != "" {
 		return m.serveHTTP(ctx, *httpAddr)
 	}
@@ -234,10 +249,21 @@ func (m *mcpServer) callTool(ctx context.Context, token string, req *rpcRequest)
 	if !ok {
 		return rpcFail(req.ID, codeInvalidParams, "unknown tool: "+call.Name)
 	}
+
+	// The call is a span, and the permission check above it is the reason the
+	// rows it returns are the rows it returns: an agent's work is followable
+	// here the same way a request over HTTP is.
+	ctx, span := otel.Start(otel.WithTracer(ctx, m.tracer), otel.KindMCP, "mcp."+call.Name)
+	actor, _ := chatActor(p)
+	span.SetPrincipal(p.UserID, actor, p.Project)
+	defer span.End()
+
 	out, err := tool.call(ctx, m, p, call.Arguments)
 	if err != nil {
+		span.Fail("the tool returned an error to the agent")
 		return result(req.ID, toolError(err))
 	}
+	span.OK()
 	return result(req.ID, toolResult(out))
 }
 
@@ -259,6 +285,10 @@ func (m *mcpServer) principal(ctx context.Context, token string) (*store.Princip
 	if p.UserID == "" && p.AgentID == "" {
 		return nil, errors.New("unauthenticated: token resolves to no principal")
 	}
+	// Decided here, from this machine's configuration, exactly as the HTTP
+	// middleware decides it - never from the tokens row, which does not carry it
+	// and which nothing replicates.
+	p.Operator = m.operator != "" && p.UserID == m.operator
 	return p, nil
 }
 

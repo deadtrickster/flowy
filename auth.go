@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/deadtrickster/flowy/internal/otel"
 	"github.com/deadtrickster/flowy/internal/store"
 )
 
@@ -24,28 +25,56 @@ type principalKey struct{}
 // property of who runs the node, and the tokens table is not replicated.
 func (s *server) authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Resolving the token is the first span inside the request's, because
+		// "which principal is this" is the question every read below it is
+		// narrowed by, and a trace that does not show it shows a query with no
+		// reason for the rows it returned.
+		//
+		// request is kept: it is the context the handler runs under, and it
+		// holds the request's own span. Handing the handler this child instead
+		// would hand it a span that has already ended - so its queries would
+		// hang off nothing, and a handler that moves the request into the trace
+		// a handoff arrived in (see adoptThreadTrace) would be moving a span
+		// that is already written down.
+		request := r.Context()
+		ctx, permission := otel.Start(request, otel.KindPermission, "principal.resolve")
+		defer permission.End()
+		r = r.WithContext(ctx)
+
 		token, ok := bearerToken(r)
 		if !ok {
+			permission.Fail("no bearer token")
 			unauthorized(w, "missing bearer token")
 			return
 		}
 		p, err := s.db.PrincipalForToken(r.Context(), token)
 		if errors.Is(err, store.ErrNotFound) {
+			permission.Fail("unknown token")
 			unauthorized(w, "unknown token")
 			return
 		}
 		if err != nil {
+			permission.Fail("the store could not resolve the token")
 			serverError(w, r, err)
 			return
 		}
 		if p.UserID == "" && p.AgentID == "" {
+			permission.Fail("token resolves to no principal")
 			unauthorized(w, "token resolves to no principal")
 			return
 		}
 		p.Operator = s.operator != "" && p.UserID == s.operator
 
-		ctx := context.WithValue(r.Context(), principalKey{}, p)
-		next.ServeHTTP(w, r.WithContext(ctx))
+		// The principal goes onto the request's span as well as into its
+		// context: a span is filtered by who it was for, so a span with no
+		// principal on it is one nobody but the operator can ever read back.
+		actor, _ := chatActor(p)
+		permission.SetPrincipal(p.UserID, actor, p.Project)
+		permission.Root().SetPrincipal(p.UserID, actor, p.Project)
+		permission.OK()
+		permission.End()
+
+		next.ServeHTTP(w, r.WithContext(context.WithValue(request, principalKey{}, p)))
 	})
 }
 

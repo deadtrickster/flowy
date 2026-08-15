@@ -43,6 +43,9 @@ commands:
   sync     replicate with a peer: pull its delta, apply it, push ours
            (flowy sync --peer <url> --token <t>; env: DATABASE_URL, FLOWY_NODE,
            FLOWY_TOKEN)
+  traces   collect one trace from this node and its peers, as one waterfall
+           (flowy traces --trace <id> [--peer <url>,...] --token <t>;
+           env: DATABASE_URL, FLOWY_NODE, FLOWY_TOKEN, FLOWY_OPERATOR)
   identity this node's signing key, and the peer keys it holds
            (flowy identity | list | pin --node N --key K | keygen --node N)
   sign     sign a replication delta read on stdin (flowy sign [--seed HEX])
@@ -52,7 +55,7 @@ commands:
 
 // release is the version of the code: the phase it belongs to, bumped by hand
 // when a phase or a round of security work lands.
-const release = "0.7.3-fix14"
+const release = "0.8.0"
 
 // buildStamp names the build itself, and the build sets it:
 //
@@ -106,6 +109,11 @@ func main() {
 	case "sync":
 		if err := syncCmd(os.Args[2:]); err != nil {
 			fmt.Fprintf(os.Stderr, "flowy sync: %v\n", err)
+			os.Exit(1)
+		}
+	case "traces":
+		if err := tracesCmd(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "flowy traces: %v\n", err)
 			os.Exit(1)
 		}
 	case "identity":

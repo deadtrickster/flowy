@@ -476,7 +476,7 @@ func (s *server) handleAppendEvent(w http.ResponseWriter, r *http.Request) {
 		Actor:    actor,
 		Artifact: req.Artifact,
 		Body:     req.Body,
-		Meta:     speakerStripped(req.Meta),
+		Meta:     withTrace(speakerStripped(req.Meta), traceIDOf(r)),
 	}
 	if err := s.db.AppendEvent(r.Context(), e); err != nil {
 		serverError(w, r, err)
@@ -496,7 +496,8 @@ func (s *server) handleAppendEvent(w http.ResponseWriter, r *http.Request) {
 // ideas about what attribution is.
 const actorMetaPrefix = store.ActorMetaPrefix
 
-// speakerStripped drops the speaker keys out of meta a client handed over.
+// speakerStripped drops the speaker keys - and the trace key - out of meta a
+// client handed over.
 //
 // The actor column has been the token's since the forgery in it was fixed, but
 // meta rode in verbatim, and every reader of an event that cares who is
@@ -505,6 +506,13 @@ const actorMetaPrefix = store.ActorMetaPrefix
 // correctly signed and reads, everywhere it is rendered, as somebody else.
 // Meta is still carried, because it is where a client puts what an event is
 // about; it is simply not a channel for saying who is talking.
+//
+// The trace key is the same rule for correlation rather than for attribution.
+// A trace id in meta is what carries a handoff across the node boundary, and
+// the far node reads it back off the thread and continues that trace - so a
+// client that could write one could join its own events to somebody else's
+// trace, or scatter a trace across events that had nothing to do with it. The
+// node stamps it, on the writes it makes, and nowhere else - see withTrace.
 //
 // Anything that is not a JSON object is dropped whole: there is nothing to
 // strip out of it and nothing that needs it through.
@@ -517,7 +525,7 @@ func speakerStripped(meta json.RawMessage) json.RawMessage {
 		return nil
 	}
 	for k := range fields {
-		if strings.HasPrefix(k, actorMetaPrefix) {
+		if strings.HasPrefix(k, actorMetaPrefix) || k == store.TraceMetaKey {
 			delete(fields, k)
 		}
 	}

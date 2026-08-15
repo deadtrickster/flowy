@@ -277,10 +277,107 @@ CREATE TABLE IF NOT EXISTS fs_intents (
     created    timestamptz DEFAULT now()
 );
 
+-- Phase 8. What the node saw itself do.
+--
+-- A span is one operation - an MCP call, a permission check, a query, an
+-- ingest, a leg of a sync - with the trace it belongs to and the span above it.
+-- The trace id is what makes a handoff followable end to end: it is minted on
+-- the node the work was assigned on, it rides that assignment's opening event
+-- in meta (which is inside the event's signature, so a relay cannot rewrite
+-- it), and the node the work is delivered to continues the same trace rather
+-- than starting one of its own.
+--
+-- Local, like tokens and fs_intents: no hlc, no signature, never replicated.
+-- A span is this node's account of what this node did, and the collector -
+-- `flowy traces --peer` - is what puts two nodes' accounts of one trace back
+-- together. Replicating them would mean merging somebody else's telemetry into
+-- the fabric under the fabric's own rules, which is not what telemetry is.
+--
+-- span_id is the primary key rather than a serial, and the spans that stand for
+-- a replicated row derive it from that row's id, so applying the same delta
+-- twice records one span rather than two - see store.DeliverSpanID.
+CREATE TABLE IF NOT EXISTS spans (
+    span_id    text PRIMARY KEY,
+    trace_id   text NOT NULL,
+    parent_id  text,
+    name       text,
+    kind       text,
+    node       text,
+    -- Who the work was for. The scope filter reads these three: a span is its
+    -- principal's, and after that it is the project's - and then only when the
+    -- artifact it names is one the reader may read.
+    actor      text,
+    user_id    text,
+    project    text,
+    artifact   text,
+    status     text,
+    started    timestamptz,
+    ended      timestamptz,
+    duration_us bigint,
+    attrs      jsonb
+);
+
+CREATE INDEX IF NOT EXISTS spans_trace_idx   ON spans (trace_id, started);
+CREATE INDEX IF NOT EXISTS spans_started_idx ON spans (started);
+CREATE INDEX IF NOT EXISTS spans_user_idx    ON spans (user_id);
+
+-- What a metric read measured, so that "unusual" can be a statement about this
+-- node's own history rather than about a number somebody picked.
+--
+-- One row per series per read, keyed by the scope the read was made in: two
+-- principals see different corpora, so their histories are different series and
+-- must not be averaged together. The anomaly pass refuses a verdict below
+-- metricMinSamples samples rather than calling three points a baseline.
+CREATE TABLE IF NOT EXISTS metric_samples (
+    id     text PRIMARY KEY,
+    scope  text,
+    series text,
+    value  double precision,
+    at     timestamptz DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS metric_samples_series_idx ON metric_samples (scope, series, at);
+
+-- Refusals, counted. A 401 or a 403 under /api/ is written here as it happens,
+-- with the principal it was refused to when there was one.
+--
+-- It is the audit half of the permissions group, and it is scope-filtered like
+-- everything else: you see the refusals you were given, the operator sees the
+-- node's. Nothing about the row that was refused is stored - not its id, not
+-- its project - because a denial log that records what somebody could not read
+-- is a way to read it.
+CREATE TABLE IF NOT EXISTS access_denials (
+    id      text PRIMARY KEY,
+    at      timestamptz DEFAULT now(),
+    user_id text,
+    agent   text,
+    status  integer,
+    method  text,
+    route   text,
+    reason  text
+);
+
+CREATE INDEX IF NOT EXISTS access_denials_at_idx   ON access_denials (at);
+CREATE INDEX IF NOT EXISTS access_denials_user_idx ON access_denials (user_id, at);
+
+-- What a merge did, per peer, so the sync group can report conflicts rather
+-- than guess at them. A conflict is a row that arrived, was authentic and
+-- allowed, and lost its merge to a row already here: last-writer-wins keeps no
+-- loser, so if the count is not taken as it happens it cannot be taken at all.
+CREATE TABLE IF NOT EXISTS sync_stats (
+    peer      text PRIMARY KEY,
+    conflicts bigint DEFAULT 0,
+    refused   bigint DEFAULT 0,
+    applied   bigint DEFAULT 0,
+    at        timestamptz
+);
+
 CREATE INDEX IF NOT EXISTS artifacts_project_type_idx ON artifacts (project, type);
 CREATE INDEX IF NOT EXISTS artifacts_owner_idx        ON artifacts (owner_user);
 CREATE INDEX IF NOT EXISTS artifacts_hlc_idx          ON artifacts (hlc);
 CREATE INDEX IF NOT EXISTS artifacts_updated_idx      ON artifacts (updated);
+-- Growth is "how many of these landed in the last day", which is a read by date.
+CREATE INDEX IF NOT EXISTS artifacts_created_idx      ON artifacts (created);
 
 -- Phase 2 stores shared memory as artifacts of type 'memory', narrowed by kind.
 -- The column is in the CREATE TABLE above; the ALTER is here so a database that

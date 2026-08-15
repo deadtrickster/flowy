@@ -1,6 +1,7 @@
 import { Route, Routes } from "react-router-dom";
 
 import { Shell } from "@/components/Shell";
+import { Activity } from "@/routes/Activity";
 import { ArtifactView } from "@/routes/ArtifactView";
 import { ChatRoom } from "@/routes/ChatRoom";
 import { Home } from "@/routes/Home";
@@ -8,6 +9,7 @@ import { Inbox } from "@/routes/Inbox";
 import { Metrics } from "@/routes/Metrics";
 import { NotFound } from "@/routes/NotFound";
 import { TaskView } from "@/routes/TaskView";
+import { Traces } from "@/routes/Traces";
 
 /**
  * Every view is a path, and every path is a bookmark. The node serves
@@ -25,6 +27,8 @@ export default function App() {
         <Route path="/task/:id" element={<TaskView />} />
         <Route path="/p/:project/:type/:id" element={<ArtifactView />} />
         <Route path="/metrics" element={<Metrics />} />
+        <Route path="/traces" element={<Traces />} />
+        <Route path="/activity" element={<Activity />} />
         <Route path="*" element={<NotFound />} />
       </Routes>
     </Shell>

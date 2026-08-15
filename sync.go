@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -17,6 +18,7 @@ import (
 
 	_ "github.com/lib/pq"
 
+	"github.com/deadtrickster/flowy/internal/otel"
 	"github.com/deadtrickster/flowy/internal/store"
 )
 
@@ -149,6 +151,12 @@ func (s *server) handleSyncPush(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A delta that arrives carrying trace ids is a delta this node is taking
+	// delivery of: one span per traced row, under the trace it was assigned in,
+	// so a handoff followed on the far node continues here. It is recorded
+	// whatever the merge decides, because delivery happened either way.
+	defer recordDeliveries(r.Context(), s.db, s.node, &in, peerName(p))
+
 	res, err := s.db.SyncApplyAs(r.Context(), p, &in)
 	if errors.Is(err, store.ErrBadReading) {
 		// Nothing was merged and the clock was not touched. A reading like this
@@ -160,6 +168,10 @@ func (s *server) handleSyncPush(w http.ResponseWriter, r *http.Request) {
 		serverError(w, r, err)
 		return
 	}
+	// What the merge did, per peer, written as it happens: last-writer-wins
+	// keeps no loser, so a row that arrived and lost cannot be counted later.
+	noteMerge(r.Context(), s.db, peerName(p), in.Counts(), res)
+
 	writeJSON(w, http.StatusOK, pushResponse{
 		Node:     s.node,
 		Received: in.Counts(),
@@ -281,6 +293,18 @@ func syncCmd(args []string) error {
 		return err
 	}
 
+	// The driver traces itself too: its spans land in this node's own store, so
+	// "the sync that delivered this" is a span in the same table as everything
+	// else, and the peer's half of each request joins the same trace through
+	// the traceparent header peerRequest sends.
+	tracer := newTracer(*node, db)
+	defer tracer.Close()
+	ctx = otel.WithTracer(ctx, tracer)
+	ctx, runSpan := otel.Start(ctx, otel.KindSync, "sync.run")
+	runSpan.SetAttr("peer", base)
+	runSpan.SetPrincipal(principal.UserID, principal.AgentID, principal.Project)
+	defer runSpan.End()
+
 	if err := db.RegisterPeer(ctx, base); err != nil {
 		return err
 	}
@@ -298,12 +322,24 @@ func syncCmd(args []string) error {
 	}
 
 	if *pull {
-		if err := pullFromPeer(ctx, db, client, base, *token, *limit, principal, &report); err != nil {
+		pullCtx, span := otel.Start(ctx, otel.KindSync, "sync.pull")
+		err := pullFromPeer(pullCtx, db, client, base, *token, *limit, principal, &report)
+		if err != nil {
+			span.Fail("the pull did not finish")
+		}
+		span.End()
+		if err != nil {
 			return err
 		}
 	}
 	if *push {
-		if err := pushToPeer(ctx, db, client, base, *token, *limit, principal, &report); err != nil {
+		pushCtx, span := otel.Start(ctx, otel.KindSync, "sync.push")
+		err := pushToPeer(pushCtx, db, client, base, *token, *limit, principal, &report)
+		if err != nil {
+			span.Fail("the push did not finish")
+		}
+		span.End()
+		if err != nil {
 			return err
 		}
 	}
@@ -353,6 +389,12 @@ func pullFromPeer(ctx context.Context, db *store.DB, client *http.Client,
 		if err != nil {
 			return err
 		}
+		// The pulling node is taking delivery too, and it is the side a handoff
+		// usually arrives on: the rows come in here rather than being pushed at
+		// us. Same span, same derived id, so pulling the same page twice is one
+		// delivery.
+		recordDeliveries(ctx, db, db.Node(), got.SyncSet, base)
+		noteMerge(ctx, db, base, got.SyncSet.Counts(), res)
 		addCounts(report.Pulled, got.SyncSet.Counts())
 		addCounts(report.Applied, res.Applied)
 		addCounts(report.Refused, res.Refused)
@@ -444,6 +486,38 @@ func pushToPeer(ctx context.Context, db *store.DB, client *http.Client,
 	return nil
 }
 
+// peerName is what a peer is called in the merge stats when it pushed at us:
+// the principal it authenticated as, because a push arrives from a token rather
+// than from a URL this node knows.
+func peerName(p *store.Principal) string {
+	if p == nil || p.UserID == "" {
+		return "unnamed-peer"
+	}
+	return "push:" + p.UserID
+}
+
+// noteMerge writes down what one merge did.
+//
+// Conflicts are what is left over: a row that arrived, was authentic, was
+// allowed, and was neither applied nor refused - which is exactly a row that
+// lost its merge to something already here. It is the only moment the number
+// exists, so a failure to write it is logged rather than swallowed.
+func noteMerge(ctx context.Context, db *store.DB, peer string,
+	received map[string]int, res *store.SyncResult,
+) {
+	if res == nil {
+		return
+	}
+	applied, refused := count(res.Applied), count(res.Refused)
+	conflicts := count(received) - applied - refused
+	if conflicts < 0 {
+		conflicts = 0
+	}
+	if err := db.RecordMergeStats(ctx, peer, applied, refused, conflicts); err != nil {
+		log.Printf("metrics: the merge against %s was not counted: %v", peer, err)
+	}
+}
+
 // peerRequest makes one authenticated request to a peer and decodes its answer.
 func peerRequest(ctx context.Context, client *http.Client, method, url, token string,
 	body []byte, into any,
@@ -458,6 +532,11 @@ func peerRequest(ctx context.Context, client *http.Client, method, url, token st
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", "application/json")
+	// The peer's half of this request joins our trace, so a sync reads as one
+	// operation across two nodes rather than as two unrelated ones.
+	if header := otel.TraceParent(otel.SpanFrom(ctx)); header != "" {
+		req.Header.Set(traceHeader, header)
+	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
