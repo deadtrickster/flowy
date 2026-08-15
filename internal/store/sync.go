@@ -1749,6 +1749,15 @@ func taskParty(p *Principal, t *Task) bool {
 func checkGrant(
 	ctx context.Context, tx *sql.Tx, p *Principal, mode syncMode, g *Grant,
 ) (string, error) {
+	// The cap is checked first, and on both modes, because it is a property of
+	// the row rather than of who is handing it over: a grant that claims a
+	// capability this node does not implement is refused whoever carries it and
+	// whichever direction it came from. The local door - insertGrant - holds
+	// the same line, so the column cannot say something no reader would honour.
+	if !GrantCapOK(g.Cap) {
+		return "grant " + g.ID + " carries cap " + capSaid(g.Cap) +
+			", which is not a capability this node implements", nil
+	}
 	if p == nil {
 		return "", nil
 	}

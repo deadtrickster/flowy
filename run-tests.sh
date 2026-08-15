@@ -29,6 +29,19 @@
 # selecting the mock is a choice rather than the only option - and so that
 # "GhClient was not invoked" is a fact the gate can check rather than assume.
 
+# Two things to have right before running it, because getting either wrong fails
+# in a place that does not name the real cause:
+#
+#   - Run it as an ordinary user, not as root. initdb refuses to run as root,
+#     and a container or an agent harness that lands you there gets an error
+#     about the database that reads like a Postgres problem rather than a wrong
+#     user. `sudo -u someone ./run-tests.sh` from a root shell.
+#   - node >= 20. The console is built with vite 6, and node 18 fails `npm run
+#     build` partway through with a message about the bundler.
+#
+# Both are checked in the environment section below, which says so and stops
+# rather than letting the failure surface later as something else.
+
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -152,6 +165,9 @@ gofmt_clean() {
 	fi
 	printf 'gofmt clean\n'
 }
+
+# scalar QUERY - one value straight out of the single node's database.
+scalar() { psql -v ON_ERROR_STOP=1 -tA -c "$1"; }
 
 # psql_counts runs a counting query as a second client and fails when it comes
 # back with nothing.
@@ -2859,12 +2875,19 @@ mem_write_stays_in_its_namespace() {
 
 # LOW 8. A reply used to inherit its thread from a parent read without the
 # permission filter, which puts the speaker in a conversation they cannot see.
+#
+# The ninth round closed the same hole one step earlier: a parent nobody can
+# read is not a parent, so the message is refused rather than quietly opening a
+# thread of its own. What this check is about is unchanged - pc's conversation
+# does not gain a speaker who cannot read it - and it now asserts the refusal,
+# because the reply that used to land was a message with an edge to an event its
+# writer had only guessed at.
 a_reply_does_not_adopt_an_unreadable_thread() {
 	recall
 	# CHAT_PC is a message in pc, and the conversation it is in is pc's. B holds
 	# a grant into pa and none into pc, so B cannot read either.
 	api GET "$TOKEN_A_PC" /api/chat/general || return 1
-	local hidden
+	local hidden was
 	hidden="$(jqv "[.events[] | select(.id == \"$CHAT_PC\")][0].thread")"
 	if [ -z "$hidden" ] || [ "$hidden" = null ]; then
 		printf 'could not find the thread of %s in pc\n' "$CHAT_PC" >&2
@@ -2873,23 +2896,20 @@ a_reply_does_not_adopt_an_unreadable_thread() {
 	api GET "$TOKEN_B" "/api/events?thread=$hidden" || return 1
 	want_eq "what B can read of that thread" \
 		"$(printf '%s' "$API_BODY" | jq '.events | length')" 0 || return 1
+	was="$(scalar "SELECT count(*) FROM events WHERE thread = '$hidden'")" || return 1
 
-	api POST "$TOKEN_B" /api/chat/general/say \
+	want_status 400 POST "$TOKEN_B" /api/chat/general/say \
 		"$(jq -nc --arg p "$CHAT_PC" '{body: "answering something I cannot see", parents: [$p]}')" ||
 		return 1
-	want_eq "status" "$API_STATUS" 200 || return 1
-	local reply thread
-	reply="$(jqv .id)"
-	thread="$(jqv .thread)"
-	if [ "$thread" = "$hidden" ]; then
-		printf 'the reply joined thread %s, which the speaker cannot read\n' "$hidden" >&2
-		return 1
-	fi
 
-	# And pc's conversation is as it was: the reply is not in it.
-	api GET "$TOKEN_A_PC" "/api/chat/general?thread=$hidden" || return 1
-	want_eq "the reply in pc's thread" "$(chat_len ".id == \"$reply\"")" 0 || return 1
-	printf 'the unreadable parent was ignored and the reply opened its own thread %s\n' "$thread"
+	# Nothing landed anywhere: not in pc's conversation, and not in a thread of
+	# its own with an edge into one.
+	want_eq "messages in pc's thread afterwards" \
+		"$(scalar "SELECT count(*) FROM events WHERE thread = '$hidden'")" "$was" || return 1
+	want_eq "rows anywhere naming that message as a parent" \
+		"$(scalar "SELECT count(*) FROM events WHERE '$CHAT_PC' = ANY(parents)")" 0 || return 1
+	printf 'a reply to a message the speaker cannot read was refused, and thread %s is as it was\n' \
+		"$hidden"
 }
 
 # ------------------------------------------ the second round of security fixes
@@ -3266,7 +3286,15 @@ for tool in go curl jq node npm; do
 done
 node_major="$(node -v | sed 's/^v\([0-9]*\).*/\1/')"
 if [ "$node_major" -lt 20 ]; then
-	printf 'node %s is too old; the console needs node >= 20\n' "$(node -v)" >&2
+	printf 'node %s is too old; the console needs node >= 20 to build\n' "$(node -v)" >&2
+	exit 1
+fi
+# initdb refuses to run as root, and says so in terms of postgres rather than in
+# terms of who is running this. A container or an agent harness lands you as
+# root by default, so the gate says which of the two it is before it gets there.
+if [ "$(id -u)" -eq 0 ]; then
+	printf 'run the gate as an ordinary user: initdb refuses to run as root.\n' >&2
+	printf 'from a root shell: sudo -u <user> %s\n' "$0" >&2
 	exit 1
 fi
 PG_BIN="$(find_pg_bin)"
@@ -4304,9 +4332,6 @@ check "a reader cannot tombstone an artifact it does not own (LOW 8)" \
 # node's own row counts answered to anybody, and four multi-row writes that
 # were not one write. One check each, and every one of them fails on the source
 # it fixes.
-
-# scalar QUERY - one value straight out of the single node's database.
-scalar() { psql -v ON_ERROR_STOP=1 -tA -c "$1"; }
 
 # node_hlc - a reading comfortably above anything the single node has minted,
 # so a row written straight into its tables is newer than everything there.
@@ -5535,6 +5560,267 @@ check "a status move and a forge link both refuse a deleted artifact (MED 3)" \
 say "a clock with nothing left says so"
 check "a saturated clock refuses a reading rather than repeating one (LOW 4)" \
 	go test -count=1 -run TestSaturatedClockRefusesRatherThanRepeat ./internal/hlc
+
+# ------------------------------------------- the ninth round of security fixes
+#
+# The re-review found nothing left in the core - the permission filter, the
+# clock, the signatures and both sync doors were certified as they stand - and
+# four hardening defects around it, each of them a place where something was
+# accepted, stored or started without being held to the rule the rest of the
+# node keeps. Plus one packaging defect, which is not a security question at all
+# but breaks the build for whoever receives this tree.
+
+# ROBUSTNESS. web/dist holds a tracked placeholder so that `//go:embed
+# all:web/dist` in console.go matches something on a tree where the console has
+# never been built - a pattern that matches nothing is a compile error, not an
+# empty directory. The placeholder was zero bytes, which is the natural way to
+# write one and the one way to write one that does not survive: a packing path
+# that skips empty entries drops the file, the directory goes with it, and `go
+# build` in that copy fails on the embed with nothing in the tree to say why.
+#
+# So the check is the whole sentence: the commit carries one file under web/dist,
+# it is not empty, and the committed tree builds on its own - no node_modules, no
+# vite output, no network.
+the_committed_tree_builds_with_no_console_build() {
+	local tree="$WORK/committed" keep
+	rm -rf "$tree"
+	mkdir -p "$tree"
+	git -C "$ROOT" archive HEAD | tar -x -C "$tree" || return 1
+
+	keep="$tree/web/dist/.gitkeep"
+	if [ ! -f "$keep" ]; then
+		printf 'nothing is committed under web/dist; go:embed all:web/dist matches nothing\n' >&2
+		return 1
+	fi
+	if [ ! -s "$keep" ]; then
+		printf 'web/dist/.gitkeep is committed empty, and an empty file is what a\n' >&2
+		printf 'packing path drops - the embed then has nothing to match\n' >&2
+		return 1
+	fi
+	want_eq "files committed under web/dist" "$(git -C "$ROOT" ls-files web/dist | wc -l)" 1 ||
+		return 1
+
+	# And what the build actually does with it: vite empties dist, so the
+	# placeholder is written back by the postbuild step, and it has to be written
+	# back as the bytes that are committed or every build leaves the tree dirty.
+	if ! cmp -s "$keep" "$ROOT/web/dist/.gitkeep"; then
+		printf 'the placeholder after a build is not the one that is committed:\n' >&2
+		diff "$keep" "$ROOT/web/dist/.gitkeep" >&2
+		return 1
+	fi
+
+	(cd "$tree" && go build ./...) || return 1
+	printf 'the committed tree builds with a %s byte placeholder and no console build\n' \
+		"$(wc -c <"$keep")"
+}
+
+# MED. A grant's cap was taken verbatim from the body: stored, signed and
+# replicated, and read by nothing. Every read rule here treats a live grant as a
+# read and never looks at the column, so `cap: "write"` was accepted and
+# travelled to every peer describing a reach nobody granted - waiting for the
+# first reader that does look at it. The set is what is implemented, and both
+# doors ask.
+a_grant_carries_a_cap_this_node_implements() {
+	recall
+	local gid
+
+	want_status 400 POST "$TOKEN_A" /api/grants \
+		'{"from_project": "pb", "to_project": "pa", "cap": "write"}' || return 1
+	want_status 400 POST "$TOKEN_A" /api/grants \
+		"$(jq -nc '{from_project: "pb", to_project: "pa", cap: ("x" * 4096)}')" || return 1
+	want_eq "grants stored with a cap nothing implements" \
+		"$(scalar "SELECT count(*) FROM grants WHERE cap <> 'read'")" 0 || return 1
+
+	# read, and left out, are the same grant and both go through.
+	want_status 200 POST "$TOKEN_A" /api/grants \
+		'{"from_project": "pb", "to_project": "pa", "cap": "read"}' || return 1
+	want_eq "the cap it stored" "$(jqv .cap)" read || return 1
+	want_status 200 POST "$TOKEN_A" /api/grants \
+		'{"from_project": "pb", "to_project": "pa"}' || return 1
+	gid="$(jqv .id)"
+	want_eq "the cap a body that left it out gets" "$(jqv .cap)" read || return 1
+	want_eq "the cap in the row" \
+		"$(scalar "SELECT cap FROM grants WHERE id = '$gid'")" read || return 1
+	printf 'cap is read or nothing at the API door; the row says read\n'
+}
+
+# MED, the other door. A peer signs its own rows, so a cap it invents is
+# authentic - authenticity says who wrote a row, never what it may say. The two
+# grants below differ in one field, which is what makes the refusal about the
+# cap and not about anything else on the row.
+a_pushed_grant_with_a_cap_nobody_implements_is_refused() {
+	recall5
+	local good bad hlc delta
+	good="cap-ok-$$-$(date +%s)"
+	bad="cap-bad-$$-$(date +%s)"
+	hlc="$(forged_hlc "$N5_PORT_B")" || return 1
+
+	# Both open pb up to a project that does not exist, so nothing here is
+	# opened up by the one that lands.
+	delta="$(jq -nc --arg g "$good" --arg b "$bad" --arg o "$N5_USER_B" \
+		--argjson h1 "$hlc" --argjson h2 "$((hlc + 65536))" '
+		{artifacts: [], events: [], tasks: [], hwm: 0, grants: [
+		  {id: $g, from_project: "pz-nowhere", to_project: "pb", subject: "", artifact: "",
+		   cap: "read", granted_by: $o, hlc: $h1, node: "nodeA", tombstone: false},
+		  {id: $b, from_project: "pz-nowhere", to_project: "pb", subject: "", artifact: "",
+		   cap: "write", granted_by: $o, hlc: $h2, node: "nodeA",
+		   tombstone: false}]}' | sign5 "$N5_DSN_A" nodeA)" || return 1
+
+	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_B" /api/sync/push "$delta" || return 1
+	want_eq "grants refused" "$(jqv '.refused.grants')" 1 || return 1
+	want_eq "grants applied" "$(jqv '.applied.grants')" 1 || return 1
+	want_eq "rows for the one that claims write" \
+		"$(scalar5 "$N5_DSN_B" "SELECT count(*) FROM grants WHERE id = '$bad'")" 0 || return 1
+	want_eq "rows for the one that claims read" \
+		"$(scalar5 "$N5_DSN_B" "SELECT count(*) FROM grants WHERE id = '$good'")" 1 || return 1
+	case "$(jqv '.reasons[0]')" in
+	*cap*) ;;
+	*)
+		printf 'the refusal is not about the cap: %s\n' "$(jqv '.reasons[0]')" >&2
+		return 1
+		;;
+	esac
+
+	# Out of the peer's table again, so a grant this check invented is not
+	# something the nodes go on replicating to each other.
+	psql5_do "$N5_DSN_B" "DELETE FROM grants WHERE id = '$good'" || return 1
+	printf 'the write cap was refused on the merge and the read one applied: %s\n' \
+		"$(jqv '.reasons[0]')"
+}
+
+# MED/LOW. serveStdio read stdin with `for scanner.Scan()`, which is not
+# interruptible: the signal handler cancelled the context and the process stayed
+# in the read until the client closed the pipe. So `flowy mcp` outlived SIGTERM,
+# and a client that kills its server and waits for it waited for its own
+# timeout instead.
+#
+# The check is the real thing: a `flowy mcp` on stdio whose stdin is held open
+# and silent, which is what an idle client looks like, and a SIGTERM.
+flowy_mcp_exits_on_sigterm() {
+	local fifo="$WORK/mcp-stdin" log="$WORK/mcp-sigterm.log" pid i
+	rm -f "$fifo" "$log"
+	mkfifo "$fifo" || return 1
+
+	DATABASE_URL="$DATABASE_URL" FLOWY_NODE=gate "$ROOT/flowy" mcp <"$fifo" >/dev/null 2>"$log" &
+	pid=$!
+	# The write end stays open here, so the server's stdin never sees EOF and
+	# only the signal can end it.
+	exec 9>"$fifo"
+
+	# Up first: the transport says so on stderr before it reads anything.
+	for i in $(seq 1 100); do
+		if grep -q 'stdio transport' "$log" 2>/dev/null; then
+			break
+		fi
+		sleep 0.1
+	done
+	if ! grep -q 'stdio transport' "$log" 2>/dev/null; then
+		kill -9 "$pid" 2>/dev/null
+		exec 9>&-
+		printf 'flowy mcp never reached its stdio loop:\n%s\n' "$(cat "$log")" >&2
+		return 1
+	fi
+
+	kill -TERM "$pid" 2>/dev/null || true
+	for i in $(seq 1 50); do
+		if ! kill -0 "$pid" 2>/dev/null; then
+			break
+		fi
+		sleep 0.1
+	done
+	if kill -0 "$pid" 2>/dev/null; then
+		kill -9 "$pid" 2>/dev/null
+		wait "$pid" 2>/dev/null || true
+		exec 9>&-
+		rm -f "$fifo"
+		printf 'flowy mcp was still running five seconds after SIGTERM, with its\n' >&2
+		printf 'stdin held open: the read loop never looked at the signal\n' >&2
+		return 1
+	fi
+	wait "$pid" 2>/dev/null || true
+	exec 9>&-
+	rm -f "$fifo"
+	printf 'flowy mcp on stdio exited on SIGTERM with its stdin still open\n'
+}
+
+# LOW. Event parents were stored verbatim on both write paths. POST /api/events
+# took the whole list on trust; the chat path read parents[0] through the filter
+# only to decide which thread to inherit, and only when the body named no thread.
+# So an event could claim descent from ids that are not here, or from a
+# conversation the writer cannot see, and the console's thread pane and every
+# future reader of the DAG take those edges for structure.
+an_event_cannot_name_a_parent_it_cannot_read() {
+	recall
+	local missing before after mine
+
+	missing="no-such-event-$$-$(date +%s)"
+	before="$(scalar "SELECT count(*) FROM events")" || return 1
+
+	# An id that is not an event at all.
+	want_status 400 POST "$TOKEN_A" /api/events \
+		"$(jq -nc --arg p "$missing" \
+			'{type: "chat", room: "general", body: "descended from nothing", parents: [$p]}')" ||
+		return 1
+	want_status 400 POST "$TOKEN_A" /api/chat/general/say \
+		"$(jq -nc --arg p "$missing" '{body: "answering nothing at all", parents: [$p]}')" || return 1
+
+	# And one that is here, and out of this speaker's reach: CHAT_PC is a
+	# message in pc, and B holds a grant into pa and none into pc.
+	want_status 400 POST "$TOKEN_B" /api/events \
+		"$(jq -nc --arg p "$CHAT_PC" \
+			'{type: "chat", room: "general", body: "descended from pc", parents: [$p]}')" || return 1
+	want_status 400 POST "$TOKEN_B" /api/chat/general/say \
+		"$(jq -nc --arg p "$CHAT_PC" '{body: "answering what I cannot see", parents: [$p]}')" ||
+		return 1
+
+	# A parent hiding in a list of readable ones is still a parent.
+	want_status 200 POST "$TOKEN_A" /api/chat/general/say '{"body": "a message of my own"}' || return 1
+	mine="$(jqv .id)"
+	want_status 400 POST "$TOKEN_A" /api/chat/general/say \
+		"$(jq -nc --arg ok "$mine" --arg p "$missing" \
+			'{body: "one real parent and one invented", parents: [$ok, $p]}')" || return 1
+
+	# Nothing was written by any of them: five refusals, and the one message
+	# above is the only row the log gained.
+	after="$(scalar "SELECT count(*) FROM events")" || return 1
+	want_eq "events the refusals wrote" "$((after - before))" 1 || return 1
+	want_eq "rows naming the invented parent" \
+		"$(scalar "SELECT count(*) FROM events WHERE '$missing' = ANY(parents)")" 0 || return 1
+
+	# And the edge a speaker may name goes through, on both paths.
+	want_status 200 POST "$TOKEN_A" /api/events \
+		"$(jq -nc --arg p "$mine" \
+			'{type: "chat", room: "general", body: "a real edge", parents: [$p]}')" || return 1
+	want_eq "the parent it recorded" "$(jqv '.parents | join(",")')" "$mine" || return 1
+	want_status 200 POST "$TOKEN_A" /api/chat/general/say \
+		"$(jq -nc --arg p "$mine" '{body: "and a real reply", parents: [$p]}')" || return 1
+	want_eq "the reply parent" "$(jqv '.parents | join(",")')" "$mine" || return 1
+	printf 'a parent that is not there and a parent out of reach are both refused\n'
+}
+
+say "a grant says what it can do, and it is a capability this node has"
+check "cap outside the implemented set is refused at the API door (MED 2)" \
+	a_grant_carries_a_cap_this_node_implements
+check "and on the merge, where a peer signs its own invention (MED 2)" \
+	a_pushed_grant_with_a_cap_nobody_implements_is_refused
+
+say "a memory and the entry that records it are one write"
+check "a memory write that cannot log itself writes neither row (MED 3)" \
+	go test -count=1 -run TestWriteMemoryIsAllOrNothing ./internal/store
+
+say "the mcp server stops when it is told to"
+check "flowy mcp on stdio exits on SIGTERM instead of waiting for its client (MED 4)" \
+	flowy_mcp_exits_on_sigterm
+check "the stdio loop returns on a cancelled context rather than blocking in Scan (MED 4)" \
+	go test -count=1 -run TestStdioStopsOnCancellation .
+
+say "an event descends from what its writer can see"
+check "a parent that is missing or out of reach is refused on both write paths (LOW 5)" \
+	an_event_cannot_name_a_parent_it_cannot_read
+
+say "the tree that is handed over is a tree that builds"
+check "the committed tree builds with no console build in it (ROBUSTNESS)" \
+	the_committed_tree_builds_with_no_console_build
 
 # ------------------------------------------------------------------- verdict
 

@@ -114,6 +114,13 @@ func (d *DB) UpsertArtifact(ctx context.Context, a *Artifact) error {
 	if err := d.fill(a); err != nil {
 		return err
 	}
+	return d.upsertArtifact(ctx, d.sql, a)
+}
+
+// upsertArtifact is UpsertArtifact against whatever is in hand - the pool for a
+// write on its own, a transaction for one that is half of an operation - and
+// with the reading already stamped on the row by fill or fillAt.
+func (d *DB) upsertArtifact(ctx context.Context, q execer, a *Artifact) error {
 	if err := d.signArtifact(ctx, a); err != nil {
 		return err
 	}
@@ -122,7 +129,7 @@ func (d *DB) UpsertArtifact(ctx context.Context, a *Artifact) error {
 	if len(a.Fields) > 0 {
 		fields = []byte(a.Fields)
 	}
-	err := d.sql.QueryRowContext(ctx,
+	err := q.QueryRowContext(ctx,
 		`INSERT INTO artifacts (id, type, kind, project, owner_user, title, body, discovery,
 		                        status, severity, tags, user_tags, related, visibility,
 		                        file_path, fields, hlc, node, tombstone, search, sig)
@@ -153,6 +160,38 @@ func (d *DB) UpsertArtifact(ctx context.Context, a *Artifact) error {
 		return fmt.Errorf("store: upsert artifact: %w", err)
 	}
 	return nil
+}
+
+// WriteMemory writes a memory item and the event that records the write, in one
+// transaction and under one clock reading.
+//
+// The memory tools' write is two rows, like a status move and like an
+// assignment: the item, and the entry in the log that says memory moved. Written
+// one statement at a time they could disagree - a node that stopped between them
+// left an item with nothing in the log behind it, permanently, because nothing
+// here ever comes back to finish a half-written operation. Worse, the half
+// replicates on its own: each row carries its own reading and a peer merges what
+// it is given, so a peer paging the log sees a memory that was never written and
+// a memory table that says otherwise.
+//
+// The event's artifact and project are taken from the item rather than from the
+// caller: the id may only exist once fillAt has minted it, and an entry that
+// named anything else would not be a record of this write.
+func (d *DB) WriteMemory(ctx context.Context, a *Artifact, e *Event) error {
+	at, err := d.clock.Pack()
+	if err != nil {
+		return fmt.Errorf("store: write memory: %w", err)
+	}
+	d.fillAt(a, at)
+	e.SeqHLC = at
+	e.Artifact, e.Project = a.ID, a.Project
+
+	return d.inTx(ctx, "write memory "+a.ID, func(tx *sql.Tx) error {
+		if err := d.upsertArtifact(ctx, tx, a); err != nil {
+			return err
+		}
+		return d.appendEvent(ctx, tx, e)
+	})
 }
 
 // CreateArtifact writes an artifact that is not here yet, and never writes over
@@ -205,6 +244,23 @@ func (d *DB) CreateArtifact(ctx context.Context, a *Artifact) error {
 // personal floor to be a property of the row, mint an id when the caller left
 // one out, and stamp a fresh reading and this node's name.
 func (d *DB) fill(a *Artifact) error {
+	// A fresh reading on every write, including an update - the previous value
+	// is what a peer already saw. A clock that has none left to give is the one
+	// thing that stops the write here: two rows under one reading is a merge
+	// quietly keeping one of them.
+	at, err := d.clock.Pack()
+	if err != nil {
+		return fmt.Errorf("store: %w", err)
+	}
+	d.fillAt(a, at)
+	return nil
+}
+
+// fillAt is fill under a reading already taken. An operation that writes an
+// artifact and an event as one thing takes the reading once and stamps it on
+// both, so a peer merging them sees them at the same point in the order rather
+// than as two writes that happened to be near each other.
+func (d *DB) fillAt(a *Artifact, at int64) {
 	if a.Visibility == "" {
 		a.Visibility = "project"
 	}
@@ -220,20 +276,11 @@ func (d *DB) fill(a *Artifact) error {
 		// too rather than describing a reach the row does not have.
 		a.Visibility = VisibilityPersonal
 	}
-	// A fresh reading on every write, including an update - the previous
-	// value is what a peer already saw. A clock that has none left to give is
-	// the one thing that stops the write here: two rows under one reading is a
-	// merge quietly keeping one of them.
-	at, err := d.clock.Pack()
-	if err != nil {
-		return fmt.Errorf("store: %w", err)
-	}
 	a.HLC = at
 	a.Node = d.node
 	if a.ID == "" {
 		a.ID = ulid.NewString()
 	}
-	return nil
 }
 
 // ArtifactQuery narrows a list or a search. Every field is optional; the

@@ -76,7 +76,19 @@ named by hand.
 
 It needs `go`, `node` >= 20 with `npm`, a Postgres installation (`initdb`,
 `pg_ctl`, `psql`), and `curl` and `jq` for the HTTP checks - no running
-database, no systemd. It builds the console first (`npm ci`, Biome, `vite
+database, no systemd.
+
+Two prerequisites are worth stating on their own, because getting either wrong
+fails somewhere that does not name the real cause:
+
+- **Run it as an ordinary user, not as root.** `initdb` refuses to run as root,
+  and a container or an agent harness that puts you there gets an error about
+  the database that reads like a Postgres problem rather than a wrong user.
+  From a root shell: `sudo -u someone ./run-tests.sh`. The gate checks `id -u`
+  first and says which of the two it is.
+- **node >= 20.** The console is built with vite 6, and node 18 fails `npm run
+  build` partway through with a message about the bundler. Checked in the same
+  place, before anything is built. It builds the console first (`npm ci`, Biome, `vite
 build`), because `flowy serve` embeds `web/dist`; then it creates a throwaway
 cluster in a temp directory on a free port, loads `schema.sql`, builds the
 binary, runs the unit tests, starts `flowy serve`, runs the live checks against
@@ -2316,6 +2328,84 @@ store write path propagates it; `Update` and `Reading` are unchanged, because
 learning what a peer has seen and reporting where the clock stands are not
 readings to stamp a row with.
 
+## The ninth round of security fixes
+
+The re-review certified the core: the permission filter is a `WHERE` clause with
+nothing filtered after the fact, the SQL is parameterised throughout, the clock
+and the id generator fail loud rather than repeat themselves, a row's
+authenticity is checked before its authority and keys do not rotate, and both
+sync doors hold the push, the pull, the minted types, the ownership and the
+project floor. What came out around it is four hardening defects - **four places
+where something was accepted, stored or started without being held to the rule
+the rest of the node keeps** - and one packaging defect that is not a security
+question at all and breaks the build for whoever receives the tree. Same rule as
+the rounds before: one check in `run-tests.sh` per defect, each verified to fail
+on the source it fixes.
+
+Nothing here changes how a node is configured.
+
+**MEDIUM - a grant's `cap` was accepted unvalidated and consulted by nothing.**
+It came off the request body, was normalised only from empty to `read`, and was
+then stored, **signed** - it is inside the canonical form - and replicated. No
+reader ever looked at it: `CanRead`, `ArtifactFilterSQL`, `EventFilterSQL` and
+every share clause in the merge treat a grant that is not tombstoned as a read.
+So `cap: "write"`, or ten megabytes of it, was persisted and travelled to every
+peer as a capability this node had apparently agreed to, waiting for the first
+reader that does look. That is a column that lies and a latent escalation the
+day somebody implements cap checks against the values already in the table. The
+set is now what is implemented - `read`, and empty meaning `read` - and both
+doors ask: `POST /api/grants` answers `400`, and `insertGrant` returns an error,
+so the merge holds the same line on a row a peer signed for itself. Widen it
+when a second capability exists, not before.
+
+**MEDIUM - `mem_write` was two writes with nothing holding them together.** The
+memory item went in through `UpsertArtifact` and the `memory.write` entry
+through `AppendEvent`, and a node that stopped between them left a memory with
+no record of having been written - permanently, because nothing here comes back
+to finish a half-written operation, and the half that landed replicates on its
+own, since every row carries its own reading. This is the project's own `inTx`
+standard, which `WriteAssignment`, `MoveArtifactStatus`, `LinkArtifactExternal`
+and `UpdateTaskEvent` all keep, violated in exactly one place. There is a
+`WriteMemory` now: one clock reading taken up front, stamped on both rows, both
+written in one transaction, and the entry takes its artifact and project from
+the item rather than from the caller - the item's id may only exist once the row
+has been filled in.
+
+**MEDIUM/LOW - `flowy mcp` on stdio outlived SIGTERM.** The serve loop was `for
+scanner.Scan()`, and a blocked read of stdin is not interruptible: the
+`signal.NotifyContext` context was passed to dispatch and never looked at by the
+loop, so a terminated server sat in the read until its client closed the pipe.
+Clients that kill their server and wait for it waited for their own timeout
+instead, and orphans accumulated. The reading is on a goroutine now and the loop
+selects on it against `ctx.Done()`, so cancellation returns and `main` exits;
+what is half-read on stdin is the client's to resend to whatever it starts next.
+
+**LOW - event parents were stored unvalidated.** `POST /api/events` took
+`parents` verbatim, and the chat path read `parents[0]` through the filtered
+`ReadEvent` only to decide which thread to inherit, and only when the body named
+no thread - so the rest of the list, the whole list on the events endpoint, and
+every element once a thread is named went into the DAG unchecked. Nothing leaks:
+a parent id is echoed only to somebody who can already read the event carrying
+it, and following one is itself a filtered read. What it costs is DAG integrity -
+an event can claim descent from ids that are not here, or from a conversation
+its writer cannot see, and the console's thread pane and every future reader walk
+those edges as structure. Both write paths now check the whole list in one
+filtered query, and a parent that is missing and a parent that is out of reach
+get the same answer, which is the answer a read of it would give.
+
+**ROBUSTNESS - the placeholder that keeps `go:embed` satisfied was zero bytes.**
+`console.go` embeds `web/dist` so that `flowy serve` is one file, and a tree
+where the console has never been built needs something in that directory or the
+pattern matches nothing and the build fails. `web/dist/.gitkeep` is that
+something, and being empty is the natural way to write a placeholder and the one
+way to write one that does not survive: a packing path that skips zero-length
+entries drops the file, the directory goes with it, and `go build` in that copy
+dies on the embed with nothing in the tree to say why. It has a line of text in
+it now, `npm run build`'s postbuild step writes the same bytes back after vite
+empties the directory, and the gate exports the commit and builds it - no
+`node_modules`, no vite output, no network - so the tree that is handed over is
+a tree that is known to build.
+
 ## Deployment
 
 The store speaks the Postgres wire and nothing else. The spine of `schema.sql`
@@ -2338,35 +2428,42 @@ query. Nothing above it depends on anything below it.
 
 ## Phase 6.5 status
 
-Green. `./run-tests.sh` reports `passed: 282 failed: 0` with Go 1.22, Node 22.14
-and Postgres 16 - the 200 checks Phase 6 ended with, all still green, plus the
-12 the first security slice added, the 12 the second one did, the 8 from the
-third, the 8 from the fourth, the 10 from the fifth, the 6 from the sixth, the 6
-from the seventh - one per defect, and two for the `project-only` handoff
-because it is refused at two doors - and the 16 Phase 6.5 adds: two end-to-end
-over the two real nodes (the hostile rewrite and the relay), the canonical
-encoder's own unit tests, and one Go test per property of the merge - refusal of
-a rewritten, unsigned or replayed row, one flipped byte, a validly signed row
-that authorisation still refuses, every local write of every replicated table
-signed, a signature that survives the database, the key that arrives with the
-rows it verifies, no rotation at the pin or over the wire, require-pin, and a
-pull that hands over public keys and no private ones, and the 4 the eighth
-round adds - the pulled share, the minted task, the two blind updates and the
-saturated clock. Each is verified to fail on the source it fixes. Four of
-the older checks changed with the fixes rather than around them: a deleted
-artifact now reads as `404` on both nodes with the tombstone asserted through
-`psql`, the `?counts=1` health check no longer claims to be reporting the spine
-tables to nobody in particular, the phase 6 checks drive the mock forge's
-control routes with the operator's token because that is whose they are, and
-the hand-driven push check writes its row as the replication principal, because
-a push carries the pusher's own rows and somebody else's cross by being pulled. Phase 6's own 22 were: capability selection, filing, the conflict and permission cases, the
-close-to-done move, the reviewer loop in both directions, the no-op sync, the
-untouched `gh`, and six `psql` checks over what all of it wrote. Phases 0 to 5
-stayed green throughout, and mostly by construction - the three endpoints are
-gated on the permission filter that was already there, a threaded comment is a
-Phase 3 chat event, the status move is Phase 4's status event with one more meta
-field, and the link replicates because Phase 5 already merges the row it sits
-on.
+Green. `./run-tests.sh` reports `passed: 289 failed: 0` with Go 1.22, Node
+22.14 and Postgres 16 - the 200 checks Phase 6 ended with, all still green,
+plus the 12 the first security slice added, the 12 the second one did, the 8
+from the third, the 8 from the fourth, the 10 from the fifth, the 6 from the
+sixth, the 6 from the seventh - one per defect, and two for the `project-only`
+handoff because it is refused at two doors - and the 16 Phase 6.5 adds: two
+end-to-end over the two real nodes (the hostile rewrite and the relay), the
+canonical encoder's own unit tests, and one Go test per property of the merge -
+refusal of a rewritten, unsigned or replayed row, one flipped byte, a validly
+signed row that authorisation still refuses, every local write of every
+replicated table signed, a signature that survives the database, the key that
+arrives with the rows it verifies, no rotation at the pin or over the wire,
+require-pin, and a pull that hands over public keys and no private ones, and
+the 4 the eighth round adds - the pulled share, the minted task, the two blind
+updates and the saturated clock - and the 7 the ninth adds: the grant cap at
+both doors, the memory write that cannot log itself, `flowy mcp` under a real
+SIGTERM and its loop under a cancelled context, parents on both write paths,
+and the committed tree built from a `git archive` with no console build in it.
+Each is verified to fail on the source it fixes. Five of the older checks
+changed with the fixes rather than around them: a reply to a message its
+speaker cannot read is refused outright now rather than quietly opening a
+thread of its own, which is the same rule one step earlier, a deleted artifact
+now reads as `404` on both nodes with the tombstone asserted through `psql`,
+the `?counts=1` health check no longer claims to be reporting the spine tables
+to nobody in particular, the phase 6 checks drive the mock forge's control
+routes with the operator's token because that is whose they are, and the
+hand-driven push check writes its row as the replication principal, because a
+push carries the pusher's own rows and somebody else's cross by being pulled.
+Phase 6's own 22 were: capability selection, filing, the conflict and
+permission cases, the close-to-done move, the reviewer loop in both directions,
+the no-op sync, the untouched `gh`, and six `psql` checks over what all of it
+wrote. Phases 0 to 5 stayed green throughout, and mostly by construction - the
+three endpoints are gated on the permission filter that was already there, a
+threaded comment is a Phase 3 chat event, the status move is Phase 4's status
+event with one more meta field, and the link replicates because Phase 5 already
+merges the row it sits on.
 
 Not here yet, on the forge bridge: the real `gh`/`glab` path is coded and its
 argv and parsing are unit-tested, but **it has never run against GitHub or

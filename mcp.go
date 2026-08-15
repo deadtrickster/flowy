@@ -313,30 +313,67 @@ func resourceSpecs() []map[string]any {
 
 // serveStdio speaks newline-delimited JSON-RPC. One message per line in, one
 // response per line out, nothing else on stdout ever.
+//
+// The reading is on a goroutine of its own so that the loop can wait on the
+// context as well as on the client. A blocking read of stdin is not
+// interruptible: a plain `for scanner.Scan()` sits in the read until the other
+// end closes the pipe, so SIGTERM was noted by the signal handler and then
+// nothing happened - `flowy mcp` outlived the signal, and a client that kills
+// its server and waits for it waited for its own timeout. The goroutine is left
+// blocked in that read when the context goes; the process is on its way out and
+// it holds nothing but the pipe.
 func (m *mcpServer) serveStdio(ctx context.Context, in io.Reader, out io.Writer, token string) error {
-	scanner := bufio.NewScanner(in)
-	scanner.Buffer(make([]byte, 0, 64<<10), maxLine)
 	w := bufio.NewWriter(out)
 
 	log.Printf("flowy %s: stdio transport, node %q", version, m.node)
 
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
+	lines := make(chan string)
+	readErr := make(chan error, 1)
+	go func() {
+		defer close(lines)
+		scanner := bufio.NewScanner(in)
+		scanner.Buffer(make([]byte, 0, 64<<10), maxLine)
+		for scanner.Scan() {
+			select {
+			case lines <- scanner.Text():
+			case <-ctx.Done():
+				return
+			}
 		}
-		resp := m.dispatchRaw(ctx, token, []byte(line))
-		if resp == nil {
-			continue
+		if err := scanner.Err(); err != nil {
+			readErr <- err
 		}
-		if err := writeLine(w, resp); err != nil {
-			return err
+	}()
+
+	for {
+		select {
+		case <-ctx.Done():
+			// Interrupted or terminated. Anything half-read on stdin is the
+			// client's to resend to whatever it starts next.
+			return nil
+		case line, ok := <-lines:
+			if !ok {
+				// The client closed stdin. A read that failed rather than ended
+				// is waiting on readErr, and is the reason this is over.
+				select {
+				case err := <-readErr:
+					return fmt.Errorf("mcp stdio: read: %w", err)
+				default:
+					return nil
+				}
+			}
+			if strings.TrimSpace(line) == "" {
+				continue
+			}
+			resp := m.dispatchRaw(ctx, token, []byte(strings.TrimSpace(line)))
+			if resp == nil {
+				continue
+			}
+			if err := writeLine(w, resp); err != nil {
+				return err
+			}
 		}
 	}
-	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("mcp stdio: read: %w", err)
-	}
-	return nil
 }
 
 // writeLine writes one JSON value and a newline, and flushes: a client is

@@ -425,6 +425,15 @@ func (s *server) handleAppendEvent(w http.ResponseWriter, r *http.Request) {
 	if req.Thread != "" && !s.mayWriteThread(w, r, req.Thread) {
 		return
 	}
+	if req.Parents == nil {
+		req.Parents = []string{}
+	}
+	// And the edges it claims are edges to events it can see. This path took the
+	// whole list on trust, which is how an event came to descend from ids that
+	// are not here.
+	if !s.mayNameParents(w, r, req.Parents) {
+		return
+	}
 
 	// An agent acting on its own behalf is the actor; otherwise the user is.
 	// req.Actor is read and dropped: it is accepted so an older client is not
@@ -434,9 +443,6 @@ func (s *server) handleAppendEvent(w http.ResponseWriter, r *http.Request) {
 	if p.Project != "" {
 		home := p.Project
 		project = &home
-	}
-	if req.Parents == nil {
-		req.Parents = []string{}
 	}
 
 	e := &store.Event{
@@ -552,6 +558,16 @@ func (s *server) handleCreateGrant(w http.ResponseWriter, r *http.Request) {
 	var req grantRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, errorBody("bad request body: "+err.Error()))
+		return
+	}
+	// A cap nothing reads is still a cap that is stored, signed and replicated.
+	// Every read rule here treats a live grant as a read and never looks at the
+	// column, so `write` would be accepted, travel to every peer and describe a
+	// reach nobody granted - waiting for the first reader that does look. The
+	// set is what is implemented, and it is one entry today.
+	if !store.GrantCapOK(req.Cap) {
+		writeJSON(w, http.StatusBadRequest,
+			errorBody("cap must be "+store.CapRead+" or left out; this node implements no other"))
 		return
 	}
 

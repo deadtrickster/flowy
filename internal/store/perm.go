@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -74,6 +75,41 @@ type Grant struct {
 	// Artifact.Sig. A grant is the row that opens a project up, so it is the
 	// row a hostile peer most wants to write in somebody else's name.
 	Sig []byte `json:"sig,omitempty"`
+}
+
+// CapRead is the one capability a grant can carry. Every read rule - CanRead,
+// ArtifactFilterSQL, EventFilterSQL, the share clauses in the merge - treats a
+// grant that is not tombstoned as a read and asks the column nothing, so a
+// grant saying anything else describes a reach this node does not implement.
+const CapRead = "read"
+
+// ErrBadCap is a grant carrying a capability that is not implemented here.
+var ErrBadCap = errors.New("store: grant carries a capability this node does not implement")
+
+// GrantCapOK reports whether cap is a capability a grant may carry. Empty is
+// one: the reads coalesce a missing cap to read and the local write path fills
+// it in, so a row that arrived without one is a read grant and not a lie.
+//
+// It is deliberately a closed set rather than a length check. A cap nothing
+// consults is a column that can say anything - `write`, or ten megabytes of
+// it - and be stored, signed and replicated as if this node had agreed to it.
+// Nothing acts on it today, so the day something does, it acts on values that
+// were never checked when they were written. Both doors ask this: the handler
+// that mints a grant, and the merge that takes one from a peer. Widen it when a
+// second capability is implemented, not before.
+func GrantCapOK(capability string) bool {
+	return capability == "" || capability == CapRead
+}
+
+// capSaid renders a cap for a refusal, cut short: it is a string off the wire,
+// and a refusal is not a place to print an arbitrary amount of somebody else's
+// text back out.
+func capSaid(capability string) string {
+	const most = 32
+	if len(capability) > most {
+		return strconv.Quote(capability[:most]) + "..."
+	}
+	return strconv.Quote(capability)
 }
 
 // CanRead is the read predicate, in Go. ArtifactFilterSQL is the same rule
@@ -300,7 +336,13 @@ func (d *DB) insertGrant(ctx context.Context, q execer, g *Grant) error {
 		return err
 	}
 	if g.Cap == "" {
-		g.Cap = "read"
+		g.Cap = CapRead
+	}
+	// Before it is signed, because signing it is this node saying the row is
+	// what it says it is. A cap nothing implements is not that, and a grant is
+	// replicated: a value waved through here is a value every peer holds.
+	if !GrantCapOK(g.Cap) {
+		return fmt.Errorf("%w: %s", ErrBadCap, capSaid(g.Cap))
 	}
 	if err := d.signGrant(ctx, g); err != nil {
 		return err

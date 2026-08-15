@@ -347,3 +347,77 @@ func TestADeletedArtifactIsNotMovedOrFiled(t *testing.T) {
 		t.Errorf("the deleted row moved under a stale read: %+v, was %+v", here, was)
 	}
 }
+
+// TestWriteMemoryIsAllOrNothing is the same rule for the memory tools' write.
+//
+// mem_write is two rows - the item, and the memory.write entry that says the
+// fabric moved - and they were two independent statements. A node that stopped
+// between them left a memory with nothing in the log behind it, permanently:
+// nothing here ever comes back to finish a half-written operation, and the half
+// that landed replicates on its own, because it carries its own reading and a
+// peer merges what it is given.
+//
+// The failure is forced the way the ones above are: the entry collides with an
+// event id that is already here, so the append fails after the item has gone in.
+func TestWriteMemoryIsAllOrNothing(t *testing.T) {
+	ctx, db := open(t)
+
+	project := "pm-" + ulid.NewString()
+	owner := &User{Handle: "owner-" + ulid.NewString()}
+	if err := db.InsertUser(ctx, owner); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+
+	// The happy path first, so the failure below is a failure of the write and
+	// not of the fixture. Both rows land, both carry one reading, and the entry
+	// names the item it is the record of.
+	item := &Artifact{
+		Type: "memory", Kind: "note", Project: &project, OwnerUser: owner.ID,
+		Title: "the first one", Visibility: VisibilityProject,
+	}
+	wrote := &Event{Type: "memory.write", Room: "memory", Actor: owner.ID, Body: item.Title}
+	if err := db.WriteMemory(ctx, item, wrote); err != nil {
+		t.Fatalf("write memory: %v", err)
+	}
+	if item.HLC == 0 || item.HLC != wrote.SeqHLC {
+		t.Errorf("the item reads %d and its entry %d, want one reading", item.HLC, wrote.SeqHLC)
+	}
+	if wrote.Artifact != item.ID {
+		t.Errorf("the entry names artifact %q, want %q", wrote.Artifact, item.ID)
+	}
+	if rows(t, db, "artifacts", item.ID) != 1 || rows(t, db, "events", wrote.ID) != 1 {
+		t.Fatal("a successful memory write did not leave both rows")
+	}
+
+	// And now one that cannot finish. A fresh item, and an entry whose id is
+	// already taken by the one above.
+	second := &Artifact{
+		Type: "memory", Kind: "note", Project: &project, OwnerUser: owner.ID,
+		Title: "the one that never happened", Visibility: VisibilityProject,
+	}
+	collides := &Event{
+		ID: wrote.ID, Type: "memory.write", Room: "memory", Actor: owner.ID, Body: second.Title,
+	}
+	if err := db.WriteMemory(ctx, second, collides); err == nil {
+		t.Fatal("a memory write whose entry collides with an existing event id reported success")
+	}
+	if n := rows(t, db, "artifacts", second.ID); n != 0 {
+		t.Errorf("the item is there (%d rows): a memory with no memory.write behind it", n)
+	}
+
+	// The update path is the same write, so an update that cannot record itself
+	// must not move the item either.
+	item.Title = "edited, and never logged"
+	if err := db.WriteMemory(ctx, item, &Event{
+		ID: wrote.ID, Type: "memory.write", Room: "memory", Actor: owner.ID, Body: item.Title,
+	}); err == nil {
+		t.Fatal("an update whose entry collides reported success")
+	}
+	here, err := db.GetArtifact(ctx, item.ID)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if here.Title != "the first one" {
+		t.Errorf("the item reads %q: the edit outlived the entry it needed", here.Title)
+	}
+}

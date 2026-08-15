@@ -67,6 +67,72 @@ func (d *DB) ReadEvent(ctx context.Context, p *Principal, id string) (*Event, er
 	return e, nil
 }
 
+// UnreadableParents returns the ids in parents that do not name an event this
+// principal may read - one that is not here at all, and one that is here and out
+// of reach, which are the same answer for the same reason every filtered read
+// gives it. Duplicates are collapsed and the caller's order is kept, so the
+// refusal names the first one the writer wrote.
+//
+// It is the check both write paths owed the DAG. parents used to be stored
+// verbatim: POST /api/events took the whole list on trust, and the chat path
+// looked at parents[0] only to decide which thread to inherit, and only when the
+// request named no thread. So an event could claim descent from ids that are not
+// here, or from a conversation the writer cannot see, and the console's thread
+// pane and every reader that walks the DAG afterwards take those edges for
+// structure. Nothing leaks - a parent id is echoed only to somebody who can
+// already read the event carrying it, and following one is itself a filtered
+// read - but an edge nobody checked is an edge that says something untrue about
+// what came before what.
+//
+// One query for the whole list, with the read filter in the WHERE clause: the
+// same shape as every other read here, and it does not become a query per parent
+// on a long list.
+//
+// It is asked on the way in, of a client's write. The merge does not ask it: an
+// event replicated from a peer legitimately arrives before - or without - the
+// events it names, and refusing it there would refuse federation rather than
+// forgery.
+func (d *DB) UnreadableParents(ctx context.Context, p *Principal, parents []string) ([]string, error) {
+	if len(parents) == 0 {
+		return nil, nil
+	}
+	if p == nil {
+		return parents, nil
+	}
+	a := &args{}
+	idsArg := a.next(pq.Array(parents))
+	filter := EventFilterSQL(p, "e", a, false)
+	rows, err := d.sql.QueryContext(ctx,
+		`SELECT e.id FROM events e WHERE e.id = ANY(`+idsArg+`) AND `+filter, a.vals...)
+	if err != nil {
+		return nil, fmt.Errorf("store: read parents: %w", err)
+	}
+	defer rows.Close()
+
+	readable := map[string]bool{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("store: read parents: %w", err)
+		}
+		readable[id] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: read parents: %w", err)
+	}
+
+	var out []string
+	seen := map[string]bool{}
+	for _, id := range parents {
+		if readable[id] || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out, nil
+}
+
 // EventQuery narrows a read of the log. Since pages by seq_hlc, which is the
 // same cursor peer replication will use: strictly greater, so a caller can hand
 // back the last value it saw.

@@ -1,0 +1,5 @@
+# keeps web/dist present so //go:embed all:web/dist builds before `npm run`
+# build has run. Not empty on purpose: a zero-byte file does not survive
+# every way this tree is copied around, and losing it breaks `go build`.
+# See .gitignore, which tracks this one file and ignores everything vite
+# writes beside it, and console.go, which embeds the directory.

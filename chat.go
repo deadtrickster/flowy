@@ -102,6 +102,32 @@ func (s *server) mayWriteThread(w http.ResponseWriter, r *http.Request, thread s
 	return true
 }
 
+// mayNameParents reports whether every id the writer named as a parent is an
+// event it may read, and answers 400 when one is not.
+//
+// An edge in the log is a claim about what came before what, and it was the one
+// thing on a write nobody checked: whatever the body said went into the column.
+// A message could descend from an id that is not here, or from a conversation
+// the writer cannot see, and the console draws those edges and future readers
+// walk them. So the ids are checked the same way everything else that arrives by
+// id is - through the read filter - and a parent that is not there and a parent
+// that is out of reach get the same answer, which is the same answer a read of
+// it would give.
+func (s *server) mayNameParents(w http.ResponseWriter, r *http.Request, parents []string) bool {
+	unreadable, err := s.db.UnreadableParents(r.Context(), principalOf(r), parents)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
+		return false
+	}
+	if len(unreadable) > 0 {
+		writeJSON(w, http.StatusBadRequest,
+			errorBody("parent "+unreadable[0]+" is not an event you can read; "+
+				"an event descends from what is in front of you or from nothing"))
+		return false
+	}
+	return true
+}
+
 // handleChatSay appends a message to a room.
 //
 // POST /api/chat/{room}/say  {body, thread?, parents?}
@@ -125,14 +151,16 @@ func (s *server) handleChatSay(w http.ResponseWriter, r *http.Request) {
 	if req.Parents == nil {
 		req.Parents = []string{}
 	}
+	if !s.mayNameParents(w, r, req.Parents) {
+		return
+	}
 	if req.Thread == "" {
 		// A message that answers something inherits that message's thread, so
-		// a reply cannot start a second thread by accident. The parent is read
-		// through the permission filter: an id is a guess anybody can make, and
-		// inheriting a thread from a message the speaker may not read would put
-		// them in a conversation they cannot see - and put what they say next
-		// in front of the people who can. An unreadable parent is ignored, and
-		// the message starts a thread of its own.
+		// a reply cannot start a second thread by accident. Every parent is an
+		// event the speaker can read by the time this runs - an id is a guess
+		// anybody can make, and inheriting a thread from a message the speaker
+		// may not read would put them in a conversation they cannot see, and
+		// put what they say next in front of the people who can.
 		//
 		// A readable parent is not a readable thread, either. The tasks clause
 		// in the event filter shows one message of a thread to a party to the

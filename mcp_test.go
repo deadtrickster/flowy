@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"strings"
 	"testing"
+	"time"
 )
 
 // dispatch runs one request against a server with no database. Everything
@@ -169,5 +171,36 @@ func TestOneOfRefusesRatherThanDefaults(t *testing.T) {
 	}
 	if got, err := oneOf("kind", "handoff", memKinds, "note"); err != nil || got != "handoff" {
 		t.Errorf("kind handoff resolved to (%q, %v)", got, err)
+	}
+}
+
+// TestStdioStopsOnCancellation is what SIGTERM has to do to `flowy mcp`.
+//
+// The serve loop used to be `for scanner.Scan()`, which is not interruptible: a
+// blocked read of stdin returns when the other end closes the pipe and at no
+// other time. The signal handler cancelled the context, dispatch would have seen
+// it, and the process sat in the read - so a client that terminates its server
+// and waits for it waited for its own timeout instead, and the orphans piled up.
+//
+// The reader here never produces a line and is never closed, which is exactly
+// what an idle client's stdin looks like.
+func TestStdioStopsOnCancellation(t *testing.T) {
+	m := &mcpServer{node: "test"}
+	in, hold := io.Pipe()
+	t.Cleanup(func() { hold.Close() })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- m.serveStdio(ctx, in, io.Discard, "") }()
+
+	// Nothing is coming down that pipe, so the loop is in its read by now.
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("serveStdio returned %v, want nil on cancellation", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("serveStdio is still reading stdin five seconds after the context was cancelled")
 	}
 }

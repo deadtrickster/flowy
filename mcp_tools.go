@@ -291,23 +291,21 @@ func memWrite(ctx context.Context, m *mcpServer, p *store.Principal, raw json.Ra
 		art.Project = home
 	}
 
-	if err := m.db.UpsertArtifact(ctx, art); err != nil {
-		return nil, err
-	}
-
 	// The write is also a fact about the fabric: it goes in the log, so a peer
-	// paging events sees that memory moved without diffing the table.
+	// paging events sees that memory moved without diffing the table. The item
+	// and the entry are one write - two statements with a gap in the middle
+	// meant a memory could end up with no record of having been written, and
+	// nothing repairs that afterwards - so they go in together, under one
+	// reading, the way a status move and its trail entry do.
 	actor := p.AgentID
 	if actor == "" {
 		actor = p.UserID
 	}
-	if err := m.db.AppendEvent(ctx, &store.Event{
-		Type:     "memory.write",
-		Project:  art.Project,
-		Room:     "memory",
-		Actor:    actor,
-		Artifact: art.ID,
-		Body:     art.Title,
+	if err := m.db.WriteMemory(ctx, art, &store.Event{
+		Type:  "memory.write",
+		Room:  "memory",
+		Actor: actor,
+		Body:  art.Title,
 	}); err != nil {
 		return nil, err
 	}
