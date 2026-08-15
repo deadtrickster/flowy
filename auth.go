@@ -49,6 +49,28 @@ func (s *server) authenticate(next http.Handler) http.Handler {
 	})
 }
 
+// isOperator reports whether r carries this node's operator's token.
+//
+// It resolves the token itself because the endpoints that ask are the open
+// ones, outside the authenticate mount - /healthz is answered whether or not
+// anybody holds a credential, and it has to be. A missing token, an unknown one
+// and somebody else's are all simply "no": a health check that answered 401 to
+// a typo would be a health check that fails when the node is fine.
+func (s *server) isOperator(ctx context.Context, r *http.Request) bool {
+	if s.operator == "" {
+		return false
+	}
+	token, ok := bearerToken(r)
+	if !ok {
+		return false
+	}
+	p, err := s.db.PrincipalForToken(ctx, token)
+	if err != nil {
+		return false
+	}
+	return p.UserID != "" && p.UserID == s.operator
+}
+
 // bearerToken pulls the token out of the Authorization header.
 func bearerToken(r *http.Request) (string, bool) {
 	header := r.Header.Get("Authorization")

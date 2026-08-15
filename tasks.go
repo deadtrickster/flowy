@@ -105,9 +105,6 @@ func (s *server) handleAssign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// One reading for the three rows below.
-	at := s.db.Clock().Pack()
-
 	grant := &store.Grant{
 		FromProject: p.Project,
 		ToProject:   *art.Project,
@@ -115,21 +112,20 @@ func (s *server) handleAssign(w http.ResponseWriter, r *http.Request) {
 		Artifact:    art.ID,
 		Cap:         "read",
 		GrantedBy:   p.UserID,
-		HLC:         at,
-	}
-	if err := s.db.InsertGrant(ctx, grant); err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
-		return
 	}
 
+	// The id and the thread are minted here rather than by the store, because
+	// the message that opens the thread names the task in its meta and is built
+	// before any of the three rows is written. Ids are minted anywhere: that is
+	// what a ULID is for.
 	task := &store.Task{
+		ID:       ulid.NewString(),
 		Artifact: art.ID,
 		FromUser: p.UserID,
 		ToUser:   to.ID,
 		Project:  *art.Project,
 		State:    store.TaskOpen,
 		Thread:   ulid.NewString(),
-		HLC:      at,
 	}
 
 	// auto_delegate is the assignee's standing answer to inbound work: yes,
@@ -151,13 +147,18 @@ func (s *server) handleAssign(w http.ResponseWriter, r *http.Request) {
 			task.State = store.TaskDelegated
 		}
 	}
-	if err := s.db.InsertTask(ctx, task); err != nil {
+	opening, err := s.assignmentOpening(r, task, art, req.Note)
+	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
 		return
 	}
 
-	opening, err := s.openAssignmentThread(r, task, art, req.Note, at)
-	if err != nil {
+	// The three of them, or none of them. A failure between two of these writes
+	// used to leave whatever had already landed: a share nothing points at at
+	// best, and at worst a task about an artifact its assignee gets a 404 on,
+	// or a handoff nobody was told about. Nothing came back to finish it, and
+	// the half replicated on its own.
+	if err := s.db.WriteAssignment(ctx, grant, task, opening); err != nil {
 		writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
 		return
 	}
@@ -165,12 +166,15 @@ func (s *server) handleAssign(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, assignResponse{Task: task, Grant: grant, Opening: opening})
 }
 
-// openAssignmentThread posts the message that starts the conversation. It is an
+// assignmentOpening builds the message that starts the conversation. It is an
 // ordinary chat event - same type, same room, same meta - so the console renders
 // it with the chat it already had, and the thread it opens is the one both
 // sides answer in.
-func (s *server) openAssignmentThread(
-	r *http.Request, task *store.Task, art *store.Artifact, note string, at int64,
+//
+// It is built rather than written: the assignment's three rows go in together,
+// under one reading, in WriteAssignment.
+func (s *server) assignmentOpening(
+	r *http.Request, task *store.Task, art *store.Artifact, note string,
 ) (*store.Event, error) {
 	p := principalOf(r)
 	actor, kind := chatActor(p)
@@ -199,7 +203,7 @@ func (s *server) openAssignmentThread(
 	// side reaches the thread through the task itself in any case - see the
 	// tasks clause in EventFilterSQL.
 	project := *art.Project
-	e := &store.Event{
+	return &store.Event{
 		Type:     chatEventType,
 		Project:  &project,
 		Room:     assignRoom,
@@ -207,14 +211,9 @@ func (s *server) openAssignmentThread(
 		Parents:  []string{},
 		Actor:    actor,
 		Artifact: art.ID,
-		SeqHLC:   at,
 		Body:     body,
 		Meta:     json.RawMessage(meta),
-	}
-	if err := s.db.AppendEvent(r.Context(), e); err != nil {
-		return nil, err
-	}
-	return e, nil
+	}, nil
 }
 
 // handleInboxTasks is the work waiting for the principal: the tasks handed to

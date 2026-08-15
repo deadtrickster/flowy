@@ -217,15 +217,25 @@ func (s *server) handleForgeFile(w http.ResponseWriter, r *http.Request) {
 	// The filing goes in the thread, and its reading becomes the push cursor:
 	// the reviewer loop carries what was said after the issue existed, not the
 	// whole conversation that led to it being filed.
-	event, err := s.appendForgeEvent(r, art, ref, "filed "+ref.Repo+"#"+strconv.Itoa(number), nil)
+	event, err := s.forgeEvent(r, art, ref, "filed "+ref.Repo+"#"+strconv.Itoa(number), nil)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
 		return
 	}
-	ref.Pushed = event.SeqHLC
 
-	if err := s.db.SetArtifactExternal(ctx, art, ref, true); err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
+	// The entry and the link land together, and the push cursor is the entry's
+	// own reading - see LinkArtifactExternal. Written separately, a failure
+	// between them left the log saying the bug had been filed and the artifact
+	// saying it had not, and the next call to this endpoint would file it
+	// again: two issues for one bug, one of them belonging to nobody.
+	//
+	// The issue itself is already open, and no rollback here closes it. So a
+	// failure names it: whoever reads this error is the only one who can go and
+	// look, and telling them "internal error" would lose the number.
+	if err := s.db.LinkArtifactExternal(ctx, art, ref, true, event); err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorBody(
+			"filed as "+ref.Repo+"#"+strconv.Itoa(number)+" ("+issueURL+
+				"), and this node could not record it: "+err.Error()))
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -310,17 +320,21 @@ func (s *server) handleForgeStatus(w http.ResponseWriter, r *http.Request) {
 	was := statusOf(art)
 	moved := false
 	if forge.Terminal(state) && lifecycleTypes[art.Type] && !terminalStatus[was] {
-		if err := s.db.SetArtifactStatus(ctx, art, statusDone); err != nil {
-			writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
-			return
-		}
-		if _, err := s.appendStatusEventVia(r, art, was, statusDone, map[string]string{
+		event, err := s.statusEventVia(r, art, was, statusDone, map[string]string{
 			"via":    forgeEventType,
 			"forge":  ref.Forge,
 			"repo":   ref.Repo,
 			"number": strconv.Itoa(ref.Number),
 			"state":  state,
-		}); err != nil {
+		})
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
+			return
+		}
+		// The move and the entry that says the forge made it, together: a
+		// status the trail cannot account for is worse here than anywhere else,
+		// because this is the one move nobody in the fabric made.
+		if err := s.db.MoveArtifactStatus(ctx, art, statusDone, event); err != nil {
 			writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
 			return
 		}
@@ -625,9 +639,14 @@ func forgeIssueBody(art *store.Artifact) string {
 	return strings.Join(parts, "\n\n")
 }
 
-// appendForgeEvent records a move of the bridge itself - a filing - in the
-// thread the issue's conversation uses.
-func (s *server) appendForgeEvent(
+// forgeEvent builds the record of a move of the bridge itself - a filing - for
+// the thread the issue's conversation uses.
+//
+// It is built rather than written: the entry and the link it describes go into
+// the store together, in LinkArtifactExternal, because an entry saying a bug
+// was filed on an artifact that says it was not is how the same bug gets filed
+// twice.
+func (s *server) forgeEvent(
 	r *http.Request, art *store.Artifact, ref *store.ExternalRef, body string, extra map[string]string,
 ) (*store.Event, error) {
 	p := principalOf(r)
@@ -656,7 +675,7 @@ func (s *server) appendForgeEvent(
 		return nil, err
 	}
 
-	e := &store.Event{
+	return &store.Event{
 		Type:     forgeEventType,
 		Project:  art.Project,
 		Room:     forgeRoom,
@@ -666,11 +685,7 @@ func (s *server) appendForgeEvent(
 		Artifact: art.ID,
 		Body:     body,
 		Meta:     json.RawMessage(meta),
-	}
-	if err := s.db.AppendEvent(r.Context(), e); err != nil {
-		return nil, err
-	}
-	return e, nil
+	}, nil
 }
 
 // readableArtifact reads the artifact the request names and answers 404 itself

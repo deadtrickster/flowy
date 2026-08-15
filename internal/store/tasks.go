@@ -87,6 +87,12 @@ func scanTask(sc scanner, withArtifact bool) (*Task, error) {
 
 // InsertTask writes a task, stamping id/hlc/node when unset.
 func (d *DB) InsertTask(ctx context.Context, t *Task) error {
+	return d.insertTask(ctx, d.sql, t)
+}
+
+// insertTask is InsertTask against whatever is in hand - the pool, or the
+// transaction WriteAssignment holds.
+func (d *DB) insertTask(ctx context.Context, q execer, t *Task) error {
 	d.stamp(&t.ID, &t.HLC, &t.Node)
 	if t.State == "" {
 		t.State = TaskOpen
@@ -94,7 +100,7 @@ func (d *DB) InsertTask(ctx context.Context, t *Task) error {
 	// project and assignee_agent are NULL rather than '' when absent, so a
 	// personal task and an undelegated one read back the same way they were
 	// written whichever client wrote them.
-	_, err := d.sql.ExecContext(ctx,
+	_, err := q.ExecContext(ctx,
 		`INSERT INTO tasks (id, artifact, from_user, to_user, project, state,
 		                    assignee_agent, thread, hlc, node)
 		 VALUES ($1, $2, $3, $4, nullif($5, ''), $6, nullif($7, ''), $8, $9, $10)`,
@@ -104,6 +110,36 @@ func (d *DB) InsertTask(ctx context.Context, t *Task) error {
 		return fmt.Errorf("store: insert task: %w", err)
 	}
 	return nil
+}
+
+// WriteAssignment writes the three rows a handoff is - the share that lets the
+// assignee read the artifact, the task, and the message that opens the thread
+// they will talk in - in one transaction and under one clock reading.
+//
+// One reading because they are one operation as far as ordering goes: a peer
+// merging them cannot interleave anything between the share and the task it
+// exists for. One transaction because they are one operation to the people
+// using it, and until they were, a failure between two of the writes left the
+// half behind for good - a task whose artifact the assignee gets a 404 on, or a
+// share nobody can see the reason for. Nothing comes back to finish it, and the
+// half replicates on its own, because each row carries its own reading and a
+// peer merges what is there.
+//
+// The rows go in in that order, so a rollback that somehow does not happen
+// leaves the harmless one rather than the confusing one.
+func (d *DB) WriteAssignment(ctx context.Context, g *Grant, t *Task, opening *Event) error {
+	at := d.clock.Pack()
+	g.HLC, t.HLC, opening.SeqHLC = at, at, at
+
+	return d.inTx(ctx, "write assignment", func(tx *sql.Tx) error {
+		if err := d.insertGrant(ctx, tx, g); err != nil {
+			return err
+		}
+		if err := d.insertTask(ctx, tx, t); err != nil {
+			return err
+		}
+		return d.appendEvent(ctx, tx, opening)
+	})
 }
 
 // GetTask reads a task by id, without asking who wants it.

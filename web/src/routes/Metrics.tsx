@@ -50,14 +50,21 @@ export function Metrics() {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <dl className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-              {counts.map(([table, n]) => (
-                <div key={table} className="rounded-md border border-border p-2">
-                  <dt className="text-muted-foreground text-xs">{table}</dt>
-                  <dd className="font-semibold text-lg tabular-nums">{n}</dd>
-                </div>
-              ))}
-            </dl>
+            {health && counts.length === 0 ? (
+              <p className="text-muted-foreground text-sm">
+                the row counts are the node operator's view of their own machine - sign in with the
+                operator's token to see them
+              </p>
+            ) : (
+              <dl className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                {counts.map(([table, n]) => (
+                  <div key={table} className="rounded-md border border-border p-2">
+                    <dt className="text-muted-foreground text-xs">{table}</dt>
+                    <dd className="font-semibold text-lg tabular-nums">{n}</dd>
+                  </div>
+                ))}
+              </dl>
+            )}
           </CardContent>
         </Card>
       </div>

@@ -19,10 +19,25 @@ import (
 // memoryType is the artifact type every one of these tools reads and writes.
 const memoryType = "memory"
 
-// The scopes, in the order they widen. Each is a visibility in the store:
-// personal is the floor no grant reaches through, project is everyone in the
-// project, shared is the project plus whoever holds a grant or a share.
+// The scopes, in the order they widen: personal is the floor no grant reaches
+// through, project is everyone in the project and nobody else, shared is the
+// project plus whoever holds a grant or a share.
 var memScopes = []string{"personal", "project", "shared"}
+
+// scopeVisibility is the visibility each scope is stored as.
+//
+// project is not stored as 'project'. That value has always meant "the project,
+// and whoever the project's grants reach", because it is what an artifact
+// written over the API gets by default and a cross-project grant has always
+// reached those - so an item written here at scope=project was readable by
+// exactly the people the scope said it was not, and an agent choosing the
+// narrower of two scopes got the wider one. The store has a value that means
+// what this scope says, and this is what writes it.
+var scopeVisibility = map[string]string{
+	"personal": store.VisibilityPersonal,
+	"project":  store.VisibilityProjectOnly,
+	"shared":   store.VisibilityShared,
+}
 
 // The kinds. todos looks at the last three.
 var memKinds = []string{"note", "todo", "feature", "handoff"}
@@ -44,7 +59,8 @@ var tools = []tool{
 		Name: "mem_write",
 		Description: "Write a memory item to shared memory, or update one by id. " +
 			"Scope decides who can ever read it: personal (only you and your agents), " +
-			"project (your project), shared (promoted across a grant). " +
+			"project (your project and nobody else, grants included), " +
+			"shared (promoted across a grant). " +
 			"Store durable facts, decisions and handoffs, not transcripts.",
 		InputSchema: object(props{
 			"title": str("One line, phrased as the claim being remembered."),
@@ -174,6 +190,9 @@ func memWrite(ctx context.Context, m *mcpServer, p *store.Principal, raw json.Ra
 	if err != nil {
 		return nil, err
 	}
+	// What the scope is stored as. An update that names no scope keeps the
+	// item's own visibility instead - see below.
+	visibility := visibilityOf(scope)
 
 	art := &store.Artifact{
 		ID:     a.ID,
@@ -222,7 +241,11 @@ func memWrite(ctx context.Context, m *mcpServer, p *store.Principal, raw json.Ra
 			art.Tags = old.Tags
 		}
 		if a.Scope == "" {
-			scope = old.Visibility
+			// An update that says nothing about scope keeps the one the item
+			// has, verbatim - including a visibility written before this
+			// distinction existed, which is not something to migrate behind
+			// somebody's back.
+			visibility = old.Visibility
 		}
 		art.Discovery, art.Severity, art.Related = old.Discovery, old.Severity, old.Related
 		art.FilePath, art.Fields = old.FilePath, old.Fields
@@ -231,8 +254,8 @@ func memWrite(ctx context.Context, m *mcpServer, p *store.Principal, raw json.Ra
 	}
 
 	art.OwnerUser = p.UserID
-	art.Visibility = scope
-	if scope == "personal" {
+	art.Visibility = visibility
+	if visibility == store.VisibilityPersonal {
 		// The floor is a property of the row: no project, so no grant can
 		// reach it, whatever anyone writes into grants afterwards.
 		art.Project = nil
@@ -241,7 +264,8 @@ func memWrite(ctx context.Context, m *mcpServer, p *store.Principal, raw json.Ra
 		// project it can put a row into - a memory written anywhere else would
 		// not be readable by the agent that wrote it.
 		if p.Project == "" {
-			return nil, fmt.Errorf("this token has no project, so it can only write scope=personal, not %s", scope)
+			return nil, fmt.Errorf("this token has no project, so it can only write scope=personal, not %s",
+				scopeOf(visibility))
 		}
 		home := p.Project
 		art.Project = &home
@@ -380,7 +404,7 @@ func memQuery(scope, kind string, limit int) (store.ArtifactQuery, error) {
 		if err != nil {
 			return q, err
 		}
-		q.Visibility = v
+		q.Visibility = visibilityOf(v)
 	}
 	if kind != "" {
 		k, err := oneOf("kind", kind, memKinds, "")
@@ -390,6 +414,27 @@ func memQuery(scope, kind string, limit int) (store.ArtifactQuery, error) {
 		q.Kind = k
 	}
 	return q, nil
+}
+
+// visibilityOf is the visibility a scope is stored as. Anything that is not one
+// of the scopes is passed through: an item written before this distinction
+// existed carries a visibility that is not a scope, and reading it back is not
+// the moment to change what it means.
+func visibilityOf(scope string) string {
+	if v, ok := scopeVisibility[scope]; ok {
+		return v
+	}
+	return scope
+}
+
+// scopeOf names the scope a visibility is, for a message an agent reads.
+func scopeOf(visibility string) string {
+	for scope, v := range scopeVisibility {
+		if v == visibility {
+			return scope
+		}
+	}
+	return visibility
 }
 
 // oneOf validates an enumerated argument, substituting fallback when it is

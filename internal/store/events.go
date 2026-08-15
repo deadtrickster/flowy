@@ -95,50 +95,41 @@ func (q EventQuery) limit() int {
 // ListEvents returns the events p may read, in log order. The log is
 // append-only, so this is the only read it needs: ordering by seq_hlc then id
 // is total, and it agrees with the order the events were appended in.
+//
+// The page never cuts a reading in half - see pageOf - because Since is one
+// integer and the order is two columns. Two events written in the same instant
+// on two nodes carry the same seq_hlc, and a LIMIT falling between them would
+// hand back the first and a cursor that steps over the second for good. What a
+// reader hands back is the last event's reading, so every event at that reading
+// has to have been in the page.
 func (d *DB) ListEvents(ctx context.Context, p *Principal, q EventQuery) ([]*Event, error) {
-	a := &args{}
-	filter := EventFilterSQL(p, "e", a, q.ScopeAll)
-	where := ""
-	if q.Thread != "" {
-		where += " AND e.thread = " + a.next(q.Thread)
-	}
-	if q.Room != "" {
-		where += " AND e.room = " + a.next(q.Room)
-	}
-	if q.Type != "" {
-		where += " AND e.type = " + a.next(q.Type)
-	}
-	if q.Since > 0 {
-		where += " AND e.seq_hlc > " + a.next(q.Since)
-	}
-	for _, actor := range q.NotActors {
-		if actor != "" {
-			where += " AND coalesce(e.actor, '') <> " + a.next(actor)
-		}
-	}
-
-	query := `SELECT ` + eventColumns + `
+	limit := q.limit()
+	return pageOf(ctx, d, "list events", limit,
+		func(a *args, tie *tieAt, lim int) string {
+			filter := EventFilterSQL(p, "e", a, q.ScopeAll)
+			where := ""
+			if q.Thread != "" {
+				where += " AND e.thread = " + a.next(q.Thread)
+			}
+			if q.Room != "" {
+				where += " AND e.room = " + a.next(q.Room)
+			}
+			if q.Type != "" {
+				where += " AND e.type = " + a.next(q.Type)
+			}
+			if q.Since > 0 || tie != nil {
+				where += " AND " + above("e.seq_hlc", "e.id", q.Since, tie, a)
+			}
+			for _, actor := range q.NotActors {
+				if actor != "" {
+					where += " AND coalesce(e.actor, '') <> " + a.next(actor)
+				}
+			}
+			return `SELECT ` + eventColumns + `
 	            FROM events e
 	           WHERE ` + filter + where + `
-	           ORDER BY e.seq_hlc, e.id
-	           LIMIT ` + a.next(q.limit())
-
-	rows, err := d.sql.QueryContext(ctx, query, a.vals...)
-	if err != nil {
-		return nil, fmt.Errorf("store: list events: %w", err)
-	}
-	defer rows.Close()
-
-	out := []*Event{}
-	for rows.Next() {
-		e, err := scanEvent(rows)
-		if err != nil {
-			return nil, fmt.Errorf("store: list events: %w", err)
-		}
-		out = append(out, e)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: list events: %w", err)
-	}
-	return out, nil
+	           ORDER BY e.seq_hlc, e.id` + limitSQL(a, lim)
+		},
+		scanEvent,
+		func(e *Event) (int64, string) { return e.SeqHLC, e.ID })
 }

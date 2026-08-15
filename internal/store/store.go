@@ -66,6 +66,38 @@ func (d *DB) Clock() *hlc.Clock { return d.clock }
 // Ping reports whether the database is reachable.
 func (d *DB) Ping(ctx context.Context) error { return d.sql.PingContext(ctx) }
 
+// execer is what both the pool and a transaction satisfy, so one statement
+// serves a write made on its own and the same write made as part of a sequence
+// that has to land whole.
+type execer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// inTx runs fn in one transaction and commits it, rolling back on any error.
+//
+// It is what the multi-row operations are written against. An assignment is
+// three rows - the share, the task and the message that opens its thread - and
+// a status move is two, and until they were one transaction a node that failed
+// halfway left the half behind: a share nothing points at, a task about an
+// artifact the assignee cannot read, a status the trail has no entry for.
+// Nothing backfills that. Worse, the half replicates on its own, because the
+// rows carry their own readings and a peer merges whatever is there.
+func (d *DB) inTx(ctx context.Context, what string, fn func(tx *sql.Tx) error) error {
+	tx, err := d.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("store: %s: %w", what, err)
+	}
+	defer tx.Rollback() //nolint:errcheck // rolled back only when Commit did not happen
+	if err := fn(tx); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: %s: %w", what, err)
+	}
+	return nil
+}
+
 // stamp fills in an id, an hlc reading and the node name where the caller left
 // them empty.
 func (d *DB) stamp(id *string, clockVal *int64, node *string) {
@@ -265,6 +297,12 @@ type Event struct {
 
 // AppendEvent writes an event, stamping id/seq_hlc/node when unset.
 func (d *DB) AppendEvent(ctx context.Context, e *Event) error {
+	return d.appendEvent(ctx, d.sql, e)
+}
+
+// appendEvent is AppendEvent against whatever is in hand: the pool for a
+// message on its own, a transaction for one that is part of an operation.
+func (d *DB) appendEvent(ctx context.Context, q execer, e *Event) error {
 	d.stamp(&e.ID, &e.SeqHLC, &e.Node)
 	if e.Thread == "" {
 		// A thread with no explicit head is named after its first event.
@@ -274,7 +312,7 @@ func (d *DB) AppendEvent(ctx context.Context, e *Event) error {
 	if len(e.Meta) > 0 {
 		meta = []byte(e.Meta)
 	}
-	err := d.sql.QueryRowContext(ctx,
+	err := q.QueryRowContext(ctx,
 		`INSERT INTO events (id, type, project, room, thread, parents, actor, artifact,
 		                     seq_hlc, node, body, meta)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)

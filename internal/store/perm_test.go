@@ -49,12 +49,17 @@ func TestCanReadMatchesSQL(t *testing.T) {
 	inPY := mk(&py, "project", bob.ID)
 	personalAlice := mk(nil, "personal", alice.ID)
 	personalBob := mk(nil, "personal", bob.ID)
+	// The second floor: px and nobody else, whatever grants say. It is what the
+	// memory tools' `project` scope has always claimed to be.
+	onlyPX := mk(&px, VisibilityProjectOnly, alice.ID)
 
 	// bob's project may read alice's, and one artifact of alice's is shared to
-	// bob by name. Nothing points the other way.
+	// bob by name - including, on purpose, the project-only one, which neither
+	// the grant nor the share reaches.
 	grants := []*Grant{
 		{FromProject: py, ToProject: px, GrantedBy: alice.ID},
 		{Artifact: sharedPX.ID, Subject: bob.ID, ToProject: px, GrantedBy: alice.ID},
+		{Artifact: onlyPX.ID, Subject: bob.ID, ToProject: px, GrantedBy: alice.ID},
 		// A tombstoned grant must count for nothing.
 		{FromProject: px, ToProject: py, GrantedBy: bob.ID, Tombstone: true},
 	}
@@ -72,38 +77,41 @@ func TestCanReadMatchesSQL(t *testing.T) {
 		"projectless alice": {UserID: alice.ID},
 	}
 	artifacts := map[string]*Artifact{
-		"alice's px note":   inPX,
-		"alice's shared px": sharedPX,
-		"bob's py note":     inPY,
-		"alice's personal":  personalAlice,
-		"bob's personal":    personalBob,
+		"alice's px note":      inPX,
+		"alice's shared px":    sharedPX,
+		"alice's px-only note": onlyPX,
+		"bob's py note":        inPY,
+		"alice's personal":     personalAlice,
+		"bob's personal":       personalBob,
 	}
 
 	// What the rules say, spelled out rather than derived, so a change to
 	// CanRead cannot quietly rewrite the expectation too.
 	want := map[string]map[string]bool{
 		"alice in px": {
-			"alice's px note": true, "alice's shared px": true, "bob's py note": false,
-			"alice's personal": true, "bob's personal": false,
+			"alice's px note": true, "alice's shared px": true, "alice's px-only note": true,
+			"bob's py note": false, "alice's personal": true, "bob's personal": false,
 		},
 		"alice's agent": {
-			"alice's px note": true, "alice's shared px": true, "bob's py note": false,
-			"alice's personal": true, "bob's personal": false,
+			"alice's px note": true, "alice's shared px": true, "alice's px-only note": true,
+			"bob's py note": false, "alice's personal": true, "bob's personal": false,
 		},
 		"bob in py": {
 			// The py -> px grant reaches both px notes, and the personal floor
-			// stops it dead at alice's note even though the grant exists.
-			"alice's px note": true, "alice's shared px": true, "bob's py note": true,
-			"alice's personal": false, "bob's personal": true,
+			// stops it dead at alice's note even though the grant exists. The
+			// px-only note is the second floor: bob holds a share of that one
+			// by name and still does not reach it.
+			"alice's px note": true, "alice's shared px": true, "alice's px-only note": false,
+			"bob's py note": true, "alice's personal": false, "bob's personal": true,
 		},
 		"stranger in pz": {
-			"alice's px note": false, "alice's shared px": false, "bob's py note": false,
-			"alice's personal": false, "bob's personal": false,
+			"alice's px note": false, "alice's shared px": false, "alice's px-only note": false,
+			"bob's py note": false, "alice's personal": false, "bob's personal": false,
 		},
 		"projectless alice": {
 			// No home project, so only what alice owns personally.
-			"alice's px note": false, "alice's shared px": false, "bob's py note": false,
-			"alice's personal": true, "bob's personal": false,
+			"alice's px note": false, "alice's shared px": false, "alice's px-only note": false,
+			"bob's py note": false, "alice's personal": true, "bob's personal": false,
 		},
 	}
 

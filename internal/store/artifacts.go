@@ -98,32 +98,20 @@ func scanArtifact(sc scanner, rank *float64) (*Artifact, error) {
 // CONFLICT clause: the forge link is written by SetArtifactExternal alone, so
 // editing the title of a bug that has been filed cannot unfile it.
 //
-// The update branch only fires for the owner. An id is a guess anybody can
-// make, and an unconditional ON CONFLICT DO UPDATE turns a guessed id into a
-// takeover: every column, including owner_user, project and visibility, is
-// replaced by whoever wrote last. So the ownership test is here rather than in
-// the handler that happens to have read the row first - a caller who cannot
-// read the row cannot be told about it either, and gets ErrNotFound, exactly
-// as a read of it would.
+// The update branch only fires for the owner, and only on a row that is not
+// deleted. An id is a guess anybody can make, and an unconditional ON CONFLICT
+// DO UPDATE turns a guessed id into a takeover: every column, including
+// owner_user, project and visibility, is replaced by whoever wrote last. So the
+// ownership test is here rather than in the handler that happens to have read
+// the row first - a caller who cannot read the row cannot be told about it
+// either, and gets ErrNotFound, exactly as a read of it would. The tombstone
+// test is the same rule for a row that has been deleted: it is not readable, so
+// it is not writable, and an edit is not how something comes back.
+//
+// This is the update. A caller that did not read the row first wants
+// CreateArtifact, which will not touch one that is already here.
 func (d *DB) UpsertArtifact(ctx context.Context, a *Artifact) error {
-	if a.Visibility == "" {
-		a.Visibility = "project"
-	}
-	if a.Visibility == "personal" {
-		a.Project = nil
-	}
-	if a.Project == nil && a.Visibility == "project" {
-		// A row with no project cannot be a project artifact: there is no
-		// project to read it.
-		a.Visibility = "personal"
-	}
-	// A fresh reading on every write, including an update - the previous
-	// value is what a peer already saw.
-	a.HLC = d.clock.Pack()
-	a.Node = d.node
-	if a.ID == "" {
-		a.ID = ulid.NewString()
-	}
+	d.fill(a)
 
 	var fields any
 	if len(a.Fields) > 0 {
@@ -145,6 +133,7 @@ func (d *DB) UpsertArtifact(ctx context.Context, a *Artifact) error {
 		     fields = excluded.fields, hlc = excluded.hlc, node = excluded.node,
 		     tombstone = excluded.tombstone, search = excluded.search, updated = now()
 		  WHERE artifacts.owner_user = excluded.owner_user
+		    AND coalesce(artifacts.tombstone, false) = false
 		 RETURNING created, updated`,
 		a.ID, a.Type, a.Kind, a.Project, a.OwnerUser, a.Title, a.Body, a.Discovery,
 		a.Status, a.Severity, pq.Array(a.Tags), pq.Array(a.UserTags), pq.Array(a.Related),
@@ -158,6 +147,71 @@ func (d *DB) UpsertArtifact(ctx context.Context, a *Artifact) error {
 		return fmt.Errorf("store: upsert artifact: %w", err)
 	}
 	return nil
+}
+
+// CreateArtifact writes an artifact that is not here yet, and never writes over
+// one that is. An id already in the table comes back as ErrTaken with nothing
+// written at all.
+//
+// It exists because "the read found nothing" and "there is nothing there" are
+// not the same sentence. A read is permission-filtered, so an artifact in
+// another project, or a deleted one, reads as absent - and a create that
+// treated absent as free took the update branch of the upsert on the strength
+// of owning the row it could not see. The owner of a personal artifact in one
+// project, holding a token for another, could POST its id and watch it move
+// project, lose every field the request left out and come back from the dead.
+// The id is the only thing a caller can be told about a row it cannot read, and
+// even that is told as a 404.
+func (d *DB) CreateArtifact(ctx context.Context, a *Artifact) error {
+	d.fill(a)
+
+	var fields any
+	if len(a.Fields) > 0 {
+		fields = []byte(a.Fields)
+	}
+	err := d.sql.QueryRowContext(ctx,
+		`INSERT INTO artifacts (id, type, kind, project, owner_user, title, body, discovery,
+		                        status, severity, tags, user_tags, related, visibility,
+		                        file_path, fields, hlc, node, tombstone, search)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
+		         $19, `+fmt.Sprintf(artifactSearchSQL, 20)+`)
+		 ON CONFLICT (id) DO NOTHING
+		 RETURNING created, updated`,
+		a.ID, a.Type, a.Kind, a.Project, a.OwnerUser, a.Title, a.Body, a.Discovery,
+		a.Status, a.Severity, pq.Array(a.Tags), pq.Array(a.UserTags), pq.Array(a.Related),
+		a.Visibility, a.FilePath, fields, a.HLC, a.Node, a.Tombstone, searchText(a)).
+		Scan(&a.Created, &a.Updated)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrTaken
+	}
+	if err != nil {
+		return fmt.Errorf("store: create artifact: %w", err)
+	}
+	return nil
+}
+
+// fill is what both writes do to an artifact before it goes in: force the
+// personal floor to be a property of the row, mint an id when the caller left
+// one out, and stamp a fresh reading and this node's name.
+func (d *DB) fill(a *Artifact) {
+	if a.Visibility == "" {
+		a.Visibility = "project"
+	}
+	if a.Visibility == "personal" {
+		a.Project = nil
+	}
+	if a.Project == nil && projectScoped(a.Visibility) {
+		// A row with no project cannot be a project artifact: there is no
+		// project to read it.
+		a.Visibility = "personal"
+	}
+	// A fresh reading on every write, including an update - the previous
+	// value is what a peer already saw.
+	a.HLC = d.clock.Pack()
+	a.Node = d.node
+	if a.ID == "" {
+		a.ID = ulid.NewString()
+	}
 }
 
 // ArtifactQuery narrows a list or a search. Every field is optional; the
@@ -298,12 +352,23 @@ func (d *DB) SearchArtifacts(ctx context.Context, p *Principal, q ArtifactQuery)
 // ReadArtifact returns the artifact only if p may read it. A row that exists
 // but is out of reach comes back as ErrNotFound, the same as a row that was
 // never there: the caller has no way to tell, and neither does its user.
+//
+// A deleted artifact is one of those rows. The tombstone stays in the table so
+// the delete can replicate as a fact rather than as an absence - see
+// TombstoneArtifact - but it is not the artifact any more, and every read went
+// through here: a deleted bug was still readable by id, still had a status to
+// move, still had a history and could still be filed as an issue. Worse, an
+// edit of one was a resurrection - the update stamped a fresh reading that beat
+// the delete on every peer - so deleting something and editing it back was a
+// race the writer won. Coming back is a thing to do on purpose, not a side
+// effect of a write that never mentioned it.
 func (d *DB) ReadArtifact(ctx context.Context, p *Principal, id string, scopeAll bool) (*Artifact, error) {
 	a := &args{}
 	idArg := a.next(id)
 	filter := ArtifactFilterSQL(p, "ar", a, scopeAll)
 	row := d.sql.QueryRowContext(ctx,
-		`SELECT `+artifactColumns+` FROM artifacts ar WHERE ar.id = `+idArg+` AND `+filter,
+		`SELECT `+artifactColumns+` FROM artifacts ar
+		  WHERE ar.id = `+idArg+` AND coalesce(ar.tombstone, false) = false AND `+filter,
 		a.vals...)
 
 	art, err := scanArtifact(row, nil)

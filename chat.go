@@ -133,9 +133,27 @@ func (s *server) handleChatSay(w http.ResponseWriter, r *http.Request) {
 		// them in a conversation they cannot see - and put what they say next
 		// in front of the people who can. An unreadable parent is ignored, and
 		// the message starts a thread of its own.
+		//
+		// A readable parent is not a readable thread, either. The tasks clause
+		// in the event filter shows one message of a thread to a party to the
+		// task and the rest of it to nobody else, so a reply to that message
+		// would have landed in a conversation the speaker cannot read - the
+		// exact injection the explicit-thread path refuses. So the inherited
+		// thread goes through the same test, and a closed one is not a 403: the
+		// caller never named a thread, and answering 403 to a request that
+		// mentioned no thread would say that the parent's is one worth
+		// guessing. It starts a fresh thread instead.
 		if len(req.Parents) > 0 {
-			if parent, err := s.db.ReadEvent(r.Context(), p, req.Parents[0]); err == nil {
-				req.Thread = parent.Thread
+			parent, err := s.db.ReadEvent(r.Context(), p, req.Parents[0])
+			if err == nil && parent.Thread != "" {
+				hidden, err := s.db.ThreadHidden(r.Context(), p, parent.Thread)
+				if err != nil {
+					writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
+					return
+				}
+				if !hidden {
+					req.Thread = parent.Thread
+				}
 			}
 		}
 		if req.Thread == "" {
@@ -308,6 +326,12 @@ func writeChatEvents(w http.ResponseWriter, room string, since int64, list []*st
 
 // cursorOf is the seq_hlc a caller should hand back next time: the last event's,
 // or the one it came in with when nothing landed.
+//
+// That is only safe because the page it reads never cuts a reading in half -
+// see ListEvents and pageOf in the store. Two messages written in the same
+// instant on two nodes carry the same seq_hlc, and a page that ended between
+// them would hand back a cursor that steps over the second one for good: the
+// message is not late, it never arrives, and nothing says so.
 func cursorOf(since int64, list []*store.Event) int64 {
 	if n := len(list); n > 0 {
 		return list[n-1].SeqHLC

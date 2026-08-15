@@ -14,9 +14,11 @@ when you write; it cannot be widened by accident.
   through this: it is a floor, not a default that a share can override. Use it
   for working notes, half-formed ideas, anything about the person rather than
   the project.
-- `project` - everyone working in your project reads it. This is the right scope
-  for most durable facts: how the build is run, why a dependency is pinned, what
-  a service is called in production.
+- `project` - everyone working in your project, and nobody outside it. A grant
+  another project holds on yours does not reach these, which is what makes this
+  narrower than `shared` rather than another word for it. This is the right
+  scope for most durable facts: how the build is run, why a dependency is
+  pinned, what a service is called in production.
 - `shared` - the item is promoted past the project boundary, so anyone whose
   project holds a grant on yours can read it, as can anyone it was shared with
   directly. Use it for what another team genuinely needs: an interface contract,

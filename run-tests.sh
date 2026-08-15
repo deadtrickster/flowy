@@ -2036,13 +2036,18 @@ a_delete_on_a_reaches_b() {
 
 the_tombstone_is_on_b_too() {
 	recall5
-	# A tombstone is a row and reads back as one, on both nodes alike: what the
-	# delete removes is the artifact from the views, not the fact from the table.
-	want_napi 200 "$N5_PORT_A" GET "$N5_TOKEN_A" "/api/artifact/$SHARED_ID" || return 1
-	want_eq "the delete on A" "$(jqv .tombstone)" true || return 1
-	want_napi 200 "$N5_PORT_B" GET "$N5_TOKEN_A" "/api/artifact/$SHARED_ID" || return 1
-	want_eq "the delete on B" "$(jqv .tombstone)" true || return 1
-	want_eq "at the same reading" "$(jqv .hlc)" "$TOMB_HLC" || return 1
+	# A tombstone is a row and stays one, on both nodes alike: what the delete
+	# removes is the artifact from every view, and what it leaves behind is the
+	# fact in the table, which is how the delete replicates at all. So the API
+	# answers 404 on both nodes - a deleted artifact is not there to read - and
+	# the row is what the second client sees.
+	want_napi 404 "$N5_PORT_A" GET "$N5_TOKEN_A" "/api/artifact/$SHARED_ID" || return 1
+	want_napi 404 "$N5_PORT_B" GET "$N5_TOKEN_A" "/api/artifact/$SHARED_ID" || return 1
+	want_eq "the delete on A" \
+		"$(scalar5 "$N5_DSN_A" "SELECT tombstone FROM artifacts WHERE id = '$SHARED_ID'")" t || return 1
+	want_eq "at the delete's reading on A" \
+		"$(scalar5 "$N5_DSN_A" "SELECT hlc FROM artifacts WHERE id = '$SHARED_ID'")" \
+		"$TOMB_HLC" || return 1
 	want_napi 200 "$N5_PORT_B" GET "$N5_TOKEN_A" /api/artifacts || return 1
 	want_eq "in B's list" "$(hits ".id == \"$SHARED_ID\"")" 0 || return 1
 	want_napi 200 "$N5_PORT_B" GET "$N5_TOKEN_A" "/api/search?q=zibbleflax" || return 1
@@ -3250,7 +3255,7 @@ SERVE_PID=$!
 printf 'flowy serve pid %s on 127.0.0.1:%s\n' "$SERVE_PID" "$HTTP_PORT"
 
 check "flowy serve answers /healthz" "$WORK/smoke" healthz "http://127.0.0.1:$HTTP_PORT/healthz"
-check "healthz reports the spine tables" \
+check "healthz answers when counts are asked for" \
 	"$WORK/smoke" healthz "http://127.0.0.1:$HTTP_PORT/healthz?counts=1"
 check "spine tables exist" "$WORK/smoke" schema
 
@@ -4127,6 +4132,335 @@ check "a push the peer refused does not move the cursor past it (MED/LOW 7)" \
 say "the delete says whose it is"
 check "a reader cannot tombstone an artifact it does not own (LOW 8)" \
 	go test -count=1 -run TestTombstoneNamesTheOwner ./internal/store
+
+# ------------------------------------------------ the fourth round of fixes
+#
+# The re-review of the third round: the big items held, and eight smaller ones
+# behind them - a cursor that is one integer over a two-column order, a create
+# that read "not readable" as "not there", two columns of a task nobody
+# checked, a thread inherited rather than tested, a delete that only removed
+# the row from the lists, a scope that was documented narrower than it was, the
+# node's own row counts answered to anybody, and four multi-row writes that
+# were not one write. One check each, and every one of them fails on the source
+# it fixes.
+
+# scalar QUERY - one value straight out of the single node's database.
+scalar() { psql -v ON_ERROR_STOP=1 -tA -c "$1"; }
+
+# node_hlc - a reading comfortably above anything the single node has minted,
+# so a row written straight into its tables is newer than everything there.
+node_hlc() {
+	api GET "" /healthz || return 1
+	printf '%s' "$(($(jqv .hlc) + 65536))"
+}
+
+# HIGH 1. Every page is ordered by (reading, id) and was paged by the reading
+# alone. Two rows at one reading - two nodes writing in the same millisecond, a
+# handoff stamping its three rows together - straddling a page boundary meant
+# the second was handed over never: the cursor moved to the first one's reading
+# and "strictly greater" did the rest. Silent and permanent, in replication and
+# in the chat log alike.
+a_page_does_not_cut_a_reading_in_half() {
+	recall
+	recall5
+	# napi and want_napi point the helpers at one of the federated nodes and
+	# leave them there, so the single node's port is put by for the second half.
+	local gate=$HTTP_PORT
+	local hlc first second hwm carried
+	hlc="$(forged_hlc "$N5_PORT_B")" || return 1
+	first="tie-a-$$"
+	second="tie-b-$$"
+
+	# Two artifacts of the peer's own, at exactly one reading, ids in sort
+	# order. Straight into the table, because nothing mints two readings the
+	# same on one node - it takes two of them, which is the case this is about.
+	psql5_do "$N5_DSN_B" "INSERT INTO artifacts
+	    (id, type, project, owner_user, title, body, visibility, hlc, node, tombstone)
+	    VALUES ('$first', 'note', 'pb', '$N5_USER_B', 'first at the reading', 'twinnerdash',
+	            'project', $hlc, 'nodeB', false),
+	           ('$second', 'note', 'pb', '$N5_USER_B', 'second at the reading', 'twinnerdash',
+	            'project', $hlc, 'nodeB', false)" || return 1
+
+	# One row per table per page, so the boundary falls between the two.
+	want_napi 200 "$N5_PORT_B" GET "$N5_TOKEN_B" \
+		"/api/sync/pull?since=$((hlc - 1))&limit=1" || return 1
+	carried="$(printf '%s' "$API_BODY" |
+		jq '[.artifacts[].id | select(. == "'"$first"'" or . == "'"$second"'")] | length')"
+	want_eq "the rows one page carried" "$carried" 2 || return 1
+
+	# And the cursor it reports does not step over either of them: what is above
+	# it is nothing of theirs.
+	hwm="$(jqv .hwm)"
+	want_napi 200 "$N5_PORT_B" GET "$N5_TOKEN_B" "/api/sync/pull?since=$hwm&limit=1" || return 1
+	carried="$(printf '%s' "$API_BODY" |
+		jq '[.artifacts[].id | select(. == "'"$first"'" or . == "'"$second"'")] | length')"
+	want_eq "the rows left above the cursor" "$carried" 0 || return 1
+	psql5_do "$N5_DSN_B" "DELETE FROM artifacts WHERE id IN ('$first', '$second')" || return 1
+
+	# The same hole in the log a chat client pages, which is the same code.
+	HTTP_PORT=$gate
+	local chlc e1 e2
+	chlc="$(node_hlc)" || return 1
+	e1="tie-ev-a-$$"
+	e2="tie-ev-b-$$"
+	psql_do "INSERT INTO events
+	    (id, type, project, room, thread, parents, actor, seq_hlc, node, body)
+	    VALUES ('$e1', 'chat', 'pa', 'tieroom', '$e1', '{}', '$USER_A', $chlc, 'gate',
+	            'the first at the reading'),
+	           ('$e2', 'chat', 'pa', 'tieroom', '$e1', '{}', '$USER_A', $chlc, 'gate',
+	            'the second at the reading')" || return 1
+
+	api GET "$TOKEN_A" "/api/chat/tieroom?since=$((chlc - 1))&limit=1" || return 1
+	want_eq "messages one page carried" \
+		"$(printf '%s' "$API_BODY" | jq '.events | length')" 2 || return 1
+	want_eq "the cursor it reports" "$(jqv .cursor)" "$chlc" || return 1
+	api GET "$TOKEN_A" "/api/chat/tieroom?since=$(jqv .cursor)&limit=1" || return 1
+	want_eq "messages left above that cursor" \
+		"$(printf '%s' "$API_BODY" | jq '.events | length')" 0 || return 1
+	printf 'both rows at %s replicated, and both messages at %s read back\n' "$hlc" "$chlc"
+}
+
+# HIGH 2. handleCreateArtifact read the id through the permission filter and
+# read "nothing you may see" as "nothing there". The owner of an artifact in
+# one project, holding a token for another, could POST its id and take the
+# update branch on a row they could not read: it moved project, lost every
+# field the request left out, and a deleted one came back.
+a_create_does_not_move_the_row_it_cannot_see() {
+	recall
+	local id
+	api POST "$TOKEN_A" /api/artifacts '{
+		"type": "note", "title": "the pa one", "body": "grumblewick",
+		"discovery": "written in pa and staying there", "tags": ["pa"]
+	}' || return 1
+	want_eq "status" "$API_STATUS" 200 || return 1
+	id="$(jqv .id)"
+	want_eq "the project it landed in" "$(jqv .project)" pa || return 1
+
+	# The same person, in another project, naming that id. pc holds no grant
+	# into pa, so the row is out of this principal's reach - and out of reach is
+	# the answer it gets.
+	want_status 404 POST "$TOKEN_A_PC" /api/artifacts \
+		"$(jq -nc --arg i "$id" '{id: $i, type: "note", title: "moved to pc"}')" || return 1
+
+	api GET "$TOKEN_A" "/api/artifact/$id" || return 1
+	want_eq "the project it is still in" "$(jqv .project)" pa || return 1
+	want_eq "the title" "$(jqv .title)" "the pa one" || return 1
+	want_eq "the body" "$(jqv .body)" grumblewick || return 1
+	want_eq "the discovery" "$(jqv .discovery)" "written in pa and staying there" || return 1
+	want_eq "rows for it in pc" "$(scalar "SELECT count(*) FROM artifacts
+	    WHERE id = '$id' AND project = 'pc'")" 0 || return 1
+	printf '%s stayed in pa with every field it had\n' "$id"
+}
+
+# HIGH 3. checkTask let a party through on the two columns a party may move,
+# and checked neither of them. assignee_agent is the third read capability on
+# the row - the tasks clause shows the thread to the agent named there - so a
+# party could hand its own handoff's conversation to anybody's agent, and park
+# the task in a state the lifecycle has no way out of.
+a_party_cannot_delegate_its_task_to_a_stranger() {
+	recall5
+	local art task thread project hlc delta was
+	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_A" /api/artifacts \
+		'{"type":"bug","title":"the handoff that gets re-delegated","body":"grindlespoke"}' || return 1
+	art="$(jqv .id)"
+	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_A" /api/assign \
+		"$(jq -nc --arg a "$art" --arg u "$N5_USER_B" '{artifact: $a, to_user: $u, note: "yours"}')" ||
+		return 1
+	task="$(jqv .id)"
+	thread="$(jqv .thread)"
+	project="$(jqv .project)"
+	was="$(scalar5 "$N5_DSN_B" "SELECT coalesce(assignee_agent, '') FROM tasks WHERE id = '$task'")" ||
+		return 1
+
+	# push_task STATE AGENT - the assignee pushes its own task back, moved.
+	push_task() {
+		hlc="$(forged_hlc "$N5_PORT_B")" || return 1
+		delta="$(jq -nc --arg t "$task" --arg a "$art" --arg f "$N5_USER_A" --arg u "$N5_USER_B" \
+			--arg p "$project" --arg th "$thread" --arg st "$1" --arg ag "$2" --argjson h "$hlc" '
+			{artifacts: [], events: [], grants: [], hwm: 0, tasks: [
+			  {id: $t, artifact: $a, from_user: $f, to_user: $u, project: $p, state: $st,
+			   assignee_agent: $ag, thread: $th, hlc: $h, node: "forger"}]}')"
+		want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_B" /api/sync/push "$delta"
+	}
+
+	# A's agent does not act for the assignee, so it is not the assignee's to
+	# delegate to - the rule POST /api/task/{id}/delegate keeps.
+	push_task delegated "$N5_AGENT_A" || return 1
+	want_eq "the stranger's agent refused" "$(jqv '.refused.tasks')" 1 || return 1
+	want_eq "the stranger's agent applied" "$(jqv '.applied.tasks')" 0 || return 1
+	want_eq "the agent it still names" \
+		"$(scalar5 "$N5_DSN_B" "SELECT coalesce(assignee_agent, '') FROM tasks WHERE id = '$task'")" \
+		"$was" || return 1
+
+	# Nor is a state the lifecycle has never heard of a move.
+	push_task mine-now "$was" || return 1
+	want_eq "the invented state refused" "$(jqv '.refused.tasks')" 1 || return 1
+	want_eq "the state it is still in" \
+		"$(scalar5 "$N5_DSN_B" "SELECT state FROM tasks WHERE id = '$task'")" delegated || return 1
+
+	# And the move a party really can make is still a move.
+	push_task "done" "$N5_AGENT_B" || return 1
+	want_eq "the real move applied" "$(jqv '.applied.tasks')" 1 || return 1
+	want_eq "the state it is in now" \
+		"$(scalar5 "$N5_DSN_B" "SELECT state FROM tasks WHERE id = '$task'")" "done" || return 1
+	printf 'task %s would not go to %s, nor to mine-now, and still closed\n' "$task" "$N5_AGENT_A"
+}
+
+# MEDIUM 4. A reply with no thread of its own inherits its parent's, and the
+# parent was read through the filter while the thread it names was not. A
+# readable message in an unreadable conversation is exactly what the tasks
+# clause produces, so answering one put the speaker inside a conversation they
+# cannot see - and put what they said next in front of the people whose it is.
+a_reply_does_not_join_a_thread_it_cannot_read() {
+	recall
+	local thread bridge hlc landed
+	api POST "$TOKEN_A_PC" /api/chat/pcquiet/say \
+		'{"body":"the pc conversation nobody else reads"}' || return 1
+	want_eq "status" "$API_STATUS" 200 || return 1
+	thread="$(jqv .thread)"
+
+	# One message of that thread that B may read, in B's own project. No
+	# principal here could have written it - both endpoints refuse exactly this
+	# - so it goes in as a row, which is what a merge from a peer would do.
+	hlc="$(node_hlc)" || return 1
+	bridge="bridge-ev-$$"
+	psql_do "INSERT INTO events
+	    (id, type, project, room, thread, parents, actor, seq_hlc, node, body)
+	    VALUES ('$bridge', 'chat', 'pb', 'general', '$thread', '{}', '$USER_B', $hlc, 'gate',
+	            'the one message of it B can read')" || return 1
+	api GET "$TOKEN_B" "/api/events?thread=$thread" || return 1
+	want_eq "what B can read of the thread" \
+		"$(printf '%s' "$API_BODY" | jq '.events | length')" 1 || return 1
+
+	api POST "$TOKEN_B" /api/chat/general/say \
+		"$(jq -nc --arg p "$bridge" '{body: "answering the one I can see", parents: [$p]}')" || return 1
+	want_eq "status" "$API_STATUS" 200 || return 1
+	landed="$(jqv .thread)"
+	if [ "$landed" = "$thread" ]; then
+		printf 'the reply joined %s, which the speaker cannot read\n' "$thread" >&2
+		return 1
+	fi
+	want_eq "messages in the pc thread" \
+		"$(scalar "SELECT count(*) FROM events WHERE thread = '$thread'")" 2 || return 1
+	printf 'the reply started thread %s instead of joining %s\n' "$landed" "$thread"
+}
+
+# HIGH 5. ReadArtifact ignored the tombstone, so a deleted artifact was still
+# readable by id, still had a status to move, still had a history and could
+# still be filed as an issue - and an edit of one brought it back with a fresh
+# reading that beat the delete on every peer.
+a_deleted_artifact_is_gone_and_stays_gone() {
+	recall
+	local id
+	id="$(new_artifact "$TOKEN_A" note "the one that gets deleted")" || return 1
+	api POST "$TOKEN_A" "/api/artifact/$id/delete" || return 1
+	want_eq "delete status" "$API_STATUS" 200 || return 1
+
+	want_status 404 GET "$TOKEN_A" "/api/artifact/$id" || return 1
+	want_status 404 GET "$TOKEN_A" "/api/artifact/$id/history" || return 1
+	want_status 404 POST "$TOKEN_A" "/api/artifact/$id/status" '{"status":"triaged"}' || return 1
+
+	# And an edit by its owner is not a resurrection.
+	want_status 404 POST "$TOKEN_A" /api/artifacts \
+		"$(jq -nc --arg i "$id" '{id: $i, type: "note", title: "back from the dead"}')" || return 1
+	want_eq "still a tombstone" \
+		"$(scalar "SELECT tombstone FROM artifacts WHERE id = '$id'")" t || return 1
+	want_eq "with the title it was deleted under" \
+		"$(scalar "SELECT title FROM artifacts WHERE id = '$id'")" "the one that gets deleted" ||
+		return 1
+	printf '%s reads as absent everywhere, and an edit did not bring it back\n' "$id"
+}
+
+# MEDIUM 6. The memory tools offer three scopes and the store had two: 'project'
+# and 'shared' were the same row test, so an item written at the narrower of
+# them was readable by everyone the wider one reaches. An agent choosing the
+# scope it was told meant "my project" got "my project and whoever holds a
+# grant on it".
+a_project_scoped_memory_stays_in_its_project() {
+	recall
+	local id
+	want_tool mem_write "$TOKEN_A" '{
+		"title": "how the gate starts postgres",
+		"body": "crumplebosk is the word",
+		"scope": "project"
+	}' || return 1
+	id="$(tv .item.id)"
+	want_eq "the project it landed in" "$(tv .item.project)" pa || return 1
+
+	# B holds the grant Phase 1 issued on pa and reads shared memory in pa with
+	# it, which is the control: the grant is live and the surface works.
+	want_tool mem_search "$TOKEN_B_AGENT" '{"q":"wobblethorn"}' || return 1
+	want_eq "the shared item across the grant" "$(tv .count)" 1 || return 1
+
+	want_tool mem_search "$TOKEN_B_AGENT" '{"q":"crumplebosk"}' || return 1
+	want_eq "the project item across the same grant" "$(tv .count)" 0 || return 1
+	want_tool_fails mem_read "$TOKEN_B_AGENT" "{\"id\": \"$id\"}" "no such memory item" || return 1
+
+	# Its own project reads it, or the scope would be personal by another name.
+	want_tool mem_read "$TOKEN_A" "{\"id\": \"$id\"}" || return 1
+	want_eq "what its own project reads" "$(tv .item.id)" "$id" || return 1
+	printf 'memory %s is pa and only pa, grant or no grant\n' "$id"
+}
+
+# MEDIUM 7. /healthz?counts=1 answered the row count of every spine table -
+# users, tokens, grants, artifacts, events, tasks - to anybody who asked, with
+# no credential at all. That is the shape and the size of what the node holds.
+healthz_counts_are_the_operators() {
+	recall
+	api GET "" '/healthz?counts=1' || return 1
+	want_eq "status with no token" "$API_STATUS" 200 || return 1
+	want_eq "counts to a stranger" "$(jqv '.counts')" null || return 1
+	api GET "$TOKEN_A" '/healthz?counts=1' || return 1
+	want_eq "counts to an ordinary token" "$(jqv '.counts')" null || return 1
+
+	api GET "$TOKEN_OP" '/healthz?counts=1' || return 1
+	want_eq "status for the operator" "$API_STATUS" 200 || return 1
+	if [ "$(jqv '.counts.tokens')" = null ]; then
+		printf 'the operator asked for counts and got none: %s\n' "$API_BODY" >&2
+		return 1
+	fi
+
+	# The health check itself is still open, because one that needs a credential
+	# is one that stops working at the worst moment.
+	api GET "" /healthz || return 1
+	want_eq "status" "$API_STATUS" 200 || return 1
+	want_eq "ok" "$(jqv .ok)" true || return 1
+	printf 'counts are the operator view, %s tables of it; /healthz is open\n' \
+		"$(printf '%s' "$API_BODY" | jq '.counts | length')"
+}
+
+say "a cursor is a page boundary, and a page has two columns"
+check "two rows at one reading are both delivered (HIGH 1)" \
+	a_page_does_not_cut_a_reading_in_half
+
+say "a create is not an update of what you cannot see"
+check "posting an id you cannot read is 404 and moves nothing (HIGH 2)" \
+	a_create_does_not_move_the_row_it_cannot_see
+
+say "the two columns a party may move"
+check "a party cannot delegate its task to somebody else's agent (HIGH 3)" \
+	a_party_cannot_delegate_its_task_to_a_stranger
+
+say "a parent you can read is not a thread you can read"
+check "an inherited thread the speaker cannot read starts a fresh one (MED 4)" \
+	a_reply_does_not_join_a_thread_it_cannot_read
+
+say "a delete is a delete"
+check "a tombstoned artifact is 404 and an edit does not raise it (HIGH 5)" \
+	a_deleted_artifact_is_gone_and_stays_gone
+
+say "the scopes mean what they say"
+check "a project-scoped memory item is not readable across a grant (MED 6)" \
+	a_project_scoped_memory_stays_in_its_project
+
+say "the node's own numbers"
+check "healthz counts are the operator's, and /healthz stays open (MED 7)" \
+	healthz_counts_are_the_operators
+
+say "one operation, one write"
+check "a failure mid-assignment leaves no half of it behind (MED 8)" \
+	go test -count=1 \
+	-run 'TestWriteAssignmentIsAllOrNothing|TestMoveArtifactStatusIsAllOrNothing' ./internal/store
 
 # ------------------------------------------------------------------- verdict
 

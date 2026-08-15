@@ -303,7 +303,16 @@ type healthzResponse struct {
 }
 
 // handleHealthz reports whether the node can reach its store. ?counts=1 adds
-// the row count of each spine table.
+// the row count of each spine table, for this node's operator and nobody else.
+//
+// The health check itself stays open, because one that needs a credential is
+// one that stops working at the worst moment, and "ok, db up, this version"
+// tells a load balancer what it needs and a stranger nothing it did not
+// already know from the port answering. The counts are a different thing: how
+// many users, how many tokens, how many grants, how many artifacts is the shape
+// and the size of what this node holds, and it was answered to anybody who
+// asked. It is the operator's view of their own machine, like ?scope=all and
+// like /api/peers, so it is behind the operator's token now.
 func (s *server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
@@ -322,7 +331,7 @@ func (s *server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, resp)
 		return
 	}
-	if r.URL.Query().Get("counts") != "" {
+	if r.URL.Query().Get("counts") != "" && s.isOperator(ctx, r) {
 		counts, err := s.db.Counts(ctx)
 		if err != nil {
 			resp.OK, resp.DB, resp.Error = false, "degraded", err.Error()

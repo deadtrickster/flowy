@@ -159,10 +159,13 @@ override it:
 | `FLOWY_TOKEN` | - | the bearer token `flowy mcp` uses over stdio |
 | `FLOWY_FORGE` | `-forge` | empty; `gh` if it is on `PATH`, else `glab`, else no forge |
 
-`GET /healthz` (add `?counts=1` for per-table row counts), `GET /version` and
-`GET /` are open - a health check that needs a credential stops working at the
-worst possible moment, and none of the three reads a row of fabric data.
-Everything under `/api/` needs a token.
+`GET /healthz`, `GET /version` and `GET /` are open - a health check that needs
+a credential stops working at the worst possible moment, and none of the three
+reads a row of fabric data. `?counts=1` adds the per-table row counts, and
+those are the operator's: the shape and the size of what the node holds is not
+something a stranger on the port needs, so it is answered only to a request
+carrying the operator's token, and to everyone else the health check answers as
+if the parameter were not there. Everything under `/api/` needs a token.
 
 ## Shared memory over MCP
 
@@ -221,7 +224,12 @@ visibility:
   is written with no project at all, so the floor is a property of the data: no
   grant written afterwards can reach it.
 - **project** - the principal's home project, which is the only project a token
-  can write into.
+  can write into, and nobody outside it. A grant another project holds does not
+  reach these and neither does a share: it is a second floor, one step above
+  `personal`. The row is written `visibility='project-only'`, which is what the
+  filter tests - `visibility='project'`, the default an artifact written over
+  the API gets, has always meant "the project and whoever its grants reach" and
+  still does.
 - **shared** - the project, plus anyone holding a project-wide grant on it or a
   per-artifact share of the item. This is how a memory crosses a boundary.
 
@@ -288,7 +296,12 @@ In the order they are applied:
    clears its project in the store, so the floor is a property of the data
    rather than a promise of the API.
 2. **Your own project is yours.** Same project as the principal, allowed.
-3. **Anything else needs a live grant**, either a project-wide one along the
+3. **`project-only` stops there.** An artifact written `visibility='project-only'`
+   is readable by its project and by nothing else - no project-wide grant, no
+   per-artifact share. It is the second floor, and it is what the `project`
+   memory scope means; `visibility='project'`, which is what an artifact written
+   over the API gets by default, is the wider one that grants reach.
+4. **Anything else needs a live grant**, either a project-wide one along the
    edge (`from_project` = the reader's project, `to_project` = the artifact's)
    or a share of that one artifact to that one user (`artifact` = the id,
    `subject` = the reader). Tombstoned grants count for nothing.
@@ -328,7 +341,7 @@ and deletes are tombstones.
 
 | route | what it does |
 | --- | --- |
-| `POST /api/artifacts` | create, or replace one you own. Body: `type` (required), `kind`, `title`, `body`, `discovery`, `status`, `severity`, `tags`, `user_tags`, `related`, `visibility`, `project`, `file_path`, `fields`, `id?`. A new `id` is a ULID; `hlc` and `node` are stamped |
+| `POST /api/artifacts` | create, or replace one you own **and can read**. Body: `type` (required), `kind`, `title`, `body`, `discovery`, `status`, `severity`, `tags`, `user_tags`, `related`, `visibility`, `project`, `file_path`, `fields`, `id?`. A new `id` is a ULID; `hlc` and `node` are stamped. An `id` that names a row you cannot read - another project's, a deleted one - is `404` and writes nothing |
 | `GET /api/artifacts?type=&kind=&project=&status=` | `{"artifacts":[...]}`, permission-filtered, newest first, tombstones omitted |
 | `GET /api/artifact/{id}` | the artifact, or `404` if it is missing **or** out of reach |
 | `POST /api/artifact/{id}/delete` | tombstone it and bump the clock past the write it removes |
@@ -368,9 +381,13 @@ cursor peer replication pages by - `/api/sync/pull` takes the same parameter and
 means the same thing by it - and it is strictly greater, so a caller hands back
 the last value it saw.
 
-A tombstoned artifact still answers a `GET` by id, marked `"tombstone": true` -
-that is how the delete replicates - but it is gone from every list and every
-search.
+A tombstoned artifact is gone from every read: the list, the search and a `GET`
+by id alike, and its status and its history with them. The row stays in the
+table, marked, because that is how the delete replicates - a delete travels as a
+fact and not as an absence - and `psql` is where you see it. What that closes is
+resurrection by accident: every read went through one filter, so an edit of a
+deleted artifact used to write it back with a reading that beat the delete on
+every peer.
 
 ## Chat, over the event DAG
 
@@ -721,7 +738,7 @@ can bookmark or send:
 | `/inbox` | the work assigned to this token: state, delegate and done, and the auto-delegate switch |
 | `/task/:id` | one handoff: the task, and its thread rendered as chat with its DAG |
 | `/p/:project/:type/:id` | one artifact, with the lifecycle control and its history |
-| `/metrics` | node counts, a stub over `/healthz?counts=1` |
+| `/metrics` | node counts, a stub over `/healthz?counts=1` - the counts come back for the operator's token, and the page says so when they do not |
 
 Which means the server has to answer with the app for all of them: `flowy serve`
 serves `web/dist` and falls back to `index.html` for **any** non-`/api` GET, so
@@ -1078,8 +1095,8 @@ the real `flowy sync`:
   version, at `h2`, authored `nodeB`, and **exactly one row each** - no lost
   update, no duplicate
 - A deletes it: the tombstone reads after the edit it removes, and after a sync
-  B answers the same `tombstone: true` at the same reading, with the artifact
-  gone from B's list and B's search and the row still in B's table
+  both nodes answer `404` for it while both tables still hold the row, at the
+  delete's reading, gone from B's list and B's search
 - an assignment on A arrives on B as all three of its parts - the task, the
   share that makes the artifact readable, and the thread it opened
 - a sync with nothing new **moves nothing**: pulled and pushed are zero on both
@@ -1204,6 +1221,25 @@ And the second slice, the same way - one check per defect the re-review found:
   offers the same rows again, and the cursor moves once the peer takes them
 - a reader cannot tombstone an artifact it does not own, in the store rather
   than in the handler
+- two rows at one reading straddling a `LIMIT 1` page boundary are both
+  delivered, in a replication pull and in a room's chat log alike, and the
+  cursor each reports steps over neither
+- posting the id of an artifact you own but cannot read from the project you are
+  acting in is `404`, and the row keeps its project and every field
+- a party cannot push its own task delegated to an agent that does not act for
+  the assignee, nor into a state the lifecycle has never heard of, and the move
+  a party really can make still lands
+- a reply to a readable message in an unreadable thread starts a thread of its
+  own rather than joining that conversation
+- a deleted artifact is `404` by id, for its history and for a status move, and
+  an edit by its owner does not raise it
+- a memory item written at `scope=project` is not readable through the
+  cross-project grant that reaches the `shared` one beside it
+- `/healthz?counts=1` reports the spine tables to the operator's token and to
+  nobody else, and `/healthz` itself stays open
+- an assignment whose task cannot be written leaves neither the share nor the
+  opening message behind, and a status move whose entry cannot be written does
+  not move the status
 
 The last thing the gate does is ask git whether the tree it just tested is the
 tree on disk: uncommitted changes, or nothing ever committed, is a failure.
@@ -1535,6 +1571,114 @@ things in turn: would applying it change anything at all (if not, it is neither
 applied nor refused), may this principal write it (which is the question above,
 and the answer differs by direction), and then it is applied.
 
+## The fourth round of security fixes
+
+The third round was reviewed again. The big items held - the permission SQL, the
+clock's packing and clamping, the node-name tiebreak in the merge - and eight
+smaller things were behind them. Same rule as before: one check in
+`run-tests.sh` per defect, each verified by reverting the source and leaving the
+checks in place, and each of the eight fails on the source it fixes.
+
+Nothing here changes how a node is configured.
+
+**HIGH - a cursor is one integer and every page is ordered by two columns.**
+Artifacts, events, tasks and grants are all read `ORDER BY hlc, id` and paged by
+`hlc > since`. Two rows can carry the same reading - two nodes writing in the
+same millisecond, or one handoff stamping its three rows together - and a
+`LIMIT` that falls between them hands over the first and reports its reading as
+the high water mark. The next pull asks for what is strictly greater, and the
+second row is never offered again. Not delayed: dropped, permanently, with
+nothing anywhere saying so. `ListEvents` had the same hole, so the same thing
+happened to a chat message a client paged past. A page that fills now goes on to
+read the rest of the reading it stopped in, so the cursor it reports names a
+reading every row of which has been handed over - which is what an integer
+cursor has to mean for paging by it to be safe. A tie is bounded by how many
+nodes wrote in one instant, so finishing one costs a handful of rows.
+
+**HIGH - a create read "not readable" as "not there".** `handleCreateArtifact`
+read the id through the permission filter and treated `ErrNotFound` as a free
+id, which sent it down the update branch of the upsert - and the upsert's own
+guard is ownership, which the caller had. So the owner of a personal artifact in
+one project, holding a token for another, could POST its id and watch the row
+move project, lose every field the request left out, and come back from the
+dead. The read and the write now agree about what they are doing: a caller that
+read the row updates it, and a caller that did not creates - and a create that
+lands on a taken id writes nothing and comes back `ErrTaken`, which the handler
+answers as the `404` a read would have given. The id is the only thing anyone
+can be told about a row they cannot read, and even that is told as a 404.
+
+**HIGH - `checkTask` waved through the two columns a party may move.** The merge
+refuses to let a party re-point its task's thread, artifact or people, and then
+took `state` and `assignee_agent` as given. `assignee_agent` is the third read
+capability on the row - the tasks clause in `EventFilterSQL` shows the thread to
+the agent named there - so a party could hand its own handoff's conversation to
+anybody's agent by pushing its own task back. Over the API only the assignee
+delegates, and only to an agent that acts for them, so that is the rule here
+now: an incoming agent that differs from the one on the row has to be an agent
+of the assignee. The state is checked against the three the lifecycle has, so a
+task cannot be parked somewhere nothing moves out of.
+
+**MEDIUM - an inherited thread was not a checked thread.** A message with no
+thread of its own inherits its parent's, and the parent was read through the
+filter while the thread it names was not. A readable message inside an
+unreadable conversation is exactly what the tasks clause produces, so answering
+one put the speaker inside a conversation they cannot see and put what they said
+next in front of the people whose it is. The inherited thread goes through
+`ThreadHidden` now, and a closed one is not a `403`: the caller never named a
+thread, and refusing would say that the parent's is one worth guessing. It
+starts a fresh thread, which is what leaving `thread` out has always done.
+
+**HIGH - a delete only removed the artifact from the lists.** `ReadArtifact` did
+not look at the tombstone, and every read of one artifact goes through it, so a
+deleted artifact still answered a `GET` by id, still had a status to move, still
+had a history, and could still be filed as an issue on a forge. Worse, an edit
+of one was a resurrection: `UpsertArtifact` stamps a fresh reading, and a fresh
+reading beats the delete on every peer. Both are shut - the read filters the
+tombstone and the upsert will not update one - so coming back is something to do
+on purpose rather than a side effect of a write that never mentioned it. The row
+itself is untouched, because that is how the delete replicates.
+
+**MEDIUM - the memory scopes promised three levels and the store had two.**
+`visibility='project'` and `visibility='shared'` were the same row test: both
+reach the project, both are reached by the project's grants and shares. The
+`project` scope is documented, in the tool description and in the instructions
+an agent reads, as narrower than `shared` - so an agent choosing the narrower of
+the two got the wider one, on the one write here that cannot be taken back. The
+store has a value that means what the scope says now, `project-only`, and the
+filter and `CanRead` both stop at it; `mem_write` at `scope=project` writes it.
+`visibility='project'` keeps the reach it has always had, because it is what
+every artifact written over the API gets by default and what every cross-project
+grant in the fabric has always reached.
+
+**MEDIUM - `/healthz?counts=1` answered the node's row counts to anybody.** How
+many users, tokens, grants, artifacts, events and tasks this node holds is its
+shape and its size, and it needed no credential at all. The health check itself
+stays open - one that needs a credential stops working at the worst moment, and
+`ok`, `db` and a version tell a load balancer what it needs and a stranger
+nothing the port answering had not already told them. The counts are the
+operator's view of the operator's machine, like `?scope=all` and like
+`/api/peers`, so they are answered to the operator's token and to nobody else.
+Everyone else gets the health check, without the parameter having any effect.
+
+**MEDIUM - four multi-row writes were not one write.** An assignment is three
+rows - the share, the task, and the message that opens the thread - and a status
+move is two, and a filing is two. Written one statement at a time, a failure in
+the middle left the half behind: a share nothing points at, a task about an
+artifact the assignee gets a `404` on, a status with no entry in the trail, a
+log entry saying a bug was filed on an artifact that says it was not, which
+files it again the next time somebody asks. Nothing in the node ever came back
+to finish any of them, and the half replicated on its own, because every row
+carries its own reading and a peer merges what is there. Each sequence is one
+`BeginTx` in the store now - `WriteAssignment`, `MoveArtifactStatus`,
+`LinkArtifactExternal` - taking one clock reading before it starts, which is the
+same-hlc ordering those rows always had.
+
+What is still not transactional is the forge itself. Opening an issue is a call
+to another machine and no rollback closes it, so the order is file, then record
+the event and the link together, and a failure recording them answers with the
+issue number and URL it could not write down - the person reading that error is
+the only one who can go and look.
+
 ## Deployment
 
 The store speaks the Postgres wire and nothing else. The spine of `schema.sql`
@@ -1557,11 +1701,14 @@ query. Nothing above it depends on anything below it.
 
 ## Phase 6 status
 
-Green. `./run-tests.sh` reports `passed: 232 failed: 0` with Go 1.22, Node 22.14
+Green. `./run-tests.sh` reports `passed: 240 failed: 0` with Go 1.22, Node 22.14
 and Postgres 16 - the 200 checks Phase 6 ended with, all still green, plus the
-12 the first security slice added, the 12 the second one did and the 8 from the
-third: one per defect above, each of them verified to fail on the source it
-fixes. Phase 6's own 22 were: capability selection, filing, the conflict and permission cases, the
+12 the first security slice added, the 12 the second one did, the 8 from the
+third and the 8 from the fourth: one per defect above, each of them verified to
+fail on the source it fixes. Two of the older checks changed with the fixes
+rather than around them: a deleted artifact now reads as `404` on both nodes
+with the tombstone asserted through `psql`, and the `?counts=1` health check no
+longer claims to be reporting the spine tables to nobody in particular. Phase 6's own 22 were: capability selection, filing, the conflict and permission cases, the
 close-to-done move, the reviewer loop in both directions, the no-op sync, the
 untouched `gh`, and six `psql` checks over what all of it wrote. Phases 0 to 5
 stayed green throughout, and mostly by construction - the three endpoints are

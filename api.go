@@ -90,12 +90,24 @@ func (s *server) handleCreateArtifact(w http.ResponseWriter, r *http.Request) {
 	// clear the same bar twice: the principal must be able to see the artifact
 	// at all, and must own it. Unreadable is 404 rather than 403, the same as a
 	// plain read, so a probe cannot learn an id exists by trying to write it.
+	//
+	// update says which of the two writes below runs. It is false for an id
+	// this caller cannot read, and that is the whole of the fix: a read that
+	// finds nothing means "nothing you may write to", not "nothing there". The
+	// two came apart in the one case that matters - the caller's own artifact,
+	// in another project, held with a token for this one - and taking the
+	// update branch on it moved the row into this project, wiped every field
+	// the request left out and brought a deleted one back. The store settles
+	// what "not there" really was: a create that lands on a taken id writes
+	// nothing and comes back ErrTaken, which is answered as a 404 like the read.
+	update := false
 	if req.ID != "" {
 		existing, err := s.db.ReadArtifact(r.Context(), p, req.ID, false)
 		switch {
 		case errors.Is(err, store.ErrNotFound):
-			// Not there, or not ours to see. Either way this is a create with
-			// a caller-chosen id, which is allowed - ids are minted anywhere.
+			// Not there, or not ours to see, or deleted. This is a create with
+			// a caller-chosen id, which is allowed - ids are minted anywhere -
+			// and it is a create even if the id turns out to be taken.
 		case err != nil:
 			writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
 			return
@@ -105,6 +117,7 @@ func (s *server) handleCreateArtifact(w http.ResponseWriter, r *http.Request) {
 		default:
 			// Fields the caller left out keep the value they had, so an update
 			// does not have to restate the whole artifact.
+			update = true
 			req.fillFrom(existing)
 			if project, err = req.project(p); err != nil {
 				writeJSON(w, http.StatusBadRequest, errorBody(err.Error()))
@@ -143,11 +156,17 @@ func (s *server) handleCreateArtifact(w http.ResponseWriter, r *http.Request) {
 		FilePath:   req.FilePath,
 		Fields:     req.Fields,
 	}
-	if err := s.db.UpsertArtifact(r.Context(), art); err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			// The id names a row this principal does not own. The store refused
-			// it, and the answer is the one a read of that row would give: a
-			// caller must not learn an id exists by writing to it.
+	write := s.db.CreateArtifact
+	if update {
+		write = s.db.UpsertArtifact
+	}
+	if err := write(r.Context(), art); err != nil {
+		if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrTaken) {
+			// The id names a row this principal may not write: somebody else's,
+			// or one that has been deleted, or - on a create - simply one that
+			// is already there. The store refused it and wrote nothing, and the
+			// answer is the one a read of that row would give: a caller must
+			// not learn an id exists by writing to it.
 			writeJSON(w, http.StatusNotFound, errorBody("no such artifact"))
 			return
 		}

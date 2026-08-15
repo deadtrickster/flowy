@@ -14,16 +14,47 @@ import (
 //
 // The clock moves, because the status is part of what replicates.
 func (d *DB) SetArtifactStatus(ctx context.Context, art *Artifact, status string) error {
+	return d.setArtifactStatus(ctx, d.sql, art, status, d.clock.Pack())
+}
+
+// setArtifactStatus is the one statement, against whatever is in hand and at
+// whatever reading the caller has already taken.
+func (d *DB) setArtifactStatus(
+	ctx context.Context, q execer, art *Artifact, status string, at int64,
+) error {
 	art.Status = status
-	art.HLC = d.clock.Pack()
+	art.HLC = at
 	art.Node = d.node
-	_, err := d.sql.ExecContext(ctx,
+	_, err := q.ExecContext(ctx,
 		`UPDATE artifacts SET status = $2, hlc = $3, node = $4, updated = now() WHERE id = $1`,
 		art.ID, art.Status, art.HLC, art.Node)
 	if err != nil {
 		return fmt.Errorf("store: set status of %s: %w", art.ID, err)
 	}
 	return nil
+}
+
+// MoveArtifactStatus moves an artifact's status and writes the event that
+// records the move, in one transaction and under one clock reading.
+//
+// The trail is the point of the lifecycle: "in-review" is worth something only
+// because there is an entry saying who moved it there. Two statements with a
+// gap in the middle meant the two could disagree - a status with no entry
+// behind it if the append failed, which nothing ever notices and nothing ever
+// repairs. They are one write now, and they carry the same reading, so a peer
+// merging them sees the move and its record at the same point in the order.
+func (d *DB) MoveArtifactStatus(
+	ctx context.Context, art *Artifact, status string, e *Event,
+) error {
+	at := d.clock.Pack()
+	e.SeqHLC = at
+
+	return d.inTx(ctx, "move status of "+art.ID, func(tx *sql.Tx) error {
+		if err := d.setArtifactStatus(ctx, tx, art, status, at); err != nil {
+			return err
+		}
+		return d.appendEvent(ctx, tx, e)
+	})
 }
 
 // ArtifactEvents reads the events of one type that name an artifact, in log

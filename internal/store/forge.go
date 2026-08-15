@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -144,6 +145,14 @@ func (r *ExternalRef) AlreadySeen(id string, at time.Time) bool {
 func (d *DB) SetArtifactExternal(
 	ctx context.Context, art *Artifact, ref *ExternalRef, reported bool,
 ) error {
+	return d.setArtifactExternal(ctx, d.sql, art, ref, reported, d.clock.Pack())
+}
+
+// setArtifactExternal is the one statement, against whatever is in hand and at
+// a reading the caller may already have taken.
+func (d *DB) setArtifactExternal(
+	ctx context.Context, q execer, art *Artifact, ref *ExternalRef, reported bool, at int64,
+) error {
 	var raw any
 	if ref != nil {
 		encoded, err := json.Marshal(ref)
@@ -154,15 +163,47 @@ func (d *DB) SetArtifactExternal(
 	}
 
 	art.External, art.Reported = ref, reported
-	art.HLC = d.clock.Pack()
+	art.HLC = at
 	art.Node = d.node
-	_, err := d.sql.ExecContext(ctx,
+	_, err := q.ExecContext(ctx,
 		`UPDATE artifacts SET external = $2, reported = $3, hlc = $4, node = $5, updated = now()
 		  WHERE id = $1`, art.ID, raw, art.Reported, art.HLC, art.Node)
 	if err != nil {
 		return fmt.Errorf("store: set external ref of %s: %w", art.ID, err)
 	}
 	return nil
+}
+
+// LinkArtifactExternal records that an artifact has been filed: the event that
+// says so goes in the thread and the link goes on the artifact, in one
+// transaction and under one reading.
+//
+// The two used to be separate writes, and the second one carried the cursor the
+// first one produced - ref.Pushed is the filing event's reading, which is what
+// stops the reviewer loop pushing the whole conversation that led to the filing
+// out to the forge. A failure between them left an event saying the bug was
+// filed on an artifact that says it was not: the next call files it a second
+// time, and there are now two issues for one bug and one of them is nobody's.
+//
+// What is still not in the transaction is the forge itself. Opening an issue is
+// a call to another machine and cannot be rolled back, so the order is: file,
+// then record both halves together, and a failure here is reported with the
+// issue it could not record - see handleForgeFile.
+func (d *DB) LinkArtifactExternal(
+	ctx context.Context, art *Artifact, ref *ExternalRef, reported bool, e *Event,
+) error {
+	at := d.clock.Pack()
+	e.SeqHLC = at
+	if ref != nil {
+		ref.Pushed = at
+	}
+
+	return d.inTx(ctx, "link "+art.ID, func(tx *sql.Tx) error {
+		if err := d.appendEvent(ctx, tx, e); err != nil {
+			return err
+		}
+		return d.setArtifactExternal(ctx, tx, art, ref, reported, at)
+	})
 }
 
 // LatestTaskForArtifact is the newest handoff about an artifact, or ErrNotFound

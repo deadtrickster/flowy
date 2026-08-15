@@ -165,13 +165,15 @@ func (s *server) handleArtifactStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.db.SetArtifactStatus(ctx, art, to); err != nil {
+	event, err := s.statusEvent(r, art, from, to)
+	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
 		return
 	}
-
-	event, err := s.appendStatusEvent(r, art, from, to)
-	if err != nil {
+	// The move and the entry that records it are one write. A status with no
+	// entry behind it is a lifecycle nobody can audit, and it is not something
+	// anything here would ever notice or repair.
+	if err := s.db.MoveArtifactStatus(ctx, art, to, event); err != nil {
 		writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
 		return
 	}
@@ -215,20 +217,23 @@ func (s *server) handleArtifactHistory(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// appendStatusEvent writes the move into the log, as a child of the move before
+// statusEvent builds the move's entry in the log, as a child of the move before
 // it. The event lands in the artifact's project rather than the actor's: the
 // trail belongs with the thing it is about, and an assignee moving a shared bug
 // from another project should not fork its history into a second log.
-func (s *server) appendStatusEvent(
+//
+// It is built rather than written: the move and its entry go in together, in
+// MoveArtifactStatus.
+func (s *server) statusEvent(
 	r *http.Request, art *store.Artifact, from, to string,
 ) (*store.Event, error) {
-	return s.appendStatusEventVia(r, art, from, to, nil)
+	return s.statusEventVia(r, art, from, to, nil)
 }
 
-// appendStatusEventVia is appendStatusEvent with extra meta on the event. Phase
-// 6 uses it to mark the one move that does not come from the workflow: an issue
-// closed on a forge moves its artifact to done, and the trail has to say so.
-func (s *server) appendStatusEventVia(
+// statusEventVia is statusEvent with extra meta on the event. Phase 6 uses it
+// to mark the one move that does not come from the workflow: an issue closed on
+// a forge moves its artifact to done, and the trail has to say so.
+func (s *server) statusEventVia(
 	r *http.Request, art *store.Artifact, from, to string, extra map[string]string,
 ) (*store.Event, error) {
 	p := principalOf(r)
@@ -260,7 +265,7 @@ func (s *server) appendStatusEventVia(
 		return nil, err
 	}
 
-	e := &store.Event{
+	return &store.Event{
 		Type:     statusEventType,
 		Project:  art.Project,
 		Thread:   thread,
@@ -269,9 +274,5 @@ func (s *server) appendStatusEventVia(
 		Artifact: art.ID,
 		Body:     from + "->" + to,
 		Meta:     json.RawMessage(meta),
-	}
-	if err := s.db.AppendEvent(r.Context(), e); err != nil {
-		return nil, err
-	}
-	return e, nil
+	}, nil
 }

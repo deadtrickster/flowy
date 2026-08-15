@@ -14,6 +14,40 @@ import (
 // them apart leaks the existence of an artifact across a project boundary.
 var ErrNotFound = errors.New("store: not found")
 
+// ErrTaken is what a create returns when the id it was given is already a row
+// here. It is deliberately not ErrNotFound: the caller is told nothing about
+// the row - not whose it is, not what project it is in, not whether it is
+// deleted - and the handler turns it into the same 404 a read would give. What
+// it does say to the code above it is that nothing was written.
+var ErrTaken = errors.New("store: id is taken")
+
+// The visibilities an artifact can carry.
+//
+//	personal     - the floor. Its owner and their agents, and no grant reaches
+//	               through it. A row with no project is one of these whatever
+//	               the column says.
+//	project-only - the project it is in, and nothing else. A grant does not
+//	               reach it: that is the whole of what makes it narrower than
+//	               the two below, and it is what the mem_write `project` scope
+//	               promises an agent.
+//	project      - the project it is in, plus whoever the project's grants and
+//	               its own shares reach. This is the default for an artifact
+//	               written over the API, and it is what "a bug in pa, readable
+//	               by pb because pa opened up" has always meant.
+//	shared       - the same reach, said on purpose rather than by default.
+const (
+	VisibilityPersonal    = "personal"
+	VisibilityProjectOnly = "project-only"
+	VisibilityProject     = "project"
+	VisibilityShared      = "shared"
+)
+
+// projectScoped reports whether a visibility needs a project to mean anything.
+// A row with none is personal, whatever it was written as.
+func projectScoped(visibility string) bool {
+	return visibility == VisibilityProject || visibility == VisibilityProjectOnly
+}
+
 // Principal is the identity a request acts as: a (user, agent, project) triple
 // resolved from a bearer token. Project is the principal's home project, the
 // one it reads without needing a grant.
@@ -53,7 +87,10 @@ type Grant struct {
 //     readable only by its owner. This is a floor: no grant reaches through it,
 //     which is why it is tested before anything else looks at grants.
 //  2. An artifact in the principal's home project is readable.
-//  3. Anything else is cross-project, and needs a live grant: either a
+//  3. A 'project-only' artifact stops there. It is the second floor, and it is
+//     the one the memory tools' `project` scope has always claimed to be: a
+//     grant into the project does not reach it, and neither does a share.
+//  4. Anything else is cross-project, and needs a live grant: either a
 //     project-wide one along the edge (principal's project -> artifact's
 //     project) or a share of this one artifact to this one user.
 //
@@ -63,11 +100,14 @@ func CanRead(p *Principal, art *Artifact, grants []Grant) bool {
 	if p == nil || art == nil {
 		return false
 	}
-	if art.Visibility == "personal" || art.Project == nil {
+	if art.Visibility == VisibilityPersonal || art.Project == nil {
 		return p.UserID != "" && art.OwnerUser == p.UserID
 	}
 	if p.Project != "" && *art.Project == p.Project {
 		return true
+	}
+	if art.Visibility == VisibilityProjectOnly {
+		return false
 	}
 	for _, g := range grants {
 		if g.Tombstone {
@@ -116,10 +156,15 @@ func ArtifactFilterSQL(p *Principal, alias string, a *args, scopeAll bool) strin
 	project := a.next(p.Project)
 
 	// CASE, not OR, so the personal branch is a floor: when it is taken the
-	// grant tests are not merely false, they are not reachable.
+	// grant tests are not merely false, they are not reachable. 'project-only'
+	// is the same shape one step down - the project and nothing else - because
+	// a scope that is documented as narrower than 'shared' and reaches exactly
+	// as far is a scope that lies to whoever chose it.
 	return strings.NewReplacer("{a}", alias, "{user}", user, "{project}", project).Replace(
 		`(CASE WHEN {a}.visibility = 'personal' OR {a}.project IS NULL
 		       THEN {a}.owner_user = {user} AND {user} <> ''
+		       WHEN {a}.visibility = 'project-only'
+		       THEN {a}.project = {project} AND {project} <> ''
 		       ELSE {a}.project = {project} AND {project} <> ''
 		         OR EXISTS (SELECT 1 FROM grants g
 		                     WHERE coalesce(g.tombstone, false) = false
@@ -230,13 +275,19 @@ func (d *DB) InsertToken(ctx context.Context, p *Principal) error {
 
 // InsertGrant writes a grant, stamping id/hlc/node when unset.
 func (d *DB) InsertGrant(ctx context.Context, g *Grant) error {
+	return d.insertGrant(ctx, d.sql, g)
+}
+
+// insertGrant is InsertGrant against whatever is in hand - the pool, or the
+// transaction an assignment writes its three rows in.
+func (d *DB) insertGrant(ctx context.Context, q execer, g *Grant) error {
 	d.stamp(&g.ID, &g.HLC, &g.Node)
 	if g.Cap == "" {
 		g.Cap = "read"
 	}
 	// artifact and subject are NULL rather than '' when absent: the filter asks
 	// `artifact IS NULL` to mean "project-wide", and an empty string is not that.
-	_, err := d.sql.ExecContext(ctx,
+	_, err := q.ExecContext(ctx,
 		`INSERT INTO grants (id, from_project, to_project, subject, artifact, cap,
 		                     granted_by, hlc, node, tombstone)
 		 VALUES ($1, $2, $3, nullif($4, ''), nullif($5, ''), $6, nullif($7, ''), $8, $9, $10)`,

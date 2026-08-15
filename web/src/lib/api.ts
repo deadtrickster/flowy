@@ -272,7 +272,12 @@ export const api = {
 
   history: (id: string) => request<History>(`/api/artifact/${encodeURIComponent(id)}/history`),
 
-  /** health needs no token: it is the one thing the console can show logged out. */
+  /**
+   * health needs no token: it is the one thing the console can show logged out.
+   * The counts are the exception - they come back only for the operator's
+   * token, which request() sends when there is one - so a logged-out console
+   * shows the node and its version and no tiles.
+   */
   health: () => request<NodeCounts>("/healthz?counts=1"),
 };
 

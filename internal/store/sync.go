@@ -161,7 +161,11 @@ func (d *DB) SyncPull(ctx context.Context, p *Principal, q SyncQuery) (*SyncSet,
 		if last > hwm {
 			hwm = last
 		}
-		if n == limit && last > 0 && (capped == 0 || last < capped) {
+		// A page that filled may have left rows above it, so the cursor cannot
+		// go past the reading it stopped at. It is >= rather than == because a
+		// page that fills goes on to finish the reading it stopped in - see
+		// pageOf - so it comes back a row or two longer than the limit.
+		if n >= limit && last > 0 && (capped == 0 || last < capped) {
 			capped = last
 		}
 	}
@@ -257,34 +261,113 @@ func ids(arts []*Artifact) []string {
 	return out
 }
 
-func (d *DB) syncArtifacts(ctx context.Context, p *Principal, since int64, limit int) ([]*Artifact, error) {
-	a := &args{}
-	filter := ArtifactFilterSQL(p, "ar", a, false)
-	query := `SELECT ` + artifactColumns + `
-	            FROM artifacts ar
-	           WHERE ar.hlc > ` + a.next(since) + `
-	             AND ` + filter + `
-	           ORDER BY ar.hlc, ar.id
-	           LIMIT ` + a.next(limit)
+// ------------------------------------------------------------ paging a table
+//
+// Every table is paged the same way: everything above a cursor, in (reading,
+// id) order, capped at a limit. The sort key is two columns and the cursor is
+// one, and the gap between them is where rows used to disappear.
+//
+// Two rows can carry the same reading - two nodes writing in the same
+// millisecond, or one handoff stamping its three rows together - and a LIMIT
+// that falls between them hands over the first and reports its reading as the
+// high water mark. The next pull asks for what is strictly greater than that,
+// and the second row is never offered again: not delayed, dropped, and
+// silently. The same hole in ListEvents is a chat message that never arrives.
+//
+// So a page that fills goes on to read the rest of the reading it stopped in.
+// The cursor it then reports names a reading every row of which has been handed
+// over, which is what an integer cursor has to mean for paging by it to be
+// safe. A tie is bounded by how many nodes wrote in one instant, so finishing
+// one costs a handful of rows and not a second page.
 
-	rows, err := d.sql.QueryContext(ctx, query, a.vals...)
+// tieAt is where a page stopped: the reading its last row carried, and that
+// row's id. It is the half of the sort key a cursor cannot carry.
+type tieAt struct {
+	hlc int64
+	id  string
+}
+
+// above is the row test one read uses. Without a tie it is everything after the
+// cursor; with one it is the rest of the reading the page stopped in.
+func above(reading, id string, since int64, tie *tieAt, a *args) string {
+	if tie == nil {
+		return reading + " > " + a.next(since)
+	}
+	return reading + " = " + a.next(tie.hlc) + " AND " + id + " > " + a.next(tie.id)
+}
+
+// limitSQL is a LIMIT clause, or nothing at all: the tie read is bounded by the
+// one reading it asks for rather than by a count, because half a tie is the bug
+// it is there to close.
+func limitSQL(a *args, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	return `
+	           LIMIT ` + a.next(limit)
+}
+
+// pageOf reads one page and, when it filled, the rest of the reading it stopped
+// in. query builds the statement for one read; at is a row's sort key.
+func pageOf[T any](
+	ctx context.Context, d *DB, what string, limit int,
+	query func(a *args, tie *tieAt, limit int) string,
+	scan func(scanner) (T, error),
+	at func(T) (int64, string),
+) ([]T, error) {
+	out, err := readPage(ctx, d, what, func(a *args) string { return query(a, nil, limit) }, scan)
+	if err != nil || limit <= 0 || len(out) < limit {
+		// Short of the limit, so there was nothing after it to cut: what came
+		// back is every row above the cursor, ties and all.
+		return out, err
+	}
+	reading, id := at(out[len(out)-1])
+	rest, err := readPage(ctx, d, what,
+		func(a *args) string { return query(a, &tieAt{hlc: reading, id: id}, 0) }, scan)
 	if err != nil {
-		return nil, fmt.Errorf("store: sync artifacts: %w", err)
+		return nil, err
+	}
+	return append(out, rest...), nil
+}
+
+// readPage runs one statement and collects what it returns.
+func readPage[T any](
+	ctx context.Context, d *DB, what string,
+	query func(a *args) string, scan func(scanner) (T, error),
+) ([]T, error) {
+	a := &args{}
+	statement := query(a)
+	rows, err := d.sql.QueryContext(ctx, statement, a.vals...)
+	if err != nil {
+		return nil, fmt.Errorf("store: %s: %w", what, err)
 	}
 	defer rows.Close()
 
-	out := []*Artifact{}
+	out := []T{}
 	for rows.Next() {
-		art, err := scanArtifact(rows, nil)
+		row, err := scan(rows)
 		if err != nil {
-			return nil, fmt.Errorf("store: sync artifacts: %w", err)
+			return nil, fmt.Errorf("store: %s: %w", what, err)
 		}
-		out = append(out, art)
+		out = append(out, row)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: sync artifacts: %w", err)
+		return nil, fmt.Errorf("store: %s: %w", what, err)
 	}
 	return out, nil
+}
+
+func (d *DB) syncArtifacts(ctx context.Context, p *Principal, since int64, limit int) ([]*Artifact, error) {
+	return pageOf(ctx, d, "sync artifacts", limit,
+		func(a *args, tie *tieAt, lim int) string {
+			return `SELECT ` + artifactColumns + `
+	            FROM artifacts ar
+	           WHERE ` + above("ar.hlc", "ar.id", since, tie, a) + `
+	             AND ` + ArtifactFilterSQL(p, "ar", a, false) + `
+	           ORDER BY ar.hlc, ar.id` + limitSQL(a, lim)
+		},
+		func(sc scanner) (*Artifact, error) { return scanArtifact(sc, nil) },
+		func(art *Artifact) (int64, string) { return art.HLC, art.ID })
 }
 
 // syncNewlyVisible reads the artifacts below the cursor that the grants in this
@@ -552,96 +635,49 @@ func placeholders(a *args, values []string) string {
 }
 
 func (d *DB) syncEvents(ctx context.Context, p *Principal, since int64, limit int) ([]*Event, error) {
-	a := &args{}
-	filter := EventFilterSQL(p, "e", a, false)
-	query := `SELECT ` + eventColumns + `
+	return pageOf(ctx, d, "sync events", limit,
+		func(a *args, tie *tieAt, lim int) string {
+			return `SELECT ` + eventColumns + `
 	            FROM events e
-	           WHERE e.seq_hlc > ` + a.next(since) + `
-	             AND ` + filter + `
-	           ORDER BY e.seq_hlc, e.id
-	           LIMIT ` + a.next(limit)
-
-	rows, err := d.sql.QueryContext(ctx, query, a.vals...)
-	if err != nil {
-		return nil, fmt.Errorf("store: sync events: %w", err)
-	}
-	defer rows.Close()
-
-	out := []*Event{}
-	for rows.Next() {
-		e, err := scanEvent(rows)
-		if err != nil {
-			return nil, fmt.Errorf("store: sync events: %w", err)
-		}
-		out = append(out, e)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: sync events: %w", err)
-	}
-	return out, nil
+	           WHERE ` + above("e.seq_hlc", "e.id", since, tie, a) + `
+	             AND ` + EventFilterSQL(p, "e", a, false) + `
+	           ORDER BY e.seq_hlc, e.id` + limitSQL(a, lim)
+		},
+		scanEvent,
+		func(e *Event) (int64, string) { return e.SeqHLC, e.ID })
 }
 
 func (d *DB) syncTasks(ctx context.Context, p *Principal, since int64, limit int) ([]*Task, error) {
-	a := &args{}
-	where := taskPartySQL(p, "t", a)
-	query := `SELECT ` + taskColumns + `
+	return pageOf(ctx, d, "sync tasks", limit,
+		func(a *args, tie *tieAt, lim int) string {
+			return `SELECT ` + taskColumns + `
 	            FROM tasks t
-	           WHERE t.hlc > ` + a.next(since) + `
-	             AND ` + where + `
-	           ORDER BY t.hlc, t.id
-	           LIMIT ` + a.next(limit)
-
-	rows, err := d.sql.QueryContext(ctx, query, a.vals...)
-	if err != nil {
-		return nil, fmt.Errorf("store: sync tasks: %w", err)
-	}
-	defer rows.Close()
-
-	out := []*Task{}
-	for rows.Next() {
-		t, err := scanTask(rows, false)
-		if err != nil {
-			return nil, fmt.Errorf("store: sync tasks: %w", err)
-		}
-		out = append(out, t)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: sync tasks: %w", err)
-	}
-	return out, nil
+	           WHERE ` + above("t.hlc", "t.id", since, tie, a) + `
+	             AND ` + taskPartySQL(p, "t", a) + `
+	           ORDER BY t.hlc, t.id` + limitSQL(a, lim)
+		},
+		func(sc scanner) (*Task, error) { return scanTask(sc, false) },
+		func(t *Task) (int64, string) { return t.HLC, t.ID })
 }
 
 func (d *DB) syncGrants(ctx context.Context, p *Principal, since int64, limit int) ([]Grant, error) {
-	a := &args{}
-	filter := GrantFilterSQL(p, "g", a)
-	query := `SELECT g.id, g.from_project, g.to_project, coalesce(g.subject, ''),
+	return pageOf(ctx, d, "sync grants", limit,
+		func(a *args, tie *tieAt, lim int) string {
+			return `SELECT g.id, g.from_project, g.to_project, coalesce(g.subject, ''),
 	                 coalesce(g.artifact, ''), coalesce(g.cap, 'read'), coalesce(g.granted_by, ''),
 	                 coalesce(g.hlc, 0), coalesce(g.node, ''), coalesce(g.tombstone, false)
 	            FROM grants g
-	           WHERE coalesce(g.hlc, 0) > ` + a.next(since) + `
-	             AND ` + filter + `
-	           ORDER BY g.hlc, g.id
-	           LIMIT ` + a.next(limit)
-
-	rows, err := d.sql.QueryContext(ctx, query, a.vals...)
-	if err != nil {
-		return nil, fmt.Errorf("store: sync grants: %w", err)
-	}
-	defer rows.Close()
-
-	out := []Grant{}
-	for rows.Next() {
-		var g Grant
-		if err := rows.Scan(&g.ID, &g.FromProject, &g.ToProject, &g.Subject, &g.Artifact,
-			&g.Cap, &g.GrantedBy, &g.HLC, &g.Node, &g.Tombstone); err != nil {
-			return nil, fmt.Errorf("store: sync grants: %w", err)
-		}
-		out = append(out, g)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: sync grants: %w", err)
-	}
-	return out, nil
+	           WHERE ` + above("coalesce(g.hlc, 0)", "g.id", since, tie, a) + `
+	             AND ` + GrantFilterSQL(p, "g", a) + `
+	           ORDER BY g.hlc, g.id` + limitSQL(a, lim)
+		},
+		func(sc scanner) (Grant, error) {
+			var g Grant
+			err := sc.Scan(&g.ID, &g.FromProject, &g.ToProject, &g.Subject, &g.Artifact,
+				&g.Cap, &g.GrantedBy, &g.HLC, &g.Node, &g.Tombstone)
+			return g, err
+		},
+		func(g Grant) (int64, string) { return g.HLC, g.ID })
 }
 
 // SyncResult is what one merge did: the rows it applied, and the rows it
@@ -1277,7 +1313,10 @@ func artifactReadable(ctx context.Context, tx *sql.Tx, p *Principal, a *Artifact
 //     delegated to. The thread, the artifact and the two people are the shape
 //     of the handoff, and a party that could re-point them would be handing
 //     itself - or anybody - a read on any conversation on this node, which is
-//     the same escalation as inventing the row in the first place;
+//     the same escalation as inventing the row in the first place. The two that
+//     do move are checked rather than taken: an agent has to be one that acts
+//     for the assignee, because naming an agent is handing it the thread, and a
+//     state has to be one of the three the lifecycle has;
 //   - a new one has to be a handoff the principal is in. On a push they are the
 //     side handing the work over, which is what POST /api/assign requires; on a
 //     pull they may also be the side it was handed to, because that is how a
@@ -1322,6 +1361,31 @@ func checkTask(
 			return "task " + t.ID + " is a party's to move, not to re-point: " +
 				"the thread, the artifact and the two people are how it was handed over", nil
 		}
+		// The two columns a party may move, and neither of them was checked.
+		//
+		// assignee_agent is the third read capability on the row: the tasks
+		// clause in EventFilterSQL shows the thread to the agent named here, so
+		// a party pushing its own task with somebody else's agent on it hands
+		// that agent the conversation. Over the API only the assignee delegates,
+		// and only to an agent that acts for them - see handleDelegateTask - so
+		// that is the rule here too. Clearing it takes a capability away and is
+		// allowed.
+		if t.AssigneeAgent != "" && t.AssigneeAgent != here.AssigneeAgent {
+			acts, err := agentActsFor(ctx, tx, t.AssigneeAgent, here.ToUser)
+			if err != nil {
+				return "", err
+			}
+			if !acts {
+				return "task " + t.ID + " is delegated to " + t.AssigneeAgent +
+					", which is not an agent of " + here.ToUser, nil
+			}
+		}
+		// And the state is the lifecycle, not a free text column: a task parked
+		// in a state nothing moves out of is a handoff that can never be closed.
+		if !ValidTaskState(t.State) {
+			return "task " + t.ID + " moves to state " + t.State +
+				", and a task is open, delegated or done", nil
+		}
 		return "", nil
 	}
 
@@ -1352,6 +1416,24 @@ func checkTask(
 	}
 
 	return threadClosed(ctx, tx, p, t.Thread, "task "+t.ID)
+}
+
+// agentActsFor reports whether agent is an agent of user, which is the lookup
+// handleDelegateTask makes before it moves a task: an agent acts for exactly
+// one person, and delegating to somebody else's agent puts the work - and the
+// thread the task names - outside the person whose work it is.
+func agentActsFor(ctx context.Context, tx *sql.Tx, agent, user string) (bool, error) {
+	if agent == "" || user == "" {
+		return false, nil
+	}
+	var acts bool
+	err := tx.QueryRowContext(ctx,
+		`SELECT EXISTS (SELECT 1 FROM agents WHERE id = $1 AND user_id = $2)`, agent, user).
+		Scan(&acts)
+	if err != nil {
+		return false, fmt.Errorf("store: sync check agent %s: %w", agent, err)
+	}
+	return acts, nil
 }
 
 // taskParty reports whether p is one of the three people a task is between: the
