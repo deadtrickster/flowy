@@ -4,11 +4,18 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"testing"
+	"time"
 )
 
 // The canonical encoders have two properties worth testing, and everything the
 // merge relies on is one of them: the same row is always the same bytes, and no
 // two rows that differ anywhere are the same bytes.
+
+// written is the date the fixtures carry. A row's date is signed like every
+// other replicated column: outside the signature it is a field an honest-
+// looking relay may move, and a date is what every list and every reader orders
+// by.
+var written = time.Date(2026, 8, 15, 9, 30, 0, 0, time.UTC)
 
 func artifact() Artifact {
 	project := "pa"
@@ -20,6 +27,7 @@ func artifact() Artifact {
 		Tags: []string{"a", "b"}, UserTags: []string{"mine"}, Related: []string{"art-0"},
 		FilePath: "internal/store/store.go", Fields: []byte(`{"x":1}`),
 		Reported: false, External: []byte(`{"repo":"o/r"}`),
+		Created: written,
 	}
 }
 
@@ -64,6 +72,9 @@ func TestEveryArtifactFieldIsInTheSignature(t *testing.T) {
 		"no fields":  func(a *Artifact) { a.Fields = nil },
 		"reported":   func(a *Artifact) { a.Reported = true },
 		"external":   func(a *Artifact) { a.External = []byte(`{"repo":"o/other"}`) },
+		"created":    func(a *Artifact) { a.Created = written.AddDate(0, -2, 0) },
+		"no created": func(a *Artifact) { a.Created = time.Time{} },
+		"created us": func(a *Artifact) { a.Created = written.Add(time.Microsecond) },
 	}
 	for what, change := range changes {
 		a := artifact()
@@ -155,7 +166,7 @@ func TestCanonicalEventCoversEveryFieldAndSortsParents(t *testing.T) {
 	e := Event{
 		ID: "e-1", Artifact: "art-1", Thread: "th-1", Actor: "u-1", Type: "chat",
 		Body: "said it", Meta: []byte(`{"topic":"x"}`), Parents: []string{"e-0", "e-00"},
-		HLC: 11, Node: "nodeA", Project: &project, Room: "pa/bugs",
+		HLC: 11, Node: "nodeA", Project: &project, Room: "pa/bugs", Created: written,
 	}
 	base := CanonicalEvent(e)
 
@@ -188,6 +199,8 @@ func TestCanonicalEventCoversEveryFieldAndSortsParents(t *testing.T) {
 		"no project":  func(e *Event) { e.Project = nil },
 		"room":        func(e *Event) { e.Room = "pa/quiet" },
 		"empty parts": func(e *Event) { e.Parents = nil },
+		"created":     func(e *Event) { e.Created = written.AddDate(0, -3, 0) },
+		"no created":  func(e *Event) { e.Created = time.Time{} },
 	}
 	for what, change := range changes {
 		one := e

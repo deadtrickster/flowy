@@ -372,11 +372,17 @@ func identityOf(ctx context.Context, tx *sql.Tx, node string) (pub []byte, pinne
 //   - an identity has to be self-signed. Its own key over its own name and key,
 //     so a relay passing it on cannot swap the key inside it.
 //   - a node this one has never heard of is taken on trust and marked unpinned.
-//     That is the only moment TOFU exists.
+//     That is the only moment TOFU exists, and it is the one FLOWY_REQUIRE_
+//     PINNED_PEERS closes: a deployment that will not take a row from an
+//     unpinned node has no business taking the key that would make one
+//     verifiable either, so first contact is refused there rather than
+//     recorded. Every key that deployment holds is one its operator named.
 //   - a node it has heard of keeps the key it has. Same key, nothing to do;
 //     different key, refused - including when the row here is only TOFU'd,
-//     because the first key seen is the one that node is.
-func applyIdentity(ctx context.Context, tx *sql.Tx, id *NodeIdentity) (int, string, error) {
+//     because the first key seen is the one that node is, and including when
+//     the new row is perfectly self-signed, because a key rotation a peer can
+//     serve is an impersonation a peer can serve.
+func (d *DB) applyIdentity(ctx context.Context, tx *sql.Tx, id *NodeIdentity) (int, string, error) {
 	if id.NodeID == "" {
 		return 0, "an identity with no node name", nil
 	}
@@ -407,6 +413,16 @@ func applyIdentity(ctx context.Context, tx *sql.Tx, id *NodeIdentity) (int, stri
 		}
 		return 0, "identity for " + id.NodeID + " carries a different key from the one held here, " +
 			"and a node's key does not change over the wire", nil
+	}
+
+	// First contact with a node nobody here has named. It is the only trust this
+	// file extends on its own, and the deployment that has switched that off
+	// gets a refusal rather than a key: taking it would leave a node whose rows
+	// are then refused one at a time by authentic, which reads as a peer that
+	// half works instead of as a peer the operator has not pinned.
+	if d.requirePinned {
+		return 0, "identity for " + id.NodeID + " arrived on a page and nobody here pinned it, " +
+			"and " + requirePinnedEnv + " is set: pin it with `flowy identity pin`", nil
 	}
 
 	res, err := tx.ExecContext(ctx,

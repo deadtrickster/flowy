@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/deadtrickster/flowy/internal/ulid"
 )
@@ -677,5 +678,184 @@ func TestSyncPullHandsOverTheKeysAndNoPrivateOnes(t *testing.T) {
 	}
 	if strings.Contains(string(raw), "private") {
 		t.Fatal("a pull answer has a private key field in it")
+	}
+}
+
+// TestTheCreatedDateIsInsideTheSignature is the column the signature left out.
+//
+// canonicalArtifact named twenty-one fields and canonicalEvent its own set, and
+// neither of them named created. The column replicates - it is what every list,
+// every digest and every reader ages and orders by - so a relay could hand on
+// somebody else's row with its date moved and nothing anywhere would notice:
+// the signature still verifies, because the bytes it covers are unchanged, and
+// the row lands looking more authentic than an unsigned one ever could. An
+// adversary planted rows three months old on a receiver that way.
+//
+// So created is signed on both row types, and the local writes mint it rather
+// than leaving it to the column's DEFAULT now(), because a value the database
+// invents after the signing is a value nothing signed - see createdNow.
+func TestTheCreatedDateIsInsideTheSignature(t *testing.T) {
+	ctx, db := open(t)
+
+	node := "dated-" + ulid.NewString()
+	key := pinTestNode(t, ctx, db, node)
+	project := "pd-" + ulid.NewString()
+	owner := "u-" + ulid.NewString()
+	at := packed(t, db)
+	when := time.Date(2026, 8, 15, 9, 30, 0, 0, time.UTC)
+	planted := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+
+	art := &Artifact{
+		ID: ulid.NewString(), Type: "note", Project: &project, OwnerUser: owner,
+		Visibility: "project", Title: "dated", Body: "wrackenspoke",
+		HLC: at + 1, Node: node, Created: when,
+	}
+	SignArtifact(key, art)
+	if !verifyBytes(publicOf(key), canonicalArtifact(art), art.Sig) {
+		t.Fatal("an artifact signed with its date does not verify")
+	}
+
+	// One field moved, nothing else touched.
+	moved := *art
+	moved.Created = planted
+	if verifyBytes(publicOf(key), canonicalArtifact(&moved), moved.Sig) {
+		t.Error("an artifact whose created was rewritten still verifies: " +
+			"the date is outside the signature")
+	}
+
+	res, err := db.SyncApply(ctx, &SyncSet{Artifacts: []*Artifact{&moved}})
+	if err != nil {
+		t.Fatalf("apply the back-dated artifact: %v", err)
+	}
+	if res["artifacts"] != 0 {
+		t.Errorf("a back-dated artifact applied %d rows, want 0", res["artifacts"])
+	}
+	if n := rows(t, db, "artifacts", art.ID); n != 0 {
+		t.Fatalf("the back-dated artifact landed (%d rows)", n)
+	}
+
+	// The row as its author signed it lands, with the date its author gave it.
+	if res, err = db.SyncApply(ctx, &SyncSet{Artifacts: []*Artifact{art}}); err != nil {
+		t.Fatalf("apply the artifact: %v", err)
+	}
+	if res["artifacts"] != 1 {
+		t.Fatalf("the signed artifact applied %d rows, want 1", res["artifacts"])
+	}
+	held, err := db.GetArtifact(ctx, art.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if !held.Created.Equal(when) {
+		t.Errorf("the artifact is dated %s here, want %s", held.Created.UTC(), when)
+	}
+
+	// And the same for an event, which is the row a date matters most on: the
+	// log is read in date order.
+	e := &Event{
+		ID: ulid.NewString(), Type: "chat", Project: &project, Room: "general",
+		Actor: owner, Body: "said at a time", SeqHLC: at + 2, Node: node, Created: when,
+	}
+	SignEvent(key, e)
+	if !verifyBytes(publicOf(key), canonicalEvent(e), e.Sig) {
+		t.Fatal("an event signed with its date does not verify")
+	}
+	movedEvent := *e
+	movedEvent.Created = time.Date(2026, 5, 20, 0, 0, 0, 0, time.UTC)
+	if verifyBytes(publicOf(key), canonicalEvent(&movedEvent), movedEvent.Sig) {
+		t.Error("an event whose created was rewritten still verifies")
+	}
+	if res, err = db.SyncApply(ctx, &SyncSet{Events: []*Event{&movedEvent}}); err != nil {
+		t.Fatalf("apply the back-dated event: %v", err)
+	}
+	if res["events"] != 0 {
+		t.Errorf("a back-dated event applied %d rows, want 0", res["events"])
+	}
+	if res, err = db.SyncApply(ctx, &SyncSet{Events: []*Event{e}}); err != nil {
+		t.Fatalf("apply the event: %v", err)
+	}
+	if res["events"] != 1 {
+		t.Fatalf("the signed event applied %d rows, want 1", res["events"])
+	}
+	heldEvent, err := db.GetEvent(ctx, e.ID)
+	if err != nil {
+		t.Fatalf("get event: %v", err)
+	}
+	if !heldEvent.Created.Equal(when) {
+		t.Errorf("the event is dated %s here, want %s", heldEvent.Created.UTC(), when)
+	}
+}
+
+// TestALocalWritesDateIsSignedWithIt is the other half: the date a local write
+// puts in the column is the date it signed.
+//
+// It used to be the column's own DEFAULT now(), filled in after the signature
+// was made, so every row this node wrote carried a date outside its own
+// signature - and a peer relaying it onward could hand over any date it liked
+// with the author's signature still verifying beside it.
+func TestALocalWritesDateIsSignedWithIt(t *testing.T) {
+	ctx, db := open(t)
+
+	id, err := db.Identity(ctx)
+	if err != nil {
+		t.Fatalf("identity: %v", err)
+	}
+	project := "pl-" + ulid.NewString()
+	owner := "u-" + ulid.NewString()
+
+	art := &Artifact{
+		Type: "note", Project: &project, OwnerUser: owner, Visibility: "project",
+		Title: "written here", Body: "flintermoss",
+	}
+	if err := db.CreateArtifact(ctx, art); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	stored, err := db.GetArtifact(ctx, art.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if stored.Created.IsZero() {
+		t.Fatal("the stored artifact has no date at all")
+	}
+	if !verifyBytes(id.PublicKey, canonicalArtifact(stored), stored.Sig) {
+		t.Error("a locally created artifact does not verify with the date the column holds")
+	}
+	backdated := *stored
+	backdated.Created = stored.Created.Add(-90 * 24 * time.Hour)
+	if verifyBytes(id.PublicKey, canonicalArtifact(&backdated), backdated.Sig) {
+		t.Error("moving a locally written artifact's date leaves it verifying")
+	}
+
+	// An edit keeps the date the row was created with, and signs that one: a
+	// row signed over a date it does not have is a row no peer can verify.
+	stored.Title = "edited here"
+	if err := db.UpsertArtifact(ctx, stored); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	edited, err := db.GetArtifact(ctx, art.ID)
+	if err != nil {
+		t.Fatalf("get after edit: %v", err)
+	}
+	if !edited.Created.Equal(art.Created) {
+		t.Errorf("an edit moved the date from %s to %s", art.Created, edited.Created)
+	}
+	if !verifyBytes(id.PublicKey, canonicalArtifact(edited), edited.Sig) {
+		t.Error("an edited artifact does not verify with the date the column holds")
+	}
+
+	e := &Event{
+		Type: "chat", Project: &project, Room: "general", Actor: owner, Body: "said here",
+	}
+	if err := db.AppendEvent(ctx, e); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	storedEvent, err := db.GetEvent(ctx, e.ID)
+	if err != nil {
+		t.Fatalf("get event: %v", err)
+	}
+	if storedEvent.Created.IsZero() {
+		t.Fatal("the stored event has no date at all")
+	}
+	if !verifyBytes(id.PublicKey, canonicalEvent(storedEvent), storedEvent.Sig) {
+		t.Error("a locally appended event does not verify with the date the column holds")
 	}
 }

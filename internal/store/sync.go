@@ -972,7 +972,7 @@ func (d *DB) syncApply(ctx context.Context, p *Principal, mode syncMode, in *Syn
 	// in the same transaction as the rows, so a page that fails leaves neither.
 	for i := range in.Identities {
 		id := &in.Identities[i]
-		n, why, err := applyIdentity(ctx, tx, id)
+		n, why, err := d.applyIdentity(ctx, tx, id)
 		if err != nil {
 			return nil, err
 		}
@@ -1392,13 +1392,68 @@ func pulledAttribution(ctx context.Context, tx *sql.Tx, p *Principal, e *Event) 
 	if ok && pinned {
 		return "", nil
 	}
-	mine := e.Actor != "" && (e.Actor == p.UserID || e.Actor == p.AgentID)
-	if !mine {
+	if !speaksFor(p, e.Actor) {
 		return "event " + e.ID + " says " + named(e.Actor) + " wrote it and arrives from node " +
 			e.Node + ", whose key nobody here pinned: a relay is not a speaker, so pin " +
 			e.Node + " with `flowy identity pin` or this is somebody else's name in your log", nil
 	}
 	return metaClaimsAnother(p, e), nil
+}
+
+// speaksFor reports whether who is this principal or the agent that acts for
+// it - the one party a pulled row may name without anybody having to be trusted
+// about it, because the principal is the one carrying the page.
+func speaksFor(p *Principal, who string) bool {
+	if p == nil || who == "" {
+		return false
+	}
+	return p.UserID != "" && who == p.UserID || p.AgentID != "" && who == p.AgentID
+}
+
+// pulledParty is the question push asks of every row, asked on the pull door:
+// is this the row of the party it says it is?
+//
+// Push answers it with owner-is-sender - the pushing principal writes its own
+// rows and nobody else's - and that answer cannot be used here, because
+// relaying other people's rows is what federation is. Alice's artifact, owned
+// by alice, written on alice's node, is exactly what a pull is for, and a rule
+// of owner-is-puller would refuse it.
+//
+// So the same question gets the other answer this node can give: whether its
+// operator pinned the key of the node that authored the row. A pinned node is
+// one somebody decided to believe, and believing a node includes believing what
+// it says about who wrote what. A node whose key merely turned up on a page -
+// trust on first use, which is nobody's decision - may hand over only what this
+// principal could have handed over itself.
+//
+// who is the party the row names as the one asserting it: the owner of an
+// artifact, the actor of an event, the grantor of a grant. node is the node the
+// row says authored it, which the signature check has already tied to the bytes
+// - so what is left, and all that is left, is whether that node's word is worth
+// anything here.
+//
+// Without this a peer serves a page of rows belonging to people who have never
+// heard of it, signed perfectly well with its own key, and they land: an
+// artifact owned by somebody else, a grant somebody else is said to have
+// given - the same delta push refuses row for row, applied in full because it
+// was fetched instead of offered.
+func pulledParty(ctx context.Context, tx *sql.Tx, p *Principal, node, who string) (bool, error) {
+	if p == nil || speaksFor(p, who) {
+		return true, nil
+	}
+	_, pinned, ok, err := identityOf(ctx, tx, node)
+	if err != nil {
+		return false, err
+	}
+	return ok && pinned, nil
+}
+
+// relayedBy is the refusal a pulled row gets when the party it names is a third
+// party and the node that authored it is not one the operator pinned.
+func relayedBy(what, who, node string) string {
+	return what + " is " + named(who) + "'s and arrives from node " + node +
+		", whose key nobody here pinned: a relay is not an author, so pin " + node +
+		" with `flowy identity pin` or this is somebody else's row in your store"
 }
 
 // checkEvent answers why p may not push e, or "" when it may.
@@ -1674,11 +1729,34 @@ func nullText(s *string) any {
 //     and then handed on. Being able to read it is not enough. On a push it is
 //     stricter still - the row has to be the pusher's own, which is the rule
 //     POST /api/artifacts keeps.
+//
+// And, on a pull, the fourth: the row is the owner's to assert. Push says the
+// owner is the sender; a pull cannot, because relaying other people's rows is
+// what federation is - so it says instead that a row owned by a third party is
+// taken only from an authoring node the operator pinned. See pulledParty, which
+// is the same rule the event door has kept since the attribution fix, and the
+// gap it was missing: an artifact owned by somebody who has never heard of the
+// peer serving it used to arrive on the reach test alone, forged owner and all,
+// and the name it forged then held the update and tombstone rights the owner
+// column carries.
 func checkArtifact(
 	ctx context.Context, tx *sql.Tx, p *Principal, mode syncMode, a *Artifact, shared bool,
 ) (string, error) {
 	if p == nil {
 		return "", nil
+	}
+	if mode == modePull {
+		// Before anything about where it lands: whose row it says it is. It
+		// covers the row that is already here as well as the new one, because
+		// rewriting somebody else's artifact under a name a hostile relay signs
+		// for is the same forgery as inventing it.
+		own, err := pulledParty(ctx, tx, p, a.Node, a.OwnerUser)
+		if err != nil {
+			return "", err
+		}
+		if !own {
+			return relayedBy("artifact "+a.ID, a.OwnerUser, a.Node), nil
+		}
 	}
 	if a.Visibility == "personal" || a.Project == nil {
 		if a.OwnerUser == "" || a.OwnerUser != p.UserID {
@@ -1821,6 +1899,11 @@ func artifactReadable(ctx context.Context, tx *sql.Tx, p *Principal, a *Artifact
 //     already
 //     read - a thread nobody has said anything in yet is a thread there is
 //     nothing to learn from.
+//
+//     A pulled task therefore already answers the question pulledParty asks of
+//     the other three row types - it names this principal as a party, on both
+//     branches, so there is no third party's handoff to be carried in on
+//     somebody's say-so - and it needs no pinned-node test beside it.
 //
 //     And, whichever door it came in by, from_user is the artifact's owner and
 //     the thread is one nothing has been said in yet. Both are POST
@@ -2043,6 +2126,29 @@ func checkGrant(
 		if !reaches {
 			return "grant " + g.ID + " is between other people and other projects", nil
 		}
+		// And whose say-so it is. The reach test above asks only that the grant
+		// touches this principal somewhere, and a grant naming this principal's
+		// own project as the one it opens up - or as the one it opens outwards -
+		// touches it while being entirely somebody else's claim.
+		//
+		// The two branches below cover part of that: a grant into this project
+		// needs a grantor who is a principal here, and a share needs a grantor
+		// who owns the artifact. Neither covers a grant *out* of this project,
+		// which is the one that hands this project's work to a peer's, and it
+		// was taken on the strength of the row saying somebody else granted it.
+		//
+		// So the same question every other row type is now asked on this door:
+		// a grant somebody other than the carrier is said to have given is taken
+		// only from an authoring node the operator pinned. Legitimate federation
+		// is untouched - the share a handoff wrote on alice's node is relayed
+		// with alice's node's key, and that node is pinned or it is nobody.
+		by, err := pulledParty(ctx, tx, p, g.Node, g.GrantedBy)
+		if err != nil {
+			return "", err
+		}
+		if !by {
+			return relayedBy("grant "+g.ID, g.GrantedBy, g.Node), nil
+		}
 		// The one row a peer can write itself. A project-wide grant is a
 		// capability that lands in to_project, and every check above is
 		// satisfied by a grant that names this principal's own project there:
@@ -2229,7 +2335,13 @@ func applyArtifact(ctx context.Context, tx *sql.Tx, a *Artifact) (int, error) {
 		     visibility = excluded.visibility, file_path = excluded.file_path,
 		     fields = excluded.fields, hlc = excluded.hlc, node = excluded.node,
 		     tombstone = excluded.tombstone, search = excluded.search, updated = now(),
-		     reported = excluded.reported, external = excluded.external, sig = excluded.sig
+		     reported = excluded.reported, external = excluded.external, sig = excluded.sig,
+		     -- created is inside the signature now, so the stored date has to be
+		     -- the one the sig column beside it was made over: a row kept at this
+		     -- node's own date, under the author's signature over theirs, is a row
+		     -- no peer downstream of here could verify. A row that arrives without
+		     -- one keeps whatever is here.
+		     created = coalesce(excluded.created, artifacts.created)
 		  WHERE coalesce(artifacts.hlc, 0) < excluded.hlc
 		     OR (coalesce(artifacts.hlc, 0) = excluded.hlc
 		         AND coalesce(artifacts.node, '') < excluded.node)`,

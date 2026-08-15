@@ -6448,6 +6448,68 @@ say "a store that cannot answer is not an answer"
 check "a parent the store could not read is a 500, not a new thread (LOW 3)" \
 	a_parent_the_store_cannot_read_is_a_500
 
+# ----------------------------------------------------- thirteenth round
+
+# HIGH 2. created was outside the signature, on artifacts and on events, so a
+# relay could hand a row on with its date moved and everything around it would
+# still say authentic - a signed row carrying somebody else's timestamp, which
+# is worse than an unsigned one. This is the wire version of the fix: a row is
+# taken out of the node that wrote it, its created moved three months back and
+# nothing else touched, and handed to a node that does not hold it yet by the
+# very user who owns it. No authorisation rule has anything to say about that
+# row, so the only thing that can refuse it is the signature.
+a_moved_date_is_refused_over_the_wire() {
+	recall5
+	local id hlc delta moved dated
+	want_napi 200 "$N5_PORT_A" POST "$N5_TOKEN_B" /api/artifacts \
+		'{"type":"note","title":"dated by its author","body":"marrowglint"}' || return 1
+	id="$(jqv .id)"
+	hlc="$(jqv .hlc)"
+
+	want_napi 200 "$N5_PORT_A" GET "$N5_TOKEN_B" "/api/sync/pull?since=$((hlc - 1))" || return 1
+	delta="$(printf '%s' "$API_BODY" | jq -c --arg i "$id" \
+		'{artifacts: [.artifacts[] | select(.id == $i)], events: [], tasks: [], grants: []}')" ||
+		return 1
+	want_eq "the delta holds the row" \
+		"$(printf '%s' "$delta" | jq '.artifacts | length')" 1 || return 1
+	dated="$(printf '%s' "$delta" | jq -r '.artifacts[0].created | .[0:10]')" || return 1
+
+	moved="$(printf '%s' "$delta" |
+		jq -c '.artifacts[0].created = "2026-06-01T00:00:00Z"')" || return 1
+	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_B" /api/sync/push "$moved" || return 1
+	want_eq "the back-dated row refused" "$(jqv '.refused.artifacts')" 1 || return 1
+	want_eq "the back-dated row applied" "$(jqv '.applied.artifacts')" 0 || return 1
+	want_eq "rows in B's table for it" \
+		"$(scalar5 "$N5_DSN_B" "SELECT count(*) FROM artifacts WHERE id = '$id'")" 0 || return 1
+
+	# And the same delta with its date left alone is taken, dated as its author
+	# dated it: what was refused is the rewrite, not the row.
+	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_B" /api/sync/push "$delta" || return 1
+	want_eq "the untouched row applied" "$(jqv '.applied.artifacts')" 1 || return 1
+	want_eq "the date it crossed with" \
+		"$(scalar5 "$N5_DSN_B" "SELECT to_char(created AT TIME ZONE 'UTC', 'YYYY-MM-DD')
+		                          FROM artifacts WHERE id = '$id'")" "$dated" || return 1
+	printf 'the row was refused with its date moved and taken with it left alone: %s\n' "$id"
+}
+
+say "a pulled row is the authoring party's to assert"
+check "an artifact, a grant and an event owned by a third party from an unpinned node (HIGH 1)" \
+	go test -count=1 -run TestPulledRowsAreTheAuthoringPartysToAssert ./internal/store
+check "a rewrite of somebody else's artifact needs a pinned node too (HIGH 1)" \
+	go test -count=1 -run TestAPulledRewriteOfAnothersArtifactNeedsAPinnedNode ./internal/store
+
+say "the date a row carries is the date its author signed"
+check "created is inside the signature, on artifacts and on events (HIGH 2)" \
+	go test -count=1 -run TestTheCreatedDateIsInsideTheSignature ./internal/store
+check "a local write signs the date the column will hold (HIGH 2)" \
+	go test -count=1 -run TestALocalWritesDateIsSignedWithIt ./internal/store
+check "a row whose date was moved is refused over the wire (HIGH 2)" \
+	a_moved_date_is_refused_over_the_wire
+
+say "an identity is self-signed, is never rotated, and is pinned where that is required"
+check "a key served for a node that did not sign it, and a second key for a known one (MED 3)" \
+	go test -count=1 -run TestAServedIdentityIsSelfSignedAndNeverRotates ./internal/store
+
 # ------------------------------------------------------------------- verdict
 
 say "result"

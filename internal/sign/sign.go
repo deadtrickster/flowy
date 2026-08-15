@@ -38,6 +38,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"sort"
+	"time"
 )
 
 // The domain of each message: what this signature is a signature of. It is the
@@ -82,6 +83,14 @@ type Artifact struct {
 	Fields    []byte
 	Reported  bool
 	External  []byte
+
+	// Created is when the row says it was written. It is in the signature for
+	// the same reason the rest of the second block is: a column outside it is a
+	// column an honest-looking relay may rewrite. A date is not decoration -
+	// every list, every digest and every reader orders and ages by it - and a
+	// signed row carrying an attacker's timestamp is worse than an unsigned
+	// one, because everything around it says authentic.
+	Created time.Time
 }
 
 // CanonicalArtifact is the byte string an artifact's signature is over.
@@ -109,6 +118,7 @@ func CanonicalArtifact(a Artifact) []byte {
 	m.digest(a.Fields)
 	m.flag(a.Reported)
 	m.digest(a.External)
+	m.moment(a.Created)
 	return m.bytes()
 }
 
@@ -205,6 +215,11 @@ type Event struct {
 
 	Project *string
 	Room    string
+
+	// Created is when the entry says it was made - see Artifact.Created. A log
+	// is read in date order, so a date a relay can move is a log a relay can
+	// re-order.
+	Created time.Time
 }
 
 // CanonicalEvent is the byte string an event's signature is over.
@@ -223,6 +238,7 @@ func CanonicalEvent(e Event) []byte {
 
 	m.optional(e.Project)
 	m.text(e.Room)
+	m.moment(e.Created)
 	return m.bytes()
 }
 
@@ -323,6 +339,25 @@ func (m *message) digest(b []byte) {
 	}
 	sum := sha256.Sum256(b)
 	m.field(sum[:])
+	m.flag(true)
+}
+
+// moment is a timestamp column, as microseconds since the epoch, with a marker
+// byte for the zero time - a row that carries no date and a row dated at the
+// epoch are different rows.
+//
+// Microseconds, and not nanoseconds, because that is the resolution the column
+// has: a timestamptz keeps microseconds, so a signature over anything finer
+// would be a signature over digits the database throws away, and the row would
+// stop verifying the moment it was read back out. The value is an instant, so
+// the zone the reader happens to be in does not enter into it.
+func (m *message) moment(t time.Time) {
+	if t.IsZero() {
+		m.field(nil)
+		m.flag(false)
+		return
+	}
+	m.number(t.UnixMicro())
 	m.flag(true)
 }
 

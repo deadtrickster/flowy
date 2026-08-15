@@ -282,6 +282,9 @@ func (d *DB) InsertArtifact(ctx context.Context, a *Artifact) error {
 	if a.Visibility == "" {
 		a.Visibility = "project"
 	}
+	// The date is minted here and passed in rather than left to the column's
+	// default, because it is inside the signature - see createdNow.
+	a.Created = createdNow()
 	if err := d.signArtifact(ctx, a); err != nil {
 		return err
 	}
@@ -292,13 +295,14 @@ func (d *DB) InsertArtifact(ctx context.Context, a *Artifact) error {
 	err := d.sql.QueryRowContext(ctx,
 		`INSERT INTO artifacts (id, type, kind, project, owner_user, title, body, discovery,
 		                        status, severity, tags, user_tags, related, visibility,
-		                        file_path, fields, hlc, node, tombstone, search, sig)
+		                        file_path, fields, hlc, node, tombstone, search, sig, created)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
-		         $19, `+fmt.Sprintf(artifactSearchSQL, 20)+`, $21)
+		         $19, `+fmt.Sprintf(artifactSearchSQL, 20)+`, $21, $22)
 		 RETURNING created, updated`,
 		a.ID, a.Type, a.Kind, a.Project, a.OwnerUser, a.Title, a.Body, a.Discovery,
 		a.Status, a.Severity, pq.Array(a.Tags), pq.Array(a.UserTags), pq.Array(a.Related),
-		a.Visibility, a.FilePath, fields, a.HLC, a.Node, a.Tombstone, searchText(a), a.Sig).
+		a.Visibility, a.FilePath, fields, a.HLC, a.Node, a.Tombstone, searchText(a), a.Sig,
+		a.Created).
 		Scan(&a.Created, &a.Updated)
 	if err != nil {
 		return fmt.Errorf("store: insert artifact: %w", err)
@@ -353,6 +357,9 @@ func (d *DB) appendEvent(ctx context.Context, q execer, e *Event) error {
 		// A thread with no explicit head is named after its first event.
 		e.Thread = e.ID
 	}
+	// The date is minted here and passed in rather than left to the column's
+	// default, because it is inside the signature - see createdNow.
+	e.Created = createdNow()
 	if err := d.signEvent(ctx, e); err != nil {
 		return err
 	}
@@ -362,11 +369,11 @@ func (d *DB) appendEvent(ctx context.Context, q execer, e *Event) error {
 	}
 	err := q.QueryRowContext(ctx,
 		`INSERT INTO events (id, type, project, room, thread, parents, actor, artifact,
-		                     seq_hlc, node, body, meta, sig)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		                     seq_hlc, node, body, meta, sig, created)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 		 RETURNING created`,
 		e.ID, e.Type, e.Project, e.Room, e.Thread, pq.Array(e.Parents), e.Actor,
-		e.Artifact, e.SeqHLC, e.Node, e.Body, meta, e.Sig).
+		e.Artifact, e.SeqHLC, e.Node, e.Body, meta, e.Sig, e.Created).
 		Scan(&e.Created)
 	if err != nil {
 		return fmt.Errorf("store: append event: %w", err)

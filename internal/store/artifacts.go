@@ -121,6 +121,23 @@ func (d *DB) UpsertArtifact(ctx context.Context, a *Artifact) error {
 // write on its own, a transaction for one that is half of an operation - and
 // with the reading already stamped on the row by fill or fillAt.
 func (d *DB) upsertArtifact(ctx context.Context, q execer, a *Artifact) error {
+	// The date the row will carry, decided before it is signed rather than by
+	// the column's default afterwards - see createdNow. An update keeps the date
+	// the row already has: an edit is not a new artifact, and the value has to
+	// be the stored one or the signature would be over a date the row does not
+	// have and no peer downstream could verify it.
+	var held sql.NullTime
+	err := q.QueryRowContext(ctx, `SELECT created FROM artifacts WHERE id = $1`, a.ID).Scan(&held)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		a.Created = createdNow()
+	case err != nil:
+		return fmt.Errorf("store: upsert artifact: %w", err)
+	case held.Valid:
+		a.Created = held.Time
+	default:
+		a.Created = createdNow()
+	}
 	if err := d.signArtifact(ctx, a); err != nil {
 		return err
 	}
@@ -129,12 +146,12 @@ func (d *DB) upsertArtifact(ctx context.Context, q execer, a *Artifact) error {
 	if len(a.Fields) > 0 {
 		fields = []byte(a.Fields)
 	}
-	err := q.QueryRowContext(ctx,
+	err = q.QueryRowContext(ctx,
 		`INSERT INTO artifacts (id, type, kind, project, owner_user, title, body, discovery,
 		                        status, severity, tags, user_tags, related, visibility,
-		                        file_path, fields, hlc, node, tombstone, search, sig)
+		                        file_path, fields, hlc, node, tombstone, search, sig, created)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
-		         $19, `+fmt.Sprintf(artifactSearchSQL, 20)+`, $21)
+		         $19, `+fmt.Sprintf(artifactSearchSQL, 20)+`, $21, $22)
 		 ON CONFLICT (id) DO UPDATE SET
 		     type = excluded.type, kind = excluded.kind, project = excluded.project,
 		     owner_user = excluded.owner_user,
@@ -144,13 +161,14 @@ func (d *DB) upsertArtifact(ctx context.Context, q execer, a *Artifact) error {
 		     visibility = excluded.visibility, file_path = excluded.file_path,
 		     fields = excluded.fields, hlc = excluded.hlc, node = excluded.node,
 		     tombstone = excluded.tombstone, search = excluded.search, sig = excluded.sig,
-		     updated = now()
+		     created = excluded.created, updated = now()
 		  WHERE artifacts.owner_user = excluded.owner_user
 		    AND coalesce(artifacts.tombstone, false) = false
 		 RETURNING created, updated`,
 		a.ID, a.Type, a.Kind, a.Project, a.OwnerUser, a.Title, a.Body, a.Discovery,
 		a.Status, a.Severity, pq.Array(a.Tags), pq.Array(a.UserTags), pq.Array(a.Related),
-		a.Visibility, a.FilePath, fields, a.HLC, a.Node, a.Tombstone, searchText(a), a.Sig).
+		a.Visibility, a.FilePath, fields, a.HLC, a.Node, a.Tombstone, searchText(a), a.Sig,
+		a.Created).
 		Scan(&a.Created, &a.Updated)
 	if errors.Is(err, sql.ErrNoRows) {
 		// The id is taken, and not by this owner. Nothing was written.
@@ -211,6 +229,10 @@ func (d *DB) CreateArtifact(ctx context.Context, a *Artifact) error {
 	if err := d.fill(a); err != nil {
 		return err
 	}
+	// Minted here and signed with the row, not left to the column - see
+	// createdNow. A create is always a new row, so there is no stored date to
+	// keep and none is taken from the caller.
+	a.Created = createdNow()
 	if err := d.signArtifact(ctx, a); err != nil {
 		return err
 	}
@@ -222,14 +244,15 @@ func (d *DB) CreateArtifact(ctx context.Context, a *Artifact) error {
 	err := d.sql.QueryRowContext(ctx,
 		`INSERT INTO artifacts (id, type, kind, project, owner_user, title, body, discovery,
 		                        status, severity, tags, user_tags, related, visibility,
-		                        file_path, fields, hlc, node, tombstone, search, sig)
+		                        file_path, fields, hlc, node, tombstone, search, sig, created)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
-		         $19, `+fmt.Sprintf(artifactSearchSQL, 20)+`, $21)
+		         $19, `+fmt.Sprintf(artifactSearchSQL, 20)+`, $21, $22)
 		 ON CONFLICT (id) DO NOTHING
 		 RETURNING created, updated`,
 		a.ID, a.Type, a.Kind, a.Project, a.OwnerUser, a.Title, a.Body, a.Discovery,
 		a.Status, a.Severity, pq.Array(a.Tags), pq.Array(a.UserTags), pq.Array(a.Related),
-		a.Visibility, a.FilePath, fields, a.HLC, a.Node, a.Tombstone, searchText(a), a.Sig).
+		a.Visibility, a.FilePath, fields, a.HLC, a.Node, a.Tombstone, searchText(a), a.Sig,
+		a.Created).
 		Scan(&a.Created, &a.Updated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrTaken

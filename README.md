@@ -739,6 +739,13 @@ signature over the request body would verify on the node that made it and
 nowhere else. What is authenticated is the value, which is what the column
 holds.
 
+`created` is in the encoding too, as microseconds since the epoch - the
+resolution `timestamptz` keeps, so a row still verifies after the round trip
+through the column. A date outside the signature is a date an honest-looking
+relay may move, and everything downstream ages and orders by it. The date is
+therefore minted by the node that writes the row rather than by the column's
+`DEFAULT now()`, which used to fill it in after the signing.
+
 **Signing is on the write.** Every path that mints or moves a replicated row -
 create, update, status move, tombstone, the forge link, assignment's three rows,
 a task delegation, a message - stamps the reading and this node's name and then
@@ -803,8 +810,17 @@ on it does. A node that never speaks for itself is pinned on every machine that
 has to verify it.
 
 `FLOWY_REQUIRE_PINNED_PEERS=true` refuses rows from any node whose key was only
-taken on trust. It costs transitive relay, which is the trade a high-security
-deployment is making on purpose.
+taken on trust, and refuses the key itself on the way in: first contact is not
+recorded there, so every key such a node holds is one its operator named. It
+costs transitive relay, which is the trade a high-security deployment is making
+on purpose.
+
+Pinning also decides what a peer may say about other people. A pulled row whose
+owner, actor or grantor is somebody other than the principal carrying the page
+is taken only when the node that authored it is pinned - see `pulledParty` and
+the thirteenth round below. Federation between two pinned nodes is unaffected;
+a relay whose key merely arrived on a page can hand over only rows the puller
+could have written itself.
 
 ## The forge bridge
 
@@ -2644,6 +2660,87 @@ the reply sitting where nobody reading the thread will find it - and nothing
 said the store had been unreachable. The `ThreadHidden` call six lines below has
 always told the two apart; this asks the same question and `500`s.
 
+## The thirteenth round of security fixes
+
+The lab's lying-peer adversary was run against a live node with a control: the
+same signed delta, offered both ways. Push refused it row for row; pull applied
+`{artifacts: 2, events: 4, grants: 1, identities: 2}` of it. Three findings, all
+federation provenance, and the first is the shape of the other two. Same rule as
+the rounds before: one check in `run-tests.sh` per defect, each verified to fail
+on the source it fixes.
+
+Nothing here changes how a node is configured. It does make `flowy identity pin`
+matter more again - see the first fix - and `FLOWY_REQUIRE_PINNED_PEERS` now
+refuses a key as well as a row.
+
+**HIGH - the provenance check was only wired into push.** `checkArtifact`
+refused a row that is not the pusher's own, on both the new-row and the
+already-here branch, and both tests were guarded on `mode == modePush`. On a
+pull only the reach test and the owner-does-not-change test ran. So a peer
+serving a page put a **new** artifact owned by a third party into it, signed
+with its own key - authentic, because the peer really did write those bytes -
+and it landed with the forged owner, which then holds the update and tombstone
+rights the `owner_user` column carries. Grants had half a rule: one opening the
+*receiver's* project was refused, one opening that project *outwards* on
+somebody else's say-so was applied, which hands this project's work to a peer's.
+The eleventh round fixed exactly this on the event door and nowhere else.
+
+The answer cannot be owner-is-puller. Relaying other people's rows is what
+federation is, and alice's artifact arriving from alice's node is the point of
+the exercise. So the eleventh round's answer is generalised instead:
+`pulledParty` asks whether the party a pulled row names - the owner of an
+artifact, the actor of an event, the grantor of a grant - is this principal or
+its agent, and if it is not, whether the node that authored the row is one the
+operator **pinned**. A pinned node is one somebody decided to believe, and
+believing a node includes believing what it says about who wrote what. A node
+whose key merely turned up on a page may hand over only what this principal
+could have handed over itself. It applies to the row that is already here as
+well as the new one, because rewriting somebody else's artifact under a node
+name the relay can sign for is the same forgery as inventing it. `checkTask`
+already answered the question on both doors - a task has to name this principal
+as a party either way - and is unchanged.
+
+**HIGH - `created` was not signed, on artifacts or on events.**
+`canonicalArtifact` named twenty-one fields and `canonicalEvent` its own set,
+and neither named `created`, so the date was outside the signature and an honest
+relay could rewrite it. The adversary planted rows dated `2026-06-01` and
+`2026-05-20` on a receiver. A signed row carrying an attacker's timestamp is
+worse than an unsigned one, because everything around it says authentic, and a
+date is not decoration: every list, every digest and every reader orders and
+ages by it. `Created` is now a field of `sign.Artifact` and `sign.Event`,
+encoded as microseconds since the epoch with a marker for absent - microseconds
+because that is the resolution `timestamptz` keeps, so the row still verifies
+after the round trip through the column. `grants` and `tasks` have no such
+column, so there is nothing there to sign.
+
+That moved where the date comes from. It used to be the column's own `DEFAULT
+now()`, filled in after the signing, which is precisely a value nothing signed:
+the local writes mint it themselves now (`createdNow`, truncated to the
+microsecond) and pass it in, so the row that lands is the row that was signed.
+An edit keeps the date the row already has - `upsertArtifact` reads it before it
+signs - and a create does not take one from the caller, so backdating your own
+artifact through a request body is not a thing either. On the merge, `created`
+is carried onto the stored row rather than kept at this node's own clock, or the
+row would sit here under a signature over a date it does not have and no peer
+downstream could verify it. `flowy sign` dates a row that has none in the same
+call, for the same reason.
+
+**MEDIUM - identity provenance on a pulled page.** The adversary's pull applied
+two identity rows, which is a peer teaching the receiver which key belongs to
+which node. Two of the three rules already held and were left alone: an identity
+has to be **self-signed** by the key it carries, so a peer cannot serve an
+identity for node C unless it holds C's key, and a second, different key for a
+node already here is **refused** whether that node was pinned or taken on trust.
+What was missing is the third: under `FLOWY_REQUIRE_PINNED_PEERS` a first-contact
+identity was still recorded, and only the rows behind it were refused, one at a
+time, by `authentic`. A deployment that will not take a row from an unpinned node
+has no business taking the key that would make one verifiable either, so
+`applyIdentity` refuses the key itself there. Without that flag, first contact
+remains trust-on-first-use: an unknown node's self-signed identity is taken and
+marked unpinned. That is the documented residual - a peer can claim a name this
+node has never heard of, under its own key - and pinning, or that flag, is what
+closes it.
+
 ## Deployment
 
 The store speaks the Postgres wire and nothing else. The spine of `schema.sql`
@@ -2666,7 +2763,7 @@ query. Nothing above it depends on anything below it.
 
 ## Phase 6.5 status
 
-Green. `./run-tests.sh` reports `passed: 295 failed: 0` with Go 1.22, Node
+Green. `./run-tests.sh` reports `passed: 311 failed: 0` with Go 1.22, Node
 22.14 and Postgres 16 - the 200 checks Phase 6 ended with, all still green,
 plus the 12 the first security slice added, the 12 the second one did, the 8
 from the third, the 8 from the fourth, the 10 from the fifth, the 6 from the
@@ -2687,8 +2784,17 @@ and the committed tree built from a `git archive` with no console build in it,
 and the 6 the tenth adds: the event floor over the wire and again as a Go test
 holding the two filters together, the opaque `500`, the limit that clamps to the
 cap, the second JSON value refused on every write path, and the memory item that
-cannot be promoted out of the personal floor by an edit. Each is verified to
-fail on the source it fixes. Five of the older checks
+cannot be promoted out of the personal floor by an edit, and the 4 the eleventh
+adds: the pulled event under somebody else's name, the artifact column on both
+write paths and at both merge doors, and the bounded rescan, and the 6 the
+twelfth adds: the event floor over the wire and as a Go test, the artifact floor
+the event filter now evaluates, the two concurrent filings and the predicate
+that decides them, and the parent the store could not read, and the 6 the
+thirteenth adds: the pulled row that is not the authoring party's to assert and
+the rewrite of somebody else's artifact, `created` inside the signature as a Go
+test and again over the wire between the two nodes, the date a local write
+signs, and the identity that is self-signed, never rotated and pinned where that
+is required. Each is verified to fail on the source it fixes. Five of the older checks
 changed with the fixes rather than around them: a reply to a message its
 speaker cannot read is refused outright now rather than quietly opening a
 thread of its own, which is the same rule one step earlier, a deleted artifact

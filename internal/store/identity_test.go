@@ -173,3 +173,145 @@ func TestPinnedKeyDoesNotRotate(t *testing.T) {
 		t.Fatalf("re-pinning the same key: %v", err)
 	}
 }
+
+// TestAServedIdentityIsSelfSignedAndNeverRotates is what a peer may teach this
+// node about who is who.
+//
+// A pull applies the identities on the page before the rows, because a row
+// cannot be verified before its node's key is here - so the page is also a peer
+// telling this node which key belongs to which node, and every key it plants is
+// a node it can then sign for. Three rules hold that door, and this is all
+// three at once:
+//
+//   - self-signed. An identity for node C carries C's own signature over C's
+//     own name and key, so a relay passing it on cannot swap the key inside it,
+//     and a peer cannot mint one for a node it does not hold the key of.
+//   - never rotated. A second, different key for a node already here is
+//     refused, TOFU'd or pinned alike - otherwise a peer impersonates any node
+//     it likes by serving a new identity for it first.
+//   - and first contact, which is the one trust the rule leaves: an unknown
+//     node's key is taken on trust and marked unpinned. That is the residual,
+//     and FLOWY_REQUIRE_PINNED_PEERS is the deployment that will not have it -
+//     a key nobody named is refused rather than recorded, so every key such a
+//     node holds is one its operator chose.
+func TestAServedIdentityIsSelfSignedAndNeverRotates(t *testing.T) {
+	ctx, db := open(t)
+
+	// A peer serving an identity for somebody else, signed with its own key.
+	// The name is C's, the key inside is C's, and the signature is the relay's:
+	// only the holder of C's key can make that signature, which is the whole
+	// point of it.
+	third := "third-" + ulid.NewString()
+	relay := testKey("relay-" + third)
+	notSelfSigned := NodeIdentity{NodeID: third, PublicKey: publicOf(testKey(third))}
+	notSelfSigned.Sig = signBytes(relay, canonicalIdentity(third, notSelfSigned.PublicKey))
+
+	res, err := db.syncApply(ctx, nil, modePull, &SyncSet{
+		Identities: []NodeIdentity{notSelfSigned},
+	})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if res.Applied[tableIdentities] != 0 || res.Refused[tableIdentities] != 1 {
+		t.Fatalf("an identity for %s signed by somebody else applied %d and was refused %d, "+
+			"want 0 and 1: %+v",
+			third, res.Applied[tableIdentities], res.Refused[tableIdentities], res.Reasons)
+	}
+	if _, err := db.GetIdentity(ctx, third); !errors.Is(err, ErrNotFound) {
+		t.Errorf("a key for %s that %s never signed for is here: %v", third, third, err)
+	}
+
+	// A second, different key for a node this one already holds. Refused on the
+	// wire, and refused at the operator's own door as ErrKeyRotation.
+	known := "known-" + ulid.NewString()
+	first := testKey(known)
+	if err := db.PinIdentity(ctx, known, publicOf(first)); err != nil {
+		t.Fatalf("pin: %v", err)
+	}
+	impostor := testKey(known + "-impostor")
+	rotated := NodeIdentity{NodeID: known, PublicKey: publicOf(impostor)}
+	rotated.Sig = signIdentity(impostor, &rotated)
+
+	res, err = db.syncApply(ctx, nil, modePull, &SyncSet{Identities: []NodeIdentity{rotated}})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if res.Applied[tableIdentities] != 0 || res.Refused[tableIdentities] != 1 {
+		t.Fatalf("a second key for %s applied %d and was refused %d, want 0 and 1: %+v",
+			known, res.Applied[tableIdentities], res.Refused[tableIdentities], res.Reasons)
+	}
+	if err := db.PinIdentity(ctx, known, publicOf(impostor)); !errors.Is(err, ErrKeyRotation) {
+		t.Errorf("pinning a second key for %s returned %v, want ErrKeyRotation", known, err)
+	}
+	held, err := db.GetIdentity(ctx, known)
+	if err != nil {
+		t.Fatalf("get identity: %v", err)
+	}
+	if !equalKeys(held.PublicKey, publicOf(first)) {
+		t.Fatal("the key held here was replaced by one that arrived on a page")
+	}
+
+	// First contact, which is the residual: an unknown node's self-signed
+	// identity is taken on trust with the flag off.
+	tofu := "tofu-" + ulid.NewString()
+	res, err = db.syncApply(ctx, nil, modePull, &SyncSet{
+		Identities: []NodeIdentity{identityOfNode(tofu)},
+	})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if res.Applied[tableIdentities] != 1 {
+		t.Fatalf("an unknown node's identity applied %d, want 1: %+v",
+			res.Applied[tableIdentities], res.Reasons)
+	}
+
+	// And the deployment that will not have it. The key is refused outright
+	// rather than recorded and then found wanting on every row that needs it.
+	db.SetRequirePinnedPeers(true)
+	t.Cleanup(func() { db.SetRequirePinnedPeers(false) })
+
+	strict := "strict-" + ulid.NewString()
+	strictKey := testKey(strict)
+	project := "pi-" + ulid.NewString()
+	owner := "u-" + ulid.NewString()
+	row := &Artifact{
+		ID: ulid.NewString(), Type: "note", Project: &project, OwnerUser: owner,
+		Visibility: "project", Title: "from a node nobody named", Body: "gravelbight",
+		HLC: packed(t, db) + 1, Node: strict,
+	}
+	SignArtifact(strictKey, row)
+
+	res, err = db.syncApply(ctx, nil, modePull, &SyncSet{
+		Identities: []NodeIdentity{identityOfNode(strict)}, Artifacts: []*Artifact{row},
+	})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if res.Applied[tableIdentities] != 0 || res.Refused[tableIdentities] != 1 {
+		t.Errorf("an unpinned identity applied %d and was refused %d under %s, want 0 and 1: %+v",
+			res.Applied[tableIdentities], res.Refused[tableIdentities], requirePinnedEnv,
+			res.Reasons)
+	}
+	if _, err := db.GetIdentity(ctx, strict); !errors.Is(err, ErrNotFound) {
+		t.Errorf("a key nobody pinned was recorded under %s: %v", requirePinnedEnv, err)
+	}
+	if res.Applied["artifacts"] != 0 {
+		t.Errorf("a row from that node landed anyway (%d rows)", res.Applied["artifacts"])
+	}
+
+	// The operator's pin is what lifts it, and nothing about the page changes.
+	if err := db.PinIdentity(ctx, strict, publicOf(strictKey)); err != nil {
+		t.Fatalf("pin: %v", err)
+	}
+	res, err = db.syncApply(ctx, nil, modePull, &SyncSet{
+		Identities: []NodeIdentity{identityOfNode(strict)}, Artifacts: []*Artifact{row},
+	})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if res.Refused[tableIdentities] != 0 || res.Applied["artifacts"] != 1 {
+		t.Errorf("after the pin, the identity was refused %d times and the row applied %d, "+
+			"want 0 and 1: %+v", res.Refused[tableIdentities], res.Applied["artifacts"],
+			res.Reasons)
+	}
+}

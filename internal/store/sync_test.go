@@ -1,6 +1,7 @@
 package store
 
 import (
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"sync/atomic"
@@ -1302,5 +1303,199 @@ func TestNewlyVisibleRescanIsBoundedAndBatched(t *testing.T) {
 		if !want[art.ID] {
 			t.Errorf("the debt handed over %s, which the grant never opened", art.ID)
 		}
+	}
+}
+
+// TestPulledRowsAreTheAuthoringPartysToAssert is the pull door asking the
+// question push has always asked, of every row type instead of one.
+//
+// Push refuses a row that is not the pusher's own: an artifact owned by
+// somebody else, a grant somebody else is said to have given, an event under
+// somebody else's name. The pull door ran the reach test and the
+// owner-does-not-change test and nothing else, so the same delta - the same
+// bytes, signed by the same key, offered by the same peer - was refused one way
+// and applied whole the other. The peer's signature is no help: it really did
+// write those bytes, and that is all a signature ever says.
+//
+// It cannot be answered with owner-is-puller. Relaying other people's rows is
+// what federation is, and alice's artifact arriving from alice's node is the
+// point of the exercise. So it is answered with the one thing this node decides
+// for itself - whether its operator pinned the key of the node that authored
+// the row - which is the rule the event door has kept since the attribution fix
+// and is now the rule for artifacts and grants too. See pulledParty.
+func TestPulledRowsAreTheAuthoringPartysToAssert(t *testing.T) {
+	ctx, db := open(t)
+
+	project := "pp-" + ulid.NewString()
+	theirs := "pq-" + ulid.NewString()
+	me := "u-me-" + ulid.NewString()
+	alice := "u-alice-" + ulid.NewString()
+	p := &Principal{UserID: me, Project: project}
+	at := packed(t, db)
+
+	// A node nobody here has pinned, whose key rides in on the page it serves.
+	relay := "relay-" + ulid.NewString()
+	relayKey := testKey(relay)
+
+	// The adversary's delta: three rows, none of them this principal's, all of
+	// them perfectly signed by the node serving them.
+	forged := func(node string, key ed25519.PrivateKey, at int64) *SyncSet {
+		art := &Artifact{
+			ID: ulid.NewString(), Type: "note", Project: &project, OwnerUser: alice,
+			Visibility: "project", Title: "alice never wrote this", Body: "quernstile",
+			HLC: at + 1, Node: node,
+		}
+		SignArtifact(key, art)
+		grant := Grant{
+			ID: ulid.NewString(), FromProject: project, ToProject: theirs, Cap: CapRead,
+			GrantedBy: alice, HLC: at + 2, Node: node,
+		}
+		SignGrant(key, &grant)
+		e := &Event{
+			ID: ulid.NewString(), Type: "chat", Project: &project, Room: "general",
+			Actor: alice, Body: "nor this", SeqHLC: at + 3, Node: node,
+		}
+		SignEvent(key, e)
+		return &SyncSet{
+			Identities: []NodeIdentity{identityOfNode(node)},
+			Artifacts:  []*Artifact{art}, Grants: []Grant{grant}, Events: []*Event{e},
+		}
+	}
+
+	// The control. Offered at the push door, every row of it is refused.
+	set := forged(relay, relayKey, at)
+	pushed, err := db.SyncApplyAs(ctx, p, set)
+	if err != nil {
+		t.Fatalf("push the forged delta: %v", err)
+	}
+	for _, table := range []string{"artifacts", "grants", "events"} {
+		if pushed.Applied[table] != 0 || pushed.Refused[table] != 1 {
+			t.Fatalf("push applied %d and refused %d of %s, want 0 and 1: %+v",
+				pushed.Applied[table], pushed.Refused[table], table, pushed.Reasons)
+		}
+	}
+
+	// The same delta, fetched instead of offered. It used to land whole.
+	pulled, err := db.SyncApplyFrom(ctx, p, set)
+	if err != nil {
+		t.Fatalf("pull the forged delta: %v", err)
+	}
+	for _, table := range []string{"artifacts", "grants", "events"} {
+		if pulled.Applied[table] != 0 || pulled.Refused[table] != 1 {
+			t.Errorf("pull applied %d and refused %d of %s, want 0 and 1: %+v",
+				pulled.Applied[table], pulled.Refused[table], table, pulled.Reasons)
+		}
+	}
+	if n := rows(t, db, "artifacts", set.Artifacts[0].ID); n != 0 {
+		t.Errorf("an artifact owned by %s arrived from unpinned %s (%d rows)", alice, relay, n)
+	}
+	if n := grantRows(t, db, set.Grants[0].ID); n != 0 {
+		t.Errorf("a grant out of %s on %s's say-so arrived from unpinned %s (%d rows)",
+			project, alice, relay, n)
+	}
+	if _, err := db.GetEvent(ctx, set.Events[0].ID); err == nil {
+		t.Errorf("an event under %s's name arrived from unpinned %s", alice, relay)
+	}
+
+	// And the relay is not being refused for being a relay: this principal's
+	// own row, carried by the same unpinned node, still lands.
+	mine := &Artifact{
+		ID: ulid.NewString(), Type: "note", Project: &project, OwnerUser: me,
+		Visibility: "project", Title: "and this one is mine", Body: "quernstile too",
+		HLC: at + 10, Node: relay,
+	}
+	SignArtifact(relayKey, mine)
+	res, err := db.SyncApplyFrom(ctx, p, &SyncSet{Artifacts: []*Artifact{mine}})
+	if err != nil {
+		t.Fatalf("pull my own row: %v", err)
+	}
+	if res.Applied["artifacts"] != 1 {
+		t.Fatalf("my own row relayed by %s applied %d, want 1: %+v",
+			relay, res.Applied["artifacts"], res.Reasons)
+	}
+
+	// The legitimate relay federation is made of: the same three rows, authored
+	// on a node this operator pinned. Every one of them lands, under the name it
+	// was written with.
+	origin := "origin-" + ulid.NewString()
+	originKey := pinTestNode(t, ctx, db, origin)
+	real := forged(origin, originKey, at+20)
+	res, err = db.SyncApplyFrom(ctx, p, real)
+	if err != nil {
+		t.Fatalf("pull the real delta: %v", err)
+	}
+	for _, table := range []string{"artifacts", "grants", "events"} {
+		if res.Applied[table] != 1 || res.Refused[table] != 0 {
+			t.Errorf("a relayed %s from pinned %s applied %d and was refused %d, want 1 and 0: %+v",
+				table, origin, res.Applied[table], res.Refused[table], res.Reasons)
+		}
+	}
+	got, err := db.GetArtifact(ctx, real.Artifacts[0].ID)
+	if err != nil {
+		t.Fatalf("the relayed artifact is not here: %v", err)
+	}
+	if got.OwnerUser != alice {
+		t.Errorf("the relayed artifact came out owned by %q, want %q", got.OwnerUser, alice)
+	}
+}
+
+// TestAPulledRewriteOfAnothersArtifactNeedsAPinnedNode is the same rule on the
+// row that is already here.
+//
+// The owner-does-not-change test says a merge does not hand an artifact over,
+// and it is satisfied by a rewrite that keeps the owner column exactly as it
+// found it. So an unpinned peer could take somebody else's artifact, rewrite
+// the title and the body, put its own node name on it - which makes its own
+// signature verify - raise the reading and serve it, and last-writer-wins made
+// the rewrite the truth here and on every node downstream. The row is the
+// owner's to assert whether it is new or not.
+func TestAPulledRewriteOfAnothersArtifactNeedsAPinnedNode(t *testing.T) {
+	ctx, db := open(t)
+
+	project := "pr-" + ulid.NewString()
+	me := "u-me-" + ulid.NewString()
+	alice := "u-alice-" + ulid.NewString()
+	p := &Principal{UserID: me, Project: project}
+	at := packed(t, db)
+
+	origin := "origin-" + ulid.NewString()
+	originKey := pinTestNode(t, ctx, db, origin)
+	real := &Artifact{
+		ID: ulid.NewString(), Type: "note", Project: &project, OwnerUser: alice,
+		Visibility: "project", Title: "alice's own", Body: "sprocketwise", HLC: at + 1, Node: origin,
+	}
+	SignArtifact(originKey, real)
+	if res, err := db.SyncApplyFrom(ctx, p, &SyncSet{Artifacts: []*Artifact{real}}); err != nil {
+		t.Fatalf("pull alice's row: %v", err)
+	} else if res.Applied["artifacts"] != 1 {
+		t.Fatalf("alice's row applied %d, want 1: %+v", res.Applied["artifacts"], res.Reasons)
+	}
+
+	relay := "relay-" + ulid.NewString()
+	relayKey := testKey(relay)
+	rewritten := &Artifact{
+		ID: real.ID, Type: "note", Project: &project, OwnerUser: alice,
+		Visibility: "project", Title: "say this instead", Body: "and this",
+		HLC: at + 2, Node: relay,
+	}
+	SignArtifact(relayKey, rewritten)
+
+	res, err := db.SyncApplyFrom(ctx, p, &SyncSet{
+		Identities: []NodeIdentity{identityOfNode(relay)}, Artifacts: []*Artifact{rewritten},
+	})
+	if err != nil {
+		t.Fatalf("pull the rewrite: %v", err)
+	}
+	if res.Applied["artifacts"] != 0 || res.Refused["artifacts"] != 1 {
+		t.Fatalf("the rewrite applied %d and was refused %d, want 0 and 1: %+v",
+			res.Applied["artifacts"], res.Refused["artifacts"], res.Reasons)
+	}
+	held, err := db.GetArtifact(ctx, real.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if held.Title != real.Title || held.Body != real.Body {
+		t.Errorf("%s's artifact reads %q/%q, want %q/%q",
+			alice, held.Title, held.Body, real.Title, real.Body)
 	}
 }

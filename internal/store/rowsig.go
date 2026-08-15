@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/deadtrickster/flowy/internal/sign"
 )
@@ -40,6 +41,7 @@ func canonicalArtifact(a *Artifact) []byte {
 		Kind:      a.Kind, Discovery: a.Discovery, Status: a.Status, Severity: a.Severity,
 		Tags: a.Tags, UserTags: a.UserTags, Related: a.Related, FilePath: a.FilePath,
 		Fields: canonicalJSON(a.Fields), Reported: a.Reported, External: externalBytes(a.External),
+		Created: a.Created,
 	})
 }
 
@@ -89,6 +91,27 @@ func externalBytes(ref *ExternalRef) []byte {
 	return raw
 }
 
+// createdNow is the date a local write stamps on a row it is about to insert.
+//
+// The column has a DEFAULT now() and used to be left to it, which put the date
+// outside the signature: signing happens here, before the statement runs, so a
+// value the database invents after it is a value nothing signed - and a signed
+// row whose date a relay may rewrite is worse than an unsigned one, because
+// everything around it says authentic. So the node mints the date itself and
+// passes it in, and the row that lands is the row that was signed.
+//
+// Truncated to the microsecond because that is what a timestamptz keeps: a
+// finer value would be rounded by the column and the row would stop verifying
+// the moment it was read back out.
+//
+// It is not taken from the caller. A create arrives from a request body, and a
+// date somebody may choose for their own row is a row that sorts wherever they
+// like in everybody's list. An update keeps the date the row already has - see
+// upsertArtifact, which reads it - because an edit is not a new artifact.
+//
+// Grants and tasks have no such column, so there is nothing there to sign.
+func createdNow() time.Time { return time.Now().UTC().Truncate(time.Microsecond) }
+
 func canonicalGrant(g *Grant) []byte {
 	return sign.CanonicalGrant(sign.Grant{
 		ID: g.ID, FromProject: g.FromProject, ToProject: g.ToProject, Subject: g.Subject,
@@ -119,7 +142,7 @@ func canonicalEvent(e *Event) []byte {
 	return sign.CanonicalEvent(sign.Event{
 		ID: e.ID, Artifact: e.Artifact, Thread: e.Thread, Actor: e.Actor, Type: e.Type,
 		Body: e.Body, Meta: canonicalJSON(e.Meta), Parents: e.Parents, HLC: e.SeqHLC, Node: e.Node,
-		Project: e.Project, Room: e.Room,
+		Project: e.Project, Room: e.Room, Created: e.Created,
 	})
 }
 
@@ -153,11 +176,22 @@ func SignEvent(priv ed25519.PrivateKey, e *Event) { e.Sig = signBytes(priv, cano
 // decide that. A set whose rows name a node this key does not belong to is
 // exactly the forgery the merge is there to refuse, and being able to build one
 // is how that refusal is tested.
+//
+// It does date a row that carries no date, because created is inside the
+// signature. A row signed without one can be merged - the receiver puts its own
+// clock in the column, since the column has to hold something - but it can
+// never be relayed on from there: what the next node is handed is the date the
+// receiver invented, and the signature is over a row that had none. So a delta
+// assembled by hand gets this moment as its date, in the same call that signs
+// it, and travels as far as any other row.
 func SignSet(priv ed25519.PrivateKey, set *SyncSet) {
 	if set == nil {
 		return
 	}
 	for _, a := range set.Artifacts {
+		if a.Created.IsZero() {
+			a.Created = createdNow()
+		}
 		SignArtifact(priv, a)
 	}
 	for i := range set.Grants {
@@ -167,6 +201,9 @@ func SignSet(priv ed25519.PrivateKey, set *SyncSet) {
 		SignTask(priv, t)
 	}
 	for _, e := range set.Events {
+		if e.Created.IsZero() {
+			e.Created = createdNow()
+		}
 		SignEvent(priv, e)
 	}
 }
