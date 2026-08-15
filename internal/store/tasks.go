@@ -252,7 +252,36 @@ func (d *DB) ListTasks(ctx context.Context, p *Principal, q TaskQuery) ([]*Task,
 func (d *DB) UpdateTask(ctx context.Context, t *Task) error {
 	t.HLC = d.clock.Pack()
 	t.Node = d.node
-	_, err := d.sql.ExecContext(ctx,
+	return d.updateTask(ctx, d.sql, t)
+}
+
+// UpdateTaskEvent moves a task and writes the entry that accounts for the move,
+// together, under one reading - the same shape MoveArtifactStatus has, for the
+// same reason.
+//
+// Delegating a task and moving its state were two writes with nothing holding
+// them together: the row moved, and then the entry was appended, and a failure
+// between the two left a task in a state its own thread never explains. Worse,
+// each row carries its own reading and replicates on its own, so the half that
+// landed reached every peer and the half that did not never existed anywhere.
+// The state a task is in and the record of it getting there are one fact.
+func (d *DB) UpdateTaskEvent(ctx context.Context, t *Task, e *Event) error {
+	at := d.clock.Pack()
+	t.HLC, t.Node, e.SeqHLC = at, d.node, at
+
+	return d.inTx(ctx, "move task "+t.ID, func(tx *sql.Tx) error {
+		if err := d.updateTask(ctx, tx, t); err != nil {
+			return err
+		}
+		return d.appendEvent(ctx, tx, e)
+	})
+}
+
+// updateTask is the write itself, against whatever is in hand: the pool for a
+// move on its own, a transaction for one that comes with its entry. The reading
+// is the caller's, so the two rows can share one.
+func (d *DB) updateTask(ctx context.Context, q execer, t *Task) error {
+	_, err := q.ExecContext(ctx,
 		`UPDATE tasks SET state = $2, assignee_agent = nullif($3, ''), hlc = $4, node = $5
 		  WHERE id = $1`,
 		t.ID, t.State, t.AssigneeAgent, t.HLC, t.Node)

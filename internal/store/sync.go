@@ -891,6 +891,12 @@ func (d *DB) syncApply(ctx context.Context, p *Principal, mode syncMode, in *Syn
 		})
 	}
 
+	// The highest reading actually written, and the node that wrote it. The
+	// clock is moved once, after the commit: see below.
+	var (
+		highest     int64
+		highestNode string
+	)
 	for pass := 0; pass < syncPasses; pass++ {
 		moved := false
 		for _, row := range rows {
@@ -922,7 +928,9 @@ func (d *DB) syncApply(ctx context.Context, p *Principal, mode syncMode, in *Syn
 				return nil, err
 			}
 			res.Applied[row.table] += n
-			d.observe(row.hlc, row.node)
+			if row.hlc > highest {
+				highest, highestNode = row.hlc, row.node
+			}
 			row.settled, row.why, moved = true, "", true
 		}
 		if !moved {
@@ -943,6 +951,19 @@ func (d *DB) syncApply(ctx context.Context, p *Principal, mode syncMode, in *Syn
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("store: sync apply: %w", err)
 	}
+
+	// The clock moves once, here, and only for rows that are now in the
+	// database. It used to move inside the merge, a row at a time, before the
+	// commit that decides whether any of those rows exist - so a page that
+	// failed halfway rolled its writes back and left the clock standing past
+	// readings this node never held. Nothing undoes that: the node then stamps
+	// everything it writes afterwards above rows it does not have, and the
+	// peer that does have them loses every merge against a node that never
+	// applied them.
+	//
+	// One observation of the highest reading is enough. UpdatePacked only ever
+	// moves the clock forward, so the maximum subsumes the rest.
+	d.observe(highest, highestNode)
 	return res, nil
 }
 
@@ -1107,6 +1128,18 @@ func checkEventRow(
 			return why, nil
 		}
 	} else {
+		// A minted type is refused whichever door it comes in at. checkEvent
+		// refuses it on the push side because it is a claim the pusher is not
+		// entitled to make; here it is refused because it is a claim about
+		// this node's own handlers that this node's own handlers did not make.
+		// The trail is only worth reading if the only way into it is to have
+		// done the thing, and a peer serving a page is not a handler: a pulled
+		// status move, handoff or forge entry is a peer writing this node's
+		// history for it, and every peer downstream then holds it too.
+		if mintedEventTypes[e.Type] {
+			return "a " + e.Type + " event is minted by the node that did the thing, " +
+				"not carried in (" + e.ID + ")", nil
+		}
 		ok, err := eventReadable(ctx, tx, p, e)
 		if err != nil {
 			return "", err
@@ -1485,6 +1518,31 @@ func checkGrant(
 		if !reaches {
 			return "grant " + g.ID + " is between other people and other projects", nil
 		}
+		// The one row a peer can write itself. A project-wide grant is a
+		// capability that lands in to_project, and every check above is
+		// satisfied by a grant that names this principal's own project there:
+		// the peer picks a from_project of its own, says anybody at all
+		// granted it, and from the next pull onwards its project reads this
+		// one - permanently, because merging is last-writer-wins.
+		//
+		// Federation never needs that. A grant that opens this project up is
+		// written here, by somebody who is here, and travels outwards. So it
+		// is taken only when the grantor is a principal of the project being
+		// opened, on this node. Grants between other projects, riding a page
+		// this principal may read, are untouched by this: they open nothing
+		// here, and refusing them would be refusing federation.
+		if g.Artifact == "" && g.ToProject != "" && g.ToProject == p.Project &&
+			g.FromProject != p.Project {
+			opener, err := principalOfProject(ctx, tx, g.GrantedBy, g.ToProject)
+			if err != nil {
+				return "", err
+			}
+			if !opener {
+				return "grant " + g.ID + " opens " + g.ToProject + " up, and " +
+					named(g.GrantedBy) + " is nobody here who could", nil
+			}
+			return "", nil
+		}
 		if g.GrantedBy == "" || g.GrantedBy != p.UserID {
 			return "", nil
 		}
@@ -1520,6 +1578,43 @@ func checkGrant(
 		return "grant " + g.ID + " shares " + g.Artifact + ", which is not yours to share", nil
 	}
 	return "", nil
+}
+
+// named renders a grantor for a refusal message, so an unsigned row reads as
+// one rather than as an empty gap in the sentence.
+func named(user string) string {
+	if user == "" {
+		return "nobody"
+	}
+	return user
+}
+
+// principalOfProject reports whether user is somebody on this node who holds a
+// principal in project: a token of their own that sits there, or an agent of
+// theirs that does. It is "could this person have written that grant here",
+// asked of a name that arrived over the wire.
+//
+// The user has to exist locally as well. A peer that invents both a grantor and
+// the token behind it cannot, but a name that resolves to nothing here is a
+// grant this node has no way to account for, and the point of the check is that
+// the grantor is somebody this node already knows.
+func principalOfProject(ctx context.Context, tx *sql.Tx, user, project string) (bool, error) {
+	if user == "" || project == "" {
+		return false, nil
+	}
+	var ok bool
+	err := tx.QueryRowContext(ctx,
+		`SELECT EXISTS (SELECT 1 FROM users u WHERE u.id = $1)
+		    AND (EXISTS (SELECT 1 FROM tokens t LEFT JOIN agents a ON a.id = t.agent_id
+		                  WHERE coalesce(nullif(t.user_id, ''), a.user_id, '') = $1
+		                    AND coalesce(nullif(t.project, ''), a.project, '') = $2)
+		      OR EXISTS (SELECT 1 FROM agents ag
+		                  WHERE ag.user_id = $1 AND coalesce(ag.project, '') = $2))`,
+		user, project).Scan(&ok)
+	if err != nil {
+		return false, fmt.Errorf("store: sync check grantor %s: %w", user, err)
+	}
+	return ok, nil
 }
 
 // observe advances this node's clock past a reading seen on another node, so

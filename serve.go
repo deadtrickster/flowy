@@ -263,13 +263,23 @@ func (s *server) routes() http.Handler {
 	api.HandleFunc("POST /api/forge/sync", s.handleForgeSync)
 	// The mock's control surface, and only when the mock is what this node
 	// selected: on a node talking to GitHub these routes do not exist.
+	//
+	// Every one of them is the operator's, and the gate goes on here rather
+	// than inside the handlers so that it is one decision instead of six: a
+	// route added to this block cannot forget it. They are the other side of
+	// the conversation - who the forge says it is, what a reviewer said, when
+	// the forge refuses to answer - and any token at all could drive them,
+	// which made an artifact's whole forge story something a stranger writes.
 	if s.mockForge != nil {
-		api.HandleFunc("POST /api/forge/mock/state", s.handleMockState)
-		api.HandleFunc("POST /api/forge/mock/comment", s.handleMockComment)
-		api.HandleFunc("GET /api/forge/mock/issue", s.handleMockIssue)
-		api.HandleFunc("POST /api/forge/mock/fail", s.handleMockFail)
-		api.HandleFunc("POST /api/forge/mock/login", s.handleMockLogin)
-		api.HandleFunc("POST /api/forge/mock/on-file", s.handleMockOnFile)
+		mock := func(pattern string, h http.HandlerFunc) {
+			api.HandleFunc(pattern, s.operatorOnly(h))
+		}
+		mock("POST /api/forge/mock/state", s.handleMockState)
+		mock("POST /api/forge/mock/comment", s.handleMockComment)
+		mock("GET /api/forge/mock/issue", s.handleMockIssue)
+		mock("POST /api/forge/mock/fail", s.handleMockFail)
+		mock("POST /api/forge/mock/login", s.handleMockLogin)
+		mock("POST /api/forge/mock/on-file", s.handleMockOnFile)
 	}
 	// Replication. A peer is a client like any other: it holds a token, it
 	// resolves to a principal, and it pulls what that principal may read.
@@ -318,11 +328,14 @@ func (s *server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	resp := healthzResponse{
-		OK:       true,
-		Node:     s.node,
-		Version:  version,
-		DB:       "up",
-		HLC:      s.db.Clock().Pack(),
+		OK:      true,
+		Node:    s.node,
+		Version: version,
+		DB:      "up",
+		// Reading, not Pack: reporting the clock is not a use of it. Pack goes
+		// through Now, which advances the counter, so every probe of an open
+		// endpoint spent a reading nothing was ever written under.
+		HLC:      s.db.Clock().Reading().Pack(),
 		UptimeMS: time.Since(s.started).Milliseconds(),
 	}
 

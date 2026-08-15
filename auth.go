@@ -71,6 +71,25 @@ func (s *server) isOperator(ctx context.Context, r *http.Request) bool {
 	return p.UserID != "" && p.UserID == s.operator
 }
 
+// operatorOnly wraps a handler so that nobody but this node's operator reaches
+// it, answering 403 to everyone else.
+//
+// It is a wrapper rather than a line at the top of each handler because a set
+// of routes that all need the same gate is a set where one of them eventually
+// does not have it - which is exactly what happened to the mock forge's control
+// surface, where some routes checked and the rest answered 200 to any token
+// that authenticated at all.
+func (s *server) operatorOnly(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !s.isOperator(r.Context(), r) {
+			writeJSON(w, http.StatusForbidden,
+				errorBody("this is the operator's, and you are not the operator"))
+			return
+		}
+		h(w, r)
+	}
+}
+
 // bearerToken pulls the token out of the Authorization header.
 func bearerToken(r *http.Request) (string, bool) {
 	header := r.Header.Get("Authorization")

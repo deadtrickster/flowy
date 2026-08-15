@@ -145,3 +145,77 @@ func rows(t *testing.T, db *DB, table, id string) int {
 	}
 	return n
 }
+
+// TestUpdateTaskEventIsAllOrNothing is the same rule for a task move.
+//
+// Delegating a task and moving its state were each two writes with nothing
+// holding them together: the row moved, then the entry that accounts for the
+// move was appended. A failure between them left a task in a state its own
+// thread does not explain - and because each row carries its own reading and
+// replicates on its own, the half that landed reached every peer while the half
+// that did not never existed anywhere.
+func TestUpdateTaskEventIsAllOrNothing(t *testing.T) {
+	ctx, db := open(t)
+
+	project := "pt-" + ulid.NewString()
+	from := &User{Handle: "from-" + ulid.NewString()}
+	to := &User{Handle: "to-" + ulid.NewString()}
+	for _, u := range []*User{from, to} {
+		if err := db.InsertUser(ctx, u); err != nil {
+			t.Fatalf("insert user: %v", err)
+		}
+	}
+	art := &Artifact{Type: "bug", Project: &project, OwnerUser: from.ID, Title: "the work"}
+	if err := db.UpsertArtifact(ctx, art); err != nil {
+		t.Fatalf("upsert artifact: %v", err)
+	}
+	grant, task, opening := assignmentParts(t, db, project, from, to, art)
+	if err := db.WriteAssignment(ctx, grant, task, opening); err != nil {
+		t.Fatalf("write assignment: %v", err)
+	}
+
+	move := func(state, id string) *Event {
+		return &Event{
+			ID: id, Type: "task", Project: &project, Room: "handoffs", Thread: task.Thread,
+			Parents: []string{}, Actor: to.ID, Artifact: art.ID,
+			Body: task.State + "->" + state,
+		}
+	}
+
+	// The happy path first, so the failure below is a failure of the write and
+	// not of the fixture. The row and the entry land together, under one
+	// reading, stamped on both.
+	entry := move(TaskDone, ulid.NewString())
+	was := task.State
+	task.State = TaskDone
+	if err := db.UpdateTaskEvent(ctx, task, entry); err != nil {
+		t.Fatalf("move task: %v", err)
+	}
+	if task.HLC == 0 || task.HLC != entry.SeqHLC {
+		t.Fatalf("the move read %d and its entry %d, want one reading", task.HLC, entry.SeqHLC)
+	}
+	if rows(t, db, "events", entry.ID) != 1 {
+		t.Fatal("the entry is not there after a successful move")
+	}
+	if here, err := db.GetTask(ctx, task.ID); err != nil {
+		t.Fatalf("read back: %v", err)
+	} else if here.State != TaskDone {
+		t.Fatalf("the task is at %q, want %s", here.State, TaskDone)
+	}
+
+	// And now one whose entry cannot be written, because its id is taken. The
+	// move must not outlive it.
+	collides := move(TaskOpen, entry.ID)
+	task.State = TaskOpen
+	if err := db.UpdateTaskEvent(ctx, task, collides); err == nil {
+		t.Fatal("a move whose entry collides with an existing event id reported success")
+	}
+	here, err := db.GetTask(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if here.State != TaskDone {
+		t.Errorf("the task is at %q, want %s: the move outlived the entry it needed, and %q "+
+			"is a state its own thread never accounts for", here.State, TaskDone, was)
+	}
+}

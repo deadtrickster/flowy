@@ -348,6 +348,21 @@ func pullFromPeer(ctx context.Context, db *store.DB, client *http.Client,
 		addCounts(report.Refused, res.Refused)
 		report.Reasons = append(report.Reasons, res.Reasons...)
 
+		// A refused row holds the cursor, exactly as it does on the push side.
+		// The cursor is a promise that everything below it has been offered and
+		// dealt with, and a row this node would not take was not: moving past
+		// it is how that row is never offered again and the two nodes quietly
+		// differ, with the refusal buried in one run's report. So the bookmark
+		// stays where it is and this run stops pulling. The next one is offered
+		// the same page - which clears a refusal that was only about the order
+		// rows arrived in, and leaves a real one where somebody can read it.
+		//
+		// A row this node already holds is not a refusal: it loses its merge
+		// and is ignored, so our own rows coming back at us do not wedge this.
+		if refused := count(res.Refused); refused > 0 {
+			break
+		}
+
 		// A page that carries rows but no higher cursor cannot be paged past;
 		// stop rather than ask for it again forever.
 		if got.SyncSet.HWM <= cursor {

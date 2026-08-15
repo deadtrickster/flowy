@@ -193,6 +193,9 @@ func memWrite(ctx context.Context, m *mcpServer, p *store.Principal, raw json.Ra
 	// What the scope is stored as. An update that names no scope keeps the
 	// item's own visibility instead - see below.
 	visibility := visibilityOf(scope)
+	// Where a non-personal item lives. A create writes where the token is; an
+	// update keeps the home the item already had - see below.
+	var home *string
 
 	art := &store.Artifact{
 		ID:     a.ID,
@@ -249,6 +252,14 @@ func memWrite(ctx context.Context, m *mcpServer, p *store.Principal, raw json.Ra
 		}
 		art.Discovery, art.Severity, art.Related = old.Discovery, old.Severity, old.Related
 		art.FilePath, art.Fields = old.FilePath, old.Fields
+		// Where the item lives is not something an update says. It used to be
+		// rewritten to the token's own project every time, so an owner holding
+		// tokens in two projects moved their own item out of one and into the
+		// other by editing its title - silently, and past the rule POST
+		// /api/artifacts and the merge both keep, which is that a principal
+		// writes in its own project or not at all. An item that came from
+		// somewhere else keeps that home and is refused below.
+		home = old.Project
 	} else if art.Title == "" && strings.TrimSpace(art.Body) == "" {
 		return nil, errors.New("a memory item needs a title or a body")
 	}
@@ -267,8 +278,17 @@ func memWrite(ctx context.Context, m *mcpServer, p *store.Principal, raw json.Ra
 			return nil, fmt.Errorf("this token has no project, so it can only write scope=personal, not %s",
 				scopeOf(visibility))
 		}
-		home := p.Project
-		art.Project = &home
+		if home == nil || *home == "" {
+			// A create, or an update of an item that had no project until now:
+			// a personal one being given a scope. Either way it lands here.
+			here := p.Project
+			home = &here
+		}
+		if *home != p.Project {
+			return nil, fmt.Errorf("memory item %s lives in project %s, and this token writes in %s",
+				art.ID, *home, p.Project)
+		}
+		art.Project = home
 	}
 
 	if err := m.db.UpsertArtifact(ctx, art); err != nil {

@@ -424,13 +424,54 @@ func (s *server) handleAppendEvent(w http.ResponseWriter, r *http.Request) {
 		Actor:    actor,
 		Artifact: req.Artifact,
 		Body:     req.Body,
-		Meta:     req.Meta,
+		Meta:     speakerStripped(req.Meta),
 	}
 	if err := s.db.AppendEvent(r.Context(), e); err != nil {
 		writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
 		return
 	}
 	writeJSON(w, http.StatusOK, e)
+}
+
+// actorMetaPrefix is what the handlers that mint an event write the speaker
+// under: actor_kind says whether a person or their agent said it, actor_user
+// says which person. The console renders both, and the gate reads them back to
+// tell an agent's message from its user's.
+const actorMetaPrefix = "actor_"
+
+// speakerStripped drops the speaker keys out of meta a client handed over.
+//
+// The actor column has been the token's since the forgery in it was fixed, but
+// meta rode in verbatim, and every reader of an event that cares who is
+// speaking reads meta - so `{"actor_kind":"agent","actor_user":"somebody"}` on
+// a hand-appended event was the same forgery through a second door: the row is
+// correctly signed and reads, everywhere it is rendered, as somebody else.
+// Meta is still carried, because it is where a client puts what an event is
+// about; it is simply not a channel for saying who is talking.
+//
+// Anything that is not a JSON object is dropped whole: there is nothing to
+// strip out of it and nothing that needs it through.
+func speakerStripped(meta json.RawMessage) json.RawMessage {
+	if len(meta) == 0 {
+		return nil
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(meta, &fields); err != nil {
+		return nil
+	}
+	for k := range fields {
+		if strings.HasPrefix(k, actorMetaPrefix) {
+			delete(fields, k)
+		}
+	}
+	if len(fields) == 0 {
+		return nil
+	}
+	clean, err := json.Marshal(fields)
+	if err != nil {
+		return nil
+	}
+	return clean
 }
 
 // handleListEvents reads the log in order, filtered to what the principal may
@@ -513,9 +554,15 @@ func (s *server) handleCreateGrant(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, errorBody("subject is required for a share"))
 			return
 		}
-		if req.ToProject == "" {
-			req.ToProject = *art.Project
-		}
+		// A share is about one artifact, and both ends of the edge it writes
+		// follow from that: it lands where the artifact lives, and it comes
+		// from where the owner handing it over is. Neither is the caller's to
+		// say, and to_project was only defaulted while from_project was never
+		// looked at at all - so a share carried whatever edge its body claimed,
+		// and a grants table read by project rather than by subject would have
+		// believed it.
+		req.ToProject = *art.Project
+		req.FromProject = p.Project
 	} else {
 		if req.FromProject == "" || req.ToProject == "" {
 			writeJSON(w, http.StatusBadRequest,

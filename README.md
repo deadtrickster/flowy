@@ -1252,8 +1252,9 @@ A review found ten defects, and this slice fixes all ten. Each one has a check
 in `run-tests.sh` that fails on the code as it was and passes on the code as it
 is - the run below verifies that by reverting the source and leaving the checks
 in place, which is the only way to know a regression test is testing anything.
-A re-review of this slice found ten more, mostly in the push gate it added, and
-a third round found eight behind those - the two sections after this one.
+A re-review of this slice found ten more, mostly in the push gate it added, a
+third round found eight behind those, a fourth found eight more, and a fifth
+found ten - the four sections after this one.
 
 Two of them change how a node is configured, so they are worth reading before
 upgrading one:
@@ -1679,6 +1680,117 @@ the event and the link together, and a failure recording them answers with the
 issue number and URL it could not write down - the person reading that error is
 the only one who can go and look.
 
+## The fifth round of security fixes
+
+The fourth round was reviewed again, and ten more came out of it. The theme is
+that a rule kept in one place was not kept in the other: the pull half of the
+merge took two things the push half has always refused, the pull half of the
+driver stepped past a row it had just refused while the push half holds, and a
+set of routes that all needed the same gate had it on some of them. Same rule as
+before: one check in `run-tests.sh` per defect, each of them verified to fail on
+the source it fixes.
+
+Nothing here changes how a node is configured.
+
+**HIGH - a pulled grant could open the puller's own project.** `checkGrant` in
+`modePull` asked whether a grant reaches this principal at all, and a
+project-wide grant naming this principal's project as `to_project` reaches it by
+definition - so a peer serving a page could write one with a `from_project` of
+its own choosing and any `granted_by` it liked, and from the next pull onwards
+that project reads this one. Merging is last-writer-wins, so a high enough
+reading makes it permanent. Federation never needs that: a grant that opens this
+project up is written here, by somebody who is here, and travels outwards. So
+one is taken on the pull side only when `granted_by` resolves to a local user
+who holds a principal in the project being opened. Grants between other
+projects, riding a page this principal may read, are untouched - refusing those
+would be refusing federation.
+
+**HIGH - the mock forge's control surface answered any token.** The routes that
+play the other side of the conversation - the reviewer who closes an issue, the
+reviewer who comments, who the forge says it is logged in as, and when the next
+call fails - existed for anybody who authenticated at all. A reader of one
+artifact could close somebody else's issue, put words in a reviewer's mouth, and
+rename the login the node posts under, which is the whole of the evidence the
+bridge works from. All six are behind the operator now, and the gate is a
+wrapper applied where they are registered rather than a line inside each
+handler: a set of routes that all need the same check is a set where one of them
+eventually does not have it, which is what happened here.
+
+**HIGH - a refused pull moved the cursor past the row it refused.** The push
+side stopped doing this a round ago; the pull side went on advancing its
+bookmark to the page's high water mark whatever the merge said about the rows in
+it. A cursor is a promise that everything below it has been offered and dealt
+with, and a row this node would not take was not: moving past it is how that row
+is never offered again and the two nodes quietly differ, with the reason buried
+in one run's report. The pull loop now stops before persisting the cursor when a
+page carried a refusal. A row that merely loses its merge is not a refusal, so
+our own rows coming back at us do not wedge it.
+
+**MEDIUM/HIGH - a memory update moved the item into the token's project.**
+`mem_write`'s update path rewrote `project` to the principal's home every time.
+An owner holding tokens in two projects moved their own item out of one and into
+the other by editing its title - silently, and past the rule that
+`POST /api/artifacts` and `checkArtifact` both keep, which is that a principal
+writes in its own project or not at all. An update keeps the home the item
+already has now, and one that would land outside the token's project is refused
+rather than performed. A create still writes where the token is, and a personal
+item being given a scope for the first time lands there too.
+
+**MEDIUM - a minted type was refused at one door and not the other.**
+`checkEvent` refuses a pushed `status`, `task` or `forge` event because it is a
+claim the pusher is not entitled to make. A pulled one was taken without
+question - which is a peer writing this node's own history for it: a lifecycle
+move nobody made, a handoff nobody handed over, and every peer downstream then
+holds it too. The trail is only worth reading if the only way into it is to have
+done the thing, so the pull side refuses them as well. Chat is not minted and
+still replicates in both directions, because it carries no authority the peer did
+not already have.
+
+**MEDIUM - a task moved in two writes.** `handleDelegateTask` and
+`handleTaskState` each wrote the row and then appended the entry that accounts
+for the move, with nothing holding the two together. A failure between them left
+a task in a state its own thread does not explain - and because each row carries
+its own reading and replicates on its own, the half that landed reached every
+peer while the half that did not never existed anywhere. `UpdateTaskEvent` is
+the same shape as `MoveArtifactStatus`: one reading taken before the first
+write, stamped on the row and on the entry, both inside one `BeginTx`.
+
+**LOW/MEDIUM - `/healthz` spent a clock reading to report one.** The response
+carried `Clock().Pack()`, which goes through `Now()`, which advances the
+counter. So looking at the clock was a use of it, on an open endpoint that needs
+no credential: a stranger could walk the logical counter up one probe at a time,
+spending readings nothing was ever written under. `Clock().Reading()` returns
+where the clock stands without moving it, and that is what the health check
+reports. `Now()` is still the only way to get a reading to stamp a row with,
+because two writes must never share one.
+
+**LOW - a share believed the projects its body named.** The share branch of
+`POST /api/grants` defaulted `to_project` only when the body left it empty and
+never looked at `from_project` at all, so a share was recorded along whatever
+edge the caller claimed. Both ends of a share follow from the artifact and from
+the owner handing it over, and neither is the caller's to say: `to_project` is
+forced to the artifact's project and `from_project` to the caller's, whatever
+the body holds.
+
+**LOW - the merge moved the clock before it knew the page had landed.**
+`syncApply` observed each row's reading as it applied it, inside the transaction
+and before the commit that decides whether any of those rows exist. A page that
+failed halfway rolled its writes back and left the clock standing past readings
+this node does not hold, and nothing puts that back: every write afterwards is
+stamped above rows that are not here, so the peer that does have them loses
+every merge against a node that never applied them. The highest applied reading
+is observed once, after the commit succeeds.
+
+**LOW - `meta` was a second way to sign an event.** The `actor` column has been
+the token's since the forgery in it was fixed, but `meta` rode in verbatim - and
+every reader that cares who is speaking reads `meta`, because that is where
+`actor_kind` and `actor_user` live. `{"actor_kind":"agent","actor_user":"…"}` on
+a hand-appended event is the same forgery through the second door: the row is
+correctly signed and reads, everywhere it is rendered, as somebody it is not.
+`POST /api/events` strips every `actor_*` key out of client-supplied meta now.
+The rest of meta is still carried, because it is where a client puts what an
+event is about; it is simply not a channel for saying who is talking.
+
 ## Deployment
 
 The store speaks the Postgres wire and nothing else. The spine of `schema.sql`
@@ -1701,14 +1813,16 @@ query. Nothing above it depends on anything below it.
 
 ## Phase 6 status
 
-Green. `./run-tests.sh` reports `passed: 240 failed: 0` with Go 1.22, Node 22.14
+Green. `./run-tests.sh` reports `passed: 250 failed: 0` with Go 1.22, Node 22.14
 and Postgres 16 - the 200 checks Phase 6 ended with, all still green, plus the
 12 the first security slice added, the 12 the second one did, the 8 from the
-third and the 8 from the fourth: one per defect above, each of them verified to
-fail on the source it fixes. Two of the older checks changed with the fixes
-rather than around them: a deleted artifact now reads as `404` on both nodes
-with the tombstone asserted through `psql`, and the `?counts=1` health check no
-longer claims to be reporting the spine tables to nobody in particular. Phase 6's own 22 were: capability selection, filing, the conflict and permission cases, the
+third, the 8 from the fourth and the 10 from the fifth: one per defect above,
+each of them verified to fail on the source it fixes. Three of the older checks
+changed with the fixes rather than around them: a deleted artifact now reads as
+`404` on both nodes with the tombstone asserted through `psql`, the `?counts=1`
+health check no longer claims to be reporting the spine tables to nobody in
+particular, and the phase 6 checks drive the mock forge's control routes with
+the operator's token, because that is whose they are. Phase 6's own 22 were: capability selection, filing, the conflict and permission cases, the
 close-to-done move, the reviewer loop in both directions, the no-op sync, the
 untouched `gh`, and six `psql` checks over what all of it wrote. Phases 0 to 5
 stayed green throughout, and mostly by construction - the three endpoints are

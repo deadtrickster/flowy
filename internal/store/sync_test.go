@@ -433,3 +433,179 @@ func TestSyncApplyAsRefusesAForgedEvent(t *testing.T) {
 		t.Fatalf("the pusher's own event was not written: %v", err)
 	}
 }
+
+// TestPulledProjectGrantNeedsALocalOpener is the one row a peer could write
+// itself.
+//
+// A project-wide grant is a capability that lands in to_project. A peer serving
+// a page could name this principal's own project there, name a from_project of
+// its own, say anybody at all granted it, and the pull side applied it without
+// asking anything: from the next pull onwards the peer's project reads this one,
+// and because merging is last-writer-wins the forgery outlives being noticed.
+//
+// So a grant that opens this principal's project up is taken only when its
+// grantor is somebody who holds a principal here in that project. Grants between
+// other projects, riding a page this principal may read, are federation and are
+// untouched.
+func TestPulledProjectGrantNeedsALocalOpener(t *testing.T) {
+	ctx, db := open(t)
+
+	home := "ph-" + ulid.NewString()   // the puller's project: the one being opened
+	theirs := "pi-" + ulid.NewString() // the peer's
+	third := "pj-" + ulid.NewString()  // somebody else's entirely
+
+	me := &User{Handle: "opener-" + ulid.NewString()}
+	if err := db.InsertUser(ctx, me); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+	// The token is what makes me a principal of home on this node, which is
+	// what the check looks for.
+	if err := db.InsertToken(ctx, &Principal{
+		Token: "t-" + ulid.NewString(), UserID: me.ID, Project: home,
+	}); err != nil {
+		t.Fatalf("insert token: %v", err)
+	}
+	puller := &Principal{UserID: me.ID, Project: home}
+
+	at := db.Clock().Pack()
+	forged := Grant{
+		ID: ulid.NewString(), FromProject: theirs, ToProject: home, Cap: "read",
+		GrantedBy: "u-stranger-" + ulid.NewString(), HLC: at + 1, Node: "peer-node",
+	}
+	// The same shape, opened by somebody who is here and is in home: that is a
+	// grant this node could have issued, arriving back from a peer.
+	ours := Grant{
+		ID: ulid.NewString(), FromProject: theirs, ToProject: home, Cap: "read",
+		GrantedBy: me.ID, HLC: at + 2, Node: "peer-node",
+	}
+	// And one between two projects that are neither of ours, reaching this
+	// principal because it names them as the subject. Refusing this would be
+	// refusing federation.
+	elsewhere := Grant{
+		ID: ulid.NewString(), FromProject: third, ToProject: theirs, Cap: "read",
+		Subject: me.ID, GrantedBy: "u-" + ulid.NewString(), HLC: at + 3, Node: "peer-node",
+	}
+
+	res, err := db.SyncApplyFrom(ctx, puller, &SyncSet{Grants: []Grant{forged, ours, elsewhere}})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if res.Applied["grants"] != 2 || res.Refused["grants"] != 1 {
+		t.Fatalf("applied %d and refused %d grants, want 2 and 1: %+v",
+			res.Applied["grants"], res.Refused["grants"], res.Reasons)
+	}
+	if grantRows(t, db, forged.ID) != 0 {
+		t.Errorf("the forged grant opened %s up: %s says anyone can", home, forged.GrantedBy)
+	}
+	if grantRows(t, db, ours.ID) != 1 {
+		t.Errorf("a grant opened by a principal of %s did not come back", home)
+	}
+	if grantRows(t, db, elsewhere.ID) != 1 {
+		t.Errorf("a grant between %s and %s was refused: that is federation", third, theirs)
+	}
+}
+
+// grantRows counts the rows of the grants table with one id.
+func grantRows(t *testing.T, db *DB, id string) int {
+	t.Helper()
+	var n int
+	if err := db.SQL().QueryRow(`SELECT count(*) FROM grants WHERE id = $1`, id).Scan(&n); err != nil {
+		t.Fatalf("count grants: %v", err)
+	}
+	return n
+}
+
+// TestPulledMintedEventIsRefused holds the minted rule on the pull side too.
+//
+// checkEvent refuses a pushed status, task or forge event because it is a claim
+// the pusher is not entitled to make. A pulled one was taken without question,
+// which is the same forgery through the other door: a peer serving a page wrote
+// this node's own history for it - a lifecycle move nobody made, a handoff
+// nobody handed over - and every peer downstream then held it as well.
+//
+// The chat event beside it still lands: refusing conversations would be
+// refusing federation, and chat carries no authority the peer did not already
+// have.
+func TestPulledMintedEventIsRefused(t *testing.T) {
+	ctx, db := open(t)
+
+	project := "pn-" + ulid.NewString()
+	puller := &Principal{UserID: "u-" + ulid.NewString(), Project: project}
+	at := db.Clock().Pack()
+
+	said := &Event{ID: ulid.NewString(), Type: "chat", Project: &project,
+		Actor: "u-over-there", Body: "said on the other node", SeqHLC: at + 1, Node: "peer-node"}
+
+	res, err := db.SyncApplyFrom(ctx, puller, &SyncSet{Events: []*Event{said}})
+	if err != nil {
+		t.Fatalf("apply the chat: %v", err)
+	}
+	if res.Applied["events"] != 1 {
+		t.Fatalf("a pulled chat event applied %d rows, want 1: %+v", res.Applied["events"], res.Reasons)
+	}
+
+	for _, kind := range []string{"status", "task", "forge"} {
+		minted := &Event{ID: ulid.NewString(), Type: kind, Project: &project,
+			Actor: "u-over-there", Body: "open->done", SeqHLC: at + 10, Node: "peer-node"}
+		res, err := db.SyncApplyFrom(ctx, puller, &SyncSet{Events: []*Event{minted}})
+		if err != nil {
+			t.Fatalf("apply the %s event: %v", kind, err)
+		}
+		if res.Applied["events"] != 0 || res.Refused["events"] != 1 {
+			t.Errorf("a pulled %s event applied %d and was refused %d times, want 0 and 1: %+v",
+				kind, res.Applied["events"], res.Refused["events"], res.Reasons)
+		}
+		if _, err := db.GetEvent(ctx, minted.ID); err == nil {
+			t.Errorf("a %s event this node never did is in its own trail", kind)
+		}
+	}
+}
+
+// TestSyncApplyObservesTheClockAfterTheCommit is where the clock is allowed to
+// learn what a page carried.
+//
+// The merge used to observe each row's reading as it applied it, inside the
+// transaction and before the commit that decides whether any of those rows
+// exist. A page that failed halfway rolled its writes back and left the clock
+// standing past readings this node does not hold - and nothing puts that back.
+// Every write afterwards is stamped above rows that are not here, so the peer
+// that does have them loses every merge against a node that never applied them.
+func TestSyncApplyObservesTheClockAfterTheCommit(t *testing.T) {
+	ctx, db := open(t)
+
+	project := "pq-" + ulid.NewString()
+	owner := "u-" + ulid.NewString()
+	at := db.Clock().Pack()
+	applied := at + 1000
+
+	// One good artifact and, behind it, an event whose meta is not JSON: the
+	// insert fails, so the whole page rolls back with the artifact in it.
+	page := &SyncSet{
+		Artifacts: []*Artifact{remote(ulid.NewString(), applied, &project, owner, "the good one")},
+		Events: []*Event{{
+			ID: ulid.NewString(), Type: "chat", Project: &project, Actor: owner,
+			Parents: []string{}, Body: "the one that cannot be written",
+			Meta: []byte(`{not json`), SeqHLC: at + 2000, Node: "peer-node",
+		}},
+	}
+	if _, err := db.SyncApply(ctx, page); err == nil {
+		t.Fatal("a page whose event cannot be written reported success")
+	}
+
+	// Nothing was applied, so nothing should have reached the clock.
+	if now := db.Clock().Reading().Pack(); now >= applied {
+		t.Errorf("the clock reads %d after a page that rolled back, which is past the %d it "+
+			"carried: the node is now stamping above rows it does not have", now, applied)
+	}
+
+	// And the happy path still moves it: the guarantee is that a reading is
+	// observed once it is committed, not that it is never observed.
+	good := remote(ulid.NewString(), applied, &project, owner, "the one that lands")
+	if _, err := db.SyncApply(ctx, &SyncSet{Artifacts: []*Artifact{good}}); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if now := db.Clock().Reading().Pack(); now < applied {
+		t.Errorf("the clock reads %d after committing a row at %d, want at least that",
+			now, applied)
+	}
+}

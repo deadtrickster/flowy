@@ -312,13 +312,16 @@ func (s *server) handleDelegateTask(w http.ResponseWriter, r *http.Request) {
 	was := task.State
 	task.AssigneeAgent = agent.ID
 	task.State = store.TaskDelegated
-	if err := s.db.UpdateTask(ctx, task); err != nil {
+
+	// The move and its entry, or neither. They were two writes, and a failure
+	// between them left a task in a state its own thread does not account for -
+	// and the half that landed replicated on its own, so every peer held it.
+	event, err := s.taskEvent(r, task, was+"->"+task.State, agent.ID)
+	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
 		return
 	}
-
-	event, err := s.appendTaskEvent(r, task, was+"->"+task.State, agent.ID)
-	if err != nil {
+	if err := s.db.UpdateTaskEvent(ctx, task, event); err != nil {
 		writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
 		return
 	}
@@ -361,13 +364,15 @@ func (s *server) handleTaskState(w http.ResponseWriter, r *http.Request) {
 
 	was := task.State
 	task.State = req.State
-	if err := s.db.UpdateTask(r.Context(), task); err != nil {
+
+	// One write, for the same reason the delegate above is one: a state a task
+	// is in and the record of it getting there are one fact.
+	event, err := s.taskEvent(r, task, was+"->"+task.State, "")
+	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
 		return
 	}
-
-	event, err := s.appendTaskEvent(r, task, was+"->"+task.State, "")
-	if err != nil {
+	if err := s.db.UpdateTaskEvent(r.Context(), task, event); err != nil {
 		writeJSON(w, http.StatusInternalServerError, errorBody(err.Error()))
 		return
 	}
@@ -425,11 +430,14 @@ func (s *server) taskParty(w http.ResponseWriter, r *http.Request) (*store.Task,
 	return task, true
 }
 
-// appendTaskEvent records a move in the task's own thread, as a child of
+// taskEvent builds a move's entry in the task's own thread, as a child of
 // whatever was last said there. The thread is the conversation and the audit
 // trail at once: reading it in order tells you what was said and what happened
 // between the messages.
-func (s *server) appendTaskEvent(
+//
+// It is built rather than written: the move and its entry go in together, in
+// UpdateTaskEvent.
+func (s *server) taskEvent(
 	r *http.Request, task *store.Task, body, agent string,
 ) (*store.Event, error) {
 	p := principalOf(r)
@@ -466,9 +474,6 @@ func (s *server) appendTaskEvent(
 		Artifact: task.Artifact,
 		Body:     body,
 		Meta:     json.RawMessage(meta),
-	}
-	if err := s.db.AppendEvent(r.Context(), e); err != nil {
-		return nil, err
 	}
 	return e, nil
 }

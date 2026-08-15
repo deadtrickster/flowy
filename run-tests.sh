@@ -2203,6 +2203,10 @@ the_two_databases_agree_row_for_row() {
 # conversation - the reviewer who closes an issue and the reviewer who comments
 # on it - through the mock's own control routes, which exist only when the mock
 # is what FLOWY_FORGE picked.
+#
+# Those control routes are the operator's, so the token the mock_* helpers are
+# handed is the operator's throughout: being the forge is being the machine, not
+# being one of the people on it - see the LOW/MED check below.
 
 # forge_file TOKEN ARTIFACT REPO - file an artifact as an issue.
 forge_file() {
@@ -2340,7 +2344,7 @@ a_stranger_cannot_file_or_sync_it() {
 
 the_issue_is_closed_on_the_forge() {
 	recall
-	mock_state "$TOKEN_A_PC" o/r "$ISSUE" closed || return 1
+	mock_state "$TOKEN_OP" o/r "$ISSUE" closed || return 1
 	want_eq "status" "$API_STATUS" 200 || return 1
 	want_eq "the issue is closed" "$(jqv .state)" closed || return 1
 	printf 'o/r#%s closed by the reviewer\n' "$ISSUE"
@@ -2381,7 +2385,7 @@ refreshing_a_closed_issue_moves_nothing() {
 
 the_reviewer_comments_on_the_issue() {
 	recall
-	mock_comment "$TOKEN_A_PC" o/r "$ISSUE" reviewer "does it flimberwock at 3000rpm?" || return 1
+	mock_comment "$TOKEN_OP" o/r "$ISSUE" reviewer "does it flimberwock at 3000rpm?" || return 1
 	want_eq "status" "$API_STATUS" 200 || return 1
 	want_eq "by the reviewer" "$(jqv .author)" reviewer || return 1
 	remember REVIEWCOMMENT "$(jqv .id)"
@@ -2419,7 +2423,7 @@ a_reply_in_the_thread_reaches_the_forge() {
 	want_eq "nothing new came in" "$(jqv .pulled)" 0 || return 1
 	want_eq "and the reply went out" "$(jqv .pushed)" 1 || return 1
 
-	mock_issue "$TOKEN_A_PC" o/r "$ISSUE" || return 1
+	mock_issue "$TOKEN_OP" o/r "$ISSUE" || return 1
 	want_eq "the forge received it, posted as the node" \
 		"$(jqv '[.comments[] | select(.author == "flowy"
 		         and (.body | test("flimberwocks louder above 4000rpm")))] | length')" 1 || return 1
@@ -2445,7 +2449,7 @@ syncing_with_nothing_new_is_a_no_op() {
 	api GET "$TOKEN_A_PC" "/api/chat/forge?thread=$FORGETHREAD" || return 1
 	local events comments hlc
 	events="$(jqv '.events | length')"
-	mock_issue "$TOKEN_A_PC" o/r "$ISSUE" || return 1
+	mock_issue "$TOKEN_OP" o/r "$ISSUE" || return 1
 	comments="$(jqv '.comments | length')"
 	api GET "$TOKEN_A_PC" "/api/artifact/$FORGEBUG" || return 1
 	hlc="$(jqv .hlc)"
@@ -2459,7 +2463,7 @@ syncing_with_nothing_new_is_a_no_op() {
 
 	api GET "$TOKEN_A_PC" "/api/chat/forge?thread=$FORGETHREAD" || return 1
 	want_eq "no new events" "$(jqv '.events | length')" "$events" || return 1
-	mock_issue "$TOKEN_A_PC" o/r "$ISSUE" || return 1
+	mock_issue "$TOKEN_OP" o/r "$ISSUE" || return 1
 	want_eq "no new comments" "$(jqv '.comments | length')" "$comments" || return 1
 	api GET "$TOKEN_A_PC" "/api/artifact/$FORGEBUG" || return 1
 	want_eq "and the artifact was not written at all" "$(jqv .hlc)" "$hlc" || return 1
@@ -2665,11 +2669,11 @@ a_refused_reply_is_not_posted_twice() {
 	done
 
 	# The forge accepts one comment and refuses the next.
-	api POST "$TOKEN_A_PC" /api/forge/mock/fail '{"after": 1}' || return 1
+	api POST "$TOKEN_OP" /api/forge/mock/fail '{"after": 1}' || return 1
 	want_eq "the mock is armed to refuse" "$API_STATUS" 200 || return 1
 	forge_sync "$TOKEN_A_PC" "$id" || return 1
 	want_eq "the sync reports the refusal" "$API_STATUS" 502 || return 1
-	mock_issue "$TOKEN_A_PC" o/r "$num" || return 1
+	mock_issue "$TOKEN_OP" o/r "$num" || return 1
 	want_eq "comments on the issue" \
 		"$(jqv '[.comments[] | select(.author == "flowy")] | length')" 1 || return 1
 
@@ -2678,7 +2682,7 @@ a_refused_reply_is_not_posted_twice() {
 	forge_sync "$TOKEN_A_PC" "$id" || return 1
 	want_eq "the second sync" "$API_STATUS" 200 || return 1
 	want_eq "replies it sent" "$(jqv .pushed)" 2 || return 1
-	mock_issue "$TOKEN_A_PC" o/r "$num" || return 1
+	mock_issue "$TOKEN_OP" o/r "$num" || return 1
 	for i in 1 2 3; do
 		want_eq "copies of reply $i" \
 			"$(jqv "[.comments[] | select(.body | test(\"reply number $i about\"))] | length")" 1 ||
@@ -2970,7 +2974,7 @@ a_half_threaded_pull_is_not_threaded_twice() {
 	num="$(jqv .external.number)"
 	thread="$(jqv .external.thread)"
 	for i in 1 2 3 4 5; do
-		mock_comment "$TOKEN_A_PC" o/r "$num" reviewer "inbound $i about the sunroof" || return 1
+		mock_comment "$TOKEN_OP" o/r "$num" reviewer "inbound $i about the sunroof" || return 1
 		want_eq "the reviewer comment $i" "$API_STATUS" 200 || return 1
 	done
 
@@ -3006,7 +3010,7 @@ a_half_threaded_pull_is_not_threaded_twice() {
 the_node_asks_the_forge_who_it_is() {
 	recall
 	local id num
-	api POST "$TOKEN_A_PC" /api/forge/mock/login '{"login":"flowy-bot"}' || return 1
+	api POST "$TOKEN_OP" /api/forge/mock/login '{"login":"flowy-bot"}' || return 1
 	want_eq "the forge is logged in as" "$(jqv .login)" flowy-bot || return 1
 
 	id="$(new_artifact "$TOKEN_A_PC" bug "the horn sticks in the cold")" || return 1
@@ -3015,15 +3019,15 @@ the_node_asks_the_forge_who_it_is() {
 	want_eq "the login the link records" "$(jqv .external.author)" flowy-bot || return 1
 	num="$(jqv .external.number)"
 
-	mock_comment "$TOKEN_A_PC" o/r "$num" flowy-bot "this one came from this node" || return 1
-	mock_comment "$TOKEN_A_PC" o/r "$num" reviewer "and this one did not" || return 1
+	mock_comment "$TOKEN_OP" o/r "$num" flowy-bot "this one came from this node" || return 1
+	mock_comment "$TOKEN_OP" o/r "$num" reviewer "and this one did not" || return 1
 	forge_sync "$TOKEN_A_PC" "$id" || return 1
 	want_eq "the sync" "$API_STATUS" 200 || return 1
 	want_eq "comments it threaded in" "$(jqv .pulled)" 1 || return 1
 	want_eq "and who said the one it took" "$(jqv '.events[0].actor')" "forge:reviewer" || return 1
 
 	# Back to the name the rest of the run uses.
-	api POST "$TOKEN_A_PC" /api/forge/mock/login '{"login":"flowy"}' || return 1
+	api POST "$TOKEN_OP" /api/forge/mock/login '{"login":"flowy"}' || return 1
 	want_eq "the forge is itself again" "$(jqv .login)" flowy || return 1
 	printf 'the node posts as flowy-bot here, and knows its own comments by it\n'
 }
@@ -3035,7 +3039,7 @@ the_node_asks_the_forge_who_it_is() {
 a_comment_made_while_filing_is_not_lost() {
 	recall
 	local id num
-	api POST "$TOKEN_A_PC" /api/forge/mock/on-file \
+	api POST "$TOKEN_OP" /api/forge/mock/on-file \
 		'{"author":"reviewer","body":"answered while the issue was being opened"}' || return 1
 	want_eq "the forge is armed" "$(jqv .armed)" true || return 1
 
@@ -3043,7 +3047,7 @@ a_comment_made_while_filing_is_not_lost() {
 	forge_file "$TOKEN_A_PC" "$id" o/r || return 1
 	want_eq "filed" "$API_STATUS" 200 || return 1
 	num="$(jqv .external.number)"
-	mock_issue "$TOKEN_A_PC" o/r "$num" || return 1
+	mock_issue "$TOKEN_OP" o/r "$num" || return 1
 	want_eq "the comment is on the issue" \
 		"$(jqv '[.comments[] | select(.body | test("while the issue was being opened"))] | length')" 1 ||
 		return 1
@@ -4461,6 +4465,299 @@ say "one operation, one write"
 check "a failure mid-assignment leaves no half of it behind (MED 8)" \
 	go test -count=1 \
 	-run 'TestWriteAssignmentIsAllOrNothing|TestMoveArtifactStatusIsAllOrNothing' ./internal/store
+
+# ------------------------------------------------- the fifth round of fixes
+#
+# The re-review of the fourth: ten more, and the theme is that a rule kept in
+# one place was not kept in the other. The pull side of the merge took a grant
+# that opened the puller's own project up and a minted event the push side has
+# always refused; the pull side of the driver stepped past a row it had just
+# refused, which the push side stopped doing a round ago. The mock forge's
+# control routes - being the other side of the conversation - answered any
+# token at all. A memory update rewrote the project of an item it did not
+# write. A task moved in two writes. /healthz spent a clock reading to report
+# one. A share believed the projects its body named. And meta was a second way
+# to sign an event after the first was closed.
+
+# LOW/MED. Being the forge is being the machine: the mock's control routes say
+# who the forge is logged in as, what a reviewer said, and when the next call
+# fails, and any token that authenticated at all could drive every one of them.
+# A reader of one artifact could close somebody else's issue, put words in a
+# reviewer's mouth, and rename the login the node posts under.
+the_mock_forge_is_the_operators() {
+	recall
+	want_status 403 POST "$TOKEN_A_PC" /api/forge/mock/fail '{"after":1}' || return 1
+	want_status 403 POST "$TOKEN_A_PC" /api/forge/mock/state \
+		'{"repo":"o/r","number":1,"state":"closed"}' || return 1
+	want_status 403 POST "$TOKEN_A_PC" /api/forge/mock/comment \
+		'{"repo":"o/r","number":1,"author":"reviewer","body":"said by a stranger"}' || return 1
+	want_status 403 POST "$TOKEN_A_PC" /api/forge/mock/login '{"login":"impostor"}' || return 1
+	want_status 403 POST "$TOKEN_A_PC" /api/forge/mock/on-file \
+		'{"author":"reviewer","body":"armed by a stranger"}' || return 1
+	want_status 403 GET "$TOKEN_A_PC" '/api/forge/mock/issue?repo=o/r&number=1' || return 1
+
+	# The owner of the filed artifact is no different: this is not about the
+	# artifact, it is about the machine.
+	want_status 403 POST "$TOKEN_B" /api/forge/mock/fail '{"after":1}' || return 1
+	# With no token at all it is the mount that answers, one step earlier.
+	want_status 401 POST "" /api/forge/mock/fail '{"after":1}' || return 1
+
+	# And the operator still drives them, or the gate would be a break rather
+	# than a rule. login back to what phase 6 left it as.
+	want_status 200 POST "$TOKEN_OP" /api/forge/mock/login '{"login":"flowy"}' || return 1
+	printf 'all six mock control routes are the operators, and %s still drives them\n' "$USER_OP"
+}
+
+# HIGH. A refused row held the push cursor a round ago and did not hold the pull
+# one: the driver moved its bookmark to the page's high water mark whatever the
+# merge had said about the rows in it. So a row this node would not take was
+# offered once, refused once, and never offered again - the two nodes differ
+# from then on, with the reason buried in one run's report.
+a_refused_pull_does_not_move_the_cursor() {
+	recall5
+	local peer before after forged art hlc refused
+	peer="http://127.0.0.1:$N5_PORT_A"
+
+	# Settle first, so what follows is about the rows this check writes.
+	sync_round || return 1
+	sync_round || return 1
+	before="$(scalar5 "$N5_DSN_B" "SELECT pull_cursor FROM peers WHERE peer = '$peer'")" || return 1
+
+	# One ordinary row for the page to carry besides the forgery, written
+	# through the API so it is stamped by node A's own clock.
+	want_napi 200 "$N5_PORT_A" POST "$N5_TOKEN_A" /api/artifacts \
+		'{"type":"note","title":"the one behind the refusal","body":"spindlewrack"}' || return 1
+	art="$(jqv .id)"
+
+	# And a grant on node A that opens node B's own project up, signed by
+	# somebody node B has never heard of. It reaches the replication principal -
+	# to_project is that principal's project - and the pull check refuses it.
+	hlc="$(forged_hlc "$N5_PORT_A")" || return 1
+	forged="forged-grant-$$-$(date +%s)"
+	psql5_do "$N5_DSN_A" "INSERT INTO grants
+	    (id, from_project, to_project, subject, artifact, cap, granted_by, hlc, node, tombstone)
+	    VALUES ('$forged', 'pz-nowhere', 'pb', '', '', 'read', 'u-stranger', $hlc, 'nodeA', false)" ||
+		return 1
+
+	sync5_flags "$N5_DSN_B" nodeB "$N5_PORT_A" "$N5_TOKEN_B" --push=false || return 1
+	refused="$(printf '%s' "$SYNC_REPORT" | jq '[.refused[]] | add')"
+	if [ "$refused" -lt 1 ]; then
+		printf 'the pull refused nothing, so there is no cursor to hold: %s\n' "$SYNC_REPORT" >&2
+		return 1
+	fi
+	want_eq "the forged grant on B" \
+		"$(scalar5 "$N5_DSN_B" "SELECT count(*) FROM grants WHERE id = '$forged'")" 0 || return 1
+	after="$(scalar5 "$N5_DSN_B" "SELECT pull_cursor FROM peers WHERE peer = '$peer'")" || return 1
+	want_eq "the cursor after a refused page" "$after" "$before" || return 1
+
+	# The next pull is offered the same row again rather than stepping past it.
+	sync5_flags "$N5_DSN_B" nodeB "$N5_PORT_A" "$N5_TOKEN_B" --push=false || return 1
+	refused="$(printf '%s' "$SYNC_REPORT" | jq '[.refused[]] | add')"
+	if [ "$refused" -lt 1 ]; then
+		printf 'the second pull was not offered the refused row: %s\n' "$SYNC_REPORT" >&2
+		return 1
+	fi
+	after="$(scalar5 "$N5_DSN_B" "SELECT pull_cursor FROM peers WHERE peer = '$peer'")" || return 1
+	want_eq "the cursor after the second refused page" "$after" "$before" || return 1
+
+	# Take the forgery off A and the cursor comes unstuck, which is what makes
+	# this a hold rather than a wedge.
+	psql5_do "$N5_DSN_A" "DELETE FROM grants WHERE id = '$forged'" || return 1
+	sync5_flags "$N5_DSN_B" nodeB "$N5_PORT_A" "$N5_TOKEN_B" --push=false || return 1
+	after="$(scalar5 "$N5_DSN_B" "SELECT pull_cursor FROM peers WHERE peer = '$peer'")" || return 1
+	if [ "$after" -le "$before" ]; then
+		printf 'the cursor never came unstuck: %s -> %s\n' "$before" "$after" >&2
+		return 1
+	fi
+	want_eq "the ordinary row behind it, on B" \
+		"$(scalar5 "$N5_DSN_B" "SELECT count(*) FROM artifacts WHERE id = '$art'")" 1 || return 1
+	sync_round || return 1
+	printf 'held at %s while %s was refused, and moved to %s once it was gone\n' \
+		"$before" "$forged" "$after"
+}
+
+# MED/HIGH. mem_write's update path rewrote the artifact's project to the
+# token's own, every time. An owner holding tokens in two projects moved their
+# own item out of one and into the other by editing its title - silently, and
+# past the rule POST /api/artifacts and the merge both keep, which is that a
+# principal writes in its own project or not at all.
+a_memory_item_does_not_change_project_when_it_is_edited() {
+	recall
+	local id
+	want_tool mem_write "$TOKEN_A_PC" '{
+		"title": "the one that stays in pc",
+		"body": "wrinklethorpe is the word",
+		"scope": "shared"
+	}' || return 1
+	id="$(tv .item.id)"
+	want_eq "the project it landed in" "$(tv .item.project)" pc || return 1
+
+	# pc opens up to pa, so the owner's other token can read the item at all:
+	# what is being tested is the write, not whether the row is visible.
+	want_status 200 POST "$TOKEN_A_PC" /api/grants \
+		'{"from_project":"pa","to_project":"pc"}' || return 1
+	want_tool mem_read "$TOKEN_A" "{\"id\": \"$id\"}" || return 1
+	want_eq "what pa reads" "$(tv .item.project)" pc || return 1
+
+	# The same owner, from pa, edits it.
+	want_tool_fails mem_write "$TOKEN_A" \
+		"$(jq -nc --arg i "$id" '{id: $i, title: "moved to pa behind your back"}')" \
+		"lives in project pc" || return 1
+
+	want_tool mem_read "$TOKEN_A_PC" "{\"id\": \"$id\"}" || return 1
+	want_eq "the project it is still in" "$(tv .item.project)" pc || return 1
+	want_eq "and its title" "$(tv .item.title)" "the one that stays in pc" || return 1
+	want_eq "rows of it that ever moved to pa" \
+		"$(scalar "SELECT count(*) FROM artifacts WHERE id = '$id' AND project = 'pa'")" 0 || return 1
+
+	# The token that does live there still edits it, so the refusal is about
+	# where the item is and not about updates.
+	want_tool mem_write "$TOKEN_A_PC" \
+		"$(jq -nc --arg i "$id" '{id: $i, title: "edited from pc, where it lives"}')" || return 1
+	want_eq "the project after an edit from home" "$(tv .item.project)" pc || return 1
+	printf 'memory %s stays in pc when its owner edits it from pa\n' "$id"
+}
+
+# LOW/MED. /healthz reported the clock through Pack, which goes through Now,
+# which advances it. So looking at the clock was a use of it: an open endpoint
+# with no credential at all walked the logical counter up, one probe at a time,
+# spending readings nothing was ever written under.
+healthz_does_not_spend_the_clock() {
+	recall
+	local first i
+	api GET "" /healthz || return 1
+	first="$(jqv .hlc)"
+	api GET "" /healthz || return 1
+	want_eq "the reading a second probe reports" "$(jqv .hlc)" "$first" || return 1
+	for i in $(seq 1 10); do
+		api GET "" /healthz || return 1
+	done
+	want_eq "the reading after ten more probes" "$(jqv .hlc)" "$first" || return 1
+
+	# And a write still moves it, or the endpoint would be reporting a clock
+	# that has stopped rather than one that is not spent by being read.
+	want_status 200 POST "$TOKEN_A" /api/events \
+		'{"type":"chat","room":"general","body":"quillsprocket"}' || return 1
+	api GET "" /healthz || return 1
+	if [ "$(jqv .hlc)" -le "$first" ]; then
+		printf 'the clock did not move for a write: %s -> %s\n' "$first" "$(jqv .hlc)" >&2
+		return 1
+	fi
+	printf 'twelve probes left the clock at %s; one write moved it to %s\n' "$first" "$(jqv .hlc)"
+}
+
+# LOW. The share branch of POST /api/grants defaulted to_project only when the
+# body left it empty and never looked at from_project at all, so a share was
+# recorded along whatever edge its body claimed. Both ends of a share follow
+# from the artifact and the owner handing it over, and neither is the caller's
+# to say.
+a_share_names_its_own_projects() {
+	recall
+	local id gid
+	id="$(new_artifact "$TOKEN_A_PC" note "the one whose share is corrected")" || return 1
+	api POST "$TOKEN_A_PC" /api/grants \
+		"$(jq -nc --arg a "$id" --arg s "$USER_B" \
+			'{artifact: $a, subject: $s, from_project: "pz-nowhere", to_project: "pz-elsewhere"}')" ||
+		return 1
+	want_eq "share status" "$API_STATUS" 200 || return 1
+	gid="$(jqv .id)"
+	want_eq "where the share lands" "$(jqv .to_project)" pc || return 1
+	want_eq "and where it comes from" "$(jqv .from_project)" pc || return 1
+	want_eq "the artifact it is about" "$(jqv .artifact)" "$id" || return 1
+
+	# The row, not just the response: what a peer replicates is the table.
+	want_eq "the stored edge" \
+		"$(scalar "SELECT from_project || '->' || to_project FROM grants WHERE id = '$gid'")" \
+		'pc->pc' || return 1
+	want_eq "rows of it along the edge the body claimed" \
+		"$(scalar "SELECT count(*) FROM grants WHERE id = '$gid' AND to_project = 'pz-elsewhere'")" \
+		0 || return 1
+
+	# And it still does what a share is for.
+	want_status 200 GET "$TOKEN_B" "/api/artifact/$id" || return 1
+	printf 'share %s was written pc->pc whatever its body said, and still shares %s\n' "$gid" "$id"
+}
+
+# LOW. The actor column has been the token's since the forgery in it was fixed,
+# but meta rode in verbatim - and every reader that cares who is speaking reads
+# meta. `{"actor_kind":"agent","actor_user":"somebody-else"}` on a hand-appended
+# event is the same forgery through the second door: the row is correctly signed
+# and reads, everywhere it is rendered, as somebody it is not.
+an_event_meta_is_not_a_signature() {
+	recall
+	local id served
+	want_status 200 POST "$TOKEN_B" /api/events \
+		"$(jq -nc --arg u "$USER_A" '{type: "chat", room: "general", body: "not who you think",
+		    meta: {actor_kind: "agent", actor_user: $u, topic: "kept"}}')" || return 1
+	id="$(jqv .id)"
+	want_eq "who the row is signed by" "$(jqv .actor)" "$USER_B" || return 1
+	want_eq "the actor_kind it claimed" "$(jqv .meta.actor_kind)" null || return 1
+	want_eq "the actor_user it claimed" "$(jqv .meta.actor_user)" null || return 1
+	want_eq "what meta is still for" "$(jqv .meta.topic)" kept || return 1
+
+	# And served back the same way, because what the console renders is the
+	# stored row rather than the answer to the write.
+	api GET "$TOKEN_B" '/api/events?room=general' || return 1
+	served="$(printf '%s' "$API_BODY" |
+		jq -r "[.events[] | select(.id == \"$id\")] | .[0]")"
+	want_eq "the forged kind, as served" \
+		"$(printf '%s' "$served" | jq -r '.meta.actor_kind')" null || return 1
+	want_eq "the forged speaker, as served" \
+		"$(printf '%s' "$served" | jq -r '.meta.actor_user')" null || return 1
+	want_eq "what meta still carries, as served" \
+		"$(printf '%s' "$served" | jq -r '.meta.topic')" kept || return 1
+	want_eq "rows of it holding a speaker key" \
+		"$(scalar "SELECT count(*) FROM events
+		            WHERE id = '$id' AND (meta -> 'actor_user') IS NOT NULL")" \
+		0 || return 1
+
+	# The endpoints that do say who is speaking still do: an agent's message is
+	# still marked as one, which is what makes the meta worth reading.
+	api POST "$TOKEN_A_AGENT" /api/chat/general/say '{"body":"said by the agent itself"}' || return 1
+	want_eq "say status" "$API_STATUS" 200 || return 1
+	want_eq "and what it is marked as" "$(jqv .meta.actor_kind)" agent || return 1
+	printf 'event %s is signed %s and carries no actor_* meta at all\n' "$id" "$USER_B"
+}
+
+say "a pulled grant does not open the puller's own project"
+check "a project-wide grant into this project needs a local opener (HIGH 1)" \
+	go test -count=1 -run TestPulledProjectGrantNeedsALocalOpener ./internal/store
+
+say "being the forge is being the machine"
+check "the mock forge's control routes are the operator's (HIGH 2)" \
+	the_mock_forge_is_the_operators
+
+say "a refused row is not a dropped row, the other way round"
+check "a pull the node refused does not move the cursor past it (HIGH 3)" \
+	a_refused_pull_does_not_move_the_cursor
+
+say "an edit is not a move"
+check "editing a memory item does not drag it into the token's project (MED/HIGH 4)" \
+	a_memory_item_does_not_change_project_when_it_is_edited
+
+say "a minted type is minted at both doors"
+check "a pulled status, task or forge event is refused (MED 5)" \
+	go test -count=1 -run TestPulledMintedEventIsRefused ./internal/store
+
+say "one operation, one write, again"
+check "a failure mid-delegate leaves no task move without its entry (MED 6)" \
+	go test -count=1 -run TestUpdateTaskEventIsAllOrNothing ./internal/store
+
+say "reading the clock is not using it"
+check "probing /healthz does not advance the logical counter (LOW/MED 7)" \
+	healthz_does_not_spend_the_clock
+
+say "a share is about an artifact, not about an edge"
+check "a share is stored with the projects it actually joins (LOW 8)" \
+	a_share_names_its_own_projects
+
+say "the clock learns what was committed"
+check "a page that rolls back does not leave the clock ahead of it (LOW 9)" \
+	go test -count=1 -run TestSyncApplyObservesTheClockAfterTheCommit ./internal/store
+
+say "meta is not a second signature"
+check "a hand-appended event carries no speaker it made up (LOW 10)" \
+	an_event_meta_is_not_a_signature
 
 # ------------------------------------------------------------------- verdict
 

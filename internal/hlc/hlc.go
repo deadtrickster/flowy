@@ -158,6 +158,21 @@ func (c *Clock) Now() Timestamp {
 // what the hlc and seq_hlc columns want.
 func (c *Clock) Pack() int64 { return c.Now().Pack() }
 
+// Reading returns where the clock stands without moving it.
+//
+// Now is the only way to get a reading to stamp a row with, and it has to
+// advance: two writes must never share one. But a caller that only wants to
+// report the clock - /healthz says what this node's reading is - is not writing
+// anything, and asking through Now made looking at the clock a use of it. An
+// unauthenticated probe could then walk the logical counter up on its own, one
+// request at a time, which is the counter being spent by somebody who wrote
+// nothing.
+func (c *Clock) Reading() Timestamp {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return Timestamp{WallMS: c.wall, Logical: c.logical, Node: c.node}
+}
+
 // Update merges a timestamp observed from another node and returns the local
 // reading that results. The returned timestamp is greater than both the remote
 // one and anything this clock handed out earlier.
