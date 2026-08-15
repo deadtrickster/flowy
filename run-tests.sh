@@ -6143,6 +6143,72 @@ say "a memory item does not leave the personal floor by being edited"
 check "mem_write cannot promote a personal item into a project (MED 5)" \
 	mem_write_will_not_promote_a_personal_item
 
+# ---------------------------------------------------------------- iteration 11
+#
+# An event says four things about work that may not be its writer's: who wrote
+# it, what thread it is in, what it descends from, and what artifact it is
+# about. Three of those are checked on the doors they arrive at. The fourth was
+# not, and on the pull door the first was not either - so both are here, with
+# the rescan a fresh project-wide grant sets off beside them.
+
+# MED/HIGH 2. The artifact column was taken on trust on every door. It is not
+# decoration: the per-artifact share clause in the event filter carries the
+# events about an artifact to everybody it is shared with, so a writer holding
+# nothing but a guessed id could put entries into what that artifact's readers
+# see - and they replicated from there. parents were closed for this exact
+# reason ("an edge in the log is a claim"); the artifact column was left.
+an_event_cannot_name_an_artifact_it_cannot_read() {
+	recall
+	local mine before
+	# A's personal memory item. B holds the pb -> pa grant and still reads
+	# nothing of it, which is what makes it the right thing to try to name.
+	want_status 404 GET "$TOKEN_B" "/api/artifact/$MEM_PERSONAL" || return 1
+	before="$(scalar "SELECT count(*) FROM events WHERE artifact = '$MEM_PERSONAL'")" || return 1
+
+	want_status 404 POST "$TOKEN_B" /api/events \
+		"$(jq -nc --arg a "$MEM_PERSONAL" '{type: "chat", room: "pb/bugs", artifact: $a,
+			body: "an entry in a trail that is not mine"}')" || return 1
+	want_eq "what it says" "$(jqv .error | cut -d';' -f1)" \
+		"artifact $MEM_PERSONAL is not one you can read" || return 1
+
+	# An id that is not here at all gets the same answer, the same way a parent
+	# that is not here and a parent out of reach do.
+	want_status 404 POST "$TOKEN_B" /api/events \
+		'{"type":"chat","room":"pb/bugs","artifact":"01HZZZZZZZZZZZZZZZZZZZZZZZ",
+		  "body":"or about one nobody has"}' || return 1
+
+	# Nothing landed in the trail either way.
+	want_eq "events naming A's personal item" \
+		"$(scalar "SELECT count(*) FROM events WHERE artifact = '$MEM_PERSONAL'")" "$before" ||
+		return 1
+	want_eq "events B wrote about it" \
+		"$(scalar "SELECT count(*) FROM events
+		            WHERE artifact = '$MEM_PERSONAL' AND actor = '$USER_B'")" 0 || return 1
+
+	# B naming its own artifact is untouched: what is refused is naming somebody
+	# else's, not naming one at all.
+	mine="$(new_artifact "$TOKEN_B" note "B's own to be about")" || return 1
+	want_status 200 POST "$TOKEN_B" /api/events \
+		"$(jq -nc --arg a "$mine" '{type: "chat", room: "pb/bugs", artifact: $a,
+			body: "and this trail is mine"}')" || return 1
+	want_eq "the artifact it went in under" "$(jqv .artifact)" "$mine" || return 1
+	printf 'B cannot put an entry in %s trail and can put one in %s\n' "$MEM_PERSONAL" "$mine"
+}
+
+say "an event's attribution is not the signer's to invent"
+check "a pulled event under a third party's name from an unpinned node is refused (HIGH 1)" \
+	go test -count=1 -run TestPulledEventCannotClaimSomebodyElsesName ./internal/store
+
+say "an event is about something its writer can read"
+check "naming an artifact out of reach is a 404 on POST /api/events (MED/HIGH 2)" \
+	an_event_cannot_name_an_artifact_it_cannot_read
+check "and it is refused at both merge doors (MED/HIGH 2)" \
+	go test -count=1 -run TestEventCannotNameAnArtifactItCannotRead ./internal/store
+
+say "one grant does not buy a project's worth of statements"
+check "the newly-visible rescan reads and writes in batches (MED 3)" \
+	go test -count=1 -run TestNewlyVisibleRescanIsBoundedAndBatched ./internal/store
+
 # ------------------------------------------------------------------- verdict
 
 say "result"

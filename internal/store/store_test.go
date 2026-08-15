@@ -456,13 +456,60 @@ func (c countingConn) QueryContext(
 	ctx context.Context, query string, args []driver.NamedValue,
 ) (driver.Rows, error) {
 	atomic.AddInt64(c.n, 1)
-	return c.Conn.(driver.QueryerContext).QueryContext(ctx, query, args)
+	rows, err := c.Conn.(driver.QueryerContext).QueryContext(ctx, query, args)
+	if err != nil {
+		return nil, err
+	}
+	return &countingRows{Rows: rows}, nil
+}
+
+// ExecContext counts the writes as well, because "one statement per id" and
+// "one statement per batch" write the same rows and only the count tells them
+// apart - the same reason the reads are counted.
+func (c countingConn) ExecContext(
+	ctx context.Context, query string, args []driver.NamedValue,
+) (driver.Result, error) {
+	atomic.AddInt64(&countedExecs, 1)
+	return c.Conn.(driver.ExecerContext).ExecContext(ctx, query, args)
+}
+
+// countingRows remembers the widest answer any one statement gave, which is how
+// a test says "no read here came back with more than a batch in it". A count of
+// statements alone cannot say that: one unbounded query and one bounded one are
+// both one query.
+type countingRows struct {
+	driver.Rows
+	n int64
+}
+
+func (r *countingRows) Next(dest []driver.Value) error {
+	err := r.Rows.Next(dest)
+	if err != nil {
+		return err
+	}
+	r.n++
+	for {
+		widest := atomic.LoadInt64(&countedWidest)
+		if r.n <= widest || atomic.CompareAndSwapInt64(&countedWidest, widest, r.n) {
+			return nil
+		}
+	}
 }
 
 var (
 	countedQueries int64
+	countedExecs   int64
+	countedWidest  int64
 	countingOnce   sync.Once
 )
+
+// resetCounts zeroes all three tallies, for a test that is about to measure one
+// call.
+func resetCounts() {
+	atomic.StoreInt64(&countedQueries, 0)
+	atomic.StoreInt64(&countedExecs, 0)
+	atomic.StoreInt64(&countedWidest, 0)
+}
 
 // openCounting is open(t) over the counting driver.
 func openCounting(t *testing.T) (context.Context, *DB, *int64) {

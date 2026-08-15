@@ -1,7 +1,9 @@
 package store
 
 import (
+	"encoding/json"
 	"errors"
+	"sync/atomic"
 	"testing"
 
 	"github.com/deadtrickster/flowy/internal/ulid"
@@ -934,5 +936,371 @@ func TestPulledNewTaskIsTheOwnersHandoffIntoAFreshThread(t *testing.T) {
 	}
 	if n := rows(t, db, "tasks", real.ID); n != 1 {
 		t.Errorf("the owner's handoff is not here (%d rows)", n)
+	}
+}
+
+// TestPulledEventCannotClaimSomebodyElsesName is the pull door's answer to
+// attribution.
+//
+// A pulled event was checked for three things - not a minted type, lands
+// somewhere this principal reads, thread it may write into - and for nothing at
+// all about who it says it is from. Every row on a peer's page carries that
+// peer's own valid signature, and a signature says the node wrote the bytes,
+// not that the actor column is honest: so a hostile peer put a chat event
+// naming somebody else into a page, it verified, and it landed rendered
+// everywhere as that person - permanently, because the log is append-only, and
+// onward, because the next peer pulls it too. Operator pinning does not help by
+// itself: the forgery is genuinely signed by the pinned peer's key.
+//
+// So attribution is answered with the one thing this node decides for itself:
+// whether its operator pinned the writing node. From a pinned node an event
+// says who wrote it and is believed, which is what makes ordinary federation
+// work. From a node whose key merely turned up on a page it may say only what
+// this principal could have said itself, in the actor column and in the meta
+// beside it.
+func TestPulledEventCannotClaimSomebodyElsesName(t *testing.T) {
+	ctx, db := open(t)
+
+	project := "pk-" + ulid.NewString()
+	me := "u-" + ulid.NewString()
+	alice := "u-alice-" + ulid.NewString()
+	puller := &Principal{UserID: me, Project: project}
+	at := packed(t, db)
+
+	// A node this one has never heard of, whose key rides in on the page:
+	// trust on first use, which is nobody's decision.
+	relay := "relay-" + ulid.NewString()
+	relayKey := testKey(relay)
+
+	forged := &Event{
+		ID: ulid.NewString(), Type: "chat", Project: &project, Room: "general",
+		Actor: alice, Body: "alice never said this", SeqHLC: at + 1, Node: relay,
+		Meta: json.RawMessage(`{"actor_kind":"user","actor_user":"` + alice + `"}`),
+	}
+	SignEvent(relayKey, forged)
+
+	res, err := db.SyncApplyFrom(ctx, puller, &SyncSet{
+		Identities: []NodeIdentity{identityOfNode(relay)}, Events: []*Event{forged},
+	})
+	if err != nil {
+		t.Fatalf("apply the forged event: %v", err)
+	}
+	if res.Applied["events"] != 0 || res.Refused["events"] != 1 {
+		t.Fatalf("an event under %s's name from unpinned %s applied %d and was refused %d, "+
+			"want 0 and 1: %+v", alice, relay, res.Applied["events"], res.Refused["events"], res.Reasons)
+	}
+	if _, err := db.GetEvent(ctx, forged.ID); err == nil {
+		t.Errorf("%s is in the log saying something they never said", alice)
+	}
+	// The key itself was taken, which is what makes the refusal about
+	// attribution rather than about not being able to verify anything.
+	held, err := db.GetIdentity(ctx, relay)
+	if err != nil {
+		t.Fatalf("the relay's key did not arrive: %v", err)
+	}
+	if held.Pinned {
+		t.Fatalf("%s came out pinned; the test proves nothing", relay)
+	}
+
+	// The same peer, this principal's own name in the actor column, and the
+	// meta claiming somebody else. Meta is where every reader that cares who is
+	// speaking looks, so it is the same forgery through the column beside it.
+	viaMeta := &Event{
+		ID: ulid.NewString(), Type: "chat", Project: &project, Room: "general",
+		Actor: me, Body: "mine, but it renders as alice", SeqHLC: at + 2, Node: relay,
+		Meta: json.RawMessage(`{"actor_kind":"user","actor_user":"` + alice + `","topic":"kept"}`),
+	}
+	SignEvent(relayKey, viaMeta)
+
+	res, err = db.SyncApplyFrom(ctx, puller, &SyncSet{Events: []*Event{viaMeta}})
+	if err != nil {
+		t.Fatalf("apply the meta claim: %v", err)
+	}
+	if res.Applied["events"] != 0 || res.Refused["events"] != 1 {
+		t.Fatalf("an event whose meta names %s applied %d and was refused %d, want 0 and 1: %+v",
+			alice, res.Applied["events"], res.Refused["events"], res.Reasons)
+	}
+	if _, err := db.GetEvent(ctx, viaMeta.ID); err == nil {
+		t.Errorf("the meta forgery is in the log")
+	}
+
+	// This principal's own message, relayed by the same unpinned node, still
+	// lands: the refusal is about attribution and not about relaying.
+	own := &Event{
+		ID: ulid.NewString(), Type: "chat", Project: &project, Room: "general",
+		Actor: me, Body: "and this one really is mine", SeqHLC: at + 3, Node: relay,
+		Meta: json.RawMessage(`{"actor_kind":"user","actor_user":"` + me + `"}`),
+	}
+	SignEvent(relayKey, own)
+	res, err = db.SyncApplyFrom(ctx, puller, &SyncSet{Events: []*Event{own}})
+	if err != nil {
+		t.Fatalf("apply my own event: %v", err)
+	}
+	if res.Applied["events"] != 1 {
+		t.Fatalf("my own message relayed by %s applied %d events, want 1: %+v",
+			relay, res.Applied["events"], res.Reasons)
+	}
+
+	// And the legitimate relay federation is made of: alice's message, written
+	// on a node the operator pinned, arrives under alice's name with its meta
+	// as she wrote it.
+	origin := "origin-" + ulid.NewString()
+	originKey := pinTestNode(t, ctx, db, origin)
+	real := &Event{
+		ID: ulid.NewString(), Type: "chat", Project: &project, Room: "general",
+		Actor: alice, Body: "this one alice did say", SeqHLC: at + 4, Node: origin,
+		Meta: json.RawMessage(`{"actor_kind":"user","actor_user":"` + alice + `"}`),
+	}
+	SignEvent(originKey, real)
+
+	res, err = db.SyncApplyFrom(ctx, puller, &SyncSet{Events: []*Event{real}})
+	if err != nil {
+		t.Fatalf("apply the real event: %v", err)
+	}
+	if res.Applied["events"] != 1 {
+		t.Fatalf("alice's message from pinned %s applied %d events, want 1: %+v",
+			origin, res.Applied["events"], res.Reasons)
+	}
+	got, err := db.GetEvent(ctx, real.ID)
+	if err != nil {
+		t.Fatalf("the relayed message is not here: %v", err)
+	}
+	if got.Actor != alice {
+		t.Errorf("the relayed message came out under %q, want %q", got.Actor, alice)
+	}
+	var meta map[string]string
+	if err := json.Unmarshal(got.Meta, &meta); err != nil {
+		t.Fatalf("the relayed meta reads back as %q: %v", got.Meta, err)
+	}
+	if meta["actor_user"] != alice || meta["actor_kind"] != "user" {
+		t.Errorf("the relayed meta reads back as %v, want alice speaking as herself", meta)
+	}
+}
+
+// TestEventCannotNameAnArtifactItCannotRead closes the fourth of an event's
+// reference columns.
+//
+// An event says four things about somebody else's work: who wrote it, what
+// thread it is in, what it descends from, and what artifact it is about. The
+// first three are checked on the doors they arrive at; the artifact column went
+// in on trust, and it is not decoration - the per-artifact share clause in the
+// event filter carries the events about an artifact to everybody it is shared
+// with, and /api/artifact/{id}/history is gated on reading the artifact rather
+// than on reading each event. So a writer holding nothing but a guessed id
+// could put entries into what that artifact's readers see, and they replicated
+// from there.
+func TestEventCannotNameAnArtifactItCannotRead(t *testing.T) {
+	ctx, db := open(t)
+
+	// Somebody else's project, and a note in it that no grant reaches.
+	theirs := "pt-" + ulid.NewString()
+	stranger := "u-" + ulid.NewString()
+	closed := &Artifact{
+		Type: "note", Project: &theirs, OwnerUser: stranger, Visibility: "project-only",
+		Title: "not yours to be about", Body: "quillfetch",
+	}
+	if err := db.UpsertArtifact(ctx, closed); err != nil {
+		t.Fatalf("upsert the closed artifact: %v", err)
+	}
+
+	home := "pu-" + ulid.NewString()
+	me := "u-" + ulid.NewString()
+	p := &Principal{UserID: me, Project: home}
+
+	mine := &Artifact{
+		Type: "note", Project: &home, OwnerUser: me, Visibility: "shared",
+		Title: "mine to be about", Body: "quillfetch too",
+	}
+	if err := db.UpsertArtifact(ctx, mine); err != nil {
+		t.Fatalf("upsert my artifact: %v", err)
+	}
+
+	at := packed(t, db)
+	// The same claim at both merge doors: pushed as my own work, and pulled as
+	// a page a peer served.
+	doors := []struct {
+		name string
+		mode syncMode
+	}{{"push", modePush}, {"pull", modePull}}
+	for i, door := range doors {
+		injected := &Event{
+			ID: ulid.NewString(), Type: "chat", Project: &home, Room: "general",
+			Actor: me, Artifact: closed.ID, Body: "into a trail that is not mine",
+			SeqHLC: at + int64(i) + 1, Node: "peer-node",
+		}
+		set := fromPeer(t, ctx, db, &SyncSet{Events: []*Event{injected}})
+
+		var (
+			res *SyncResult
+			err error
+		)
+		if door.mode == modePush {
+			res, err = db.SyncApplyAs(ctx, p, set)
+		} else {
+			res, err = db.SyncApplyFrom(ctx, p, set)
+		}
+		if err != nil {
+			t.Fatalf("%s the injected event: %v", door.name, err)
+		}
+		if res.Applied["events"] != 0 || res.Refused["events"] != 1 {
+			t.Fatalf("an event about %s applied %d and was refused %d on the %s door, "+
+				"want 0 and 1: %+v", closed.ID, res.Applied["events"], res.Refused["events"],
+				door.name, res.Reasons)
+		}
+		if n := rows(t, db, "events", injected.ID); n != 0 {
+			t.Errorf("the %s door left %d rows in %s's trail", door.name, n, closed.ID)
+		}
+	}
+
+	// An event about an artifact this principal really can read is untouched:
+	// what is refused is naming somebody else's, not naming one at all.
+	fine := &Event{
+		ID: ulid.NewString(), Type: "chat", Project: &home, Room: "general",
+		Actor: me, Artifact: mine.ID, Body: "about my own", SeqHLC: at + 3, Node: "peer-node",
+	}
+	res, err := db.SyncApplyAs(ctx, p, fromPeer(t, ctx, db, &SyncSet{Events: []*Event{fine}}))
+	if err != nil {
+		t.Fatalf("push the event about my own artifact: %v", err)
+	}
+	if res.Applied["events"] != 1 {
+		t.Fatalf("an event about my own artifact applied %d, want 1: %+v",
+			res.Applied["events"], res.Reasons)
+	}
+}
+
+// TestNewlyVisibleRescanIsBoundedAndBatched holds the rescan to statements
+// somebody chose the size of.
+//
+// A fresh project-wide grant makes every older artifact in a project readable
+// at once, below the reader's cursor, and the rescan that finds them ran on the
+// serving node inside the request that carried the grant. It read everything
+// past the first page in one statement with no LIMIT on it, and then wrote the
+// ids down one INSERT at a time and handed them over one UPDATE at a time - so
+// one grant row bought O(N) round trips and an N-row answer, with N whatever
+// the project holds and nothing on the serving side bounding it. Any principal
+// allowed to mint a project-wide grant into its own project and then pull could
+// ask for that.
+//
+// The rows still all land: what is asserted here is that they land a batch at a
+// time.
+func TestNewlyVisibleRescanIsBoundedAndBatched(t *testing.T) {
+	ctx, db, queries := openCounting(t)
+
+	// A small batch, so the batching is visible on a handful of rows instead of
+	// on a few thousand.
+	was := syncBatch
+	syncBatch = 4
+	t.Cleanup(func() { syncBatch = was })
+
+	home := "pv-" + ulid.NewString()
+	theirs := "pw-" + ulid.NewString()
+	me := &User{Handle: "puller-" + ulid.NewString()}
+	them := &User{Handle: "holder-" + ulid.NewString()}
+	for _, u := range []*User{me, them} {
+		if err := db.InsertUser(ctx, u); err != nil {
+			t.Fatalf("insert user: %v", err)
+		}
+	}
+
+	// More than a page of older work in the other project.
+	const total = 21
+	want := map[string]bool{}
+	for i := 0; i < total; i++ {
+		art := &Artifact{
+			Type: "note", Project: &theirs, OwnerUser: them.ID, Visibility: "shared",
+			Title: "older than the cursor", Body: "brindlewisp",
+		}
+		if err := db.UpsertArtifact(ctx, art); err != nil {
+			t.Fatalf("upsert artifact %d: %v", i, err)
+		}
+		want[art.ID] = true
+	}
+
+	// The cursor sits above all of them, and the grant that opens them arrives
+	// above the cursor: the case the rescan exists for.
+	since := packed(t, db)
+	grant := &Grant{FromProject: home, ToProject: theirs, Cap: "read", GrantedBy: me.ID}
+	if err := db.InsertGrant(ctx, grant); err != nil {
+		t.Fatalf("insert grant: %v", err)
+	}
+	if grant.HLC <= since {
+		t.Fatalf("the grant read %d, which is not above the cursor %d", grant.HLC, since)
+	}
+
+	p := &Principal{UserID: me.ID, Project: home}
+	key := pendingKey(p)
+	const page = 4
+
+	resetCounts()
+	got, over, err := db.syncNewlyVisible(ctx, p, since, page, []Grant{*grant})
+	if err != nil {
+		t.Fatalf("rescan: %v", err)
+	}
+	if err := db.holdPending(ctx, key, over); err != nil {
+		t.Fatalf("hold: %v", err)
+	}
+	reads := atomic.LoadInt64(queries)
+	writes := atomic.LoadInt64(&countedExecs)
+	widest := atomic.LoadInt64(&countedWidest)
+
+	// Every row the grant opened is accounted for: the page, plus the debt.
+	if len(got) != page {
+		t.Fatalf("the page came back with %d rows, want %d", len(got), page)
+	}
+	seen := map[string]bool{}
+	for _, art := range got {
+		seen[art.ID] = true
+	}
+	for _, id := range over {
+		if seen[id] {
+			t.Errorf("%s is both on the page and in the debt", id)
+		}
+		seen[id] = true
+	}
+	if len(seen) != total {
+		t.Fatalf("the rescan accounted for %d of %d artifacts", len(seen), total)
+	}
+	for id := range want {
+		if !seen[id] {
+			t.Errorf("%s was opened by the grant and the rescan lost it", id)
+		}
+	}
+
+	// And no statement it ran was one the project's size chose: not the reads,
+	// which is what the missing LIMIT was, and not the writes, which were one
+	// per id.
+	if widest > int64(page) {
+		t.Errorf("one statement came back with %d rows; nothing here reads more than %d",
+			widest, page)
+	}
+	if bound := int64(total/syncBatch + 2); writes > bound {
+		t.Errorf("writing %d ids down took %d statements, want at most %d",
+			len(over), writes, bound)
+	}
+	if bound := int64(total/syncBatch + 3); reads > bound {
+		t.Errorf("reading %d ids took %d statements, want at most %d", total, reads, bound)
+	}
+
+	// The debt is on the list, and it is the rows themselves that come back off
+	// it - bounded statements are not worth much if they lose rows.
+	var held int
+	if err := db.SQL().QueryRow(
+		`SELECT count(*) FROM sync_pending WHERE principal = $1`, key).Scan(&held); err != nil {
+		t.Fatalf("count pending: %v", err)
+	}
+	if held != len(over) {
+		t.Fatalf("sync_pending holds %d rows for this reader, want %d", held, len(over))
+	}
+	drained, err := db.drainPending(ctx, p, key, total)
+	if err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+	if len(drained) != len(over) {
+		t.Fatalf("draining the debt gave back %d rows, want %d", len(drained), len(over))
+	}
+	for _, art := range drained {
+		if !want[art.ID] {
+			t.Errorf("the debt handed over %s, which the grant never opened", art.ID)
+		}
 	}
 }

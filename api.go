@@ -449,6 +449,13 @@ func (s *server) handleAppendEvent(w http.ResponseWriter, r *http.Request) {
 	if !s.mayNameParents(w, r, req.Parents) {
 		return
 	}
+	// And the artifact it says it is about is one it can read. Same reason: the
+	// column is a claim, the event filter carries the events about an artifact
+	// to everybody it is shared with, and this one was the last of the four
+	// still going in on trust.
+	if !s.mayNameArtifact(w, r, req.Artifact) {
+		return
+	}
 
 	// An agent acting on its own behalf is the actor; otherwise the user is.
 	// req.Actor is read and dropped: it is accepted so an older client is not
@@ -482,7 +489,12 @@ func (s *server) handleAppendEvent(w http.ResponseWriter, r *http.Request) {
 // under: actor_kind says whether a person or their agent said it, actor_user
 // says which person. The console renders both, and the gate reads them back to
 // tell an agent's message from its user's.
-const actorMetaPrefix = "actor_"
+//
+// It is the store's constant rather than a second copy of the string: the merge
+// reads the same keys to decide whether a replicated event is claiming a
+// speaker, and two spellings of "actor_" would be two doors with different
+// ideas about what attribution is.
+const actorMetaPrefix = store.ActorMetaPrefix
 
 // speakerStripped drops the speaker keys out of meta a client handed over.
 //

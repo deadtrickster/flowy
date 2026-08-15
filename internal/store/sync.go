@@ -471,16 +471,64 @@ func (d *DB) syncNewlyVisible(
 	// The page filled, so there may be more of it. The rest is read as ids in
 	// the same order, from where the page stopped: they are what the caller
 	// owes this reader.
-	over := &args{}
-	overflow, err := d.readIDs(ctx, `SELECT ar.id
-	                                   FROM artifacts ar
-	                                  WHERE `+where(over)+`
-	                                  ORDER BY ar.hlc, ar.id
-	                                 OFFSET `+over.next(limit), over.vals)
-	if err != nil {
-		return nil, nil, fmt.Errorf("store: sync newly visible overflow: %w", err)
+	//
+	// It is read a batch at a time rather than in one statement. One
+	// project-wide grant can open a whole project, and this runs on the serving
+	// node inside the request that carried the grant - so an unbounded read here
+	// is a peer choosing how much of this node's memory and how long a statement
+	// it likes, by minting one grant into its own project and then pulling. What
+	// is collected is still every id, because the debt has to be complete or the
+	// reader is quietly short of the rows the grant opened; what is bounded is
+	// each statement.
+	last := tieAt{hlc: out[len(out)-1].HLC, id: out[len(out)-1].ID}
+	overflow := []string{}
+	for {
+		over := &args{}
+		clause := where(over)
+		batch, err := d.readCursorIDs(ctx, `SELECT ar.hlc, ar.id
+		                                      FROM artifacts ar
+		                                     WHERE `+clause+`
+		                                       AND (ar.hlc, ar.id) > (`+
+			over.next(last.hlc)+`, `+over.next(last.id)+`)
+		                                     ORDER BY ar.hlc, ar.id
+		                                     LIMIT `+over.next(syncBatch), over.vals, &last)
+		if err != nil {
+			return nil, nil, fmt.Errorf("store: sync newly visible overflow: %w", err)
+		}
+		overflow = append(overflow, batch...)
+		if len(batch) < syncBatch {
+			return out, overflow, nil
+		}
 	}
-	return out, overflow, nil
+}
+
+// readCursorIDs runs a query whose two columns are a reading and an id,
+// collects the ids and leaves the sort key of the last row in at, which is
+// where the next batch starts. A keyset rather than an OFFSET: the offset form
+// re-scans everything it has already handed back, so a project big enough to
+// need the batching is a project the batching then walks over and over.
+func (d *DB) readCursorIDs(
+	ctx context.Context, query string, vals []any, at *tieAt,
+) ([]string, error) {
+	rows, err := d.sql.QueryContext(ctx, query, vals...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []string{}
+	for rows.Next() {
+		var (
+			hlc int64
+			id  string
+		)
+		if err := rows.Scan(&hlc, &id); err != nil {
+			return nil, err
+		}
+		at.hlc, at.id = hlc, id
+		out = append(out, id)
+	}
+	return out, rows.Err()
 }
 
 // readIDs runs a query whose one column is an id and collects it.
@@ -516,6 +564,15 @@ func (d *DB) readIDs(ctx context.Context, query string, vals []any) ([]string, e
 // other has not - which is right for the same reason the permission filter is:
 // they are the same reader.
 
+// syncBatch is how many ids one statement of the rescan reads, and how many
+// one write of sync_pending carries. It is the bound on the work a single grant
+// can make the serving node do in one go: the ids still all get written down,
+// but as a few hundred per statement rather than a whole project in one.
+//
+// It is a var so the tests can shrink it and watch the batching happen on a
+// handful of rows instead of on a few thousand. Nothing else writes to it.
+var syncBatch = 500
+
 // pendingKey is the reader a pending row is owed to. Unit separators, so a
 // principal cannot be forged out of two others by choosing an id with a
 // separator in it.
@@ -542,19 +599,51 @@ func (d *DB) ackPending(ctx context.Context, key string, since int64) error {
 // holdPending records artifacts owed to a reader. An id already on the list
 // keeps the mark it was last sent under rather than being reset: it is the same
 // debt, and re-arming it would stop it ever being settled.
+//
+// One statement per batch, not one per id. The list is as long as the project a
+// grant just opened, and a round trip each was the same hazard the rescan's own
+// read had: the serving node doing work proportional to a whole project inside
+// one request, with nothing on its side bounding it.
 func (d *DB) holdPending(ctx context.Context, key string, artifacts []string) error {
-	for _, id := range artifacts {
-		if id == "" {
-			continue
+	return d.eachBatch(artifacts, func(batch []string) error {
+		a := &args{}
+		principal := a.next(key)
+		values := make([]string, 0, len(batch))
+		for _, id := range batch {
+			values = append(values, "("+principal+", "+a.next(id)+", 0)")
 		}
 		_, err := d.sql.ExecContext(ctx,
-			`INSERT INTO sync_pending (principal, artifact, sent_hwm) VALUES ($1, $2, 0)
-			 ON CONFLICT (principal, artifact) DO NOTHING`, key, id)
+			`INSERT INTO sync_pending (principal, artifact, sent_hwm) VALUES `+
+				strings.Join(values, ", ")+
+				` ON CONFLICT (principal, artifact) DO NOTHING`, a.vals...)
 		if err != nil {
 			return fmt.Errorf("store: sync pending hold: %w", err)
 		}
+		return nil
+	})
+}
+
+// eachBatch calls fn with the non-empty ids, syncBatch at a time. It is what
+// keeps the three sync_pending writes to a bounded statement each rather than
+// to one statement each.
+func (d *DB) eachBatch(ids []string, fn func([]string) error) error {
+	batch := make([]string, 0, syncBatch)
+	for _, id := range ids {
+		if id == "" {
+			continue
+		}
+		batch = append(batch, id)
+		if len(batch) == syncBatch {
+			if err := fn(batch); err != nil {
+				return err
+			}
+			batch = batch[:0]
+		}
 	}
-	return nil
+	if len(batch) == 0 {
+		return nil
+	}
+	return fn(batch)
 }
 
 // drainPending reads a page of what the reader is owed, through the same
@@ -618,27 +707,34 @@ func (d *DB) markPendingSent(ctx context.Context, key string, artifacts []string
 	if hwm <= 0 {
 		return nil
 	}
-	for _, id := range artifacts {
+	return d.eachBatch(artifacts, func(batch []string) error {
+		a := &args{}
+		mark := a.next(hwm)
+		principal := a.next(key)
 		_, err := d.sql.ExecContext(ctx,
-			`UPDATE sync_pending SET sent_hwm = $3 WHERE principal = $1 AND artifact = $2`,
-			key, id, hwm)
+			`UPDATE sync_pending SET sent_hwm = `+mark+
+				` WHERE principal = `+principal+
+				` AND artifact IN (`+placeholders(a, batch)+`)`, a.vals...)
 		if err != nil {
 			return fmt.Errorf("store: sync pending mark: %w", err)
 		}
-	}
-	return nil
+		return nil
+	})
 }
 
 // dropPending strikes rows off the list.
 func (d *DB) dropPending(ctx context.Context, key string, artifacts []string) error {
-	for _, id := range artifacts {
+	return d.eachBatch(artifacts, func(batch []string) error {
+		a := &args{}
+		principal := a.next(key)
 		_, err := d.sql.ExecContext(ctx,
-			`DELETE FROM sync_pending WHERE principal = $1 AND artifact = $2`, key, id)
+			`DELETE FROM sync_pending WHERE principal = `+principal+
+				` AND artifact IN (`+placeholders(a, batch)+`)`, a.vals...)
 		if err != nil {
 			return fmt.Errorf("store: sync pending drop: %w", err)
 		}
-	}
-	return nil
+		return nil
+	})
 }
 
 // placeholders records each value and returns the comma-separated placeholders
@@ -1196,6 +1292,115 @@ var mintedEventTypes = map[string]bool{
 // write rather than one a client may hand over.
 func MintedEventType(kind string) bool { return mintedEventTypes[kind] }
 
+// ActorMetaPrefix is the key prefix the handlers that mint an event write the
+// speaker under: actor_kind says whether a person or their agent said it,
+// actor_user says which person. The console renders both, so meta is a second
+// place an event says who is talking, and every door that decides the actor
+// column has to decide these as well - see speakerStripped in the server
+// package, which is what the API does with them, and metaSpeaker below, which
+// is what the merge does.
+const ActorMetaPrefix = "actor_"
+
+// actorMetaUser is the key inside that prefix that names a person.
+const actorMetaUser = ActorMetaPrefix + "user"
+
+// metaSpeaker reads the speaker an event's meta claims: the person named under
+// actor_user, and whether the meta made any speaker claim at all.
+//
+// A meta that is not a JSON object claims nothing - there are no keys in it to
+// claim with - and neither does one with no actor_ key. A meta that has an
+// actor_ key and no actor_user claims a speaker it does not name, which is
+// still a claim: it says the actor column is an agent, or is external, and the
+// console renders that.
+func metaSpeaker(meta json.RawMessage) (string, bool) {
+	if len(meta) == 0 {
+		return "", false
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(meta, &fields); err != nil {
+		return "", false
+	}
+	claimed, user := false, ""
+	for k, v := range fields {
+		if !strings.HasPrefix(k, ActorMetaPrefix) {
+			continue
+		}
+		claimed = true
+		if k != actorMetaUser {
+			continue
+		}
+		var who string
+		if err := json.Unmarshal(v, &who); err == nil {
+			user = who
+		}
+	}
+	return user, claimed
+}
+
+// metaClaimsAnother answers why p may not hand over an event whose meta says
+// who is speaking, or "" when the meta claims nobody but p.
+//
+// The actor column has been decided by the token on the way in since the
+// forgery in it was fixed, and by the door on the way over since checkEvent -
+// but meta rode in beside it unread, and every reader that cares who is
+// speaking reads meta. So `{"actor_kind":"agent","actor_user":"somebody"}` is
+// the same forgery through a second door: correctly signed, correctly actored,
+// and rendered everywhere as somebody else.
+func metaClaimsAnother(p *Principal, e *Event) string {
+	speaker, claimed := metaSpeaker(e.Meta)
+	if !claimed {
+		return ""
+	}
+	if speaker != "" && speaker == p.UserID {
+		return ""
+	}
+	return "event " + e.ID + " says in its meta that " + named(speaker) +
+		" is speaking, which is not you"
+}
+
+// pulledAttribution answers why p may not take a pulled event's attribution, or
+// "" when it may.
+//
+// Signing proves the node wrote the bytes. It does not make the actor column
+// honest: a peer serving a page is a relay, and a hostile one puts a chat event
+// into that page under somebody else's name, signs it with its own perfectly
+// good key, and the row lands rendered everywhere as that person - permanently,
+// because the log is append-only, and onward, because every peer downstream
+// pulls it too. Push refuses this (the actor is the pusher) and POST
+// /api/events refuses it twice (the actor is the token's, and the meta is
+// stripped). The pull door was the one left open.
+//
+// So attribution is treated here as what it is - an authenticity question - and
+// answered with the one thing this node knows about a peer: whether its
+// operator pinned that node's key by hand. A pinned node is one somebody
+// decided to believe, and believing it includes believing what it says about
+// who wrote what, which is what makes ordinary federation work: alice's message
+// really does replicate to bob's node with actor=alice. From a node whose key
+// merely arrived on a page - trust on first use, which is nobody's decision -
+// an event may say only what this principal could have said itself.
+//
+// This is the same trust upgrade FLOWY_REQUIRE_PINNED_PEERS expresses for every
+// row, applied to the one column that is a claim about a person.
+func pulledAttribution(ctx context.Context, tx *sql.Tx, p *Principal, e *Event) (string, error) {
+	if p == nil {
+		return "", nil
+	}
+	_, pinned, ok, err := identityOf(ctx, tx, e.Node)
+	if err != nil {
+		return "", err
+	}
+	if ok && pinned {
+		return "", nil
+	}
+	mine := e.Actor != "" && (e.Actor == p.UserID || e.Actor == p.AgentID)
+	if !mine {
+		return "event " + e.ID + " says " + named(e.Actor) + " wrote it and arrives from node " +
+			e.Node + ", whose key nobody here pinned: a relay is not a speaker, so pin " +
+			e.Node + " with `flowy identity pin` or this is somebody else's name in your log", nil
+	}
+	return metaClaimsAnother(p, e), nil
+}
+
 // checkEvent answers why p may not push e, or "" when it may.
 //
 // The log is append-only and nothing ever rewrites a row of it, so the only
@@ -1229,6 +1434,12 @@ func checkEvent(p *Principal, e *Event) string {
 	}
 	if actor == "" || e.Actor != actor {
 		return "event " + e.ID + " is signed " + e.Actor + ", which is not you"
+	}
+	// And the meta does not say somebody else is speaking. The actor column
+	// above is the pusher by then, so a meta naming anybody else is the same
+	// claim through the column beside it - the one POST /api/events strips.
+	if why := metaClaimsAnother(p, e); why != "" {
+		return why
 	}
 	if e.Project == nil {
 		if (e.Actor != p.UserID || p.UserID == "") && (e.Actor != p.AgentID || p.AgentID == "") {
@@ -1277,6 +1488,12 @@ func checkEventRow(
 			return "a " + e.Type + " event is minted by the node that did the thing, " +
 				"not carried in (" + e.ID + ")", nil
 		}
+		// Who it says it is from, which a signature does not answer: the node
+		// that signed the row is the node that wrote the bytes, not the person
+		// the row names. See pulledAttribution.
+		if why, err := pulledAttribution(ctx, tx, p, e); why != "" || err != nil {
+			return why, err
+		}
 		ok, err := eventReadable(ctx, tx, p, e)
 		if err != nil {
 			return "", err
@@ -1285,7 +1502,10 @@ func checkEventRow(
 			return "event " + e.ID + " lands where you read nothing", nil
 		}
 	}
-	return threadClosed(ctx, tx, p, e.Thread, "event "+e.ID)
+	if why, err := threadClosed(ctx, tx, p, e.Thread, "event "+e.ID); why != "" || err != nil {
+		return why, err
+	}
+	return artifactClosed(ctx, tx, p, e.Artifact, "event "+e.ID)
 }
 
 // eventReadable reports whether p could read e as it would land, by running the
@@ -1332,6 +1552,60 @@ func threadClosed(
 		return what + " is in thread " + thread + ", which you cannot read", nil
 	}
 	return "", nil
+}
+
+// artifactClosed answers why p may not name artifact on an event, or "" when it
+// may.
+//
+// The artifact column is the fourth thing an event says about somebody else's
+// work - actor, thread, parents, artifact - and it was the one nothing looked
+// at. The per-artifact share clause in the event filter carries the events
+// about an artifact to everybody it is shared with, so an event naming an
+// artifact its writer cannot read is an entry pushed into what that artifact's
+// readers see, over an id that is a guess. POST /api/events refuses it through
+// mayNameArtifact; both merge doors refuse it here.
+//
+// It is the shape threadClosed has, for the shape's reason: an artifact that is
+// not on this node is not hidden from anybody, and a replicated event
+// legitimately arrives before - or without - the artifact it names, so refusing
+// that would refuse federation rather than injection. What is refused is an
+// artifact that is here and out of the principal's reach.
+func artifactClosed(
+	ctx context.Context, q querier, p *Principal, artifact, what string,
+) (string, error) {
+	if p == nil || artifact == "" {
+		return "", nil
+	}
+	hidden, err := artifactHidden(ctx, q, p, artifact)
+	if err != nil {
+		return "", err
+	}
+	if hidden {
+		return what + " is about artifact " + artifact + ", which you cannot read", nil
+	}
+	return "", nil
+}
+
+// artifactHidden reports whether artifact is on this node and out of p's reach.
+func artifactHidden(ctx context.Context, q querier, p *Principal, artifact string) (bool, error) {
+	if p == nil {
+		return true, nil
+	}
+	if artifact == "" {
+		return false, nil
+	}
+	a := &args{}
+	idArg := a.next(artifact)
+	filter := ArtifactFilterSQL(p, "ar", a, false)
+	var hidden bool
+	err := q.QueryRowContext(ctx,
+		`SELECT EXISTS (SELECT 1 FROM artifacts ar
+		                 WHERE ar.id = `+idArg+`
+		                   AND NOT coalesce((`+filter+`), false))`, a.vals...).Scan(&hidden)
+	if err != nil {
+		return false, fmt.Errorf("store: read artifact %s: %w", artifact, err)
+	}
+	return hidden, nil
 }
 
 // querier is what both *sql.DB and *sql.Tx satisfy, so one thread test serves

@@ -128,6 +128,39 @@ func (s *server) mayNameParents(w http.ResponseWriter, r *http.Request, parents 
 	return true
 }
 
+// mayNameArtifact reports whether the artifact an event says it is about is one
+// the writer can read, and answers 404 when it is not.
+//
+// The artifact column is not decoration. The per-artifact share clause in the
+// event filter shows the events about an artifact to everybody that artifact is
+// shared with, and /api/artifact/{id}/history is gated on reading the artifact
+// rather than on reading each event - so naming one is a claim about somebody
+// else's work in the same way an edge in the DAG is, and it was taken on trust
+// while the thread and the parents beside it were checked. An id is a guess
+// anybody can make, so a writer who cannot read the artifact could put an entry
+// into what its readers see, and it replicated from there.
+//
+// A missing artifact and one out of reach get the same answer, which is the
+// answer a read of it would give.
+func (s *server) mayNameArtifact(w http.ResponseWriter, r *http.Request, artifact string) bool {
+	if artifact == "" {
+		return true
+	}
+	p := principalOf(r)
+	_, err := s.db.ReadArtifact(r.Context(), p, artifact, p.Operator)
+	if errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound,
+			errorBody("artifact "+artifact+" is not one you can read; "+
+				"an event is about something in front of you or about nothing"))
+		return false
+	}
+	if err != nil {
+		serverError(w, r, err)
+		return false
+	}
+	return true
+}
+
 // handleChatSay appends a message to a room.
 //
 // POST /api/chat/{room}/say  {body, thread?, parents?}

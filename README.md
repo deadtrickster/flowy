@@ -2479,6 +2479,92 @@ the rest of this model is built to refuse. It is refused now, in the same words
 the API uses. An update that leaves the scope alone is untouched, and a new item
 written at a scope is what a scope is for.
 
+## The eleventh round of security fixes
+
+The re-review certified the core exhaustively clean again and found three
+residual defects, all in the event-merge and newly-visible machinery. Two of
+them are one class: an event carries four columns that refer to somebody else's
+work - `actor`, `artifact`, `thread`, `parents` - and only `thread` and
+`parents` were checked on the door they arrived at. Same rule as the rounds
+before: one check in `run-tests.sh` per defect, each verified to fail on the
+source it fixes.
+
+Nothing here changes how a node is configured, but one of the three makes
+`flowy identity pin` matter more than it did - see below.
+
+**HIGH - the pull door took an event's attribution on trust.** A pulled event
+was checked for three things - not a minted type, lands somewhere this principal
+reads, thread it may write into - and for nothing at all about who it says it is
+from. `applyEvent` inserts `actor` and `meta` verbatim, and `speakerStripped`
+only ever ran on `POST /api/events`, so a merged event's `meta.actor_user` and
+`meta.actor_kind` rode in untouched as well. Row signing does not answer this:
+a signature says the node wrote the bytes, not that the actor column is honest.
+So a hostile peer served a page with a chat event on it naming somebody else,
+signed with its own perfectly good key, and it verified, landed, and rendered
+everywhere as that person - permanently, because the log is append-only and has
+no delete, and onward, because the next peer pulls it too. Operator pinning did
+not help by itself: the forgery is genuinely signed by the pinned peer's key.
+Push refused this all along (`checkEvent`: the actor is the pusher) and the API
+refused it twice (the actor is the token's, and the meta is stripped). The pull
+door was the one left open.
+
+Attribution is now answered as the authenticity question it is, with the one
+thing this node decides for itself: whether its operator pinned the writing
+node's key by hand. From a **pinned** node an event says who wrote it and is
+believed, which is what ordinary federation is made of - alice's message really
+does replicate to bob's node under alice's name, meta and all. From a node whose
+key merely arrived on a page - trust on first use, which is nobody's decision -
+an event may say only what the pulling principal could have said itself: the
+actor column has to be that principal or their agent, and the meta may not name
+anyone else as the speaker. Refuse-outright rather than relay-stamping, because
+a stamp is a thing a reader has to notice; the row does not land at all.
+
+Two consequences worth saying plainly. Stripping the speaker keys out of a
+merged event's meta - the other way to close the meta half - was **not** taken:
+`meta` is inside the row's signature, so rewriting it on the way in produces a
+row that no longer verifies under the `sig` stored beside it, and this node then
+serves an unverifiable row to every peer downstream. It would also throw away
+the legitimate `actor_kind` that tells a person's message from their agent's.
+And the trust that pinning expresses is now load-bearing for the log as well as
+for the rows: **pin the peers you replicate from.** `FLOWY_REQUIRE_PINNED_PEERS`
+already refuses every unpinned row; without it, an unpinned peer can still relay
+your own work back to you and nothing else.
+
+**MEDIUM/HIGH - an event could name an artifact its writer cannot read.**
+`handleAppendEvent` validated the thread through `mayWriteThread` and every
+parent through `mayNameParents`, and took `req.Artifact` on trust; `checkEvent`
+never looked at `e.Artifact` at all, and the pull branch's `eventReadable` is
+true for an event in the principal's own project whatever the artifact column
+says. The column is not decoration: the per-artifact share clause in
+`EventFilterSQL` carries the events about an artifact to everybody it is shared
+with, and `GET /api/artifact/{id}/history` is gated on reading the artifact
+rather than on reading each event. So a writer holding nothing but a guessed id
+could put entries into what that artifact's readers see, and they replicated
+from there - injection, plus a cross-project existence oracle with a body
+attached. `parents` were closed for exactly this reason, that an edge in the log
+is a claim; the artifact column was left. All three doors ask now. On the API it
+is the read itself - `ReadArtifact`, and a missing artifact and one out of reach
+get the same `404`, the way a parent already did. At both merge doors it is
+`artifactClosed`, which has `threadClosed`'s shape for `threadClosed`'s reason:
+an artifact that is not on this node is hidden from nobody, and a replicated
+event legitimately arrives before - or without - the artifact it names, so what
+is refused is an artifact that is here and out of reach.
+
+**MEDIUM - one grant bought a project's worth of statements.** When a fresh
+project-wide grant makes more than a page of older artifacts newly visible,
+`syncNewlyVisible` read every remaining id in one statement - `OFFSET` with no
+`LIMIT` - and then `holdPending` wrote them to `sync_pending` one `INSERT` at a
+time, drained one `UPDATE` at a time, inside the request that carried the grant.
+One grant row therefore cost the **serving** node O(N) sequential round trips
+and an N-row answer, N being whatever the project holds, and the puller's 60s
+`syncTimeout` bounds the client and not the server. Any principal allowed to
+mint a project-wide grant into its own project and then pull could ask for it.
+The rescan now reads a batch at a time by keyset - `(hlc, id) > (...)` rather
+than a growing `OFFSET`, which would re-scan what it had already handed back -
+and the three `sync_pending` writes go out as one multi-row statement per batch.
+Every id is still written down: the debt has to be complete, or the reader is
+quietly short of the rows the grant opened. What is bounded is each statement.
+
 ## Deployment
 
 The store speaks the Postgres wire and nothing else. The spine of `schema.sql`
