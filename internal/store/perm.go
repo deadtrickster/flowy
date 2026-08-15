@@ -70,6 +70,10 @@ type Grant struct {
 	HLC         int64  `json:"hlc"`
 	Node        string `json:"node"`
 	Tombstone   bool   `json:"tombstone"`
+	// Sig is the writing node's signature over the capability - see
+	// Artifact.Sig. A grant is the row that opens a project up, so it is the
+	// row a hostile peer most wants to write in somebody else's name.
+	Sig []byte `json:"sig,omitempty"`
 }
 
 // CanRead is the read predicate, in Go. ArtifactFilterSQL is the same rule
@@ -296,14 +300,17 @@ func (d *DB) insertGrant(ctx context.Context, q execer, g *Grant) error {
 	if g.Cap == "" {
 		g.Cap = "read"
 	}
+	if err := d.signGrant(ctx, g); err != nil {
+		return err
+	}
 	// artifact and subject are NULL rather than '' when absent: the filter asks
 	// `artifact IS NULL` to mean "project-wide", and an empty string is not that.
 	_, err := q.ExecContext(ctx,
 		`INSERT INTO grants (id, from_project, to_project, subject, artifact, cap,
-		                     granted_by, hlc, node, tombstone)
-		 VALUES ($1, $2, $3, nullif($4, ''), nullif($5, ''), $6, nullif($7, ''), $8, $9, $10)`,
+		                     granted_by, hlc, node, tombstone, sig)
+		 VALUES ($1, $2, $3, nullif($4, ''), nullif($5, ''), $6, nullif($7, ''), $8, $9, $10, $11)`,
 		g.ID, g.FromProject, g.ToProject, g.Subject, g.Artifact, g.Cap,
-		g.GrantedBy, g.HLC, g.Node, g.Tombstone)
+		g.GrantedBy, g.HLC, g.Node, g.Tombstone, g.Sig)
 	if err != nil {
 		return fmt.Errorf("store: insert grant: %w", err)
 	}
@@ -321,7 +328,7 @@ func (d *DB) GrantsFor(ctx context.Context, art *Artifact) ([]Grant, error) {
 	rows, err := d.sql.QueryContext(ctx,
 		`SELECT id, from_project, to_project, coalesce(subject, ''), coalesce(artifact, ''),
 		        coalesce(cap, 'read'), coalesce(granted_by, ''), coalesce(hlc, 0),
-		        coalesce(node, ''), coalesce(tombstone, false)
+		        coalesce(node, ''), coalesce(tombstone, false), sig
 		   FROM grants
 		  WHERE (artifact IS NULL AND to_project = $1) OR artifact = $2`, project, art.ID)
 	if err != nil {
@@ -333,7 +340,7 @@ func (d *DB) GrantsFor(ctx context.Context, art *Artifact) ([]Grant, error) {
 	for rows.Next() {
 		var g Grant
 		if err := rows.Scan(&g.ID, &g.FromProject, &g.ToProject, &g.Subject, &g.Artifact,
-			&g.Cap, &g.GrantedBy, &g.HLC, &g.Node, &g.Tombstone); err != nil {
+			&g.Cap, &g.GrantedBy, &g.HLC, &g.Node, &g.Tombstone, &g.Sig); err != nil {
 			return nil, fmt.Errorf("store: grants for %s: %w", art.ID, err)
 		}
 		out = append(out, g)

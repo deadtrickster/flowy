@@ -11,10 +11,12 @@ package store
 
 import (
 	"context"
+	"crypto/ed25519"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/lib/pq"
@@ -28,6 +30,19 @@ type DB struct {
 	sql   *sql.DB
 	clock *hlc.Clock
 	node  string
+
+	// keyMu guards priv, which is this node's ed25519 private key: read from
+	// node_identity the first time something signs, minted there if the table
+	// has no row for this node yet, and then held for the life of the process.
+	// It never leaves this struct - nothing serialises it, and no query that
+	// replication can reach selects the column.
+	keyMu sync.Mutex
+	priv  ed25519.PrivateKey
+
+	// requirePinned refuses a replicated row from any node whose key this
+	// node's operator has not pinned by hand, which is FLOWY_REQUIRE_PINNED_
+	// PEERS. It is a deployment's choice, so it is configuration and not a row.
+	requirePinned bool
 }
 
 // Open dials dsn and verifies the connection. node names this node in every row
@@ -48,7 +63,10 @@ func Open(ctx context.Context, dsn, node string) (*DB, error) {
 		sqlDB.Close()
 		return nil, fmt.Errorf("store: ping: %w", err)
 	}
-	return &DB{sql: sqlDB, clock: hlc.New(node), node: node}, nil
+	return &DB{
+		sql: sqlDB, clock: hlc.New(node), node: node,
+		requirePinned: requirePinnedFromEnv(),
+	}, nil
 }
 
 // Close releases the pool.
@@ -234,8 +252,12 @@ type Artifact struct {
 	HLC       int64        `json:"hlc"`
 	Node      string       `json:"node"`
 	Tombstone bool         `json:"tombstone"`
-	Created   time.Time    `json:"created"`
-	Updated   time.Time    `json:"updated"`
+	// Sig is the signature of the node named in Node over this row's
+	// authenticated fields - see internal/sign. It travels with the row and is
+	// what the merge on the far side checks before it looks at anything else.
+	Sig     []byte    `json:"sig,omitempty"`
+	Created time.Time `json:"created"`
+	Updated time.Time `json:"updated"`
 }
 
 // InsertArtifact writes an artifact, stamping id/hlc/node when unset.
@@ -244,6 +266,9 @@ func (d *DB) InsertArtifact(ctx context.Context, a *Artifact) error {
 	if a.Visibility == "" {
 		a.Visibility = "project"
 	}
+	if err := d.signArtifact(ctx, a); err != nil {
+		return err
+	}
 	var fields any
 	if len(a.Fields) > 0 {
 		fields = []byte(a.Fields)
@@ -251,13 +276,13 @@ func (d *DB) InsertArtifact(ctx context.Context, a *Artifact) error {
 	err := d.sql.QueryRowContext(ctx,
 		`INSERT INTO artifacts (id, type, kind, project, owner_user, title, body, discovery,
 		                        status, severity, tags, user_tags, related, visibility,
-		                        file_path, fields, hlc, node, tombstone, search)
+		                        file_path, fields, hlc, node, tombstone, search, sig)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
-		         $19, `+fmt.Sprintf(artifactSearchSQL, 20)+`)
+		         $19, `+fmt.Sprintf(artifactSearchSQL, 20)+`, $21)
 		 RETURNING created, updated`,
 		a.ID, a.Type, a.Kind, a.Project, a.OwnerUser, a.Title, a.Body, a.Discovery,
 		a.Status, a.Severity, pq.Array(a.Tags), pq.Array(a.UserTags), pq.Array(a.Related),
-		a.Visibility, a.FilePath, fields, a.HLC, a.Node, a.Tombstone, searchText(a)).
+		a.Visibility, a.FilePath, fields, a.HLC, a.Node, a.Tombstone, searchText(a), a.Sig).
 		Scan(&a.Created, &a.Updated)
 	if err != nil {
 		return fmt.Errorf("store: insert artifact: %w", err)
@@ -292,7 +317,9 @@ type Event struct {
 	Node     string          `json:"node"`
 	Body     string          `json:"body"`
 	Meta     json.RawMessage `json:"meta,omitempty"`
-	Created  time.Time       `json:"created"`
+	// Sig is the writing node's signature over the event - see Artifact.Sig.
+	Sig     []byte    `json:"sig,omitempty"`
+	Created time.Time `json:"created"`
 }
 
 // AppendEvent writes an event, stamping id/seq_hlc/node when unset.
@@ -308,17 +335,20 @@ func (d *DB) appendEvent(ctx context.Context, q execer, e *Event) error {
 		// A thread with no explicit head is named after its first event.
 		e.Thread = e.ID
 	}
+	if err := d.signEvent(ctx, e); err != nil {
+		return err
+	}
 	var meta any
 	if len(e.Meta) > 0 {
 		meta = []byte(e.Meta)
 	}
 	err := q.QueryRowContext(ctx,
 		`INSERT INTO events (id, type, project, room, thread, parents, actor, artifact,
-		                     seq_hlc, node, body, meta)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		                     seq_hlc, node, body, meta, sig)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 		 RETURNING created`,
 		e.ID, e.Type, e.Project, e.Room, e.Thread, pq.Array(e.Parents), e.Actor,
-		e.Artifact, e.SeqHLC, e.Node, e.Body, meta).
+		e.Artifact, e.SeqHLC, e.Node, e.Body, meta, e.Sig).
 		Scan(&e.Created)
 	if err != nil {
 		return fmt.Errorf("store: append event: %w", err)

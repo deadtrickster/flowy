@@ -165,9 +165,16 @@ func (d *DB) setArtifactExternal(
 	art.External, art.Reported = ref, reported
 	art.HLC = at
 	art.Node = d.node
+	// The link replicates, so it is signed: an artifact arriving at a peer with
+	// a forge link on it is a peer being told which repository this node's
+	// credential talks to, and that has to come from the node that filed it.
+	if err := d.signArtifact(ctx, art); err != nil {
+		return err
+	}
 	_, err := q.ExecContext(ctx,
-		`UPDATE artifacts SET external = $2, reported = $3, hlc = $4, node = $5, updated = now()
-		  WHERE id = $1`, art.ID, raw, art.Reported, art.HLC, art.Node)
+		`UPDATE artifacts SET external = $2, reported = $3, hlc = $4, node = $5, sig = $6,
+		        updated = now()
+		  WHERE id = $1`, art.ID, raw, art.Reported, art.HLC, art.Node, art.Sig)
 	if err != nil {
 		return fmt.Errorf("store: set external ref of %s: %w", art.ID, err)
 	}

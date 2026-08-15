@@ -39,7 +39,7 @@ func searchText(a *Artifact) string {
 // artifactColumns is the read list, in the order scanArtifact expects.
 const artifactColumns = `id, type, kind, project, owner_user, title, body, discovery, status,
 	severity, tags, user_tags, related, visibility, file_path, fields, hlc, node,
-	tombstone, created, updated, reported, external`
+	tombstone, created, updated, reported, external, sig`
 
 // scanner is what both *sql.Row and *sql.Rows satisfy.
 type scanner interface{ Scan(dest ...any) error }
@@ -57,7 +57,7 @@ func scanArtifact(sc scanner, rank *float64) (*Artifact, error) {
 	)
 	dest := []any{&a.ID, &typeCol, &kind, &project, &owner, &title, &body, &disc, &status, &severity,
 		pq.Array(&a.Tags), pq.Array(&a.UserTags), pq.Array(&a.Related), &vis, &filePath,
-		&fields, &clockVal, &nodeCol, &tomb, &a.Created, &a.Updated, &reported, &external}
+		&fields, &clockVal, &nodeCol, &tomb, &a.Created, &a.Updated, &reported, &external, &a.Sig}
 	if rank != nil {
 		dest = append(dest, rank)
 	}
@@ -112,6 +112,9 @@ func scanArtifact(sc scanner, rank *float64) (*Artifact, error) {
 // CreateArtifact, which will not touch one that is already here.
 func (d *DB) UpsertArtifact(ctx context.Context, a *Artifact) error {
 	d.fill(a)
+	if err := d.signArtifact(ctx, a); err != nil {
+		return err
+	}
 
 	var fields any
 	if len(a.Fields) > 0 {
@@ -120,9 +123,9 @@ func (d *DB) UpsertArtifact(ctx context.Context, a *Artifact) error {
 	err := d.sql.QueryRowContext(ctx,
 		`INSERT INTO artifacts (id, type, kind, project, owner_user, title, body, discovery,
 		                        status, severity, tags, user_tags, related, visibility,
-		                        file_path, fields, hlc, node, tombstone, search)
+		                        file_path, fields, hlc, node, tombstone, search, sig)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
-		         $19, `+fmt.Sprintf(artifactSearchSQL, 20)+`)
+		         $19, `+fmt.Sprintf(artifactSearchSQL, 20)+`, $21)
 		 ON CONFLICT (id) DO UPDATE SET
 		     type = excluded.type, kind = excluded.kind, project = excluded.project,
 		     owner_user = excluded.owner_user,
@@ -131,13 +134,14 @@ func (d *DB) UpsertArtifact(ctx context.Context, a *Artifact) error {
 		     user_tags = excluded.user_tags, related = excluded.related,
 		     visibility = excluded.visibility, file_path = excluded.file_path,
 		     fields = excluded.fields, hlc = excluded.hlc, node = excluded.node,
-		     tombstone = excluded.tombstone, search = excluded.search, updated = now()
+		     tombstone = excluded.tombstone, search = excluded.search, sig = excluded.sig,
+		     updated = now()
 		  WHERE artifacts.owner_user = excluded.owner_user
 		    AND coalesce(artifacts.tombstone, false) = false
 		 RETURNING created, updated`,
 		a.ID, a.Type, a.Kind, a.Project, a.OwnerUser, a.Title, a.Body, a.Discovery,
 		a.Status, a.Severity, pq.Array(a.Tags), pq.Array(a.UserTags), pq.Array(a.Related),
-		a.Visibility, a.FilePath, fields, a.HLC, a.Node, a.Tombstone, searchText(a)).
+		a.Visibility, a.FilePath, fields, a.HLC, a.Node, a.Tombstone, searchText(a), a.Sig).
 		Scan(&a.Created, &a.Updated)
 	if errors.Is(err, sql.ErrNoRows) {
 		// The id is taken, and not by this owner. Nothing was written.
@@ -164,6 +168,9 @@ func (d *DB) UpsertArtifact(ctx context.Context, a *Artifact) error {
 // even that is told as a 404.
 func (d *DB) CreateArtifact(ctx context.Context, a *Artifact) error {
 	d.fill(a)
+	if err := d.signArtifact(ctx, a); err != nil {
+		return err
+	}
 
 	var fields any
 	if len(a.Fields) > 0 {
@@ -172,14 +179,14 @@ func (d *DB) CreateArtifact(ctx context.Context, a *Artifact) error {
 	err := d.sql.QueryRowContext(ctx,
 		`INSERT INTO artifacts (id, type, kind, project, owner_user, title, body, discovery,
 		                        status, severity, tags, user_tags, related, visibility,
-		                        file_path, fields, hlc, node, tombstone, search)
+		                        file_path, fields, hlc, node, tombstone, search, sig)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
-		         $19, `+fmt.Sprintf(artifactSearchSQL, 20)+`)
+		         $19, `+fmt.Sprintf(artifactSearchSQL, 20)+`, $21)
 		 ON CONFLICT (id) DO NOTHING
 		 RETURNING created, updated`,
 		a.ID, a.Type, a.Kind, a.Project, a.OwnerUser, a.Title, a.Body, a.Discovery,
 		a.Status, a.Severity, pq.Array(a.Tags), pq.Array(a.UserTags), pq.Array(a.Related),
-		a.Visibility, a.FilePath, fields, a.HLC, a.Node, a.Tombstone, searchText(a)).
+		a.Visibility, a.FilePath, fields, a.HLC, a.Node, a.Tombstone, searchText(a), a.Sig).
 		Scan(&a.Created, &a.Updated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrTaken
@@ -408,9 +415,15 @@ func (d *DB) TombstoneArtifact(ctx context.Context, p *Principal, id string) (*A
 	art.Tombstone = true
 	art.HLC = d.clock.Pack()
 	art.Node = d.node
+	// The delete is a write like any other and travels as a row, so it is signed
+	// as one: a tombstone nobody signed is a delete a peer could have invented.
+	if err := d.signArtifact(ctx, art); err != nil {
+		return nil, err
+	}
 	res, err := d.sql.ExecContext(ctx,
-		`UPDATE artifacts SET tombstone = true, hlc = $2, node = $3, updated = now()
-		  WHERE id = $1 AND coalesce(owner_user, '') = $4`, art.ID, art.HLC, art.Node, p.UserID)
+		`UPDATE artifacts SET tombstone = true, hlc = $2, node = $3, sig = $5, updated = now()
+		  WHERE id = $1 AND coalesce(owner_user, '') = $4`,
+		art.ID, art.HLC, art.Node, p.UserID, art.Sig)
 	if err != nil {
 		return nil, fmt.Errorf("store: tombstone artifact %s: %w", id, err)
 	}

@@ -72,7 +72,10 @@ CREATE TABLE IF NOT EXISTS grants (
     granted_by   text,
     hlc          bigint,
     node         text,
-    tombstone    boolean DEFAULT false
+    tombstone    boolean DEFAULT false,
+    -- Phase 6.5: the grantor node's signature over this row. See the ALTERs
+    -- below and internal/sign.
+    sig          bytea
 );
 
 -- Everything a node holds that is worth naming.
@@ -107,6 +110,7 @@ CREATE TABLE IF NOT EXISTS artifacts (
     hlc        bigint,
     node       text,
     tombstone  boolean DEFAULT false,
+    sig        bytea,
     created    timestamptz DEFAULT now(),
     updated    timestamptz DEFAULT now()
 );
@@ -127,6 +131,7 @@ CREATE TABLE IF NOT EXISTS events (
     node     text,
     body     text,
     meta     jsonb,
+    sig      bytea,
     created  timestamptz DEFAULT now()
 );
 
@@ -153,7 +158,39 @@ CREATE TABLE IF NOT EXISTS tasks (
     assignee_agent text,
     thread         text,
     hlc            bigint,
-    node           text
+    node           text,
+    sig            bytea
+);
+
+-- Who a node is. One row per node this one has ever had to believe, keyed by
+-- the node name that every replicated row carries in its node column.
+--
+-- The local node's row is the only one that holds private_key: it is the seed
+-- half of an ed25519 keypair, it never leaves this machine, and nothing that
+-- replicates ever selects it. Every other row is a public key and how this node
+-- came to hold it:
+--
+--   pinned = true  - the operator put it there, out of band, naming the node
+--                    and its key (`flowy identity pin`, or FLOWY_PEER_KEYS).
+--                    This is the authoritative kind.
+--   pinned = false - it arrived over the wire and this node had never heard of
+--                    that node before, so it was taken on trust the first time
+--                    and is held to ever after. A second, different key for a
+--                    node already in this table is refused rather than applied:
+--                    there is no key rotation over the wire, because a rotation
+--                    a peer can serve is an impersonation a peer can serve.
+--
+-- The row is self-signed - sig is the node's own signature over its name and
+-- its public key - so an identity can travel through a relay that holds neither
+-- key without that relay being able to alter it. That is what lets A verify C's
+-- rows on a page it pulled from B.
+CREATE TABLE IF NOT EXISTS node_identity (
+    node_id     text PRIMARY KEY,
+    public_key  bytea NOT NULL,
+    private_key bytea,
+    pinned      boolean NOT NULL DEFAULT false,
+    created_hlc bigint,
+    sig         bytea
 );
 
 -- Replication bookmarks, one row per peer node.
@@ -208,6 +245,19 @@ ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS external jsonb;
 -- "what have I filed" is a read of the reported flag, and it is a small
 -- minority of the rows.
 CREATE INDEX IF NOT EXISTS artifacts_reported_idx      ON artifacts (reported);
+
+-- Phase 6.5. Every replicated row carries the signature of the node that wrote
+-- it, over the canonical encoding of its authenticated fields - see
+-- internal/sign. The column is nullable, because the column is not where the
+-- rule lives: the merge requires a signature that verifies under the key of the
+-- node named on the row, and refuses the row when there is none. Making it NOT
+-- NULL would say the same thing in a place that cannot say why a row was
+-- refused, and would stop a node loading a schema over a store written before
+-- the column existed.
+ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS sig bytea;
+ALTER TABLE events    ADD COLUMN IF NOT EXISTS sig bytea;
+ALTER TABLE tasks     ADD COLUMN IF NOT EXISTS sig bytea;
+ALTER TABLE grants    ADD COLUMN IF NOT EXISTS sig bytea;
 
 CREATE INDEX IF NOT EXISTS events_thread_idx          ON events (thread);
 CREATE INDEX IF NOT EXISTS events_seq_hlc_idx         ON events (seq_hlc);

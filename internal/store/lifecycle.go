@@ -25,9 +25,15 @@ func (d *DB) setArtifactStatus(
 	art.Status = status
 	art.HLC = at
 	art.Node = d.node
+	// The row this node is about to have is the row it signs: a status move
+	// changes one column and the reading, and both are inside the signature.
+	if err := d.signArtifact(ctx, art); err != nil {
+		return err
+	}
 	_, err := q.ExecContext(ctx,
-		`UPDATE artifacts SET status = $2, hlc = $3, node = $4, updated = now() WHERE id = $1`,
-		art.ID, art.Status, art.HLC, art.Node)
+		`UPDATE artifacts SET status = $2, hlc = $3, node = $4, sig = $5, updated = now()
+		  WHERE id = $1`,
+		art.ID, art.Status, art.HLC, art.Node, art.Sig)
 	if err != nil {
 		return fmt.Errorf("store: set status of %s: %w", art.ID, err)
 	}

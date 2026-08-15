@@ -1,4 +1,4 @@
-# flowy - Handoff Fabric node (Phase 6)
+# flowy - Handoff Fabric node (Phase 6.5)
 
 The host-side node: one Go binary, one Postgres-wire database, and the schema
 spine every later phase rides on. Phase 0 was the skeleton - a server that
@@ -53,6 +53,20 @@ since the last push goes back out as a comment. It is idempotent - both cursors
 live on the ref and only move forward - and the gate drives all of it against an
 in-process `MockForge`, because a gate that needed a GitHub token would be a
 gate that leaves issues in somebody's repository.
+
+Phase 6.5 signs what replicates: **every row carries the ed25519 signature of
+the node that wrote it, and a merge checks that before it checks anything
+else**. Federation is peers handing each other other people's rows - that is
+what it is for - so a peer serving a page could rewrite every column of any row
+the puller may read, leave the original node's name on it, raise the clock
+reading, and watch last-writer-wins make the rewrite the truth on every node
+downstream. Nothing in the merge could see it, because nothing on an unsigned
+row says who wrote it. Now a node mints a keypair on first use, signs each
+artifact, grant, task and event as it writes it, and refuses any row whose
+signature does not verify under the key of the node named on it. Keys travel by
+operator pin or trust-on-first-use, a node's key never changes over the wire,
+and `FLOWY_REQUIRE_PINNED_PEERS` narrows a deployment to nodes its operator
+named by hand.
 
 ## Run the gate
 
@@ -128,6 +142,8 @@ both empty by default. See [The security fixes](#the-security-fixes).
 | `flowy mcp` | MCP server: shared memory over stdio, or `--http :PORT` |
 | `flowy fuse` | prints `fuse: not yet` (artifacts as a filesystem) |
 | `flowy sync` | replicate with a peer: `--peer <url> --token <t>`, pull then push |
+| `flowy identity` | this node's signing key, the keys it holds, and how a key gets in |
+| `flowy sign` | sign a replication delta read on stdin |
 | `flowy version` | build version |
 | `flowy help` | usage |
 
@@ -147,6 +163,33 @@ It prints one JSON object per run - what it pulled, what that applied, what it
 pushed, what the peer applied, and where both cursors ended up - so a cron entry
 or a shell can read the result back.
 
+`flowy identity` is the operator's side of row signing:
+
+| command | what it does |
+| --- | --- |
+| `flowy identity` | print this node's node id and public key, minting the keypair if it has none yet |
+| `flowy identity list` | every identity this node holds, and whether each was pinned or taken on trust |
+| `flowy identity pin --node N --key K` | record a peer's public key, hex or base64, as the operator's own decision |
+| `flowy identity keygen --node N [--seed HEX]` | mint a keypair without touching a database |
+
+Standing two nodes up is one exchange, over whatever channel the two operators
+already trust:
+
+```sh
+# on the laptop
+flowy identity
+{"node":"laptop","pinned":true,"public_key":"e96a8cce...b016f89b5"}
+
+# on the server, and the other way round
+flowy identity pin --node laptop --key e96a8cce...b016f89b5
+```
+
+`flowy sign` reads a delta on stdin and writes it back with every row signed -
+by this node's stored key, or by the key a `--seed` makes. It leaves the `node`
+column of each row exactly as it found it, because a row says which node wrote
+it and signing is not the place to decide that. `--identity` puts the signer's
+own self-signed identity on the delta, the way a page from that node carries it.
+
 `mcp` and `serve` read their configuration from the environment, and flags
 override it:
 
@@ -158,6 +201,8 @@ override it:
 | `FLOWY_OPERATOR` | `-operator` | empty; nobody may use `?scope=all` |
 | `FLOWY_TOKEN` | - | the bearer token `flowy mcp` uses over stdio |
 | `FLOWY_FORGE` | `-forge` | empty; `gh` if it is on `PATH`, else `glab`, else no forge |
+| `FLOWY_PEER_KEYS` | `-peer-keys` | empty; `node=publickey` pairs to pin at startup, comma-separated |
+| `FLOWY_REQUIRE_PINNED_PEERS` | - | `false`; when true, only rows from nodes the operator pinned are merged |
 
 `GET /healthz`, `GET /version` and `GET /` are open - a health check that needs
 a credential stops working at the worst possible moment, and none of the three
@@ -635,6 +680,111 @@ handed the same rows out of band, the way two machines are handed the same key.
 `GET /api/peers` shows the bookmarks, and only to this node's operator: a peer's
 cursor is not something one principal's token should reveal to another.
 
+## Row signing: who wrote this
+
+Replication is peers handing each other rows they did not write. That is not a
+weakness in the design, it is the design - the share a handoff wrote on one node
+is how the other side reads the artifact on this one - and it is exactly what
+made the merge's checks insufficient. Every check asks what the principal
+*handing a row over* may write. None of them could ask whether the node named on
+the row is the node that wrote it, because nothing on an unsigned row answers
+that.
+
+What that bought a hostile peer: take any artifact, grant, task or event the
+pulling principal may read, rewrite every column of it, leave the original
+node's name in `node`, stamp a reading that beats what the puller holds, and
+serve it. The row lands where it always landed, owned by whoever always owned
+it, and only its contents are somebody else's. Last-writer-wins then makes it
+the truth on the pulling node and on every node downstream of that one.
+
+So every replicated row now carries `sig`: the ed25519 signature of the node
+named in `node`, over a canonical encoding of the row's authenticated fields.
+
+**The encoding** (`internal/sign`) is canonical in both directions that matter:
+one row has exactly one byte string, and no two different rows share one. Fields
+are length-prefixed with an 8-byte big-endian count, so no run of fields can be
+re-cut into a different run - `"ab"+"c"` and `"a"+"bc"` are different messages
+here. Each message opens with its own domain string, so an artifact's signature
+is not a task's. A NULL column and an empty one are different bytes, because the
+read filter reads them differently. Large or structured values - a transcript
+body, a `fields` object - are folded in as their sha256 rather than copied, so
+signing a megabyte artifact costs a hash of it. `parents` is sorted first,
+because the DAG is a set of edges and two nodes may list them in either order.
+
+A `jsonb` column is parsed and re-encoded before it is hashed. It has to be:
+Postgres does not store `meta` as the string you handed it - it drops the
+whitespace, orders the keys its own way and normalises the numbers - so a
+signature over the request body would verify on the node that made it and
+nowhere else. What is authenticated is the value, which is what the column
+holds.
+
+**Signing is on the write.** Every path that mints or moves a replicated row -
+create, update, status move, tombstone, the forge link, assignment's three rows,
+a task delegation, a message - stamps the reading and this node's name and then
+signs the result, in the same statement that writes it. So `node` is always this
+node on a signature this node makes, and the row is self-consistent by
+construction. Local reads do not verify: the store is this node's own, and a
+database whose rows an attacker can edit directly is one whose `node_identity`
+they can edit directly too.
+
+**Verifying is at the merge, ahead of everything else.** `syncApply` asks three
+questions of every row before it looks at the merge order or the permission
+checks: is there a key here for the node named on the row, does the row carry a
+signature, and is that signature that node's over these bytes. A row that fails
+any of them is refused with the reason - `artifact <id>: signature from node
+<n> does not verify` - counted, and not written, exactly like a row that fails
+an authorisation check. The cursor holds, so the peer is offered the same page
+again rather than the two nodes quietly differing.
+
+**Authenticity and authorisation are two layers, and both ship.** A peer that
+really did write a row - its own key, its own node, a signature that verifies -
+is still refused when the row is not one it may write: a project-wide grant
+naming a grantor who is nobody here, a task re-pointed at somebody else's
+thread, an artifact landing in a project it cannot reach. Authenticity says who
+wrote it; authorisation says whether writing it was theirs to do. Neither
+subsumes the other, and the gate has a check that proves it - a validly signed
+forgery, refused by the *authorisation* message rather than the signature one.
+
+### Keys, and how a node comes to hold one
+
+`node_identity` is one row per node this one has ever had to believe: the node
+name, its ed25519 public key, whether the operator pinned it, and the node's own
+signature over its name and key. The local node's row is the only one that also
+holds a private key - the 32-byte seed - and nothing that replicates ever
+selects that column. It is minted on first use, so a node that has never signed
+anything gets a key on its first write rather than on a command somebody has to
+remember to run.
+
+Two routes in, and the first is authoritative:
+
+- **the operator pins it.** `flowy identity pin --node N --key K`, or
+  `FLOWY_PEER_KEYS` at startup. The key came off the other machine and travelled
+  by some channel that is not the one being secured. Nothing over the wire
+  changes a pinned key.
+- **trust on first use.** Identities replicate: a page carries the public keys
+  the serving node holds, and an identity for a node this one has never heard of
+  is taken and marked unpinned. That is what makes a relay work - A pulls from B
+  a page holding C's rows, and C's key rides along in it. B cannot alter that
+  key, because the identity is signed by C over C's own name and key.
+
+A second, different key for a node already here is **refused**, whether it
+arrives on a page or at `flowy identity pin`, and whether the key here was
+pinned or taken on trust. A key rotation a peer can serve is an impersonation a
+peer can serve; a peer genuinely rebuilt with a new key is a row somebody
+deletes by hand on the machine, which is the deliberate act it should be. The
+window trust-on-first-use leaves open is first contact and nothing after it.
+
+An operator's pin carries no self-signature - the operator holds the peer's
+public key, not its private one - so a pinned identity does not relay onward
+from the node that pinned it. When that peer's own self-signed identity turns up
+on a page, the signature is filled in on the key already agreed, and from then
+on it does. A node that never speaks for itself is pinned on every machine that
+has to verify it.
+
+`FLOWY_REQUIRE_PINNED_PEERS=true` refuses rows from any node whose key was only
+taken on trust. It costs transitive relay, which is the trade a high-security
+deployment is making on purpose.
+
 ## The forge bridge
 
 A node holds bugs; the world holds an issue tracker. Phase 6 is the join, and it
@@ -865,6 +1015,18 @@ and `external jsonb`, the link to an issue on a forge and the two cursors the
 reviewer loop keeps. They are written only by the forge endpoints, replicate
 with the row they are on, and are indexed by `reported` for "what have I filed".
 
+Phase 6.5 adds `sig bytea` to `artifacts`, `events`, `tasks` and `grants` - the
+writing node's signature over the row - and one table:
+
+| table | holds |
+| --- | --- |
+| `node_identity` | one row per node this one has to believe: `node_id`, `public_key`, the node's own signature over the two, `pinned`, and - for this node alone - `private_key`, the ed25519 seed that never leaves the machine |
+
+The `sig` columns are nullable, because the column is not where the rule lives:
+the merge requires a signature that verifies under the key of the node named on
+the row and refuses the row when there is none, which is a place that can say
+*why*. `node_identity` replicates its public half and only its public half.
+
 The second security slice adds one more local table beside `peers`:
 
 | table | holds |
@@ -898,6 +1060,19 @@ what a status trail is.
   folds `{wall_ms, logical}` into `wall_ms<<16 | logical`, which is what the
   `hlc` and `seq_hlc` columns store. Mutex-guarded, so it stays monotonic under
   concurrent goroutines.
+- `internal/sign` - the canonical encoding and the two ed25519 operations. One
+  `Canonical<T>` per replicated row type, length-prefixed and domain-tagged, and
+  `Sign`/`Verify` over the result. It knows nothing about the store: the row
+  views it takes are plain structs, so the encoding can be tested field by field
+  without a database, which is what its unit tests do.
+- `internal/store/identity.go`, `internal/store/rowsig.go` - the store's half of
+  signing. `identity.go` is the keypair, the pin, trust-on-first-use, the
+  no-rotation rule and what a page hands over; `rowsig.go` is the adapters from
+  the store's rows to `internal/sign`, one struct literal per table, so adding a
+  replicated column and forgetting to authenticate it is a diff somebody can
+  see.
+- `identity.go` - `flowy identity` and `flowy sign`: the operator's commands and
+  the one that signs a delta by hand.
 - `internal/store` - the Postgres-wire persistence layer. Stamps id, clock and
   node on the way in; reads rows back with their arrays and jsonb intact.
   `perm.go` holds the principal, the read predicate and the SQL filter;
@@ -1112,6 +1287,10 @@ the real `flowy sync`:
   holds a single artifact the other wrote
 - the replication token resolves to the same principal in the same project on
   both, which is what lets a peer authenticate at all
+- each node's operator reads the other's public key off it and pins it, the two
+  keys differ, and neither node hands over a private one
+- a row that crossed carries the **same signature bytes** on both nodes, and no
+  row of either node's is on the other without one
 - A opens `pa` up to `pb`, writes a shared artifact, a **personal** one and one
   in `pc` that nobody granted the peer, and a thread of two events; B writes one
   of its own in `pb`
@@ -1511,7 +1690,10 @@ So the pull check is a different question - does this row land inside the world
 this principal already has here, and does it leave what is already here alone -
 and the residual is that a peer you pull from can still hand you a capability
 signed with somebody else's name. Closing that needs signed rows, which is a
-bigger change than a check.
+bigger change than a check. *(Phase 6.5 made it: rows are signed now, and the
+merge verifies authorship before it asks any of these questions. The two rules
+above are unchanged - authorisation is still two questions, and it is now the
+second layer of two rather than the only one.)*
 
 **HIGH - the pull side applied a peer's rows with no check at all.**
 `pullFromPeer` called `SyncApply`, which takes no principal, and every check in
@@ -1985,6 +2167,68 @@ status on it, past every caller that handles `ApiError`. The parse has its own
 of the body on it, or the status line when there is nothing to quote. The node's
 own JSON errors are untouched, which the check asserts beside the fix.
 
+## Phase 6.5: the one the seventh round left
+
+The seventh review closed six defects and named one it could not: a hostile
+**pull** peer could rewrite the content of any artifact, grant, task or event
+the pulling principal may read. `checkArtifact`, `checkGrant`, `checkTask` and
+`checkEventRow` all verify *authorisation* - reach, ownership, self-consistency
+- and none of them could verify *authenticity*, because an unsigned row carries
+nothing that says who wrote it. Last-writer-wins then makes the rewrite
+permanent. The comment on `syncMode` said as much: *closing the gap for good
+needs signed rows, which is a bigger change than a check.*
+
+This is that change. What it is and how keys move is above, under **Row
+signing**; what follows is the checks, one per property, each verified to fail
+on the source it fixes.
+
+**The rewrite, end to end.** Node A writes an artifact and signs it; it
+replicates to node B by an ordinary sync; node B - hostile now - rewrites the
+title, the body and the status in its own database, keeps `node = 'nodeA'`,
+stamps a reading that beats A's, and signs the result with **its own key**,
+which is the best a peer that does not hold A's key can do. Node A pulls, and
+refuses it: *signature from node nodeA does not verify*. A's copy still says
+what A wrote. The same three ways over as a Go test - signed by another node,
+not signed at all, and carrying A's signature over a different row - plus one
+flipped byte of the title, the body, the owner, the reading and the signature
+itself.
+
+**The relay.** Node C is a keypair and a name, which is all a node is to a row.
+It signs a row, node B takes it - C's self-signed identity is on the same page,
+and B has never heard of C either - and node A pulls that row from B, learns C's
+key from the page, verifies C's signature and applies it. Then B edits the row
+in transit, and A refuses it: the relay cannot sign for C. Both halves are in
+the gate, driven through the two real nodes.
+
+**The two layers compose.** A peer signs a project-wide grant correctly, with
+its own key, naming a grantor who holds no principal in the project it opens.
+The signature verifies - it really did write it - and `checkGrant` refuses it
+anyway. The check asserts the refusal is the authorisation message and not the
+signature one, which is what says neither layer swallowed the other.
+
+**No silent rotation.** An identity for a node already known, under a different
+key, is refused at the pin and on the wire, and the rows that came with it are
+refused too. The key that was here stays, and stays pinned.
+
+**Require-pin.** With `FLOWY_REQUIRE_PINNED_PEERS` set, a row from a node whose
+key was only taken on trust is refused and a row from a pinned node is not -
+and pinning the first node's key lifts the refusal without anything about its
+rows changing.
+
+**The database is part of the signature.** A `jsonb` column does not come back
+the way it went in, so an artifact with `fields` or a message with `meta` -
+which is every message the chat endpoints write - is signed over the parsed and
+re-encoded value. The check writes both, reads them back, pulls them as a peer
+would be handed them, and verifies. Without it the assignment thread was the
+first thing to stop replicating, which is how it was found.
+
+Existing checks changed with the fix rather than around it. The hand-assembled
+deltas in the gate - the forged grant, the read-share rewrite, the re-pointed
+task, the tie-break rows - are signed now by the node they name, through `flowy
+sign`, so each of them still tests the authorisation rule it was written for
+instead of stopping at the new one. The two federated nodes exchange and pin
+each other's keys at startup, the way two operators would.
+
 ## Deployment
 
 The store speaks the Postgres wire and nothing else. The spine of `schema.sql`
@@ -2005,14 +2249,21 @@ else. It is quarantined there because it is meant to be deleted: when SereneDB
 brings vectors, that section goes and `store.SearchArtifacts` becomes a vector
 query. Nothing above it depends on anything below it.
 
-## Phase 6 status
+## Phase 6.5 status
 
-Green. `./run-tests.sh` reports `passed: 262 failed: 0` with Go 1.22, Node 22.14
+Green. `./run-tests.sh` reports `passed: 278 failed: 0` with Go 1.22, Node 22.14
 and Postgres 16 - the 200 checks Phase 6 ended with, all still green, plus the
 12 the first security slice added, the 12 the second one did, the 8 from the
-third, the 8 from the fourth, the 10 from the fifth, the 6 from the sixth - one
-per defect, and two for the `project-only` handoff because it is refused at two
-doors - and the 6 from the seventh, one per defect above. Each is verified to
+third, the 8 from the fourth, the 10 from the fifth, the 6 from the sixth, the 6
+from the seventh - one per defect, and two for the `project-only` handoff
+because it is refused at two doors - and the 16 Phase 6.5 adds: two end-to-end
+over the two real nodes (the hostile rewrite and the relay), the canonical
+encoder's own unit tests, and one Go test per property of the merge - refusal of
+a rewritten, unsigned or replayed row, one flipped byte, a validly signed row
+that authorisation still refuses, every local write of every replicated table
+signed, a signature that survives the database, the key that arrives with the
+rows it verifies, no rotation at the pin or over the wire, require-pin, and a
+pull that hands over public keys and no private ones. Each is verified to
 fail on the source it fixes. Four of
 the older checks changed with the fixes rather than around them: a deleted
 artifact now reads as `404` on both nodes with the tombstone asserted through

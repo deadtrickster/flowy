@@ -84,7 +84,14 @@ type SyncSet struct {
 	Events    []*Event    `json:"events"`
 	Tasks     []*Task     `json:"tasks"`
 	Grants    []Grant     `json:"grants"`
-	HWM       int64       `json:"hwm"`
+	// Identities are the public keys this node holds, and they ride on every
+	// page rather than being fetched separately: a row can only be verified by
+	// the node that wrote it, and on a relayed page that node is neither end of
+	// this exchange. They are not fabric rows - they are not counted, they do
+	// not move a cursor, and they carry no reading of their own - so Len and
+	// Counts are about the four tables, as they always were.
+	Identities []NodeIdentity `json:"identities,omitempty"`
+	HWM        int64          `json:"hwm"`
 }
 
 // Len is the number of rows in the set.
@@ -144,6 +151,16 @@ func (d *DB) SyncPull(ctx context.Context, p *Principal, q SyncQuery) (*SyncSet,
 	}
 	limit := q.limit()
 	set := &SyncSet{Artifacts: []*Artifact{}, Events: []*Event{}, Tasks: []*Task{}, Grants: []Grant{}}
+
+	// Every page carries the keys, because a page can carry a third node's rows
+	// - A pulls from B a row C wrote - and the puller cannot verify those
+	// without C's key. They are public halves and self-signed, so handing them
+	// to whoever is asking gives away nothing and lets a relay work.
+	identities, err := d.SharableIdentities(ctx)
+	if err != nil {
+		return nil, err
+	}
+	set.Identities = identities
 
 	// A cursor at or above the mark a pending row was handed over under is the
 	// reader saying it applied that page. Settle those first, so this pull
@@ -665,7 +682,7 @@ func (d *DB) syncGrants(ctx context.Context, p *Principal, since int64, limit in
 		func(a *args, tie *tieAt, lim int) string {
 			return `SELECT g.id, g.from_project, g.to_project, coalesce(g.subject, ''),
 	                 coalesce(g.artifact, ''), coalesce(g.cap, 'read'), coalesce(g.granted_by, ''),
-	                 coalesce(g.hlc, 0), coalesce(g.node, ''), coalesce(g.tombstone, false)
+	                 coalesce(g.hlc, 0), coalesce(g.node, ''), coalesce(g.tombstone, false), g.sig
 	            FROM grants g
 	           WHERE ` + above("coalesce(g.hlc, 0)", "g.id", since, tie, a) + `
 	             AND ` + GrantFilterSQL(p, "g", a) + `
@@ -674,7 +691,7 @@ func (d *DB) syncGrants(ctx context.Context, p *Principal, since int64, limit in
 		func(sc scanner) (Grant, error) {
 			var g Grant
 			err := sc.Scan(&g.ID, &g.FromProject, &g.ToProject, &g.Subject, &g.Artifact,
-				&g.Cap, &g.GrantedBy, &g.HLC, &g.Node, &g.Tombstone)
+				&g.Cap, &g.GrantedBy, &g.HLC, &g.Node, &g.Tombstone, &g.Sig)
 			return g, err
 		},
 		func(g Grant) (int64, string) { return g.HLC, g.ID })
@@ -689,6 +706,13 @@ type SyncResult struct {
 	Refused map[string]int `json:"refused"`
 	Reasons []string       `json:"reasons,omitempty"`
 }
+
+// tableIdentities is the key the identity half of a delta is counted under. It
+// is in the same two maps as the four tables so that a refused key is a refused
+// row as far as the driver is concerned: the cursor holds, the run stops, and
+// the reason is in the report. A peer that has started serving a different key
+// for a node is not a peer to go on pulling from as if nothing had happened.
+const tableIdentities = "identities"
 
 // maxReasons caps what a refusal reports, so a page of bad rows answers with a
 // readable message rather than a page of its own.
@@ -719,11 +743,15 @@ var ErrBadReading = errors.New("store: clock reading is not believable")
 //
 // The two cannot be the same rule, and the proof is in the gate: the share a
 // handoff writes on one node and the share a hostile peer invents are the same
-// row, pushed by the same principal. One has to be applied and the other
-// refused, and nothing in an unsigned row tells them apart. What decides it is
-// who asked: rows we went and fetched from a peer we chose, or rows that turned
-// up. Closing the gap for good needs signed rows, which is a bigger change than
-// a check.
+// row, pushed by the same principal. What decides it is who asked: rows we went
+// and fetched from a peer we chose, or rows that turned up.
+//
+// Neither of them is the authenticity question, and neither ever was. Both
+// modes now run the signature check first - see authentic - because "may this
+// principal hand me this row" and "did the node named on this row write it" are
+// different questions with different answers, and a peer that answers the first
+// honestly can still forge the second. Authorisation stops a peer minting
+// beyond its rights; authenticity stops it impersonating a node. Both ship.
 type syncMode int
 
 const (
@@ -801,8 +829,11 @@ type syncRow struct {
 	node  string
 	// settled is a row that needs nothing further: applied, or ignored because
 	// it loses its merge.
-	settled   bool
-	why       string
+	settled bool
+	why     string
+	// verify is the authenticity question, asked of every row before anything
+	// else looks at it: the node named on the row signed the row.
+	verify    func(context.Context, *sql.Tx) (string, error)
 	unchanged func(context.Context, *sql.Tx) (bool, error)
 	check     func(context.Context, *sql.Tx) (string, error)
 	apply     func(context.Context, *sql.Tx) (int, error)
@@ -819,10 +850,14 @@ const syncPasses = 3
 
 func (d *DB) syncApply(ctx context.Context, p *Principal, mode syncMode, in *SyncSet) (*SyncResult, error) {
 	res := &SyncResult{
-		Applied: map[string]int{"artifacts": 0, "events": 0, "tasks": 0, "grants": 0},
-		Refused: map[string]int{"artifacts": 0, "events": 0, "tasks": 0, "grants": 0},
+		Applied: map[string]int{
+			"artifacts": 0, "events": 0, "tasks": 0, "grants": 0, tableIdentities: 0,
+		},
+		Refused: map[string]int{
+			"artifacts": 0, "events": 0, "tasks": 0, "grants": 0, tableIdentities: 0,
+		},
 	}
-	if in == nil || in.Len() == 0 {
+	if in == nil || (in.Len() == 0 && len(in.Identities) == 0) {
 		return res, nil
 	}
 	// Before anything is merged, and before a single reading reaches the clock.
@@ -836,6 +871,25 @@ func (d *DB) syncApply(ctx context.Context, p *Principal, mode syncMode, in *Syn
 	}
 	defer tx.Rollback() //nolint:errcheck // rolled back only when Commit did not happen
 
+	// The keys first: a page can carry the identity of the node whose rows are
+	// on it, and a row cannot be verified before its node's key is here. They go
+	// in the same transaction as the rows, so a page that fails leaves neither.
+	for i := range in.Identities {
+		id := &in.Identities[i]
+		n, why, err := applyIdentity(ctx, tx, id)
+		if err != nil {
+			return nil, err
+		}
+		if why != "" {
+			res.Refused[tableIdentities]++
+			if len(res.Reasons) < maxReasons {
+				res.Reasons = append(res.Reasons, why)
+			}
+			continue
+		}
+		res.Applied[tableIdentities] += n
+	}
+
 	// Grants first: a grant is what makes the rows that follow readable, and a
 	// row that lands in a project this principal has no reach into is refused.
 	// Then artifacts, which a task is about, then tasks, which open a thread,
@@ -845,6 +899,9 @@ func (d *DB) syncApply(ctx context.Context, p *Principal, mode syncMode, in *Syn
 		g := &in.Grants[i]
 		rows = append(rows, &syncRow{
 			table: "grants", hlc: g.HLC, node: g.Node,
+			verify: func(ctx context.Context, tx *sql.Tx) (string, error) {
+				return d.authentic(ctx, tx, g.Node, canonicalGrant(g), g.Sig, "grant "+g.ID)
+			},
 			unchanged: func(ctx context.Context, tx *sql.Tx) (bool, error) {
 				return loses(ctx, tx, "grants", g.ID, g.HLC, g.Node)
 			},
@@ -857,6 +914,10 @@ func (d *DB) syncApply(ctx context.Context, p *Principal, mode syncMode, in *Syn
 	for _, art := range in.Artifacts {
 		rows = append(rows, &syncRow{
 			table: "artifacts", hlc: art.HLC, node: art.Node,
+			verify: func(ctx context.Context, tx *sql.Tx) (string, error) {
+				return d.authentic(ctx, tx, art.Node, canonicalArtifact(art), art.Sig,
+					"artifact "+art.ID)
+			},
 			unchanged: func(ctx context.Context, tx *sql.Tx) (bool, error) {
 				return loses(ctx, tx, "artifacts", art.ID, art.HLC, art.Node)
 			},
@@ -869,6 +930,9 @@ func (d *DB) syncApply(ctx context.Context, p *Principal, mode syncMode, in *Syn
 	for _, t := range in.Tasks {
 		rows = append(rows, &syncRow{
 			table: "tasks", hlc: t.HLC, node: t.Node,
+			verify: func(ctx context.Context, tx *sql.Tx) (string, error) {
+				return d.authentic(ctx, tx, t.Node, canonicalTask(t), t.Sig, "task "+t.ID)
+			},
 			unchanged: func(ctx context.Context, tx *sql.Tx) (bool, error) {
 				return loses(ctx, tx, "tasks", t.ID, t.HLC, t.Node)
 			},
@@ -881,6 +945,9 @@ func (d *DB) syncApply(ctx context.Context, p *Principal, mode syncMode, in *Syn
 	for _, e := range in.Events {
 		rows = append(rows, &syncRow{
 			table: "events", hlc: e.SeqHLC, node: e.Node,
+			verify: func(ctx context.Context, tx *sql.Tx) (string, error) {
+				return d.authentic(ctx, tx, e.Node, canonicalEvent(e), e.Sig, "event "+e.ID)
+			},
 			unchanged: func(ctx context.Context, tx *sql.Tx) (bool, error) {
 				return eventIsHere(ctx, tx, e.ID)
 			},
@@ -902,6 +969,20 @@ func (d *DB) syncApply(ctx context.Context, p *Principal, mode syncMode, in *Syn
 		for _, row := range rows {
 			if row.settled {
 				continue
+			}
+			// Authenticity first, and before the merge order is even
+			// consulted: a row whose signature does not verify is not a row
+			// this node has any business reasoning about. It is refused
+			// whatever it would have done to what is here.
+			if row.verify != nil {
+				why, err := row.verify(ctx, tx)
+				if err != nil {
+					return nil, err
+				}
+				if why != "" {
+					row.why = why
+					continue
+				}
 			}
 			// A row that loses its merge is not a write, so it is not a
 			// refusal either: it is a delta being replayed. Deciding that
@@ -1039,6 +1120,57 @@ func checkReadings(in *SyncSet) error {
 		}
 	}
 	return nil
+}
+
+// authentic answers why a replicated row is not the row it says it is, or ""
+// when it is. It is the first question the merge asks of every row, in both
+// directions, and it is a different question from every other check in this
+// file.
+//
+// The rest of the merge asks what the principal handing a row over is allowed
+// to write. That is worth asking and it is not enough: a peer serves rows it
+// did not write - that is what federation is - so the principal being entitled
+// to carry a row says nothing about who wrote it. Without this check, a peer
+// answering a pull could take any artifact, task, grant or event the puller can
+// read, rewrite every column, put the original node's name back on it, raise
+// the reading and hand it over. Last-writer-wins would then make the rewrite
+// the truth, on the pulling node and on every node it replicates to after that.
+// Nothing in the old checks could see it: the row lands where it always landed,
+// owned by whoever always owned it, and only its contents are somebody else's.
+//
+// So: the node named on the row has a key here, the row carries a signature,
+// and that signature is that node's over the canonical encoding of the row. A
+// row that fails any of the three is refused with the reason, exactly like a
+// row that fails an authorisation check - the peer is told, the cursor holds,
+// and nothing is written.
+//
+// Under FLOWY_REQUIRE_PINNED_PEERS a key that only arrived over the wire is not
+// enough either: the operator has to have pinned it.
+func (d *DB) authentic(
+	ctx context.Context, tx *sql.Tx, node string, msg, sig []byte, what string,
+) (string, error) {
+	if node == "" {
+		return what + " names no node, so there is nobody whose signature it could carry", nil
+	}
+	if len(sig) == 0 {
+		return what + " carries no signature from node " + node, nil
+	}
+	public, pinned, ok, err := identityOf(ctx, tx, node)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return what + " is from node " + node + ", whose key this node does not hold: " +
+			"pin it with `flowy identity pin` or let it arrive on a page", nil
+	}
+	if d.requirePinned && !pinned {
+		return what + " is from node " + node + ", whose key was taken on trust rather than " +
+			"pinned by the operator, and " + requirePinnedEnv + " is set", nil
+	}
+	if !verifyBytes(public, msg, sig) {
+		return what + ": signature from node " + node + " does not verify", nil
+	}
+	return "", nil
 }
 
 // mintedEventTypes are the event types a handler of this node writes and
@@ -1689,10 +1821,10 @@ func applyArtifact(ctx context.Context, tx *sql.Tx, a *Artifact) (int, error) {
 		`INSERT INTO artifacts (id, type, kind, project, owner_user, title, body, discovery,
 		                        status, severity, tags, user_tags, related, visibility,
 		                        file_path, fields, hlc, node, tombstone, search, created, updated,
-		                        reported, external)
+		                        reported, external, sig)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
 		         $19, `+fmt.Sprintf(artifactSearchSQL, 20)+`, coalesce($21::timestamptz, now()), now(),
-		         $22, $23)
+		         $22, $23, $24)
 		 ON CONFLICT (id) DO UPDATE SET
 		     type = excluded.type, kind = excluded.kind, project = excluded.project,
 		     owner_user = excluded.owner_user, title = excluded.title, body = excluded.body,
@@ -1701,14 +1833,14 @@ func applyArtifact(ctx context.Context, tx *sql.Tx, a *Artifact) (int, error) {
 		     visibility = excluded.visibility, file_path = excluded.file_path,
 		     fields = excluded.fields, hlc = excluded.hlc, node = excluded.node,
 		     tombstone = excluded.tombstone, search = excluded.search, updated = now(),
-		     reported = excluded.reported, external = excluded.external
+		     reported = excluded.reported, external = excluded.external, sig = excluded.sig
 		  WHERE coalesce(artifacts.hlc, 0) < excluded.hlc
 		     OR (coalesce(artifacts.hlc, 0) = excluded.hlc
 		         AND coalesce(artifacts.node, '') < excluded.node)`,
 		a.ID, a.Type, a.Kind, a.Project, a.OwnerUser, a.Title, a.Body, a.Discovery,
 		a.Status, a.Severity, pq.Array(a.Tags), pq.Array(a.UserTags), pq.Array(a.Related),
 		a.Visibility, a.FilePath, fields, a.HLC, a.Node, a.Tombstone, searchText(a),
-		nullTime(a.Created), a.Reported, external)
+		nullTime(a.Created), a.Reported, external, a.Sig)
 	if err != nil {
 		return 0, fmt.Errorf("store: sync apply artifact %s: %w", a.ID, err)
 	}
@@ -1728,12 +1860,12 @@ func applyEvent(ctx context.Context, tx *sql.Tx, e *Event) (int, error) {
 	}
 	res, err := tx.ExecContext(ctx,
 		`INSERT INTO events (id, type, project, room, thread, parents, actor, artifact,
-		                     seq_hlc, node, body, meta, created)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-		         coalesce($13::timestamptz, now()))
+		                     seq_hlc, node, body, meta, sig, created)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+		         coalesce($14::timestamptz, now()))
 		 ON CONFLICT (id) DO NOTHING`,
 		e.ID, e.Type, e.Project, e.Room, e.Thread, pq.Array(e.Parents), e.Actor,
-		e.Artifact, e.SeqHLC, e.Node, e.Body, meta, nullTime(e.Created))
+		e.Artifact, e.SeqHLC, e.Node, e.Body, meta, e.Sig, nullTime(e.Created))
 	if err != nil {
 		return 0, fmt.Errorf("store: sync apply event %s: %w", e.ID, err)
 	}
@@ -1748,18 +1880,18 @@ func applyTask(ctx context.Context, tx *sql.Tx, t *Task) (int, error) {
 	}
 	res, err := tx.ExecContext(ctx,
 		`INSERT INTO tasks (id, artifact, from_user, to_user, project, state,
-		                    assignee_agent, thread, hlc, node)
-		 VALUES ($1, $2, $3, $4, nullif($5, ''), $6, nullif($7, ''), $8, $9, $10)
+		                    assignee_agent, thread, hlc, node, sig)
+		 VALUES ($1, $2, $3, $4, nullif($5, ''), $6, nullif($7, ''), $8, $9, $10, $11)
 		 ON CONFLICT (id) DO UPDATE SET
 		     artifact = excluded.artifact, from_user = excluded.from_user,
 		     to_user = excluded.to_user, project = excluded.project, state = excluded.state,
 		     assignee_agent = excluded.assignee_agent, thread = excluded.thread,
-		     hlc = excluded.hlc, node = excluded.node
+		     hlc = excluded.hlc, node = excluded.node, sig = excluded.sig
 		  WHERE coalesce(tasks.hlc, 0) < excluded.hlc
 		     OR (coalesce(tasks.hlc, 0) = excluded.hlc
 		         AND coalesce(tasks.node, '') < excluded.node)`,
 		t.ID, t.Artifact, t.FromUser, t.ToUser, t.Project, t.State,
-		t.AssigneeAgent, t.Thread, t.HLC, t.Node)
+		t.AssigneeAgent, t.Thread, t.HLC, t.Node, t.Sig)
 	if err != nil {
 		return 0, fmt.Errorf("store: sync apply task %s: %w", t.ID, err)
 	}
@@ -1774,18 +1906,18 @@ func applyGrant(ctx context.Context, tx *sql.Tx, g *Grant) (int, error) {
 	}
 	res, err := tx.ExecContext(ctx,
 		`INSERT INTO grants (id, from_project, to_project, subject, artifact, cap,
-		                     granted_by, hlc, node, tombstone)
-		 VALUES ($1, $2, $3, nullif($4, ''), nullif($5, ''), $6, nullif($7, ''), $8, $9, $10)
+		                     granted_by, hlc, node, tombstone, sig)
+		 VALUES ($1, $2, $3, nullif($4, ''), nullif($5, ''), $6, nullif($7, ''), $8, $9, $10, $11)
 		 ON CONFLICT (id) DO UPDATE SET
 		     from_project = excluded.from_project, to_project = excluded.to_project,
 		     subject = excluded.subject, artifact = excluded.artifact, cap = excluded.cap,
 		     granted_by = excluded.granted_by, hlc = excluded.hlc, node = excluded.node,
-		     tombstone = excluded.tombstone
+		     tombstone = excluded.tombstone, sig = excluded.sig
 		  WHERE coalesce(grants.hlc, 0) < excluded.hlc
 		     OR (coalesce(grants.hlc, 0) = excluded.hlc
 		         AND coalesce(grants.node, '') < excluded.node)`,
 		g.ID, g.FromProject, g.ToProject, g.Subject, g.Artifact, g.Cap,
-		g.GrantedBy, g.HLC, g.Node, g.Tombstone)
+		g.GrantedBy, g.HLC, g.Node, g.Tombstone, g.Sig)
 	if err != nil {
 		return 0, fmt.Errorf("store: sync apply grant %s: %w", g.ID, err)
 	}

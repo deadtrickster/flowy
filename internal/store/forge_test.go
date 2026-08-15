@@ -76,7 +76,7 @@ func TestExternalRefRoundTrips(t *testing.T) {
 	incoming.Node = "peer"
 	incoming.HLC = read.HLC + 1
 	incoming.Title = "as the peer has it"
-	applied, err := db.SyncApply(ctx, &SyncSet{Artifacts: []*Artifact{&incoming}})
+	applied, err := db.SyncApply(ctx, fromPeer(t, ctx, db, &SyncSet{Artifacts: []*Artifact{&incoming}}))
 	if err != nil {
 		t.Fatalf("sync apply: %v", err)
 	}

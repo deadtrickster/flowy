@@ -32,6 +32,10 @@ type Task struct {
 	Thread        string `json:"thread"`
 	HLC           int64  `json:"hlc"`
 	Node          string `json:"node"`
+	// Sig is the writing node's signature over the handoff - see Artifact.Sig.
+	// A task is a read capability (the tasks clause in EventFilterSQL), so a
+	// task nobody signed is a conversation anybody can hand themselves.
+	Sig []byte `json:"sig,omitempty"`
 
 	// ArtifactTitle and ArtifactType are joined in by ListTasks so an inbox can
 	// be drawn in one request. They are filled only when the reader may see the
@@ -59,7 +63,7 @@ func ValidTaskState(state string) bool {
 
 // taskColumns is the read list, in the order scanTask expects.
 const taskColumns = `t.id, t.artifact, t.from_user, t.to_user, t.project, t.state,
-	t.assignee_agent, t.thread, t.hlc, t.node`
+	t.assignee_agent, t.thread, t.hlc, t.node, t.sig`
 
 // scanTask reads one row of taskColumns, optionally followed by the joined
 // artifact title and type.
@@ -71,7 +75,8 @@ func scanTask(sc scanner, withArtifact bool) (*Task, error) {
 		clockVal                    sql.NullInt64
 		title, artType              sql.NullString
 	)
-	dest := []any{&t.ID, &artifact, &from, &to, &project, &state, &agent, &thread, &clockVal, &node}
+	dest := []any{&t.ID, &artifact, &from, &to, &project, &state, &agent, &thread, &clockVal,
+		&node, &t.Sig}
 	if withArtifact {
 		dest = append(dest, &title, &artType)
 	}
@@ -97,15 +102,18 @@ func (d *DB) insertTask(ctx context.Context, q execer, t *Task) error {
 	if t.State == "" {
 		t.State = TaskOpen
 	}
+	if err := d.signTask(ctx, t); err != nil {
+		return err
+	}
 	// project and assignee_agent are NULL rather than '' when absent, so a
 	// personal task and an undelegated one read back the same way they were
 	// written whichever client wrote them.
 	_, err := q.ExecContext(ctx,
 		`INSERT INTO tasks (id, artifact, from_user, to_user, project, state,
-		                    assignee_agent, thread, hlc, node)
-		 VALUES ($1, $2, $3, $4, nullif($5, ''), $6, nullif($7, ''), $8, $9, $10)`,
+		                    assignee_agent, thread, hlc, node, sig)
+		 VALUES ($1, $2, $3, $4, nullif($5, ''), $6, nullif($7, ''), $8, $9, $10, $11)`,
 		t.ID, t.Artifact, t.FromUser, t.ToUser, t.Project, t.State,
-		t.AssigneeAgent, t.Thread, t.HLC, t.Node)
+		t.AssigneeAgent, t.Thread, t.HLC, t.Node, t.Sig)
 	if err != nil {
 		return fmt.Errorf("store: insert task: %w", err)
 	}
@@ -285,10 +293,16 @@ func (d *DB) UpdateTaskEvent(ctx context.Context, t *Task, e *Event) error {
 // appending the entry that accounts for a move which never happened - the exact
 // half-write UpdateTaskEvent exists to rule out, arrived at from the other side.
 func (d *DB) updateTask(ctx context.Context, q execer, t *Task) error {
+	// A move is a row, and the row it becomes is what is signed: the state and
+	// the agent are both inside the signature, because both are capabilities.
+	if err := d.signTask(ctx, t); err != nil {
+		return err
+	}
 	res, err := q.ExecContext(ctx,
-		`UPDATE tasks SET state = $2, assignee_agent = nullif($3, ''), hlc = $4, node = $5
+		`UPDATE tasks SET state = $2, assignee_agent = nullif($3, ''), hlc = $4, node = $5,
+		        sig = $6
 		  WHERE id = $1`,
-		t.ID, t.State, t.AssigneeAgent, t.HLC, t.Node)
+		t.ID, t.State, t.AssigneeAgent, t.HLC, t.Node, t.Sig)
 	if err != nil {
 		return fmt.Errorf("store: update task %s: %w", t.ID, err)
 	}

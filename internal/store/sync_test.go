@@ -29,7 +29,7 @@ func TestSyncApplyIsLastWriterWinsByHLC(t *testing.T) {
 
 	apply := func(a *Artifact) int {
 		t.Helper()
-		applied, err := db.SyncApply(ctx, &SyncSet{Artifacts: []*Artifact{a}})
+		applied, err := db.SyncApply(ctx, fromPeer(t, ctx, db, &SyncSet{Artifacts: []*Artifact{a}}))
 		if err != nil {
 			t.Fatalf("apply: %v", err)
 		}
@@ -113,7 +113,7 @@ func TestSyncApplyAdvancesTheClock(t *testing.T) {
 	project := "pz-" + ulid.NewString()
 	ahead := db.Clock().Pack() + 60_000<<16 // a full minute of wall clock ahead
 	art := remote(ulid.NewString(), ahead, &project, "u-"+ulid.NewString(), "from the future")
-	if _, err := db.SyncApply(ctx, &SyncSet{Artifacts: []*Artifact{art}}); err != nil {
+	if _, err := db.SyncApply(ctx, fromPeer(t, ctx, db, &SyncSet{Artifacts: []*Artifact{art}})); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
 	if next := db.Clock().Pack(); next <= ahead {
@@ -141,7 +141,7 @@ func TestSyncApplyEventsAreAppendOnly(t *testing.T) {
 	}
 
 	set := &SyncSet{Events: []*Event{first, child}}
-	applied, err := db.SyncApply(ctx, set)
+	applied, err := db.SyncApply(ctx, fromPeer(t, ctx, db, set))
 	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}
@@ -163,7 +163,7 @@ func TestSyncApplyEventsAreAppendOnly(t *testing.T) {
 
 	// The same delta again, with a body that differs: nothing moves.
 	child.Body = "edited on the way through"
-	applied, err = db.SyncApply(ctx, set)
+	applied, err = db.SyncApply(ctx, fromPeer(t, ctx, db, set))
 	if err != nil {
 		t.Fatalf("re-apply: %v", err)
 	}
@@ -418,7 +418,7 @@ func TestSyncApplyAsRefusesAForgedEvent(t *testing.T) {
 	forged := &Event{ID: ulid.NewString(), Type: "status", Project: &project,
 		Actor: "u-somebody-else", Body: "open->done", SeqHLC: at + 2, Node: "peer-node"}
 
-	res, err := db.SyncApplyAs(ctx, peer, &SyncSet{Events: []*Event{mine, forged}})
+	res, err := db.SyncApplyAs(ctx, peer, fromPeer(t, ctx, db, &SyncSet{Events: []*Event{mine, forged}}))
 	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}
@@ -486,7 +486,8 @@ func TestPulledProjectGrantNeedsALocalOpener(t *testing.T) {
 		Subject: me.ID, GrantedBy: "u-" + ulid.NewString(), HLC: at + 3, Node: "peer-node",
 	}
 
-	res, err := db.SyncApplyFrom(ctx, puller, &SyncSet{Grants: []Grant{forged, ours, elsewhere}})
+	res, err := db.SyncApplyFrom(ctx, puller,
+		fromPeer(t, ctx, db, &SyncSet{Grants: []Grant{forged, ours, elsewhere}}))
 	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}
@@ -536,7 +537,7 @@ func TestPulledMintedEventIsRefused(t *testing.T) {
 	said := &Event{ID: ulid.NewString(), Type: "chat", Project: &project,
 		Actor: "u-over-there", Body: "said on the other node", SeqHLC: at + 1, Node: "peer-node"}
 
-	res, err := db.SyncApplyFrom(ctx, puller, &SyncSet{Events: []*Event{said}})
+	res, err := db.SyncApplyFrom(ctx, puller, fromPeer(t, ctx, db, &SyncSet{Events: []*Event{said}}))
 	if err != nil {
 		t.Fatalf("apply the chat: %v", err)
 	}
@@ -547,7 +548,7 @@ func TestPulledMintedEventIsRefused(t *testing.T) {
 	for _, kind := range []string{"status", "task", "forge"} {
 		minted := &Event{ID: ulid.NewString(), Type: kind, Project: &project,
 			Actor: "u-over-there", Body: "open->done", SeqHLC: at + 10, Node: "peer-node"}
-		res, err := db.SyncApplyFrom(ctx, puller, &SyncSet{Events: []*Event{minted}})
+		res, err := db.SyncApplyFrom(ctx, puller, fromPeer(t, ctx, db, &SyncSet{Events: []*Event{minted}}))
 		if err != nil {
 			t.Fatalf("apply the %s event: %v", kind, err)
 		}
@@ -588,7 +589,7 @@ func TestSyncApplyObservesTheClockAfterTheCommit(t *testing.T) {
 			Meta: []byte(`{not json`), SeqHLC: at + 2000, Node: "peer-node",
 		}},
 	}
-	if _, err := db.SyncApply(ctx, page); err == nil {
+	if _, err := db.SyncApply(ctx, fromPeer(t, ctx, db, page)); err == nil {
 		t.Fatal("a page whose event cannot be written reported success")
 	}
 
@@ -601,7 +602,7 @@ func TestSyncApplyObservesTheClockAfterTheCommit(t *testing.T) {
 	// And the happy path still moves it: the guarantee is that a reading is
 	// observed once it is committed, not that it is never observed.
 	good := remote(ulid.NewString(), applied, &project, owner, "the one that lands")
-	if _, err := db.SyncApply(ctx, &SyncSet{Artifacts: []*Artifact{good}}); err != nil {
+	if _, err := db.SyncApply(ctx, fromPeer(t, ctx, db, &SyncSet{Artifacts: []*Artifact{good}})); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
 	if now := db.Clock().Reading().Pack(); now < applied {
@@ -636,9 +637,9 @@ func TestPushedNewArtifactIsThePushersOwn(t *testing.T) {
 	// a row nobody here can be said to own.
 	unsigned := remote(ulid.NewString(), at+3, &project, "", "signed by nobody")
 
-	res, err := db.SyncApplyAs(ctx, pusher, &SyncSet{
+	res, err := db.SyncApplyAs(ctx, pusher, fromPeer(t, ctx, db, &SyncSet{
 		Artifacts: []*Artifact{forged, own, unsigned},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}
@@ -700,7 +701,7 @@ func TestPushedTaskAboutAProjectOnlyArtifactIsRefused(t *testing.T) {
 	}
 	unopenable, real := handoff(narrow, at+1), handoff(wide, at+2)
 
-	res, err := db.SyncApplyAs(ctx, pusher, &SyncSet{Tasks: []*Task{unopenable, real}})
+	res, err := db.SyncApplyAs(ctx, pusher, fromPeer(t, ctx, db, &SyncSet{Tasks: []*Task{unopenable, real}}))
 	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}

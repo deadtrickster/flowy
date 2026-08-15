@@ -260,6 +260,14 @@ func syncCmd(args []string) error {
 	if _, err := db.SeedClock(ctx); err != nil {
 		return err
 	}
+	// And it needs its own key: what it pushes is what it has signed, and the
+	// identity it hands over on a page is what lets the peer verify any of it.
+	if _, err := db.Identity(ctx); err != nil {
+		return err
+	}
+	if _, err := db.PinFromEnv(ctx, os.Getenv("FLOWY_PEER_KEYS")); err != nil {
+		return fmt.Errorf("peer keys: %w", err)
+	}
 
 	// What we may push is what this token's principal may read here.
 	principal, err := db.PrincipalForToken(ctx, *token)

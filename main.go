@@ -11,7 +11,9 @@
 // merging them last-writer-wins by hlc. Phase 6 is the forge bridge: a bug here
 // is filed as an issue on GitHub or GitLab through that forge's own CLI, its
 // state is read back, and the comments on it and the replies here are one
-// conversation.
+// conversation. Phase 6.5 signs what replicates: every row carries the ed25519
+// signature of the node that wrote it, and a merge verifies that before it
+// asks whether the principal handing it over was allowed to.
 package main
 
 import (
@@ -33,12 +35,15 @@ commands:
   sync     replicate with a peer: pull its delta, apply it, push ours
            (flowy sync --peer <url> --token <t>; env: DATABASE_URL, FLOWY_NODE,
            FLOWY_TOKEN)
+  identity this node's signing key, and the peer keys it holds
+           (flowy identity | list | pin --node N --key K | keygen --node N)
+  sign     sign a replication delta read on stdin (flowy sign [--seed HEX])
   version  print the version and exit
   help     print this message
 `
 
 // version is the node's build version.
-const version = "0.7.0-phase6"
+const version = "0.7.1-phase6.5"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -62,6 +67,16 @@ func main() {
 	case "sync":
 		if err := syncCmd(os.Args[2:]); err != nil {
 			fmt.Fprintf(os.Stderr, "flowy sync: %v\n", err)
+			os.Exit(1)
+		}
+	case "identity":
+		if err := identityCmd(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "flowy identity: %v\n", err)
+			os.Exit(1)
+		}
+	case "sign":
+		if err := signCmd(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "flowy sign: %v\n", err)
 			os.Exit(1)
 		}
 	case "version", "--version", "-v":

@@ -75,6 +75,9 @@ func serve(args []string) error {
 	forgeRepos := fs.String("forge-repos", os.Getenv("FLOWY_FORGE_REPOS"),
 		"comma-separated repositories this node may file into, e.g. owner/name "+
 			"(default $FLOWY_FORGE_REPOS)")
+	peerKeys := fs.String("peer-keys", os.Getenv("FLOWY_PEER_KEYS"),
+		"comma-separated node=publickey pairs to pin, the key in hex or base64 "+
+			"(default $FLOWY_PEER_KEYS)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -102,6 +105,25 @@ func serve(args []string) error {
 		log.Printf("clock: could not read the highest reading in the store: %v", err)
 	} else if highest > 0 {
 		log.Printf("clock: seeded above the store's highest reading (%d)", highest)
+	}
+
+	// And the key does not live in memory either. A node signs every row it
+	// writes, so it needs one before it takes a request - and failing here is
+	// better than failing on the first write, where the caller is told their
+	// artifact could not be stored and nobody says why.
+	id, err := db.Identity(dialCtx)
+	if err != nil {
+		return err
+	}
+	log.Printf("identity: node %q signs with %s", id.NodeID, store.EncodeKey(id.PublicKey))
+	if n, err := db.PinFromEnv(dialCtx, *peerKeys); err != nil {
+		return fmt.Errorf("peer keys: %w", err)
+	} else if n > 0 {
+		log.Printf("identity: %d peer key(s) pinned by the operator", n)
+	}
+	if db.RequirePinnedPeers() {
+		log.Print("identity: rows are taken only from nodes this operator pinned " +
+			"(FLOWY_REQUIRE_PINNED_PEERS)")
 	}
 
 	srv := &server{
@@ -373,7 +395,7 @@ func (s *server) handleNode(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"node":    s.node,
 		"version": version,
-		"phase":   6,
+		"phase":   6.5,
 		"console": s.console != nil && s.console.index != nil,
 		"forge":   forgeKind,
 		"routes":  append([]string{"GET /healthz", "GET /version"}, apiRoutes...),

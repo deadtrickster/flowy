@@ -1763,6 +1763,56 @@ psql5_counts() {
 	printf '%s row(s)\n' "$n"
 }
 
+# ---------------------------------------------------------------- phase 6.5
+#
+# Row signing. Every replicated row carries the signature of the node that
+# wrote it, and a merge verifies that before it asks anything else. Two things
+# follow for the gate:
+#
+#   - the two nodes have to know each other's public key, which is an operator's
+#     job and is done here the way an operator does it: read the key off one
+#     machine, pin it on the other. See the_nodes_exchange_keys.
+#   - a delta assembled by hand is a delta nothing signed, and a node will not
+#     merge one. The checks that hand a node rows it should refuse for some
+#     other reason - a forged grant, a re-pointed task - sign them properly
+#     first, so that what they are testing is still the check they were written
+#     for and not the new one. `flowy sign` is what does it.
+
+# node_key DSN NODE - the public key a node signs its rows with, in hex.
+node_key() {
+	DATABASE_URL="$1" FLOWY_NODE="$2" "$ROOT/flowy" identity | jq -r .public_key
+}
+
+# pin_key DSN NODE PEER KEY - one node's operator recording another node's key.
+pin_key() {
+	DATABASE_URL="$1" FLOWY_NODE="$2" "$ROOT/flowy" identity pin --node "$3" --key "$4"
+}
+
+# sign5 DSN NODE - sign a delta read on stdin with that node's own stored key.
+# The node column of each row is left alone: a delta whose rows name a node this
+# key does not belong to is a forgery, and building one is how the refusal is
+# tested.
+sign5() { DATABASE_URL="$1" FLOWY_NODE="$2" "$ROOT/flowy" sign; }
+
+# sign_seed SEED [NODE] - sign a delta read on stdin as the node a seed makes,
+# for the checks that need to be a node with no database of its own. With a node
+# name, the delta also carries that node's own self-signed identity, which is
+# how a page from a node carries the key that verifies it.
+sign_seed() {
+	if [ -n "${2:-}" ]; then
+		"$ROOT/flowy" sign --seed "$1" --node "$2" --identity
+		return
+	fi
+	"$ROOT/flowy" sign --seed "$1"
+}
+
+# seed_of NAME - a 32 byte hex seed derived from a name, so a check's stand-in
+# node has the same key every run.
+seed_of() { printf '%s' "$1" | sha256sum | cut -c1-64; }
+
+# key_of NODE SEED - the public key of the node a seed makes.
+key_of() { "$ROOT/flowy" identity keygen --node "$1" --seed "$2" | jq -r .public_key; }
+
 # sync5 DSN NODE PEER_PORT TOKEN - one run of the real driver, with its report
 # left in SYNC_REPORT.
 sync5() {
@@ -1790,6 +1840,67 @@ sync_round() {
 }
 
 # ------------------------------------------------------------- phase 5 checks
+
+# The out-of-band half of federation, done the way an operator does it: the key
+# is read off one machine and pinned on the other, over a channel that is not
+# the one being secured. Nothing is taken on trust here - both ends are pinned -
+# so what the rest of the phase exercises is two nodes that know each other.
+the_nodes_exchange_keys() {
+	recall5
+	local a b
+	a="$(node_key "$N5_DSN_A" nodeA)" || return 1
+	b="$(node_key "$N5_DSN_B" nodeB)" || return 1
+	if [ -z "$a" ] || [ "$a" = null ] || [ "$a" = "$b" ]; then
+		printf 'the two nodes report keys %s and %s\n' "${a:-<none>}" "${b:-<none>}" >&2
+		return 1
+	fi
+	pin_key "$N5_DSN_B" nodeB nodeA "$a" >/dev/null || return 1
+	pin_key "$N5_DSN_A" nodeA nodeB "$b" >/dev/null || return 1
+
+	want_eq "nodeA's key, pinned on B" \
+		"$(scalar5 "$N5_DSN_B" \
+			"SELECT count(*) FROM node_identity WHERE node_id = 'nodeA' AND pinned")" 1 || return 1
+	want_eq "nodeB's key, pinned on A" \
+		"$(scalar5 "$N5_DSN_A" \
+			"SELECT count(*) FROM node_identity WHERE node_id = 'nodeB' AND pinned")" 1 || return 1
+	# And neither of them handed over a private key doing it.
+	want_eq "private keys on B that are not B's own" \
+		"$(scalar5 "$N5_DSN_B" \
+			"SELECT count(*) FROM node_identity WHERE private_key IS NOT NULL AND node_id <> 'nodeB'")" \
+		0 || return 1
+	printf 'nodeA signs with %s, nodeB with %s, each pinned on the other\n' \
+		"$(printf '%s' "$a" | cut -c1-16)" "$(printf '%s' "$b" | cut -c1-16)"
+}
+
+# A row that crossed the fabric carries the signature of the node that wrote it,
+# byte for byte: the merge on the far side would not have taken it otherwise,
+# and what is stored there is what was verified rather than a re-stamp.
+the_replicated_rows_carry_their_authors_signature() {
+	recall5
+	local id here there
+	id="$(scalar5 "$N5_DSN_B" \
+		"SELECT id FROM artifacts WHERE node = 'nodeA' AND sig IS NOT NULL ORDER BY hlc LIMIT 1")" ||
+		return 1
+	if [ -z "$id" ]; then
+		printf 'nodeB holds no signed row of nodeA at all\n' >&2
+		return 1
+	fi
+	here="$(scalar5 "$N5_DSN_A" "SELECT encode(sig, 'hex') FROM artifacts WHERE id = '$id'")" || return 1
+	there="$(scalar5 "$N5_DSN_B" "SELECT encode(sig, 'hex') FROM artifacts WHERE id = '$id'")" || return 1
+	want_eq "the signature on the row that travelled" "$there" "$here" || return 1
+	want_eq "rows of nodeA's on B with no signature at all" \
+		"$(scalar5 "$N5_DSN_B" "SELECT count(*) FROM artifacts WHERE node = 'nodeA' AND sig IS NULL")" \
+		0 || return 1
+	want_eq "events of nodeA's on B with no signature" \
+		"$(scalar5 "$N5_DSN_B" "SELECT count(*) FROM events WHERE node = 'nodeA' AND sig IS NULL")" \
+		0 || return 1
+	# And the other direction, so this is about replication rather than about
+	# one node's writes.
+	want_eq "rows of nodeB's on A with no signature" \
+		"$(scalar5 "$N5_DSN_A" "SELECT count(*) FROM artifacts WHERE node = 'nodeB' AND sig IS NULL")" \
+		0 || return 1
+	printf 'artifact %s is on both nodes under the same signature\n' "$id"
+}
 
 both_nodes_are_up_and_apart() {
 	recall5
@@ -2262,7 +2373,7 @@ the_node_selected_the_mock() {
 	want_eq "gh is on PATH" "$(jqv .available.gh)" true || return 1
 	want_eq "the mock's control surface is up" "$(jqv .mock)" true || return 1
 	api GET "$TOKEN_A" /api/node || return 1
-	want_eq "the node reports the phase" "$(jqv .phase)" 6 || return 1
+	want_eq "the node reports the phase" "$(jqv .phase)" 6.5 || return 1
 	want_eq "and its forge" "$(jqv .forge)" mock || return 1
 	printf 'FLOWY_FORGE=mock selected MockForge, with gh installed beside it\n'
 }
@@ -2522,8 +2633,11 @@ a_forged_grant_is_refused() {
 	hlc="$(jqv .hlc)"
 	id="forged-$(date +%s)-$$"
 	# pb may read pa. It has no business in pc, and this is it saying otherwise.
-	delta="$(printf '{"artifacts":[],"events":[],"tasks":[],"grants":[{"id":"%s","from_project":"pb","to_project":"pc","cap":"read","granted_by":"%s","hlc":%d,"node":"forger","tombstone":false}],"hwm":0}' \
-		"$id" "$N5_USER_B" "$((hlc + 65536))")"
+	# Signed by nodeA, which is a node B holds the key of: the row really was
+	# written by the peer it says wrote it, and it is still not a row that peer
+	# may write. Authenticity passes and authorisation refuses.
+	delta="$(printf '{"artifacts":[],"events":[],"tasks":[],"grants":[{"id":"%s","from_project":"pb","to_project":"pc","cap":"read","granted_by":"%s","hlc":%d,"node":"nodeA","tombstone":false}],"hwm":0}' \
+		"$id" "$N5_USER_B" "$((hlc + 65536))" | sign5 "$N5_DSN_A" nodeA)" || return 1
 
 	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_B" /api/sync/push "$delta" || return 1
 	want_eq "grants refused" "$(jqv '.refused.grants')" 1 || return 1
@@ -2541,11 +2655,13 @@ a_poisoned_clock_reading_is_refused() {
 	napi "$N5_PORT_B" GET "" /healthz || return 1
 	local before delta
 	before="$(jqv .hlc)"
-	delta="$(printf '{"artifacts":[{"id":"poison-%s","type":"note","project":"pb","owner_user":"%s","title":"poison","body":"","visibility":"project","hlc":9223372036854775807,"node":"forger","tombstone":false}],"events":[],"tasks":[],"grants":[],"hwm":0}' \
-		"$$" "$N5_USER_B")"
+	delta="$(printf '{"artifacts":[{"id":"poison-%s","type":"note","project":"pb","owner_user":"%s","title":"poison","body":"","visibility":"project","hlc":9223372036854775807,"node":"nodeA","tombstone":false}],"events":[],"tasks":[],"grants":[],"hwm":0}' \
+		"$$" "$N5_USER_B" | sign5 "$N5_DSN_A" nodeA)" || return 1
 	want_napi 400 "$N5_PORT_B" POST "$N5_TOKEN_B" /api/sync/push "$delta" || return 1
+	# Properly signed and still refused whole: a reading no clock could have
+	# made is not a row to check, it is a delta to throw out.
 	want_eq "rows it wrote" \
-		"$(scalar5 "$N5_DSN_B" "SELECT count(*) FROM artifacts WHERE node = 'forger'")" 0 || return 1
+		"$(scalar5 "$N5_DSN_B" "SELECT count(*) FROM artifacts WHERE id = 'poison-$$'")" 0 || return 1
 
 	# The clock still works: two writes, both positive, strictly increasing and
 	# above where the node was before the push.
@@ -2816,9 +2932,10 @@ a_pushed_event_is_signed_by_the_pusher() {
 		--argjson h1 "$hlc" --argjson h2 "$((hlc + 65536))" '
 		{artifacts: [], tasks: [], grants: [], hwm: 0, events: [
 		  {id: $f, type: "status", project: "pb", room: "pb/bugs", thread: $f, parents: [],
-		   actor: $a, artifact: "", seq_hlc: $h1, node: "forger", body: "open->done"},
+		   actor: $a, artifact: "", seq_hlc: $h1, node: "nodeA", body: "open->done"},
 		  {id: $m, type: "chat", project: "pb", room: "pb/bugs", thread: $m, parents: [],
-		   actor: $b, artifact: "", seq_hlc: $h2, node: "forger", body: "this one really is mine"}]}')"
+		   actor: $b, artifact: "", seq_hlc: $h2, node: "nodeA",
+		   body: "this one really is mine"}]}' | sign5 "$N5_DSN_A" nodeA)" || return 1
 
 	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_B" /api/sync/push "$delta" || return 1
 	want_eq "events received" "$(jqv '.received.events')" 2 || return 1
@@ -2851,8 +2968,8 @@ a_read_share_is_not_a_write() {
 	delta="$(jq -nc --arg i "$id" --arg b "$N5_USER_B" --argjson h "$hlc" '
 		{events: [], tasks: [], grants: [], hwm: 0, artifacts: [
 		  {id: $i, type: "note", project: "pb", owner_user: $b, title: "mine now",
-		   body: "taken over by a reader", visibility: "project", hlc: $h, node: "forger",
-		   tombstone: false, reported: false}]}')"
+		   body: "taken over by a reader", visibility: "project", hlc: $h, node: "nodeA",
+		   tombstone: false, reported: false}]}' | sign5 "$N5_DSN_A" nodeA)" || return 1
 	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_B" /api/sync/push "$delta" || return 1
 	want_eq "artifacts refused" "$(jqv '.refused.artifacts')" 1 || return 1
 	want_eq "artifacts applied" "$(jqv '.applied.artifacts')" 0 || return 1
@@ -2883,7 +3000,8 @@ a_share_is_only_the_owners_to_hand_over() {
 		--argjson h "$hlc" '
 		{artifacts: [], events: [], tasks: [], hwm: 0, grants: [
 		  {id: $g, from_project: "pa", to_project: "pa", subject: $s, artifact: $i,
-		   cap: "read", granted_by: $o, hlc: $h, node: "forger", tombstone: false}]}')"
+		   cap: "read", granted_by: $o, hlc: $h, node: "nodeA",
+		   tombstone: false}]}' | sign5 "$N5_DSN_A" nodeA)" || return 1
 
 	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_B" /api/sync/push "$delta" || return 1
 	want_eq "grants refused" "$(jqv '.refused.grants')" 1 || return 1
@@ -2919,7 +3037,8 @@ a_pushed_task_cannot_name_a_thread_it_cannot_read() {
 		--argjson h "$hlc" '
 		{artifacts: [], events: [], grants: [], hwm: 0, tasks: [
 		  {id: $t, artifact: $a, from_user: $u, to_user: $u, project: "pb", state: "open",
-		   assignee_agent: "", thread: $th, hlc: $h, node: "forger"}]}')"
+		   assignee_agent: "", thread: $th, hlc: $h,
+		   node: "nodeA"}]}' | sign5 "$N5_DSN_A" nodeA)" || return 1
 
 	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_B" /api/sync/push "$delta" || return 1
 	want_eq "tasks refused" "$(jqv '.refused.tasks')" 1 || return 1
@@ -3562,6 +3681,7 @@ check "node A comes up" "$WORK/smoke" healthz "http://127.0.0.1:$NODE5A_PORT/hea
 check "node B comes up" "$WORK/smoke" healthz "http://127.0.0.1:$NODE5B_PORT/healthz"
 check "two nodes, two databases, nothing shared yet" both_nodes_are_up_and_apart
 check "the replication token authenticates on both" the_same_token_authenticates_on_both
+check "each node's operator pins the other node's signing key" the_nodes_exchange_keys
 
 say "what replicates"
 check "A opens pa up to pb, which is what makes pa replicable" a_opens_pa_up_to_pb_on_node_a
@@ -3571,6 +3691,8 @@ check "A appends a thread of two events" a_appends_a_thread
 check "B writes one of its own" b_writes_one_of_its_own
 check "sync: A pulls B's delta and pushes its own" the_first_sync
 check "A's artifact is on B, same id, same hlc, same author" the_shared_artifact_is_on_b
+check "and under the signature nodeA wrote it with" \
+	the_replicated_rows_carry_their_authors_signature
 check "B's artifact is on A the same way" bs_artifact_is_on_a
 check "the thread is on B with its parents intact" the_thread_is_on_b_with_its_parents
 
@@ -3875,7 +3997,8 @@ a_pushed_artifact_lands_where_it_may() {
 		{events: [], tasks: [], grants: [], hwm: 0, artifacts: [
 		  {id: $i, type: "note", project: "pz", owner_user: $b, title: "filed in pz",
 		   body: "by somebody with no business in pz", visibility: "project",
-		   hlc: $h, node: "forger", tombstone: false, reported: false}]}')"
+		   hlc: $h, node: "nodeA", tombstone: false,
+		   reported: false}]}' | sign5 "$N5_DSN_A" nodeA)" || return 1
 	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_B" /api/sync/push "$delta" || return 1
 	want_eq "artifacts refused" "$(jqv '.refused.artifacts')" 1 || return 1
 	want_eq "artifacts applied" "$(jqv '.applied.artifacts')" 0 || return 1
@@ -3893,8 +4016,8 @@ a_pushed_artifact_lands_where_it_may() {
 	delta="$(jq -nc --arg i "$id" --arg b "$N5_USER_B" --argjson h "$hlc" '
 		{events: [], tasks: [], grants: [], hwm: 0, artifacts: [
 		  {id: $i, type: "note", project: "pa", owner_user: $b, title: "the peer own row",
-		   body: "grimsbyfeather", visibility: "project", hlc: $h, node: "forger",
-		   tombstone: false, reported: false}]}')"
+		   body: "grimsbyfeather", visibility: "project", hlc: $h, node: "nodeA",
+		   tombstone: false, reported: false}]}' | sign5 "$N5_DSN_A" nodeA)" || return 1
 	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_B" /api/sync/push "$delta" || return 1
 	want_eq "the re-projection refused" "$(jqv '.refused.artifacts')" 1 || return 1
 	want_eq "the re-projection applied" "$(jqv '.applied.artifacts')" 0 || return 1
@@ -3942,7 +4065,8 @@ a_party_cannot_re_point_its_task() {
 		--arg th "$thread" --argjson h "$hlc" '
 		{artifacts: [], events: [], grants: [], hwm: 0, tasks: [
 		  {id: $t, artifact: $a, from_user: $f, to_user: $u, project: "pa", state: "open",
-		   assignee_agent: "", thread: $th, hlc: $h, node: "forger"}]}')"
+		   assignee_agent: "", thread: $th, hlc: $h,
+		   node: "nodeA"}]}' | sign5 "$N5_DSN_A" nodeA)" || return 1
 	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_B" /api/sync/push "$delta" || return 1
 	want_eq "tasks refused" "$(jqv '.refused.tasks')" 1 || return 1
 	want_eq "tasks applied" "$(jqv '.applied.tasks')" 0 || return 1
@@ -3996,7 +4120,25 @@ a_message_does_not_enter_a_thread_it_cannot_read() {
 # The node name is the tiebreak, and it has to be the same tiebreak on both.
 a_tied_reading_still_has_a_winner() {
 	recall5
-	local id hlc delta
+	local id hlc delta zz_seed aa_seed
+	# Two nodes that exist only for this check, each a keypair and a name. Node
+	# B's operator pins both, because a row from a node whose key is not here is
+	# refused before the tiebreak is ever reached - and what is being tested is
+	# the tiebreak.
+	zz_seed="$(seed_of zz-node)" || return 1
+	aa_seed="$(seed_of aa-node)" || return 1
+	local node
+	for node in "$N5_DSN_A:nodeA" "$N5_DSN_B:nodeB"; do
+		# Both machines, because the winning row replicates onward: a node that
+		# never speaks for itself has no way to hand its key to the far side, so
+		# the operator does it. An identity that arrived on a page relays; a pin
+		# is local to the machine it was made on.
+		pin_key "${node%:*}" "${node#*:}" zz-node "$(key_of zz-node "$zz_seed")" >/dev/null ||
+			return 1
+		pin_key "${node%:*}" "${node#*:}" aa-node "$(key_of aa-node "$aa_seed")" >/dev/null ||
+			return 1
+	done
+
 	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_B" /api/artifacts \
 		'{"type":"note","title":"written on nodeB","body":"snaffleburr"}' || return 1
 	id="$(jqv .id)"
@@ -4008,7 +4150,7 @@ a_tied_reading_still_has_a_winner() {
 		{events: [], tasks: [], grants: [], hwm: 0, artifacts: [
 		  {id: $i, type: "note", project: "pb", owner_user: $b, title: "written on zz",
 		   body: "snaffleburr", visibility: "project", hlc: $h, node: "zz-node",
-		   tombstone: false, reported: false}]}')"
+		   tombstone: false, reported: false}]}' | sign_seed "$zz_seed")" || return 1
 	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_B" /api/sync/push "$delta" || return 1
 	want_eq "the tie applied" "$(jqv '.applied.artifacts')" 1 || return 1
 	want_eq "the tie refused" "$(jqv '.refused.artifacts')" 0 || return 1
@@ -4024,7 +4166,7 @@ a_tied_reading_still_has_a_winner() {
 		{events: [], tasks: [], grants: [], hwm: 0, artifacts: [
 		  {id: $i, type: "note", project: "pb", owner_user: $b, title: "written on aa",
 		   body: "snaffleburr", visibility: "project", hlc: $h, node: "aa-node",
-		   tombstone: false, reported: false}]}')"
+		   tombstone: false, reported: false}]}' | sign_seed "$aa_seed")" || return 1
 	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_B" /api/sync/push "$delta" || return 1
 	want_eq "the losing side applied" "$(jqv '.applied.artifacts')" 0 || return 1
 	want_eq "the losing side refused" "$(jqv '.refused.artifacts')" 0 || return 1
@@ -4298,7 +4440,8 @@ a_party_cannot_delegate_its_task_to_a_stranger() {
 			--arg p "$project" --arg th "$thread" --arg st "$1" --arg ag "$2" --argjson h "$hlc" '
 			{artifacts: [], events: [], grants: [], hwm: 0, tasks: [
 			  {id: $t, artifact: $a, from_user: $f, to_user: $u, project: $p, state: $st,
-			   assignee_agent: $ag, thread: $th, hlc: $h, node: "forger"}]}')"
+			   assignee_agent: $ag, thread: $th, hlc: $h,
+			   node: "nodeA"}]}' | sign5 "$N5_DSN_A" nodeA)" || return 1
 		want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_B" /api/sync/push "$delta"
 	}
 
@@ -5162,6 +5305,222 @@ check "an oversized pull answer is a named error, not a parse error (LOW 5)" \
 say "a body that is not json still has a status"
 check "a non-json error body becomes an ApiError with the status (LOW 6)" \
 	console_reports_the_status_not_the_parse_error
+
+# -------------------------------------------------- phase 6.5: signed rows
+#
+# The one HIGH the seventh review left: a hostile PULL peer could rewrite the
+# content of any artifact, grant, task or event the pulling principal may read.
+# Every check in the rounds above asks what the peer handing a row over is
+# allowed to write, and a peer serving a page is allowed to hand over other
+# people's rows - that is what federation is. Nothing asked whether the node
+# named on the row wrote it, because nothing on an unsigned row answers that.
+#
+# The two below are the end-to-end halves of the fix, driven through the real
+# nodes: a peer rewriting somebody else's row, and a third node's rows reaching
+# a node that has never spoken to it. The property-by-property checks are Go
+# tests against the merge itself, registered underneath them.
+
+# psql5_do - a statement against one of the two federated databases. It is how
+# a check is something a node cannot do to itself: a hostile peer's database is
+# a database somebody else writes.
+
+# forged_sig DSN NODE ROW - the signature the node behind DSN would put on a row
+# that names somebody else as its author, in base64. The row is one artifact
+# object; what comes back is the best a peer holding its own key and somebody
+# else's row can do, which is exactly the forgery.
+forged_sig() {
+	local dsn=$1 node=$2 row=$3
+	jq -nc --argjson a "$row" '{artifacts: [$a], events: [], tasks: [], grants: [], hwm: 0}' |
+		sign5 "$dsn" "$node" | jq -r '.artifacts[0].sig'
+}
+
+# HIGH 1 (phase 6.5). A pulled row used to be believed because of who handed it
+# over. Node A owns an artifact; node B holds a copy of it because it was
+# replicated there; node B rewrites it - title, body, status, a reading that
+# wins - and puts node A's name back on it. On the code as it was, A pulled its
+# own artifact back with somebody else's words in it and kept them.
+a_peer_cannot_rewrite_the_row_it_was_given() {
+	recall5
+	local id hlc was_title row forged
+	# A's own row, written on A and replicated to B by an ordinary sync.
+	want_napi 200 "$N5_PORT_A" POST "$N5_TOKEN_B" /api/artifacts \
+		'{"type":"bug","title":"the alternator whines","body":"only when cold","status":"open"}' ||
+		return 1
+	id="$(jqv .id)"
+	sync_round || return 1
+	want_eq "the row reached nodeB" \
+		"$(scalar5 "$N5_DSN_B" "SELECT count(*) FROM artifacts WHERE id = '$id' AND node = 'nodeA'")" \
+		1 || return 1
+
+	was_title="$(scalar5 "$N5_DSN_A" "SELECT title FROM artifacts WHERE id = '$id'")" || return 1
+	hlc="$(forged_hlc "$N5_PORT_B")" || return 1
+
+	# What a hostile peer writes into its own database: A's id, A's owner, A's
+	# project, everything else its own, and its own signature over the result.
+	# It cannot produce A's signature over these bytes, and this is the nearest
+	# thing it can produce.
+	row="$(jq -nc --arg i "$id" --arg o "$N5_USER_B" --argjson h "$hlc" \
+		'{id: $i, type: "bug", project: "pb", owner_user: $o, title: "the alternator is fine",
+		  body: "closed as invalid", status: "done", visibility: "project",
+		  hlc: $h, node: "nodeA", tombstone: false, reported: false}')"
+	forged="$(forged_sig "$N5_DSN_B" nodeB "$row")" || return 1
+	psql5_do "$N5_DSN_B" "UPDATE artifacts
+	    SET title = 'the alternator is fine', body = 'closed as invalid', status = 'done',
+	        owner_user = '$N5_USER_B', project = 'pb', hlc = $hlc, node = 'nodeA',
+	        sig = decode('$forged', 'base64')
+	  WHERE id = '$id'" || return 1
+
+	# The peer really does serve it, so what follows is the merge rather than
+	# the peer being unable to say it.
+	want_napi 200 "$N5_PORT_B" GET "$N5_TOKEN_B" "/api/sync/pull?since=$((hlc - 1))" || return 1
+	want_eq "the rewritten row the peer served" \
+		"$(printf '%s' "$API_BODY" | jq '[.artifacts[] | select(.id == "'"$id"'")] | length')" 1 ||
+		return 1
+
+	sync5_flags "$N5_DSN_A" nodeA "$N5_PORT_B" "$N5_TOKEN_B" --push=false || return 1
+	local refused
+	refused="$(printf '%s' "$SYNC_REPORT" | jq '[.refused[]] | add')"
+	if [ "$refused" -lt 1 ]; then
+		printf 'nodeA refused %s rows and took the rewrite: %s\n' "$refused" "$SYNC_REPORT" >&2
+		return 1
+	fi
+	case "$SYNC_REPORT" in
+	*"does not verify"*) ;;
+	*)
+		printf 'the refusal is not about the signature: %s\n' "$SYNC_REPORT" >&2
+		return 1
+		;;
+	esac
+
+	# And A's own copy is exactly as A wrote it.
+	want_eq "the title on nodeA" \
+		"$(scalar5 "$N5_DSN_A" "SELECT title FROM artifacts WHERE id = '$id'")" "$was_title" ||
+		return 1
+	want_eq "the body on nodeA" \
+		"$(scalar5 "$N5_DSN_A" "SELECT body FROM artifacts WHERE id = '$id'")" "only when cold" ||
+		return 1
+	want_eq "the status on nodeA" \
+		"$(scalar5 "$N5_DSN_A" "SELECT coalesce(status, '') FROM artifacts WHERE id = '$id'")" \
+		open || return 1
+
+	# The rewrite goes out of the peer, so nothing after this runs against a
+	# node holding a row no other node will ever merge again.
+	psql5_do "$N5_DSN_B" "DELETE FROM artifacts WHERE id = '$id'" || return 1
+	printf 'the rewrite of %s was served, refused and never landed: %s\n' "$id" \
+		"$(printf '%s' "$SYNC_REPORT" | jq -r '.reasons[0]')"
+}
+
+# HIGH 1, the other way round: the relay that works. Node C is a node with a
+# key and no server - it exists as a keypair and a name, which is all a node is
+# to a row - and its rows reach nodeA through nodeB, which holds neither key.
+#
+# The identity travels with them, self-signed, so nodeB cannot alter it in
+# transit; nodeA has never heard of nodeC and takes it on first use. And when
+# nodeB does alter one of C's rows, C's signature breaks and nodeA refuses it -
+# which is the whole point of verifying the author rather than the sender.
+a_third_nodes_rows_relay_through_the_peer() {
+	recall5
+	local seed key id hlc delta
+	seed="$(seed_of nodeC)" || return 1
+	key="$(key_of nodeC "$seed")" || return 1
+	id="relayed-$$-$(date +%s)"
+
+	# Neither node has ever heard of nodeC. Its identity travels with its rows,
+	# self-signed, which is the only thing that makes a relay possible at all.
+	want_eq "what nodeB knows of nodeC to begin with" \
+		"$(scalar5 "$N5_DSN_B" "SELECT count(*) FROM node_identity WHERE node_id = 'nodeC'")" 0 ||
+		return 1
+	want_eq "what nodeA knows of nodeC to begin with" \
+		"$(scalar5 "$N5_DSN_A" "SELECT count(*) FROM node_identity WHERE node_id = 'nodeC'")" 0 ||
+		return 1
+
+	# C writes a row and signs it, and B takes it: the signature is C's, the
+	# owner is the principal pushing it, and B holds C's key.
+	hlc="$(forged_hlc "$N5_PORT_B")" || return 1
+	delta="$(jq -nc --arg i "$id" --arg o "$N5_USER_B" --argjson h "$hlc" '
+		{events: [], tasks: [], grants: [], hwm: 0, artifacts: [
+		  {id: $i, type: "note", project: "pb", owner_user: $o, title: "written on nodeC",
+		   body: "flimberwhack", visibility: "project", hlc: $h, node: "nodeC",
+		   tombstone: false, reported: false}]}' | sign_seed "$seed" nodeC)" || return 1
+	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_B" /api/sync/push "$delta" || return 1
+	want_eq "nodeB took C's row" "$(jqv '.applied.artifacts')" 1 || return 1
+	want_eq "and C's key, on first use" \
+		"$(scalar5 "$N5_DSN_B" \
+			"SELECT count(*) FROM node_identity WHERE node_id = 'nodeC' AND NOT pinned")" 1 ||
+		return 1
+
+	# nodeA pulls from nodeB and gets a row from a node it has never met.
+	sync5_flags "$N5_DSN_A" nodeA "$N5_PORT_B" "$N5_TOKEN_B" --push=false || return 1
+	want_eq "rows nodeA refused" \
+		"$(printf '%s' "$SYNC_REPORT" | jq '[.refused[]] | add')" 0 || return 1
+	want_eq "C's row on nodeA" \
+		"$(scalar5 "$N5_DSN_A" "SELECT count(*) FROM artifacts WHERE id = '$id' AND node = 'nodeC'")" \
+		1 || return 1
+	want_eq "and the key it verified it with, taken on first use" \
+		"$(scalar5 "$N5_DSN_A" \
+			"SELECT count(*) FROM node_identity WHERE node_id = 'nodeC' AND NOT pinned")" 1 ||
+		return 1
+	want_eq "which is the key nodeC really signs with" \
+		"$(scalar5 "$N5_DSN_A" \
+			"SELECT encode(public_key, 'hex') FROM node_identity WHERE node_id = 'nodeC'")" \
+		"$key" || return 1
+
+	# Now the relay tampers: same row, nodeB's own words, a reading that wins,
+	# and nodeC's signature still on it because nodeB cannot make another.
+	hlc="$(forged_hlc "$N5_PORT_B")" || return 1
+	psql5_do "$N5_DSN_B" "UPDATE artifacts
+	    SET title = 'edited by the relay', body = 'wobblethwack', hlc = $hlc
+	  WHERE id = '$id'" || return 1
+	sync5_flags "$N5_DSN_A" nodeA "$N5_PORT_B" "$N5_TOKEN_B" --push=false || return 1
+	if [ "$(printf '%s' "$SYNC_REPORT" | jq '[.refused[]] | add')" -lt 1 ]; then
+		printf 'nodeA took a row the relay had edited: %s\n' "$SYNC_REPORT" >&2
+		return 1
+	fi
+	want_eq "the title nodeA still has" \
+		"$(scalar5 "$N5_DSN_A" "SELECT title FROM artifacts WHERE id = '$id'")" \
+		"written on nodeC" || return 1
+
+	# And out of the peer again, so the cursor is not held against the checks
+	# that follow.
+	psql5_do "$N5_DSN_B" "DELETE FROM artifacts WHERE id = '$id'" || return 1
+	printf 'nodeC relayed through nodeB to nodeA; the relay could not edit %s\n' "$id"
+}
+
+say "a peer that hands a row over is not the node that wrote it"
+check "a hostile peer's rewrite of somebody else's row is refused end to end (HIGH 1)" \
+	a_peer_cannot_rewrite_the_row_it_was_given
+check "a third node's rows relay through a peer, and the relay cannot edit them (HIGH 1)" \
+	a_third_nodes_rows_relay_through_the_peer
+
+say "the canonical encoding is what is signed"
+check "one row is one byte string, and every field is in it" \
+	go test -count=1 ./internal/sign
+
+say "authorship, checked at the merge"
+check "a rewritten, unsigned or replayed row is refused" \
+	go test -count=1 -run TestAHostilePeerCannotRewriteAnothersRow ./internal/store
+check "one flipped byte of any signed field is refused" \
+	go test -count=1 -run TestOneFlippedByteIsRefused ./internal/store
+check "a validly signed row is still refused when it is not the peer's to write" \
+	go test -count=1 -run TestAuthenticityAndAuthorisationAreTwoLayers ./internal/store
+check "every local write of every replicated table is signed" \
+	go test -count=1 -run TestALocalWriteIsSignedForEveryTable ./internal/store
+check "a signature survives the database that stores the row" \
+	go test -count=1 -run TestASignatureSurvivesTheDatabase ./internal/store
+
+say "keys: pinned, taken on first use, never rotated over the wire"
+check "this node mints one key and signs with it" \
+	go test -count=1 -run TestThisNodeSignsAndKeepsItsKey ./internal/store
+check "an identity arrives with the rows it verifies" \
+	go test -count=1 -run TestAnIdentityArrivesWithTheRowsItVerifies ./internal/store
+check "a second key for a node already known is refused, at the pin" \
+	go test -count=1 -run TestPinnedKeyDoesNotRotate ./internal/store
+check "and over the wire, with the rows that came with it" \
+	go test -count=1 -run TestAKeyDoesNotRotateOverTheWire ./internal/store
+check "FLOWY_REQUIRE_PINNED_PEERS refuses a node the operator did not pin" \
+	go test -count=1 -run TestRequirePinnedPeersRefusesATrustedOnFirstUseNode ./internal/store
+check "a pull hands over public keys and no private ones" \
+	go test -count=1 -run TestSyncPullHandsOverTheKeysAndNoPrivateOnes ./internal/store
 
 # ------------------------------------------------------------------- verdict
 

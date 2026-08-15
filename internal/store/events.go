@@ -12,7 +12,7 @@ import (
 
 // eventColumns is the read list, in the order scanEvent expects.
 const eventColumns = `id, type, project, room, thread, parents, actor, artifact, seq_hlc,
-	node, body, meta, created`
+	node, body, meta, sig, created`
 
 // scanEvent reads one row of eventColumns.
 func scanEvent(sc scanner) (*Event, error) {
@@ -24,7 +24,7 @@ func scanEvent(sc scanner) (*Event, error) {
 		seq                            sql.NullInt64
 	)
 	err := sc.Scan(&e.ID, &typeCol, &project, &room, &thread, pq.Array(&e.Parents), &actor,
-		&artifact, &seq, &nodeCol, &body, &meta, &e.Created)
+		&artifact, &seq, &nodeCol, &body, &meta, &e.Sig, &e.Created)
 	if err != nil {
 		return nil, err
 	}
