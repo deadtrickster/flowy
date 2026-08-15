@@ -609,3 +609,110 @@ func TestSyncApplyObservesTheClockAfterTheCommit(t *testing.T) {
 			now, applied)
 	}
 }
+
+// TestPushedNewArtifactIsThePushersOwn holds the push rule for a row that is
+// not here yet.
+//
+// checkArtifact's third rule is the one that stops a merge changing hands, and
+// on a push it is stricter: the row has to be the pusher's own. But it was
+// written against the row already in the table, and a new id matches nothing -
+// so the check returned early and the rule never fired. A peer could push a
+// brand new artifact into any project it can reach with anybody at all in
+// owner_user: authorship forged at the door, replicated onward from here, and
+// the name it forged then holding the update and tombstone rights that column
+// carries.
+//
+// The pusher's own new row still lands, which is what a push is for.
+func TestPushedNewArtifactIsThePushersOwn(t *testing.T) {
+	ctx, db := open(t)
+
+	project := "pk-" + ulid.NewString()
+	pusher := &Principal{UserID: "u-" + ulid.NewString(), Project: project}
+	at := db.Clock().Pack()
+
+	forged := remote(ulid.NewString(), at+1, &project, "u-somebody-else", "signed by somebody else")
+	own := remote(ulid.NewString(), at+2, &project, pusher.UserID, "the pusher's own")
+	// And the unsigned one, which is the same forgery with the name left out:
+	// a row nobody here can be said to own.
+	unsigned := remote(ulid.NewString(), at+3, &project, "", "signed by nobody")
+
+	res, err := db.SyncApplyAs(ctx, pusher, &SyncSet{
+		Artifacts: []*Artifact{forged, own, unsigned},
+	})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if res.Applied["artifacts"] != 1 || res.Refused["artifacts"] != 2 {
+		t.Fatalf("applied %d and refused %d artifacts, want 1 and 2: %+v",
+			res.Applied["artifacts"], res.Refused["artifacts"], res.Reasons)
+	}
+	if n := rows(t, db, "artifacts", forged.ID); n != 0 {
+		t.Errorf("a new row owned by %s was pushed in by %s (%d rows): forged authorship",
+			forged.OwnerUser, pusher.UserID, n)
+	}
+	if n := rows(t, db, "artifacts", unsigned.ID); n != 0 {
+		t.Errorf("a new row owned by nobody was pushed in (%d rows)", n)
+	}
+	if n := rows(t, db, "artifacts", own.ID); n != 1 {
+		t.Errorf("the pusher's own new row did not land (%d rows): that is what a push is", n)
+	}
+}
+
+// TestPushedTaskAboutAProjectOnlyArtifactIsRefused is the read filter's second
+// floor, held at the sync door.
+//
+// A 'project-only' artifact is the project it is in and nothing else: the CASE
+// in ArtifactFilterSQL takes that branch and the grant and share tests below it
+// are never reached. So the share an assignment writes for one can never take
+// effect, and the task that comes with it points at an artifact the assignee
+// gets a 404 on - the riddle POST /api/assign exists to refuse. checkTask
+// excluded only the personal floor, so a handoff about one replicated in.
+func TestPushedTaskAboutAProjectOnlyArtifactIsRefused(t *testing.T) {
+	ctx, db := open(t)
+
+	project := "pl-" + ulid.NewString()
+	from := &User{Handle: "from-" + ulid.NewString()}
+	to := &User{Handle: "to-" + ulid.NewString()}
+	for _, u := range []*User{from, to} {
+		if err := db.InsertUser(ctx, u); err != nil {
+			t.Fatalf("insert user: %v", err)
+		}
+	}
+	pusher := &Principal{UserID: from.ID, Project: project}
+
+	narrow := &Artifact{Type: "bug", Project: &project, OwnerUser: from.ID,
+		Title: "the one no grant reaches", Visibility: VisibilityProjectOnly}
+	wide := &Artifact{Type: "bug", Project: &project, OwnerUser: from.ID,
+		Title: "the one a share can reach", Visibility: VisibilityProject}
+	for _, a := range []*Artifact{narrow, wide} {
+		if err := db.UpsertArtifact(ctx, a); err != nil {
+			t.Fatalf("upsert artifact: %v", err)
+		}
+	}
+
+	at := db.Clock().Pack()
+	handoff := func(art *Artifact, hlc int64) *Task {
+		return &Task{
+			ID: ulid.NewString(), Artifact: art.ID, FromUser: from.ID, ToUser: to.ID,
+			Project: project, State: TaskOpen, Thread: ulid.NewString(),
+			HLC: hlc, Node: "peer-node",
+		}
+	}
+	unopenable, real := handoff(narrow, at+1), handoff(wide, at+2)
+
+	res, err := db.SyncApplyAs(ctx, pusher, &SyncSet{Tasks: []*Task{unopenable, real}})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if res.Applied["tasks"] != 1 || res.Refused["tasks"] != 1 {
+		t.Fatalf("applied %d and refused %d tasks, want one of each: %+v",
+			res.Applied["tasks"], res.Refused["tasks"], res.Reasons)
+	}
+	if n := rows(t, db, "tasks", unopenable.ID); n != 0 {
+		t.Errorf("a handoff about a project-only artifact landed (%d rows): %s gets a 404 on it",
+			n, to.ID)
+	}
+	if n := rows(t, db, "tasks", real.ID); n != 1 {
+		t.Errorf("an ordinary handoff was refused (%d rows)", n)
+	}
+}

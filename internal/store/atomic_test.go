@@ -1,6 +1,7 @@
 package store
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/deadtrickster/flowy/internal/ulid"
@@ -217,5 +218,47 @@ func TestUpdateTaskEventIsAllOrNothing(t *testing.T) {
 	if here.State != TaskDone {
 		t.Errorf("the task is at %q, want %s: the move outlived the entry it needed, and %q "+
 			"is a state its own thread never accounts for", here.State, TaskDone, was)
+	}
+}
+
+// TestUpdateTaskEventNeedsTheTaskToBeThere is the half-write from the other
+// side.
+//
+// updateTask ran its UPDATE and threw the result away, so a WHERE that matched
+// nothing - a task id that is not here, or one a peer's tombstone has already
+// taken away - reported success. UpdateTaskEvent then appended the entry that
+// accounts for the move and committed it: a trail entry for a move that did not
+// happen, in a thread whose task does not exist, replicating outwards from here.
+func TestUpdateTaskEventNeedsTheTaskToBeThere(t *testing.T) {
+	ctx, db := open(t)
+
+	project := "pu-" + ulid.NewString()
+	actor := &User{Handle: "actor-" + ulid.NewString()}
+	if err := db.InsertUser(ctx, actor); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+
+	gone := &Task{
+		ID: ulid.NewString(), Artifact: ulid.NewString(), FromUser: actor.ID,
+		ToUser: actor.ID, Project: project, State: TaskDone, Thread: ulid.NewString(),
+	}
+	entry := &Event{
+		ID: ulid.NewString(), Type: "task", Project: &project, Room: "handoffs",
+		Thread: gone.Thread, Parents: []string{}, Actor: actor.ID,
+		Body: "open->" + TaskDone,
+	}
+
+	err := db.UpdateTaskEvent(ctx, gone, entry)
+	if err == nil {
+		t.Fatal("moving a task that is not here reported success")
+	}
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("moving a task that is not here failed with %v, want %v", err, ErrNotFound)
+	}
+	if n := rows(t, db, "events", entry.ID); n != 0 {
+		t.Errorf("the entry is there (%d rows): a record of a move that never happened", n)
+	}
+	if n := rows(t, db, "tasks", gone.ID); n != 0 {
+		t.Errorf("the task is there (%d rows), which the fixture did not write", n)
 	}
 }

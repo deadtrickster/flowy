@@ -280,13 +280,24 @@ func (d *DB) UpdateTaskEvent(ctx context.Context, t *Task, e *Event) error {
 // updateTask is the write itself, against whatever is in hand: the pool for a
 // move on its own, a transaction for one that comes with its entry. The reading
 // is the caller's, so the two rows can share one.
+// An UPDATE that matches nothing is not a write that succeeded, and saying so
+// is the difference between the caller learning the task is gone and the caller
+// appending the entry that accounts for a move which never happened - the exact
+// half-write UpdateTaskEvent exists to rule out, arrived at from the other side.
 func (d *DB) updateTask(ctx context.Context, q execer, t *Task) error {
-	_, err := q.ExecContext(ctx,
+	res, err := q.ExecContext(ctx,
 		`UPDATE tasks SET state = $2, assignee_agent = nullif($3, ''), hlc = $4, node = $5
 		  WHERE id = $1`,
 		t.ID, t.State, t.AssigneeAgent, t.HLC, t.Node)
 	if err != nil {
 		return fmt.Errorf("store: update task %s: %w", t.ID, err)
+	}
+	n, err := affectedRows(res)
+	if err != nil {
+		return fmt.Errorf("store: update task %s: %w", t.ID, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("store: update task: %w: task %s", ErrNotFound, t.ID)
 	}
 	return nil
 }

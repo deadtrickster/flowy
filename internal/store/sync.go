@@ -1284,6 +1284,16 @@ func checkArtifact(
 		`SELECT coalesce(owner_user, ''), project FROM artifacts WHERE id = $1`, a.ID).
 		Scan(&owner, &project)
 	if errors.Is(err, sql.ErrNoRows) {
+		// Nothing here to take over, so the third rule has nothing to compare
+		// against - but the push half of it still applies, and it was written
+		// against the stored row, so for a new row it never fired. A peer could
+		// push a brand new artifact into any project it can reach with anybody
+		// at all as its owner: authorship forged, replicated onward, and the
+		// name it forged then holding the update and tombstone rights the owner
+		// column carries. A push writes the pusher's own rows.
+		if mode == modePush && (a.OwnerUser == "" || a.OwnerUser != p.UserID) {
+			return "artifact " + a.ID + " would land here as somebody else's row", nil
+		}
 		return "", nil
 	}
 	if err != nil {
@@ -1354,7 +1364,10 @@ func artifactReadable(ctx context.Context, tx *sql.Tx, p *Principal, a *Artifact
 //     side handing the work over, which is what POST /api/assign requires; on a
 //     pull they may also be the side it was handed to, because that is how a
 //     handoff made on another node arrives. Either way the artifact is one they
-//     may read and is not personal, and the thread is one they can already
+//     may read and is one that can be shared at all - not personal, and not
+//     'project-only', which no grant reaches through, so a task naming one is a
+//     task whose artifact the assignee gets a 404 on. The thread is one they can
+//     already
 //     read - a thread nobody has said anything in yet is a thread there is
 //     nothing to learn from.
 func checkTask(
@@ -1439,6 +1452,7 @@ func checkTask(
 		`SELECT EXISTS (SELECT 1 FROM artifacts ar
 		                 WHERE ar.id = `+artArg+`
 		                   AND coalesce(ar.visibility, '') <> 'personal'
+		                   AND coalesce(ar.visibility, '') <> 'project-only'
 		                   AND ar.project IS NOT NULL
 		                   AND `+filter+`)`, shareable.vals...).Scan(&canHandOver)
 	if err != nil {

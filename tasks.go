@@ -58,9 +58,18 @@ type assignResponse struct {
 
 // handleAssign shares an artifact with somebody and hands them the work on it.
 //
-// The caller has to be able to read the artifact - not own it. Passing on a
-// bug that was shared with you is the ordinary case, and the share it writes
-// gives away no more than the caller already had: read on this one artifact.
+// The caller has to own the artifact, which is the bar POST /api/grants keeps -
+// because the first of the three writes is a share, and a share is the owner's
+// to give. Reading was not enough and never could be: the share it wrote named
+// the reader as its grantor, so any reader of an artifact could hand any user a
+// read on it, and the row it minted was one no peer would take either -
+// checkGrant refuses a share whose granted_by is not the artifact's owner, so a
+// reader-made assignment landed its task on the far side with the share that
+// makes the task openable refused behind it.
+//
+// Passing on work that was shared with you is a real thing to want and it is
+// deliberately not this: it needs a re-share capability the owner sets on the
+// grant, and the push rule to match. See the delegation note in the README.
 //
 // POST /api/assign  {artifact, to_user, note?}
 func (s *server) handleAssign(w http.ResponseWriter, r *http.Request) {
@@ -88,10 +97,19 @@ func (s *server) handleAssign(w http.ResponseWriter, r *http.Request) {
 	}
 	// The personal floor again: a personal artifact has no project to share it
 	// into and no grant reaches through it, so an assignment of one would be a
-	// task nobody but the owner could open.
-	if art.Visibility == "personal" || art.Project == nil {
+	// task nobody but the owner could open. 'project-only' is the same thing one
+	// step up - the read filter stops at the project and the share clause below
+	// it is never reached - so a share written for one is a share that can never
+	// take effect, and the task it comes with is the riddle again.
+	if art.Visibility == store.VisibilityPersonal ||
+		art.Visibility == store.VisibilityProjectOnly || art.Project == nil {
 		writeJSON(w, http.StatusBadRequest,
-			errorBody("a personal artifact cannot be assigned; give it a project first"))
+			errorBody("a personal or project-only artifact cannot be assigned; share it first"))
+		return
+	}
+	// And a share is the owner's to give - the rule POST /api/grants keeps.
+	if art.OwnerUser != p.UserID {
+		writeJSON(w, http.StatusForbidden, errorBody("not the owner of "+art.ID))
 		return
 	}
 

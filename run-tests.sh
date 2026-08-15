@@ -2101,9 +2101,15 @@ a_sync_with_nothing_new_moves_nothing() {
 	printf 'caught up, and it costs nothing to say so: %s\n' "$SYNC_REPORT"
 }
 
+# The row is written as the replication principal itself, because a push
+# writes the pusher's own rows - checkArtifact says so for a row that is
+# already here and, since the sixth round, for one that is not here yet either.
+# Somebody else's rows reach the peer by being pulled, which is the other half
+# of the same exchange. What this check is about is the second push: the same
+# delta, received again and applied to nothing.
 pushing_the_same_delta_twice_applies_it_once() {
 	recall5
-	want_napi 200 "$N5_PORT_A" POST "$N5_TOKEN_A" /api/artifacts \
+	want_napi 200 "$N5_PORT_A" POST "$N5_TOKEN_B" /api/artifacts \
 		'{"type":"note","title":"pushed by hand","body":"flimflammery"}' || return 1
 	local id hlc delta
 	id="$(jqv .id)"
@@ -3775,8 +3781,17 @@ sync5_flags() {
 # the next pull carries back out.
 a_pulled_forgery_is_refused() {
 	recall5
-	local hlc gid aid eid tid
+	local hlc gid aid eid tid bookmarked
 	hlc="$(forged_hlc "$N5_PORT_B")" || return 1
+	# Above nodeA's bookmark for B as well as above B's own clock. A cursor is
+	# a promise that everything below it has been dealt with, so a row written
+	# under one is a row nodeA has already stepped past - and this check is
+	# about what the merge does with the four rows, not about whether they are
+	# offered.
+	bookmarked="$(scalar5 "$N5_DSN_A" "SELECT coalesce(max(pull_cursor), 0) FROM peers")" || return 1
+	if [ "$bookmarked" -ge "$hlc" ]; then
+		hlc=$((bookmarked + 65536))
+	fi
 	gid="pull-grant-$$"
 	aid="pull-art-$$"
 	eid="pull-ev-$$"
@@ -4758,6 +4773,199 @@ check "a page that rolls back does not leave the clock ahead of it (LOW 9)" \
 say "meta is not a second signature"
 check "a hand-appended event carries no speaker it made up (LOW 10)" \
 	an_event_meta_is_not_a_signature
+
+# ------------------------------------------------- the sixth round of fixes
+#
+# The re-review of the fifth: the core held, and five behind it - an assignment
+# that gated on a read and then minted a share, a push check that never fired
+# for a row that is not here yet, a visibility no grant reaches through being
+# handed over anyway, the split the first of those left across two nodes, and
+# an UPDATE that matched nothing and said it had.
+
+# HIGH 1 (and 4). handleAssign asked only that the caller could read the
+# artifact, and then wrote the share itself with the caller in granted_by. The
+# share clause matches on artifact and subject alone, so any reader of an
+# artifact could hand a read on it to anybody - re-delegation across a tenant
+# boundary, from a capability that was only ever a read.
+#
+# It was not even replicable: checkGrant refuses a share whose grantor is not
+# the artifact's owner, so the task and its opening message pushed while the
+# share behind them did not, and the far side held a task whose artifact it
+# gets a 404 on - with the refused grant holding the push cursor where it was,
+# so nothing moved after it either.
+#
+# A share is the owner's to give, which is the bar POST /api/grants keeps.
+only_the_owner_hands_the_work_on() {
+	recall
+	local id
+	id="$(new_artifact "$TOKEN_A_PC" bug "the flywheel that gets passed on")" || return 1
+
+	# A share puts it in B's reach, which is all the handler used to ask for.
+	want_status 200 POST "$TOKEN_A_PC" /api/grants \
+		"$(jq -nc --arg a "$id" --arg s "$USER_B" '{artifact: $a, subject: $s}')" || return 1
+	want_status 200 GET "$TOKEN_B" "/api/artifact/$id" || return 1
+
+	# B reads it and does not own it, so B does not hand it on.
+	want_status 403 POST "$TOKEN_B" /api/assign \
+		"$(jq -nc --arg a "$id" --arg u "$USER_OP" '{artifact: $a, to_user: $u}')" || return 1
+	want_eq "shares of it to the third party" \
+		"$(scalar "SELECT count(*) FROM grants
+		            WHERE artifact = '$id' AND subject = '$USER_OP'")" 0 || return 1
+	want_eq "tasks about it" \
+		"$(scalar "SELECT count(*) FROM tasks WHERE artifact = '$id'")" 0 || return 1
+
+	# The same through a project-wide grant rather than a share: B reads
+	# anything in pa because A opened pa up to pb, and B still owns none of it.
+	local inpa
+	inpa="$(new_artifact "$TOKEN_A" bug "the pa one a reader tries to pass on")" || return 1
+	want_status 200 GET "$TOKEN_B" "/api/artifact/$inpa" || return 1
+	want_status 403 POST "$TOKEN_B" /api/assign \
+		"$(jq -nc --arg a "$inpa" --arg u "$USER_OP" '{artifact: $a, to_user: $u}')" || return 1
+	want_eq "tasks about the pa one" \
+		"$(scalar "SELECT count(*) FROM tasks WHERE artifact = '$inpa'")" 0 || return 1
+
+	# And the owner still hands their own work over, with the share signed by
+	# the owner - which is the only kind a peer will take.
+	assign_as "$TOKEN_A_PC" "$id" "$USER_OP" "yours" || return 1
+	want_eq "the owner's assignment" "$API_STATUS" 200 || return 1
+	want_eq "who signed the share" "$(jqv .grant.granted_by)" "$USER_A" || return 1
+	want_eq "who it is for" "$(jqv .to_user)" "$USER_OP" || return 1
+
+	# And the stored share is signed by the artifact's owner, which is the one
+	# shape checkGrant will take on a push - a reader-minted one never was.
+	want_eq "the share the handoff wrote" \
+		"$(scalar "SELECT count(*) FROM grants g JOIN artifacts a ON a.id = g.artifact
+		            WHERE g.artifact = '$id' AND g.subject = '$USER_OP'
+		              AND g.granted_by = a.owner_user")" 1 || return 1
+	printf 'a reader of %s could not pass it on; its owner could\n' "$id"
+}
+
+# MED 3. A 'project-only' artifact is the project it is in and nothing else:
+# the read filter takes that branch and the grant and share tests below it are
+# never reached. So the share an assignment writes for one can never take
+# effect, and the task beside it points at an artifact the assignee gets a 404
+# on - the riddle the handler exists to refuse, arrived at the other way round.
+a_project_only_artifact_is_not_assignable() {
+	recall
+	local id
+	api POST "$TOKEN_A_PC" /api/artifacts '{
+		"type": "note", "title": "the narrow one", "body": "snickerbolt",
+		"visibility": "project-only"
+	}' || return 1
+	want_eq "create status" "$API_STATUS" 200 || return 1
+	id="$(jqv .id)"
+	want_eq "the visibility it kept" "$(jqv .visibility)" project-only || return 1
+
+	want_status 400 POST "$TOKEN_A_PC" /api/assign \
+		"$(jq -nc --arg a "$id" --arg u "$USER_B" '{artifact: $a, to_user: $u}')" || return 1
+	want_eq "shares of it" \
+		"$(scalar "SELECT count(*) FROM grants WHERE artifact = '$id'")" 0 || return 1
+	want_eq "tasks about it" \
+		"$(scalar "SELECT count(*) FROM tasks WHERE artifact = '$id'")" 0 || return 1
+
+	# Which is not a guess about the read filter: a share of it, written the
+	# ordinary way, reaches nothing at all.
+	want_status 200 POST "$TOKEN_A_PC" /api/grants \
+		"$(jq -nc --arg a "$id" --arg s "$USER_B" '{artifact: $a, subject: $s}')" || return 1
+	want_status 404 GET "$TOKEN_B" "/api/artifact/$id" || return 1
+
+	# Widen it and the same handoff goes through, so the refusal is about the
+	# visibility and not about the artifact.
+	api POST "$TOKEN_A_PC" /api/artifacts \
+		"$(jq -nc --arg i "$id" '{id: $i, type: "note", visibility: "shared"}')" || return 1
+	want_eq "the update status" "$API_STATUS" 200 || return 1
+	want_eq "the widened visibility" "$(jqv .visibility)" shared || return 1
+	assign_as "$TOKEN_A_PC" "$id" "$USER_B" "now you can open it" || return 1
+	want_eq "the handoff once it can be shared" "$API_STATUS" 200 || return 1
+	want_status 200 GET "$TOKEN_B" "/api/artifact/$id" || return 1
+	printf '%s could not be handed over while no grant reached it\n' "$id"
+}
+
+# HIGH 4. The split the reader-made assignment left across two nodes, and what
+# an owner-made one does instead: all three rows travel, nothing is refused,
+# and the cursor moves on.
+an_owner_assignment_replicates_whole() {
+	recall5
+	local peer art task thread before after refused
+	peer="http://127.0.0.1:$N5_PORT_A"
+
+	# The reader first, on node B: A's artifact, shared with B, and B trying to
+	# pass it on. That is the assignment whose three rows used to split.
+	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_A" /api/artifacts \
+		'{"type":"bug","title":"the one a reader tried to pass on","body":"thrummelcask"}' || return 1
+	art="$(jqv .id)"
+	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_A" /api/grants \
+		"$(jq -nc --arg a "$art" --arg s "$N5_USER_B" '{artifact: $a, subject: $s}')" || return 1
+	want_napi 200 "$N5_PORT_B" GET "$N5_TOKEN_B" "/api/artifact/$art" || return 1
+	want_napi 403 "$N5_PORT_B" POST "$N5_TOKEN_B" /api/assign \
+		"$(jq -nc --arg a "$art" --arg u "$N5_USER_OP" '{artifact: $a, to_user: $u}')" || return 1
+	want_eq "tasks the reader wrote" \
+		"$(scalar5 "$N5_DSN_B" "SELECT count(*) FROM tasks WHERE artifact = '$art'")" 0 || return 1
+
+	# Settle, so what the push below carries is this check's own three rows.
+	sync_round || return 1
+	sync_round || return 1
+	before="$(scalar5 "$N5_DSN_B" "SELECT pushed_cursor FROM peers WHERE peer = '$peer'")" || return 1
+
+	# And now the owner's own handoff, made as the principal replication
+	# authenticates as - which is what makes the three rows one thing on the
+	# far side as well as on this one.
+	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_B" /api/artifacts \
+		'{"type":"bug","title":"the owner-made handoff","body":"quirkleflange"}' || return 1
+	art="$(jqv .id)"
+	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_B" /api/assign \
+		"$(jq -nc --arg a "$art" --arg u "$N5_USER_A" '{artifact: $a, to_user: $u, note: "yours"}')" ||
+		return 1
+	task="$(jqv .id)"
+	thread="$(jqv .thread)"
+
+	# One push, nothing pulled: what node A makes of the three rows on their own.
+	sync5_flags "$N5_DSN_B" nodeB "$N5_PORT_A" "$N5_TOKEN_B" --pull=false || return 1
+	refused="$(printf '%s' "$SYNC_REPORT" | jq '[.refused[]] | add')"
+	want_eq "rows the push refused" "$refused" 0 || return 1
+	want_eq "the share on A" \
+		"$(scalar5 "$N5_DSN_A" "SELECT count(*) FROM grants
+		            WHERE artifact = '$art' AND subject = '$N5_USER_A'")" 1 || return 1
+	want_eq "the task on A" \
+		"$(scalar5 "$N5_DSN_A" "SELECT count(*) FROM tasks WHERE id = '$task'")" 1 || return 1
+	want_eq "the opening message on A" \
+		"$(scalar5 "$N5_DSN_A" "SELECT count(*) FROM events WHERE thread = '$thread'")" 1 || return 1
+
+	# Which is the point of the share: the side that was handed the work can
+	# open it.
+	want_napi 200 "$N5_PORT_A" GET "$N5_TOKEN_A" "/api/artifact/$art" || return 1
+
+	after="$(scalar5 "$N5_DSN_B" "SELECT pushed_cursor FROM peers WHERE peer = '$peer'")" || return 1
+	if [ "$after" -le "$before" ]; then
+		printf 'the push cursor did not move: %s -> %s\n' "$before" "$after" >&2
+		return 1
+	fi
+	sync_round || return 1
+	printf 'task %s, its share and its thread all pushed; the cursor moved %s -> %s\n' \
+		"$task" "$before" "$after"
+}
+
+say "a share is the owner's to give, assignment included"
+check "a reader of an artifact cannot assign it onward (HIGH 1)" \
+	only_the_owner_hands_the_work_on
+
+say "a push writes the pusher's own rows"
+check "a new artifact pushed in somebody else's name is refused (HIGH 2)" \
+	go test -count=1 -run TestPushedNewArtifactIsThePushersOwn ./internal/store
+
+say "a handoff nobody can open is not a handoff"
+check "a project-only artifact cannot be assigned (MED 3)" \
+	a_project_only_artifact_is_not_assignable
+check "nor replicated in as a task (MED 3)" \
+	go test -count=1 -run TestPushedTaskAboutAProjectOnlyArtifactIsRefused ./internal/store
+
+say "three rows, one handoff, both nodes"
+check "an owner's assignment pushes whole and moves the cursor (HIGH 4)" \
+	an_owner_assignment_replicates_whole
+
+say "an update that matched nothing is not a write"
+check "moving a task that is not here appends no entry for it (LOW 5)" \
+	go test -count=1 -run TestUpdateTaskEventNeedsTheTaskToBeThere ./internal/store
 
 # ------------------------------------------------------------------- verdict
 

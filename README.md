@@ -445,11 +445,15 @@ They are written in that order for the same reason they share a reading: a node
 that dies halfway leaves a share nobody is using, which is harmless and visible,
 rather than a task whose artifact the assignee cannot open.
 
-- **You assign what you can read, not what you own.** Passing on a bug that was
-  shared with you is the ordinary case, and the share it writes gives away no
-  more than the caller already had - read, on that one artifact. A personal
-  artifact cannot be assigned at all: it has no project to share it into, and
-  the personal floor in the permission filter would refuse it anyway.
+- **You assign what you own.** The first of the three writes is a share, and a
+  share is the owner's to give - the same bar `POST /api/grants` keeps, and a
+  `403` here for the same reason. A personal artifact cannot be assigned at
+  all: it has no project to share it into, and the personal floor in the
+  permission filter would refuse it anyway. Nor can a `project-only` one: the
+  filter stops at the project for those and never reaches the share clause, so
+  the share an assignment writes for one can never take effect and the task
+  beside it is the riddle again. That is a `400`; share it first.
+
 - **Delegation is the receiver's call.** `auto_delegate` on the user row is a
   standing answer to inbound work - on, and the task arrives already
   `delegated` to that person's agent. Off, and it waits at `open` until they
@@ -469,6 +473,23 @@ rather than a task whose artifact the assignee cannot open.
   same thread as `type='task'` events, chained by `parents`, so "delegated it,
   then asked a question, then closed it" reads top to bottom without joining
   anything.
+
+### Delegation: passing on work that was shared with you
+
+Not supported yet, deliberately, and this is a follow-up rather than an
+oversight. Handing on a bug somebody handed to you is a real thing to want, and
+it is not what "the caller can read it" bought: the share clause matches on
+artifact and subject alone, so a reader who could mint a share could hand a read
+on somebody else's artifact to anybody at all, across a tenant boundary, from a
+capability that was only ever a read. The row was not even replicable -
+`checkGrant` refuses a share whose `granted_by` is not the artifact's owner, so
+the task travelled and the share behind it did not, and the far side held a task
+whose artifact it gets a `404` on.
+
+Doing it properly needs a **may-reshare** capability bit that the owner sets on
+a grant, designed together with `checkGrant`'s push rule so that a re-share is a
+row a peer can tell apart from a forgery. Until that exists, the owner is the
+one who assigns.
 
 The lifecycle is the other half. `POST /api/artifact/{id}/status` moves an issue
 along one line and no further:
@@ -1791,6 +1812,83 @@ correctly signed and reads, everywhere it is rendered, as somebody it is not.
 The rest of meta is still carried, because it is where a client puts what an
 event is about; it is simply not a channel for saying who is talking.
 
+## The sixth round of security fixes
+
+The fifth round was reviewed again. The core held - the composite `(hlc, id)`
+cursor, a minted type refused at both doors, the forge owner gates, the cursor
+held on a refusal, `meta` stripped of speaker keys, the clock observed only
+after the commit, `mem_write`'s scope rules - and five more came out from behind
+it. The theme this time is a rule that fires against the wrong row: a check on
+what the caller can **read** standing in for a check on what they **own**, a
+check written against the **stored** row that a **new** row walks past, and a
+statement that matched **nothing** reporting that it wrote. Same rule as before:
+one check in `run-tests.sh` per defect, each verified to fail on the source it
+fixes.
+
+Nothing here changes how a node is configured.
+
+**HIGH - any reader of an artifact could share it with anybody.**
+`handleAssign` gated on `ReadArtifact` and then wrote the share itself with the
+caller in `granted_by`. The share clause in `ArtifactFilterSQL` matches on
+artifact and subject alone, so a user in another project - reaching in through a
+cross-project grant, or through a share of that one artifact - could hand a read
+on somebody else's artifact to any user on the node. It was a re-delegation hole
+out of a capability that was only ever a read, and everywhere else a share is
+the owner's: `POST /api/grants` refuses a non-owner, and `checkGrant` refuses a
+pushed share whose `granted_by` is not the artifact's owner. `handleAssign`
+keeps the same bar now - `403`, naming the artifact. Passing on work that was
+shared with you is a real feature and it is not this one; see the delegation
+note above for what it needs.
+
+**HIGH - a pushed artifact could be created in somebody else's name.**
+`checkArtifact` runs the reach test, then reads the row already here to decide
+the third rule - a merge does not change hands, does not move project, and on a
+push has to be the pusher's own. On `sql.ErrNoRows` it returned early, so for a
+row that is **not here yet** the push rule never fired at all: a peer in
+`FLOWY_PEERS` could push a brand new artifact into any project it can reach with
+`owner_user` set to anybody, and the forgery then replicated onward from here
+while the name it invented held the real update and tombstone rights that column
+carries. The new-row case is decided rather than skipped now: on a push the row
+has to be the pusher's own, which is what the doc comment always claimed, what
+`POST /api/artifacts` does, and what `checkEvent`, `checkTask` and `checkGrant`
+have each required of their own table all along. Artifacts were the one table
+where it was not true. So a push carries the pusher's rows and nothing else, and
+somebody else's cross by being **pulled** - which is the half of the exchange
+that is allowed to carry them, because a pull is filtered to what the principal
+may already read there and lands the row in the same world it came from.
+
+**MEDIUM - a `project-only` artifact could be assigned, and the handoff could
+not be opened.** The read filter's `project-only` branch is a floor below the
+grant and share tests: it reaches the project and stops. `handleAssign` refused
+only the personal floor, so a `project-only` artifact passed and the handler
+minted a share that can never take effect - leaving the assignee with a task
+whose artifact is a `404`, which is the exact riddle the three-writes rule
+exists to prevent. `checkTask` had the same gap on the replication side. Both
+refuse it now: `400` from the endpoint, and a pushed or pulled task about one is
+refused with the rest of the page applied around it.
+
+**HIGH - the reader-made assignment split its three rows across two nodes.**
+The consequence of the first defect, and worth its own check. `WriteAssignment`
+lands the share, the task and the opening message in one transaction locally,
+but a non-owner's share is exactly what `checkGrant` refuses on a push - so the
+task and the message crossed and the share did not, the far side held a task it
+could not open, and the refused grant held the push cursor where it was, so
+nothing behind it moved either. Making assignment owner-only removes the
+divergence at the source: there is no code change here beyond that fix, and the
+check asserts the whole of it - a reader's assignment is refused outright, and
+an owner's pushes grant, task and event with zero refusals and a cursor that
+advances.
+
+**LOW - a task move that matched no row reported success.** `updateTask` threw
+its `sql.Result` away, so an `UPDATE` whose `WHERE` matched nothing - an id that
+is not here, or one a peer's tombstone has already taken away - returned `nil`.
+`UpdateTaskEvent` then appended the entry that accounts for the move and
+committed it: a trail entry for a move that did not happen, in a thread whose
+task does not exist, replicating outwards from here. That is the half-write
+`UpdateTaskEvent` exists to rule out, arrived at from the other side. It checks
+`RowsAffected` now and returns `ErrNotFound`, which rolls the transaction back
+with the entry in it.
+
 ## Deployment
 
 The store speaks the Postgres wire and nothing else. The spine of `schema.sql`
@@ -1813,16 +1911,19 @@ query. Nothing above it depends on anything below it.
 
 ## Phase 6 status
 
-Green. `./run-tests.sh` reports `passed: 250 failed: 0` with Go 1.22, Node 22.14
+Green. `./run-tests.sh` reports `passed: 256 failed: 0` with Go 1.22, Node 22.14
 and Postgres 16 - the 200 checks Phase 6 ended with, all still green, plus the
 12 the first security slice added, the 12 the second one did, the 8 from the
-third, the 8 from the fourth and the 10 from the fifth: one per defect above,
-each of them verified to fail on the source it fixes. Three of the older checks
-changed with the fixes rather than around them: a deleted artifact now reads as
-`404` on both nodes with the tombstone asserted through `psql`, the `?counts=1`
-health check no longer claims to be reporting the spine tables to nobody in
-particular, and the phase 6 checks drive the mock forge's control routes with
-the operator's token, because that is whose they are. Phase 6's own 22 were: capability selection, filing, the conflict and permission cases, the
+third, the 8 from the fourth, the 10 from the fifth and the 6 from the sixth:
+one per defect above, and two for the `project-only` handoff because it is
+refused at two doors. Each is verified to fail on the source it fixes. Four of
+the older checks changed with the fixes rather than around them: a deleted
+artifact now reads as `404` on both nodes with the tombstone asserted through
+`psql`, the `?counts=1` health check no longer claims to be reporting the spine
+tables to nobody in particular, the phase 6 checks drive the mock forge's
+control routes with the operator's token because that is whose they are, and
+the hand-driven push check writes its row as the replication principal, because
+a push carries the pusher's own rows and somebody else's cross by being pulled. Phase 6's own 22 were: capability selection, filing, the conflict and permission cases, the
 close-to-done move, the reviewer loop in both directions, the no-op sync, the
 untouched `gh`, and six `psql` checks over what all of it wrote. Phases 0 to 5
 stayed green throughout, and mostly by construction - the three endpoints are
