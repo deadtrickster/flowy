@@ -262,3 +262,88 @@ func TestUpdateTaskEventNeedsTheTaskToBeThere(t *testing.T) {
 		t.Errorf("the task is there (%d rows), which the fixture did not write", n)
 	}
 }
+
+// TestADeletedArtifactIsNotMovedOrFiled is the half-write from the third side:
+// an UPDATE whose WHERE matched a row that is not supposed to be there any more.
+//
+// setArtifactStatus and setArtifactExternal were both `WHERE id = $1` with the
+// result thrown away. The handlers gate on a filtered read, which refuses a
+// tombstoned artifact - but the read and the write are two statements, and the
+// owner's delete lands in between. The move then matched the dead row anyway:
+// a new reading, this node's name and this node's signature stamped onto a
+// deleted artifact by somebody who is not its owner, and - because both
+// operations write their entry in the same transaction - a trail entry for a
+// transition of an artifact that no longer exists, replicating outwards.
+//
+// updateTask already answers this with ErrNotFound. These two did not.
+func TestADeletedArtifactIsNotMovedOrFiled(t *testing.T) {
+	ctx, db := open(t)
+
+	project := "px-" + ulid.NewString()
+	owner := &User{Handle: "owner-" + ulid.NewString()}
+	if err := db.InsertUser(ctx, owner); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+	art := &Artifact{
+		Type: "bug", Project: &project, OwnerUser: owner.ID,
+		Title: "the one that goes away", Status: "open",
+	}
+	if err := db.UpsertArtifact(ctx, art); err != nil {
+		t.Fatalf("upsert artifact: %v", err)
+	}
+
+	// The handler's read has happened by now; the delete lands next.
+	if _, err := db.TombstoneArtifact(ctx, &Principal{UserID: owner.ID, Project: project},
+		art.ID); err != nil {
+		t.Fatalf("tombstone: %v", err)
+	}
+	was, err := db.GetArtifact(ctx, art.ID)
+	if err != nil {
+		t.Fatalf("read the tombstone back: %v", err)
+	}
+
+	moved := &Event{
+		ID: ulid.NewString(), Type: "status", Project: &project, Actor: owner.ID,
+		Artifact: art.ID, Parents: []string{}, Body: "open->done",
+	}
+	err = db.MoveArtifactStatus(ctx, art, "done", moved)
+	if err == nil {
+		t.Fatal("moving the status of a deleted artifact reported success")
+	}
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("moving the status of a deleted artifact failed with %v, want %v", err, ErrNotFound)
+	}
+	if n := rows(t, db, "events", moved.ID); n != 0 {
+		t.Errorf("the status entry is there (%d rows): a transition of an artifact that is gone", n)
+	}
+
+	filed := &Event{
+		ID: ulid.NewString(), Type: "forge", Project: &project, Actor: owner.ID,
+		Artifact: art.ID, Parents: []string{}, Body: "filed as mock#1",
+	}
+	ref := &ExternalRef{Forge: "mock", Repo: "owner/repo", Number: 1, URL: "mock://1", State: "open"}
+	err = db.LinkArtifactExternal(ctx, art, ref, true, filed)
+	if err == nil {
+		t.Fatal("filing a deleted artifact reported success")
+	}
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("filing a deleted artifact failed with %v, want %v", err, ErrNotFound)
+	}
+	if n := rows(t, db, "events", filed.ID); n != 0 {
+		t.Errorf("the filing entry is there (%d rows): an issue opened for an artifact that is gone", n)
+	}
+
+	// And the row itself is untouched: same reading, same node, same status, no
+	// link - nothing about it was written on the strength of a stale read.
+	here, err := db.GetArtifact(ctx, art.ID)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if !here.Tombstone {
+		t.Fatal("the delete was undone")
+	}
+	if here.HLC != was.HLC || here.Node != was.Node || here.Status != was.Status ||
+		here.External != nil || here.Reported {
+		t.Errorf("the deleted row moved under a stale read: %+v, was %+v", here, was)
+	}
+}

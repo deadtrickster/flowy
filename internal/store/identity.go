@@ -176,7 +176,10 @@ func (d *DB) signer(ctx context.Context) (ed25519.PrivateKey, error) {
 	if err != nil {
 		return nil, err
 	}
-	id.CreatedHLC = d.clock.Pack()
+	id.CreatedHLC, err = d.clock.Pack()
+	if err != nil {
+		return nil, fmt.Errorf("store: write this node's identity: %w", err)
+	}
 	seed := priv.Seed()
 	_, err = d.sql.ExecContext(ctx,
 		`INSERT INTO node_identity (node_id, public_key, private_key, pinned, created_hlc, sig)

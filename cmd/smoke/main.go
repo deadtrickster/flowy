@@ -187,6 +187,7 @@ func checkHLC() error {
 	c := hlc.New("smoke")
 	var wg sync.WaitGroup
 	batches := make([][]int64, goroutines)
+	errs := make([]error, goroutines)
 
 	for gi := 0; gi < goroutines; gi++ {
 		wg.Add(1)
@@ -194,12 +195,22 @@ func checkHLC() error {
 			defer wg.Done()
 			batch := make([]int64, per)
 			for i := range batch {
-				batch[i] = c.Pack()
+				at, err := c.Pack()
+				if err != nil {
+					errs[gi] = err
+					return
+				}
+				batch[i] = at
 			}
 			batches[gi] = batch
 		}(gi)
 	}
 	wg.Wait()
+	for gi, err := range errs {
+		if err != nil {
+			return fmt.Errorf("goroutine %d could not take a reading: %w", gi, err)
+		}
+	}
 
 	all := make([]int64, 0, goroutines*per)
 	for gi, batch := range batches {

@@ -2229,6 +2229,93 @@ sign`, so each of them still tests the authorisation rule it was written for
 instead of stopping at the new one. The two federated nodes exchange and pin
 each other's keys at startup, the way two operators would.
 
+## The eighth round of security fixes
+
+Phase 6.5 was reviewed again, against the signing itself. The canonical encoder
+came back clean - length-prefixed, no field that can be re-cut into another -
+and the content-rewrite finding it was written for is closed. What came out
+behind it is four defects of a different kind: **a signature says who wrote a
+row, not what they were allowed to write.** A peer signs its own rows with its
+own pinned key, so authenticity is satisfied and authorisation is still the only
+thing standing between a valid signature and a capability the peer minted for
+itself. Same rule as the rounds before: one check in `run-tests.sh` per defect,
+each verified to fail on the source it fixes.
+
+Nothing here changes how a node is configured.
+
+**HIGH - a pulled share of somebody else's artifact was taken on trust.**
+`checkGrant`'s pull half asked two things of a share: that it reaches this
+principal at all, and - only when the grant said this principal signed it - that
+they could have issued it. The reach test is satisfied by naming this principal
+as the **subject**, so a share of an artifact owned by somebody else, granted by
+anybody at all, matched neither branch and merged. From then on the puller reads
+that artifact for good: the per-artifact clause in `ArtifactFilterSQL` asks for
+the artifact and the subject and never for the grantor, and the forged row
+pushes onward from here like any other. Reproduced live - a grant signed by a
+pinned peer, `applied grants: 1`, and `ReadArtifact` handing over a body that
+was `ErrNotFound` a moment before. A pulled share is now judged the way a pushed
+one is, against the artifact this node holds: the artifact has to be here, has
+to be shareable at all, and its `owner_user` has to be the grantor. Only the
+last line of the push rule is dropped - the carrier is not asked to be the owner,
+because on a pull it never is.
+
+That leaves the two rows needing each other: the artifact is readable here
+because of the share, and the share is the owner's to give because of the
+artifact. `sharedInDelta` breaks that without believing either row on its own -
+an artifact may land somewhere the principal cannot otherwise reach when the
+same page carries a share naming this principal as the subject and naming, as
+the grantor, the very owner the artifact says it has. Both rows are signed by
+the node that wrote them, and a share that came with its own version of a row
+that is already here is refused twice over: the artifact because a merge does
+not change hands, the share because the owner it claims is not the owner this
+node holds.
+
+**MEDIUM - a new task could be minted by anybody who could read the thread.** A
+task is a read capability: the tasks clause in `EventFilterSQL` shows a whole
+thread to `from_user`, `to_user` and the agent it was delegated to. The new-task
+branch of `checkTask` asked only that the carrier was a party to the row, could
+read the artifact and could read the thread - never that they could have
+**opened** the handoff. `POST /api/assign` requires the assigner to own the
+artifact and opens a fresh thread; the merge required neither, and
+`assignee_agent` was guarded while `to_user` was checked against nothing. So a
+principal who merely reads an artifact could carry in `{from_user: themselves,
+to_user: any local user, thread: any thread they can see}` and hand that user
+the conversation. Reproduced live - `applied tasks: 1`, and the named outsider
+reading the thread's first event. A new task now has to name the artifact's
+owner as `from_user`, and the thread it names has to be one nothing has been
+said in yet. The second half is federation-safe because the entry that opens a
+real handoff is a `task` event, and a minted type is refused at every wire path:
+a task that was genuinely replicated arrives with its thread empty. An existing
+task's two people were already frozen by the re-point check.
+
+**MEDIUM - a status move and a forge link could land on a deleted artifact.**
+`setArtifactStatus` and `setArtifactExternal` were both `UPDATE artifacts ...
+WHERE id = $1` with the result thrown away and no tombstone predicate. The
+handlers gate on a filtered read, which refuses a tombstoned row - but the read
+and the write are two statements, and the owner's delete lands in between. The
+move then matched the dead row anyway: a new reading, this node's name and this
+node's signature stamped onto a deleted artifact under somebody else's hand, and
+- because both operations write their entry in the same transaction - a trail
+entry for a transition of an artifact that no longer exists, replicating
+outwards. `updateTask` already answers this with `ErrNotFound`; these two sites
+were missed. Both carry `AND coalesce(tombstone, false) = false` now and check
+`RowsAffected`, and the paired event rolls back with them.
+
+**LOW - a saturated clock handed the same reading out twice.** At `(MaxWallMS,
+MaxLogical)` `bump` returned without advancing - which is right, because a
+wrapped reading is negative and sorts below every row the node ever wrote - and
+`Now` then returned the same packed value again, against a documented invariant
+that every reading is strictly greater than the one before it. Two rows would
+share it, and `loses` drops the second of them silently. It takes a local wall
+clock at about the year 6.6 million to get there, and nothing off the wire can
+push it there - `checkReadings` refuses anything past `now + 24h` and `Pack`
+clamps below `MaxWallMS` - so it is LOW. But silent is the wrong failure:
+`Clock.Now` and `Clock.Pack` return `hlc.ErrSaturated` and no timestamp now, so
+the write that wanted a reading fails instead of stamping a duplicate. Every
+store write path propagates it; `Update` and `Reading` are unchanged, because
+learning what a peer has seen and reporting where the clock stands are not
+readings to stamp a row with.
+
 ## Deployment
 
 The store speaks the Postgres wire and nothing else. The spine of `schema.sql`
@@ -2251,7 +2338,7 @@ query. Nothing above it depends on anything below it.
 
 ## Phase 6.5 status
 
-Green. `./run-tests.sh` reports `passed: 278 failed: 0` with Go 1.22, Node 22.14
+Green. `./run-tests.sh` reports `passed: 282 failed: 0` with Go 1.22, Node 22.14
 and Postgres 16 - the 200 checks Phase 6 ended with, all still green, plus the
 12 the first security slice added, the 12 the second one did, the 8 from the
 third, the 8 from the fourth, the 10 from the fifth, the 6 from the sixth, the 6
@@ -2263,8 +2350,9 @@ a rewritten, unsigned or replayed row, one flipped byte, a validly signed row
 that authorisation still refuses, every local write of every replicated table
 signed, a signature that survives the database, the key that arrives with the
 rows it verifies, no rotation at the pin or over the wire, require-pin, and a
-pull that hands over public keys and no private ones. Each is verified to
-fail on the source it fixes. Four of
+pull that hands over public keys and no private ones, and the 4 the eighth
+round adds - the pulled share, the minted task, the two blind updates and the
+saturated clock. Each is verified to fail on the source it fixes. Four of
 the older checks changed with the fixes rather than around them: a deleted
 artifact now reads as `404` on both nodes with the tombstone asserted through
 `psql`, the `?counts=1` health check no longer claims to be reporting the spine

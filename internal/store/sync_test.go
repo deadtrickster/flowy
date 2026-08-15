@@ -1,6 +1,7 @@
 package store
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/deadtrickster/flowy/internal/ulid"
@@ -25,7 +26,7 @@ func TestSyncApplyIsLastWriterWinsByHLC(t *testing.T) {
 	project := "pz-" + ulid.NewString()
 	owner := "u-" + ulid.NewString()
 	id := ulid.NewString()
-	base := db.Clock().Pack()
+	base := packed(t, db)
 
 	apply := func(a *Artifact) int {
 		t.Helper()
@@ -111,12 +112,12 @@ func TestSyncApplyAdvancesTheClock(t *testing.T) {
 	ctx, db := open(t)
 
 	project := "pz-" + ulid.NewString()
-	ahead := db.Clock().Pack() + 60_000<<16 // a full minute of wall clock ahead
+	ahead := packed(t, db) + 60_000<<16 // a full minute of wall clock ahead
 	art := remote(ulid.NewString(), ahead, &project, "u-"+ulid.NewString(), "from the future")
 	if _, err := db.SyncApply(ctx, fromPeer(t, ctx, db, &SyncSet{Artifacts: []*Artifact{art}})); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
-	if next := db.Clock().Pack(); next <= ahead {
+	if next := packed(t, db); next <= ahead {
 		t.Fatalf("clock handed out %d after applying %d; it did not move past the peer", next, ahead)
 	}
 }
@@ -130,14 +131,14 @@ func TestSyncApplyEventsAreAppendOnly(t *testing.T) {
 	project := "pz-" + ulid.NewString()
 	first := &Event{
 		ID: ulid.NewString(), Type: "chat", Project: &project, Room: "general",
-		Actor: "u-" + ulid.NewString(), Body: "hello", SeqHLC: db.Clock().Pack(),
+		Actor: "u-" + ulid.NewString(), Body: "hello", SeqHLC: packed(t, db),
 		Node: "peer-node", Parents: []string{},
 	}
 	first.Thread = first.ID
 	child := &Event{
 		ID: ulid.NewString(), Type: "chat", Project: &project, Room: "general",
 		Thread: first.Thread, Parents: []string{first.ID}, Actor: first.Actor,
-		Body: "reply", SeqHLC: db.Clock().Pack(), Node: "peer-node",
+		Body: "reply", SeqHLC: packed(t, db), Node: "peer-node",
 	}
 
 	set := &SyncSet{Events: []*Event{first, child}}
@@ -194,7 +195,7 @@ func TestSyncPullIsPermissionFiltered(t *testing.T) {
 		}
 	}
 
-	since := db.Clock().Pack()
+	since := packed(t, db)
 
 	shared := &Artifact{Type: "note", Project: &pa, OwnerUser: alice.ID, Title: "shared",
 		Visibility: "project"}
@@ -269,7 +270,7 @@ func TestSyncPullPagesAndHoldsTheCursorBack(t *testing.T) {
 	}
 	peer := &Principal{UserID: owner.ID, Project: project}
 
-	since := db.Clock().Pack()
+	since := packed(t, db)
 	ids := make([]string, 5)
 	for i := range ids {
 		a := &Artifact{Type: "note", Project: &project, OwnerUser: owner.ID,
@@ -411,7 +412,7 @@ func TestSyncApplyAsRefusesAForgedEvent(t *testing.T) {
 
 	project := "pe-" + ulid.NewString()
 	peer := &Principal{UserID: "u-" + ulid.NewString(), Project: project}
-	at := db.Clock().Pack()
+	at := packed(t, db)
 
 	mine := &Event{ID: ulid.NewString(), Type: "chat", Project: &project,
 		Actor: peer.UserID, Body: "mine", SeqHLC: at + 1, Node: "peer-node"}
@@ -467,7 +468,7 @@ func TestPulledProjectGrantNeedsALocalOpener(t *testing.T) {
 	}
 	puller := &Principal{UserID: me.ID, Project: home}
 
-	at := db.Clock().Pack()
+	at := packed(t, db)
 	forged := Grant{
 		ID: ulid.NewString(), FromProject: theirs, ToProject: home, Cap: "read",
 		GrantedBy: "u-stranger-" + ulid.NewString(), HLC: at + 1, Node: "peer-node",
@@ -532,7 +533,7 @@ func TestPulledMintedEventIsRefused(t *testing.T) {
 
 	project := "pn-" + ulid.NewString()
 	puller := &Principal{UserID: "u-" + ulid.NewString(), Project: project}
-	at := db.Clock().Pack()
+	at := packed(t, db)
 
 	said := &Event{ID: ulid.NewString(), Type: "chat", Project: &project,
 		Actor: "u-over-there", Body: "said on the other node", SeqHLC: at + 1, Node: "peer-node"}
@@ -576,7 +577,7 @@ func TestSyncApplyObservesTheClockAfterTheCommit(t *testing.T) {
 
 	project := "pq-" + ulid.NewString()
 	owner := "u-" + ulid.NewString()
-	at := db.Clock().Pack()
+	at := packed(t, db)
 	applied := at + 1000
 
 	// One good artifact and, behind it, an event whose meta is not JSON: the
@@ -629,7 +630,7 @@ func TestPushedNewArtifactIsThePushersOwn(t *testing.T) {
 
 	project := "pk-" + ulid.NewString()
 	pusher := &Principal{UserID: "u-" + ulid.NewString(), Project: project}
-	at := db.Clock().Pack()
+	at := packed(t, db)
 
 	forged := remote(ulid.NewString(), at+1, &project, "u-somebody-else", "signed by somebody else")
 	own := remote(ulid.NewString(), at+2, &project, pusher.UserID, "the pusher's own")
@@ -691,7 +692,7 @@ func TestPushedTaskAboutAProjectOnlyArtifactIsRefused(t *testing.T) {
 		}
 	}
 
-	at := db.Clock().Pack()
+	at := packed(t, db)
 	handoff := func(art *Artifact, hlc int64) *Task {
 		return &Task{
 			ID: ulid.NewString(), Artifact: art.ID, FromUser: from.ID, ToUser: to.ID,
@@ -715,5 +716,223 @@ func TestPushedTaskAboutAProjectOnlyArtifactIsRefused(t *testing.T) {
 	}
 	if n := rows(t, db, "tasks", real.ID); n != 1 {
 		t.Errorf("an ordinary handoff was refused (%d rows)", n)
+	}
+}
+
+// TestPulledArtifactShareIsStillTheOwnersToGive is the share the pull side
+// waved through.
+//
+// checkGrant's pull half asked two things: that the grant reaches this
+// principal at all, and - only when the grant said this principal signed it -
+// that they could have issued it. The reach test is satisfied by naming the
+// puller as the subject, so a share of somebody else's artifact, granted by
+// anybody at all, matched neither branch and was taken. From then on the
+// puller reads that artifact for good: the share clause in ArtifactFilterSQL
+// asks for the artifact and the subject and never for the grantor, and the
+// forged row pushes onward from here like any other.
+//
+// Signing does not close it. The peer signs its own row with its own pinned
+// key, so the row is authentic - it is the authority behind it that is
+// invented, and that is asked of the artifact this node holds rather than of
+// the claim on the row.
+func TestPulledArtifactShareIsStillTheOwnersToGive(t *testing.T) {
+	ctx, db := open(t)
+
+	home := "pa-" + ulid.NewString()   // where the artifact and its owner live
+	theirs := "pb-" + ulid.NewString() // where the puller does
+
+	owner := &User{Handle: "owner-" + ulid.NewString()}
+	reader := &User{Handle: "reader-" + ulid.NewString()}
+	for _, u := range []*User{owner, reader} {
+		if err := db.InsertUser(ctx, u); err != nil {
+			t.Fatalf("insert user: %v", err)
+		}
+	}
+
+	art := &Artifact{
+		Type: "bug", Project: &home, OwnerUser: owner.ID,
+		Title: "not the peer's to hand out", Visibility: VisibilityProject,
+	}
+	if err := db.UpsertArtifact(ctx, art); err != nil {
+		t.Fatalf("upsert artifact: %v", err)
+	}
+	puller := &Principal{UserID: reader.ID, Project: theirs}
+
+	// The baseline: nothing about the puller reaches this artifact.
+	if _, err := db.ReadArtifact(ctx, puller, art.ID, false); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("the fixture already lets %s read %s: %v", reader.ID, art.ID, err)
+	}
+
+	at := packed(t, db)
+	share := func(grantedBy string, hlc int64) Grant {
+		return Grant{
+			ID: ulid.NewString(), FromProject: home, ToProject: theirs,
+			Artifact: art.ID, Subject: reader.ID, Cap: "read",
+			GrantedBy: grantedBy, HLC: hlc, Node: "peer-node",
+		}
+	}
+	forged := share("u-stranger-"+ulid.NewString(), at+1)
+
+	res, err := db.SyncApplyFrom(ctx, puller, fromPeer(t, ctx, db, &SyncSet{Grants: []Grant{forged}}))
+	if err != nil {
+		t.Fatalf("apply the forged share: %v", err)
+	}
+	if res.Applied["grants"] != 0 || res.Refused["grants"] != 1 {
+		t.Fatalf("a share granted by %s applied %d and was refused %d times, want 0 and 1: %+v",
+			forged.GrantedBy, res.Applied["grants"], res.Refused["grants"], res.Reasons)
+	}
+	if n := grantRows(t, db, forged.ID); n != 0 {
+		t.Errorf("the forged share is here (%d rows): %s reads %s from now on", n, reader.ID, art.ID)
+	}
+	if _, err := db.ReadArtifact(ctx, puller, art.ID, false); !errors.Is(err, ErrNotFound) {
+		t.Errorf("%s can read %s after a share nobody who owns it wrote: %v", reader.ID, art.ID, err)
+	}
+
+	// The same forgery with a row for the artifact beside it, which is the
+	// shape a cross-project handoff really has: the share and the artifact it
+	// opens arrive together, and each is checked against the other. Here the
+	// peer names itself the owner of a row that is already here, so both halves
+	// go - the artifact because a merge does not change hands, and the share
+	// because the owner it claims is not the owner this node holds.
+	rewrite := &Artifact{
+		ID: art.ID, Type: "bug", Project: &theirs, OwnerUser: "u-evil-" + ulid.NewString(),
+		Title: "mine now", Visibility: VisibilityProject, HLC: at + 10, Node: "peer-node",
+	}
+	pair := share(rewrite.OwnerUser, at+11)
+	res, err = db.SyncApplyFrom(ctx, puller, fromPeer(t, ctx, db,
+		&SyncSet{Artifacts: []*Artifact{rewrite}, Grants: []Grant{pair}}))
+	if err != nil {
+		t.Fatalf("apply the pair: %v", err)
+	}
+	if res.Applied["grants"] != 0 || res.Applied["artifacts"] != 0 {
+		t.Fatalf("a share carrying its own version of the artifact applied %d grants and "+
+			"%d artifacts, want none of either: %+v",
+			res.Applied["grants"], res.Applied["artifacts"], res.Reasons)
+	}
+	if n := grantRows(t, db, pair.ID); n != 0 {
+		t.Errorf("the paired share is here (%d rows)", n)
+	}
+	if here, err := db.GetArtifact(ctx, art.ID); err != nil {
+		t.Fatalf("read the artifact back: %v", err)
+	} else if here.OwnerUser != owner.ID || here.Title != art.Title {
+		t.Errorf("the artifact changed hands: %+v", here)
+	}
+	if _, err := db.ReadArtifact(ctx, puller, art.ID, false); !errors.Is(err, ErrNotFound) {
+		t.Errorf("%s can read %s after a share that came with its own owner: %v",
+			reader.ID, art.ID, err)
+	}
+
+	// And the owner's own share of the same artifact, arriving the same way,
+	// still lands: that is what federation is, and the grantor is not the
+	// principal carrying it.
+	real := share(owner.ID, at+2)
+	res, err = db.SyncApplyFrom(ctx, puller, fromPeer(t, ctx, db, &SyncSet{Grants: []Grant{real}}))
+	if err != nil {
+		t.Fatalf("apply the owner's share: %v", err)
+	}
+	if res.Applied["grants"] != 1 {
+		t.Fatalf("the owner's own share applied %d grants, want 1: %+v",
+			res.Applied["grants"], res.Reasons)
+	}
+	if n := grantRows(t, db, real.ID); n != 1 {
+		t.Fatalf("the owner's share is not here (%d rows)", n)
+	}
+	if _, err := db.ReadArtifact(ctx, puller, art.ID, false); err != nil {
+		t.Errorf("%s cannot read %s after the owner shared it: %v", reader.ID, art.ID, err)
+	}
+}
+
+// TestPulledNewTaskIsTheOwnersHandoffIntoAFreshThread is the other half of the
+// same thing: a task is a read capability, and minting one was open to anybody
+// who could read the artifact.
+//
+// The tasks clause in EventFilterSQL shows a whole thread to from_user, to_user
+// and the agent a task was delegated to. The new-task branch asked only that
+// the carrier was a party to the row, could read the artifact and could read
+// the thread - never that they could have opened the handoff. POST /api/assign
+// requires the assigner to own the artifact and opens a thread of its own, so a
+// principal who merely reads an artifact could carry in a task naming any
+// thread they can see and any local user in to_user, and hand that user the
+// conversation. assignee_agent was guarded; to_user was not.
+func TestPulledNewTaskIsTheOwnersHandoffIntoAFreshThread(t *testing.T) {
+	ctx, db := open(t)
+
+	home := "pc-" + ulid.NewString()    // the artifact, the thread and the mate
+	outside := "pd-" + ulid.NewString() // the person being handed the read
+
+	owner := &User{Handle: "owner-" + ulid.NewString()}
+	mate := &User{Handle: "mate-" + ulid.NewString()}
+	outsider := &User{Handle: "outsider-" + ulid.NewString()}
+	for _, u := range []*User{owner, mate, outsider} {
+		if err := db.InsertUser(ctx, u); err != nil {
+			t.Fatalf("insert user: %v", err)
+		}
+	}
+
+	art := &Artifact{
+		Type: "bug", Project: &home, OwnerUser: owner.ID,
+		Title: "the work", Visibility: VisibilityProject,
+	}
+	if err := db.UpsertArtifact(ctx, art); err != nil {
+		t.Fatalf("upsert artifact: %v", err)
+	}
+
+	// A conversation that is already here, in the project, which the mate reads
+	// because they are in it.
+	said := &Event{
+		Type: "chat", Project: &home, Room: "general", Parents: []string{},
+		Actor: owner.ID, Body: "what we are actually doing about this",
+	}
+	if err := db.AppendEvent(ctx, said); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+
+	carrier := &Principal{UserID: mate.ID, Project: home}
+	stranger := &Principal{UserID: outsider.ID, Project: outside}
+
+	if _, err := db.ReadEvent(ctx, stranger, said.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("the fixture already lets %s read the thread: %v", outsider.ID, err)
+	}
+
+	at := packed(t, db)
+	forged := &Task{
+		ID: ulid.NewString(), Artifact: art.ID, FromUser: mate.ID, ToUser: outsider.ID,
+		Project: home, State: TaskOpen, Thread: said.Thread, HLC: at + 1, Node: "peer-node",
+	}
+	res, err := db.SyncApplyFrom(ctx, carrier, fromPeer(t, ctx, db, &SyncSet{Tasks: []*Task{forged}}))
+	if err != nil {
+		t.Fatalf("apply the forged handoff: %v", err)
+	}
+	if res.Applied["tasks"] != 0 || res.Refused["tasks"] != 1 {
+		t.Fatalf("a handoff minted by %s applied %d and was refused %d times, want 0 and 1: %+v",
+			mate.ID, res.Applied["tasks"], res.Refused["tasks"], res.Reasons)
+	}
+	if n := rows(t, db, "tasks", forged.ID); n != 0 {
+		t.Errorf("the forged handoff is here (%d rows)", n)
+	}
+	if _, err := db.ReadEvent(ctx, stranger, said.ID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("%s reads a conversation they were named into by somebody who does not own %s: %v",
+			outsider.ID, art.ID, err)
+	}
+
+	// The real thing still replicates: the owner hands the work over, into a
+	// thread nothing has been said in - which is what an assignment made on
+	// another node looks like when it arrives, because the `task` event that
+	// opens it is minted and refused at every wire path.
+	real := &Task{
+		ID: ulid.NewString(), Artifact: art.ID, FromUser: owner.ID, ToUser: outsider.ID,
+		Project: home, State: TaskOpen, Thread: ulid.NewString(), HLC: at + 2, Node: "peer-node",
+	}
+	res, err = db.SyncApplyFrom(ctx, &Principal{UserID: owner.ID, Project: home},
+		fromPeer(t, ctx, db, &SyncSet{Tasks: []*Task{real}}))
+	if err != nil {
+		t.Fatalf("apply the owner's handoff: %v", err)
+	}
+	if res.Applied["tasks"] != 1 {
+		t.Fatalf("the owner's own handoff applied %d tasks, want 1: %+v",
+			res.Applied["tasks"], res.Reasons)
+	}
+	if n := rows(t, db, "tasks", real.ID); n != 1 {
+		t.Errorf("the owner's handoff is not here (%d rows)", n)
 	}
 }

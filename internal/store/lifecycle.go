@@ -13,8 +13,20 @@ import (
 // artifact to every peer that merges it.
 //
 // The clock moves, because the status is part of what replicates.
+//
+// A deleted artifact has no status to move, so the write says so rather than
+// matching the dead row anyway. The handlers gate on a filtered read, and the
+// read is not the write: between the two, the owner's delete can land, and the
+// move would then stamp a new reading and this node's signature onto a
+// tombstoned row on somebody else's behalf - and MoveArtifactStatus would
+// append an entry for a transition of an artifact that is not there. ErrNotFound
+// is what the caller would have got had the delete landed a moment earlier.
 func (d *DB) SetArtifactStatus(ctx context.Context, art *Artifact, status string) error {
-	return d.setArtifactStatus(ctx, d.sql, art, status, d.clock.Pack())
+	at, err := d.clock.Pack()
+	if err != nil {
+		return fmt.Errorf("store: set status of %s: %w", art.ID, err)
+	}
+	return d.setArtifactStatus(ctx, d.sql, art, status, at)
 }
 
 // setArtifactStatus is the one statement, against whatever is in hand and at
@@ -30,12 +42,19 @@ func (d *DB) setArtifactStatus(
 	if err := d.signArtifact(ctx, art); err != nil {
 		return err
 	}
-	_, err := q.ExecContext(ctx,
+	res, err := q.ExecContext(ctx,
 		`UPDATE artifacts SET status = $2, hlc = $3, node = $4, sig = $5, updated = now()
-		  WHERE id = $1`,
+		  WHERE id = $1 AND coalesce(tombstone, false) = false`,
 		art.ID, art.Status, art.HLC, art.Node, art.Sig)
 	if err != nil {
 		return fmt.Errorf("store: set status of %s: %w", art.ID, err)
+	}
+	n, err := affectedRows(res)
+	if err != nil {
+		return fmt.Errorf("store: set status of %s: %w", art.ID, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("store: set status: %w: artifact %s", ErrNotFound, art.ID)
 	}
 	return nil
 }
@@ -52,7 +71,10 @@ func (d *DB) setArtifactStatus(
 func (d *DB) MoveArtifactStatus(
 	ctx context.Context, art *Artifact, status string, e *Event,
 ) error {
-	at := d.clock.Pack()
+	at, err := d.clock.Pack()
+	if err != nil {
+		return fmt.Errorf("store: move status of %s: %w", art.ID, err)
+	}
 	e.SeqHLC = at
 
 	return d.inTx(ctx, "move status of "+art.ID, func(tx *sql.Tx) error {

@@ -145,11 +145,21 @@ func (r *ExternalRef) AlreadySeen(id string, at time.Time) bool {
 func (d *DB) SetArtifactExternal(
 	ctx context.Context, art *Artifact, ref *ExternalRef, reported bool,
 ) error {
-	return d.setArtifactExternal(ctx, d.sql, art, ref, reported, d.clock.Pack())
+	at, err := d.clock.Pack()
+	if err != nil {
+		return fmt.Errorf("store: set external ref of %s: %w", art.ID, err)
+	}
+	return d.setArtifactExternal(ctx, d.sql, art, ref, reported, at)
 }
 
 // setArtifactExternal is the one statement, against whatever is in hand and at
 // a reading the caller may already have taken.
+//
+// A deleted artifact is not filed against, for the same reason a deleted one
+// does not move status: the handler's read and this write are two statements,
+// and an owner's delete can land between them. LinkArtifactExternal wraps this
+// and the entry that records the filing in one transaction, so a link refused
+// here takes its event back out with it.
 func (d *DB) setArtifactExternal(
 	ctx context.Context, q execer, art *Artifact, ref *ExternalRef, reported bool, at int64,
 ) error {
@@ -171,12 +181,20 @@ func (d *DB) setArtifactExternal(
 	if err := d.signArtifact(ctx, art); err != nil {
 		return err
 	}
-	_, err := q.ExecContext(ctx,
+	res, err := q.ExecContext(ctx,
 		`UPDATE artifacts SET external = $2, reported = $3, hlc = $4, node = $5, sig = $6,
 		        updated = now()
-		  WHERE id = $1`, art.ID, raw, art.Reported, art.HLC, art.Node, art.Sig)
+		  WHERE id = $1 AND coalesce(tombstone, false) = false`,
+		art.ID, raw, art.Reported, art.HLC, art.Node, art.Sig)
 	if err != nil {
 		return fmt.Errorf("store: set external ref of %s: %w", art.ID, err)
+	}
+	n, err := affectedRows(res)
+	if err != nil {
+		return fmt.Errorf("store: set external ref of %s: %w", art.ID, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("store: set external ref: %w: artifact %s", ErrNotFound, art.ID)
 	}
 	return nil
 }
@@ -199,7 +217,10 @@ func (d *DB) setArtifactExternal(
 func (d *DB) LinkArtifactExternal(
 	ctx context.Context, art *Artifact, ref *ExternalRef, reported bool, e *Event,
 ) error {
-	at := d.clock.Pack()
+	at, err := d.clock.Pack()
+	if err != nil {
+		return fmt.Errorf("store: link %s: %w", art.ID, err)
+	}
 	e.SeqHLC = at
 	if ref != nil {
 		ref.Pushed = at

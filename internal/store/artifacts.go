@@ -111,7 +111,9 @@ func scanArtifact(sc scanner, rank *float64) (*Artifact, error) {
 // This is the update. A caller that did not read the row first wants
 // CreateArtifact, which will not touch one that is already here.
 func (d *DB) UpsertArtifact(ctx context.Context, a *Artifact) error {
-	d.fill(a)
+	if err := d.fill(a); err != nil {
+		return err
+	}
 	if err := d.signArtifact(ctx, a); err != nil {
 		return err
 	}
@@ -167,7 +169,9 @@ func (d *DB) UpsertArtifact(ctx context.Context, a *Artifact) error {
 // The id is the only thing a caller can be told about a row it cannot read, and
 // even that is told as a 404.
 func (d *DB) CreateArtifact(ctx context.Context, a *Artifact) error {
-	d.fill(a)
+	if err := d.fill(a); err != nil {
+		return err
+	}
 	if err := d.signArtifact(ctx, a); err != nil {
 		return err
 	}
@@ -200,7 +204,7 @@ func (d *DB) CreateArtifact(ctx context.Context, a *Artifact) error {
 // fill is what both writes do to an artifact before it goes in: force the
 // personal floor to be a property of the row, mint an id when the caller left
 // one out, and stamp a fresh reading and this node's name.
-func (d *DB) fill(a *Artifact) {
+func (d *DB) fill(a *Artifact) error {
 	if a.Visibility == "" {
 		a.Visibility = "project"
 	}
@@ -217,12 +221,19 @@ func (d *DB) fill(a *Artifact) {
 		a.Visibility = VisibilityPersonal
 	}
 	// A fresh reading on every write, including an update - the previous
-	// value is what a peer already saw.
-	a.HLC = d.clock.Pack()
+	// value is what a peer already saw. A clock that has none left to give is
+	// the one thing that stops the write here: two rows under one reading is a
+	// merge quietly keeping one of them.
+	at, err := d.clock.Pack()
+	if err != nil {
+		return fmt.Errorf("store: %w", err)
+	}
+	a.HLC = at
 	a.Node = d.node
 	if a.ID == "" {
 		a.ID = ulid.NewString()
 	}
+	return nil
 }
 
 // ArtifactQuery narrows a list or a search. Every field is optional; the
@@ -413,7 +424,11 @@ func (d *DB) TombstoneArtifact(ctx context.Context, p *Principal, id string) (*A
 		return nil, ErrNotFound
 	}
 	art.Tombstone = true
-	art.HLC = d.clock.Pack()
+	at, err := d.clock.Pack()
+	if err != nil {
+		return nil, fmt.Errorf("store: tombstone artifact %s: %w", id, err)
+	}
+	art.HLC = at
 	art.Node = d.node
 	// The delete is a write like any other and travels as a row, so it is signed
 	// as one: a tombstone nobody signed is a delete a peer could have invented.

@@ -43,7 +43,7 @@ func TestAHostilePeerCannotRewriteAnothersRow(t *testing.T) {
 
 	project := "pv-" + ulid.NewString()
 	owner := "u-" + ulid.NewString()
-	at := db.Clock().Pack()
+	at := packed(t, db)
 	id := ulid.NewString()
 
 	original := &Artifact{
@@ -126,7 +126,7 @@ func TestOneFlippedByteIsRefused(t *testing.T) {
 	key := pinTestNode(t, ctx, db, node)
 	project := "pt-" + ulid.NewString()
 	owner := "u-" + ulid.NewString()
-	at := db.Clock().Pack()
+	at := packed(t, db)
 
 	build := func() *Artifact {
 		a := &Artifact{
@@ -197,7 +197,7 @@ func TestAuthenticityAndAuthorisationAreTwoLayers(t *testing.T) {
 		t.Fatalf("insert token: %v", err)
 	}
 	puller := &Principal{UserID: me.ID, Project: home}
-	at := db.Clock().Pack()
+	at := packed(t, db)
 
 	// Genuinely written by the peer, and genuinely not the peer's to write.
 	forged := Grant{
@@ -246,7 +246,7 @@ func TestAnIdentityArrivesWithTheRowsItVerifies(t *testing.T) {
 
 	project := "pr-" + ulid.NewString()
 	owner := "u-" + ulid.NewString()
-	at := db.Clock().Pack()
+	at := packed(t, db)
 	art := &Artifact{
 		ID: ulid.NewString(), Type: "note", Project: &project, OwnerUser: owner,
 		Visibility: "project", Title: "written on C", Body: "relayed by B",
@@ -320,7 +320,7 @@ func TestAKeyDoesNotRotateOverTheWire(t *testing.T) {
 	row := &Artifact{
 		ID: ulid.NewString(), Type: "note", Project: &project, OwnerUser: owner,
 		Visibility: "project", Title: "signed by the impostor",
-		HLC: db.Clock().Pack() + 1, Node: node,
+		HLC: packed(t, db) + 1, Node: node,
 	}
 	SignArtifact(impostor, row)
 
@@ -363,7 +363,7 @@ func TestRequirePinnedPeersRefusesATrustedOnFirstUseNode(t *testing.T) {
 
 	project := "pw-" + ulid.NewString()
 	owner := "u-" + ulid.NewString()
-	at := db.Clock().Pack()
+	at := packed(t, db)
 	row := func(node string, key ed25519.PrivateKey, n int64) *Artifact {
 		a := &Artifact{
 			ID: ulid.NewString(), Type: "note", Project: &project, OwnerUser: owner,

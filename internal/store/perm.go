@@ -296,7 +296,9 @@ func (d *DB) InsertGrant(ctx context.Context, g *Grant) error {
 // insertGrant is InsertGrant against whatever is in hand - the pool, or the
 // transaction an assignment writes its three rows in.
 func (d *DB) insertGrant(ctx context.Context, q execer, g *Grant) error {
-	d.stamp(&g.ID, &g.HLC, &g.Node)
+	if err := d.stamp(&g.ID, &g.HLC, &g.Node); err != nil {
+		return err
+	}
 	if g.Cap == "" {
 		g.Cap = "read"
 	}

@@ -118,16 +118,26 @@ func (d *DB) inTx(ctx context.Context, what string, fn func(tx *sql.Tx) error) e
 
 // stamp fills in an id, an hlc reading and the node name where the caller left
 // them empty.
-func (d *DB) stamp(id *string, clockVal *int64, node *string) {
+//
+// It can fail, because taking a reading can: a clock with nothing left above
+// the last value it handed out has no reading to give, and a row stamped with
+// the previous one is a row that shares a reading with another - which the
+// merge resolves by dropping one of them. So the write does not happen.
+func (d *DB) stamp(id *string, clockVal *int64, node *string) error {
 	if *id == "" {
 		*id = ulid.NewString()
 	}
 	if *clockVal == 0 {
-		*clockVal = d.clock.Pack()
+		at, err := d.clock.Pack()
+		if err != nil {
+			return fmt.Errorf("store: %w", err)
+		}
+		*clockVal = at
 	}
 	if *node == "" {
 		*node = d.node
 	}
+	return nil
 }
 
 // User is a person on this node.
@@ -142,7 +152,9 @@ type User struct {
 
 // InsertUser writes a user, stamping id/hlc/node when unset.
 func (d *DB) InsertUser(ctx context.Context, u *User) error {
-	d.stamp(&u.ID, &u.HLC, &u.Node)
+	if err := d.stamp(&u.ID, &u.HLC, &u.Node); err != nil {
+		return err
+	}
 	_, err := d.sql.ExecContext(ctx,
 		`INSERT INTO users (id, handle, display, auto_delegate, hlc, node)
 		 VALUES ($1, $2, $3, $4, $5, $6)`,
@@ -187,7 +199,9 @@ type Agent struct {
 
 // InsertAgent writes an agent, stamping id/hlc/node when unset.
 func (d *DB) InsertAgent(ctx context.Context, a *Agent) error {
-	d.stamp(&a.ID, &a.HLC, &a.Node)
+	if err := d.stamp(&a.ID, &a.HLC, &a.Node); err != nil {
+		return err
+	}
 	_, err := d.sql.ExecContext(ctx,
 		`INSERT INTO agents (id, user_id, kind, project, hlc, node)
 		 VALUES ($1, $2, $3, $4, $5, $6)`,
@@ -262,7 +276,9 @@ type Artifact struct {
 
 // InsertArtifact writes an artifact, stamping id/hlc/node when unset.
 func (d *DB) InsertArtifact(ctx context.Context, a *Artifact) error {
-	d.stamp(&a.ID, &a.HLC, &a.Node)
+	if err := d.stamp(&a.ID, &a.HLC, &a.Node); err != nil {
+		return err
+	}
 	if a.Visibility == "" {
 		a.Visibility = "project"
 	}
@@ -330,7 +346,9 @@ func (d *DB) AppendEvent(ctx context.Context, e *Event) error {
 // appendEvent is AppendEvent against whatever is in hand: the pool for a
 // message on its own, a transaction for one that is part of an operation.
 func (d *DB) appendEvent(ctx context.Context, q execer, e *Event) error {
-	d.stamp(&e.ID, &e.SeqHLC, &e.Node)
+	if err := d.stamp(&e.ID, &e.SeqHLC, &e.Node); err != nil {
+		return err
+	}
 	if e.Thread == "" {
 		// A thread with no explicit head is named after its first event.
 		e.Thread = e.ID

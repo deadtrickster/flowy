@@ -912,6 +912,11 @@ func (d *DB) syncApply(ctx context.Context, p *Principal, mode syncMode, in *Syn
 		})
 	}
 	for _, art := range in.Artifacts {
+		// Whether the share that opens this row is on the page with it, which is
+		// the only reason a row lands somewhere the principal cannot otherwise
+		// reach. Worked out once, off the delta, so the passes below cannot make
+		// it depend on the order rows happen to settle in.
+		shared := sharedInDelta(p, art, in.Grants)
 		rows = append(rows, &syncRow{
 			table: "artifacts", hlc: art.HLC, node: art.Node,
 			verify: func(ctx context.Context, tx *sql.Tx) (string, error) {
@@ -922,7 +927,7 @@ func (d *DB) syncApply(ctx context.Context, p *Principal, mode syncMode, in *Syn
 				return loses(ctx, tx, "artifacts", art.ID, art.HLC, art.Node)
 			},
 			check: func(ctx context.Context, tx *sql.Tx) (string, error) {
-				return checkArtifact(ctx, tx, p, mode, art)
+				return checkArtifact(ctx, tx, p, mode, art, shared)
 			},
 			apply: func(ctx context.Context, tx *sql.Tx) (int, error) { return applyArtifact(ctx, tx, art) },
 		})
@@ -1386,6 +1391,9 @@ func nullText(s *string) any {
 //     project a live grant opens to it, or an artifact shared to it. Without
 //     this, a peer invents a row in any project it likes - including one it has
 //     never been let into - and the row is then real for every node downstream.
+//     shared is the one relaxation: a share riding the same page, which has not
+//     been applied yet because it is waiting for this very row - see
+//     sharedInDelta.
 //   - a row that is already here does not change hands and does not move
 //     project. Applying a row replaces every column of the one it lands on, so
 //     without this a share is a way to take a row over: re-owned, re-projected
@@ -1393,7 +1401,7 @@ func nullText(s *string) any {
 //     stricter still - the row has to be the pusher's own, which is the rule
 //     POST /api/artifacts keeps.
 func checkArtifact(
-	ctx context.Context, tx *sql.Tx, p *Principal, mode syncMode, a *Artifact,
+	ctx context.Context, tx *sql.Tx, p *Principal, mode syncMode, a *Artifact, shared bool,
 ) (string, error) {
 	if p == nil {
 		return "", nil
@@ -1407,7 +1415,7 @@ func checkArtifact(
 		if err != nil {
 			return "", err
 		}
-		if !ok {
+		if !ok && !shared {
 			return "artifact " + a.ID + " would land in project " + *a.Project +
 				", which you cannot reach", nil
 		}
@@ -1457,6 +1465,37 @@ func checkArtifact(
 	return "", nil
 }
 
+// sharedInDelta reports whether the page a arrived on also carries the share
+// that opens it to p: a grant naming this principal as the subject and naming,
+// as the grantor, the very owner the artifact says it has.
+//
+// The two rows need each other. The artifact is readable here because of the
+// share, and the share is the owner's to give because of the artifact - so a
+// merge that insists on one before the other refuses both forever, which is a
+// cross-project handoff that never arrives and a cursor that never moves. That
+// is what this is for, and it is not a hole because neither row is believed on
+// its own: the grantor has to be the owner named on the artifact that came with
+// it, and both rows are signed by the node that wrote them. What it does not do
+// is let a share reach an artifact a share cannot reach - personal, project-less
+// or 'project-only' - or let it stand in for the owner test on a row that is
+// already here, which checkGrant asks of the stored row and not of this.
+func sharedInDelta(p *Principal, a *Artifact, grants []Grant) bool {
+	if p == nil || p.UserID == "" || a == nil || a.OwnerUser == "" || a.Project == nil ||
+		a.Visibility == VisibilityPersonal || a.Visibility == VisibilityProjectOnly {
+		return false
+	}
+	for i := range grants {
+		g := &grants[i]
+		if g.Tombstone || g.Artifact == "" || g.Artifact != a.ID {
+			continue
+		}
+		if g.Subject == p.UserID && g.GrantedBy == a.OwnerUser {
+			return true
+		}
+	}
+	return false
+}
+
 // artifactReadable reports whether p could read a as it would land, by running
 // the read filter over the incoming values rather than over a stored row. That
 // is the "land where the API would put it" rule, which for a peer is wider than
@@ -1497,6 +1536,7 @@ func artifactReadable(ctx context.Context, tx *sql.Tx, p *Principal, a *Artifact
 //     do move are checked rather than taken: an agent has to be one that acts
 //     for the assignee, because naming an agent is handing it the thread, and a
 //     state has to be one of the three the lifecycle has;
+//
 //   - a new one has to be a handoff the principal is in. On a push they are the
 //     side handing the work over, which is what POST /api/assign requires; on a
 //     pull they may also be the side it was handed to, because that is how a
@@ -1507,6 +1547,13 @@ func artifactReadable(ctx context.Context, tx *sql.Tx, p *Principal, a *Artifact
 //     already
 //     read - a thread nobody has said anything in yet is a thread there is
 //     nothing to learn from.
+//
+//     And, whichever door it came in by, from_user is the artifact's owner and
+//     the thread is one nothing has been said in yet. Both are POST
+//     /api/assign's rule: an assignment is the owner's to make and it opens a
+//     fresh thread. Without them a reader of an artifact could mint a task
+//     naming any thread they can read and any local user in to_user, and hand
+//     that user the conversation - a task is a read capability, not a note.
 func checkTask(
 	ctx context.Context, tx *sql.Tx, p *Principal, mode syncMode, t *Task,
 ) (string, error) {
@@ -1599,6 +1646,46 @@ func checkTask(
 		return "task " + t.ID + " is about " + t.Artifact + ", which is not yours to hand over", nil
 	}
 
+	// And the side handing it over is the artifact's owner, which is what POST
+	// /api/assign requires. Being able to read an artifact is not being able to
+	// hand it on: a task is a read capability - the tasks clause in
+	// EventFilterSQL shows the whole thread to from_user, to_user and the agent
+	// it was delegated to - so a reader who could mint one would be handing a
+	// thread to anybody they cared to name in to_user. assignee_agent is
+	// checked against the assignee above; to_user was checked against nothing.
+	var owner sql.NullString
+	err = tx.QueryRowContext(ctx,
+		`SELECT owner_user FROM artifacts WHERE id = $1`, t.Artifact).Scan(&owner)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "task " + t.ID + " is about " + t.Artifact + ", which is not here", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("store: sync check task %s: %w", t.ID, err)
+	}
+	if owner.String == "" || owner.String != t.FromUser {
+		return "task " + t.ID + " hands " + t.Artifact + " over as " + named(t.FromUser) +
+			", and it is " + named(owner.String) + "'s to hand over", nil
+	}
+
+	// A handoff opens a conversation; it does not join one. The entry that
+	// opens a real assignment is a `task` event, and a minted type is refused
+	// at every wire path - see mintedEventTypes - so a task that was genuinely
+	// replicated arrives with its thread empty on this node. A new task naming
+	// a thread that already holds messages is therefore not a handoff arriving:
+	// it is a read on an existing conversation being written for whoever the
+	// row names.
+	if t.Thread != "" {
+		var talking bool
+		if err := tx.QueryRowContext(ctx,
+			`SELECT EXISTS (SELECT 1 FROM events WHERE thread = $1)`, t.Thread).Scan(&talking); err != nil {
+			return "", fmt.Errorf("store: sync check task %s: %w", t.ID, err)
+		}
+		if talking {
+			return "task " + t.ID + " is a new handoff into thread " + t.Thread +
+				", which is a conversation that is already here", nil
+		}
+	}
+
 	return threadClosed(ctx, tx, p, t.Thread, "task "+t.ID)
 }
 
@@ -1647,14 +1734,18 @@ func taskParty(p *Principal, t *Task) bool {
 //     wrote, and believing it lets anybody share anybody's artifact with
 //     themselves.
 //
-// A pulled grant is not that. Federation is capabilities travelling: the share
-// a handoff wrote on one node is how the other side reads the artifact on this
-// one, and it was written by the owner, who is not the principal carrying it.
-// So a pulled grant is checked twice over instead - it has to be one this
-// principal could have been handed at all, which is the reach GrantFilterSQL
-// replicates by, and if it says this principal signed it then it has to be one
-// this principal could have issued. What that leaves is a peer naming somebody
-// else as the grantor, which no unsigned row can rule out.
+// A pulled grant is not quite that. Federation is capabilities travelling: the
+// share a handoff wrote on one node is how the other side reads the artifact on
+// this one, and it was written by the owner, who is not the principal carrying
+// it. So on a pull the carrier is asked only to be somebody the grant could
+// have been handed to at all - the reach GrantFilterSQL replicates by - and the
+// grantor is still asked to be the owner of the artifact that is here. Only the
+// last line of the push rule is dropped, the one that says the carrier is that
+// owner.
+//
+// Dropping the rest of it was the hole: a share whose grantor was anybody other
+// than the puller used to be taken on the reach test alone, and reach is
+// satisfied by naming the puller as the subject.
 func checkGrant(
 	ctx context.Context, tx *sql.Tx, p *Principal, mode syncMode, g *Grant,
 ) (string, error) {
@@ -1682,22 +1773,36 @@ func checkGrant(
 		// opened, on this node. Grants between other projects, riding a page
 		// this principal may read, are untouched by this: they open nothing
 		// here, and refusing them would be refusing federation.
-		if g.Artifact == "" && g.ToProject != "" && g.ToProject == p.Project &&
-			g.FromProject != p.Project {
-			opener, err := principalOfProject(ctx, tx, g.GrantedBy, g.ToProject)
-			if err != nil {
-				return "", err
+		if g.Artifact == "" {
+			if g.ToProject != "" && g.ToProject == p.Project && g.FromProject != p.Project {
+				opener, err := principalOfProject(ctx, tx, g.GrantedBy, g.ToProject)
+				if err != nil {
+					return "", err
+				}
+				if !opener {
+					return "grant " + g.ID + " opens " + g.ToProject + " up, and " +
+						named(g.GrantedBy) + " is nobody here who could", nil
+				}
 			}
-			if !opener {
-				return "grant " + g.ID + " opens " + g.ToProject + " up, and " +
-					named(g.GrantedBy) + " is nobody here who could", nil
-			}
+			// Grants between other projects, riding a page this principal may
+			// read, open nothing here.
 			return "", nil
 		}
-		if g.GrantedBy == "" || g.GrantedBy != p.UserID {
-			return "", nil
-		}
-		// Signed by this principal, so it is judged as one of theirs.
+		// A share of one artifact falls through to the owner test below.
+		//
+		// It used to be taken on the reach test alone whenever somebody other
+		// than this principal was named as the grantor, and the reach test is
+		// satisfied by a grant that names this principal as the subject. So a
+		// peer could serve {artifact: somebody else's, subject: you, granted_by:
+		// anybody} and it merged - and the share clause in ArtifactFilterSQL
+		// asks only for the artifact and the subject, never for the grantor, so
+		// the read it opens is permanent and travels onward from here.
+		//
+		// A signature does not close that: the peer signs its own row with its
+		// own key and the row is authentic. Who may hand out a read on an
+		// artifact is a separate question, and it is answered the same way on
+		// both doors - against the artifact that is here, not against the claim
+		// on the row.
 	}
 	if g.Artifact == "" {
 		if g.ToProject == "" || g.ToProject != p.Project {
@@ -1724,6 +1829,14 @@ func checkGrant(
 	}
 	if owner.String == "" || owner.String != g.GrantedBy {
 		return "grant " + g.ID + " is not the owner's to give", nil
+	}
+	if mode == modePull {
+		// The owner is not the carrier. A share written on another node by the
+		// owner of an artifact that is here is exactly what federation moves,
+		// and the principal handing the page over is whoever is reading it. So
+		// the grantor is checked against the artifact and the carrier is not
+		// asked to be them.
+		return "", nil
 	}
 	if p.UserID == "" || owner.String != p.UserID {
 		return "grant " + g.ID + " shares " + g.Artifact + ", which is not yours to share", nil

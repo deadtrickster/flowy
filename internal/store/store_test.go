@@ -39,6 +39,18 @@ func open(t *testing.T) (context.Context, *DB) {
 	return ctx, db
 }
 
+// packed is db.Clock().Pack() for a test: taking a reading can fail now - a
+// clock with nothing left above the last value it gave out refuses rather than
+// repeating itself - and a test that cannot get one has nothing to assert.
+func packed(t *testing.T, db *DB) int64 {
+	t.Helper()
+	at, err := db.Clock().Pack()
+	if err != nil {
+		t.Fatalf("clock: %v", err)
+	}
+	return at
+}
+
 func TestOpenRejectsEmptyDSN(t *testing.T) {
 	if _, err := Open(context.Background(), "", "n"); err == nil {
 		t.Fatal("Open with an empty DSN returned no error")
@@ -269,7 +281,7 @@ func TestGrantAndTaskDefaults(t *testing.T) {
 	_, err := db.SQL().ExecContext(ctx,
 		`INSERT INTO grants (id, from_project, to_project, subject, granted_by, hlc, node)
 		 VALUES ($1, 'flowy', 'other', 'bugs', 'u1', $2, $3)`,
-		grantID, db.Clock().Pack(), db.Node())
+		grantID, packed(t, db), db.Node())
 	if err != nil {
 		t.Fatalf("insert grant: %v", err)
 	}
@@ -287,7 +299,7 @@ func TestGrantAndTaskDefaults(t *testing.T) {
 	_, err = db.SQL().ExecContext(ctx,
 		`INSERT INTO tasks (id, artifact, from_user, to_user, project, hlc, node)
 		 VALUES ($1, $2, 'u1', 'u2', 'flowy', $3, $4)`,
-		taskID, ulid.NewString(), db.Clock().Pack(), db.Node())
+		taskID, ulid.NewString(), packed(t, db), db.Node())
 	if err != nil {
 		t.Fatalf("insert task: %v", err)
 	}
@@ -318,7 +330,7 @@ func TestPeerCursors(t *testing.T) {
 		t.Fatalf("cursors defaulted to %d/%d, want 0/0", pull, pushed)
 	}
 
-	now := db.Clock().Pack()
+	now := packed(t, db)
 	if _, err := db.SQL().ExecContext(ctx,
 		`UPDATE peers SET pull_cursor = $1, last_seen = now() WHERE peer = $2`, now, peer); err != nil {
 		t.Fatalf("advance cursor: %v", err)
@@ -339,7 +351,7 @@ func TestSeqHLCPaging(t *testing.T) {
 	ctx, db := open(t)
 
 	room := "room-" + ulid.NewString()
-	cursor := db.Clock().Pack()
+	cursor := packed(t, db)
 
 	var ids []string
 	for i := 0; i < 5; i++ {
@@ -489,7 +501,7 @@ func TestThreadEventsIsOneQuery(t *testing.T) {
 	ctx, db, queries := openCounting(t)
 
 	thread := ulid.NewString()
-	base := db.Clock().Pack()
+	base := packed(t, db)
 	// Two events share a reading, so the id half of the (seq_hlc, id) order is
 	// exercised rather than assumed.
 	written := []*Event{

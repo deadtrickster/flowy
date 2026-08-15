@@ -5522,6 +5522,20 @@ check "FLOWY_REQUIRE_PINNED_PEERS refuses a node the operator did not pin" \
 check "a pull hands over public keys and no private ones" \
 	go test -count=1 -run TestSyncPullHandsOverTheKeysAndNoPrivateOnes ./internal/store
 
+say "signing says who wrote a row, not what they may write"
+check "a pulled share of somebody else's artifact is refused (HIGH 1)" \
+	go test -count=1 -run TestPulledArtifactShareIsStillTheOwnersToGive ./internal/store
+check "a pulled new task is the owner's, into a thread nobody has spoken in (MED 2)" \
+	go test -count=1 -run TestPulledNewTaskIsTheOwnersHandoffIntoAFreshThread ./internal/store
+
+say "a read is not a write, and a deleted row is not there"
+check "a status move and a forge link both refuse a deleted artifact (MED 3)" \
+	go test -count=1 -run TestADeletedArtifactIsNotMovedOrFiled ./internal/store
+
+say "a clock with nothing left says so"
+check "a saturated clock refuses a reading rather than repeating one (LOW 4)" \
+	go test -count=1 -run TestSaturatedClockRefusesRatherThanRepeat ./internal/hlc
+
 # ------------------------------------------------------------------- verdict
 
 say "result"

@@ -7,6 +7,7 @@
 package hlc
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"sync"
@@ -95,7 +96,8 @@ func UnpackTimestamp(packed int64, node string) Timestamp {
 }
 
 // Clock is a hybrid logical clock. It is safe for concurrent use; every reading
-// it hands out is strictly greater than the one before it.
+// it hands out is strictly greater than the one before it - and when it can no
+// longer be, it hands out none and says so rather than repeating itself.
 type Clock struct {
 	mu      sync.Mutex
 	wall    int64
@@ -115,48 +117,76 @@ func New(node string) *Clock {
 // Node returns the node tag this clock stamps onto its readings.
 func (c *Clock) Node() string { return c.node }
 
-// tick advances the counter past the given physical reading. Callers hold mu.
-func (c *Clock) tick(phys int64) {
+// ErrSaturated is what a clock at the top of its range answers a request for a
+// reading with. It is the end of the line: wall and logical are both at their
+// maximum, so there is no value left that is greater than the last one handed
+// out, and handing that one out again would give two rows one reading - which
+// is the merge silently dropping the second of them.
+//
+// It takes a local wall clock at roughly the year 6.6 million to get here. A
+// reading off the wire cannot: checkReadings refuses anything past now+MaxSkew
+// and Pack clamps below MaxWallMS. So this is a broken machine, and the write
+// that wanted the reading fails rather than proceeding with a duplicate.
+var ErrSaturated = errors.New("hlc: clock is saturated: no reading left above the last one")
+
+// tick advances the counter past the given physical reading, and reports
+// whether it moved. Callers hold mu.
+func (c *Clock) tick(phys int64) bool {
 	if phys > c.wall {
 		c.wall = phys
 		c.logical = 0
-		return
+		return true
 	}
-	c.bump()
+	return c.bump()
 }
 
 // bump advances the logical counter by one, carrying into the wall clock when
-// the counter is exhausted. Callers hold mu.
+// the counter is exhausted, and reports whether it moved. Callers hold mu.
 //
 // The carry saturates at MaxWallMS rather than wrapping: a clock that has been
 // pushed to the top of the range by a bad reading stops advancing, which is a
-// clock that has stopped rather than a clock that has gone negative.
-func (c *Clock) bump() {
+// clock that has stopped rather than a clock that has gone negative. Saying so
+// is the caller's business - see Now.
+func (c *Clock) bump() bool {
 	if c.logical == MaxLogical {
 		if c.wall >= MaxWallMS {
-			return
+			return false
 		}
 		c.wall++
 		c.logical = 0
-		return
+		return true
 	}
 	c.logical++
+	return true
 }
 
-// Now returns the next local timestamp.
-func (c *Clock) Now() Timestamp {
+// Now returns the next local timestamp, which is strictly greater than every
+// reading this clock has handed out before it. When there is no such value left
+// it returns ErrSaturated and no timestamp: the alternative is repeating the
+// last reading, which two rows would then share, and the older of them loses a
+// merge it never took part in.
+func (c *Clock) Now() (Timestamp, error) {
 	phys := c.now()
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	c.tick(phys)
-	return Timestamp{WallMS: c.wall, Logical: c.logical, Node: c.node}
+	if !c.tick(phys) {
+		return Timestamp{}, ErrSaturated
+	}
+	return Timestamp{WallMS: c.wall, Logical: c.logical, Node: c.node}, nil
 }
 
 // Pack returns the next local timestamp already folded into an int64, which is
-// what the hlc and seq_hlc columns want.
-func (c *Clock) Pack() int64 { return c.Now().Pack() }
+// what the hlc and seq_hlc columns want. A saturated clock returns 0 and
+// ErrSaturated, so a caller that ignores the error stamps nothing usable.
+func (c *Clock) Pack() (int64, error) {
+	t, err := c.Now()
+	if err != nil {
+		return 0, err
+	}
+	return t.Pack(), nil
+}
 
 // Reading returns where the clock stands without moving it.
 //
@@ -176,6 +206,10 @@ func (c *Clock) Reading() Timestamp {
 // Update merges a timestamp observed from another node and returns the local
 // reading that results. The returned timestamp is greater than both the remote
 // one and anything this clock handed out earlier.
+//
+// It is not a reading to stamp a row with - it is the clock learning what has
+// been seen - so a saturated clock is not an error here: it simply does not
+// move, and the next Now that wanted a value to write says so.
 func (c *Clock) Update(remote Timestamp) Timestamp {
 	phys := c.now()
 

@@ -98,7 +98,9 @@ func (d *DB) InsertTask(ctx context.Context, t *Task) error {
 // insertTask is InsertTask against whatever is in hand - the pool, or the
 // transaction WriteAssignment holds.
 func (d *DB) insertTask(ctx context.Context, q execer, t *Task) error {
-	d.stamp(&t.ID, &t.HLC, &t.Node)
+	if err := d.stamp(&t.ID, &t.HLC, &t.Node); err != nil {
+		return err
+	}
 	if t.State == "" {
 		t.State = TaskOpen
 	}
@@ -136,7 +138,10 @@ func (d *DB) insertTask(ctx context.Context, q execer, t *Task) error {
 // The rows go in in that order, so a rollback that somehow does not happen
 // leaves the harmless one rather than the confusing one.
 func (d *DB) WriteAssignment(ctx context.Context, g *Grant, t *Task, opening *Event) error {
-	at := d.clock.Pack()
+	at, err := d.clock.Pack()
+	if err != nil {
+		return fmt.Errorf("store: write assignment: %w", err)
+	}
 	g.HLC, t.HLC, opening.SeqHLC = at, at, at
 
 	return d.inTx(ctx, "write assignment", func(tx *sql.Tx) error {
@@ -258,7 +263,11 @@ func (d *DB) ListTasks(ctx context.Context, p *Principal, q TaskQuery) ([]*Task,
 // UpdateTask writes back a task's state and assignee, with a fresh clock
 // reading so the move orders after whatever it moved from.
 func (d *DB) UpdateTask(ctx context.Context, t *Task) error {
-	t.HLC = d.clock.Pack()
+	at, err := d.clock.Pack()
+	if err != nil {
+		return fmt.Errorf("store: update task %s: %w", t.ID, err)
+	}
+	t.HLC = at
 	t.Node = d.node
 	return d.updateTask(ctx, d.sql, t)
 }
@@ -274,7 +283,10 @@ func (d *DB) UpdateTask(ctx context.Context, t *Task) error {
 // landed reached every peer and the half that did not never existed anywhere.
 // The state a task is in and the record of it getting there are one fact.
 func (d *DB) UpdateTaskEvent(ctx context.Context, t *Task, e *Event) error {
-	at := d.clock.Pack()
+	at, err := d.clock.Pack()
+	if err != nil {
+		return fmt.Errorf("store: move task %s: %w", t.ID, err)
+	}
 	t.HLC, t.Node, e.SeqHLC = at, d.node, at
 
 	return d.inTx(ctx, "move task "+t.ID, func(tx *sql.Tx) error {
@@ -335,9 +347,13 @@ func (d *DB) AgentForUser(ctx context.Context, userID string) (*Agent, error) {
 // SetAutoDelegate flips a user's standing answer to inbound work. It bumps the
 // clock, because it is a fact about the user that replicates like any other.
 func (d *DB) SetAutoDelegate(ctx context.Context, userID string, on bool) (*User, error) {
+	at, err := d.clock.Pack()
+	if err != nil {
+		return nil, fmt.Errorf("store: set auto_delegate for %s: %w", userID, err)
+	}
 	res, err := d.sql.ExecContext(ctx,
 		`UPDATE users SET auto_delegate = $2, hlc = $3, node = $4 WHERE id = $1`,
-		userID, on, d.clock.Pack(), d.node)
+		userID, on, at, d.node)
 	if err != nil {
 		return nil, fmt.Errorf("store: set auto_delegate for %s: %w", userID, err)
 	}
