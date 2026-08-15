@@ -101,6 +101,16 @@ message and steer - searchable, and postable-into, because the moment you find
 the run where something went wrong is the moment you want to say something into
 it.
 
+And the surface after those: **`flowy tui`, the same fabric from a terminal**.
+The console needs a browser, and the person running these agents is usually on
+the far end of an ssh session inside tmux, where there is not one. So the rooms,
+the inbox, the artifacts, memory, the timeline, the metrics and the
+announcements are a keyboard-driven client of the same `/api` - no new endpoint,
+no database handle, one permission filter still. It never blocks on the long
+poll, it reflows on a resize, it degrades to 16 colours and to none, it binds
+neither `ctrl-a` nor `ctrl-b` because those belong to screen and tmux, and when
+it exits the terminal still echoes.
+
 ## Run the gate
 
 ```sh
@@ -185,6 +195,7 @@ both empty by default. See [The security fixes](#the-security-fixes).
 | --- | --- |
 | `flowy serve` | HTTP server, wired to the store, serving the embedded console |
 | `flowy mcp` | MCP server: shared memory over stdio, or `--http :PORT` |
+| `flowy tui` | the terminal client: rooms, inbox, artifacts, memory, timeline, metrics and announcements, over the HTTP API |
 | `flowy fuse` | mount this principal's memory as files: `--mount <dir>`, or `--reconcile` to apply what an earlier mount queued |
 | `flowy sync` | replicate with a peer: `--peer <url> --token <t>`, pull then push |
 | `flowy traces` | collect one trace from this node and its peers: `--trace <id> [--peer <url>,...]` |
@@ -192,6 +203,16 @@ both empty by default. See [The security fixes](#the-security-fixes).
 | `flowy sign` | sign a replication delta read on stdin |
 | `flowy version` | build version |
 | `flowy help` | usage |
+
+`flowy tui` needs a node and a token, and has a default for both:
+
+| flag | what it is |
+| --- | --- |
+| `--url` | node to talk to, or `$FLOWY_ADDR`, default `http://127.0.0.1:8787`; a bare `host:port` or `:8787` is read as one |
+| `--token` | bearer token, or `$FLOWY_TOKEN`, or `~/.config/flowy/token` |
+
+With no token anywhere it refuses to start rather than opening on empty panes
+that read as "you have nothing".
 
 `flowy sync` takes the peer and the token it authenticates as; everything else
 has a default:
@@ -1382,6 +1403,93 @@ npm run check    # biome
 npm run build    # -> web/dist, which go:embed picks up
 ```
 
+## The terminal client
+
+`flowy tui` is the console's job done in a terminal: the same endpoints, the
+same bearer token, the same permission filter deciding what comes back. It adds
+nothing to the server and it holds no database handle - `go list -deps` says so,
+and the gate asserts it - because a second client that needed its own reach
+would be a second permission filter, and the whole claim of this node is that
+there is one.
+
+It exists because of where the work happens. An agent's operator is usually on
+the far end of an ssh session inside tmux, and a browser is not there. What is
+there is a terminal, often 80x24, often on a machine whose `$TERM` is whatever
+the session inherited.
+
+```sh
+flowy tui                                   # $FLOWY_ADDR, $FLOWY_TOKEN
+flowy tui --url http://box:8787 --token tA-…
+```
+
+Seven views, on a tab bar, each one a digit:
+
+| view | what it is |
+| --- | --- |
+| 1 rooms | the room list, the live stream, a thread/DAG pane, and the message box |
+| 2 inbox | `GET /api/inbox/tasks`: state, delegate to your agent, mark done, jump to the artifact |
+| 3 artifact | body, badges, history, and the lifecycle moves the node says are legal |
+| 4 memory | browse and full-text search, read, write back |
+| 5 timeline | the Phase 8 activity log - turns, run logs, chat, steers - searchable and postable-into |
+| 6 metrics | the six metric groups as text panels, with bars and a sparkline drawn in cells |
+| 7 announce | the active announcements, acknowledge, and post one |
+
+The banner is above all seven: the active announcements this token may read,
+coloured by severity, on every view. Like the console's, it has no dismiss -
+what clears it is the announcement being resolved.
+
+**The stream is live and the UI never waits on it.** Every call to the node is a
+`tea.Cmd`, which bubbletea runs on a goroutine of its own and delivers back as a
+message, so the long poll blocking on the server for its window is not the
+update loop blocking. Switching rooms bumps a generation counter and the poll
+still out for the old room is dropped when it lands, rather than merged into the
+room now on screen. A lost connection is a line on the status bar and a poll
+that keeps trying: a node that went away comes back, and a client that stopped
+polling the first time a laptop slept would need restarting.
+
+**The keys are the point, and two of them are not bound.** `ctrl-a` and `ctrl-b`
+are screen's prefix and tmux's, and the text box binds neither - upstream's
+default puts "start of line" on the first and "back one character" on the
+second, which inside tmux is dead weight and outside it is a surprise. `home`,
+`end` and the arrows do the same work and collide with nothing. Nothing else in
+the client is on a control key either, and no mouse is captured, so the
+terminal's own selection and tmux's copy-mode still work.
+
+```
+j/k or arrows  move          tab / shift-tab  next / previous view
+1 … 7          a view        enter            open
+/              search        i                insert: post, or compose
+esc            leave a box, close the help, go back
+r              refresh       ?  help          q / ctrl-c  quit
+```
+
+Rooms adds `o` to open any room by name, `n`/`p` for the next and previous one
+and `t` for the thread pane; inbox adds `d` delegate and `x` done; artifact adds
+`s`, then a digit off the list the node returned in `next`; memory adds `i` and
+`e`; timeline adds `f` for the kind filter; announcements add `a` to
+acknowledge and `v`/`c` to pick a severity and a scope before posting one.
+
+**Personal stays personal.** A memory written here is written `personal`, which
+is what the memory surface's own default is, and an edit sends no visibility at
+all so the node keeps whatever the row already had. Promoting something to a
+project is a thing you do on purpose; a terminal client that did it as a side
+effect of fixing a typo would be a leak with a keyboard shortcut.
+
+**It reflows, and it degrades.** Every pane computes its geometry from the
+current width and height at render time, so `SIGWINCH` is a redraw and there is
+no cached layout to go stale - the gate resizes it twice under a real pty and
+renders every view at 20x6, 40x12, 80x24, 132x43 and 200x60, asserting no line
+is wider than the terminal and no pane taller. Colour comes from `$TERM` and
+`$COLORTERM` through lipgloss, which degrades truecolor to 256, to 16, and to
+none; `NO_COLOR` and `TERM=dumb` get none, and a locale that does not say UTF-8
+gets `#` and `-` instead of block and box characters.
+
+**And it gives the terminal back.** `q` and `ctrl-c` quit, the alternate screen
+is left so the pane's scrollback comes back, and raw mode is off. That last one
+is the failure a model test cannot see - a model has no terminal - so the gate
+runs the built binary on a real pty and reads the pty's termios afterwards:
+`ECHO` and `ICANON` on, or the check fails.
+
 ## Observability
 
 The fabric watches itself. Because the store is Postgres-wire, the engine's
@@ -1717,6 +1825,15 @@ what a status trail is.
   floor evaluated inside it.
 - `fuse.go` - `flowy fuse`: the flags, the principal the mount acts as, the
   reconcile that needs no token, and the signal handling that unmounts.
+- `internal/tui` - the terminal client. `client.go` is the HTTP API as this
+  client sees it, one method per endpoint and the response types field for
+  field; `model.go` is the root bubbletea model - the tab bar, the banner, the
+  status line, the one text box and every key; `cmds.go` is every call to the
+  node, each one a `tea.Cmd` so nothing blocks the update loop; `theme.go` is
+  the colour profile, its degradation and the bars and sparklines; and one file
+  per view. It imports no store and no database driver.
+- `tui.go` - `flowy tui`: the flags, where the URL and the token come from, and
+  the program that runs the model on the alternate screen.
 - `console.go`, `web/` - the console and its serving. `console.go` embeds
   `web/dist`, serves hashed assets immutably and falls back to `index.html` for
   every other non-API path; `web/` is the React app itself.
@@ -2197,6 +2314,25 @@ Announcements, system agents and quiesce:
 - a forged federation announcement, wearing nodeA's name and signed by a node
   nobody has heard of, is refused on merge, writes no row, and is in nobody's
   banner
+
+- `flowy tui` reaches the node only through the HTTP API - `go list -deps` on
+  the package links neither `lib/pq` nor the store - and with no token in the
+  flag, the environment or `~/.config/flowy/token` it refuses to start
+- the terminal client, driven headless by teatest against the live node with a
+  seeded token: the room renders, a message typed into the box is posted and
+  comes back **through the watcher** rather than being echoed locally (the wait
+  ignores any occurrence sitting behind the box's own prompt, so a client that
+  posted nothing could not pass it), the inbox holds the seeded task, memory
+  search re-renders under the query the node answered with, the timeline and the
+  metrics load, it is resized to 80x24, 40x10 and back, and `q` finishes it -
+  after which its own model is asked whether the message, the task, the search
+  hits, the metrics and the timeline are really in it
+- a token the node refuses puts `token refused` on the status bar and leaves the
+  client running: not a panic, and not an empty pane
+- and the built binary on a real pseudo-terminal: it draws, it survives two
+  window-size changes from underneath, `q` exits zero, the alternate screen is
+  left, and the pty's `ECHO` and `ICANON` are on again afterwards - raw mode
+  was not leaked
 
 The last thing the gate does is ask git whether the tree it just tested is the
 tree on disk: uncommitted changes, or nothing ever committed, is a failure.
@@ -3577,6 +3713,39 @@ The exception is the `SEARCH` section at the bottom of `schema.sql` - a
 else. It is quarantined there because it is meant to be deleted: when SereneDB
 brings vectors, that section goes and `store.SearchArtifacts` becomes a vector
 query. Nothing above it depends on anything below it.
+
+## Phase 10 status
+
+Green from clean. `./run-tests.sh` reports `passed: 384 failed: 0` on a machine
+with nothing of a previous run left on it - the 377 Phase 9 ended with, every
+one of them still green, plus the 7 the terminal client adds:
+
+- one structural: the package links no database driver and no store, so it is
+  an API client and not a second reach into the rows;
+- one on the refusal to start with no token anywhere;
+- one that seeds a message, a memory and a task for the drive to find;
+- the headless drive itself, which is the phase in one check: rooms, the message
+  box and the watcher, the inbox, memory search, the timeline, the metrics, two
+  resizes and a clean quit, verified against the model afterwards;
+- the bad token, which is a status line rather than a stack trace;
+- the real pty: two resizes, `q`, the alternate screen left and the terminal's
+  `ECHO` and `ICANON` back on;
+- and the node still running when the client is gone.
+
+Nothing existing changed shape. There is no new endpoint, no new table and no
+new column: every view is a `GET` or a `POST` the console and the MCP server
+were already making. What is new in the tree outside `internal/tui` is the
+`tui` case in `main.go`, four charmbracelet modules vendored, and `smoke
+tui-pty`, which is the pty harness - about 200 lines using the `golang.org/x/sys`
+that was already here, because a dependency for opening a pty is more than one
+function is worth.
+
+The one thing worth writing down, because it was nearly missed: the first
+version of the headless drive waited for the posted message to appear on screen,
+and passed - on the box's own echo of what had just been typed. It would have
+passed on a client that never posted anything. The wait now ignores any
+occurrence that sits immediately after a prompt, and the model's own message
+list - which only the room read and the watcher fill - is checked at the end.
 
 ## Phase 9 status
 

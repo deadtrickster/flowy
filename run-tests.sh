@@ -3448,6 +3448,136 @@ fuse_await() {
 	return 1
 }
 
+# -------------------------------------------------------------- phase 10 tui
+#
+# `flowy tui` is another client of this same API - the console's endpoints, the
+# console's token - rendered for a terminal. So the checks are the ones a
+# terminal client can get wrong that a browser one cannot: that it is driven by
+# the keyboard alone, that it does not take a key the multiplexer needs, that it
+# reflows on a resize instead of falling over, and that when it exits the
+# terminal still works.
+#
+# It is driven two ways. The model is driven headless with teatest, which is
+# what asserts that a room renders, that a message typed into the box comes back
+# through the watcher, that the inbox has the seeded task in it and that memory
+# search finds the seeded item. And the built binary is driven on a real
+# pseudo-terminal, which is the only way to ask the question teatest cannot:
+# after q, is ECHO back on.
+
+# The seeds the headless drive looks for. They are fixed strings rather than
+# generated ones because the check that seeds them and the check that looks for
+# them are two processes.
+TUI_MESSAGE="tui-gate-seeded-message"
+TUI_MEMORY="quinceberry"
+TUI_TASK="the tui gate handoff"
+readonly TUI_MESSAGE TUI_MEMORY TUI_TASK
+
+# The tui links no database driver and no store package: it reaches the node the
+# way any other client does or it does not reach it at all. This is a structural
+# claim and go list settles it - a client that grew a direct connection would
+# have a second permission filter, which is the one thing this node does not
+# have room for.
+tui_talks_only_to_the_api() {
+	local reached
+	reached="$(go list -deps ./internal/tui | grep -E 'lib/pq|flowy/internal/store' || true)"
+	if [ -n "$reached" ]; then
+		printf 'the tui package reaches past the HTTP API:\n%s\n' "$reached" >&2
+		return 1
+	fi
+	printf 'no database driver and no store: it is an API client\n'
+}
+
+# Every read it makes is a read the node has to attribute to somebody, so with
+# no token anywhere it refuses rather than starting up and rendering empty panes
+# that look like "you have nothing".
+tui_needs_a_token() {
+	local out
+	mkdir -p "$WORK/no-config"
+	if out="$(env -u FLOWY_TOKEN XDG_CONFIG_HOME="$WORK/no-config" \
+		"$ROOT/flowy" tui --url "http://127.0.0.1:$HTTP_PORT" 2>&1)"; then
+		printf 'flowy tui started with no token at all:\n%s\n' "$out" >&2
+		return 1
+	fi
+	case "$out" in
+	*"no token"*) printf 'refused: %s\n' "$out" ;;
+	*)
+		printf 'it refused, but not for the reason it should have:\n%s\n' "$out" >&2
+		return 1
+		;;
+	esac
+}
+
+# What the headless drive looks for: a message in general, a memory to search
+# for, and a task in A's own inbox.
+tui_seed() {
+	recall
+	api POST "$TOKEN_A" /api/chat/general/say \
+		"$(jq -nc --arg b "$TUI_MESSAGE" '{body: $b}')" || return 1
+	want_eq "the seeded message" "$API_STATUS" 200 || return 1
+	api POST "$TOKEN_A" /api/artifacts \
+		"$(jq -nc --arg t "$TUI_MEMORY pruning notes" \
+			'{type: "memory", title: $t, body: "how to prune a quinceberry"}')" || return 1
+	want_eq "the seeded memory" "$API_STATUS" 200 || return 1
+	local artifact
+	artifact="$(new_artifact "$TOKEN_A" bug "$TUI_TASK")" || return 1
+	assign_as "$TOKEN_A" "$artifact" "$USER_A" "for the tui gate" || return 1
+	want_eq "the seeded assignment" "$API_STATUS" 200 || return 1
+	printf 'a message in general, a %s memory, and a task about %s\n' \
+		"$TUI_MEMORY" "$artifact"
+}
+
+# ran_the_live_tests NAME ENV... - runs one of the teatest drives and insists it
+# really ran.
+#
+# The insisting is the point. These tests skip themselves when there is no node
+# to talk to, so that `go test ./...` above is runnable on its own - and a skip
+# prints "ok" and exits zero, which would make a gate that only looked at the
+# exit code green on a run where nothing was driven at all. So the verdict is
+# read out of -v output and a SKIP is a failure here.
+ran_the_live_tests() {
+	local pattern=$1
+	shift
+	local out status
+	out="$(env "$@" go test -count=1 -run "$pattern" -v ./internal/tui 2>&1)"
+	status=$?
+	if [ "$status" -ne 0 ]; then
+		printf '%s\n' "$out" >&2
+		return 1
+	fi
+	if printf '%s' "$out" | grep -q -- '--- SKIP'; then
+		printf 'the drive skipped rather than running:\n%s\n' "$out" >&2
+		return 1
+	fi
+	if ! printf '%s' "$out" | grep -q -- '--- PASS'; then
+		printf 'no test in %s actually passed:\n%s\n' "$pattern" "$out" >&2
+		return 1
+	fi
+	printf '%s' "$out" | grep -E '^(--- |ok )'
+}
+
+# The client itself, driven by keystrokes against the live node: the room
+# renders, a message typed into the box comes back through the watcher, the
+# inbox has the seeded task, memory search finds the seeded item, the timeline
+# and the metrics render, it is resized twice and then it quits.
+tui_headless() {
+	recall
+	ran_the_live_tests TestLiveTUIDrivenByTheKeyboard \
+		"FLOWY_TUI_URL=http://127.0.0.1:$HTTP_PORT" \
+		"FLOWY_TUI_TOKEN=$TOKEN_A" \
+		"FLOWY_TUI_ROOM=general" \
+		"FLOWY_TUI_MESSAGE=$TUI_MESSAGE" \
+		"FLOWY_TUI_MEMORY=$TUI_MEMORY" \
+		"FLOWY_TUI_TASK=$TUI_TASK"
+}
+
+# And the failure the gate has to see: a token the node refuses is a line on the
+# status bar, not a stack trace over the terminal.
+tui_headless_refuses_a_bad_token() {
+	ran_the_live_tests TestLiveABadTokenIsRefusedClearly \
+		"FLOWY_TUI_URL=http://127.0.0.1:$HTTP_PORT" \
+		"FLOWY_TUI_TOKEN=whatever"
+}
+
 # ---------------------------------------------------------------- environment
 
 say "environment"
@@ -8725,6 +8855,19 @@ check "a forged federation announcement is refused on merge" \
 	a_forged_federation_announcement_is_refused
 check "node A survived the announcements" kill -0 "$NODE5A_PID"
 check "node B survived the announcements" kill -0 "$NODE5B_PID"
+
+# -------------------------------------------------------------- phase 10 tui
+
+say "the terminal client"
+check "the tui reaches the node only through the HTTP API" tui_talks_only_to_the_api
+check "flowy tui refuses to start with no token anywhere" tui_needs_a_token
+check "a message, a memory and a task are seeded for the tui" tui_seed
+check "the tui, driven headless by the keyboard against the live node" tui_headless
+check "a token the node refuses is a status line, not a panic" \
+	tui_headless_refuses_a_bad_token
+check "flowy tui on a real pty: two resizes, q quits, the terminal is restored" \
+	"$WORK/smoke" tui-pty "$ROOT/flowy" "http://127.0.0.1:$HTTP_PORT" "${TOKEN_A:-}"
+check "the node survived the terminal client" kill -0 "$SERVE_PID"
 
 # ------------------------------------------------------------------- verdict
 

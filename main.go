@@ -35,6 +35,10 @@ commands:
            FLOWY_FORGE=gh|glab|mock)
   mcp      MCP server for agents: stdio by default, --http :PORT for a remote
            client (env: DATABASE_URL, FLOWY_TOKEN, FLOWY_NODE)
+  tui      the terminal client: rooms, inbox, memory, timeline, metrics and
+           announcements over the HTTP API, keyboard-driven and tmux-friendly
+           (flowy tui [--url URL] [--token T]; env: FLOWY_ADDR, FLOWY_TOKEN,
+           then ~/.config/flowy/token)
   fuse     mount this principal's memory as files, so an agent writes memory
            where it already writes files
            (flowy fuse --mount <dir> [--token <t>]; --reconcile applies what an
@@ -99,6 +103,11 @@ func main() {
 	case "mcp":
 		if err := mcpCmd(os.Args[2:]); err != nil {
 			fmt.Fprintf(os.Stderr, "flowy mcp: %v\n", err)
+			os.Exit(1)
+		}
+	case "tui":
+		if err := tuiCmd(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "flowy tui: %v\n", err)
 			os.Exit(1)
 		}
 	case "fuse":

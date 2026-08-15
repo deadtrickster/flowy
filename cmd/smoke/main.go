@@ -11,6 +11,8 @@
 //	smoke seed            two principals in two projects, printed as shell vars
 //	smoke otlp-collector  stand in for an OTLP collector: write what is POSTed
 //	                      to /v1/traces into a file, one payload per line
+//	smoke tui-pty         run `flowy tui` on a real pty, resize it, quit it with
+//	                      q, and check the terminal was given back
 package main
 
 import (
@@ -37,7 +39,8 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fail("usage: smoke <healthz|ulid|hlc|schema|roundtrip|personal|seed|otlp-collector> [args]")
+		fail("usage: smoke <healthz|ulid|hlc|schema|roundtrip|personal|seed|" +
+			"otlp-collector|tui-pty> [args]")
 	}
 
 	var err error
@@ -64,6 +67,11 @@ func main() {
 			fail("usage: smoke otlp-collector <addr> <file>")
 		}
 		err = otlpCollector(os.Args[2], os.Args[3])
+	case "tui-pty":
+		if len(os.Args) < 5 {
+			fail("usage: smoke tui-pty <flowy-binary> <url> <token>")
+		}
+		err = tuiPTY(os.Args[2], os.Args[3], os.Args[4])
 	default:
 		fail("smoke: unknown check %q", os.Args[1])
 	}
