@@ -79,9 +79,17 @@ gap-probe, not the backend).
   flowy-dogfood.service`. Do NOT start `flowy serve` by hand against 8787 - the unit owns the
   port now; a stray process collides with it.
 - rebuild the dogfood binary after code changes here: build `web/dist` first
-  (`cd web && npm ci && npm run build`), then `go build -o ~/Projects/flowy-dogfood/flowy .`,
-  then restart the unit - `go:embed` bakes in whatever `web/dist` holds at build time, and a
-  build from a bare tree serves "console not built".
+  (`cd web && npm ci && npm run build`), then `go build -o ~/Projects/flowy-dogfood/flowy .`
+  **from the repo root** (a `cd web && … && go build .` builds the `web` directory and fails
+  with "no Go files"), then restart the unit - `go:embed` bakes in whatever `web/dist` holds
+  at build time, and a build from a bare tree serves "console not built".
+- **a schema change needs `schema.sql` applied to the live database BEFORE the restart.**
+  Nothing applies it for you: the gate builds its database from `schema.sql` every run, so
+  the gate has never seen a database older than the binary and cannot catch this.
+  `docker exec -i flowy-dogfood-pg psql -U flowy -d flowy < schema.sql` - it is written to be
+  re-appliable. Skipping it crash-loops the unit (`Restart=on-failure` retries forever) on
+  whatever the new code reads first. Dump before you do it:
+  `docker exec flowy-dogfood-pg pg_dump -U flowy -d flowy > dump-<what>.sql`.
 
 ## Backend: SereneDB is the target, but not ready yet
 

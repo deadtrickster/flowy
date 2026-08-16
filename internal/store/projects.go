@@ -694,6 +694,19 @@ func (d *DB) projectNamesInUse(ctx context.Context) ([]string, error) {
 		  WHERE name <> ''
 		  ORDER BY name`)
 	if err != nil {
+		// The one failure worth naming rather than passing through, because the
+		// raw form of it says nothing an operator can act on: a database that
+		// predates this binary has no projects table at all, and `relation
+		// "projects" does not exist` reads as a bug in the node rather than as
+		// a schema that was never applied. It cost a live node three restart
+		// loops before anyone read the message closely. The gate cannot catch
+		// it either - the gate builds its database from schema.sql every run,
+		// so it has never seen an older one.
+		if isUndefinedTable(err) {
+			return nil, fmt.Errorf("this database has no projects table, so it is "+
+				"older than this binary: apply schema.sql to it and start again "+
+				"(underlying error: %w)", err)
+		}
 		return nil, fmt.Errorf("store: project names in use: %w", err)
 	}
 	defer rows.Close()
@@ -710,4 +723,13 @@ func (d *DB) projectNamesInUse(ctx context.Context) ([]string, error) {
 		return nil, fmt.Errorf("store: project names in use: %w", err)
 	}
 	return out, nil
+}
+
+// isUndefinedTable reports whether an error is Postgres saying the relation is
+// not there (SQLSTATE 42P01), rather than any of the other reasons a query can
+// fail. It is asked in one place - see ProjectNamesInUse - so that a database
+// older than the binary reading it gets an answer an operator can act on.
+func isUndefinedTable(err error) bool {
+	var pqErr *pq.Error
+	return errors.As(err, &pqErr) && pqErr.Code == "42P01"
 }
