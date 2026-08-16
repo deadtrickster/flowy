@@ -98,6 +98,12 @@ type reportsMsg struct {
 	err       error
 }
 
+type todosMsg struct {
+	query     string
+	artifacts []*Artifact
+	err       error
+}
+
 type activityMsg struct {
 	page *ActivityPage
 	err  error
@@ -254,10 +260,10 @@ func (m *Model) memoryCmd(query string) tea.Cmd {
 		ctx, cancel := callCtx()
 		defer cancel()
 		if query == "" {
-			list, err := m.client.Artifacts(ctx, "memory", 200)
+			list, err := m.client.Artifacts(ctx, "memory", "", 200)
 			return memoryMsg{query: query, artifacts: list, err: err}
 		}
-		hits, err := m.client.Search(ctx, query, "memory")
+		hits, err := m.client.Search(ctx, query, "memory", "")
 		return memoryMsg{query: query, artifacts: hits, err: err}
 	}
 }
@@ -283,11 +289,32 @@ func (m *Model) reportsCmd(query string) tea.Cmd {
 		ctx, cancel := callCtx()
 		defer cancel()
 		if query == "" {
-			list, err := m.client.Artifacts(ctx, "report", 200)
+			list, err := m.client.Artifacts(ctx, "report", "", 200)
 			return reportsMsg{query: query, artifacts: list, err: err}
 		}
-		hits, err := m.client.Search(ctx, query, "report")
+		hits, err := m.client.Search(ctx, query, "report", "")
 		return reportsMsg{query: query, artifacts: hits, err: err}
+	}
+}
+
+// todosCmd lists the todo queue when there is no query and searches it when
+// there is, the same two calls the reports pane makes.
+//
+// Both narrowings go out on both paths. A todo is an artifact of type memory
+// with kind todo, so asking for the type alone answers with every note and
+// handoff anybody has written and asking for neither answers with the whole
+// corpus - either way the pane would be calling something a todo that nobody
+// filed as one.
+func (m *Model) todosCmd(query string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := callCtx()
+		defer cancel()
+		if query == "" {
+			list, err := m.client.Artifacts(ctx, "memory", "todo", 200)
+			return todosMsg{query: query, artifacts: list, err: err}
+		}
+		hits, err := m.client.Search(ctx, query, "memory", "todo")
+		return todosMsg{query: query, artifacts: hits, err: err}
 	}
 }
 

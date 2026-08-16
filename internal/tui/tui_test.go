@@ -123,6 +123,36 @@ func seed(m *Model) {
 		Fields:  json.RawMessage(`{"as_of":"f343027","supersedes":"01HREPBBBBBBBBBBBBBBBBBBBB"}`),
 		Updated: now,
 	}}
+	// The queue, in the shape it is really written in: type memory, kind todo,
+	// an OWNER line the row is drawn from and a DEPENDS ON line under the rule.
+	// It is seeded out of order on purpose, so a layout check is looking at the
+	// same ordering a reader is.
+	m.todos = sortTodos([]*Artifact{
+		{
+			ID: "01HTODODONEAAAAAAAAAAAAAAA", Type: "memory", Kind: "todo", Project: &project,
+			Title: "the names on every chat surface", Body: "OWNER: flowy-claude\nDEPENDS ON: nothing",
+			Visibility: "project", Status: "done", Updated: now,
+		},
+		{
+			ID: "01HTODOTODOAAAAAAAAAAAAAAA", Type: "memory", Kind: "todo", Project: &project,
+			Title:      "the console's own todos panel",
+			Body:       "OWNER: orchestrator\nDEPENDS ON: the tui todos view landing first",
+			Visibility: "project", Status: "todo", Updated: now,
+		},
+		{
+			// The queue has two of these: filed by whoever noticed the work, with
+			// nobody named on them yet.
+			ID: "01HTODOUNOWNEDAAAAAAAAAAAA", Type: "memory", Kind: "todo", Project: &project,
+			Title: "decide what closing a todo means", Body: "DEPENDS ON: nothing - it is a decision",
+			Visibility: "project", Status: "todo", Updated: now,
+		},
+		{
+			ID: "01HTODOACTIVEAAAAAAAAAAAAA", Type: "memory", Kind: "todo", Project: &project,
+			Title:      "a todos view in the terminal client",
+			Body:       "OWNER: todo-view\nDEPENDS ON: the kind filter on /api/artifacts",
+			Visibility: "project", Status: "active", Updated: now,
+		},
+	})
 	m.tl = []*ActivityItem{{
 		ID: "01HACTAAAAAAAAAAAAAAAAAAAA", Kind: "chat", Actor: "01HUSERAAAAAAAAAAAAAAAAAAA",
 		Room: "general", Thread: "01HTHREAD1", Body: "something happened",
@@ -634,9 +664,10 @@ func TestOpeningAReportComesBackToTheReportsList(t *testing.T) {
 	}
 }
 
-// Eight tabs of full labels are wider than the terminal this client is written
+// Nine tabs of full labels are wider than the terminal this client is written
 // for, so the bar drops to digits rather than dropping the last tab off the
-// right: a view nobody can see the key for is a view nobody finds.
+// right: a view nobody can see the key for is a view nobody finds. Eight
+// already did not fit at 95 columns; todos took the row to 95.
 func TestTheTabBarKeepsEveryDigitOnANarrowTerminal(t *testing.T) {
 	m := testModel(t, NewClient("http://127.0.0.1:1", "t"))
 	for _, size := range []struct{ w, h int }{{80, 24}, {132, 43}} {
@@ -656,6 +687,270 @@ func TestTheTabBarKeepsEveryDigitOnANarrowTerminal(t *testing.T) {
 			t.Fatalf("the active tab lost its name at %d columns: %q", size.w, bar)
 		}
 	}
+
+	// And the half that makes the digits above mean something. At 80 the names
+	// have to be gone - all nine of them do not fit, and a bar that kept them
+	// and let the clip take the right-hand tabs is the failure this drop-to-
+	// digits behaviour exists to prevent. At 132 they all fit and are all drawn,
+	// so a build that gave up its names unconditionally fails here.
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	narrow := m.tabBarLine()
+	for i, name := range tabNames {
+		if view(i) == m.view {
+			continue
+		}
+		if strings.Contains(narrow, name) {
+			t.Fatalf("%s kept its name at 80 columns, where nine names do not fit: %q",
+				name, narrow)
+		}
+	}
+	m.Update(tea.WindowSizeMsg{Width: 132, Height: 43})
+	wide := m.tabBarLine()
+	for _, name := range tabNames {
+		if !strings.Contains(wide, name) {
+			t.Fatalf("%s is missing from a bar with room for every name: %q", name, wide)
+		}
+	}
+}
+
+// ----------------------------------------------------------------- the todos
+//
+// The complaint this view exists for, in the words that produced it: "I'm
+// confused as hell now where we are and what we are doing and what depends on
+// what". Four agents and a person were working one queue that existed as chat
+// messages and summaries, and the items had been artifacts for a while with
+// nothing rendering them.
+
+// The ordering is the feature. Active first, then what is open, then what is
+// done - a list that buries what is in flight under what is finished answers
+// none of the questions somebody opens this pane to ask - and the header counts
+// each, because "how much is left" is the other one.
+func TestTheTodosListPutsWhatIsInFlightFirst(t *testing.T) {
+	m := testModel(t, NewClient("http://127.0.0.1:1", "t"))
+	m.view = viewTodos
+	// Deliberately in the worst order the node could hand them over in, and
+	// through the message the command really sends, so the ordering is the
+	// client's own and not the fixture's.
+	m.Update(todosMsg{artifacts: []*Artifact{
+		{ID: "01HT1", Type: "memory", Kind: "todo", Status: "done",
+			Title: "finished-one", Body: "OWNER: ada"},
+		{ID: "01HT2", Type: "memory", Kind: "todo", Status: "todo",
+			Title: "waiting-one", Body: "OWNER: bob"},
+		{ID: "01HT3", Type: "memory", Kind: "todo", Status: "blocked",
+			Title: "unheard-of-status-one", Body: "OWNER: cass"},
+		{ID: "01HT4", Type: "memory", Kind: "todo", Status: "active",
+			Title: "in-flight-one", Body: "OWNER: dee"},
+	}})
+
+	var order []string
+	for _, a := range m.todos {
+		order = append(order, a.Status)
+	}
+	// A status this client has never heard of is work nobody has said is done,
+	// so it sorts with the open ones rather than out of the way at the bottom.
+	if want := []string{"active", "todo", "blocked", "done"}; !reflect.DeepEqual(order, want) {
+		t.Fatalf("the queue came out %v, want %v", order, want)
+	}
+
+	screen := m.View()
+	at := func(title string) int {
+		t.Helper()
+		i := strings.Index(screen, title)
+		if i < 0 {
+			t.Fatalf("%q is not on screen:\n%s", title, screen)
+		}
+		return i
+	}
+	if !(at("in-flight-one") < at("waiting-one") && at("waiting-one") < at("finished-one")) {
+		t.Fatalf("the rows are not drawn active, open, done:\n%s", screen)
+	}
+	if !strings.Contains(screen, "todos (1 active, 2 open, 1 done)") {
+		t.Fatalf("the header does not count the queue by status:\n%s", screen)
+	}
+}
+
+// Who is doing it is the point of the row: the complaint was that nobody could
+// tell, which is the same complaint that put names on the chat surfaces an hour
+// earlier. It is read off the OWNER line the items are written with, and never
+// off owner_user - that is the ulid of whoever filed the row, which for this
+// queue is one agent for all fourteen of them.
+func TestATodoRowSaysWhoOwnsIt(t *testing.T) {
+	m := testModel(t, NewClient("http://127.0.0.1:1", "t"))
+	seed(m)
+	m.view = viewTodos
+
+	screen := m.View()
+	for _, want := range []string{"active", "todo-view", "a todos view in the terminal client"} {
+		if !strings.Contains(screen, want) {
+			t.Fatalf("the todos pane does not show %q:\n%s", want, screen)
+		}
+	}
+	row := rowWith(t, screen, "a todos view in the terminal client")
+	if !strings.Contains(row, "todo-view") {
+		t.Fatalf("the owner is on screen but not on the item's own row: %q", row)
+	}
+	// What depends on what, which is the other half of the question and lives in
+	// the body rather than on the row.
+	if !strings.Contains(screen, "DEPENDS ON: the kind filter") {
+		t.Fatalf("the selected todo's body is not under the rule:\n%s", screen)
+	}
+	if got := todoOwner(m.todos[0]); got != "todo-view" {
+		t.Fatalf("the owner parsed as %q", got)
+	}
+}
+
+// Two of the fourteen carry no OWNER line, so a row that only knew how to draw
+// an owner would have dropped or broken those two - and they are exactly the
+// ones somebody needs to see, because an unowned todo is work nobody has picked
+// up. They render with a dash, body and all.
+func TestATodoWithNoOwnerStillRenders(t *testing.T) {
+	m := testModel(t, NewClient("http://127.0.0.1:1", "t"))
+	m.view = viewTodos
+	m.todos = []*Artifact{
+		{ID: "01HTNONE", Type: "memory", Kind: "todo", Status: "todo",
+			Title: "nobody has this one", Body: "DEPENDS ON: somebody picking it up"},
+		{ID: "01HTEMPTY", Type: "memory", Kind: "todo", Status: "todo",
+			Title: "and this one has no body at all"},
+	}
+	for sel := range m.todos {
+		m.todoSel = sel
+		screen := m.View()
+		if !strings.Contains(screen, m.todos[sel].Title) {
+			t.Fatalf("todo %d is not on screen:\n%s", sel, screen)
+		}
+		if !strings.Contains(rowWith(t, screen, m.todos[sel].Title), "-") {
+			t.Fatalf("todo %d draws no owner column at all:\n%s", sel, screen)
+		}
+	}
+	m.todoSel = 0
+	if !strings.Contains(m.View(), "DEPENDS ON: somebody picking it up") {
+		t.Fatal("an unowned todo lost its body")
+	}
+
+	// And the parse, which reads the first line and not the whole body: OWNER in
+	// the middle of a sentence about somebody else's item is not an owner.
+	if got := todoOwner(&Artifact{Body: "DEPENDS ON: x\nOWNER: not-really"}); got != "" {
+		t.Fatalf("an OWNER further down the body was taken as the owner: %q", got)
+	}
+	if got := todoOwner(&Artifact{Body: "OWNER:   ada  \nrest"}); got != "ada" {
+		t.Fatalf("the owner parsed as %q", got)
+	}
+}
+
+// The discriminating one: an empty queue renders its empty state and not a
+// blank pane. A view that drew nothing at all would pass every layout check
+// here - no line is too wide and no pane too tall when there are no lines - and
+// would tell a reader who came to find out where the work is that the client is
+// broken, or that there is no queue, with no way to tell which.
+func TestAnEmptyTodoListSaysSoRatherThanRenderingNothing(t *testing.T) {
+	m := testModel(t, NewClient("http://127.0.0.1:1", "t"))
+	m.view = viewTodos
+	m.todos = []*Artifact{}
+
+	screen := m.View()
+	if !strings.Contains(screen, "todos (0 active, 0 open, 0 done)") {
+		t.Fatalf("an empty queue has no header:\n%s", screen)
+	}
+	// Where they come from, because this pane cannot write one.
+	if !strings.Contains(screen, "mem_write") {
+		t.Fatalf("the empty pane does not say where a todo comes from:\n%s", screen)
+	}
+
+	// And a search that matched nothing says that instead, because "there are
+	// none" and "none matched what you typed" are different things to do next
+	// about.
+	m.todoQuery = "quinceberry"
+	searched := m.View()
+	if !strings.Contains(searched, "nothing matched") || !strings.Contains(searched, "c clears") {
+		t.Fatalf("an empty search result does not say how to get back:\n%s", searched)
+	}
+	if strings.Contains(searched, "mem_write") {
+		t.Fatalf("an empty search result is being explained as an empty queue:\n%s", searched)
+	}
+}
+
+// A todo is an artifact of type memory with kind todo, so both narrowings go
+// out on both reads. The type alone answers with every note, handoff and
+// feature anybody has written, and a pane that listed those as todos would be
+// showing a queue nobody filed.
+func TestTheTodosPaneAsksForTodosOnly(t *testing.T) {
+	s := newStub(t)
+	m := testModel(t, NewClient(s.URL, "t"))
+
+	m.Update(m.todosCmd("")())
+	if len(m.todos) != 1 || m.todoQuery != "" {
+		t.Fatalf("the list did not land: %d todos, query %q", len(m.todos), m.todoQuery)
+	}
+	m.Update(m.todosCmd("the tab bar")())
+	if m.todoQuery != "the tab bar" {
+		t.Fatalf("the pane is showing %q, not the search that was run", m.todoQuery)
+	}
+
+	if len(s.asked) != 2 {
+		t.Fatalf("the node was asked %d times, want 2: %v", len(s.asked), s.asked)
+	}
+	for _, asked := range s.asked {
+		if !strings.Contains(asked, "type=memory") || !strings.Contains(asked, "kind=todo") {
+			t.Fatalf("a read went out without both narrowings: %q", asked)
+		}
+	}
+	if !strings.Contains(s.asked[0], "/api/artifacts") {
+		t.Fatalf("an empty query did not list: %q", s.asked[0])
+	}
+	if !strings.Contains(s.asked[1], "/api/search") {
+		t.Fatalf("a query did not search: %q", s.asked[1])
+	}
+}
+
+// Opening a todo goes to the artifact view, which scrolls, and esc comes back
+// to the queue rather than to whichever pane was open before it.
+func TestOpeningATodoComesBackToTheTodosList(t *testing.T) {
+	m := testModel(t, NewClient("http://127.0.0.1:1", "t"))
+	seed(m)
+	m.view = viewTodos
+
+	if _, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter}); cmd == nil {
+		t.Fatal("enter on a todo issued no read")
+	}
+	if m.view != viewArtifact {
+		t.Fatalf("enter left the view at %s", tabNames[m.view])
+	}
+	if m.backView != viewTodos {
+		t.Fatalf("esc would go back to %s, not the todos list", tabNames[m.backView])
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if m.view != viewTodos {
+		t.Fatalf("esc landed on %s", tabNames[m.view])
+	}
+}
+
+// A handle has no length limit and a terminal has eighty columns. The owner is
+// a budgeted column: a long name is cut to it rather than pushing what the item
+// is off the right of the row, so the titles start in the same place and the
+// pane is still readable at the size it is written for. The layout check next
+// door is met by a row that clipped the title away entirely, so this one looks
+// for the title.
+func TestALongOwnerDoesNotPushTheTitleOffTheRow(t *testing.T) {
+	m := testModel(t, NewClient("http://127.0.0.1:1", "t"))
+	m.view = viewTodos
+	m.todos = []*Artifact{
+		{ID: "01HTSHORT", Type: "memory", Kind: "todo", Status: "active",
+			Title: "the short owner's item", Body: "OWNER: ada"},
+		{ID: "01HTLONG", Type: "memory", Kind: "todo", Status: "active",
+			Title: "the long owner's item",
+			Body:  "OWNER: " + strings.Repeat("a-very-long-handle-", 5)},
+	}
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	screen := m.View()
+	short := rowWith(t, screen, "the short owner's item")
+	long := rowWith(t, screen, "the long owner's item")
+	if strings.Index(short, "the short owner's item") != strings.Index(long, "the long owner's item") {
+		t.Fatalf("the long owner moved the title along the row:\n%s\n%s", short, long)
+	}
+	if width := lipgloss.Width(long); width > 80 {
+		t.Fatalf("the row is %d wide at 80 columns: %q", width, long)
+	}
 }
 
 // ------------------------------------------------------------ the live gate
@@ -667,6 +962,7 @@ func TestTheTabBarKeepsEveryDigitOnANarrowTerminal(t *testing.T) {
 
 type liveEnv struct {
 	url, token, room, message, memory, task, report, asOf string
+	todo, todoOwner                                       string
 }
 
 func live(t *testing.T) liveEnv {
@@ -680,6 +976,9 @@ func live(t *testing.T) liveEnv {
 		task:    os.Getenv("FLOWY_TUI_TASK"),
 		report:  os.Getenv("FLOWY_TUI_REPORT"),
 		asOf:    os.Getenv("FLOWY_TUI_REPORT_AS_OF"),
+
+		todo:      os.Getenv("FLOWY_TUI_TODO"),
+		todoOwner: os.Getenv("FLOWY_TUI_TODO_OWNER"),
 	}
 	if env.url == "" || env.token == "" {
 		t.Skip("no live node: set FLOWY_TUI_URL and FLOWY_TUI_TOKEN")
@@ -844,6 +1143,18 @@ func TestLiveTUIDrivenByTheKeyboard(t *testing.T) {
 		s.waitFor(t, "the report search", `matching "`+env.report+`"`)
 	}
 
+	// The todos: the queue, with who owns each item on the row. Nothing is typed
+	// into this one - it reads and does not write, and what it has to get right
+	// is the list itself, which is checked against the final model below.
+	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("9")})
+	s.waitFor(t, "the todos header", "todos (")
+	if env.todo != "" {
+		s.waitFor(t, "the seeded todo", env.todo)
+		if env.todoOwner != "" {
+			s.waitFor(t, "the todo's owner", env.todoOwner)
+		}
+	}
+
 	// A resize, twice, including down to the smallest terminal anybody uses.
 	tm.Send(tea.WindowSizeMsg{Width: 80, Height: 24})
 	tm.Send(tea.WindowSizeMsg{Width: 40, Height: 10})
@@ -892,6 +1203,39 @@ func TestLiveTUIDrivenByTheKeyboard(t *testing.T) {
 		if env.asOf != "" && reportProvenance(final.reports[0]).AsOf != env.asOf {
 			t.Fatalf("the report came back without its as_of: %q",
 				string(final.reports[0].Fields))
+		}
+	}
+	if env.todo != "" {
+		if len(final.todos) == 0 {
+			t.Fatal("the todos view never got a queue")
+		}
+		// The narrowing, against a store that has notes and handoffs of the same
+		// type in it: everything the pane listed was filed as a todo. A client
+		// that asked for the type alone passes every screen check above and
+		// fails here.
+		for _, a := range final.todos {
+			if a.Kind != "todo" {
+				t.Fatalf("the queue lists a %s/%s, which nobody filed as a todo: %q",
+					a.Type, a.Kind, a.Title)
+			}
+		}
+		// And the ordering, live: the seeded one is the only active item in this
+		// project and the earlier todos check left a done one behind it.
+		done := false
+		for _, a := range final.todos {
+			if a.Status == "done" {
+				done = true
+				continue
+			}
+			if done {
+				t.Fatalf("%q (%s) is listed below a finished todo", a.Title, a.Status)
+			}
+		}
+		if final.todos[0].Title != env.todo {
+			t.Fatalf("the queue opens on %q, not the one item in flight", final.todos[0].Title)
+		}
+		if env.todoOwner != "" && todoOwner(final.todos[0]) != env.todoOwner {
+			t.Fatalf("the todo came back without its owner: %q", final.todos[0].Body)
 		}
 	}
 	if env.task != "" {

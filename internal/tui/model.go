@@ -29,19 +29,21 @@ const (
 	viewMetrics
 	viewAnnounce
 	viewReports
+	viewTodos
 	viewCount
 )
 
 // tabNames are what the tab bar says, in order, and the digit that selects each
-// is its position: 1 is rooms, 8 is reports.
+// is its position: 1 is rooms, 9 is todos.
 //
 // Reports went on the end rather than beside memory, where it belongs by
-// subject. The digit that selects a view is its position in this list, and
-// moving memory from 4 to 5 would have renumbered five views to put one of them
-// in a tidier place - the keys are muscle memory and the help screen prints
-// them, so a new view is appended.
+// subject, and todos went on the end after it for the same reason. The digit
+// that selects a view is its position in this list, and moving memory from 4 to
+// 5 would have renumbered five views to put one of them in a tidier place - the
+// keys are muscle memory and the help screen prints them, so a new view is
+// appended.
 var tabNames = [viewCount]string{
-	"ROOMS", "INBOX", "ARTIFACT", "MEMORY", "TIMELINE", "METRICS", "ANNOUNCE", "REPORTS",
+	"ROOMS", "INBOX", "ARTIFACT", "MEMORY", "TIMELINE", "METRICS", "ANNOUNCE", "REPORTS", "TODOS",
 }
 
 // defaultRooms are the rooms that exist by convention. Any other is opened by
@@ -71,6 +73,7 @@ const (
 	inputAnnTitle
 	inputAnnBody
 	inputRepQuery
+	inputTodoQuery
 )
 
 // draft is what a two-step compose is holding on to between the steps.
@@ -140,6 +143,11 @@ type Model struct {
 	repQuery string
 	reports  []*Artifact
 	repSel   int
+
+	// todos
+	todoQuery string
+	todos     []*Artifact
+	todoSel   int
 
 	// timeline
 	tlQuery string
@@ -428,6 +436,20 @@ func (m *Model) onData(msg tea.Msg) tea.Cmd {
 		}
 		return nil
 
+	case todosMsg:
+		if m.note(msg.err) {
+			return nil
+		}
+		m.todoQuery = msg.query
+		// Ordered here rather than in the render, so the row the selection
+		// points at is the row on screen and the order is settled once per
+		// answer instead of once per frame.
+		m.todos = sortTodos(msg.artifacts)
+		if m.todoSel >= len(m.todos) {
+			m.todoSel = max(0, len(m.todos)-1)
+		}
+		return nil
+
 	case activityMsg:
 		if m.note(msg.err) {
 			return nil
@@ -524,6 +546,8 @@ func (m *Model) refreshCmd() tea.Cmd {
 		return m.memoryCmd(m.memQuery)
 	case viewReports:
 		return m.reportsCmd(m.repQuery)
+	case viewTodos:
+		return m.todosCmd(m.todoQuery)
 	case viewTimeline:
 		return m.activityCmd(m.tlQuery, m.tlKind)
 	case viewMetrics:
@@ -552,6 +576,10 @@ func (m *Model) enter(v view) tea.Cmd {
 	case viewReports:
 		if m.reports == nil {
 			return m.reportsCmd("")
+		}
+	case viewTodos:
+		if m.todos == nil {
+			return m.todosCmd("")
 		}
 	case viewTimeline:
 		if m.tl == nil {
@@ -632,7 +660,7 @@ func (m *Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.enter((m.view + 1) % viewCount)
 	case "shift+tab":
 		return m, m.enter((m.view + viewCount - 1) % viewCount)
-	case "1", "2", "3", "4", "5", "6", "7", "8":
+	case "1", "2", "3", "4", "5", "6", "7", "8", "9":
 		if m.statusPin {
 			break // the digits are the status choices while the picker is up
 		}
@@ -653,6 +681,8 @@ func (m *Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.memoryKey(msg)
 	case viewReports:
 		return m.reportsKey(msg)
+	case viewTodos:
+		return m.todosKey(msg)
 	case viewTimeline:
 		return m.timelineKey(msg)
 	case viewMetrics:
@@ -766,6 +796,10 @@ func (m *Model) submitInput() (tea.Model, tea.Cmd) {
 		m.closeInput()
 		return m, m.reportsCmd(value)
 
+	case inputTodoQuery:
+		m.closeInput()
+		return m, m.todosCmd(value)
+
 	case inputTimelineQuery:
 		m.closeInput()
 		return m, m.activityCmd(value, m.tlKind)
@@ -875,6 +909,8 @@ func (m *Model) pane(height int) []string {
 		return m.memoryView(height)
 	case viewReports:
 		return m.reportsView(height)
+	case viewTodos:
+		return m.todosView(height)
 	case viewTimeline:
 		return m.timelineView(height)
 	case viewMetrics:
@@ -1034,7 +1070,7 @@ func (m *Model) footerLine() string {
 
 // viewHelp is the one-line key hint for whatever is on screen.
 func (m *Model) viewHelp() string {
-	common := "tab/1-8 view  ?help  q quit"
+	common := "tab/1-9 view  ?help  q quit"
 	switch m.view {
 	case viewRooms:
 		return "j/k move  i post  t thread  o open room  n/p room  " + common
@@ -1045,6 +1081,8 @@ func (m *Model) viewHelp() string {
 	case viewMemory:
 		return "j/k move  / search  enter open  i new  e edit  " + common
 	case viewReports:
+		return "j/k move  / search  c clear  enter open  " + common
+	case viewTodos:
 		return "j/k move  / search  c clear  enter open  " + common
 	case viewTimeline:
 		return "j/k move  / search  i post  enter artifact  " + common
@@ -1065,8 +1103,8 @@ func (m *Model) helpView() string {
 		"",
 		"  everywhere",
 		"    tab / shift-tab   next / previous view",
-		"    1 2 3 4 5 6 7 8   rooms, inbox, artifact, memory, timeline,",
-		"                      metrics, announce, reports",
+		"    1 2 3 4 5 6 7 8 9 rooms, inbox, artifact, memory, timeline,",
+		"                      metrics, announce, reports, todos",
 		"    j / k, up / down  move        g / G   first / last",
 		"    enter             open        r       refresh",
 		"    /                 search      i       insert (post / compose)",
@@ -1082,6 +1120,7 @@ func (m *Model) helpView() string {
 		"  metrics     a ask for the node's own scope (operator only)",
 		"  announce    a acknowledge, v severity, c scope, i post one",
 		"  reports     / search, enter opens it; published with report_write",
+		"  todos       the shared queue: active first, who owns it, what it needs",
 		"",
 		m.theme.Dim.Render("  ctrl-a and ctrl-b are never bound: they belong to tmux and screen."),
 		m.theme.Dim.Render("  no mouse is needed, and none is captured, so selection still works."),

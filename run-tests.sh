@@ -4363,7 +4363,13 @@ TUI_MEMORY="quinceberry"
 TUI_TASK="the tui gate handoff"
 TUI_REPORT="quinceberry harvest report"
 TUI_REPORT_AS_OF="tui-gate-abc123"
+# The todo is worded away from the memory seed on purpose: memory search is
+# narrowed by type and not by kind, so a todo sharing quinceberry with it would
+# make the memory hit count say something about this seed instead.
+TUI_TODO="marrowbone the todos view"
+TUI_TODO_OWNER="tui-gate-owner"
 readonly TUI_MESSAGE TUI_MEMORY TUI_TASK TUI_REPORT TUI_REPORT_AS_OF
+readonly TUI_TODO TUI_TODO_OWNER
 
 # The tui links no database driver and no store package: it reaches the node the
 # way any other client does or it does not reach it at all. This is a structural
@@ -4401,7 +4407,13 @@ tui_needs_a_token() {
 }
 
 # What the headless drive looks for: a message in general, a memory to search
-# for, a task in A's own inbox, and a report.
+# for, a task in A's own inbox, a report, and a todo.
+#
+# The todo is written active, with the OWNER line the queue's items carry, and
+# it is the only active one here - the earlier todos check left a done one in
+# this project, so the two of them together are what the ordering claim rests
+# on: the drive asserts the active one is above the done one in the list the
+# client actually rendered.
 #
 # The report is written over POST /api/artifacts and deliberately not through
 # report_write, because that is the case the reports view exists for: a report
@@ -4422,12 +4434,17 @@ tui_seed() {
 			'{type: "report", title: $t, body: "how the harvest went",
 			  fields: {as_of: $a}}')" || return 1
 	want_eq "the seeded report" "$API_STATUS" 200 || return 1
+	api POST "$TOKEN_A" /api/artifacts \
+		"$(jq -nc --arg t "$TUI_TODO" --arg o "$TUI_TODO_OWNER" \
+			'{type: "memory", kind: "todo", status: "active", visibility: "project",
+			  title: $t, body: ("OWNER: " + $o + "\nDEPENDS ON: nothing")}')" || return 1
+	want_eq "the seeded todo" "$API_STATUS" 200 || return 1
 	local artifact
 	artifact="$(new_artifact "$TOKEN_A" bug "$TUI_TASK")" || return 1
 	assign_as "$TOKEN_A" "$artifact" "$USER_A" "for the tui gate" || return 1
 	want_eq "the seeded assignment" "$API_STATUS" 200 || return 1
-	printf 'a message in general, a %s memory, a report as of %s, and a task about %s\n' \
-		"$TUI_MEMORY" "$TUI_REPORT_AS_OF" "$artifact"
+	printf 'a message in general, a %s memory, a report as of %s, a todo owned by %s, and a task about %s\n' \
+		"$TUI_MEMORY" "$TUI_REPORT_AS_OF" "$TUI_TODO_OWNER" "$artifact"
 }
 
 # ran_the_live_tests NAME ENV... - runs one of the teatest drives and insists it
@@ -4462,7 +4479,8 @@ ran_the_live_tests() {
 # The client itself, driven by keystrokes against the live node: the room
 # renders, a message typed into the box comes back through the watcher, the
 # inbox has the seeded task, memory search finds the seeded item, the reports
-# view lists the seeded report with what it is true of, the timeline and the
+# view lists the seeded report with what it is true of, the todos view lists the
+# queue in flight-first order with the owner on the row, the timeline and the
 # metrics render, it is resized twice and then it quits.
 tui_headless() {
 	recall
@@ -4474,7 +4492,9 @@ tui_headless() {
 		"FLOWY_TUI_MEMORY=$TUI_MEMORY" \
 		"FLOWY_TUI_TASK=$TUI_TASK" \
 		"FLOWY_TUI_REPORT=$TUI_REPORT" \
-		"FLOWY_TUI_REPORT_AS_OF=$TUI_REPORT_AS_OF"
+		"FLOWY_TUI_REPORT_AS_OF=$TUI_REPORT_AS_OF" \
+		"FLOWY_TUI_TODO=$TUI_TODO" \
+		"FLOWY_TUI_TODO_OWNER=$TUI_TODO_OWNER"
 }
 
 # And the failure the gate has to see: a token the node refuses is a line on the

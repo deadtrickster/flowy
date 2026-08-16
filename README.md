@@ -208,7 +208,7 @@ both empty by default. See [The security fixes](#the-security-fixes).
 | --- | --- |
 | `flowy serve` | HTTP server, wired to the store, serving the embedded console |
 | `flowy mcp` | MCP server: shared memory over stdio, or `--http :PORT` |
-| `flowy tui` | the terminal client: rooms, inbox, artifacts, memory, timeline, metrics, announcements and reports, over the HTTP API |
+| `flowy tui` | the terminal client: rooms, inbox, artifacts, memory, timeline, metrics, announcements, reports and todos, over the HTTP API |
 | `flowy inbox` | block until somebody says something to you, print it and exit: `--as NAME [--deadline S] [--new] [--to-me] [--room R]` |
 | `flowy fuse` | mount this principal's memory as files: `--mount <dir>`, or `--reconcile` to apply what an earlier mount queued |
 | `flowy projects` | which project this token writes to, then the registry of what exists: `list`, `declare --project N [--origin R] [--fixture]`, `pin --project N --origin R` |
@@ -1745,7 +1745,7 @@ flowy tui                                   # $FLOWY_ADDR, $FLOWY_TOKEN
 flowy tui --url http://box:8787 --token tA-…
 ```
 
-Eight views, on a tab bar, each one a digit:
+Nine views, on a tab bar, each one a digit:
 
 | view | what it is |
 | --- | --- |
@@ -1757,14 +1757,15 @@ Eight views, on a tab bar, each one a digit:
 | 6 metrics | the six metric groups as text panels, with bars and a sparkline drawn in cells |
 | 7 announce | the active announcements, acknowledge, and post one |
 | 8 reports | the published documents, each with what it is true of, and the body under the list |
+| 9 todos | the shared queue: active first, who owns each item, and what it depends on |
 
-The banner is above all eight: the active announcements this token may read,
+The banner is above all nine: the active announcements this token may read,
 coloured by severity, on every view. Like the console's, it has no dismiss -
 what clears it is the announcement being resolved.
 
-**Eight labels are wider than eighty columns, so the bar gives up its names
-before it gives up a tab.** The full row is 86 columns and the terminal this
-client is written for is 80; a bar that only clipped would have dropped reports
+**Nine labels are wider than eighty columns, so the bar gives up its names
+before it gives up a tab.** The full row is 95 columns and the terminal this
+client is written for is 80; a bar that only clipped would have dropped todos
 off the right, and a view whose key is not on screen is a view nobody finds.
 When they do not all fit, every tab keeps its digit and only the one being
 looked at keeps its name.
@@ -1788,7 +1789,7 @@ terminal's own selection and tmux's copy-mode still work.
 
 ```
 j/k or arrows  move          tab / shift-tab  next / previous view
-1 … 8          a view        enter            open
+1 … 9          a view        enter            open
 /              search        i                insert: post, or compose
 esc            leave a box, close the help, go back
 r              refresh       ?  help          q / ctrl-c  quit
@@ -1799,7 +1800,29 @@ and `t` for the thread pane; inbox adds `d` delegate and `x` done; artifact adds
 `s`, then a digit off the list the node returned in `next`; memory adds `i` and
 `e`; timeline adds `f` for the kind filter; announcements add `a` to
 acknowledge and `v`/`c` to pick a severity and a scope before posting one;
-reports adds `/` and `c` for the search and clearing it.
+reports adds `/` and `c` for the search and clearing it, and todos the same two.
+
+**The todos view answers "where is the work" and it is the ordering that does
+it.** Active first, then everything still open, then done, with a count of each
+in the header - a list that buries what is in flight under what is finished
+answers none of the three questions somebody opens it to ask. The row is the
+status, the owner and the title, and the owner is the point: the queue was four
+agents and a person deep and there was no surface that said who had what. It
+comes off the `OWNER:` line the items are written with rather than off
+`owner_user`, which is the id of whoever filed the row and is the same id for
+the whole queue; the two items with no owner draw a dash rather than being
+hidden. The selected item's body goes under the rule, which is where its
+`DEPENDS ON:` line is - the "what depends on what" half of the same question.
+
+A todo is an artifact of type `memory` with kind `todo`, so both narrowings go
+out on both reads: `GET /api/artifacts?type=memory&kind=todo` for the list and
+the same pair on `/api/search`. Asking for the type alone would answer with
+every note, handoff and feature anybody has written and call them todos.
+
+**Todos read and do not write, for a different reason than reports.** What
+closing a todo means here - who may say it, and what the trail records - is a
+lifecycle question, and a keystroke in a terminal is not where it should be
+answered. `mem_write` with an id and `status: done` already has an answer.
 
 **Reports read and do not write, which is the one deliberate asymmetry with
 memory next door.** A report carries what it was true of (`as_of`) and what it
@@ -2712,9 +2735,11 @@ Announcements, system agents and quiesce:
   ignores any occurrence sitting behind the box's own prompt, so a client that
   posted nothing could not pass it), the inbox holds the seeded task, memory
   search re-renders under the query the node answered with, the timeline and the
-  metrics load, it is resized to 80x24, 40x10 and back, and `q` finishes it -
-  after which its own model is asked whether the message, the task, the search
-  hits, the metrics and the timeline are really in it
+  metrics load, the todos view lists the seeded queue, it is resized to 80x24,
+  40x10 and back, and `q` finishes it - after which its own model is asked
+  whether the message, the task, the search hits, the metrics and the timeline
+  are really in it, and whether everything the todos view listed was filed as a
+  todo with the one item in flight above the finished one
 - a token the node refuses puts `token refused` on the status bar and leaves the
   client running: not a panic, and not an empty pane
 - and the built binary on a real pseudo-terminal: it draws, it survives two

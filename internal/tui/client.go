@@ -637,11 +637,21 @@ func (c *Client) SetStatus(ctx context.Context, id, status string) (*StatusMove,
 		map[string]any{"status": status}, &out)
 }
 
-// Artifacts lists what the principal may read, optionally narrowed by type.
-func (c *Client) Artifacts(ctx context.Context, artifactType string, limit int) ([]*Artifact, error) {
+// Artifacts lists what the principal may read, optionally narrowed by type and
+// by kind.
+//
+// kind is the second narrowing rather than a second endpoint because that is
+// how the node has it: /api/artifacts takes both, and a todo is an artifact of
+// type memory with kind todo - not a type of its own. A client that filtered on
+// the type alone and then sifted the kinds out here would be a second idea of
+// what a todo is, and it would page through everybody's notes to find them.
+func (c *Client) Artifacts(ctx context.Context, artifactType, kind string, limit int) ([]*Artifact, error) {
 	query := url.Values{}
 	if artifactType != "" {
 		query.Set("type", artifactType)
+	}
+	if kind != "" {
+		query.Set("kind", kind)
 	}
 	if limit > 0 {
 		query.Set("limit", strconv.Itoa(limit))
@@ -653,11 +663,15 @@ func (c *Client) Artifacts(ctx context.Context, artifactType string, limit int) 
 	return out.Artifacts, err
 }
 
-// Search ranks the artifacts the principal may read against a free text query.
-func (c *Client) Search(ctx context.Context, query, artifactType string) ([]*Artifact, error) {
+// Search ranks the artifacts the principal may read against a free text query,
+// narrowed by the same type and kind a list is.
+func (c *Client) Search(ctx context.Context, query, artifactType, kind string) ([]*Artifact, error) {
 	values := url.Values{"q": {query}}
 	if artifactType != "" {
 		values.Set("type", artifactType)
+	}
+	if kind != "" {
+		values.Set("kind", kind)
 	}
 	var out struct {
 		Artifacts []*Artifact `json:"artifacts"`
