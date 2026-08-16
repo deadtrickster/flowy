@@ -94,6 +94,53 @@ func TestToolsListIsUsable(t *testing.T) {
 	}
 }
 
+// The report surface rides the same registration the memory tools do, and the
+// instructions an agent reads must name it - an unmentioned tool is an unused
+// tool. The write itself is exercised against a real store by the gate.
+func TestReportSurfaceIsListedAndDocumented(t *testing.T) {
+	resp := dispatch(t, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
+	if resp == nil || resp.Error != nil {
+		t.Fatalf("tools/list failed: %+v", resp)
+	}
+	listed := map[string]tool{}
+	for _, tl := range resp.Result.(map[string]any)["tools"].([]tool) {
+		listed[tl.Name] = tl
+	}
+	for _, want := range []string{"report_write", "report_read", "report_search", "report_list"} {
+		got, ok := listed[want]
+		if !ok {
+			t.Errorf("tools/list does not offer %s", want)
+			continue
+		}
+		if _, has := got.InputSchema["properties"]; !has {
+			t.Errorf("tool %s has no properties in its schema", want)
+		}
+	}
+	// A report is born at scope=project, so the write schema has to say so:
+	// an agent that cannot see the default will publish drafts by accident.
+	// And it must name as_of - a report without a point-in-time is a claim
+	// with no expiry.
+	w, ok := listed["report_write"]
+	if !ok {
+		t.Fatal("report_write is not listed")
+	}
+	desc := w.Description
+	if !strings.Contains(desc, "project") {
+		t.Errorf("report_write description never states the project default: %q", desc)
+	}
+	props := w.InputSchema["properties"].(map[string]any)
+	for _, field := range []string{"as_of", "supersedes"} {
+		if _, has := props[field]; !has {
+			t.Errorf("report_write schema has no %s field", field)
+		}
+	}
+	for _, want := range []string{"report_write", "report_search", "as_of"} {
+		if !strings.Contains(instructions, want) {
+			t.Errorf("the instructions never mention %q", want)
+		}
+	}
+}
+
 // A tools/call with no credential must not reach the store - which is also why
 // this test can run without one.
 func TestToolsCallWithoutAPrincipalIsRefused(t *testing.T) {

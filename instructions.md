@@ -80,6 +80,24 @@ the subject and a look at the open handoffs.
 - `mem_list {scope?, kind?, limit?}` - newest first.
 - `todos {scope?}` - todo, feature and handoff items that are not done.
 
+Reports are finished documents - research findings, designs, reviews - published for
+the project to read, with the same permission filter as everything else and no work
+lifecycle:
+
+- `report_write {title, body, scope?, tags?, as_of?, supersedes?, status?, id?}` -
+  write to the project (that is the default scope, unlike a memory item's personal),
+  or update one by `id`. Body is markdown, up to 100KB; larger documents are a
+  summary in the body plus a reference to the full thing. Say `as_of` - the commit,
+  version or run the report is true of - and `supersedes` when it replaces an
+  earlier report. Genre (research, design, review) rides `tags`.
+- `report_read {id}`, `report_search {q, scope?, limit?}`,
+  `report_list {scope?, limit?}` - the same shapes as their memory counterparts,
+  over reports only.
+
+A report and a memory item are different things: a memory item is a fact somebody
+will need later, a report is a document somebody will read on purpose, true of a
+stated point in time. Publish the findings, remember the decision.
+
 Everything is permission-filtered on the way out of the database. A result you
 did not get is a result you may not see, and nothing tells you it was there.
 

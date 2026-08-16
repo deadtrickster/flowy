@@ -96,7 +96,7 @@ CREATE TABLE IF NOT EXISTS grants (
 );
 
 -- Everything a node holds that is worth naming.
--- type: transcript|memory|chat|bug|feature|note
+-- type: transcript|memory|chat|bug|feature|note|report
 -- kind narrows a type: a memory is a note|todo|feature|handoff.
 -- visibility: personal|project|shared
 -- project NULL means the artifact is personal to owner_user.
