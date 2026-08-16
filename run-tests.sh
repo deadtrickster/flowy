@@ -2190,9 +2190,17 @@ console_renders_the_rooms_todos() {
 # hand. A string that appears in two places is not evidence about either.
 browser_renders_the_rooms_todos() {
 	recall
+	# One written the way several real ones were - "OWNER: unassigned" - because
+	# the panel falls back to "unowned" when there is no owner, and the two were
+	# on screen together. Raised as a todo through the panel itself: "todo list
+	# has unowned and unassigned - looks identical". Two words for one state
+	# read as two states. Without this row the check cannot tell the fix from
+	# its absence.
+	api POST "$TOKEN_A" /api/chat/general/todo \
+		'{"title": "quinceberry the idler pulley", "body": "OWNER: unassigned"}' || return 1
 	cd "$ROOT/web" || return 1
 	node scripts/browser-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" \
-		"$ROOM_TODO_GENERAL"
+		"$ROOM_TODO_GENERAL" unassigned
 }
 
 # Speakers are drawn in their own colour, and it is really applied. A palette
