@@ -74,10 +74,30 @@ ${shown}`);
   // for one state read as two states, and a reader goes looking for a
   // distinction that is not there.
   if (absent) {
-    const shown = await panel.innerText();
-    if (shown.includes(absent)) {
-      console.error(`the room's todo panel still shows ${JSON.stringify(absent)}:
-${shown}`);
+    // Scoped to the OWNER CELLS, not the whole panel. The first version searched
+    // all of the text and reported a failure against a todo whose TITLE quoted
+    // the word - the user's own "todo list has unowned and unassigned - looks
+    // identical". The app was right and the check was wrong: a word banned from
+    // a column is not a word banned from the page, and content is allowed to
+    // discuss the thing the column must not say.
+    const owners = await panel
+      .locator("li span:nth-child(2)")
+      .evaluateAll((nodes) => nodes.map((n) => (n.textContent || "").trim()));
+    // A selector that matches nothing would report "never says it" about a
+    // column it never found - the same shape as counting zero requests from a
+    // page that never loaded. So the cells have to exist before their contents
+    // mean anything.
+    if (owners.length === 0) {
+      console.error(
+        "no owner cells were found, so nothing was checked - the panel's row layout has moved",
+      );
+      process.exit(1);
+    }
+    const offenders = owners.filter((o) => o === absent);
+    if (offenders.length > 0) {
+      console.error(
+        `${offenders.length} todo(s) still name the owner ${JSON.stringify(absent)}; owners are: ${[...new Set(owners)].join(", ")}`,
+      );
       process.exit(1);
     }
   }
