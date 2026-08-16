@@ -2181,6 +2181,18 @@ console_renders_the_rooms_todos() {
 		"$ROOM_TODO_GENERAL"
 }
 
+# The same claim one layer out, in a browser, asserted on the PANEL rather than
+# on the page. The distinction is the whole check: the word "todos" is also in
+# the global navigation, so a page-text search for it passes with the panel
+# entirely absent - which is what happened the first time this was checked by
+# hand. A string that appears in two places is not evidence about either.
+browser_renders_the_rooms_todos() {
+	recall
+	cd "$ROOT/web" || return 1
+	node scripts/browser-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" \
+		"$ROOM_TODO_GENERAL"
+}
+
 # And the page that lists all of them still lists the one with no room, painted
 # rather than fetched. This is the discriminating case on the screen: a change
 # that only handled room-tagged todos leaves this page empty and passes every
@@ -2219,6 +2231,34 @@ npm_build() {
 console_mounts() {
 	cd "$ROOT/web" || return 1
 	node scripts/render-check.mjs
+}
+
+# A real browser for the two checks below, downloaded once per machine and
+# cached in ~/.cache/ms-playwright after that. About 40 seconds and 115MB on a
+# cold VM, nothing on a warm one.
+#
+# It is a check rather than a silent prerequisite so that "no browser" reads as
+# a named failure instead of two checks quietly not running. A skipped check
+# reports the same green as a passing one, which is how a browser assertion ends
+# up not being an assertion at all.
+browser_is_installed() {
+	cd "$ROOT/web" || return 1
+	npx --no-install playwright install chromium
+	node -e 'import("playwright").then(async ({chromium}) => {
+		const b = await chromium.launch()
+		console.log("chromium", b.version(), "launches headless")
+		await b.close()
+	})'
+}
+
+# The regression check for a console that flooded its own node at 567 requests a
+# second while every other check passed. It needs a node whose cursor never
+# moves, because a correctly long-polling one paces a client that has no pacing
+# of its own and hides the bug completely - so the fixture is the node, and it
+# lives in scripts/standin-node.mjs beside the check.
+poll_does_not_spin() {
+	cd "$ROOT/web" || return 1
+	node scripts/poll-spin-check.mjs
 }
 
 # The same mount, signed in, against the live node: the console fetches the room
@@ -4844,6 +4884,8 @@ check "biome check web/" biome_check
 check "vite build" npm_build
 check "the build is an index that loads a hashed bundle" console_build_is_hashed
 check "the console mounts in a dom and renders the room view" console_mounts
+check "a browser to run the browser checks in" browser_is_installed
+check "the room poll does not flood a node whose cursor never moves" poll_does_not_spin
 
 # ------------------------------------------------------------------- postgres
 
@@ -5147,6 +5189,8 @@ check "the console paints the room's todos on the room page" \
 	console_renders_the_rooms_todos
 check "and the todos page still paints the ones with no room" \
 	console_still_renders_the_roomless_todos
+check "the room's todo panel is on the screen in a browser, as an element" \
+	browser_renders_the_rooms_todos
 
 # ------------------------------------------------------------------- phase 4
 #
