@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import type { Artifact, FlowyEvent } from "@/lib/api";
 import { speakerStyle } from "@/lib/speakercolour";
-import { countTodos, sortTodos, todoOwner } from "@/lib/todos";
+import { countTodos, sortTodos, statusStyle, todoOwner } from "@/lib/todos";
 import { shortId } from "@/lib/utils";
 
 interface Props {
@@ -84,7 +84,14 @@ export function RoomTodos({ room, todos, raiseFrom, disabled, error, onRaise }: 
                 key={todo.id}
                 className="flex items-baseline gap-2 border-border/60 border-b px-4 py-2 text-xs"
               >
-                <Badge variant={todo.status === "active" ? "default" : "secondary"}>
+                {/*
+                  Amber in flight, grey waiting, green finished - the three
+                  states this panel exists to show, told apart at a glance
+                  instead of by reading every row. The word stays inside the
+                  badge: colour alone would leave a queue with no states in it
+                  for anybody who cannot separate amber from green.
+                */}
+                <Badge variant="secondary" style={statusStyle(todo.status)}>
                   {todo.status || "todo"}
                 </Badge>
                 {/*

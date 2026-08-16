@@ -83,6 +83,38 @@ ${shown}`);
       `one speaker (${names[0]}) drawn in ${byNameColour(speakers)}, distinctness untested`,
     );
   }
+  // And the statuses in the room's todo panel, which is what was actually
+  // asked for: "I wanted colors for Active Done and Todo". Same two questions -
+  // is it coloured at all, and are the states told apart.
+  const badges = await page
+    .$$eval("aside section li span:first-child", (nodes) =>
+      nodes
+        .map((n) => ({ word: (n.textContent || "").trim(), colour: getComputedStyle(n).color }))
+        .filter((b) => ["active", "todo", "done"].includes(b.word)),
+    )
+    .catch(() => []);
+
+  if (badges.length === 0) {
+    console.log("no todo rows in this room, so status colours were not tested");
+  } else {
+    const byWord = new Map(badges.map((b) => [b.word, b.colour]));
+    const states = [...byWord.keys()];
+    // EVERY state present needs its OWN colour, not merely two colours between
+    // them. The first version of this asked for "at least two distinct" and
+    // passed against the old build, which drew active in one colour and todo
+    // and done in the same grey - three states, two colours, and done
+    // indistinguishable from waiting, which is the pair a queue is read for.
+    if (new Set(byWord.values()).size < states.length) {
+      const shown = [...byWord].map(([w, c]) => `  ${w}: ${c}`).join("\n");
+      console.error(`${states.length} todo states share ${new Set(byWord.values()).size} colour(s), so some are not told apart:
+${shown}`);
+      process.exit(1);
+    }
+    console.log(
+      `todo statuses: ${states.length} state(s), ${new Set(byWord.values()).size} colour(s)` +
+        (states.length > 1 ? "" : " - one state present, distinctness untested"),
+    );
+  }
 } finally {
   await browser.close();
 }

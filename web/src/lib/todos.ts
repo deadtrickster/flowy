@@ -83,3 +83,33 @@ export function todoRoom(artifact: Artifact): string {
 export function todoMessage(artifact: Artifact): string {
   return fieldOf(artifact, "message");
 }
+
+/**
+ * The colour a status is drawn in. Asked for directly: "I wanted colors for
+ * Active Done and Todo".
+ *
+ * Three states, three jobs, and the colours are picked for what each one means
+ * rather than for variety. AMBER for active, because in-flight work is the
+ * thing you want your eye to land on when you open the panel. GREEN for done,
+ * which is the one convention here strong enough to be worth obeying. GREY for
+ * todo, deliberately quiet: a queue is mostly waiting, and if waiting shouts
+ * then nothing does.
+ *
+ * The status word stays inside the badge. Colour on its own would leave anybody
+ * who cannot separate amber from green reading a queue with no states in it,
+ * and this is a panel about what is happening rather than a decoration.
+ *
+ * Explicit colours rather than theme tokens, for the same reason speaker
+ * colours are: a status is a fact about the work, not a role in the interface,
+ * and "primary" and "destructive" already mean other things here.
+ */
+export function statusStyle(status: string): { color: string; backgroundColor: string } {
+  const colour = STATUS_COLOUR[todoRank(status)] ?? STATUS_COLOUR[RANK.todo];
+  return { color: colour, backgroundColor: `color-mix(in srgb, ${colour} 18%, transparent)` };
+}
+
+const STATUS_COLOUR: Record<number, string> = {
+  [RANK.active]: "#e0a03f", // amber - in flight, and the first thing to see
+  [RANK.todo]: "#8b93a7", // grey - waiting, and quiet on purpose
+  [RANK.done]: "#4fae7a", // green - finished
+};
