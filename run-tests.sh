@@ -2204,6 +2204,47 @@ console_still_renders_the_roomless_todos() {
 		"$ROOM_TODO_GLOBAL" /todos
 }
 
+# Two waiters under one name share one cursor, so the second takes deliveries
+# the first should have made and BOTH LOOK HEALTHY while somebody's room goes
+# quiet. It silenced the orchestrator's watcher, and the finding that flowy
+# inbox lacked the guard firecode chat already had is theirs.
+#
+# The check starts one, tries to start a second, and requires the refusal to
+# name the pid holding it - because the only useful thing to tell somebody who
+# just started a second waiter is which one is already theirs. It runs against
+# the live node with a reader declared for the occasion.
+a_second_waiter_for_one_name_is_refused() {
+	recall
+	local out first_pid
+	FLOWY_TOKEN="$TOKEN_A" "$ROOT/flowy" inbox --as gate-waiter --new \
+		--url "http://127.0.0.1:$HTTP_PORT" --deadline 20 >/dev/null 2>&1 &
+	first_pid=$!
+	# Let it claim the name before racing it. Without this the check would pass
+	# for the wrong reason on a slow machine: nothing to conflict with yet.
+	sleep 2
+	if ! kill -0 "$first_pid" 2>/dev/null; then
+		printf 'the first waiter did not stay up, so nothing was tested\n' >&2
+		return 1
+	fi
+	out="$(FLOWY_TOKEN="$TOKEN_A" "$ROOT/flowy" inbox --as gate-waiter \
+		--url "http://127.0.0.1:$HTTP_PORT" --deadline 20 2>&1)"
+	local status=$?
+	kill "$first_pid" 2>/dev/null
+	wait "$first_pid" 2>/dev/null
+	if [ "$status" -eq 0 ]; then
+		printf 'a second waiter for one name started instead of being refused\n' >&2
+		return 1
+	fi
+	case "$out" in
+	*"already running (pid "*) ;;
+	*)
+		printf 'the refusal does not name the pid holding it:\n%s\n' "$out" >&2
+		return 1
+		;;
+	esac
+	printf '%s\n' "$out" | head -1
+}
+
 # ---------------------------------------------------- phase 3 console helpers
 
 # The three steps of the frontend build, each its own check so a failure names
@@ -10308,6 +10349,8 @@ check "node B survived the announcements" kill -0 "$NODE5B_PID"
 say "the terminal client"
 check "the tui reaches the node only through the HTTP API" tui_talks_only_to_the_api
 check "flowy tui refuses to start with no token anywhere" tui_needs_a_token
+check "a second waiter for one name is refused, and says which pid holds it" \
+	a_second_waiter_for_one_name_is_refused
 check "a message, a memory, a report, two todos and a task are seeded for the tui" tui_seed
 check "the tui, driven headless by the keyboard against the live node" tui_headless
 check "a token the node refuses is a status line, not a panic" \
