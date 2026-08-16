@@ -58,10 +58,7 @@ export function Reports() {
           <Card key={r.id}>
             <CardHeader>
               <CardTitle className="text-base">
-                <Link
-                  className="hover:underline"
-                  to={`/p/${r.project ?? "_"}/report/${r.id}`}
-                >
+                <Link className="hover:underline" to={`/p/${r.project ?? "_"}/report/${r.id}`}>
                   {r.title || r.id}
                 </Link>
               </CardTitle>

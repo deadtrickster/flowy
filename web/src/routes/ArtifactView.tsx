@@ -96,6 +96,10 @@ export function ArtifactView() {
                 // A report is a document somebody reads on purpose, so it is
                 // rendered, not dumped: markdown to HTML, sanitized because
                 // the body is agent-written.
+                //
+                // biome-ignore lint/security/noDangerouslySetInnerHtml: the html is
+                // marked output passed through DOMPurify.sanitize on the line below -
+                // agent-written markdown rendered, not raw html trusted.
                 <div
                   className="report-body text-sm"
                   dangerouslySetInnerHTML={{
