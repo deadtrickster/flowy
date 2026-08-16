@@ -404,6 +404,18 @@ func inboxCmd(args []string) error {
 		return errors.New("--deadline is a number of seconds and has to be positive: " +
 			"a waiter with no deadline cannot tell a dead node from a quiet room")
 	}
+	// One waiter per name, refused rather than warned about. Two share one
+	// cursor, so the second takes deliveries the first should have made while
+	// both look healthy - see waiterlock.go. Claimed before the token is
+	// resolved so that a second waiter is turned away by the cheapest check
+	// rather than after doing work.
+	lock, err := holdWaiterName(*as)
+	if err != nil {
+		return err
+	}
+	defer lock.release()
+	lock.releaseOnSignal()
+
 	base := resolveURL(*urlFlag, os.Getenv("FLOWY_ADDR"))
 	bearer, err := resolveToken(*token, os.Getenv("FLOWY_TOKEN"))
 	if err != nil {
