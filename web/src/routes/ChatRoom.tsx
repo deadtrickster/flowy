@@ -91,14 +91,25 @@ export function ChatRoom() {
 
       while (!stopped) {
         try {
+          const before = cursor;
           const page = await api.wait(room, cursor, controller.signal);
           if (stopped) return;
-          if (page.events.length > 0) {
-            setEvents((current) => merge(current, page.events));
-            cursor = page.cursor;
-          }
+          if (page.events.length > 0) setEvents((current) => merge(current, page.events));
+          // Advance on every successful return, not only when something landed
+          // on screen. The server answers `seq_hlc > cursor`, so a cursor that
+          // moves only when the UI has events to show is a cursor that can
+          // stick - and a stuck cursor makes every subsequent request return
+          // instantly rather than block, which is the whole loop turning into a
+          // flood aimed at your own node.
+          if (page.cursor > cursor) cursor = page.cursor;
           setLive(true);
           setError(null);
+          // The invariant, enforced rather than assumed: a successful wait
+          // either blocked out its window or moved the cursor. If it did
+          // neither, this loop is spinning - 145 requests a second, measured -
+          // so pause before going round again. On real traffic an answered wait
+          // always advances the cursor, so this costs a busy room nothing.
+          if (cursor === before) await sleep(1000);
         } catch (err) {
           if (stopped) return;
           setLive(false);
