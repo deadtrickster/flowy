@@ -449,7 +449,25 @@ func inboxCmd(args []string) error {
 		fmt.Fprintf(os.Stderr, "reader %s at %d\n", declared.Reader, declared.Cursor)
 	}
 
-	return waitOnInbox(ctx, client, base, bearer, *as, *room, *toMe, *deadline)
+	err = waitOnInbox(ctx, client, base, bearer, *as, *room, *toMe, *deadline)
+
+	// HAND OVER ON A DELIVERY, and only on a delivery.
+	//
+	// This process exits either way, and that exit is what wakes the harness.
+	// What it must not do is leave the room unheard while the agent reads: a
+	// successor is started so somebody is listening in the gap. The lock goes
+	// first or the successor refuses itself, and the successor marks itself
+	// FORKED so a tracked waiter can later stand it down - a detached process
+	// can hear everything and has nothing to wake, so it must never be what
+	// the room is left with.
+	//
+	// Not after a quiet deadline: nothing arrived, nothing is being read, and
+	// forking there would spawn a listener every deadline forever.
+	if err == nil {
+		lock.release()
+		forkSuccessor(*as, base, *deadline)
+	}
+	return err
 }
 
 // waitOnInbox is the loop: bounded server polls until the deadline, the first
@@ -553,11 +571,14 @@ func waitOnInbox(ctx context.Context, client *http.Client, base, bearer, as, roo
 			if err := writeInbox(page); err != nil {
 				return err
 			}
+			// Spooled BEFORE the ack, for the same reason the ack comes
+			// after stdout: once the cursor moves these are off the inbox,
+			// so anything that wants them later must already hold them.
+			spoolEvents(as, page)
 			// Only now, and in this order: the messages are on stdout and
 			// flushed, so the mark may move past them.
 			ackInbox(ctx, client, base, bearer, as, page.Cursor, true)
 			reportSkipped(skipped)
-			fmt.Fprintf(os.Stderr, "re-arm with: flowy inbox --as %s --deadline %d &\n", as, deadline)
 			return nil
 		}
 

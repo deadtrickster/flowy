@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // One waiter per name, enforced rather than asked for.
@@ -82,20 +83,65 @@ func holdWaiterName(name string) (*waiterLock, error) {
 	}
 	path := filepath.Join(dir, "inbox-"+unsafeInName.ReplaceAllString(name, "-")+".pid")
 
+	// A TRACKED WAITER STANDS DOWN A FORKED ONE. They are not equivalent and
+	// the difference is the whole point of the guard.
+	//
+	// The successor forked at delivery is detached, so it is not a background
+	// task of anybody's harness: it keeps the room heard and has NOTHING TO
+	// WAKE when a message arrives. If it can refuse a tracked waiter, a
+	// session ends up with a live listener, no shells, and silence - which is
+	// what happened before this distinction existed. Two TRACKED waiters
+	// still refuse each other, because those genuinely would split a cursor.
+	kind := "tracked"
+	if os.Getenv("FLOWY_WAITER_KIND") == "forked" {
+		kind = "forked"
+	}
 	if held, ok := livePIDIn(path); ok {
-		return nil, fmt.Errorf(
-			"a waiter for %q is already running (pid %d).\n"+
-				"Two of them share one cursor, so the second would take messages the first\n"+
-				"should have delivered - and both would look healthy. Keep that one, or stop\n"+
-				"it with 'kill %d' if it is not the one your harness is watching.",
-			name, held, held)
+		heldKind := kindIn(path)
+		if heldKind == "forked" && kind == "tracked" {
+			fmt.Fprintf(os.Stderr,
+				"standing down the forked waiter (pid %d) - a tracked one can wake you, it cannot\n",
+				held)
+			_ = syscall.Kill(held, syscall.SIGTERM)
+			time.Sleep(500 * time.Millisecond)
+		} else {
+			return nil, fmt.Errorf(
+				"a waiter for %q is already running (pid %d, %s).\n"+
+					"Two of them share one cursor, so the second would take messages the first\n"+
+					"should have delivered - and both would look healthy. Keep that one, or stop\n"+
+					"it with 'kill %d' if it is not the one your harness is watching.",
+				name, held, heldKind, held)
+		}
 	}
 
 	mine := os.Getpid()
 	if err := os.WriteFile(path, []byte(strconv.Itoa(mine)+"\n"), 0o600); err != nil {
 		return nil, fmt.Errorf("cannot record this waiter: %w", err)
 	}
+	// The kind goes in a SIDECAR rather than into the pid file. Adding a
+	// second field there broke two readers within ten minutes - release()
+	// stopped matching its own claim, and a test that asserts the file's
+	// exact contents failed. A format with one reader is easy to change; this
+	// one has three, so the new fact gets its own file instead.
+	_ = os.WriteFile(kindPath(path), []byte(kind+"\n"), 0o600)
 	return &waiterLock{path: path, pid: mine}, nil
+}
+
+// kindPath is where the tracked/forked marking for a claim lives.
+func kindPath(pidPath string) string { return pidPath + ".kind" }
+
+// kindIn reports how the holder of a claim described itself. Anything
+// unreadable is tracked, which is the safe reading: it refuses rather than
+// killing something whose nature is unknown.
+func kindIn(pidPath string) string {
+	raw, err := os.ReadFile(kindPath(pidPath))
+	if err != nil {
+		return "tracked"
+	}
+	if strings.TrimSpace(string(raw)) == "forked" {
+		return "forked"
+	}
+	return "tracked"
 }
 
 // livePIDIn reports the pid recorded at path, and whether it is still running.
@@ -138,6 +184,7 @@ func (w *waiterLock) release() {
 		w.path = ""
 		return
 	}
+	os.Remove(kindPath(w.path))
 	os.Remove(w.path)
 	w.path = ""
 }
