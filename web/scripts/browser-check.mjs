@@ -20,10 +20,10 @@
 
 import { chromium } from "playwright";
 
-const [base, token, expected] = process.argv.slice(2);
+const [base, token, expected, absent] = process.argv.slice(2);
 
 if (!base || !token || !expected) {
-  console.error("usage: node scripts/browser-check.mjs BASE_URL TOKEN EXPECTED_TEXT");
+  console.error("usage: node scripts/browser-check.mjs BASE_URL TOKEN EXPECTED_TEXT [ABSENT_TEXT]");
   process.exit(2);
 }
 
@@ -70,7 +70,21 @@ ${shown}`);
     process.exit(1);
   }
 
-  console.log(`the room's todo panel shows ${JSON.stringify(expected)}, in a browser`);
+  // What must NOT be on it. A panel is as much what it does not say: two words
+  // for one state read as two states, and a reader goes looking for a
+  // distinction that is not there.
+  if (absent) {
+    const shown = await panel.innerText();
+    if (shown.includes(absent)) {
+      console.error(`the room's todo panel still shows ${JSON.stringify(absent)}:
+${shown}`);
+      process.exit(1);
+    }
+  }
+
+  console.log(
+    `the room's todo panel shows ${JSON.stringify(expected)}${absent ? ` and never ${JSON.stringify(absent)}` : ""}, in a browser`,
+  );
 } finally {
   await browser.close();
 }

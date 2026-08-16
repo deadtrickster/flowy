@@ -51,8 +51,25 @@ export function countTodos(list: Artifact[]): { active: number; open: number; do
 export function todoOwner(body: string): string {
   const line = body.split("\n").find((l) => l.startsWith("OWNER:"));
   const name = line?.slice("OWNER:".length).trim();
-  return name && name !== "?" ? name : "";
+  if (!name || NOBODY.has(name.toLowerCase())) return "";
+  return name;
 }
+
+/**
+ * The words that mean nobody is carrying this. They all collapse to the empty
+ * owner, so the panel says ONE word for one state.
+ *
+ * Raised as a todo through the panel itself: 'todo list has "unowned" and
+ * "unassigned" - looks identical. triage and fix'. Both were there because the
+ * render falls back to "unowned" while several bodies had been written with
+ * "OWNER: unassigned" - two words for one state, which reads as two states and
+ * makes a reader look for a distinction that does not exist.
+ *
+ * Normalising here rather than rewriting those bodies is the durable half: the
+ * next person to write "OWNER: none" or "OWNER: TBD" gets the same single word,
+ * without anybody having to know the convention.
+ */
+const NOBODY = new Set(["?", "-", "none", "nobody", "tbd", "unassigned", "unowned", "n/a"]);
 
 /** The body without the OWNER line, which is rendered as its own column. */
 export function todoDetail(body: string): string {
