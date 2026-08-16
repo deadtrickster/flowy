@@ -470,8 +470,10 @@ func waitOnInbox(ctx context.Context, client *http.Client, base, bearer, as, roo
 		// deadline means the number of seconds it says. Without this a
 		// --deadline under one window still blocks for a whole window, and a
 		// caller that asked to wait three seconds waits twenty.
-		query.Set("window", strconv.Itoa(pollWindowLeft(until)))
+		window := pollWindowLeft(until)
+		query.Set("window", strconv.Itoa(window))
 		endpoint := base + "/api/inbox/wait?" + query.Encode()
+		started := time.Now()
 
 		var page inboxWaitResponse
 		if err := peerRequest(ctx, client, http.MethodGet, endpoint, bearer, nil, &page); err != nil {
@@ -550,12 +552,33 @@ func waitOnInbox(ctx context.Context, client *http.Client, base, bearer, as, roo
 		// Nothing to hand over, and the mark has still moved: the poll read
 		// this principal's own messages and everything it filtered out, and a
 		// mark left behind them is a waiter that reads them again forever.
-		if page.Cursor > page.Since {
+		moved := page.Cursor > page.Since
+		if moved {
 			ackInbox(ctx, client, base, bearer, as, page.Cursor, false)
 		}
 		if !time.Now().Before(until) {
 			reportSkipped(skipped)
 			return errQuietDeadline
+		}
+
+		// THE SUCCESS PATH NEEDS A BOUND TOO, and this is the loop nobody
+		// bounded because it was the one that was working.
+		//
+		// A healthy poll either blocks out its window or comes back with
+		// something. If it returns early AND the cursor did not move, the
+		// next request is identical and returns just as fast - a waiter
+		// hammering the node it is waiting on. The console did exactly this
+		// tonight: 145 requests a second at the node, from a loop whose only
+		// fault was that its cursor stopped advancing.
+		//
+		// So: assert the invariant rather than assume it. Real traffic always
+		// moves the cursor or fills the window, so a busy room pays nothing.
+		if !moved && time.Since(started) < time.Duration(window)*time.Second/2 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(time.Second):
+			}
 		}
 	}
 }
