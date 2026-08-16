@@ -8,6 +8,7 @@ import { Home } from "@/routes/Home";
 import { Inbox } from "@/routes/Inbox";
 import { Metrics } from "@/routes/Metrics";
 import { NotFound } from "@/routes/NotFound";
+import { Reports } from "@/routes/Reports";
 import { TaskView } from "@/routes/TaskView";
 import { Traces } from "@/routes/Traces";
 
@@ -24,6 +25,7 @@ export default function App() {
         <Route path="/" element={<Home />} />
         <Route path="/chat/:room" element={<ChatRoom />} />
         <Route path="/inbox" element={<Inbox />} />
+        <Route path="/reports" element={<Reports />} />
         <Route path="/task/:id" element={<TaskView />} />
         <Route path="/p/:project/:type/:id" element={<ArtifactView />} />
         <Route path="/metrics" element={<Metrics />} />

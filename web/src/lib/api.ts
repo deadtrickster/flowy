@@ -62,6 +62,10 @@ export interface Artifact {
   tombstone: boolean;
   created: string;
   updated: string;
+  /** fields is jsonb the node signs with the row; reports keep as_of and
+   * supersedes there, announcements their scope. unknown because each type
+   * owns its own shape - narrow at the use site. */
+  fields?: unknown;
 }
 
 /**
@@ -475,6 +479,7 @@ export const api = {
     }),
 
   inbox: (since = 0) => request<ChatPage>(`/api/inbox?since=${since}`),
+  reports: () => request<{ artifacts: Artifact[] }>("/api/artifacts?type=report"),
 
   artifact: (id: string) => request<Artifact>(`/api/artifact/${encodeURIComponent(id)}`),
 

@@ -4,6 +4,9 @@ import { Link, useParams } from "react-router-dom";
 import { StatusControl } from "@/components/StatusControl";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import DOMPurify from "dompurify";
+import { marked } from "marked";
+
 import { type Artifact, LIFECYCLE_TYPES, api } from "@/lib/api";
 import { useSession } from "@/lib/session";
 
@@ -70,6 +73,12 @@ export function ArtifactView() {
                 {artifact.kind ? <Badge variant="outline">{artifact.kind}</Badge> : null}
                 <Badge variant="outline">{artifact.visibility}</Badge>
                 {artifact.status ? <Badge variant="outline">{artifact.status}</Badge> : null}
+                {typeof (artifact.fields as Record<string, unknown> | null | undefined)?.as_of ===
+                "string" ? (
+                  <Badge variant="outline">
+                    as of {(artifact.fields as Record<string, string>).as_of}
+                  </Badge>
+                ) : null}
                 {(artifact.tags ?? []).map((tag) => (
                   <Badge key={tag} variant="outline">
                     {tag}
@@ -83,9 +92,23 @@ export function ArtifactView() {
               {LIFECYCLE_TYPES.includes(artifact.type) ? (
                 <StatusControl artifact={artifact} onMoved={setArtifact} />
               ) : null}
-              <pre className="whitespace-pre-wrap break-words font-sans text-sm">
-                {artifact.body}
-              </pre>
+              {artifact.type === "report" ? (
+                // A report is a document somebody reads on purpose, so it is
+                // rendered, not dumped: markdown to HTML, sanitized because
+                // the body is agent-written.
+                <div
+                  className="report-body text-sm"
+                  dangerouslySetInnerHTML={{
+                    __html: DOMPurify.sanitize(
+                      marked.parse(artifact.body, { async: false }) as string,
+                    ),
+                  }}
+                />
+              ) : (
+                <pre className="whitespace-pre-wrap break-words font-sans text-sm">
+                  {artifact.body}
+                </pre>
+              )}
               {artifact.discovery ? (
                 <div>
                   <div className="pb-1 font-medium text-muted-foreground text-xs">discovery</div>

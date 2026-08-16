@@ -1,5 +1,6 @@
 import {
   Activity as ActivityIcon,
+  FileText,
   GitBranch,
   Hash,
   Home as HomeIcon,
@@ -40,6 +41,10 @@ export function Shell({ children }: { children: ReactNode }) {
           <NavLink to="/inbox" className={navClass}>
             <InboxIcon className="h-4 w-4" />
             inbox
+          </NavLink>
+          <NavLink to="/reports" className={navClass}>
+            <FileText className="h-4 w-4" />
+            reports
           </NavLink>
           <NavLink to="/activity" className={navClass}>
             <ListTree className="h-4 w-4" />
