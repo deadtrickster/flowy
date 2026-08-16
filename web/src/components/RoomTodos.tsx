@@ -4,6 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import type { Artifact, FlowyEvent } from "@/lib/api";
+import { speakerStyle } from "@/lib/speakercolour";
 import { countTodos, sortTodos, todoOwner } from "@/lib/todos";
 import { shortId } from "@/lib/utils";
 
@@ -86,7 +87,18 @@ export function RoomTodos({ room, todos, raiseFrom, disabled, error, onRaise }: 
                 <Badge variant={todo.status === "active" ? "default" : "secondary"}>
                   {todo.status || "todo"}
                 </Badge>
-                <span className="shrink-0 text-muted-foreground">{owner || "unowned"}</span>
+                {/*
+                  The owner in their own colour, the same one they speak in
+                  just above - so "who is carrying this" and "who said that"
+                  are the same glance rather than two lookups. Unowned stays
+                  grey, because nobody is not a person.
+                */}
+                <span
+                  className="shrink-0 rounded px-1 text-muted-foreground"
+                  style={owner ? speakerStyle(owner) : undefined}
+                >
+                  {owner || "unowned"}
+                </span>
                 <span className="min-w-0 flex-1 break-words">{todo.title || todo.id}</span>
               </li>
             );

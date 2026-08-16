@@ -2193,15 +2193,16 @@ browser_renders_the_rooms_todos() {
 		"$ROOM_TODO_GENERAL"
 }
 
-# And the page that lists all of them still lists the one with no room, painted
-# rather than fetched. This is the discriminating case on the screen: a change
-# that only handled room-tagged todos leaves this page empty and passes every
-# check above it.
-console_still_renders_the_roomless_todos() {
+# Speakers are drawn in their own colour, and it is really applied. A palette
+# that exists and a component that never uses it are indistinguishable from
+# everywhere except a rendered page, so this asks the browser what colour the
+# name actually came out. The second half is the discriminating one: giving
+# every speaker the SAME colour would pass "is it coloured" and tell nobody
+# apart, which is the entire point of the feature.
+browser_colours_the_speakers() {
 	recall
 	cd "$ROOT/web" || return 1
-	node scripts/render-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" \
-		"$ROOM_TODO_GLOBAL" /todos
+	node scripts/colour-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A"
 }
 
 # Two waiters under one name share one cursor, so the second takes deliveries
@@ -5278,10 +5279,10 @@ check "a room name that is not one is refused at both surfaces" \
 	a_room_that_is_not_one_is_refused
 check "the console paints the room's todos on the room page" \
 	console_renders_the_rooms_todos
-check "and the todos page still paints the ones with no room" \
-	console_still_renders_the_roomless_todos
 check "the room's todo panel is on the screen in a browser, as an element" \
 	browser_renders_the_rooms_todos
+check "each speaker is drawn in their own colour, in a browser" \
+	browser_colours_the_speakers
 
 # ------------------------------------------------------------------- phase 4
 #

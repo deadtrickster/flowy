@@ -572,7 +572,6 @@ export const api = {
   /** Todos are memory artifacts of kind todo - the same store, filtered by
    * kind rather than by a type of their own, because a todo is a memory
    * item with work still in it. */
-  todos: () => request<{ artifacts: Artifact[] }>("/api/artifacts?type=memory&kind=todo"),
   /**
    * The todos of one room: the same list, narrowed by the room the item was
    * raised in. It is the same endpoint and the same permission filter - room is
