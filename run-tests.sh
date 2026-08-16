@@ -9924,7 +9924,7 @@ check "node B survived the announcements" kill -0 "$NODE5B_PID"
 say "the terminal client"
 check "the tui reaches the node only through the HTTP API" tui_talks_only_to_the_api
 check "flowy tui refuses to start with no token anywhere" tui_needs_a_token
-check "a message, a memory, a report and a task are seeded for the tui" tui_seed
+check "a message, a memory, a report, a todo and a task are seeded for the tui" tui_seed
 check "the tui, driven headless by the keyboard against the live node" tui_headless
 check "a token the node refuses is a status line, not a panic" \
 	tui_headless_refuses_a_bad_token
