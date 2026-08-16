@@ -100,6 +100,15 @@ var tools = []tool{
 		InputSchema: object(props{"scope": enum("Narrow to one scope.", memScopes)}, nil),
 		call:        todosTool,
 	},
+	{
+		Name: "guide",
+		Description: "The full guide to this shared memory: scopes, kinds, tags, when " +
+			"to store and when to recall. Read it before your first write - the " +
+			"instructions your client was handed are the short form and may have " +
+			"been truncated or dropped before they reached you.",
+		InputSchema: object(props{}, nil),
+		call:        guideTool,
+	},
 }
 
 // toolSpecs is what tools/list answers; the handler funcs are not part of it.
@@ -405,6 +414,18 @@ func memList(ctx context.Context, m *mcpServer, p *store.Principal, raw json.Raw
 		return nil, err
 	}
 	return map[string]any{"count": len(list), "items": list}, nil
+}
+
+// guideTool hands back the long form of the instructions.
+//
+// It reads no row and takes no argument, and it is a tool rather than only a
+// resource because a tool is what an agent reaches for. The two ways this text
+// gets lost on the way to a model are both silent - Claude Code truncates
+// instructions at about 2 KB, and opencode drops a server's instructions
+// entirely when all of its tools are disabled by permission - so the copy that
+// matters is the one an agent can ask for on purpose.
+func guideTool(_ context.Context, _ *mcpServer, _ *store.Principal, _ json.RawMessage) (any, error) {
+	return map[string]any{"guide": guide}, nil
 }
 
 func todosTool(ctx context.Context, m *mcpServer, p *store.Principal, raw json.RawMessage) (any, error) {

@@ -44,16 +44,34 @@ import (
 // protocolVersion is the MCP revision this server implements.
 const protocolVersion = "2024-11-05"
 
-// instructionsURI names the server instructions as a resource, so a client that
-// ignores initialize.instructions can still fetch the same text.
+// instructionsURI names the full guide as a resource, so a client that ignores
+// initialize.instructions can still fetch it.
 const instructionsURI = "flowy://instructions"
 
-// instructions is the document agents read before they touch shared memory. It
-// is served twice - as initialize.instructions and as the flowy://instructions
-// resource - and is the same bytes both times.
+// instructions is what the node hands a client at initialize, and guide is the
+// long form behind it. They are two documents rather than one because of how
+// the two harnesses in this fleet treat them.
+//
+// Claude Code truncates server instructions at about 2 KB; opencode does not.
+// A single 5.8 KB document therefore arrived whole on one side and cut off
+// mid-sentence on the other, and neither said so - which is worse than either,
+// because the two halves of a fleet were reading different protocols while
+// appearing to read the same one. There is a second, sharper way to lose it:
+// opencode drops a server's instructions ENTIRELY when every one of its tools
+// is disabled by permission, so a restricted client gets no protocol at all and
+// behaves as though there never was one.
+//
+// So the short text carries the mechanism - identity, the scope rule, the verbs,
+// and the pointer - and stays under the limit; the guide carries the detail and
+// is reachable two ways that do not depend on the client reading instructions at
+// all: the `guide` tool and the flowy://instructions resource. The instructions
+// are a pointer, never the only copy.
 //
 //go:embed instructions.md
 var instructions string
+
+//go:embed guide.md
+var guide string
 
 // maxLine caps one JSON-RPC message on the stdio transport. Memory bodies are
 // prose, but prose can be long, and bufio.Scanner's default 64KiB is not.
@@ -209,10 +227,13 @@ func (m *mcpServer) handle(ctx context.Context, token string, req *rpcRequest) *
 		if p.URI != instructionsURI {
 			return rpcFail(req.ID, codeInvalidParams, "no such resource: "+p.URI)
 		}
+		// The resource answers with the guide, not the short text: a client that
+		// comes here has already got the short one or ignored it, and either way
+		// what it is missing is the detail.
 		return result(req.ID, map[string]any{"contents": []any{map[string]any{
 			"uri":      instructionsURI,
 			"mimeType": "text/markdown",
-			"text":     instructions,
+			"text":     guide,
 		}}})
 
 	case "tools/call":
@@ -332,10 +353,11 @@ func toolError(err error) map[string]any {
 // lands and there is a path to name them by.
 func resourceSpecs() []map[string]any {
 	return []map[string]any{{
-		"uri":         instructionsURI,
-		"name":        "flowy shared memory instructions",
-		"description": "How to use flowy shared memory: scopes, kinds, tags, when to store and when to recall.",
-		"mimeType":    "text/markdown",
+		"uri":  instructionsURI,
+		"name": "flowy shared memory guide",
+		"description": "The full guide to flowy shared memory: scopes, kinds, tags, " +
+			"when to store and when to recall. The same text the guide tool returns.",
+		"mimeType": "text/markdown",
 	}}
 }
 

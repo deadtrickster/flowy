@@ -45,9 +45,50 @@ func TestInitializeCarriesInstructions(t *testing.T) {
 			t.Errorf("the instructions never mention %q", want)
 		}
 	}
+	// And the pointer, which is the whole reason the short text is short. An
+	// edit that drops it leaves the detail unreachable by anyone who only ever
+	// reads what initialize handed them.
+	if !strings.Contains(text, "guide") {
+		t.Error("the instructions never name the guide, so nothing points at the detail")
+	}
 }
 
-func TestInstructionsResourceIsTheSameText(t *testing.T) {
+// The instructions have to survive the client that carries them.
+//
+// Claude Code truncates server instructions at about 2 KB and opencode does not,
+// so a document over the limit is delivered whole to one half of a fleet and cut
+// off mid-sentence to the other, with nothing said on either side. That is how
+// this document spent its first weeks: 5,835 bytes, of which Claude Code saw the
+// scopes and none of the tools.
+//
+// The margin is deliberate. "About 2 KB" is a described limit rather than a
+// measured one, so this asserts against 1,800 and leaves room to be wrong about
+// where exactly the knife falls.
+func TestInstructionsFitTheTruncationLimit(t *testing.T) {
+	const limit = 1800
+	if len(instructions) > limit {
+		t.Fatalf("instructions are %d bytes, want at most %d - anything past that is "+
+			"silently discarded by clients that truncate, so it must move into guide.md",
+			len(instructions), limit)
+	}
+	// The other half of the split: the guide is where the detail actually went.
+	// A guide that is no longer than the instructions means somebody trimmed
+	// the document rather than moving what they trimmed.
+	if len(guide) <= len(instructions) {
+		t.Fatalf("the guide is %d bytes against instructions of %d: the detail is gone, "+
+			"not relocated", len(guide), len(instructions))
+	}
+	for _, want := range []string{"mem_write", "report_write", "personal", "kind", "tags"} {
+		if !strings.Contains(guide, want) {
+			t.Errorf("the guide never mentions %q", want)
+		}
+	}
+}
+
+// The resource serves the guide, not the short text. A client reaching for it
+// has either already had the short version or ignored it; either way what it is
+// missing is the detail.
+func TestInstructionsResourceServesTheGuide(t *testing.T) {
 	resp := dispatch(t, `{"jsonrpc":"2.0","id":1,"method":"resources/read","params":{"uri":"`+instructionsURI+`"}}`)
 	if resp == nil || resp.Error != nil {
 		t.Fatalf("resources/read failed: %+v", resp)
@@ -57,8 +98,27 @@ func TestInstructionsResourceIsTheSameText(t *testing.T) {
 	if first["uri"] != instructionsURI {
 		t.Errorf("uri is %v, want %s", first["uri"], instructionsURI)
 	}
-	if first["text"] != instructions {
-		t.Error("the resource does not serve the same bytes as initialize.instructions")
+	if first["text"] != guide {
+		t.Error("the resource does not serve the guide")
+	}
+}
+
+// And the tool, which is the copy that does not depend on the client reading
+// instructions or resources at all - the one an agent asks for on purpose.
+func TestTheGuideToolReturnsTheGuide(t *testing.T) {
+	out, err := guideTool(context.Background(), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("the guide tool failed: %v", err)
+	}
+	got, ok := out.(map[string]any)["guide"].(string)
+	if !ok {
+		t.Fatalf("the guide tool returned %T, want the text", out)
+	}
+	if got != guide {
+		t.Error("the guide tool does not return the guide")
+	}
+	if _, listed := toolByName("guide"); !listed {
+		t.Error("the guide tool is not in the tool table, so nothing can call it")
 	}
 }
 

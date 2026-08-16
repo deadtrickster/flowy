@@ -340,11 +340,29 @@ there is nobody to filter the store for.
 
 ### The instructions
 
-`initialize` returns an `instructions` string, and the same text is served as
-the resource `flowy://instructions` for clients that ignore it. It is
-`instructions.md` in this repository, embedded into the binary, and it is the
-document an agent reads instead of guessing: the three scopes, the kinds, tags,
-when to store and when to recall.
+`initialize` returns an `instructions` string: `instructions.md` in this
+repository, embedded into the binary, and the document an agent reads instead of
+guessing.
+
+**It is short because the clients disagree about how much of it survives.**
+Claude Code truncates server instructions at about 2 KB; opencode does not. A
+5,835-byte document therefore arrived whole on one side of this fleet and cut
+off mid-sentence on the other, and neither said so - which is worse than either,
+because the two halves were reading different protocols while appearing to read
+the same one. Claude Code saw the scopes and none of the tools for weeks. There
+is a second, sharper way to lose it: opencode drops a server's instructions
+*entirely* when every one of its tools is disabled by permission, so a
+restricted client gets no protocol at all and behaves as though there never was
+one.
+
+So the surface is split. `instructions.md` carries the mechanism - identity, the
+scope rule, the verbs, and a pointer - and the gate fails if it passes 1,800
+bytes. `guide.md` carries the detail - the kinds, tags, when to store and when
+to recall, the reports surface, the FUSE mount - and is reachable two ways that
+do not depend on the client reading instructions at all: the `guide` tool, and
+the `flowy://instructions` resource. **The instructions are a pointer, never the
+only copy**, which is what makes a truncation or a permission config cost detail
+rather than the mechanism.
 
 ### The tools
 
@@ -1788,11 +1806,13 @@ what a status trail is.
 - `auth.go`, `api.go` - the token middleware and the handlers. The whole of
   `/api/` is mounted behind `authenticate` in one place, so a route added later
   cannot arrive without a token check.
-- `mcp.go`, `mcp_tools.go`, `instructions.md` - the MCP surface. `mcp.go` is
-  JSON-RPC 2.0, the two transports and the method dispatch; `mcp_tools.go` is
-  the five memory tools and their schemas; `instructions.md` is embedded into
-  the binary and served both as `initialize.instructions` and as the
-  `flowy://instructions` resource. A transport hands a request to `handle()`
+- `mcp.go`, `mcp_tools.go`, `instructions.md`, `guide.md` - the MCP surface.
+  `mcp.go` is JSON-RPC 2.0, the two transports and the method dispatch;
+  `mcp_tools.go` is the memory tools and their schemas. Both documents are
+  embedded into the binary: `instructions.md` is the capped text served as
+  `initialize.instructions`, and `guide.md` is the detail behind it, served by
+  the `guide` tool and as the `flowy://instructions` resource. A transport hands
+  a request to `handle()`
   and writes back what it returns, so a tool cannot behave one way over stdio
   and another over HTTP.
 - `tasks.go`, `lifecycle.go` - Phase 4's handlers. `tasks.go` is assignment,
@@ -1915,12 +1935,14 @@ Then Phase 2, against `flowy mcp --http` on a free port and against
 `flowy mcp` on a pipe:
 
 - `initialize` answers **without a token** with `serverInfo` naming flowy and its
-  version, protocol `2024-11-05`, and a non-empty `instructions` document that
-  names the three scopes and the tools
+  version, protocol `2024-11-05`, and an `instructions` document that names the
+  three scopes, the tools and the guide - and is **at most 1,800 bytes**, so
+  none of it is silently truncated by a client that cuts at 2 KB
 - `tools/list` offers `mem_write`, `mem_read`, `mem_search`, `mem_list` and
   `todos`, each with an object input schema
-- `resources/list` carries `flowy://instructions` and `resources/read` returns
-  byte-for-byte what `initialize` returned
+- `resources/list` carries `flowy://instructions`; `resources/read` and the
+  `guide` tool return the same longer document, so the detail survives both a
+  truncation and a client that never reads resources
 - `tools/call` with no token, and with an unknown token, is JSON-RPC `-32001`;
   an unknown tool is `-32602`
 - A writes a memory item: personal by default, no project, kind `note`, a

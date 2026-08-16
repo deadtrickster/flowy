@@ -693,10 +693,22 @@ mcp_handshake() {
 			"${#instructions}" >&2
 		return 1
 	fi
+	# And the ceiling, which is the half that bites silently. Claude Code
+	# truncates server instructions at about 2 KB while opencode does not, so a
+	# document over the limit reaches one half of a fleet whole and the other cut
+	# off mid-sentence, with nothing said on either side. This document was
+	# 5,835 bytes for weeks and Claude Code saw the scopes and none of the tools.
+	# 1800 leaves margin: the limit is described, not measured.
+	if [ "${#instructions}" -gt 1800 ]; then
+		printf 'initialize returned %s bytes of instructions, want at most 1800 - the rest is silently truncated by clients that cut at 2 KB, so it belongs in guide.md\n' \
+			"${#instructions}" >&2
+		return 1
+	fi
 	# The instructions are the point of the endpoint, not decoration: an agent
-	# that reads them has to come away knowing the scopes and the tools.
+	# that reads them has to come away knowing the scopes and the tools - and
+	# knowing where the detail went, or the short form is just a shorter lie.
 	local word
-	for word in personal project shared mem_write mem_search todos; do
+	for word in personal project shared mem_write mem_search todos guide; do
 		case "$instructions" in
 		*"$word"*) ;;
 		*)
@@ -705,7 +717,7 @@ mcp_handshake() {
 			;;
 		esac
 	done
-	printf 'flowy %s, protocol %s, %s bytes of instructions\n' \
+	printf 'flowy %s, protocol %s, %s bytes of instructions (ceiling 1800)\n' \
 		"$(rv .result.serverInfo.version)" "$(rv .result.protocolVersion)" "${#instructions}"
 }
 
@@ -723,11 +735,18 @@ mcp_tools_list() {
 	printf 'tools: %s\n' "$(rv '[.result.tools[].name] | join(", ")')"
 }
 
-# The same text, twice: a client that ignores initialize.instructions can read
-# the resource instead, and must not get a different document.
+# The detail has to be reachable two ways that do not depend on the client
+# having read the instructions at all.
+#
+# The short text at initialize is capped, so the rest lives in the guide - and a
+# pointer is only as good as the thing it points at. Both routes are checked
+# because they fail differently: the resource is missed by clients that never
+# call resources/read, and the tool is dropped by opencode when every tool on a
+# server is disabled by permission. Neither failure says anything, so the gate
+# has to be what notices.
 mcp_instructions_resource() {
 	mcp initialize "" '{}' || return 1
-	local from_initialize from_resource
+	local from_initialize from_resource from_tool
 	from_initialize="$(rv .result.instructions)"
 
 	mcp resources/list "$TOKEN_A" || return 1
@@ -737,12 +756,32 @@ mcp_instructions_resource() {
 	mcp resources/read "$TOKEN_A" '{"uri": "flowy://instructions"}' || return 1
 	want_eq "resource uri" "$(rv '.result.contents[0].uri')" flowy://instructions || return 1
 	from_resource="$(rv '.result.contents[0].text')"
-	if [ "$from_resource" != "$from_initialize" ]; then
-		printf 'the resource and initialize.instructions disagree (%s vs %s bytes)\n' \
+	if [ "${#from_resource}" -le "${#from_initialize}" ]; then
+		printf 'the resource is %s bytes against %s at initialize: the detail was trimmed, not relocated\n' \
 			"${#from_resource}" "${#from_initialize}" >&2
 		return 1
 	fi
-	printf 'flowy://instructions is the same %s bytes initialize returned\n' "${#from_resource}"
+
+	# The same document through the tool an agent would actually reach for.
+	want_tool guide "$TOKEN_A" '{}' || return 1
+	from_tool="$(tv .guide)"
+	if [ "$from_tool" != "$from_resource" ]; then
+		printf 'the guide tool and the resource serve different documents (%s vs %s bytes)\n' \
+			"${#from_tool}" "${#from_resource}" >&2
+		return 1
+	fi
+	local word
+	for word in mem_write report_write personal; do
+		case "$from_tool" in
+		*"$word"*) ;;
+		*)
+			printf 'the guide never mentions %s\n' "$word" >&2
+			return 1
+			;;
+		esac
+	done
+	printf 'the guide is %s bytes, the same through the resource and the tool, behind %s at initialize\n' \
+		"${#from_tool}" "${#from_initialize}"
 }
 
 # No principal, no tools. This is the whole of the authentication story on the
@@ -3827,7 +3866,7 @@ check "flowy mcp --http comes up" "$WORK/smoke" healthz "http://127.0.0.1:$MCP_P
 say "the mcp handshake"
 check "initialize answers without a token, with serverInfo and instructions" mcp_handshake
 check "tools/list offers the five memory tools" mcp_tools_list
-check "flowy://instructions serves the same document" mcp_instructions_resource
+check "the guide is reachable by resource and by tool, behind capped instructions" mcp_instructions_resource
 check "tools/call without a principal is refused" mcp_unauthenticated
 check "an unknown tool is refused" mcp_unknown_tool
 
