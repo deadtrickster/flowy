@@ -45,6 +45,19 @@ gap-probe, not the backend).
   dump-and-restore (`dump-pg17.sql` kept beside it); the old 17 container is `flowy-dogfood-pg17-kept`
   (stopped) and the old `pgdata/` dir is untouched - drop both once 18 has settled.
 - token: operator token at `~/.config/flowy/token`. More scoped tokens in `~/Projects/flowy-dogfood/ids`.
+- **projects: write real work to `flowy`, not to `pa`.** A project is just a string on a
+  token (there is no projects table), and `~/.config/flowy/token` is scoped to `pa` - which
+  is the *smoke seeder's fixture project* (`cmd/smoke/main.go:556` makes alice and operator
+  in `pa`, bob in `pb`). Writing through the default token therefore files real artifacts
+  into demo seed data, which is what happened to the first batch of shared memory here.
+  `~/.config/flowy/token-flowy` is the same operator principal scoped to project `flowy`;
+  use it for memory, reports and the worklog. Paste it into the console's token field too,
+  or the reports panel shows you `pa` and none of the real work.
+- Moving an artifact between projects is a **rewrite, never an UPDATE**. `project` is inside
+  the signed payload (`internal/sign/sign.go:101`, asserted by `sign_test.go:53`), so
+  `UPDATE artifacts SET project=…` produces rows whose signatures no longer verify - forged
+  rows, by the node's own definition. Re-file through the normal write path and tombstone
+  the original.
 - TUI: `~/Projects/flowy-dogfood/flowy tui --url http://192.168.1.55:8787` - the default url is
   loopback, and FLOWY_ADDR lives only in the unit env, not an interactive shell.
   Keys: tab/digit switch view, j/k move, / search, i post, ? help, q quit.
