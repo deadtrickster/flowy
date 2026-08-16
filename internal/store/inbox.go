@@ -203,12 +203,16 @@ func (d *DB) inboxHead(ctx context.Context, p *Principal) (int64, error) {
 // flight; LastPoll is when a poll last started. Neither is a claim about a
 // process on somebody's machine - the node sees the polling, not the listener,
 // and the views render exactly this and no more.
+//
+// The name is the user's handle - an agent has no handle of its own and speaks
+// under that person's, which is the rule the chat already renders by - and the
+// reader label is what the listener chose to be called, which for an agent is
+// the name worth showing.
 type PresenceRow struct {
 	Principal string     `json:"principal"`
 	Project   string     `json:"project"`
 	Reader    string     `json:"reader"`
 	UserName  string     `json:"user_name"`
-	AgentName string     `json:"agent_name"`
 	Attached  bool       `json:"attached"`
 	LastPoll  *time.Time `json:"last_poll_at"`
 	Updated   time.Time  `json:"updated"`
@@ -261,15 +265,15 @@ func (d *DB) DeleteInboxReader(ctx context.Context, p *Principal, name string) (
 func (d *DB) Presence(ctx context.Context) ([]*PresenceRow, error) {
 	// The principal column is user \x1f agent \x1f project. Splitting it in
 	// SQL keeps the join in one round trip; unit separators cannot appear in
-	// an id, so split_part is exact.
+	// an id, so split_part is exact. Only users carry a handle - see the
+	// struct comment for why that is the name here.
 	rows, err := d.sql.QueryContext(ctx,
 		`SELECT r.principal,
 		        split_part(r.principal, chr(31), 3) AS project,
-		        r.reader, coalesce(u.handle, ''), coalesce(a.handle, ''),
+		        r.reader, coalesce(u.handle, ''),
 		        r.polls_in_flight > 0, r.last_poll_at, r.updated
 		   FROM inbox_readers r
-		   LEFT JOIN users u  ON u.id = split_part(r.principal, chr(31), 1)
-		   LEFT JOIN agents a ON a.id = split_part(r.principal, chr(31), 2)
+		   LEFT JOIN users u ON u.id = split_part(r.principal, chr(31), 1)
 		  ORDER BY r.updated DESC, r.reader`)
 	if err != nil {
 		return nil, fmt.Errorf("store: presence: %w", err)
@@ -280,7 +284,7 @@ func (d *DB) Presence(ctx context.Context) ([]*PresenceRow, error) {
 	for rows.Next() {
 		p := &PresenceRow{}
 		if err := rows.Scan(&p.Principal, &p.Project, &p.Reader, &p.UserName,
-			&p.AgentName, &p.Attached, &p.LastPoll, &p.Updated); err != nil {
+			&p.Attached, &p.LastPoll, &p.Updated); err != nil {
 			return nil, fmt.Errorf("store: presence: %w", err)
 		}
 		out = append(out, p)
@@ -309,14 +313,14 @@ func (d *DB) RoomMembers(ctx context.Context, p *Principal) ([]*RoomMember, erro
 	filter := EventFilterSQL(p, "e", a, false)
 	rows, err := d.sql.QueryContext(ctx,
 		`SELECT DISTINCT ON (e.actor) e.actor,
-		        coalesce(a2.handle, u.handle, '') AS name,
+		        coalesce(u.handle, '') AS name,
 		        CASE WHEN a2.id IS NOT NULL THEN 'agent' ELSE 'user' END AS kind,
 		        max(e.seq_hlc) AS last
 		   FROM events e
 		   LEFT JOIN agents a2 ON a2.id = e.actor
 		   LEFT JOIN users u  ON u.id = e.actor
 		  WHERE e.type = `+typeArg+` AND `+filter+`
-		  GROUP BY e.actor, a2.handle, u.handle, a2.id
+		  GROUP BY e.actor, u.handle, a2.id
 		  ORDER BY e.actor, last DESC`, a.vals...)
 	if err != nil {
 		return nil, fmt.Errorf("store: room members: %w", err)

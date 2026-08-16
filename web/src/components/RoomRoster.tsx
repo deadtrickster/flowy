@@ -48,8 +48,8 @@ export function RoomRoster({ presence }: { presence: Presence | null }) {
           {presence.listeners.map((l) => (
             <li key={l.principal + l.reader} className="flex items-center gap-2 text-xs">
               <span className="min-w-0 truncate">
-                {l.agent_name || l.user_name || l.reader}
-                {l.reader !== (l.agent_name || l.user_name) ? (
+                {l.reader}
+                {l.reader !== l.user_name ? (
                   <span className="text-muted-foreground"> · {l.reader}</span>
                 ) : null}
               </span>

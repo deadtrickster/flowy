@@ -30,6 +30,9 @@ func TestPresenceTracksPollsNotAcks(t *testing.T) {
 	ctx, db := open(t)
 	u := presenceUser(t, ctx, db, "presence")
 	project := "presence-" + ulid.NewString()[:6]
+	if err := db.DeclareProject(ctx, &Project{ID: project, Name: project, CreatedBy: u.ID}); err != nil {
+		t.Fatalf("declare project: %v", err)
+	}
 	p := &Principal{UserID: u.ID, Project: project}
 
 	if _, err := db.DeclareInboxReader(ctx, p, "waiter"); err != nil {
@@ -91,6 +94,9 @@ func TestDeleteInboxReader(t *testing.T) {
 	u := presenceUser(t, ctx, db, "gone")
 	other := presenceUser(t, ctx, db, "keeper")
 	project := "presence-" + ulid.NewString()[:6]
+	if err := db.DeclareProject(ctx, &Project{ID: project, Name: project, CreatedBy: u.ID}); err != nil {
+		t.Fatalf("declare project: %v", err)
+	}
 	p := &Principal{UserID: u.ID, Project: project}
 	po := &Principal{UserID: other.ID, Project: project}
 
@@ -120,6 +126,9 @@ func TestRoomMembersNamesSpeakers(t *testing.T) {
 	ctx, db := open(t)
 	u := presenceUser(t, ctx, db, "speaker")
 	project := "presence-" + ulid.NewString()[:6]
+	if err := db.DeclareProject(ctx, &Project{ID: project, Name: project, CreatedBy: u.ID}); err != nil {
+		t.Fatalf("declare project: %v", err)
+	}
 	p := &Principal{UserID: u.ID, Project: project}
 
 	for _, body := range []string{"first", "second"} {

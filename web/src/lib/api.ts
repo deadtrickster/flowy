@@ -60,7 +60,6 @@ export interface Presence {
     project: string;
     reader: string;
     user_name: string;
-    agent_name: string;
     attached: boolean;
     last_poll_at?: string | null;
     updated: string;
