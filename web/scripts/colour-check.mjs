@@ -69,10 +69,9 @@ ${sample.join("\n")}`,
   if (names.length > 1) {
     const byName = new Map(speakers.map((s) => [s.name, s.colour]));
     if (new Set(byName.values()).size < 2) {
-      console.error(
-        `${names.length} speakers all share one colour, which tags nobody:\n` +
-          [...byName].map(([n, c]) => `  ${n}: ${c}`).join("\n"),
-      );
+      const shown = [...byName].map(([n, c]) => `  ${n}: ${c}`).join("\n");
+      console.error(`${names.length} speakers all share one colour, which tags nobody:
+${shown}`);
       process.exit(1);
     }
     console.log(`${names.length} speakers, ${new Set(byName.values()).size} colours, in a browser`);
