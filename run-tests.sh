@@ -2211,6 +2211,14 @@ browser_renders_the_rooms_todos() {
 # apart, which is the entire point of the feature.
 browser_colours_the_speakers() {
 	recall
+	# One raised in each remaining state first. Without them the room holds only
+	# open todos, the distinctness half of the check has nothing to compare, and
+	# it reports "one state present, distinctness untested" - which is honest
+	# and useless. The states are what the colours are FOR.
+	api POST "$TOKEN_A" /api/chat/general/todo \
+		'{"title": "quicklime the flywheel", "status": "active"}' || return 1
+	api POST "$TOKEN_A" /api/chat/general/todo \
+		'{"title": "marrowbone the gasket", "status": "done"}' || return 1
 	cd "$ROOT/web" || return 1
 	node scripts/colour-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A"
 }

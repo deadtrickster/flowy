@@ -110,9 +110,9 @@ ${shown}`);
 ${shown}`);
       process.exit(1);
     }
+    const untested = states.length > 1 ? "" : " - one state present, distinctness untested";
     console.log(
-      `todo statuses: ${states.length} state(s), ${new Set(byWord.values()).size} colour(s)` +
-        (states.length > 1 ? "" : " - one state present, distinctness untested"),
+      `todo statuses: ${states.length} state(s), ${new Set(byWord.values()).size} colour(s)${untested}`,
     );
   }
 } finally {
