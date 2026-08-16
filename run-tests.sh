@@ -2243,12 +2243,35 @@ console_mounts() {
 # up not being an assertion at all.
 browser_is_installed() {
 	cd "$ROOT/web" || return 1
-	npx --no-install playwright install chromium
-	node -e 'import("playwright").then(async ({chromium}) => {
+	# The download and the SHARED LIBRARIES IT NEEDS are two different things,
+	# and the first one succeeding says nothing about the second. A plain
+	# install put chrome-headless-shell on disk here and every launch died on
+	# "libnspr4.so: cannot open shared object file" - a browser that is present,
+	# verified present, and cannot start.
+	#
+	# --with-deps installs them, and it is apt, so it is only run where this is
+	# already root: the VM the gate runs in. On a workstation it would be a sudo
+	# prompt in the middle of a test run, so there it downloads the browser and
+	# the launch below decides - which is the right split, because a developer's
+	# machine usually has the libraries a browser needs and a fresh VM never
+	# does.
+	if [ "$(id -u)" -eq 0 ]; then
+		npx --no-install playwright install --with-deps chromium
+	else
+		npx --no-install playwright install chromium
+	fi
+	# Launching it is the check. Installed and launchable are different claims,
+	# and only the second one is the prerequisite the checks below actually have.
+	if ! node -e 'import("playwright").then(async ({chromium}) => {
 		const b = await chromium.launch()
 		console.log("chromium", b.version(), "launches headless")
 		await b.close()
-	})'
+	})'; then
+		printf 'the browser is installed but will not start.\n' >&2
+		printf 'If that is a missing system library, install them with:\n' >&2
+		printf '  cd web && npx playwright install --with-deps chromium\n' >&2
+		return 1
+	fi
 }
 
 # The regression check for a console that flooded its own node at 567 requests a
