@@ -2216,14 +2216,25 @@ console_still_renders_the_roomless_todos() {
 a_second_waiter_for_one_name_is_refused() {
 	recall
 	local out first_pid
+	# Its output is KEPT rather than sent to /dev/null. When this check first
+	# ran, the first waiter died on something and the check could only report
+	# that it had died - the one question worth answering was the one thrown
+	# away.
+	# Narrowed to a room nothing else in this run posts to, because a waiter
+	# that WORKS is the failure here: a fresh reader wakes on the first thing
+	# said anywhere, and the earlier checks fill several rooms, so the first
+	# waiter delivered its messages and exited 0 before the second one started.
+	# What this check needs is a waiter that is still holding the name.
 	FLOWY_TOKEN="$TOKEN_A" "$ROOT/flowy" inbox --as gate-waiter --new \
-		--url "http://127.0.0.1:$HTTP_PORT" --deadline 20 >/dev/null 2>&1 &
+		--room nothing-is-said-in-this-room \
+		--url "http://127.0.0.1:$HTTP_PORT" --deadline 20 >"$WORK/waiter1.out" 2>&1 &
 	first_pid=$!
 	# Let it claim the name before racing it. Without this the check would pass
 	# for the wrong reason on a slow machine: nothing to conflict with yet.
 	sleep 2
 	if ! kill -0 "$first_pid" 2>/dev/null; then
-		printf 'the first waiter did not stay up, so nothing was tested\n' >&2
+		printf 'the first waiter did not stay up, so nothing was tested. It said:\n%s\n' \
+			"$(cat "$WORK/waiter1.out" 2>/dev/null)" >&2
 		return 1
 	fi
 	out="$(FLOWY_TOKEN="$TOKEN_A" "$ROOT/flowy" inbox --as gate-waiter \
