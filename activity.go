@@ -111,6 +111,7 @@ type activityItem struct {
 	Actor     string          `json:"actor"`
 	ActorKind string          `json:"actor_kind,omitempty"`
 	ActorUser string          `json:"actor_user,omitempty"`
+	ActorName string          `json:"actor_name,omitempty"`
 	Project   *string         `json:"project"`
 	Room      string          `json:"room,omitempty"`
 	Thread    string          `json:"thread,omitempty"`
@@ -212,6 +213,11 @@ func itemOf(e *store.Event) activityItem {
 	if len(e.Meta) > 0 {
 		if err := json.Unmarshal(e.Meta, &fields); err == nil {
 			item.ActorKind, item.ActorUser = metaString(fields, "actor_kind"), metaString(fields, "actor_user")
+			// What the speaker was called when they spoke, for the rows that
+			// have it. A line with none is a line whose speaker is drawn as
+			// the tail of an id, which is every line written before the node
+			// stamped a name.
+			item.ActorName = metaString(fields, "actor_name")
 		}
 	}
 	return item
@@ -305,7 +311,7 @@ func (s *server) handlePostActivity(w http.ResponseWriter, r *http.Request) {
 	}
 
 	actor, actorKind := chatActor(p)
-	meta, err := json.Marshal(map[string]string{"actor_kind": actorKind, "actor_user": p.UserID})
+	meta, err := json.Marshal(speakerMeta(p, actorKind, s.speakerName(r.Context(), p)))
 	if err != nil {
 		serverError(w, r, err)
 		return

@@ -935,6 +935,21 @@ getting a second set of its own.
   `meta.actor_kind` (`user` or `agent`) and, for an agent, `meta.actor_user`,
   which is what lets a console tell a person from the agent working for them
   without a join per message.
+- **And a message says what they were called.** `meta.actor_name` is the
+  speaker's handle, stamped on the write beside the other two. An agent has no
+  handle of its own - the `agents` row carries the runtime it is and the person
+  it acts for - so it speaks under that person's handle, and `actor_kind` is
+  still what says an agent is talking. It is recorded rather than joined on the
+  read for two reasons: the name a message carries is what the speaker was
+  called *when they spoke*, so editing a handle later does not silently
+  reattribute everything that person ever said, and a room read stays one query
+  instead of a lookup per message. A message written before this was stamped
+  has no name, and every reader falls back to the tail of the actor id - the
+  TUI, the console's room and thread graph, and the timeline. The key is under
+  the `actor_` prefix on purpose: `speakerStripped` drops it off anything a
+  client hands to `POST /api/events`, and `metaSpeaker` counts it as a speaker
+  claim like the other two, so a name is something this node stamps and never
+  something a writer says about itself.
 - **Rooms are scoped by project.** The room is the `room` column and the project
   is the principal's, so `pa` and `pc` may both have a `general` and neither
   reads the other's - unless a grant says otherwise, exactly as for artifacts.

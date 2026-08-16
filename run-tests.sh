@@ -1389,6 +1389,8 @@ a_says_two_messages() {
 	want_eq "the message landed in pa" "$(jqv .project)" pa || return 1
 	want_eq "a human posts as the user" "$(jqv .actor)" "$USER_A" || return 1
 	want_eq "and is marked as one" "$(jqv .meta.actor_kind)" user || return 1
+	want_eq "under the name they had when they said it" \
+		"$(jqv .meta.actor_name)" "$HANDLE_A" || return 1
 	want_eq "an opening message has no parents" "$(jqv '.parents | length')" 0 || return 1
 	local first thread
 	first="$(jqv .id)"
@@ -1439,6 +1441,11 @@ an_agent_says_one() {
 	want_eq "and is marked as one" "$(jqv .meta.actor_kind)" agent || return 1
 	want_eq "with the person it works for still on the message" \
 		"$(jqv .meta.actor_user)" "$USER_A" || return 1
+	# An agent has no handle of its own - the agents table carries the runtime
+	# it is and the person it acts for - so it speaks under that person's
+	# handle, and meta.actor_kind above is what says an agent is talking.
+	want_eq "and under the name the room knows it by" \
+		"$(jqv .meta.actor_name)" "$HANDLE_A" || return 1
 	remember CHAT_M3 "$(jqv .id)"
 	remember CHAT_M3_SEQ "$(jqv .seq_hlc)"
 	printf 'agent %s said %s\n' "$AGENT_A" "$(jqv .id)"
@@ -1453,6 +1460,24 @@ human_and_agent_are_distinguishable() {
 	want_eq "the agent's message is not attributed to the person" \
 		"$(chat_len ".meta.actor_kind == \"agent\" and .actor == \"$USER_A\"")" 0 || return 1
 	printf 'two human messages and one agent message, told apart by actor and meta\n'
+}
+
+# And every one of them says who said it, on the read. A client draws a room out
+# of GET /api/chat/{room} and can only show what comes back: a read that carried
+# actor ids and nothing else is why a room of four agents and a person rendered
+# as five lines of the same eight characters, whatever the console did with it.
+the_room_read_says_who_said_each_thing() {
+	recall
+	api GET "$TOKEN_A" /api/chat/general || return 1
+	want_eq "messages carrying the speaker's name" \
+		"$(chat_len ".meta.actor_name == \"$HANDLE_A\"")" 3 || return 1
+	want_eq "messages with no name on them" "$(chat_len '.meta.actor_name == null')" 0 || return 1
+	# The name is what the speaker was called when they spoke, and it is a name
+	# rather than the id it replaces - a read that answered with the ulid under
+	# a new key would pass a check that only asked for the key to be there.
+	want_eq "messages naming the actor id instead" \
+		"$(chat_len '.meta.actor_name == .actor')" 0 || return 1
+	printf 'three messages in the room, each saying %s said it\n' "$HANDLE_A"
 }
 
 wait_returns_only_what_is_newer() {
@@ -4756,6 +4781,7 @@ check "A says a message and then a reply that names it" a_says_two_messages
 check "the room reads back in order, with the edge intact" room_reads_back_in_order
 check "A's agent says one in the same room" an_agent_says_one
 check "a human message and an agent message are told apart" human_and_agent_are_distinguishable
+check "the room read says who said each thing" the_room_read_says_who_said_each_thing
 
 say "the watcher"
 check "wait?cursor= returns only what is newer" wait_returns_only_what_is_newer
@@ -6146,6 +6172,14 @@ an_event_meta_is_not_a_signature() {
 	want_eq "the actor_kind it claimed" "$(jqv .meta.actor_kind)" null || return 1
 	want_eq "the actor_user it claimed" "$(jqv .meta.actor_user)" null || return 1
 	want_eq "what meta is still for" "$(jqv .meta.topic)" kept || return 1
+
+	# The name a client picked for itself goes the same way. It is the key a
+	# reader now draws first, so a hand-written one would be a forgery straight
+	# onto the screen rather than one a reader has to resolve an id to see.
+	want_status 200 POST "$TOKEN_B" /api/events \
+		'{"type": "chat", "room": "general", "body": "and not who this says either",
+		  "meta": {"actor_name": "the operator"}}' || return 1
+	want_eq "the name it gave itself" "$(jqv .meta.actor_name)" null || return 1
 
 	# And served back the same way, because what the console renders is the
 	# stored row rather than the answer to the write.

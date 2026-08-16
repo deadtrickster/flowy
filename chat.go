@@ -65,6 +65,52 @@ func chatActor(p *store.Principal) (actor, kind string) {
 	return p.UserID, "user"
 }
 
+// speakerName is what the speaker is called: the handle of the principal that
+// is saying something, or "" when there is no name to be had.
+//
+// An agent has no handle of its own. The two tables say two different things
+// about a speaker - users carry the handle a person is known by, agents carry
+// the runtime they are (claude|glm|opencode) and the person they act for - so
+// an agent speaks under that person's handle, which is the name the room
+// already knows it by, and under its runtime kind when the person it acts for
+// has no handle to lend. Which of the two is talking is still meta.actor_kind's
+// job; this answers what to call them.
+func (s *server) speakerName(ctx context.Context, p *store.Principal) string {
+	if user, err := s.db.GetUser(ctx, p.UserID); err == nil && user.Handle != "" {
+		return user.Handle
+	}
+	if p.AgentID != "" {
+		if agent, err := s.db.GetAgent(ctx, p.AgentID); err == nil {
+			return agent.Kind
+		}
+	}
+	return ""
+}
+
+// speakerMeta is the speaker, as the handlers that mint an event stamp it:
+// which kind of principal said it, which person, and what they were called.
+//
+// The name is recorded on the write rather than joined on the read, and that is
+// the point of it. It is what the speaker was called *when they spoke*, so a
+// handle edited later does not silently reattribute everything that person ever
+// said; and a room read stays one query, instead of growing a lookup per
+// message the first time a client wants to draw a name.
+//
+// A name that is not there is left out rather than written empty, because every
+// message said before this field existed has no name either and a reader has to
+// treat the two the same - the id it fell back to then is the id it falls back
+// to now. The key sits under the actor_ prefix on purpose: speakerStripped in
+// api.go and metaSpeaker in the merge both work off that prefix, so a name is
+// something this node stamps and never something a client or a peer says about
+// itself.
+func speakerMeta(p *store.Principal, kind, name string) map[string]string {
+	fields := map[string]string{"actor_kind": kind, "actor_user": p.UserID}
+	if name != "" {
+		fields["actor_name"] = name
+	}
+	return fields
+}
+
 // isOwnActor reports whether actor is the principal itself - either the person
 // or the agent holding the token. It is what the inbox excludes.
 func isOwnActor(p *store.Principal, actor string) bool {
@@ -302,7 +348,7 @@ func (s *server) handleChatSay(w http.ResponseWriter, r *http.Request) {
 	s.adoptThreadTrace(r, req.Thread)
 
 	actor, kind := chatActor(p)
-	meta, err := json.Marshal(map[string]string{"actor_kind": kind, "actor_user": p.UserID})
+	meta, err := json.Marshal(speakerMeta(p, kind, s.speakerName(r.Context(), p)))
 	if err != nil {
 		serverError(w, r, err)
 		return

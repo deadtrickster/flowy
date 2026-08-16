@@ -1416,7 +1416,8 @@ func MintedEventType(kind string) bool { return mintedEventTypes[kind] }
 
 // ActorMetaPrefix is the key prefix the handlers that mint an event write the
 // speaker under: actor_kind says whether a person or their agent said it,
-// actor_user says which person. The console renders both, so meta is a second
+// actor_user says which person, actor_name says what they were called when
+// they said it. The console renders them, so meta is a second
 // place an event says who is talking, and every door that decides the actor
 // column has to decide these as well - see speakerStripped in the server
 // package, which is what the API does with them, and metaSpeaker below, which

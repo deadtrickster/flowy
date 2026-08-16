@@ -199,6 +199,10 @@ type Event struct {
 	Meta      struct {
 		ActorKind string `json:"actor_kind"`
 		ActorUser string `json:"actor_user"`
+		// ActorName is what the speaker was called when they said it, which
+		// the node stamps on the write. It is absent on every message said
+		// before it was stamped, so nothing may depend on it being there.
+		ActorName string `json:"actor_name"`
 	} `json:"meta"`
 	Created time.Time `json:"created"`
 }
@@ -206,6 +210,23 @@ type Event struct {
 // IsAgent reads the speaker's kind off what the node stamped the message with,
 // rather than guessing it from the actor id.
 func (e *Event) IsAgent() bool { return e.Meta.ActorKind == "agent" }
+
+// Speaker is who to draw beside a message: the name the node recorded, and the
+// tail of an id when there is none.
+//
+// The fallback is not a corner case. Every message in every room that predates
+// the name carries no name, and a client that showed a blank column for those
+// would have swapped one unreadable room for another - so the id ladder that
+// was the whole of this before stays underneath it, unchanged.
+func (e *Event) Speaker() string {
+	if e.Meta.ActorName != "" {
+		return e.Meta.ActorName
+	}
+	if e.IsAgent() && e.Meta.ActorUser != "" {
+		return shortID(e.Meta.ActorUser) + "'s agent"
+	}
+	return shortID(e.Actor)
+}
 
 // ChatPage is what a room read or a long poll answers with.
 type ChatPage struct {
@@ -296,6 +317,7 @@ type ActivityItem struct {
 	Actor     string   `json:"actor"`
 	ActorKind string   `json:"actor_kind,omitempty"`
 	ActorUser string   `json:"actor_user,omitempty"`
+	ActorName string   `json:"actor_name,omitempty"`
 	Project   *string  `json:"project"`
 	Room      string   `json:"room,omitempty"`
 	Thread    string   `json:"thread,omitempty"`
@@ -306,6 +328,17 @@ type ActivityItem struct {
 	SeqHLC    int64    `json:"seq_hlc"`
 	Node      string   `json:"node"`
 	Created   string   `json:"created"`
+}
+
+// Speaker is who to draw for a line of the timeline, on the same rule the room
+// uses: the recorded name, and the tail of the actor id when there is none. A
+// turn, a run log line and a worklog entry are not messages and carry no name,
+// so on this pane the fallback is the ordinary case rather than the old one.
+func (a *ActivityItem) Speaker() string {
+	if a.ActorName != "" {
+		return a.ActorName
+	}
+	return shortID(a.Actor)
 }
 
 // ActivityPage is a page of the timeline.

@@ -410,6 +410,127 @@ func TestWritingMemoryDoesNotPromoteIt(t *testing.T) {
 	}
 }
 
+// ------------------------------------------------------ who said what, in it
+
+// saidBy is a message the node recorded a name for. An empty name is a message
+// from before it recorded any, which is most of what is in a live room.
+func saidBy(name, body string) *Event {
+	e := &Event{
+		ID: "01HEVENT" + name, Room: "general", Thread: "01HTHREAD1",
+		Actor: "01HUSERAAAAAAAAAACM5BYZ3W", Body: body, Created: time.Now(),
+	}
+	e.Meta.ActorKind, e.Meta.ActorUser = "user", "01HUSERAAAAAAAAAACM5BYZ3W"
+	e.Meta.ActorName = name
+	return e
+}
+
+// rowWith is the rendered line a body landed on, and the assertion that it
+// landed on one at all.
+func rowWith(t *testing.T, screen, body string) string {
+	t.Helper()
+	for _, line := range strings.Split(screen, "\n") {
+		if strings.Contains(line, body) {
+			return line
+		}
+	}
+	t.Fatalf("no row on screen carries %q:\n%s", body, screen)
+	return ""
+}
+
+// The complaint this column exists for: four agents and a person in one room,
+// and every line drawn as the tail of a ulid. A message that carries a name is
+// drawn under it - in the stream and in the thread pane beside it, because
+// those are two places the same person reads the same conversation.
+func TestARoomDrawsTheNameOfWhoeverSpoke(t *testing.T) {
+	m := testModel(t, NewClient("http://127.0.0.1:1", "t"))
+	m.msgs = []*Event{saidBy("orchestrator", "one-body"),
+		saidBy("flowy-claude", "two-body")}
+	m.thread, m.threadOpen, m.view = m.msgs, true, viewRooms
+
+	screen := m.View()
+	for _, e := range m.msgs {
+		if !strings.Contains(screen, e.Meta.ActorName) {
+			t.Fatalf("the room does not say %q said anything:\n%s", e.Meta.ActorName, screen)
+		}
+		if !strings.Contains(rowWith(t, screen, e.Body), e.Meta.ActorName) {
+			t.Fatalf("%q is on screen but not on its own row:\n%s", e.Meta.ActorName, screen)
+		}
+	}
+	// And the id it replaced is not what a reader is left matching against.
+	if strings.Contains(rowWith(t, screen, "one-body"), "CM5BYZ3W") {
+		t.Fatalf("a named message still draws the tail of its actor id:\n%s", screen)
+	}
+}
+
+// The discriminating half, and the one that covers the whole existing log:
+// every message said before the node stamped a name has none, and those rows
+// have to go on rendering exactly as they did - the tail of the actor's id, and
+// the person an agent acts for where the message says so. A build that drew a
+// blank column for them would have made the room less readable, not more, and
+// would pass a test that only looked at the new field.
+func TestAMessageWithNoNameFallsBackToTheId(t *testing.T) {
+	m := testModel(t, NewClient("http://127.0.0.1:1", "t"))
+	person := saidBy("", "old-body")
+	agent := saidBy("", "old-agent-body")
+	agent.Actor = "01HAGENTBBBBBBBBBQ7WXYZ12"
+	agent.Meta.ActorKind = "agent"
+	m.msgs = []*Event{person, agent}
+	m.thread, m.threadOpen, m.view = m.msgs, true, viewRooms
+
+	screen := m.View()
+	if row := rowWith(t, screen, person.Body); !strings.Contains(row, "CM5BYZ3W") {
+		t.Fatalf("a message with no name lost its speaker altogether: %q", row)
+	}
+	if row := rowWith(t, screen, agent.Body); !strings.Contains(row, "'s agent") {
+		t.Fatalf("an agent message with no name stopped saying whose agent it is: %q", row)
+	}
+	if got := person.Speaker(); got != "CM5BYZ3W" {
+		t.Fatalf("Speaker() on a nameless message is %q, not the tail of the actor id", got)
+	}
+}
+
+// A handle has no length limit and a terminal does. The name column is a
+// budget: a long one is cut to it, so the body starts in the same place on
+// every row and what somebody said is still on screen at 80 columns. The rule
+// the layout test asserts - no line wider than the terminal - is met by a row
+// that clipped the body away entirely, so this checks the body is there.
+func TestALongNameDoesNotPushTheBodyOffTheRow(t *testing.T) {
+	m := testModel(t, NewClient("http://127.0.0.1:1", "t"))
+	m.msgs = []*Event{
+		saidBy("ada", "the short name's message"),
+		saidBy(strings.Repeat("a-very-long-handle-", 5), "the long name's message"),
+	}
+	m.view = viewRooms
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	screen := m.View()
+	short := rowWith(t, screen, "the short name's message")
+	long := rowWith(t, screen, "the long name's message")
+	if strings.Index(short, "the short name's message") != strings.Index(long, "the long name's message") {
+		t.Fatalf("the long name moved the body along the row:\n%s\n%s", short, long)
+	}
+	if lipgloss.Width(long) > 80 {
+		t.Fatalf("the row is %d wide at 80 columns: %q", lipgloss.Width(long), long)
+	}
+	// The same budget on the timeline, which is the other pane a message can
+	// be read on and is full width rather than a column of three.
+	m.view = viewTimeline
+	m.tl = []*ActivityItem{
+		{ID: "01HACT1", Kind: "chat", Actor: "01HUSERAAAAAAAAAACM5BYZ3W",
+			ActorName: "ada", Room: "general", Body: "the short name's line",
+			Created: "2026-08-15T10:11:12Z"},
+		{ID: "01HACT2", Kind: "chat", Actor: "01HUSERAAAAAAAAAACM5BYZ3W",
+			ActorName: strings.Repeat("a-very-long-handle-", 5), Room: "general",
+			Body: "the long name's line", Created: "2026-08-15T10:11:13Z"},
+	}
+	screen = m.View()
+	short = rowWith(t, screen, "the short name's line")
+	long = rowWith(t, screen, "the long name's line")
+	if strings.Index(short, "the short name's line") != strings.Index(long, "the long name's line") {
+		t.Fatalf("the long name moved the timeline body along the row:\n%s\n%s", short, long)
+	}
+}
+
 // --------------------------------------------------------------- the reports
 
 // A report says what it is true of, and the list is where that has to be

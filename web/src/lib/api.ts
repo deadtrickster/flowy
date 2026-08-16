@@ -29,7 +29,13 @@ export interface FlowyEvent {
    * could read the room without it.
    */
   addressee?: string;
-  meta?: { actor_kind?: "user" | "agent"; actor_user?: string };
+  /**
+   * meta is where the node stamps who is speaking. actor_name is what they
+   * were called when they said it, and it is optional in the strong sense:
+   * every message said before the node recorded a name has none, so a reader
+   * falls back to the actor id rather than drawing a gap.
+   */
+  meta?: { actor_kind?: "user" | "agent"; actor_user?: string; actor_name?: string };
   created: string;
 }
 
@@ -364,6 +370,8 @@ export interface ActivityItem {
   actor: string;
   actor_kind?: string;
   actor_user?: string;
+  /** What the speaker was called, on the lines that carry one - see FlowyEvent. */
+  actor_name?: string;
   project: string | null;
   room?: string;
   thread?: string;

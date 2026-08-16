@@ -69,6 +69,22 @@ func (m *Model) roomsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// The name column, in the stream and in the thread pane. A row is one line and
+// is clipped to the pane it is in, so the two columns share the width: whatever
+// the name takes, the body does not get. A handle is longer than the tail of a
+// ulid and has no bound at all - the column is what stops one from pushing what
+// somebody said off the right edge of an 80-column terminal, and a name too
+// long for it is cut rather than let through.
+//
+// 16 in the stream is what the row already budgeted for a speaker, so a name
+// costs the body nothing it was not costing already. The thread pane is a third
+// of the terminal, so its column is narrower and the mark and the body still
+// have somewhere to go.
+const (
+	streamNameWidth = 16
+	threadNameWidth = 12
+)
+
 // selectedMessage is the message the cursor is on, or nil when the room is
 // empty. Every caller checks for nil: an empty room is the ordinary case on a
 // fresh node, not an error.
@@ -166,14 +182,11 @@ func (m *Model) streamLines(width, height int) []string {
 	start, end := window(len(m.msgs), m.msgSel, max(1, height-1))
 	for i := start; i < end; i++ {
 		e := m.msgs[i]
-		// Ids, not handles: what the log carries is a ulid, and the tail of one
-		// is the part that differs between two minted a second apart. A room
-		// with the whole 26 characters in every row is a room with no space
-		// left for what anybody said.
-		who := shortID(e.Actor)
-		if e.Meta.ActorUser != "" && e.IsAgent() {
-			who = shortID(e.Meta.ActorUser) + "'s agent"
-		}
+		// The name the node recorded, and the tail of a ulid when the message
+		// has none - see Event.Speaker. A room of four agents where every row
+		// said CM5BYZ3W is what this column is for: the ids differ, and no
+		// reader can tell which of them is which.
+		who := e.Speaker()
 		// An addressed message is drawn as one and is otherwise an ordinary
 		// message in the room: the room still holds it and the same people
 		// still read it, which is why the marker goes in front of the body
@@ -182,8 +195,11 @@ func (m *Model) streamLines(width, height int) []string {
 		if e.Addressee != "" {
 			body = m.addressMark(e.Addressee) + " " + body
 		}
-		text := fmt.Sprintf("%s %-16s %s",
-			e.Created.Local().Format("15:04"), m.theme.clip(who, 16), body)
+		// pad rather than %-16s: a clipped name ends in an ellipsis, which is
+		// one column and three bytes, and a column padded by byte count is a
+		// column that stops lining up the moment a name is too long for it.
+		text := fmt.Sprintf("%s %s %s", e.Created.Local().Format("15:04"),
+			pad(m.theme.clip(who, streamNameWidth), streamNameWidth), body)
 		text = m.theme.clip(text, width)
 		switch {
 		case i == m.msgSel:
@@ -263,16 +279,15 @@ func (m *Model) threadLines(width, height int) []string {
 		case len(e.Parents) == 1:
 			mark = "|"
 		}
-		who := e.Actor
-		if e.IsAgent() && e.Meta.ActorUser != "" {
-			who = e.Meta.ActorUser + "@"
-		}
 		body := e.Body
 		if e.Addressee != "" {
 			body = m.addressMark(e.Addressee) + " " + body
 		}
-		lines = append(lines, m.theme.clip(
-			fmt.Sprintf("%s %s %s", mark, shortID(who), body), width))
+		// The same speaker the stream draws, in a narrower column: this pane is
+		// a third of the terminal and the mark in front of it is what the pane
+		// is for, so the name gives way first.
+		lines = append(lines, m.theme.clip(fmt.Sprintf("%s %s %s",
+			mark, m.theme.clip(e.Speaker(), threadNameWidth), body), width))
 	}
 	return lines
 }

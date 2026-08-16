@@ -10,7 +10,7 @@ import {
 import { useMemo } from "react";
 
 import { type FlowyEvent, isAgent } from "@/lib/api";
-import { shortId } from "@/lib/utils";
+import { shortId, speaker } from "@/lib/utils";
 
 const ROW = 92;
 const LANE = 210;
@@ -51,8 +51,13 @@ export function threadLayout(events: FlowyEvent[]): { nodes: Node[]; edges: Edge
       data: {
         label: (
           <div className="w-44 text-left">
-            <div className="pb-1 font-mono text-[10px] uppercase tracking-wide opacity-70">
-              {agent ? "agent" : "human"} · #{shortId(event.id)}
+            {/*
+             * Who, then which message. A node is 200px of a graph, so it says
+             * the speaker's name and lets the border colour go on saying
+             * whether that speaker is a person or an agent.
+             */}
+            <div className="truncate pb-1 font-mono text-[10px] uppercase tracking-wide opacity-70">
+              {speaker(event)} · #{shortId(event.id)}
             </div>
             <div className="line-clamp-3 text-xs leading-snug">{event.body}</div>
           </div>

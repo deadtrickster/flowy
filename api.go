@@ -515,8 +515,9 @@ func (s *server) handleAppendEvent(w http.ResponseWriter, r *http.Request) {
 
 // actorMetaPrefix is what the handlers that mint an event write the speaker
 // under: actor_kind says whether a person or their agent said it, actor_user
-// says which person. The console renders both, and the gate reads them back to
-// tell an agent's message from its user's.
+// says which person, and actor_name says what that person was called at the
+// time. The console renders them, and the gate reads them back to tell an
+// agent's message from its user's.
 //
 // It is the store's constant rather than a second copy of the string: the merge
 // reads the same keys to decide whether a replicated event is claiming a

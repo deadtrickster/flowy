@@ -130,8 +130,14 @@ export function Activity() {
             <div className="flex flex-wrap items-center gap-2">
               <Badge variant={item.actor_kind === "agent" ? "agent" : "human"}>{item.kind}</Badge>
               <span className="text-muted-foreground text-xs">{clock(item.created)}</span>
-              <span className="font-mono text-muted-foreground text-xs">
-                {shortId(item.actor, 8)}
+              {/*
+               * Who did it, by name where the line carries one. A turn or a
+               * run log line does not, and neither does anything said before
+               * the node recorded names, so the id is the fallback and stays
+               * on the title.
+               */}
+              <span className="font-mono text-muted-foreground text-xs" title={item.actor}>
+                {item.actor_name || shortId(item.actor, 8)}
               </span>
               {item.room ? <Badge variant="outline">#{item.room}</Badge> : null}
               {item.thread ? (

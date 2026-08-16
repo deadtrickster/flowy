@@ -20,6 +20,12 @@ import (
 // empty string is everything.
 var kinds = []string{"", "turn", "log", "chat", "steer", "worklog"}
 
+// timelineNameWidth is the speaker column: two more than the tail of a ulid
+// took before a line could carry a name, which is what an ordinary handle
+// needs, and a hard stop for one that is longer. The body runs the rest of the
+// line, so every column taken here is one taken from what happened.
+const timelineNameWidth = 12
+
 func (m *Model) timelineKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "/":
@@ -104,8 +110,13 @@ func (m *Model) timelineView(height int) []string {
 		if where == "" && item.Thread != "" {
 			where = shortID(item.Thread)
 		}
-		text := fmt.Sprintf("%s %-5s %-10s %-10s %s",
-			clock(item.Created), item.Kind, shortID(item.Actor),
+		// The speaker column is fixed at what the tail of an id took, and a
+		// name longer than that is cut to it: this pane is full width and the
+		// body is what a person is reading along it, so a handle is not allowed
+		// to walk the body off the right edge.
+		text := fmt.Sprintf("%s %-5s %s %-10s %s",
+			clock(item.Created), item.Kind,
+			pad(m.theme.clip(item.Speaker(), timelineNameWidth), timelineNameWidth),
 			m.theme.clip(where, 10), strings.ReplaceAll(item.Body, "\n", " "))
 		text = m.theme.clip(text, m.width)
 		switch {

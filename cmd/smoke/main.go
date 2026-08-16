@@ -616,8 +616,13 @@ func seedPrincipals(ctx context.Context, db *store.DB) error {
 
 		agentTokens[agentToken] = [2]string{user.ID, person.project}
 		userIDs[person.prefix] = user.ID
+		// The handle goes out beside the id because it is what the node now
+		// records on everything this principal says, and a check that a message
+		// carries the speaker's name has to know what that name is rather than
+		// assert the shape of one.
 		out = append(out,
 			fmt.Sprintf("USER_%s=%s", person.prefix, user.ID),
+			fmt.Sprintf("HANDLE_%s=%s", person.prefix, user.Handle),
 			fmt.Sprintf("AGENT_%s=%s", person.prefix, agent.ID),
 			fmt.Sprintf("PROJECT_%s=%s", person.prefix, person.project),
 			fmt.Sprintf("TOKEN_%s=%s", person.prefix, userToken),

@@ -3,7 +3,7 @@ import { useEffect, useRef } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { type FlowyEvent, isAgent } from "@/lib/api";
-import { clock, cn, shortId } from "@/lib/utils";
+import { clock, cn, shortId, speaker } from "@/lib/utils";
 
 interface Props {
   events: FlowyEvent[];
@@ -60,8 +60,14 @@ export function MessageList({ events, selected, onSelect, me }: Props) {
             >
               <div className="flex items-center gap-2 pb-1">
                 <Badge variant={agent ? "agent" : "human"}>{agent ? "agent" : "human"}</Badge>
-                <span className="font-mono text-muted-foreground text-xs">
-                  {shortId(event.actor, 8)}
+                {/*
+                 * Who said it. The name the node recorded when it was said,
+                 * and the tail of the actor id when the message has none - a
+                 * room where every line was an id is what this replaces, and
+                 * the id stays on the title so it is still there to copy.
+                 */}
+                <span className="font-mono text-muted-foreground text-xs" title={event.actor}>
+                  {speaker(event)}
                 </span>
                 {event.addressee ? (
                   <Badge variant="outline">to {forMe ? "you" : shortId(event.addressee, 8)}</Badge>
