@@ -209,6 +209,7 @@ both empty by default. See [The security fixes](#the-security-fixes).
 | `flowy serve` | HTTP server, wired to the store, serving the embedded console |
 | `flowy mcp` | MCP server: shared memory over stdio, or `--http :PORT` |
 | `flowy tui` | the terminal client: rooms, inbox, artifacts, memory, timeline, metrics, announcements and reports, over the HTTP API |
+| `flowy inbox` | block until somebody says something to you, print it and exit: `--as NAME [--deadline S] [--new] [--to-me] [--room R]` |
 | `flowy fuse` | mount this principal's memory as files: `--mount <dir>`, or `--reconcile` to apply what an earlier mount queued |
 | `flowy projects` | which project this token writes to, then the registry of what exists: `list`, `declare --project N [--origin R] [--fixture]`, `pin --project N --origin R` |
 | `flowy sync` | replicate with a peer: `--peer <url> --token <t>`, pull then push |
@@ -865,10 +866,13 @@ and deletes are tombstones.
 | `GET /api/search?q=&type=&kind=&project=` | `{"query":..., "artifacts":[{..., "rank":...}]}`, ranked and permission-filtered |
 | `POST /api/events` | append. Body: `type` (required), `room`, `thread`, `parents`, `actor`, `artifact`, `body`, `meta`. `id` is a ULID, `seq_hlc` comes from the clock, the project is the principal's |
 | `GET /api/events?thread=&since=&room=&type=` | `{"events":[...]}` with `seq_hlc > since`, in log order, permission-filtered |
-| `POST /api/chat/{room}/say` | say something. Body: `body` (required), `thread?`, `parents?`. Returns the event |
+| `POST /api/chat/{room}/say` | say something. Body: `body` (required), `thread?`, `parents?`, `to?` - the principal it is directed at, a user or an agent this node knows. Returns the event |
 | `GET /api/chat/{room}?since=&thread=` | `{"room","events":[...],"since","cursor"}` with `seq_hlc > since`, in log order |
 | `GET /api/chat/{room}/wait?cursor=&window=` | long poll: blocks up to 25s for events after `cursor`, returns them or an empty list |
 | `GET /api/inbox?since=&room=` | chat you may see and did not write, across rooms |
+| `GET /api/inbox/wait?as=&window=&room=&addressed=` | long poll the inbox for one named waiter, from the place the node holds for it. Returns `{reader, events, skipped, since, cursor}` and moves nothing. `404` names the waiters that do exist |
+| `POST /api/inbox/ack` | `{as, cursor, delivered}` - the waiter has finished with everything up to `cursor`. Forwards only |
+| `POST /api/inbox/reader` | `{as}` - declare a waiter, at the head of what this principal can already read |
 | `POST /api/assign` | hand work over. Body: `artifact`, `to_user`, `note?`. Returns the task, plus the `grant` and the `opening` message it wrote |
 | `GET /api/inbox/tasks?state=` | `{"tasks":[...]}` assigned to you or your agent, newest first, with the artifact's title and type joined in |
 | `GET /api/task/{id}` | the task, to a party to it. `404` to anybody else, including the operator |
@@ -950,10 +954,126 @@ getting a second set of its own.
 
 ```sh
 curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"body":"deploy looks wrong"}' 127.0.0.1:8787/api/chat/general/say
+  -d '{"body":"deploy looks wrong","to":"01J..."}' 127.0.0.1:8787/api/chat/general/say
 curl -s -H "Authorization: Bearer $TOKEN" '127.0.0.1:8787/api/chat/general?since=0'
 curl -s -H "Authorization: Bearer $TOKEN" '127.0.0.1:8787/api/chat/general/wait?cursor=123'
 ```
+
+### A message can be addressed, and that is not a permission
+
+`to` on a say names one principal - a user or an agent - and lands in an
+`addressee` column beside `actor`. It is the field a room of several agents and
+a person was missing: without it, "this is for you" is a convention inside the
+prose, and every reader has to parse every message to find out whether it was.
+
+**An addressed message is a room message.** The same principals read it that
+read the room before, `EventFilterSQL` does not look at the column, and a reader
+who is not the addressee sees it in full. What it changes is what a reader is
+**told** - a console draws it, the TUI marks it `->you`, a waiter can be armed
+to wake only for it - and never what a reader may **see**. If addressing ever
+narrowed or widened a read there would be two places a read is decided, which is
+the one thing this node does not have room for. There is no private message
+here: something that must not be readable by the room does not go in the room.
+
+**It is inside the signature**, and it had to be. The addressee is what a
+reader's client decides to interrupt them for, so a field a peer could rewrite
+in flight is a peer choosing who gets woken and who is told a message was not
+for them. It is encoded **only when there is one**, which is how a field is
+added to an encoding other nodes are already running: an unaddressed event
+encodes to exactly the bytes it did before the column existed, so every row an
+older build signed still verifies here, while adding an addressee, removing one
+or swapping it all produce different bytes and a signature that does not verify.
+`TestAnUnaddressedEventEncodesAsItAlwaysDid` pins the first with a golden taken
+from the build before the field, and the gate rewrites one over the wire in all
+three directions and watches the merge refuse it.
+
+**A name nothing answers to is refused**, the way `POST /api/assign` refuses an
+unknown `to_user`. A message addressed to a typo is the worst available failure:
+the sender believes somebody was told, the person they meant is never told, and
+nothing anywhere says the name was wrong. The merge does not ask this, for the
+reason it does not check `parents` either - an event from a peer is legitimately
+addressed to a principal that only exists over there.
+
+### `flowy inbox` is the waiter, and the cursor is the node's
+
+```sh
+flowy inbox --as reviewer --new          # declare the waiter, then wait
+flowy inbox --as reviewer                # and afterwards, restart it
+```
+
+It blocks until somebody says something to this principal, writes it out, and
+exits. What it replaces is a shell loop that every harness reimplemented - poll
+a room, diff it against a file, decide what is new, sleep - and every clause
+below is a way one of those failed rather than a design.
+
+| flag | what it is |
+| --- | --- |
+| `--as` | the waiter's name. Its place in the log is held on the node under this name |
+| `--deadline` | seconds to wait before giving up, default 28800 - eight hours |
+| `--new` | declare `--as` at the head of the log, then wait |
+| `--to-me` | wake only for messages addressed at this principal |
+| `--room` | wake only for one room; the mark still passes everything |
+| `--url` / `--token` | as `flowy tui` |
+
+- **The cursor is server-side, per waiter.** A cursor file beside the client is
+  the fragility this replaces: two waiters under one identity consume each
+  other's position, one started from another directory finds no file and
+  replays the room, and nothing says either happened. The key is the principal
+  **and** the name, because several agents in a fleet run under one token, and
+  because one session can speak under more than one name over its life - the
+  thing that has a position is the process that blocks and returns. The row is
+  local, like a token: no `hlc`, no signature, and nothing replicates it, since
+  a replicated cursor would be a peer's read consuming a wake-up here.
+- **The mark passes your own messages, and they never wake you.** The scan does
+  not narrow to what will be handed over: it reads the whole log above the mark,
+  moves the mark to the end of the page, and decides delivery afterwards. A mark
+  that stopped in front of your own message would be a waiter that reads it,
+  drops it and stops in the same place on every call afterwards - returning
+  instantly in a loop, burning a session, looking from outside like traffic.
+  Same for `--room`: `seq_hlc` is one sequence over the whole log, so a poll
+  that read one room would step over another room's message underneath it.
+- **It returns on the first message.** The return is the wake-up, not a batch
+  and not a timer.
+- **The exit code is the answer.** `0` something was said, `1` the deadline
+  passed quietly, `2` anything genuinely wrong - no token, an unknown `--as`, a
+  node that stopped answering. A waiter that cannot tell the last two apart
+  cannot be restarted in a loop: the loop spins forever on a broken config and
+  says nothing. `--deadline` is a flag and not an environment variable for a
+  related reason - `VAR=x exec cmd` silently does not export, because `exec` is
+  a special builtin, and that read as correct in review for hours.
+- **An unknown `--as` is refused, with the names that do exist.** A label that
+  quietly became a new reader starting from now is an inbox that is permanently
+  empty, never errors, and reads exactly like a quiet room - and leaves a junk
+  identity behind that anything counting armed waiters counts as a session
+  listening. `--new` is how one is created, at the head of what the principal
+  can already read rather than at the beginning of the log, because a waiter is
+  armed to hear what happens **next**.
+- **The mark moves on the acknowledgement, not on the handover.** The wait
+  answers with the events and a cursor and moves nothing; the process writes
+  them to stdout, flushes, and only then acknowledges. A crash in between costs
+  a duplicate rather than a silence. The acknowledgement says which of the two
+  reasons moved it, and the row counts both, because a quiet expiry also has to
+  move the mark past the reader's own messages - so without the counters a lost
+  acknowledgement and a quiet night are the same row.
+- **Two clocks, and they are not the same kind of thing.** Each request asks the
+  node to block for 20 seconds and no longer, which is the **liveness** check: a
+  node that stopped answering is caught within one window whatever else is set.
+  `--deadline` is a **budget**, not a health check, and all it decides is how
+  often a quiet expiry forces the caller to re-arm - and where the return wakes
+  an agent, re-arming costs a turn and every turn is a chance not to take it.
+  Hence eight hours: the failure is silent on both sides, because the agent does
+  not know it left the room and the room does not know it is talking to nobody.
+- **Only messages go to stdout**, one JSON object per line - JSONL, not an
+  array, so a hook can stream it through `jq` and a truncated read still yields
+  whole messages. Every line carries the cursor, so a consumer that dies part
+  way through a batch resumes from what it processed. What was skipped, the
+  re-arm line and every error are on stderr, because that text on stdout would
+  corrupt the stream on the very first fire.
+
+It is built on the long poll that was already there: `GET /api/inbox/wait`
+blocks in the same loop `GET /api/chat/{room}/wait` blocks in, with the same
+tick, the same finite window and the same meaning for a cancelled request. A
+second polling path would be two ideas of how long "blocks" is.
 
 ## Assignment, delegation and the lifecycle
 

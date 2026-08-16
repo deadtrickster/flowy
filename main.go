@@ -21,6 +21,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 )
@@ -35,6 +36,9 @@ commands:
            FLOWY_FORGE=gh|glab|mock)
   mcp      MCP server for agents: stdio by default, --http :PORT for a remote
            client (env: DATABASE_URL, FLOWY_TOKEN, FLOWY_NODE)
+  inbox    block until somebody says something to you, then print it and exit
+           (flowy inbox --as NAME [--deadline S] [--new] [--to-me];
+           exit 0 something was said, 1 the deadline passed quietly, 2 broken)
   tui      the terminal client: rooms, inbox, memory, timeline, metrics and
            announcements over the HTTP API, keyboard-driven and tmux-friendly
            (flowy tui [--url URL] [--token T]; env: FLOWY_ADDR, FLOWY_TOKEN,
@@ -107,6 +111,19 @@ func main() {
 		if err := mcpCmd(os.Args[2:]); err != nil {
 			fmt.Fprintf(os.Stderr, "flowy mcp: %v\n", err)
 			os.Exit(1)
+		}
+	case "inbox":
+		// The one command whose exit code is its answer rather than a report of
+		// whether it worked. A quiet deadline is not a failure - it is one of
+		// the two things a waiter is for - so it is 1 and everything genuinely
+		// broken is 2, and a restart loop can tell them apart without parsing
+		// anything this prints.
+		if err := inboxCmd(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "flowy inbox: %v\n", err)
+			if errors.Is(err, errQuietDeadline) {
+				os.Exit(1)
+			}
+			os.Exit(2)
 		}
 	case "tui":
 		if err := tuiCmd(os.Args[2:]); err != nil {

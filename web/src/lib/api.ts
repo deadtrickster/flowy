@@ -22,6 +22,13 @@ export interface FlowyEvent {
   seq_hlc: number;
   node: string;
   body: string;
+  /**
+   * addressee is who the message is directed at, absent for the room. It
+   * changes how a message is drawn and nothing about who may read it: an
+   * addressed message is a room message, read by exactly the principals that
+   * could read the room without it.
+   */
+  addressee?: string;
   meta?: { actor_kind?: "user" | "agent"; actor_user?: string };
   created: string;
 }
@@ -506,11 +513,11 @@ export const api = {
       { signal },
     ),
 
-  say: (room: string, body: string, parents: string[] = [], thread?: string) =>
+  say: (room: string, body: string, parents: string[] = [], thread?: string, to?: string) =>
     request<FlowyEvent>(`/api/chat/${encodeURIComponent(room)}/say`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ body, parents, ...(thread ? { thread } : {}) }),
+      body: JSON.stringify({ body, parents, ...(thread ? { thread } : {}), ...(to ? { to } : {}) }),
     }),
 
   inbox: (since = 0) => request<ChatPage>(`/api/inbox?since=${since}`),

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -37,10 +38,16 @@ const waitTick = 250 * time.Millisecond
 // answers a particular message instead of the room: leave both out to start a
 // thread, name the thread to continue it, name parents to say which message
 // this one answers.
+//
+// To is who the message is directed at, and it is orthogonal to all three of
+// those: a thread is where a message sits in the log, an addressee is who it is
+// for. Leave it out and the message is for the room, which is what a message
+// has always been here.
 type chatSayRequest struct {
 	Body    string   `json:"body"`
 	Thread  string   `json:"thread"`
 	Parents []string `json:"parents"`
+	To      string   `json:"to"`
 }
 
 // chatActor decides who is speaking. An agent posts as itself, a human as
@@ -161,9 +168,55 @@ func (s *server) mayNameArtifact(w http.ResponseWriter, r *http.Request, artifac
 	return true
 }
 
+// mayAddress reports whether to names a principal this node knows - a user or
+// an agent, which are the two things an actor can be - and answers 400 when it
+// does not.
+//
+// It is checked for the reason POST /api/assign checks its to_user, and it is
+// emphatically not a permission check, because there is no permission here to
+// check: an addressed message is a room message and its readers are the room's.
+// What a name nothing answers to produces is the worst available failure - the
+// sender believes somebody was told, the person they meant is never told, and
+// no surface anywhere says the name was wrong. A typo is refused at the door
+// instead, where the writer can still fix it.
+//
+// It tells a caller nothing they could not already read: every message in every
+// room they can see carries an actor, and assignment has answered "no such
+// user" since Phase 4.
+//
+// The merge does not ask this, deliberately, and for the reason it does not ask
+// UnreadableParents either - an event replicated from a peer is legitimately
+// addressed to a principal that only exists over there, and refusing it here
+// would be refusing federation rather than forgery.
+func (s *server) mayAddress(w http.ResponseWriter, r *http.Request, to string) bool {
+	if to == "" {
+		return true
+	}
+	ctx := r.Context()
+	_, err := s.db.GetUser(ctx, to)
+	if err == nil {
+		return true
+	}
+	if !errors.Is(err, store.ErrNotFound) {
+		serverError(w, r, err)
+		return false
+	}
+	if _, err = s.db.GetAgent(ctx, to); err == nil {
+		return true
+	}
+	if !errors.Is(err, store.ErrNotFound) {
+		serverError(w, r, err)
+		return false
+	}
+	writeJSON(w, http.StatusBadRequest,
+		errorBody("no principal called "+to+" here: an addressee is a user or an agent, "+
+			"and a message with none is addressed to the room"))
+	return false
+}
+
 // handleChatSay appends a message to a room.
 //
-// POST /api/chat/{room}/say  {body, thread?, parents?}
+// POST /api/chat/{room}/say  {body, thread?, parents?, to?}
 func (s *server) handleChatSay(w http.ResponseWriter, r *http.Request) {
 	p := principalOf(r)
 	room, ok := roomOf(r)
@@ -183,6 +236,10 @@ func (s *server) handleChatSay(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Parents == nil {
 		req.Parents = []string{}
+	}
+	req.To = strings.TrimSpace(req.To)
+	if !s.mayAddress(w, r, req.To) {
+		return
 	}
 	if !s.mayNameParents(w, r, req.Parents) {
 		return
@@ -261,14 +318,15 @@ func (s *server) handleChatSay(w http.ResponseWriter, r *http.Request) {
 	}
 
 	e := &store.Event{
-		Type:    chatEventType,
-		Project: project,
-		Room:    room,
-		Thread:  req.Thread,
-		Parents: req.Parents,
-		Actor:   actor,
-		Body:    req.Body,
-		Meta:    withTrace(json.RawMessage(meta), traceIDOf(r)),
+		Type:      chatEventType,
+		Project:   project,
+		Room:      room,
+		Thread:    req.Thread,
+		Parents:   req.Parents,
+		Actor:     actor,
+		Addressee: req.To,
+		Body:      req.Body,
+		Meta:      withTrace(json.RawMessage(meta), traceIDOf(r)),
 	}
 	if err := s.db.AppendEvent(r.Context(), e); err != nil {
 		serverError(w, r, err)
@@ -324,27 +382,53 @@ func (s *server) handleChatWait(w http.ResponseWriter, r *http.Request) {
 	}
 	thread := q.Get("thread")
 
-	deadline := time.Now().Add(waitWindowOf(q.Get("window")))
-	for {
-		list, err := s.readRoom(r, room, thread, cursor, intParam(q.Get("limit")))
-		if err != nil {
-			serverError(w, r, err)
-			return
-		}
-		if len(list) > 0 || !time.Now().Before(deadline) {
-			writeChatEvents(w, room, cursor, list)
-			return
-		}
+	var list []*store.Event
+	err = pollUntil(r.Context(), waitWindowOf(q.Get("window")), func() (bool, error) {
+		var err error
+		list, err = s.readRoom(r, room, thread, cursor, intParam(q.Get("limit")))
+		return len(list) > 0, err
+	})
+	switch {
+	case errors.Is(err, errClientGone):
+		return
+	case err != nil:
+		serverError(w, r, err)
+		return
+	}
+	writeChatEvents(w, room, cursor, list)
+}
 
+// pollUntil is the watcher loop, and there is one of it. It calls look until
+// look says there is something to answer with or the window runs out, and it is
+// shared by the room poll above and the inbox poll below so that the two agree
+// on the tick, on the finite window, and on what a cancelled request means.
+//
+// A second implementation of this is how two long polls end up with two
+// different ideas of how long "blocks" is, and how one of them ends up hanging
+// past the server's write timeout. The contract is the room's, unchanged: a
+// poll always returns.
+func pollUntil(ctx context.Context, window time.Duration, look func() (bool, error)) error {
+	deadline := time.Now().Add(window)
+	for {
+		ready, err := look()
+		if err != nil {
+			return err
+		}
+		if ready || !time.Now().Before(deadline) {
+			return nil
+		}
 		select {
-		case <-r.Context().Done():
-			// The client hung up or the server is shutting down. Nothing to
-			// write, and writing anyway would only log a broken pipe.
-			return
+		case <-ctx.Done():
+			return errClientGone
 		case <-time.After(waitTick):
 		}
 	}
 }
+
+// errClientGone says the request was cancelled under the poll - the client hung
+// up, or the server is shutting down. There is nothing to write, and writing
+// anyway would only log a broken pipe.
+var errClientGone = errors.New("the client went away")
 
 // handleInbox is every chat message the principal may see and did not write.
 // It crosses rooms and projects: what it answers is "what happened while I was

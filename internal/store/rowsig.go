@@ -154,7 +154,7 @@ func canonicalEvent(e *Event) []byte {
 	return sign.CanonicalEvent(sign.Event{
 		ID: e.ID, Artifact: e.Artifact, Thread: e.Thread, Actor: e.Actor, Type: e.Type,
 		Body: e.Body, Meta: canonicalJSON(e.Meta), Parents: e.Parents, HLC: e.SeqHLC, Node: e.Node,
-		Project: e.Project, Room: e.Room, Created: e.Created,
+		Project: e.Project, Room: e.Room, Created: e.Created, Addressee: e.Addressee,
 	})
 }
 

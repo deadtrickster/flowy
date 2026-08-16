@@ -246,6 +246,9 @@ var apiRoutes = []string{
 	"GET /api/chat/{room}/wait",
 	"GET /api/inbox",
 	"GET /api/inbox/tasks",
+	"GET /api/inbox/wait",
+	"POST /api/inbox/ack",
+	"POST /api/inbox/reader",
 	"POST /api/assign",
 	"GET /api/task/{id}",
 	"POST /api/task/{id}/delegate",
@@ -327,6 +330,12 @@ func (s *server) routes() http.Handler {
 	api.HandleFunc("GET /api/chat/{room}", s.handleChatRead)
 	api.HandleFunc("GET /api/chat/{room}/wait", s.handleChatWait)
 	api.HandleFunc("GET /api/inbox", s.handleInbox)
+	// The waiter: a long poll over the inbox, and the two calls that keep its
+	// place. The place is on the node rather than in a file beside the client,
+	// which is the whole of why `flowy inbox` can be restarted.
+	api.HandleFunc("GET /api/inbox/wait", s.handleInboxWait)
+	api.HandleFunc("POST /api/inbox/ack", s.handleInboxAck)
+	api.HandleFunc("POST /api/inbox/reader", s.handleInboxReader)
 	// Assignment and the handoff it opens. /api/inbox/tasks is a longer pattern
 	// than /api/inbox, so the mux ranks it first and the two do not collide.
 	api.HandleFunc("GET /api/inbox/tasks", s.handleInboxTasks)

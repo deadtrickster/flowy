@@ -193,7 +193,10 @@ type Event struct {
 	SeqHLC   int64    `json:"seq_hlc"`
 	Node     string   `json:"node"`
 	Body     string   `json:"body"`
-	Meta     struct {
+	// Addressee is who the message is directed at, empty for the room. It
+	// changes how a message is drawn and nothing about who may read it.
+	Addressee string `json:"addressee"`
+	Meta      struct {
 		ActorKind string `json:"actor_kind"`
 		ActorUser string `json:"actor_user"`
 	} `json:"meta"`
@@ -521,11 +524,17 @@ func (c *Client) Wait(ctx context.Context, room string, cursor int64, window int
 	return &out, c.do(ctx, c.poll, http.MethodGet, path, nil, &out)
 }
 
-// Say posts a message into a room as whoever the token is.
-func (c *Client) Say(ctx context.Context, room, body string, parents []string, thread string) (*Event, error) {
+// Say posts a message into a room as whoever the token is. to directs it at one
+// principal without taking it out of the room, and is left out for the room.
+func (c *Client) Say(ctx context.Context, room, body string, parents []string,
+	thread, to string,
+) (*Event, error) {
 	req := map[string]any{"body": body, "parents": parents}
 	if thread != "" {
 		req["thread"] = thread
+	}
+	if to != "" {
+		req["to"] = to
 	}
 	var out Event
 	return &out, c.post(ctx, "/api/chat/"+url.PathEscape(room)+"/say", req, &out)

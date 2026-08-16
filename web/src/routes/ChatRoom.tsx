@@ -91,8 +91,8 @@ export function ChatRoom() {
   }, [room, token]);
 
   const send = useCallback(
-    async (body: string) => {
-      const said = await api.say(room, body, selected ? [selected.id] : [], selected?.thread);
+    async (body: string, to: string) => {
+      const said = await api.say(room, body, selected ? [selected.id] : [], selected?.thread, to);
       // The poll will bring it back anyway; showing it now is what makes the
       // box feel like it did something.
       setEvents((current) => merge(current, [said]));
@@ -129,7 +129,12 @@ export function ChatRoom() {
           </div>
         ) : null}
 
-        <MessageList events={events} selected={selected} onSelect={setSelected} />
+        <MessageList
+          events={events}
+          selected={selected}
+          onSelect={setSelected}
+          me={{ user: whoami?.user, agent: whoami?.agent }}
+        />
 
         <MessageBox
           replyTo={selected}

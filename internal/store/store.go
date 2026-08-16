@@ -400,6 +400,17 @@ type Event struct {
 	Node     string          `json:"node"`
 	Body     string          `json:"body"`
 	Meta     json.RawMessage `json:"meta,omitempty"`
+	// Addressee is who a message is directed at - a user id or an agent id -
+	// and is empty when it is directed at the room.
+	//
+	// It is not a permission axis, and that is the whole of what it means. An
+	// addressed message is a room message: the same people read it that read
+	// the room before, EventFilterSQL never looks at this column, and nothing
+	// here narrows or widens a read. What it changes is what a reader is told -
+	// a client can say "this one is for you" instead of leaving every reader to
+	// infer it from the prose - which is a rendering decision and a wake-up
+	// decision, never an access one.
+	Addressee string `json:"addressee,omitempty"`
 	// Sig is the writing node's signature over the event - see Artifact.Sig.
 	Sig     []byte    `json:"sig,omitempty"`
 	Created time.Time `json:"created"`
@@ -439,13 +450,16 @@ func (d *DB) appendEvent(ctx context.Context, q execer, e *Event) error {
 	if len(e.Meta) > 0 {
 		meta = []byte(e.Meta)
 	}
+	// The addressee is written through nullif so that "directed at the room" is
+	// one value in the column rather than two: the read reads NULL back as the
+	// empty string, and the signature is over the empty string either way.
 	err := q.QueryRowContext(ctx,
 		`INSERT INTO events (id, type, project, room, thread, parents, actor, artifact,
-		                     seq_hlc, node, body, meta, sig, created)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+		                     seq_hlc, node, body, meta, addressee, sig, created)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, nullif($13, ''), $14, $15)
 		 RETURNING created`,
 		e.ID, e.Type, e.Project, e.Room, e.Thread, pq.Array(e.Parents), e.Actor,
-		e.Artifact, e.SeqHLC, e.Node, e.Body, meta, e.Sig, e.Created).
+		e.Artifact, e.SeqHLC, e.Node, e.Body, meta, e.Addressee, e.Sig, e.Created).
 		Scan(&e.Created)
 	if err != nil {
 		return fmt.Errorf("store: append event: %w", err)

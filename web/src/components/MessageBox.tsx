@@ -3,6 +3,7 @@ import { type KeyboardEvent, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import type { FlowyEvent } from "@/lib/api";
 import { shortId } from "@/lib/utils";
@@ -12,7 +13,7 @@ interface Props {
   replyTo: FlowyEvent | null;
   clearReply: () => void;
   disabled: boolean;
-  onSend: (body: string) => Promise<void>;
+  onSend: (body: string, to: string) => Promise<void>;
 }
 
 /**
@@ -25,6 +26,10 @@ interface Props {
  */
 export function MessageBox({ replyTo, clearReply, disabled, onSend }: Props) {
   const [draft, setDraft] = useState("");
+  // to is who the message is for, and it is a field of its own rather than a
+  // convention inside the body: an @name in prose is a name somebody typed,
+  // and this is a column the node checks against a real principal.
+  const [to, setTo] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -34,7 +39,7 @@ export function MessageBox({ replyTo, clearReply, disabled, onSend }: Props) {
     setSending(true);
     setError(null);
     try {
-      await onSend(body);
+      await onSend(body, to.trim());
       setDraft("");
       clearReply();
     } catch (err) {
@@ -75,6 +80,15 @@ export function MessageBox({ replyTo, clearReply, disabled, onSend }: Props) {
           </Button>
         </div>
       ) : null}
+
+      <Input
+        value={to}
+        disabled={disabled || sending}
+        onChange={(event) => setTo(event.target.value)}
+        placeholder="to (a user or agent id) - leave empty for the room"
+        aria-label="addressee"
+        className="h-8 text-xs"
+      />
 
       <Textarea
         value={draft}

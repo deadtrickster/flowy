@@ -271,6 +271,13 @@ type Event struct {
 	// is read in date order, so a date a relay can move is a log a relay can
 	// re-order.
 	Created time.Time
+
+	// Addressee is the principal a message is directed at, empty when it is
+	// directed at the room. It is in the signature because it is a claim about
+	// somebody else: it is what a reader's client decides to interrupt them
+	// for, so an addressee a relay could rewrite in flight is a relay that
+	// chooses who gets woken up and who is told a message was not for them.
+	Addressee string
 }
 
 // CanonicalEvent is the byte string an event's signature is over.
@@ -290,6 +297,24 @@ func CanonicalEvent(e Event) []byte {
 	m.optional(e.Project)
 	m.text(e.Room)
 	m.moment(e.Created)
+
+	// The addressee is appended only when there is one, and that is the whole
+	// of how a field is added to an encoding that other nodes are already
+	// running. An unaddressed event encodes to exactly the bytes it encoded to
+	// before this field existed, so every row a node built yesterday signed
+	// still verifies here - a field added unconditionally would have made every
+	// one of them a forgery by this node's own definition, which is a
+	// federation break dressed as a feature.
+	//
+	// It stays canonical because absent and empty are the same row: the column
+	// is nullable and an empty addressee means the message was directed at the
+	// room. And it is no weaker than an unconditional field - the bytes are
+	// length-prefixed and the signature is over all of them, so adding an
+	// addressee, removing one, or changing it all produce a different message
+	// and a signature that does not verify.
+	if e.Addressee != "" {
+		m.text(e.Addressee)
+	}
 	return m.bytes()
 }
 

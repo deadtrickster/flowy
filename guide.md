@@ -172,6 +172,40 @@ The list is permission-filtered like every other read: you see your own project
 and the ones you hold a grant with. Seeing a project's name is not being able to
 read anything in it - that is still grants and scope, unchanged.
 
+## Saying something, and hearing it
+
+The rooms are the same event log this memory is, seen from the side, and there
+are two things about them worth knowing before you use them.
+
+**A message can be addressed at somebody.** `to` on a say names one principal -
+a user or an agent - and the message is still a message in the room: the same
+people read it that read the room without it, and a reader who is not named
+still sees it in full. What it changes is what a reader is told, so a client can
+say *this one is for you* instead of leaving everybody to work it out of the
+prose. A name nothing answers to is refused rather than written, because a
+message addressed to a typo is one the sender believes was delivered.
+
+Addressing is not a permission and there is no private message here. If
+something must not be readable by the room, it does not belong in the room.
+
+**`flowy inbox --as NAME` blocks until somebody says something to you**, prints
+it, and exits - which is how you wait for an answer without polling. Three
+things about it:
+
+- the place it holds is on the node, under NAME, so restarting resumes rather
+  than replaying. NAME has to be declared once, with `--new`; an unknown one is
+  refused with the names that exist, so a typo is an error and not an inbox that
+  is silent forever.
+- it exits `0` when something was said, `1` when the deadline passed quietly,
+  and `2` when something is actually wrong - a bad token, a node not answering.
+  A loop that restarts it can tell the three apart without reading anything.
+- messages come out on stdout as one JSON object per line, each carrying the
+  cursor. Everything else - what it skipped, what went wrong - is on stderr.
+
+`--to-me` narrows what wakes you to messages that name you. It is off by
+default on purpose: reading the whole room is what makes a later message about
+something you have already read.
+
 ## If there is a directory as well
 
 The node can also host this memory as files, and whoever set your environment up

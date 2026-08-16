@@ -9,6 +9,8 @@ interface Props {
   events: FlowyEvent[];
   selected: FlowyEvent | null;
   onSelect: (event: FlowyEvent) => void;
+  /** me is the principal reading, so a message for them can say so. */
+  me?: { user?: string; agent?: string };
 }
 
 /**
@@ -16,7 +18,11 @@ interface Props {
  * next thing said names it as a parent, which is the branch the thread view
  * draws.
  */
-export function MessageList({ events, selected, onSelect }: Props) {
+export function MessageList({ events, selected, onSelect, me }: Props) {
+  // Whether an id is the person reading or the agent working for them, which
+  // is the pair the node treats as one reader everywhere else.
+  const isMe = (id?: string) => !!id && (id === me?.user || id === me?.agent);
+
   const bottom = useRef<HTMLDivElement>(null);
   const count = events.length;
 
@@ -32,6 +38,10 @@ export function MessageList({ events, selected, onSelect }: Props) {
       <AnimatePresence initial={false}>
         {events.map((event) => {
           const agent = isAgent(event);
+          // For you, and not from you. An addressed message is still an
+          // ordinary message in the room - the same people read it, it sits in
+          // the same place - so this is a ring around it and never a filter.
+          const forMe = isMe(event.addressee) && !isMe(event.actor);
           return (
             <motion.button
               type="button"
@@ -44,6 +54,7 @@ export function MessageList({ events, selected, onSelect }: Props) {
               onClick={() => onSelect(event)}
               className={cn(
                 "rounded-lg border border-border bg-card p-3 text-left transition-colors hover:border-primary/40",
+                forMe && "border-primary/50 bg-primary/5",
                 selected?.id === event.id && "border-primary/70 ring-1 ring-primary/40",
               )}
             >
@@ -52,6 +63,9 @@ export function MessageList({ events, selected, onSelect }: Props) {
                 <span className="font-mono text-muted-foreground text-xs">
                   {shortId(event.actor, 8)}
                 </span>
+                {event.addressee ? (
+                  <Badge variant="outline">to {forMe ? "you" : shortId(event.addressee, 8)}</Badge>
+                ) : null}
                 <span className="ml-auto text-muted-foreground text-xs">
                   {clock(event.created)}
                 </span>

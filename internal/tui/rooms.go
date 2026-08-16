@@ -18,7 +18,12 @@ import (
 func (m *Model) roomsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "i":
+		// A plain say is to the room, so whatever an interrupted "a" left in
+		// the draft does not become the addressee of the next message.
+		m.draft.to = ""
 		return m, m.openInput(inputSay, m.Room()+"> ", "")
+	case "a":
+		return m, m.openInput(inputSayTo, "to> ", "")
 	case "o":
 		return m, m.openInput(inputOpenRoom, "room> ", "")
 	case "t":
@@ -169,13 +174,24 @@ func (m *Model) streamLines(width, height int) []string {
 		if e.Meta.ActorUser != "" && e.IsAgent() {
 			who = shortID(e.Meta.ActorUser) + "'s agent"
 		}
+		// An addressed message is drawn as one and is otherwise an ordinary
+		// message in the room: the room still holds it and the same people
+		// still read it, which is why the marker goes in front of the body
+		// rather than the message going somewhere else.
+		body := strings.ReplaceAll(e.Body, "\n", " ")
+		if e.Addressee != "" {
+			body = m.addressMark(e.Addressee) + " " + body
+		}
 		text := fmt.Sprintf("%s %-16s %s",
-			e.Created.Local().Format("15:04"), m.theme.clip(who, 16),
-			strings.ReplaceAll(e.Body, "\n", " "))
+			e.Created.Local().Format("15:04"), m.theme.clip(who, 16), body)
 		text = m.theme.clip(text, width)
 		switch {
 		case i == m.msgSel:
 			lines = append(lines, m.theme.Selected.Render(pad(text, width)))
+		case m.addressedToMe(e):
+			// For you, from somebody else: the one row in a busy room that is
+			// worth finding without reading the room.
+			lines = append(lines, m.theme.OK.Render(text))
 		case e.IsAgent():
 			lines = append(lines, m.theme.Agent.Render(text))
 		default:
@@ -183,6 +199,34 @@ func (m *Model) streamLines(width, height int) []string {
 		}
 	}
 	return lines
+}
+
+// addressMark is how an addressee is drawn: "to you" when it is this
+// principal, and the short id otherwise. Spelling out "you" rather than making
+// the reader match a ulid against their own is the whole value of the field on
+// a terminal - a room of 26-character ids is a room where nobody notices.
+func (m *Model) addressMark(addressee string) string {
+	if m.isMe(addressee) {
+		return "->you"
+	}
+	return "->" + shortID(addressee)
+}
+
+// addressedToMe reports whether a message is directed at this principal by
+// somebody else. Own messages are excluded for the reason the inbox excludes
+// them: a message cannot be news to the person who wrote it, and a token that
+// addresses itself would otherwise light up its own row.
+func (m *Model) addressedToMe(e *Event) bool {
+	return m.isMe(e.Addressee) && !m.isMe(e.Actor)
+}
+
+// isMe reports whether an id is this principal - the person or the agent
+// working for them, which is the same pair the node treats as one reader.
+func (m *Model) isMe(id string) bool {
+	if id == "" || m.who == nil {
+		return false
+	}
+	return id == m.who.User || (m.who.Agent != "" && id == m.who.Agent)
 }
 
 // threadLines is the DAG pane: the selected message's thread, with each
@@ -223,8 +267,12 @@ func (m *Model) threadLines(width, height int) []string {
 		if e.IsAgent() && e.Meta.ActorUser != "" {
 			who = e.Meta.ActorUser + "@"
 		}
+		body := e.Body
+		if e.Addressee != "" {
+			body = m.addressMark(e.Addressee) + " " + body
+		}
 		lines = append(lines, m.theme.clip(
-			fmt.Sprintf("%s %s %s", mark, shortID(who), e.Body), width))
+			fmt.Sprintf("%s %s %s", mark, shortID(who), body), width))
 	}
 	return lines
 }

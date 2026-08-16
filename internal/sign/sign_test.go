@@ -3,6 +3,8 @@ package sign
 import (
 	"bytes"
 	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/hex"
 	"testing"
 	"time"
 )
@@ -201,6 +203,7 @@ func TestCanonicalEventCoversEveryFieldAndSortsParents(t *testing.T) {
 		"empty parts": func(e *Event) { e.Parents = nil },
 		"created":     func(e *Event) { e.Created = written.AddDate(0, -3, 0) },
 		"no created":  func(e *Event) { e.Created = time.Time{} },
+		"addressee":   func(e *Event) { e.Addressee = "u-9" },
 	}
 	for what, change := range changes {
 		one := e
@@ -278,4 +281,73 @@ func TestCanonicalIdentityBindsTheKeyToTheNode(t *testing.T) {
 	if bytes.Equal(base, CanonicalIdentity("nodeA", other)) {
 		t.Error("two keys under the same node name encode the same")
 	}
+}
+
+// The addressee is the one field in these encoders that is written
+// conditionally, so it gets a test of its own: the compatibility it buys, and
+// the guarantee it must not have given up to buy it.
+//
+// The compatibility is the reason for the condition. Adding a field to an
+// encoding every node in a fleet is already running turns every row those nodes
+// signed into a forgery by this node's own definition - a merge that refuses
+// everything an older peer sends is a federation break dressed as a feature.
+// So an event addressed at nobody encodes to exactly the bytes it did before
+// this field existed, and the golden below is what says so a year from now,
+// when nobody remembers which fields were added when.
+func TestAnUnaddressedEventEncodesAsItAlwaysDid(t *testing.T) {
+	project := "pa"
+	e := Event{
+		ID: "e-1", Artifact: "art-1", Thread: "th-1", Actor: "u-1", Type: "chat",
+		Body: "said it", Meta: []byte(`{"topic":"x"}`), Parents: []string{"e-0", "e-00"},
+		HLC: 11, Node: "nodeA", Project: &project, Room: "pa/bugs", Created: written,
+	}
+	// The sha256 of the encoding of that event, taken from the build before the
+	// addressee existed rather than from the build that added it - a golden
+	// copied out of the code it is checking asserts nothing. If this changes,
+	// every event ever signed by another node stops verifying here, and the
+	// only correct way to make that happen is on purpose.
+	const golden = "a7d2e31a5d7091bf66a50debba9dd18f47116142b7c3b57706a954be57e35e67"
+	if got := digestHex(CanonicalEvent(e)); got != golden {
+		t.Errorf("the encoding of an unaddressed event moved:\n got  %s\n want %s\n"+
+			"every event signed by an older node now fails to verify", got, golden)
+	}
+	// And an empty addressee is not a third thing. The column is nullable and
+	// empty means directed at the room, so the two are one row and one message.
+	blank := e
+	blank.Addressee = ""
+	if !bytes.Equal(CanonicalEvent(e), CanonicalEvent(blank)) {
+		t.Error("an absent addressee and an empty one encoded differently")
+	}
+}
+
+// What the condition must not have cost: an addressee a relay can put on,
+// take off, or swap. Each of those is a different message and therefore a
+// signature that does not verify.
+func TestAnAddresseeCannotBeAddedRemovedOrSwapped(t *testing.T) {
+	to := Event{
+		ID: "e-1", Actor: "u-1", Type: "chat", Body: "for you", HLC: 11,
+		Node: "nodeA", Room: "general", Created: written, Addressee: "u-2",
+	}
+	room := to
+	room.Addressee = ""
+	elsewhere := to
+	elsewhere.Addressee = "u-3"
+
+	addressed := CanonicalEvent(to)
+	if bytes.Equal(addressed, CanonicalEvent(room)) {
+		t.Error("taking the addressee off an addressed event did not change the bytes")
+	}
+	if bytes.Equal(addressed, CanonicalEvent(elsewhere)) {
+		t.Error("redirecting an addressed event did not change the bytes")
+	}
+	if bytes.Equal(CanonicalEvent(room), CanonicalEvent(elsewhere)) {
+		t.Error("addressing an unaddressed event did not change the bytes")
+	}
+}
+
+// digestHex is the sha256 of a message, hex, for pinning an encoding without
+// pasting a few hundred bytes into a test.
+func digestHex(msg []byte) string {
+	sum := sha256.Sum256(msg)
+	return hex.EncodeToString(sum[:])
 }

@@ -2644,12 +2644,12 @@ func applyEvent(ctx context.Context, tx *sql.Tx, e *Event) (int, error) {
 	}
 	res, err := tx.ExecContext(ctx,
 		`INSERT INTO events (id, type, project, room, thread, parents, actor, artifact,
-		                     seq_hlc, node, body, meta, sig, created)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
-		         coalesce($14::timestamptz, now()))
+		                     seq_hlc, node, body, meta, addressee, sig, created)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, nullif($13, ''), $14,
+		         coalesce($15::timestamptz, now()))
 		 ON CONFLICT (id) DO NOTHING`,
 		e.ID, e.Type, e.Project, e.Room, e.Thread, pq.Array(e.Parents), e.Actor,
-		e.Artifact, e.SeqHLC, e.Node, e.Body, meta, e.Sig, nullTime(e.Created))
+		e.Artifact, e.SeqHLC, e.Node, e.Body, meta, e.Addressee, e.Sig, nullTime(e.Created))
 	if err != nil {
 		return 0, fmt.Errorf("store: sync apply event %s: %w", e.ID, err)
 	}

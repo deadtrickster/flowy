@@ -1362,6 +1362,20 @@ say_in_background() {
 	printf '%s\n' "$!"
 }
 
+# say_to_in_background ROOM TOKEN TO BODY - the same, addressed at somebody, so
+# a waiter that is only listening for its own name has something to wake for.
+say_to_in_background() {
+	local room=$1 token=$2 to=$3 body=$4
+	(
+		sleep 1
+		curl --silent --show-error -X POST \
+			-H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
+			--data-binary "$(jq -nc --arg t "$to" --arg b "$body" '{to: $t, body: $b}')" \
+			"http://127.0.0.1:$HTTP_PORT/api/chat/$room/say" >/dev/null
+	) &
+	printf '%s\n' "$!"
+}
+
 # ------------------------------------------------------------- phase 3 checks
 
 # A human posts as themselves, and a reply names the message it answers: that
@@ -1551,6 +1565,343 @@ a_granted_project_does_see_the_room() {
 	fi
 	want_eq "and not pc's room of the same name" "$(chat_len ".id == \"$CHAT_PC\"")" 0 || return 1
 	printf 'the grant reaches the room, and stops at the project it names\n'
+}
+
+# ------------------------------------------------------------ chat addressing
+#
+# A message can be directed at one principal and still be a message in the room.
+# The claim worth checking is the second half of that sentence: addressing
+# changes what a reader is TOLD and never what they may SEE, so the checks that
+# look like they are about a field are really about the read filter not having
+# moved. Every one of them runs in a room of its own, so that the counts the
+# phase 3 checks above assert are not disturbed by messages said down here.
+
+# say_to TOKEN ROOM TO BODY - a message directed at somebody.
+say_to() {
+	api POST "$1" "/api/chat/$2/say" \
+		"$(jq -nc --arg t "$3" --arg b "$4" '{to: $t, body: $b}')"
+}
+
+a_message_can_be_addressed() {
+	recall
+	local id
+	say_to "$TOKEN_A" addressing "$USER_B" "the deploy looks wrong to me" || return 1
+	want_eq "say status" "$API_STATUS" 200 || return 1
+	want_eq "who it is for" "$(jqv .addressee)" "$USER_B" || return 1
+	want_eq "and it is still a message in a room" "$(jqv .room)" addressing || return 1
+	want_eq "in the speaker's project" "$(jqv .project)" pa || return 1
+	id="$(jqv .id)"
+	remember CHAT_TO_B "$id"
+
+	api GET "$TOKEN_A" /api/chat/addressing || return 1
+	want_eq "the read path carries the addressee" \
+		"$(chat_len ".id == \"$id\" and .addressee == \"$USER_B\"")" 1 || return 1
+	printf 'addressed at %s, said in a room, read back with the addressee on it\n' "$USER_B"
+}
+
+# An actor is a user or an agent, so an addressee is too: an agent is a thing
+# you can say something to.
+an_agent_can_be_addressed() {
+	recall
+	say_to "$TOKEN_A" addressing "$AGENT_A" "over to you" || return 1
+	want_eq "say status" "$API_STATUS" 200 || return 1
+	want_eq "who it is for" "$(jqv .addressee)" "$AGENT_A" || return 1
+	printf 'an agent is an addressee: %s\n' "$AGENT_A"
+}
+
+# A message with no addressee is what a message has always been here, and the
+# field is absent rather than empty.
+an_unaddressed_message_is_still_a_message() {
+	recall
+	api POST "$TOKEN_A" /api/chat/addressing/say '{"body": "for the room"}' || return 1
+	want_eq "say status" "$API_STATUS" 200 || return 1
+	want_eq "the addressee of a message to the room" "$(jqv '.addressee // ""')" "" || return 1
+	printf 'no addressee, and nothing else about the message changed\n'
+}
+
+# A name nothing answers to is the worst available failure - the sender believes
+# somebody was told and nobody was - so it is refused at the door, and the
+# refusal writes no row.
+an_unknown_addressee_is_refused() {
+	recall
+	local before after
+	before="$(scalar "SELECT count(*) FROM events WHERE room = 'addressing'")" || return 1
+	say_to "$TOKEN_A" addressing 01NOSUCHPRINCIPAL0000000AA "for nobody at all" || return 1
+	want_eq "status" "$API_STATUS" 400 || return 1
+	after="$(scalar "SELECT count(*) FROM events WHERE room = 'addressing'")" || return 1
+	want_eq "messages the refusal wrote" "$((after - before))" 0 || return 1
+	printf 'refused, and nothing written: %s\n' "$(jqv .error)"
+}
+
+# The one that matters, in both directions.
+#
+# It does not widen: a message said in pc and addressed at B, who holds no grant
+# into pc, is not readable by B - not through the room and not through the
+# inbox. Being named on a message is not a capability, and this check is what
+# fails if it ever becomes one.
+#
+# It does not narrow: a message in pa addressed at B is read by exactly who read
+# pa's rooms before - B through the Phase 1 grant, and the operator, who is not
+# named on it at all.
+addressing_changes_nothing_about_who_reads() {
+	recall
+	local named granted
+	say_to "$TOKEN_A_PC" addressing "$USER_B" "named in a project you are not in" || return 1
+	want_eq "say status" "$API_STATUS" 200 || return 1
+	want_eq "it landed in pc" "$(jqv .project)" pc || return 1
+	named="$(jqv .id)"
+
+	api GET "$TOKEN_B" /api/chat/addressing || return 1
+	want_eq "B reads a pc message that names B" "$(chat_len ".id == \"$named\"")" 0 || return 1
+	api GET "$TOKEN_B" '/api/inbox?since=0' || return 1
+	want_eq "and B's inbox holds it" "$(chat_len ".id == \"$named\"")" 0 || return 1
+
+	say_to "$TOKEN_A" addressing "$USER_B" "named across the grant" || return 1
+	want_eq "say status" "$API_STATUS" 200 || return 1
+	granted="$(jqv .id)"
+	api GET "$TOKEN_B" /api/chat/addressing || return 1
+	want_eq "B reads a pa message that names B" "$(chat_len ".id == \"$granted\"")" 1 || return 1
+	api GET "$TOKEN_OP" /api/chat/addressing || return 1
+	want_eq "somebody in pa who is not named still reads it" \
+		"$(chat_len ".id == \"$granted\"")" 1 || return 1
+	printf 'the addressee opened nothing and closed nothing: the grant decided both\n'
+}
+
+# ----------------------------------------------------------- the inbox waiter
+#
+# `flowy inbox --as NAME` is the thing that replaces a shell loop, so it is
+# checked as a process rather than as an endpoint: what it exits with, what goes
+# to stdout, what goes to stderr, and where the node thinks it got to
+# afterwards. Every clause below comes from a way one of those loops failed.
+#
+# The room the waiter watches is its own, and the token that speaks into it is
+# A's agent - which is a different actor from A, so it is news to A, exactly as
+# GET /api/inbox has always had it.
+
+INBOX_ROOM=waiting
+readonly INBOX_ROOM
+
+# inbox_run ARGS... - the waiter, with the two streams kept apart because
+# "only messages go to stdout" is one of the things being checked, and with its
+# exit code kept because the exit code IS the answer.
+inbox_run() {
+	INBOX_STATUS=0
+	"$ROOT/flowy" inbox --url "http://127.0.0.1:$HTTP_PORT" "$@" \
+		>"$WORK/inbox.out" 2>"$WORK/inbox.err" || INBOX_STATUS=$?
+	INBOX_OUT="$(cat "$WORK/inbox.out")"
+	INBOX_ERR="$(cat "$WORK/inbox.err")"
+}
+
+# inbox_mark NAME - where the node says that waiter got to.
+inbox_mark() {
+	scalar "SELECT read_cursor FROM inbox_readers WHERE reader = '$1'"
+}
+
+# inbox_acks NAME COLUMN - how many times the mark moved for that reason.
+inbox_acks() {
+	scalar "SELECT $2 FROM inbox_readers WHERE reader = '$1'"
+}
+
+# A label nothing declared is a refusal that names the labels that do exist, not
+# a new reader starting from now. The silent version of this is an inbox that is
+# permanently empty and never errors, which is indistinguishable from a quiet
+# room - and leaves a junk identity behind that anything counting armed waiters
+# counts as a session listening.
+an_unknown_waiter_is_refused_with_what_does_exist() {
+	recall
+	inbox_run --token "$TOKEN_A" --as gate-waiter --deadline 5
+	want_eq "exit code for a name nothing declared" "$INBOX_STATUS" 2 || return 1
+	want_eq "and it wrote no messages" "$INBOX_OUT" "" || return 1
+	case "$INBOX_ERR" in
+	*"no inbox reader called gate-waiter"*) ;;
+	*)
+		printf 'the refusal does not name the label:\n%s\n' "$INBOX_ERR" >&2
+		return 1
+		;;
+	esac
+	printf 'a typo is exit 2 and a refusal: %s\n' "$INBOX_ERR"
+}
+
+# --new declares it, at the head of what this principal can already read rather
+# than at the beginning of the log: a waiter is armed to hear what happens next,
+# and one that replayed every room it can see would have its first batch thrown
+# away by whoever armed it.
+a_declared_waiter_starts_at_the_head_and_a_quiet_deadline_is_exit_1() {
+	recall
+	local head mark start elapsed
+	head="$(scalar "SELECT coalesce(max(seq_hlc), 0) FROM events WHERE type = 'chat'")" || return 1
+	start=$SECONDS
+	inbox_run --token "$TOKEN_A" --as gate-waiter --new --deadline 3
+	elapsed=$((SECONDS - start))
+	want_eq "exit code for a deadline that passed quietly" "$INBOX_STATUS" 1 || return 1
+	want_eq "messages written on a quiet deadline" "$INBOX_OUT" "" || return 1
+	mark="$(inbox_mark gate-waiter)" || return 1
+	if [ "$mark" -lt "$head" ]; then
+		printf 'a new waiter started at %s, below the head at %s\n' "$mark" "$head" >&2
+		return 1
+	fi
+	# And it took about the three seconds it was asked for. The poll window is
+	# twenty, so a deadline shorter than one has to shorten the last request or
+	# a caller who asked to wait three seconds waits twenty.
+	if [ "$elapsed" -gt 12 ]; then
+		printf 'a 3s deadline took %ss: the last poll was not shortened to the budget\n' \
+			"$elapsed" >&2
+		return 1
+	fi
+	printf 'declared at %s, quiet for %ss, exit 1\n' "$mark" "$elapsed"
+}
+
+# The return is the wake-up: the first message ends the wait, and it does not
+# wait out the rest of the deadline to batch anything with it.
+the_waiter_returns_on_the_first_message() {
+	recall
+	local poster start elapsed lines
+	poster="$(say_in_background "$INBOX_ROOM" "$TOKEN_A_AGENT" "wake up, the build is red")"
+	start=$SECONDS
+	inbox_run --token "$TOKEN_A" --as gate-waiter --deadline 40
+	elapsed=$((SECONDS - start))
+	wait "$poster" 2>/dev/null || true
+
+	want_eq "exit code when something was said" "$INBOX_STATUS" 0 || return 1
+	if [ "$elapsed" -ge 35 ]; then
+		printf 'it returned after %ss, so it waited out the deadline\n' "$elapsed" >&2
+		return 1
+	fi
+	lines="$(printf '%s\n' "$INBOX_OUT" | grep -c . || true)"
+	want_eq "lines on stdout" "$lines" 1 || return 1
+	want_eq "what it heard" \
+		"$(printf '%s' "$INBOX_OUT" | jq -r .body)" "wake up, the build is red" || return 1
+	want_eq "which room" "$(printf '%s' "$INBOX_OUT" | jq -r .room)" "$INBOX_ROOM" || return 1
+	want_eq "who said it" "$(printf '%s' "$INBOX_OUT" | jq -r .actor)" "$AGENT_A" || return 1
+	# The cursor is on every line, not only at the end, so a consumer that dies
+	# part way through a batch resumes from what it actually processed.
+	if [ "$(printf '%s' "$INBOX_OUT" | jq -r .cursor)" -le 0 ]; then
+		printf 'the message carries no cursor:\n%s\n' "$INBOX_OUT" >&2
+		return 1
+	fi
+	# And the human-facing half went to stderr, or the first fire would corrupt
+	# the JSON stream it is piped into.
+	case "$INBOX_ERR" in
+	*"flowy inbox --as gate-waiter"*) ;;
+	*)
+		printf 'the re-arm line is not on stderr:\n%s\n' "$INBOX_ERR" >&2
+		return 1
+		;;
+	esac
+	printf 'woke after %ss with one JSON line, and nothing else on stdout\n' "$elapsed"
+}
+
+# The cursor is the node's, so the next call does not hand the same message over
+# again - which is the whole reason it is not a file beside the client.
+the_cursor_is_the_nodes_so_the_next_call_does_not_repeat() {
+	recall
+	local was
+	was="$(inbox_mark gate-waiter)" || return 1
+	inbox_run --token "$TOKEN_A" --as gate-waiter --deadline 3
+	want_eq "exit code with nothing new said" "$INBOX_STATUS" 1 || return 1
+	want_eq "messages repeated" "$INBOX_OUT" "" || return 1
+	want_eq "acknowledged after a delivery" "$(inbox_acks gate-waiter acked_delivery)" 1 || return 1
+	printf 'the mark stayed at %s and the message was not handed over twice\n' "$was"
+}
+
+# The clause claude-host paid for twice. Your own messages must not wake you -
+# an inbox is what you did not write - but the mark has to pass them anyway. A
+# mark that stops in front of your own message is a waiter that reads it, drops
+# it, and stops in the same place on every call afterwards: returning instantly
+# in a loop, burning a session, and looking from outside exactly like traffic.
+its_own_messages_do_not_wake_it_and_the_mark_still_passes_them() {
+	recall
+	local mine seq mark quiet_before quiet_after
+	quiet_before="$(inbox_acks gate-waiter acked_quiet)" || return 1
+	api POST "$TOKEN_A" "/api/chat/$INBOX_ROOM/say" '{"body": "something I said myself"}' || return 1
+	want_eq "say status" "$API_STATUS" 200 || return 1
+	mine="$(jqv .id)"
+	seq="$(jqv .seq_hlc)"
+
+	inbox_run --token "$TOKEN_A" --as gate-waiter --deadline 3
+	want_eq "exit code for a room holding only my own message" "$INBOX_STATUS" 1 || return 1
+	want_eq "my own message handed back to me" "$INBOX_OUT" "" || return 1
+
+	mark="$(inbox_mark gate-waiter)" || return 1
+	if [ "$mark" -lt "$seq" ]; then
+		printf 'the mark is %s and my own message %s is at %s: it will be read forever\n' \
+			"$mark" "$mine" "$seq" >&2
+		return 1
+	fi
+	# And the move was recorded as a quiet one rather than as a delivery, so a
+	# lost acknowledgement and a quiet night are two different rows.
+	quiet_after="$(inbox_acks gate-waiter acked_quiet)" || return 1
+	if [ "$quiet_after" -le "$quiet_before" ]; then
+		printf 'the quiet ack was not counted: %s then %s\n' "$quiet_before" "$quiet_after" >&2
+		return 1
+	fi
+	printf 'not woken, and the mark moved past %s to %s anyway\n' "$seq" "$mark"
+}
+
+# --to-me is the reader's own choice about what to be interrupted for, and it
+# narrows delivery and nothing else: what it filters out is counted and said on
+# stderr, and the mark passes it, because a room that is busy and a room that is
+# dead must not look the same.
+to_me_wakes_only_for_what_names_this_principal() {
+	recall
+	local poster mark_before mark_after
+	mark_before="$(inbox_mark gate-waiter)" || return 1
+	api POST "$TOKEN_A_AGENT" "/api/chat/$INBOX_ROOM/say" \
+		'{"body": "a remark to the room at large"}' || return 1
+	want_eq "say status" "$API_STATUS" 200 || return 1
+
+	poster="$(say_to_in_background "$INBOX_ROOM" "$TOKEN_A_AGENT" "$USER_A" "this one is for you")"
+	inbox_run --token "$TOKEN_A" --as gate-waiter --to-me --deadline 40
+	wait "$poster" 2>/dev/null || true
+
+	want_eq "exit code" "$INBOX_STATUS" 0 || return 1
+	want_eq "what it woke for" \
+		"$(printf '%s' "$INBOX_OUT" | jq -r .body)" "this one is for you" || return 1
+	want_eq "addressed at" "$(printf '%s' "$INBOX_OUT" | jq -r .addressee)" "$USER_A" || return 1
+	case "$INBOX_ERR" in
+	*"to the room, not for you"*) ;;
+	*)
+		printf 'what it filtered out was not counted anywhere:\n%s\n' "$INBOX_ERR" >&2
+		return 1
+		;;
+	esac
+	mark_after="$(inbox_mark gate-waiter)" || return 1
+	if [ "$mark_after" -le "$mark_before" ]; then
+		printf 'the mark did not move past what was filtered out\n' >&2
+		return 1
+	fi
+	printf 'woken by the addressed one, told about the rest, mark past both\n'
+}
+
+# A waiter that cannot tell a broken configuration from a quiet room cannot be
+# restarted in a loop: the loop would spin forever on the broken one and say
+# nothing. So everything that is not "somebody spoke" and not "the deadline
+# passed" is 2.
+a_broken_waiter_is_exit_2_and_not_exit_1() {
+	recall
+	local out
+	inbox_run --token no-such-token --as gate-waiter --deadline 3
+	want_eq "exit code with a token the node refuses" "$INBOX_STATUS" 2 || return 1
+
+	mkdir -p "$WORK/no-config"
+	INBOX_STATUS=0
+	out="$(env -u FLOWY_TOKEN XDG_CONFIG_HOME="$WORK/no-config" \
+		"$ROOT/flowy" inbox --url "http://127.0.0.1:$HTTP_PORT" --as gate-waiter 2>&1)" ||
+		INBOX_STATUS=$?
+	want_eq "exit code with no token anywhere" "$INBOX_STATUS" 2 || return 1
+	case "$out" in
+	*"no token"*) ;;
+	*)
+		printf 'it refused, but not for the reason it should have:\n%s\n' "$out" >&2
+		return 1
+		;;
+	esac
+
+	INBOX_STATUS=0
+	out="$("$ROOT/flowy" inbox --url http://127.0.0.1:1 --token "$TOKEN_A" \
+		--as gate-waiter --deadline 3 2>&1)" || INBOX_STATUS=$?
+	want_eq "exit code when the node is not answering" "$INBOX_STATUS" 2 || return 1
+	printf 'a bad token, no token and a dead node are all 2, never 1\n'
 }
 
 # ---------------------------------------------------- phase 3 console helpers
@@ -4418,6 +4769,37 @@ check "an agent's inbox excludes its user's messages too" agent_inbox_excludes_b
 say "rooms are scoped by project"
 check "a project with no grant sees none of the room" another_project_sees_none_of_the_room
 check "a project that holds a grant does" a_granted_project_does_see_the_room
+
+# A message can be directed at somebody without leaving the room. The field is
+# the small half; the invariant is the whole point, and it is the last two
+# checks here: an addressee opens nothing and closes nothing.
+say "chat addressing"
+check "a message carries who it is for, there and back" a_message_can_be_addressed
+check "an agent is an addressee too" an_agent_can_be_addressed
+check "a message to the room carries none" an_unaddressed_message_is_still_a_message
+check "a name nothing answers to is refused, and writes no row" an_unknown_addressee_is_refused
+check "being named on a message is not a capability" addressing_changes_nothing_about_who_reads
+check "the addressee is inside what the node signs" \
+	go test -count=1 -run 'TestAnUnaddressedEventEncodesAsItAlwaysDid|TestAnAddresseeCannotBeAddedRemovedOrSwapped' ./internal/sign
+
+# `flowy inbox --as NAME` - the thing that replaces the shell loop everybody
+# reimplemented. Checked as a process, because what it exits with and which
+# stream it writes on are the contract.
+say "the inbox waiter"
+check "a label nothing declared is refused, with the ones that exist" \
+	an_unknown_waiter_is_refused_with_what_does_exist
+check "--new starts at the head, and a quiet deadline is exit 1" \
+	a_declared_waiter_starts_at_the_head_and_a_quiet_deadline_is_exit_1
+check "it returns on the first message, as one JSON line on stdout" \
+	the_waiter_returns_on_the_first_message
+check "the cursor is the node's, so the next call does not repeat it" \
+	the_cursor_is_the_nodes_so_the_next_call_does_not_repeat
+check "its own messages do not wake it, and the mark passes them anyway" \
+	its_own_messages_do_not_wake_it_and_the_mark_still_passes_them
+check "--to-me wakes for what names it and counts what it skipped" \
+	to_me_wakes_only_for_what_names_this_principal
+check "a bad token, no token and a dead node are exit 2, never exit 1" \
+	a_broken_waiter_is_exit_2_and_not_exit_1
 
 # ------------------------------------------------------------------- phase 4
 #
@@ -7379,6 +7761,65 @@ a_moved_date_is_refused_over_the_wire() {
 	printf 'the row was refused with its date moved and taken with it left alone: %s\n' "$id"
 }
 
+# The addressee is the newest field inside an event's signature, and it is the
+# only one in any of these encoders that is written conditionally - present only
+# when there is one, so that an unaddressed event still encodes to the bytes
+# every older node signed. A conditional field is exactly where a verify could
+# be lenient without anybody noticing, so it is checked on the wire in the three
+# ways a relay could lie with it: take it off, point it at somebody else, and
+# put one on a message that had none.
+a_rewritten_addressee_is_refused_over_the_wire() {
+	recall5
+	local id seq delta stripped redirected
+	want_napi 200 "$N5_PORT_A" POST "$N5_TOKEN_B" /api/chat/addressing/say \
+		"$(jq -nc --arg t "$N5_USER_A" '{to: $t, body: "for you, and signed as such"}')" || return 1
+	id="$(jqv .id)"
+	seq="$(jqv .seq_hlc)"
+	want_eq "the addressee it was written with" "$(jqv .addressee)" "$N5_USER_A" || return 1
+
+	want_napi 200 "$N5_PORT_A" GET "$N5_TOKEN_B" "/api/sync/pull?since=$((seq - 1))" || return 1
+	delta="$(printf '%s' "$API_BODY" | jq -c --arg i "$id" \
+		'{artifacts: [], events: [.events[] | select(.id == $i)], tasks: [], grants: []}')" ||
+		return 1
+	want_eq "the delta holds the message" \
+		"$(printf '%s' "$delta" | jq '.events | length')" 1 || return 1
+
+	stripped="$(printf '%s' "$delta" | jq -c 'del(.events[0].addressee)')" || return 1
+	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_B" /api/sync/push "$stripped" || return 1
+	want_eq "the message with its addressee taken off, refused" "$(jqv '.refused.events')" 1 || return 1
+	want_eq "and applied" "$(jqv '.applied.events')" 0 || return 1
+
+	redirected="$(printf '%s' "$delta" |
+		jq -c --arg u "$N5_USER_B" '.events[0].addressee = $u')" || return 1
+	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_B" /api/sync/push "$redirected" || return 1
+	want_eq "the message pointed at somebody else, refused" "$(jqv '.refused.events')" 1 || return 1
+	want_eq "rows in B's table for it" \
+		"$(scalar5 "$N5_DSN_B" "SELECT count(*) FROM events WHERE id = '$id'")" 0 || return 1
+
+	# And an addressee put onto a message that never had one - the other end of
+	# the same conditional.
+	want_napi 200 "$N5_PORT_A" POST "$N5_TOKEN_B" /api/chat/addressing/say \
+		'{"body": "said to the room and to nobody"}' || return 1
+	local plain plain_seq named
+	plain="$(jqv .id)"
+	plain_seq="$(jqv .seq_hlc)"
+	want_napi 200 "$N5_PORT_A" GET "$N5_TOKEN_B" "/api/sync/pull?since=$((plain_seq - 1))" || return 1
+	named="$(printf '%s' "$API_BODY" | jq -c --arg i "$plain" --arg u "$N5_USER_A" \
+		'{artifacts: [], events: [.events[] | select(.id == $i) | .addressee = $u],
+		  tasks: [], grants: []}')" || return 1
+	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_B" /api/sync/push "$named" || return 1
+	want_eq "an addressee put onto a room message, refused" "$(jqv '.refused.events')" 1 || return 1
+
+	# The control: the same delta untouched is taken, with the addressee its
+	# author put on it. What was refused is the rewrite and not the message.
+	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_B" /api/sync/push "$delta" || return 1
+	want_eq "the untouched message applied" "$(jqv '.applied.events')" 1 || return 1
+	want_eq "the addressee it crossed with" \
+		"$(scalar5 "$N5_DSN_B" "SELECT addressee FROM events WHERE id = '$id'")" \
+		"$N5_USER_A" || return 1
+	printf 'an addressee cannot be removed, redirected or added in flight: %s\n' "$id"
+}
+
 say "a pulled row is the authoring party's to assert"
 check "an artifact, a grant and an event owned by a third party from an unpinned node (HIGH 1)" \
 	go test -count=1 -run TestPulledRowsAreTheAuthoringPartysToAssert ./internal/store
@@ -7392,6 +7833,10 @@ check "a local write signs the date the column will hold (HIGH 2)" \
 	go test -count=1 -run TestALocalWritesDateIsSignedWithIt ./internal/store
 check "a row whose date was moved is refused over the wire (HIGH 2)" \
 	a_moved_date_is_refused_over_the_wire
+
+say "the addressee a message crossed with is the one its author signed"
+check "removed, redirected or added in flight, all refused" \
+	a_rewritten_addressee_is_refused_over_the_wire
 
 say "an identity is self-signed, is never rotated, and is pinned where that is required"
 check "a key served for a node that did not sign it, and a second key for a known one (MED 3)" \

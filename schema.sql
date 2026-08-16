@@ -76,6 +76,54 @@ CREATE TABLE IF NOT EXISTS tokens (
     project  text
 );
 
+-- Where a waiter got to in the log. One row is one thing that blocks on the
+-- inbox and returns: `flowy inbox --as NAME` is the caller, and NAME is the
+-- label.
+--
+-- The cursor is here rather than in a file beside the client, and that is the
+-- whole point of the table. Every harness that carried its own cursor file
+-- reread what it had already answered the first time two of them ran, or the
+-- first time one was restarted from a different directory; a position in a
+-- shared log belongs to the log.
+--
+-- The key is the principal AND the label, and it needs both. Several agents in
+-- a fleet run under one token, so a cursor keyed on the principal alone means
+-- one agent's read consumes another's wake-up - not a rare race, every message.
+-- And one session can speak under more than one name over its life, so the unit
+-- that has a position is the process that blocks and returns rather than the
+-- person behind it. The label is what you would restart.
+--
+-- A label is created explicitly (see store.DeclareInboxReader) and an unknown
+-- one is refused. A typo that silently became a new reader starting from now
+-- would be an inbox that is permanently empty and never says why, which is the
+-- failure this table is meant to end rather than a new one to introduce.
+--
+-- principal is the (user, agent, project) triple a token resolves to, joined
+-- the way sync_pending joins it - store.pendingKey, unit separators, so no
+-- principal can be forged out of two others by choosing an id with a separator
+-- in it. The same person in two projects is two principals reading two
+-- different slices of the log, so they are two rows here.
+--
+-- It is local, like tokens: no hlc, no node, no signature, and nothing
+-- replicates it. A cursor is a fact about a process on this machine, and a
+-- replicated one would mean a peer's read consuming a wake-up here.
+-- acked_delivery and acked_quiet are why the mark last moved: because messages
+-- were handed over, or because a poll expired with nothing to hand over and the
+-- mark still had to pass the reader's own messages. Both advance the same
+-- column, so without the two counters a lost acknowledgement and a quiet night
+-- are the same row - and "messages that never arrived" is exactly the question
+-- somebody asks of this table when it has already happened.
+CREATE TABLE IF NOT EXISTS inbox_readers (
+    principal      text NOT NULL,
+    reader         text NOT NULL,
+    read_cursor    bigint NOT NULL DEFAULT 0,
+    acked_delivery bigint NOT NULL DEFAULT 0,
+    acked_quiet    bigint NOT NULL DEFAULT 0,
+    created        timestamptz DEFAULT now(),
+    updated        timestamptz DEFAULT now(),
+    PRIMARY KEY (principal, reader)
+);
+
 -- Phase 10. The project registry: the row every project column points at.
 --
 -- A project used to be a free string. Nothing declared one and nothing checked
@@ -212,20 +260,28 @@ CREATE TABLE IF NOT EXISTS artifacts (
 -- thread, several merge them, none starts one. seq_hlc is the packed hybrid
 -- logical clock and is what peers page through.
 CREATE TABLE IF NOT EXISTS events (
-    id       text PRIMARY KEY,
-    type     text,
-    project  text,
-    room     text,
-    thread   text,
-    parents  text[],
-    actor    text,
-    artifact text,
-    seq_hlc  bigint,
-    node     text,
-    body     text,
-    meta     jsonb,
-    sig      bytea,
-    created  timestamptz DEFAULT now()
+    id        text PRIMARY KEY,
+    type      text,
+    project   text,
+    room      text,
+    thread    text,
+    parents   text[],
+    actor     text,
+    artifact  text,
+    seq_hlc   bigint,
+    node      text,
+    body      text,
+    meta      jsonb,
+    -- Who a message is directed at, NULL when it is directed at the room. It is
+    -- a user id or an agent id, the same two things actor holds, and it is
+    -- nullable because most messages are addressed to nobody in particular.
+    --
+    -- It is not a permission column and nothing in the permission filter reads
+    -- it: an addressed message is read by exactly the principals that could
+    -- read the room without it. What it carries is what a reader is TOLD.
+    addressee text,
+    sig       bytea,
+    created   timestamptz DEFAULT now()
 );
 
 -- Handoffs. One row is one assignment: this artifact, from this person to that
@@ -501,6 +557,13 @@ ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS sig bytea;
 ALTER TABLE events    ADD COLUMN IF NOT EXISTS sig bytea;
 ALTER TABLE tasks     ADD COLUMN IF NOT EXISTS sig bytea;
 ALTER TABLE grants    ADD COLUMN IF NOT EXISTS sig bytea;
+
+-- Chat addressing. A message can be directed at one principal while still being
+-- a message in the room, and the column is in the CREATE TABLE above; the ALTER
+-- is here so a database created by an earlier phase picks it up on the next
+-- load. Nullable, with no backfill: every message written before this existed
+-- was directed at the room, which is what NULL already says.
+ALTER TABLE events    ADD COLUMN IF NOT EXISTS addressee text;
 
 CREATE INDEX IF NOT EXISTS events_thread_idx          ON events (thread);
 CREATE INDEX IF NOT EXISTS events_seq_hlc_idx         ON events (seq_hlc);

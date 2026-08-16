@@ -57,6 +57,11 @@ type inputKind int
 const (
 	inputNone inputKind = iota
 	inputSay
+	// inputSayTo is the first step of addressing a message: who it is for, and
+	// then the message. Two steps rather than one line with a syntax in it -
+	// an @name convention would make a message about somebody called @deploy
+	// into a message to them, and the box is one line wide.
+	inputSayTo
 	inputOpenRoom
 	inputMemQuery
 	inputMemTitle
@@ -77,6 +82,8 @@ type draft struct {
 	scope    string
 	severity string
 	personal bool
+	// to is who the message being composed is for, empty for the room.
+	to string
 }
 
 // Model is the whole client.
@@ -695,7 +702,17 @@ func (m *Model) submitInput() (tea.Model, tea.Cmd) {
 	kind := m.inKind
 
 	switch kind {
+	case inputSayTo:
+		m.closeInput()
+		if value == "" {
+			return m, nil
+		}
+		m.draft.to = value
+		return m, m.openInput(inputSay, m.Room()+" to "+value+"> ", "")
+
 	case inputSay:
+		to := m.draft.to
+		m.draft.to = ""
 		if value == "" {
 			m.closeInput()
 			return m, nil
@@ -707,7 +724,7 @@ func (m *Model) submitInput() (tea.Model, tea.Cmd) {
 			}
 		}
 		m.closeInput()
-		return m, m.sayCmd(m.Room(), value, thread, nil)
+		return m, m.sayCmd(m.Room(), value, thread, to, nil)
 
 	case inputOpenRoom:
 		m.closeInput()
@@ -1057,7 +1074,7 @@ func (m *Model) helpView() string {
 		"    ?                 this        q / ctrl-c   quit",
 		"",
 		"  rooms       o open a room by name, n / p next / previous room,",
-		"              t thread pane, i the message box",
+		"              t thread pane, i the message box, a say it to somebody",
 		"  inbox       d delegate to your agent, x mark done, enter the artifact",
 		"  artifact    s move the lifecycle status, then a digit to pick",
 		"  memory      / search, i new, e edit the selected one",

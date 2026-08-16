@@ -171,11 +171,11 @@ func (m *Model) waitCmd(gen int, room string, cursor int64) tea.Cmd {
 	}
 }
 
-func (m *Model) sayCmd(room, body, thread string, parents []string) tea.Cmd {
+func (m *Model) sayCmd(room, body, thread, to string, parents []string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := callCtx()
 		defer cancel()
-		event, err := m.client.Say(ctx, room, body, parents, thread)
+		event, err := m.client.Say(ctx, room, body, parents, thread, to)
 		return sentMsg{event: event, err: err}
 	}
 }
