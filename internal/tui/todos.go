@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -90,6 +91,28 @@ func todoOwner(a *Artifact) string {
 	}
 	return ""
 }
+
+// todoFields is what a todo carries in fields: where it was raised, and the
+// message it came out of. It rides fields rather than columns for the reason a
+// report's as_of does - see reportProvenance, which is the same read of the
+// same column - and anything that does not parse leaves both empty, which is a
+// todo with no room on screen and is the truth.
+type todoFields struct {
+	Room    string `json:"room"`
+	Message string `json:"message"`
+}
+
+func todoProvenance(a *Artifact) todoFields {
+	var fields todoFields
+	if a == nil || len(a.Fields) == 0 {
+		return fields
+	}
+	_ = json.Unmarshal(a.Fields, &fields)
+	return fields
+}
+
+// todoRoomOf is the room a todo was raised in, or "" for one raised in none.
+func todoRoomOf(a *Artifact) string { return todoProvenance(a).Room }
 
 // todoCounts is the header: how many are in flight, how many are waiting, and
 // how many are finished.

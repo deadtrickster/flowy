@@ -295,16 +295,27 @@ func (req *artifactRequest) fillFrom(old *store.Artifact) {
 
 // handleListArtifacts lists what the principal may read.
 //
-// GET /api/artifacts?type=&project=&status=
+// GET /api/artifacts?type=&project=&status=&room=
+//
+// room narrows to what was raised in one chat room, and is a narrowing like
+// type and kind beside it: the permission filter is the same clause it always
+// was, and a list with no room in it is every artifact the caller may read,
+// including the ones that carry no room at all.
 func (s *server) handleListArtifacts(w http.ResponseWriter, r *http.Request) {
 	p := principalOf(r)
 	q := r.URL.Query()
 
+	room, err := roomArg(q.Get("room"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody(err.Error()))
+		return
+	}
 	list, err := s.db.ListArtifacts(r.Context(), p, store.ArtifactQuery{
 		Type:     q.Get("type"),
 		Kind:     q.Get("kind"),
 		Project:  q.Get("project"),
 		Status:   q.Get("status"),
+		Room:     room,
 		ScopeAll: scopeAll(r, p),
 		Limit:    intParam(q.Get("limit")),
 	})

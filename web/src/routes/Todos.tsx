@@ -4,6 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { type Artifact, api } from "@/lib/api";
 import { useSession } from "@/lib/session";
+import { countTodos, sortTodos, todoDetail, todoOwner, todoRoom } from "@/lib/todos";
 
 /**
  * The todos: what the fleet is doing, who owns each piece, and what it waits on.
@@ -17,37 +18,14 @@ import { useSession } from "@/lib/session";
  * The ordering is the feature. Active first, then open, then done: a list that
  * buries what is in flight under what is finished answers no question anybody
  * asked. Within a status they keep the order the store returned.
- */
-
-/** The order statuses are shown in, and everything unknown sorts with `todo`. */
-const RANK: Record<string, number> = { active: 0, todo: 1, done: 2 };
-
-function rank(status: string): number {
-  return RANK[status] ?? RANK.todo;
-}
-
-/**
- * The owner is the first line of the body, not the artifact's owner_user.
  *
- * Every one of these was written through the same operator principal, so
- * owner_user says "operator" for all of them and answers nothing. The body
- * carries `OWNER: <name>` as its first line, which is the claim the writer
- * actually made about who is doing the work.
+ * It lists every todo the caller may read, room or no room. The room panel in
+ * the chat view narrows to one room, and this page is the one that has to keep
+ * showing the items nobody raised in a room at all - a change that only handled
+ * room-tagged todos would empty this page and pass its own tests. The reading
+ * order, the owner line and the room live in lib/todos, shared with that panel,
+ * so the two surfaces cannot drift into two ideas of what a todo is.
  */
-function ownerOf(body: string): string {
-  const line = body.split("\n").find((l) => l.startsWith("OWNER:"));
-  const name = line?.slice("OWNER:".length).trim();
-  return name && name !== "?" ? name : "unowned";
-}
-
-/** The body without the OWNER line, which is rendered as its own column. */
-function detailOf(body: string): string {
-  return body
-    .split("\n")
-    .filter((l) => !l.startsWith("OWNER:"))
-    .join("\n")
-    .trim();
-}
 
 export function Todos() {
   const { token } = useSession();
@@ -76,15 +54,15 @@ export function Todos() {
     };
   }, [token]);
 
-  const sorted = [...todos].sort((a, b) => rank(a.status) - rank(b.status));
-  const count = (s: string) => todos.filter((t) => rank(t.status) === RANK[s]).length;
+  const sorted = sortTodos(todos);
+  const counts = countTodos(todos);
 
   return (
     <div className="flex flex-col gap-3">
       <h2 className="text-lg font-semibold">
         todos{" "}
         <span className="text-muted-foreground text-sm font-normal">
-          ({count("active")} active, {count("todo")} open, {count("done")} done)
+          ({counts.active} active, {counts.open} open, {counts.done} done)
         </span>
       </h2>
       {error ? <div className="text-destructive text-sm">{error}</div> : null}
@@ -97,7 +75,8 @@ export function Todos() {
         </div>
       ) : null}
       {sorted.map((t) => {
-        const detail = detailOf(t.body ?? "");
+        const detail = todoDetail(t.body ?? "");
+        const room = todoRoom(t);
         return (
           <Card key={t.id}>
             <CardHeader>
@@ -106,7 +85,11 @@ export function Todos() {
                 <Badge variant={t.status === "active" ? "default" : "secondary"}>
                   {t.status || "todo"}
                 </Badge>
-                <Badge variant="outline">{ownerOf(t.body ?? "")}</Badge>
+                <Badge variant="outline">{todoOwner(t.body ?? "") || "unowned"}</Badge>
+                {/* Where it was raised, when it was raised anywhere. A todo with
+                    no room is not lesser: it is where the whole queue was
+                    before rooms had panels. */}
+                {room ? <Badge variant="outline">#{room}</Badge> : null}
                 {(t.user_tags ?? []).map((tag) => (
                   <Badge key={tag} variant="outline">
                     {tag}

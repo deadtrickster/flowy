@@ -104,6 +104,16 @@ type todosMsg struct {
 	err       error
 }
 
+// roomTodosMsg is one room's todos coming back. gen says which room asked, the
+// way waitMsg does: an answer for a room the user has left is dropped rather
+// than drawn beside another room's conversation.
+type roomTodosMsg struct {
+	gen       int
+	room      string
+	artifacts []*Artifact
+	err       error
+}
+
 type activityMsg struct {
 	page *ActivityPage
 	err  error
@@ -315,6 +325,22 @@ func (m *Model) todosCmd(query string) tea.Cmd {
 		}
 		hits, err := m.client.Search(ctx, query, "memory", "todo")
 		return todosMsg{query: query, artifacts: hits, err: err}
+	}
+}
+
+// roomTodosCmd reads the todos raised in one room.
+//
+// It is issued off the back of the room read and of every long poll that comes
+// back, rather than on a timer of its own: the poll returns when somebody says
+// something and when its window runs out, which is when the plan agreed in this
+// room could have moved, and a second clock would be a second opinion about how
+// often the room is alive.
+func (m *Model) roomTodosCmd(gen int, room string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := callCtx()
+		defer cancel()
+		list, err := m.client.RoomTodos(ctx, room)
+		return roomTodosMsg{gen: gen, room: room, artifacts: list, err: err}
 	}
 }
 

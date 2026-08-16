@@ -1929,6 +1929,269 @@ a_broken_waiter_is_exit_2_and_not_exit_1() {
 	printf 'a bad token, no token and a dead node are all 2, never 1\n'
 }
 
+# ------------------------------------------------------------ per-room todos
+#
+# A todo panel inside the room, where the work is actually being agreed.
+#
+# The queue has been artifacts of type memory and kind todo for a while, and it
+# was readable everywhere except the place it is decided: two agents and a
+# person settle in #build what has to happen, and until the room grew a panel
+# the settling lived in the messages. The room is a field on the item - in
+# fields, beside as_of and supersedes on a report - and it is a filter and
+# nothing else: same owner, same visibility, same permission filter in the same
+# WHERE clause, and the todos written before the field existed carry no room and
+# are on every page they were on yesterday. These checks are written around that
+# last sentence, because a change that only handled room-tagged todos would pass
+# every check about rooms and quietly empty the list that works today.
+
+# The three titles the checks below file and then look for. Fixed strings rather
+# than generated ones because the check that writes one and the check that reads
+# it back are two processes, and because the console render check greps a
+# painted page for them.
+ROOM_TODO_BUILD="bench-test the gearbox before friday"
+ROOM_TODO_GENERAL="rewrite the pruning notes"
+ROOM_TODO_GLOBAL="a todo nobody raised in any room"
+ROOM_TODO_MCP="marrowbone the room filter"
+readonly ROOM_TODO_BUILD ROOM_TODO_GENERAL ROOM_TODO_GLOBAL ROOM_TODO_MCP
+
+# has_todo TITLE - whether the last /api/artifacts response listed that title.
+has_todo() {
+	printf '%s' "$API_BODY" | jq --arg t "$1" -e \
+		'[.artifacts[] | select(.title == $t)] | length == 1' >/dev/null
+}
+
+# want_todos LIST_DESCRIPTION PRESENT... -- ABSENT... - asserts what the last
+# artifacts response holds and what it does not. The absent half is the half
+# that matters here: "the room's panel" is a claim about what is not in it.
+want_todos() {
+	local what=$1 title
+	shift
+	local absent=0
+	for title in "$@"; do
+		if [ "$title" = "--" ]; then
+			absent=1
+			continue
+		fi
+		if [ "$absent" -eq 0 ]; then
+			if ! has_todo "$title"; then
+				printf '%s does not list %q, and should:\n%s\n' \
+					"$what" "$title" "$(printf '%s' "$API_BODY" | jq -r '.artifacts[].title')" >&2
+				return 1
+			fi
+		elif has_todo "$title"; then
+			printf '%s lists %q, and should not:\n%s\n' \
+				"$what" "$title" "$(printf '%s' "$API_BODY" | jq -r '.artifacts[].title')" >&2
+			return 1
+		fi
+	done
+}
+
+# Raising one is the point of the feature: a conversation becomes a plan without
+# leaving the conversation. Two rows go in under one clock reading - the item,
+# and one ordinary chat message in the room naming it in the artifact column the
+# log already has - and the item keeps the id of the message it came out of,
+# which is the link filing the same thing in another system loses.
+a_todo_is_raised_out_of_a_message() {
+	recall
+	api POST "$TOKEN_A" /api/chat/build/say \
+		'{"body": "the gearbox needs a bench test before we ship it"}' || return 1
+	want_eq "the message that raises it" "$API_STATUS" 200 || return 1
+	local message thread
+	message="$(jqv .id)"
+	thread="$(jqv .thread)"
+
+	api POST "$TOKEN_A" /api/chat/build/todo \
+		"$(jq -nc --arg t "$ROOM_TODO_BUILD" --arg m "$message" \
+			'{title: $t, body: "OWNER: a-bench", message: $m}')" || return 1
+	want_eq "raise status" "$API_STATUS" 200 || return 1
+	want_eq "it is a todo" "$(jqv .item.kind)" todo || return 1
+	want_eq "of the type the queue is" "$(jqv .item.type)" memory || return 1
+	want_eq "raised open" "$(jqv .item.status)" todo || return 1
+	# Read by the room, so written at the project's scope: filing the room's
+	# plan where nobody else in the room can read it is the one outcome this
+	# must not produce.
+	want_eq "in the project" "$(jqv .item.project)" pa || return 1
+	# project-only, not 'project': that value has always meant the project plus
+	# whoever its grants reach, and the scope means what it says. See
+	# store.VisibilityProjectOnly.
+	want_eq "at the project's visibility" "$(jqv .item.visibility)" project-only || return 1
+	want_eq "the room it was raised in" "$(jqv .item.fields.room)" build || return 1
+	want_eq "and the message it came out of" "$(jqv .item.fields.message)" "$message" || return 1
+
+	# The other half: the room says so, as an ordinary message.
+	want_eq "the room heard about it" "$(jqv .event.room)" build || return 1
+	want_eq "as a chat message" "$(jqv .event.type)" chat || return 1
+	want_eq "naming the todo" "$(jqv .event.artifact)" "$(jqv .item.id)" || return 1
+	want_eq "under the message it came out of" \
+		"$(jqv '.event.parents | join(",")')" "$message" || return 1
+	want_eq "in that conversation's thread" "$(jqv .event.thread)" "$thread" || return 1
+	remember ROOM_TODO_ID "$(jqv .item.id)"
+	remember ROOM_TODO_MESSAGE "$message"
+	printf 'todo %s raised in #build out of message %s\n' "$(jqv .item.id)" "$message"
+}
+
+# The filter, and the case a room-shaped change gets wrong: a todo with no room
+# is not in any room's panel and is in every list that did not ask for one.
+a_room_is_a_filter_and_not_a_move() {
+	recall
+	api POST "$TOKEN_A" /api/chat/general/todo \
+		"$(jq -nc --arg t "$ROOM_TODO_GENERAL" '{title: $t, body: "OWNER: a-writer"}')" || return 1
+	want_eq "the second room's todo" "$API_STATUS" 200 || return 1
+	want_eq "its room" "$(jqv .item.fields.room)" general || return 1
+	# One filed the way the fourteen on the real node were: no room at all.
+	api POST "$TOKEN_A" /api/artifacts \
+		"$(jq -nc --arg t "$ROOM_TODO_GLOBAL" \
+			'{type: "memory", kind: "todo", status: "todo", visibility: "project",
+			  title: $t, body: "OWNER: ?"}')" || return 1
+	want_eq "the roomless todo" "$API_STATUS" 200 || return 1
+
+	api GET "$TOKEN_A" "/api/artifacts?type=memory&kind=todo&room=build" || return 1
+	want_eq "the build panel" "$API_STATUS" 200 || return 1
+	want_todos "#build's panel" "$ROOM_TODO_BUILD" -- \
+		"$ROOM_TODO_GENERAL" "$ROOM_TODO_GLOBAL" || return 1
+
+	api GET "$TOKEN_A" "/api/artifacts?type=memory&kind=todo&room=general" || return 1
+	want_todos "#general's panel" "$ROOM_TODO_GENERAL" -- \
+		"$ROOM_TODO_BUILD" "$ROOM_TODO_GLOBAL" || return 1
+
+	# The discriminating case. Ask for no room and every todo is there, the ones
+	# with a room and the ones without: the page that works today still works.
+	api GET "$TOKEN_A" "/api/artifacts?type=memory&kind=todo" || return 1
+	want_todos "the whole queue" \
+		"$ROOM_TODO_BUILD" "$ROOM_TODO_GENERAL" "$ROOM_TODO_GLOBAL" || return 1
+	printf 'build has its own, general has its own, and the roomless one is in neither and in the list\n'
+}
+
+# The room narrows and never widens: it is not a second visibility, and asking
+# for a room somebody else's project talks in answers with what this principal
+# could already read, which is nothing.
+a_room_is_not_a_permission_axis() {
+	recall
+	api GET "$TOKEN_B" "/api/artifacts?type=memory&kind=todo&room=build" || return 1
+	want_eq "B's read of #build's panel" "$API_STATUS" 200 || return 1
+	want_eq "what B gets out of A's room" "$(hits)" 0 || return 1
+	api GET "$TOKEN_B" "/api/artifacts?type=memory&kind=todo" || return 1
+	want_todos "B's whole queue" -- "$ROOM_TODO_BUILD" "$ROOM_TODO_GENERAL" || return 1
+	printf "the room filter hands B nothing it could not already read\n"
+}
+
+# A todo is raised out of a conversation in front of you, or out of none. An id
+# is a guess anybody can make, and a message that is not there and one that is
+# out of reach get the same answer - the answer a read of it would give.
+a_todo_cannot_be_raised_out_of_a_message_you_cannot_read() {
+	recall
+	# Said in pc, which nobody holds a grant into. A's own messages are the
+	# wrong test: pb holds a grant on pa, so B can legitimately read those and
+	# raising a todo out of one is not a refusal - it is the feature.
+	api POST "$TOKEN_A_PC" /api/chat/build/say \
+		'{"body": "said in the project nobody has a grant into"}' || return 1
+	want_eq "the unreachable message" "$API_STATUS" 200 || return 1
+	local hidden
+	hidden="$(jqv .id)"
+	want_status 404 GET "$TOKEN_B" "/api/artifact/$hidden" || return 1
+
+	want_status 404 POST "$TOKEN_B" /api/chat/build/todo \
+		"$(jq -nc --arg m "$hidden" \
+			'{title: "raised out of somebody elses room", message: $m}')" || return 1
+	case "$(jqv .error)" in
+	*"not one you can read"*) ;;
+	*)
+		printf 'it was refused, but not as an unreadable message: %s\n' "$(jqv .error)" >&2
+		return 1
+		;;
+	esac
+	# And nothing was written: a refused raise leaves no half of the pair.
+	api GET "$TOKEN_B" "/api/artifacts?type=memory&kind=todo" || return 1
+	want_todos "B's queue after the refusal" -- "raised out of somebody elses room" || return 1
+	# An id that names nothing gets the same answer a row out of reach does,
+	# which is the answer a read of either would give.
+	want_status 404 POST "$TOKEN_A" /api/chat/build/todo \
+		'{"title": "raised out of nothing at all", "message": "01HNOSUCHMESSAGE00000000"}' || return 1
+	want_status 400 POST "$TOKEN_A" /api/chat/build/todo '{"body": "no title"}' || return 1
+	printf 'refused, and no row: %s\n' "$(jqv .error)"
+}
+
+# The same field over MCP, which is where an agent writes one. mem_write takes
+# the room and the message the way report_write takes as_of and supersedes, and
+# todos narrows by it - with the unnarrowed call still answering with the whole
+# queue, roomless items included.
+mem_write_takes_a_room_and_todos_narrows_by_it() {
+	recall
+	want_tool mem_write "$TOKEN_A" "$(jq -nc --arg t "$ROOM_TODO_MCP" --arg m "$ROOM_TODO_MESSAGE" \
+		'{title: $t, body: "OWNER: a-agent", scope: "project", kind: "todo",
+		  room: "build", message: $m}')" || return 1
+	want_eq "the room rode the write" "$(tv .item.fields.room)" build || return 1
+	want_eq "and so did the message" "$(tv .item.fields.message)" "$ROOM_TODO_MESSAGE" || return 1
+	local id
+	id="$(tv .item.id)"
+
+	# An update that says only "done" keeps the room it was raised in: a todo
+	# does not leave its room by being finished.
+	want_tool mem_write "$TOKEN_A" "{\"id\": \"$id\", \"status\": \"done\"}" || return 1
+	want_eq "the room survived an update that did not restate it" \
+		"$(tv .item.fields.room)" build || return 1
+	want_eq "and so did the title" "$(tv .item.title)" "$ROOM_TODO_MCP" || return 1
+
+	want_tool todos "$TOKEN_A" '{"room": "build"}' || return 1
+	want_eq "the finished one is out of the room's outstanding work" \
+		"$(printf '%s' "$TOOL_JSON" | jq "[.items[] | select(.id == \"$id\")] | length")" 0 || return 1
+	want_eq "and the raised one is in it" \
+		"$(printf '%s' "$TOOL_JSON" | jq --arg t "$ROOM_TODO_BUILD" \
+			'[.items[] | select(.title == $t)] | length')" 1 || return 1
+	want_eq "and the other room's is not" \
+		"$(printf '%s' "$TOOL_JSON" | jq --arg t "$ROOM_TODO_GENERAL" \
+			'[.items[] | select(.title == $t)] | length')" 0 || return 1
+
+	# And with no room: the whole of the outstanding queue, which is what every
+	# agent that has ever called this tool gets back.
+	want_tool todos "$TOKEN_A" '{}' || return 1
+	local title
+	for title in "$ROOM_TODO_BUILD" "$ROOM_TODO_GENERAL" "$ROOM_TODO_GLOBAL"; do
+		want_eq "todos with no room lists $title" \
+			"$(printf '%s' "$TOOL_JSON" | jq --arg t "$title" \
+				'[.items[] | select(.title == $t)] | length')" 1 || return 1
+	done
+	printf 'mem_write carries the room, todos narrows by it, and todos {} is still the whole queue\n'
+}
+
+# A room is one path segment on the chat routes, so a name that could not go
+# back into a URL is not a room this node has, at either surface.
+a_room_that_is_not_one_is_refused() {
+	recall
+	want_status 400 GET "$TOKEN_A" "/api/artifacts?type=memory&kind=todo&room=a%2Fb" || return 1
+	want_tool_fails mem_write "$TOKEN_A" \
+		'{"title": "wrong room", "kind": "todo", "scope": "project", "room": "a/b"}' \
+		"is not one" || return 1
+	# The raise takes its room from the path, where a slash cannot reach it -
+	# so the bar that catches a name the panel could never ask for again is the
+	# length one, and it is the same bar.
+	local long
+	long="$(printf 'r%.0s' $(seq 1 65))"
+	want_status 400 POST "$TOKEN_A" "/api/chat/$long/todo" \
+		'{"title": "raised into a room nothing can ask for"}' || return 1
+}
+
+# The console, on the page: the room's todos have to be on the rendered room,
+# not merely in an endpoint's answer. A feature that is complete in the data and
+# absent from the screen is the failure this whole thing is a fix for.
+console_renders_the_rooms_todos() {
+	recall
+	cd "$ROOT/web" || return 1
+	node scripts/render-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" \
+		"$ROOM_TODO_GENERAL"
+}
+
+# And the page that lists all of them still lists the one with no room, painted
+# rather than fetched. This is the discriminating case on the screen: a change
+# that only handled room-tagged todos leaves this page empty and passes every
+# check above it.
+console_still_renders_the_roomless_todos() {
+	recall
+	cd "$ROOT/web" || return 1
+	node scripts/render-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" \
+		"$ROOM_TODO_GLOBAL" /todos
+}
+
 # ---------------------------------------------------- phase 3 console helpers
 
 # The three steps of the frontend build, each its own check so a failure names
@@ -4368,8 +4631,13 @@ TUI_REPORT_AS_OF="tui-gate-abc123"
 # make the memory hit count say something about this seed instead.
 TUI_TODO="marrowbone the todos view"
 TUI_TODO_OWNER="tui-gate-owner"
+# And one raised in the room the drive opens, which the room view has to draw
+# beside the messages. It is worded away from TUI_TODO because the drive asserts
+# both - one on the todos tab, one in the room - and a shared word would let a
+# pane that drew the wrong list pass either wait.
+TUI_ROOM_TODO="quicklime the room panel"
 readonly TUI_MESSAGE TUI_MEMORY TUI_TASK TUI_REPORT TUI_REPORT_AS_OF
-readonly TUI_TODO TUI_TODO_OWNER
+readonly TUI_TODO TUI_TODO_OWNER TUI_ROOM_TODO
 
 # The tui links no database driver and no store package: it reaches the node the
 # way any other client does or it does not reach it at all. This is a structural
@@ -4439,12 +4707,20 @@ tui_seed() {
 			'{type: "memory", kind: "todo", status: "active", visibility: "project",
 			  title: $t, body: ("OWNER: " + $o + "\nDEPENDS ON: nothing")}')" || return 1
 	want_eq "the seeded todo" "$API_STATUS" 200 || return 1
+	# Raised in the room rather than filed at it: the room field and the message
+	# that raised it are what the room panel reads, so the seed goes in through
+	# the door a person in the room uses.
+	api POST "$TOKEN_A" /api/chat/general/todo \
+		"$(jq -nc --arg t "$TUI_ROOM_TODO" --arg o "$TUI_TODO_OWNER" \
+			'{title: $t, body: ("OWNER: " + $o)}')" || return 1
+	want_eq "the seeded room todo" "$API_STATUS" 200 || return 1
+	want_eq "raised in general" "$(jqv .item.fields.room)" general || return 1
 	local artifact
 	artifact="$(new_artifact "$TOKEN_A" bug "$TUI_TASK")" || return 1
 	assign_as "$TOKEN_A" "$artifact" "$USER_A" "for the tui gate" || return 1
 	want_eq "the seeded assignment" "$API_STATUS" 200 || return 1
-	printf 'a message in general, a %s memory, a report as of %s, a todo owned by %s, and a task about %s\n' \
-		"$TUI_MEMORY" "$TUI_REPORT_AS_OF" "$TUI_TODO_OWNER" "$artifact"
+	printf 'a message in general, a %s memory, a report as of %s, a todo owned by %s, "%s" raised in general, and a task about %s\n' \
+		"$TUI_MEMORY" "$TUI_REPORT_AS_OF" "$TUI_TODO_OWNER" "$TUI_ROOM_TODO" "$artifact"
 }
 
 # ran_the_live_tests NAME ENV... - runs one of the teatest drives and insists it
@@ -4494,7 +4770,8 @@ tui_headless() {
 		"FLOWY_TUI_REPORT=$TUI_REPORT" \
 		"FLOWY_TUI_REPORT_AS_OF=$TUI_REPORT_AS_OF" \
 		"FLOWY_TUI_TODO=$TUI_TODO" \
-		"FLOWY_TUI_TODO_OWNER=$TUI_TODO_OWNER"
+		"FLOWY_TUI_TODO_OWNER=$TUI_TODO_OWNER" \
+		"FLOWY_TUI_ROOM_TODO=$TUI_ROOM_TODO"
 }
 
 # And the failure the gate has to see: a token the node refuses is a line on the
@@ -4846,6 +5123,30 @@ check "--to-me wakes for what names it and counts what it skipped" \
 	to_me_wakes_only_for_what_names_this_principal
 check "a bad token, no token and a dead node are exit 2, never exit 1" \
 	a_broken_waiter_is_exit_2_and_not_exit_1
+
+# A todo panel inside the room, and the field it needs. The room rides fields
+# the way as_of rides a report, and it is a filter and not a permission axis -
+# so half of what is asserted below is what a room's panel does NOT hold, and
+# what a list that asked for no room still does.
+say "per-room todos"
+check "a todo is raised out of a message, and the room hears about it" \
+	a_todo_is_raised_out_of_a_message
+check "each room's panel holds its own, and a roomless todo is in every list" \
+	a_room_is_a_filter_and_not_a_move
+check "the room filter, in the store" \
+	go test -count=1 -run TestARoomIsAFilterAndNotAPermissionAxis ./internal/store
+check "the filter hands another project nothing it could not already read" \
+	a_room_is_not_a_permission_axis
+check "a todo cannot be raised out of a message you cannot read" \
+	a_todo_cannot_be_raised_out_of_a_message_you_cannot_read
+check "mem_write carries the room, and todos narrows by it" \
+	mem_write_takes_a_room_and_todos_narrows_by_it
+check "a room name that is not one is refused at both surfaces" \
+	a_room_that_is_not_one_is_refused
+check "the console paints the room's todos on the room page" \
+	console_renders_the_rooms_todos
+check "and the todos page still paints the ones with no room" \
+	console_still_renders_the_roomless_todos
 
 # ------------------------------------------------------------------- phase 4
 #
@@ -9924,7 +10225,7 @@ check "node B survived the announcements" kill -0 "$NODE5B_PID"
 say "the terminal client"
 check "the tui reaches the node only through the HTTP API" tui_talks_only_to_the_api
 check "flowy tui refuses to start with no token anywhere" tui_needs_a_token
-check "a message, a memory, a report, a todo and a task are seeded for the tui" tui_seed
+check "a message, a memory, a report, two todos and a task are seeded for the tui" tui_seed
 check "the tui, driven headless by the keyboard against the live node" tui_headless
 check "a token the node refuses is a status line, not a panic" \
 	tui_headless_refuses_a_bad_token

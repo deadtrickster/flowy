@@ -244,6 +244,7 @@ var apiRoutes = []string{
 	"POST /api/chat/{room}/say",
 	"GET /api/chat/{room}",
 	"GET /api/chat/{room}/wait",
+	"POST /api/chat/{room}/todo",
 	"GET /api/inbox",
 	"GET /api/inbox/tasks",
 	"GET /api/inbox/wait",
@@ -331,6 +332,9 @@ func (s *server) routes() http.Handler {
 	api.HandleFunc("POST /api/chat/{room}/say", s.handleChatSay)
 	api.HandleFunc("GET /api/chat/{room}", s.handleChatRead)
 	api.HandleFunc("GET /api/chat/{room}/wait", s.handleChatWait)
+	// The room's plan, raised from the room: a todo and the message that raised
+	// it, written where the conversation is.
+	api.HandleFunc("POST /api/chat/{room}/todo", s.handleRoomTodoRaise)
 	api.HandleFunc("GET /api/inbox", s.handleInbox)
 	// The waiter: a long poll over the inbox, and the two calls that keep its
 	// place. The place is on the node rather than in a file beside the client,

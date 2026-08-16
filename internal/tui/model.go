@@ -124,6 +124,12 @@ type Model struct {
 	threadOpen bool
 	thread     []*Event
 	watching   bool
+	// the room's own todos, beside its messages. Open by default: the plan a
+	// room has written down is what somebody in it glances at, and a pane
+	// nobody knows to press a key for is a pane that does not exist. It gives
+	// way to the stream on a narrow terminal - see roomsView.
+	roomTodosOpen bool
+	roomTodos     []*Artifact
 
 	// inbox
 	tasks   []*Task
@@ -181,15 +187,16 @@ func New(client *Client, theme Theme) *Model {
 	box.KeyMap = tmuxSafeKeyMap()
 
 	return &Model{
-		client:      client,
-		theme:       theme,
-		width:       80,
-		height:      24,
-		rooms:       append([]string{}, defaultRooms...),
-		input:       box,
-		annScope:    "project",
-		annSeverity: "info",
-		tlKind:      "",
+		client:        client,
+		theme:         theme,
+		width:         80,
+		height:        24,
+		rooms:         append([]string{}, defaultRooms...),
+		input:         box,
+		annScope:      "project",
+		annSeverity:   "info",
+		tlKind:        "",
+		roomTodosOpen: true,
 	}
 }
 
@@ -327,10 +334,13 @@ func (m *Model) onData(msg tea.Msg) tea.Cmd {
 		m.msgSel = len(m.msgs) - 1
 		m.rememberRooms(m.msgs)
 		if m.watching {
-			return nil
+			return m.roomTodosCmd(m.gen, m.Room())
 		}
 		m.watching = true
-		return m.waitCmd(m.gen, m.Room(), m.cursor)
+		// The messages and the room's plan arrive together, so a room that has
+		// just been opened is never a conversation beside an empty panel.
+		return tea.Batch(m.waitCmd(m.gen, m.Room(), m.cursor),
+			m.roomTodosCmd(m.gen, m.Room()))
 
 	case waitMsg:
 		if msg.gen != m.gen {
@@ -355,7 +365,24 @@ func (m *Model) onData(msg tea.Msg) tea.Cmd {
 			}
 		}
 		m.cursor = msg.page.Cursor
-		return m.waitCmd(m.gen, m.Room(), m.cursor)
+		// The todos ride the poll's cadence: a todo somebody else raised shows
+		// up beside the messages without anybody reloading anything, which is
+		// the whole point of the panel being here rather than on a page of its
+		// own. The next poll goes out with it.
+		return tea.Batch(m.waitCmd(m.gen, m.Room(), m.cursor),
+			m.roomTodosCmd(m.gen, m.Room()))
+
+	case roomTodosMsg:
+		if msg.gen != m.gen {
+			return nil
+		}
+		if m.note(msg.err) {
+			return nil
+		}
+		// Ordered here rather than in the render, the way the todos view does
+		// it: settled once per answer instead of once per frame.
+		m.roomTodos = sortTodos(msg.artifacts)
+		return nil
 
 	case sentMsg:
 		if m.note(msg.err) {
@@ -858,6 +885,9 @@ func (m *Model) openRoom(room string) tea.Cmd {
 	m.watching = false
 	m.msgs, m.cursor, m.msgSel = nil, 0, 0
 	m.thread, m.threadOpen = nil, false
+	// Another room's plan is not this one's, and leaving it on screen until the
+	// read comes back would say it was.
+	m.roomTodos = nil
 	m.view = viewRooms
 	return m.roomCmd(m.gen, room, 0)
 }
@@ -1112,7 +1142,8 @@ func (m *Model) helpView() string {
 		"    ?                 this        q / ctrl-c   quit",
 		"",
 		"  rooms       o open a room by name, n / p next / previous room,",
-		"              t thread pane, i the message box, a say it to somebody",
+		"              t thread pane, T this room's todos, i the message box,",
+		"              a say it to somebody",
 		"  inbox       d delegate to your agent, x mark done, enter the artifact",
 		"  artifact    s move the lifecycle status, then a digit to pick",
 		"  memory      / search, i new, e edit the selected one",

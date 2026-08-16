@@ -60,6 +60,12 @@ var tools = []tool{
 			"tags":  strArray("Free-form subject labels; searched with the title and the body."),
 			"status": str("Optional lifecycle status. Set \"done\" to take a todo off the " +
 				"todo list."),
+			"room": str("The chat room this belongs to, e.g. general. It puts the item in " +
+				"that room's panel and narrows nothing else: who may read it is unchanged. " +
+				"Leave it out and the item is the project's, which is where every item " +
+				"written before this field is."),
+			"message": str("Id of the chat message that raised this - the conversation it " +
+				"came out of, kept on the item. A message you cannot read is refused."),
 			"id": str("Update the item with this id instead of creating one."),
 		}, nil),
 		call: memWrite,
@@ -96,9 +102,12 @@ var tools = []tool{
 	{
 		Name: "todos",
 		Description: "Outstanding work you may see: todo, feature and handoff items " +
-			"whose status is not done.",
-		InputSchema: object(props{"scope": enum("Narrow to one scope.", memScopes)}, nil),
-		call:        todosTool,
+			"whose status is not done. Narrow to one room to get that room's plan.",
+		InputSchema: object(props{
+			"scope": enum("Narrow to one scope.", memScopes),
+			"room":  str("Only the items raised in this chat room."),
+		}, nil),
+		call: todosTool,
 	},
 	{
 		Name: "guide",
@@ -174,13 +183,15 @@ func enum(desc string, values []string) map[string]any {
 // ------------------------------------------------------------------- tools
 
 type memWriteArgs struct {
-	ID     string   `json:"id"`
-	Title  string   `json:"title"`
-	Body   string   `json:"body"`
-	Scope  string   `json:"scope"`
-	Kind   string   `json:"kind"`
-	Status string   `json:"status"`
-	Tags   []string `json:"tags"`
+	ID      string   `json:"id"`
+	Title   string   `json:"title"`
+	Body    string   `json:"body"`
+	Scope   string   `json:"scope"`
+	Kind    string   `json:"kind"`
+	Status  string   `json:"status"`
+	Tags    []string `json:"tags"`
+	Room    string   `json:"room"`
+	Message string   `json:"message"`
 }
 
 // memWrite creates a memory item, or replaces one the principal owns.
@@ -222,6 +233,18 @@ func memWrite(ctx context.Context, m *mcpServer, p *store.Principal, raw json.Ra
 		Status: a.Status,
 		Tags:   a.Tags,
 	}
+
+	// Where the item belongs in the conversation rides fields, not columns, the
+	// way as_of and supersedes ride a report - see mcp_reports.go. An update
+	// that does not restate them keeps what the item already said.
+	room, err := roomArg(a.Room)
+	if err != nil {
+		return nil, err
+	}
+	if err := readableMessage(ctx, m.db, p, a.Message); err != nil {
+		return nil, err
+	}
+	var fields map[string]any
 
 	if a.ID != "" {
 		old, err := m.db.ReadArtifact(ctx, p, a.ID, false)
@@ -267,7 +290,12 @@ func memWrite(ctx context.Context, m *mcpServer, p *store.Principal, raw json.Ra
 			visibility = old.Visibility
 		}
 		art.Discovery, art.Severity, art.Related = old.Discovery, old.Severity, old.Related
-		art.FilePath, art.Fields = old.FilePath, old.Fields
+		art.FilePath = old.FilePath
+		if len(old.Fields) > 0 {
+			if err := json.Unmarshal(old.Fields, &fields); err != nil {
+				return nil, fmt.Errorf("memory item %s carries fields that do not parse: %w", a.ID, err)
+			}
+		}
 		// Where the item lives is not something an update says. It used to be
 		// rewritten to the token's own project every time, so an owner holding
 		// tokens in two projects moved their own item out of one and into the
@@ -278,6 +306,15 @@ func memWrite(ctx context.Context, m *mcpServer, p *store.Principal, raw json.Ra
 		home = old.Project
 	} else if art.Title == "" && strings.TrimSpace(art.Body) == "" {
 		return nil, errors.New("a memory item needs a title or a body")
+	}
+
+	fields = withRoom(fields, room, strings.TrimSpace(a.Message))
+	if len(fields) > 0 {
+		raw, err := json.Marshal(fields)
+		if err != nil {
+			return nil, err
+		}
+		art.Fields = raw
 	}
 
 	art.OwnerUser = p.UserID
@@ -437,6 +474,7 @@ func guideTool(_ context.Context, _ *mcpServer, _ *store.Principal, _ json.RawMe
 func todosTool(ctx context.Context, m *mcpServer, p *store.Principal, raw json.RawMessage) (any, error) {
 	var a struct {
 		Scope string `json:"scope"`
+		Room  string `json:"room"`
 		Limit int    `json:"limit"`
 	}
 	if err := decodeParams(raw, &a); err != nil {
@@ -448,6 +486,11 @@ func todosTool(ctx context.Context, m *mcpServer, p *store.Principal, raw json.R
 	}
 	q.Kinds = workKinds
 	q.NotStatus = "done"
+	// The room narrows and does not widen: without it this is the whole queue,
+	// items with a room and items without, exactly as it has always been.
+	if q.Room, err = roomArg(a.Room); err != nil {
+		return nil, err
+	}
 
 	list, err := m.db.ListArtifacts(ctx, p, q)
 	if err != nil {

@@ -554,6 +554,29 @@ export const api = {
    * kind rather than by a type of their own, because a todo is a memory
    * item with work still in it. */
   todos: () => request<{ artifacts: Artifact[] }>("/api/artifacts?type=memory&kind=todo"),
+  /**
+   * The todos of one room: the same list, narrowed by the room the item was
+   * raised in. It is the same endpoint and the same permission filter - room is
+   * a narrowing beside type and kind, not a second kind of visibility - so a
+   * todo that carries no room is absent here and present in `todos` above,
+   * which is what makes this a filter rather than a move.
+   */
+  roomTodos: (room: string) =>
+    request<{ artifacts: Artifact[] }>(
+      `/api/artifacts?type=memory&kind=todo&room=${encodeURIComponent(room)}`,
+    ),
+  /**
+   * Raise a todo out of a room. message is the id of the message it came out
+   * of, and the node keeps it on the item: the plan says what to do and the
+   * message says what was being talked about when somebody decided it had to
+   * happen. The node writes the item and one message in the room together.
+   */
+  raiseTodo: (room: string, title: string, body = "", message?: string) =>
+    request<{ item: Artifact; event: FlowyEvent }>(`/api/chat/${encodeURIComponent(room)}/todo`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title, body, ...(message ? { message } : {}) }),
+    }),
 
   artifact: (id: string) => request<Artifact>(`/api/artifact/${encodeURIComponent(id)}`),
 

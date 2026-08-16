@@ -5,9 +5,10 @@ import { AnnouncementBanner } from "@/components/AnnouncementBanner";
 import { MessageBox } from "@/components/MessageBox";
 import { MessageList } from "@/components/MessageList";
 import { RoomRoster } from "@/components/RoomRoster";
+import { RoomTodos } from "@/components/RoomTodos";
 import { ThreadDag } from "@/components/ThreadDag";
 import { Badge } from "@/components/ui/badge";
-import { type FlowyEvent, type Presence, api } from "@/lib/api";
+import { type Artifact, type FlowyEvent, type Presence, api } from "@/lib/api";
 import { useSession } from "@/lib/session";
 import { shortId } from "@/lib/utils";
 
@@ -39,6 +40,8 @@ export function ChatRoom() {
   const [live, setLive] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [presence, setPresence] = useState<Presence | null>(null);
+  const [todos, setTodos] = useState<Artifact[]>([]);
+  const [todoError, setTodoError] = useState<string | null>(null);
 
   // Presence refreshes on its own clock. The long poll owns the messages; the
   // roster is a slower fact, and polling it on every message would make a busy
@@ -66,11 +69,26 @@ export function ChatRoom() {
     };
   }, [token]);
 
+  /**
+   * The room's todos, read through the same permission filter as everything
+   * else: room is a narrowing on the artifact list, not a second visibility.
+   */
+  const loadTodos = useCallback(async () => {
+    try {
+      const page = await api.roomTodos(room);
+      setTodos(page.artifacts);
+      setTodoError(null);
+    } catch (err) {
+      setTodoError(err instanceof Error ? err.message : String(err));
+    }
+  }, [room]);
+
   useEffect(() => {
     setEvents([]);
     setSelected(null);
     setLive(false);
     setError(null);
+    setTodos([]);
     if (!token) return;
 
     let stopped = false;
@@ -84,6 +102,7 @@ export function ChatRoom() {
         setEvents(page.events);
         cursor = page.cursor;
         setLive(true);
+        void loadTodos();
       } catch (err) {
         if (!stopped) setError(err instanceof Error ? err.message : String(err));
         return;
@@ -104,11 +123,20 @@ export function ChatRoom() {
           if (page.cursor > cursor) cursor = page.cursor;
           setLive(true);
           setError(null);
+          // The panel rides the room's clock rather than one of its own. The
+          // poll comes back when somebody says something and when its window
+          // runs out, which is exactly when a plan agreed in this room could
+          // have moved - and a second timer would be a second idea of how
+          // often this room is alive.
+          void loadTodos();
           // The invariant, enforced rather than assumed: a successful wait
           // either blocked out its window or moved the cursor. If it did
-          // neither, this loop is spinning - 145 requests a second, measured -
-          // so pause before going round again. On real traffic an answered wait
-          // always advances the cursor, so this costs a busy room nothing.
+          // neither, this loop is spinning - 567 requests a second, measured
+          // against a stand-in node - so pause before going round again. On
+          // real traffic an answered wait always advances the cursor, so this
+          // costs a busy room nothing. It matters more now than it did an hour
+          // ago: riding this loop is a todo read as well as a message read, so
+          // an unbounded loop is two floods rather than one.
           if (cursor === before) await sleep(1000);
         } catch (err) {
           if (stopped) return;
@@ -127,7 +155,7 @@ export function ChatRoom() {
       stopped = true;
       controller.abort();
     };
-  }, [room, token]);
+  }, [room, token, loadTodos]);
 
   const send = useCallback(
     async (body: string, to: string) => {
@@ -137,6 +165,20 @@ export function ChatRoom() {
       setEvents((current) => merge(current, [said]));
     },
     [room, selected],
+  );
+
+  /**
+   * Raising one from the room: the message the room has selected is what it is
+   * raised out of, so a conversation becomes a plan without leaving the
+   * conversation. The node writes the todo and one message in the room
+   * together, and the poll brings that message back like anybody else's.
+   */
+  const raise = useCallback(
+    async (title: string) => {
+      await api.raiseTodo(room, title, "", selected?.id);
+      await loadTodos();
+    },
+    [room, selected, loadTodos],
   );
 
   const thread = selected?.thread ?? events.at(-1)?.thread;
@@ -183,20 +225,39 @@ export function ChatRoom() {
         />
       </section>
 
+      {/*
+        The side column, beside the conversation rather than a page away from
+        it: who is here, what this room has decided to do, and the DAG of
+        whichever message is selected. The todos sit above the thread because
+        the plan is what somebody in a room glances at; the thread is what they
+        open when they are answering one message.
+      */}
       <aside className="flex w-[26rem] shrink-0 flex-col border-border border-l">
         <RoomRoster presence={presence} />
-        <header className="flex items-center gap-2 border-border border-b px-4 py-3">
-          <h2 className="font-semibold text-sm">thread</h2>
-          {thread ? (
-            <span className="font-mono text-muted-foreground text-xs">{shortId(thread, 10)}</span>
-          ) : null}
-          <span className="ml-auto text-muted-foreground text-xs">
-            {threadEvents.length} event{threadEvents.length === 1 ? "" : "s"}
-          </span>
-        </header>
-        <div className="min-h-0 flex-1">
-          <ThreadDag events={threadEvents} />
-        </div>
+
+        <RoomTodos
+          room={room}
+          todos={todos}
+          raiseFrom={selected}
+          disabled={!token}
+          error={todoError}
+          onRaise={raise}
+        />
+
+        <section className="flex min-h-0 flex-1 flex-col">
+          <header className="flex items-center gap-2 border-border border-b px-4 py-3">
+            <h2 className="font-semibold text-sm">thread</h2>
+            {thread ? (
+              <span className="font-mono text-muted-foreground text-xs">{shortId(thread, 10)}</span>
+            ) : null}
+            <span className="ml-auto text-muted-foreground text-xs">
+              {threadEvents.length} event{threadEvents.length === 1 ? "" : "s"}
+            </span>
+          </header>
+          <div className="min-h-0 flex-1">
+            <ThreadDag events={threadEvents} />
+          </div>
+        </section>
       </aside>
     </div>
   );

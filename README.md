@@ -387,11 +387,11 @@ bug holds here, and the grant that opens a project opens the memories in it.
 
 | tool | arguments | what it does |
 | --- | --- | --- |
-| `mem_write` | `title, body, scope?, kind?, tags?, status?, id?` | create an item, or update one by `id` |
+| `mem_write` | `title, body, scope?, kind?, tags?, status?, room?, message?, id?` | create an item, or update one by `id`. `room` puts a todo in that chat room's panel and `message` keeps the message it was raised out of - both filters, neither a visibility |
 | `mem_read` | `id` | one item, or the same answer a missing id gets |
 | `mem_search` | `q, scope?, kind?, limit?` | ranked full text over title, body and tags |
 | `mem_list` | `scope?, kind?, limit?` | newest first |
-| `todos` | `scope?` | `todo`, `feature` and `handoff` items that are not done |
+| `todos` | `scope?, room?` | `todo`, `feature` and `handoff` items that are not done, optionally narrowed to one room |
 
 `scope` is `personal` (default), `project` or `shared`, and it is the item's
 visibility:
@@ -858,7 +858,7 @@ and deletes are tombstones.
 | route | what it does |
 | --- | --- |
 | `POST /api/artifacts` | create, or replace one you own **and can read**. Body: `type` (required), `kind`, `title`, `body`, `discovery`, `status`, `severity`, `tags`, `user_tags`, `related`, `visibility`, `project`, `file_path`, `fields`, `id?`. A new `id` is a ULID; `hlc` and `node` are stamped. An `id` that names a row you cannot read - another project's, a deleted one - is `404` and writes nothing |
-| `GET /api/artifacts?type=&kind=&project=&status=` | `{"artifacts":[...]}`, permission-filtered, newest first, tombstones omitted |
+| `GET /api/artifacts?type=&kind=&project=&status=&room=` | `{"artifacts":[...]}`, permission-filtered, newest first, tombstones omitted. `room` narrows to what was raised in one chat room, beside `type` and `kind` and inside the same permission filter |
 | `GET /api/artifact/{id}` | the artifact, or `404` if it is missing **or** out of reach |
 | `POST /api/artifact/{id}/delete` | tombstone it and bump the clock past the write it removes |
 | `POST /api/artifact/{id}/status` | move it through the lifecycle. Body: `status`. Returns `{artifact, event}`. `409` on a move the workflow does not allow, `404` on one you cannot read |
@@ -869,6 +869,7 @@ and deletes are tombstones.
 | `POST /api/chat/{room}/say` | say something. Body: `body` (required), `thread?`, `parents?`, `to?` - the principal it is directed at, a user or an agent this node knows. Returns the event |
 | `GET /api/chat/{room}?since=&thread=` | `{"room","events":[...],"since","cursor"}` with `seq_hlc > since`, in log order |
 | `GET /api/chat/{room}/wait?cursor=&window=` | long poll: blocks up to 25s for events after `cursor`, returns them or an empty list |
+| `POST /api/chat/{room}/todo` | raise a todo out of this room. Body: `title` (required), `body?`, `status?`, `message?` - the message it came out of. Writes the item and one chat message naming it, under one clock reading. Returns `{item, event}`. `404` on a `message` you cannot read |
 | `GET /api/inbox?since=&room=` | chat you may see and did not write, across rooms |
 | `GET /api/inbox/wait?as=&window=&room=&addressed=` | long poll the inbox for one named waiter, from the place the node holds for it. Returns `{reader, events, skipped, since, cursor}` and moves nothing. `404` names the waiters that do exist |
 | `POST /api/inbox/ack` | `{as, cursor, delivered}` - the waiter has finished with everything up to `cursor`. Forwards only |
@@ -1702,6 +1703,35 @@ seconds rather than spinning. Selecting a message makes the next thing you say
 a reply to it - the new message names it in `parents`, and the DAG on the right
 grows a lane.
 
+**Beside the messages is what this room has decided to do.** The queue had been
+readable from everywhere except the place it is agreed: two agents and a person
+settle in `#build` what has to happen, and until the room grew a panel the
+settling lived in the messages, so finding out what the room had decided meant
+reading the room back. The panel is `GET /api/artifacts?type=memory&kind=todo&
+room=<room>` - status, owner and title, compact, because a column beside a
+conversation is narrow and those are the three things somebody glances at it
+for - **and it refreshes on the room's own clock**: the same long poll that
+brings a message back reloads the panel, so a todo somebody else raises appears
+without a reload and without a second timer disagreeing about how often this
+room is alive.
+
+**Raising one is the point.** The box under the panel writes `POST
+/api/chat/{room}/todo`, which files the item and one ordinary chat message in
+the room naming it in the artifact column - two rows under one clock reading,
+the way every other operation here that writes two rows does it. When a message
+is selected it is raised *out of* that message: the item keeps its id, and the
+panel says which message it is about to keep before you press anything. That
+link is what filing the same thing in another system loses - the ticket says
+what somebody decided and never why, and the why is four messages up.
+
+The room on the item is a **filter and not a permission axis**. A todo carrying
+`room: "build"` is the same project-scoped row it would be without one, readable
+by exactly the principals who could read it before; `room` never appears in the
+permission filter, which is the same clause it always was. An item with no room
+is global - in no room's panel, and in every list that did not ask for a room,
+which is where the todos written before the field existed are and where they
+stay. `/todos` is that list.
+
 The inbox is tasks rather than messages - `/api/inbox` is the chat you have not
 read, `/api/inbox/tasks` is the work you have not done - and each row carries
 the two things an assignee ever does with a handoff: pass it to their agent, or
@@ -1796,11 +1826,22 @@ r              refresh       ?  help          q / ctrl-c  quit
 ```
 
 Rooms adds `o` to open any room by name, `n`/`p` for the next and previous one
-and `t` for the thread pane; inbox adds `d` delegate and `x` done; artifact adds
+and `t` for the thread pane and `T` for this room's todos; inbox adds `d`
+delegate and `x` done; artifact adds
 `s`, then a digit off the list the node returned in `next`; memory adds `i` and
 `e`; timeline adds `f` for the kind filter; announcements add `a` to
 acknowledge and `v`/`c` to pick a severity and a scope before posting one;
 reports adds `/` and `c` for the search and clearing it, and todos the same two.
+
+**The room view draws the same queue narrowed to the room**, beside the stream
+and beside the thread pane rather than instead of it: the todos raised in the
+room being read, in the same active-open-done order, with the owner on the row.
+It is filled off the back of the room read and refilled by every long poll that
+comes back, so it moves when the room does. `T` hides it and brings it back, and
+because four columns do not fit on every terminal the panes give way to the
+conversation in an order - the todos pane goes before the thread does, and at 80
+columns with the thread open it is not drawn at all. Pressing `T` on a terminal
+too narrow to hold it says so on the status line rather than doing nothing.
 
 **The todos view answers "where is the work" and it is the ordering that does
 it.** Active first, then everything still open, then done, with a count of each
@@ -2288,6 +2329,24 @@ Then Phase 2, against `flowy mcp --http` on a free port and against
   different principals
 - a todo is outstanding until `mem_write {"id", "status": "done"}` closes it -
   which leaves the title and kind alone - and then it is out of `todos`
+- **the room on a todo is a filter and not a move.** One is raised in `#build`
+  out of a message, one in `#general`, and one is filed with no room at all the
+  way the queue that predates the field is: `#build`'s panel holds its own and
+  neither of the others, `#general`'s holds its own, and the list that asked for
+  no room holds all three - which is the case a change that only handled
+  room-tagged todos would fail after passing everything above it. The store
+  test beside it asks the same three questions of the query, and adds the
+  fourth: a principal of another project reads none of `#build`'s panel
+- the raise writes both halves - the item carries the room and the id of the
+  message it came out of, and the room gets an ordinary chat message naming the
+  artifact, under the message it came out of and in that thread. A raise out of
+  a message the caller cannot read is `404` and writes neither half
+- `mem_write` carries the room the way `report_write` carries `as_of`, an update
+  that says only `status: done` keeps it, `todos {room}` narrows to that room -
+  and `todos {}` still answers with the whole queue, roomless items included
+- **and both are on the screen, not in an endpoint**: the built console is
+  mounted against the live node at `/chat/general` and the room's todo has to be
+  in the text it painted, and at `/todos` the roomless one has to be in that
 - a worklog entry carries **the seat that wrote it**: A's agent token appends and
   the entry's actor is the agent, A's own token appends and it is A. There is no
   actor argument to get it wrong with

@@ -963,6 +963,9 @@ func TestALongOwnerDoesNotPushTheTitleOffTheRow(t *testing.T) {
 type liveEnv struct {
 	url, token, room, message, memory, task, report, asOf string
 	todo, todoOwner                                       string
+	// roomTodo is a todo raised in the room the drive opens, which the room
+	// view has to draw beside the messages rather than only on the todos tab.
+	roomTodo string
 }
 
 func live(t *testing.T) liveEnv {
@@ -979,6 +982,7 @@ func live(t *testing.T) liveEnv {
 
 		todo:      os.Getenv("FLOWY_TUI_TODO"),
 		todoOwner: os.Getenv("FLOWY_TUI_TODO_OWNER"),
+		roomTodo:  os.Getenv("FLOWY_TUI_ROOM_TODO"),
 	}
 	if env.url == "" || env.token == "" {
 		t.Skip("no live node: set FLOWY_TUI_URL and FLOWY_TUI_TOKEN")
@@ -1080,6 +1084,13 @@ func TestLiveTUIDrivenByTheKeyboard(t *testing.T) {
 	s.waitFor(t, "the room header", env.room)
 	if env.message != "" {
 		s.waitFor(t, "the seeded message", env.message)
+	}
+	// The room's own plan, beside the room's messages. It is drawn without
+	// anybody pressing anything: the panel is open by default and it is filled
+	// off the back of the room read, so what this waits for is the pane having
+	// been read and drawn rather than a key having worked.
+	if env.roomTodo != "" {
+		s.waitFor(t, "the todo raised in this room", env.roomTodo)
 	}
 
 	// The message box: i opens it, the text goes in, enter posts it.
@@ -1236,6 +1247,22 @@ func TestLiveTUIDrivenByTheKeyboard(t *testing.T) {
 		}
 		if env.todoOwner != "" && todoOwner(final.todos[0]) != env.todoOwner {
 			t.Fatalf("the todo came back without its owner: %q", final.todos[0].Body)
+		}
+	}
+	if env.roomTodo != "" {
+		// What the screen cannot say: the panel is the room's own list and not
+		// the whole queue drawn beside a room. Every item in it carries this
+		// room, which is the narrowing the node did - a client that asked for
+		// the type and the kind and forgot the room passes the wait above,
+		// because the seeded item is in the whole queue too.
+		if len(final.roomTodos) == 0 {
+			t.Fatal("the room view never got the room's todos")
+		}
+		for _, a := range final.roomTodos {
+			if todoRoomOf(a) != env.room {
+				t.Fatalf("%q is in the panel for %s and was raised in %q",
+					a.Title, env.room, todoRoomOf(a))
+			}
 		}
 	}
 	if env.task != "" {

@@ -78,15 +78,36 @@ the subject and a look at the open handoffs.
 
 ## Tools
 
-- `mem_write {title, body, scope?, kind?, tags?, status?, id?}` - create an item,
-  or update one by passing its `id`. Fields you leave out keep their old values.
-  Set `status: "done"` to close a todo.
+- `mem_write {title, body, scope?, kind?, tags?, status?, room?, message?, id?}` -
+  create an item, or update one by passing its `id`. Fields you leave out keep
+  their old values. Set `status: "done"` to close a todo.
 - `mem_read {id}` - one item. An item you may not read is reported the same way
   as an item that does not exist.
 - `mem_search {q, scope?, kind?, limit?}` - ranked full-text search over title,
   body and tags, filtered to what you may read.
 - `mem_list {scope?, kind?, limit?}` - newest first.
-- `todos {scope?}` - todo, feature and handoff items that are not done.
+- `todos {scope?, room?}` - todo, feature and handoff items that are not done,
+  optionally narrowed to one chat room.
+
+## The room a todo was raised in
+
+`room` puts a todo in a chat room's panel: the console draws that room's todos
+beside its messages, and `flowy tui` draws them beside the stream. `message` is
+the id of the chat message it came out of, which is the link a ticket filed
+somewhere else loses - the item says what is to be done and the message says
+what was being talked about when somebody decided it had to be.
+
+It is a filter and nothing else. A todo carrying `room: "build"` is the same
+project-scoped item it would be without one - same owner, same scope, read by
+exactly the principals who could read it before - and `room` never widens or
+narrows who may see anything. An item with no room is global: it is in no room's
+panel and in every list that did not ask for a room, which is where every todo
+written before this field is and where they stay.
+
+A todo raised out of a message you cannot read is refused, the way an event that
+names a parent you cannot read is. An update that says nothing about the room
+keeps the one the item has, so closing a todo does not take it out of its room.
+
 
 Reports are finished documents - research findings, designs, reviews - published for
 the project to read, with the same permission filter as everything else and no work

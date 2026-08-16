@@ -325,6 +325,22 @@ func (d *DB) fillAt(a *Artifact, at int64) {
 	}
 }
 
+// RoomField is where an artifact records the chat room it belongs to: a key in
+// fields, the way as_of and supersedes ride a report, rather than a column.
+//
+// It is a filter and nothing else. A todo raised in #build is the same
+// project-scoped row it would be with no room on it, readable by exactly the
+// principals that could read it before - the permission filter never looks at
+// this key, and a room is not a visibility. What it buys is the panel beside a
+// conversation: which of the project's todos came out of this room.
+const RoomField = "room"
+
+// MessageField is the chat message an artifact was raised out of, kept beside
+// the room. It is the link a ticket in another system loses: the item says what
+// is to be done and the message says what was being talked about when somebody
+// decided it had to be.
+const MessageField = "message"
+
 // ArtifactQuery narrows a list or a search. Every field is optional; the
 // permission filter is not, and is added by the methods below.
 type ArtifactQuery struct {
@@ -334,6 +350,7 @@ type ArtifactQuery struct {
 	Project    string
 	Status     string
 	NotStatus  string // exclude one status - what "still open" means for a todo
+	Room       string // the chat room the artifact was raised in - fields->>'room'
 	Visibility string // personal|project|shared - the memory scopes
 	Query      string // free text; SearchArtifacts only
 	ScopeAll   bool   // ?scope=all - honoured only for the operator principal
@@ -396,6 +413,13 @@ func (q ArtifactQuery) narrow(a *args, alias string) string {
 	if q.NotStatus != "" {
 		// coalesce, because a row that was never given a status is not done.
 		where += " AND coalesce(" + alias + ".status, '') <> " + a.next(q.NotStatus)
+	}
+	if q.Room != "" {
+		// The room the artifact was raised in, out of fields. A row with no
+		// room drops out of a narrowed list and stays in every unnarrowed one,
+		// which is what makes this a filter: the todos that predate the field
+		// are global, and they are still on the page that shows all of them.
+		where += " AND " + alias + ".fields->>'" + RoomField + "' = " + a.next(q.Room)
 	}
 	return where
 }

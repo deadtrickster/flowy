@@ -663,6 +663,23 @@ func (c *Client) Artifacts(ctx context.Context, artifactType, kind string, limit
 	return out.Artifacts, err
 }
 
+// RoomTodos is the plan one room has written down: the todos raised in it.
+//
+// The room is a third narrowing on the list above and not a second endpoint,
+// because it is a third narrowing on the node: type, kind and room go into the
+// same query, inside the same permission filter, and a todo carrying a room is
+// readable by exactly the principals it was readable by before it had one. A
+// todo with no room is in no room's panel and in every unnarrowed list, which
+// is the whole of what "the room is a filter" means here.
+func (c *Client) RoomTodos(ctx context.Context, room string) ([]*Artifact, error) {
+	query := url.Values{"type": {"memory"}, "kind": {"todo"}, "room": {room}}
+	var out struct {
+		Artifacts []*Artifact `json:"artifacts"`
+	}
+	err := c.get(ctx, "/api/artifacts?"+query.Encode(), &out)
+	return out.Artifacts, err
+}
+
 // Search ranks the artifacts the principal may read against a free text query,
 // narrowed by the same type and kind a list is.
 func (c *Client) Search(ctx context.Context, query, artifactType, kind string) ([]*Artifact, error) {
