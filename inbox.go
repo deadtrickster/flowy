@@ -358,6 +358,14 @@ error go to stderr, so a hook can read stdout as a stream of whole messages.
 const (
 	defaultInboxDeadline = 8 * 60 * 60
 	inboxPollWindow      = 20
+
+	// Retry pacing for a node that went away. It starts fast because most
+	// outages here are a deploy - the node was back in ten seconds twice
+	// tonight - and it caps low enough that a listener rejoins a room within
+	// half a minute of the node returning rather than sitting out the rest of
+	// an eight-hour deadline on a doubled interval.
+	firstInboxBackoff = time.Second
+	maxInboxBackoff   = 30 * time.Second
 )
 
 // inboxCmd is `flowy inbox`.
@@ -445,6 +453,11 @@ func waitOnInbox(ctx context.Context, client *http.Client, base, bearer, as, roo
 	// add up to.
 	until := time.Now().Add(time.Duration(deadline) * time.Second)
 	skipped := 0
+	// Outage state. attempts is zero whenever the wire is healthy, so it also
+	// answers "did anything go wrong since the last good poll".
+	attempts := 0
+	backoff := firstInboxBackoff
+	var outageStart time.Time
 	for {
 		// The last poll is shortened to what is left of the budget, so a
 		// deadline means the number of seconds it says. Without this a
@@ -455,7 +468,63 @@ func waitOnInbox(ctx context.Context, client *http.Client, base, bearer, as, roo
 
 		var page inboxWaitResponse
 		if err := peerRequest(ctx, client, http.MethodGet, endpoint, bearer, nil, &page); err != nil {
-			return err
+			// A NODE THAT WENT AWAY COMES BACK. A deploy restarts it in
+			// seconds, and dying on a refused dial cost an eight-hour waiter
+			// twice in one evening - the room goes unheard until somebody
+			// notices, which is the failure a waiter exists to prevent.
+			//
+			// Only for transport failures: an answer from the node is a
+			// decision, and retrying a bad token makes the same mistake more
+			// often.
+			// WHO ANSWERED decides, and *url.Error is exactly that line:
+			// net/http returns one when the request never got an answer -
+			// refused dial, dropped connection, timeout - and peerRequest
+			// wraps it. A peer that DID answer produces a plain error with
+			// the status in it, which is a decision rather than an accident.
+			//
+			// Read here rather than typed in sync.go on purpose: that file is
+			// shared with the federation driver and somebody else is in it.
+			var netErr *url.Error
+			if !errors.As(err, &netErr) {
+				return err
+			}
+			if !time.Now().Before(until) {
+				// Out of budget while it was down. NOT a quiet deadline: this
+				// waiter cannot tell whether anything was said, and reporting
+				// quiet when you were deaf is the whole failure this contract
+				// is written against.
+				reportSkipped(skipped)
+				return fmt.Errorf("the node was unreachable for the last %s of the deadline "+
+					"(%d attempt(s)), so nothing here knows whether the room was quiet: %w",
+					time.Since(outageStart).Round(time.Second), attempts, err)
+			}
+			if attempts == 0 {
+				outageStart = time.Now()
+				fmt.Fprintf(os.Stderr, "the node is not answering, retrying until the deadline: %v\n", err)
+			}
+			attempts++
+			sleepFor := backoff
+			if left := time.Until(until); left < sleepFor {
+				sleepFor = left
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(sleepFor):
+			}
+			if backoff < maxInboxBackoff {
+				backoff *= 2
+			}
+			continue
+		}
+		if attempts > 0 {
+			// Say it happened even though it recovered: a wake that arrives
+			// after a gap is not the same as one off a healthy wire, and the
+			// reader is the only one who can judge what the gap cost.
+			fmt.Fprintf(os.Stderr, "the node came back after %s and %d attempt(s)\n",
+				time.Since(outageStart).Round(time.Second), attempts)
+			attempts = 0
+			backoff = firstInboxBackoff
 		}
 		skipped += page.Skipped
 
