@@ -8,7 +8,9 @@ import (
 	"sort"
 	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/deadtrickster/flowy/internal/hlc"
 	"github.com/deadtrickster/flowy/internal/ulid"
 )
 
@@ -1773,4 +1775,63 @@ func sameStrings(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// A pinned node's word carries a third party's rows and does not carry a row
+// about somebody this node issues credentials for.
+//
+// This is the accept-side finding, as a table. An adversary pushed an event
+// authored by the receiver's own alice, from a node the receiver had pinned,
+// and the receiver accepted it, stored it and rendered it back to alice as
+// hers. Refused before the pin, accepted after - so the pin was the mechanism,
+// and `mine` is what stops it being an authority over our own people.
+func TestAPinnedNodeMayNotSpeakForOurOwnPeople(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		pr   provenance
+		want bool
+	}{
+		{"nobody's word", provenance{}, false},
+		{"the principal's own row", provenance{own: true}, true},
+		{"a pinned node relaying a third party", provenance{vouched: true}, true},
+		{"a pinned node writing about our own person", provenance{vouched: true, mine: true}, false},
+		{"our own person carrying their own row", provenance{own: true, mine: true}, true},
+		{"unpinned, about our own person", provenance{mine: true}, false},
+	} {
+		if got := c.pr.ok(); got != c.want {
+			t.Errorf("%s: ok() = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// A row's date has to belong to its own clock reading.
+//
+// created is signed, so a relay cannot rewrite somebody else's - but an author
+// signing its own forgery picks the date, and every surface that shows a time
+// reads that column. It is checked against the row's reading rather than
+// against a window because a window cannot tell replicated history from a lie:
+// a month-old row arriving today is ordinary, and a month-old row whose clock
+// reading says now is not.
+func TestADateHasToBelongToItsClockReading(t *testing.T) {
+	now := time.Now()
+	at := func(d time.Duration) int64 { return hlc.Pack(now.Add(d).UnixMilli(), 0) }
+
+	for _, c := range []struct {
+		name    string
+		created time.Time
+		packed  int64
+		refused bool
+	}{
+		{"a row written now", now, at(0), false},
+		{"history: old date, and a reading as old", now.Add(-720 * time.Hour), at(-720 * time.Hour), false},
+		{"an hour of ordinary clock drift", now.Add(time.Hour), at(0), false},
+		{"backdated two years against a reading of now", now.AddDate(-2, 0, 0), at(0), true},
+		{"postdated sixteen months against a reading of now", now.AddDate(1, 4, 0), at(0), true},
+		{"no date at all is left alone", time.Time{}, at(0), false},
+	} {
+		why := incoherentDate(c.created, c.packed)
+		if refused := why != ""; refused != c.refused {
+			t.Errorf("%s: refused = %v (%q), want %v", c.name, refused, why, c.refused)
+		}
+	}
 }
