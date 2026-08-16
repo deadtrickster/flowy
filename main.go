@@ -44,6 +44,9 @@ commands:
            (flowy fuse --mount <dir> [--token <t>]; --reconcile applies what an
            earlier mount queued and exits; env: DATABASE_URL, FLOWY_TOKEN,
            FLOWY_NODE)
+  projects which project this token writes to, and the registry of what exists
+           (flowy projects [list] | declare --project N [--origin R] [--fixture]
+           | pin --project N --origin R; env: FLOWY_ADDR, FLOWY_TOKEN)
   sync     replicate with a peer: pull its delta, apply it, push ours
            (flowy sync --peer <url> --token <t>; env: DATABASE_URL, FLOWY_NODE,
            FLOWY_TOKEN)
@@ -113,6 +116,11 @@ func main() {
 	case "fuse":
 		if err := fuseCmd(os.Args[2:]); err != nil {
 			fmt.Fprintf(os.Stderr, "flowy fuse: %v\n", err)
+			os.Exit(1)
+		}
+	case "projects":
+		if err := projectsCmd(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "flowy projects: %v\n", err)
 			os.Exit(1)
 		}
 	case "sync":

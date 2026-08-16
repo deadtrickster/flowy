@@ -206,7 +206,9 @@ func worklogAppend(ctx context.Context, m *mcpServer, p *store.Principal, raw js
 	if err := m.db.AppendEvent(ctx, e); err != nil {
 		return nil, err
 	}
-	return map[string]any{"entry": entryOf(e)}, nil
+	// The entry, and the fixture line when this seat is writing its chronology
+	// into demo seed data - see mcp_projects.go.
+	return withFixtureWarning(ctx, m, p, map[string]any{"entry": entryOf(e)}), nil
 }
 
 // worklogRefs checks the artifact ids an entry references, and returns them

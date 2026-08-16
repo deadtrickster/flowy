@@ -219,7 +219,10 @@ func TestAResizeNeverCrashes(t *testing.T) {
 // records what was written to it.
 type stub struct {
 	*httptest.Server
-	status  int
+	status int
+	// fixture is what the stub node says about the project the token writes
+	// into, so a test can drive the indicator without a database.
+	fixture bool
 	written []map[string]any
 	asked   []string
 }
@@ -240,7 +243,10 @@ func newStub(t *testing.T) *stub {
 		if deny(w) {
 			return
 		}
-		_ = json.NewEncoder(w).Encode(Whoami{User: "u1", Agent: "a1", Project: "pa"})
+		_ = json.NewEncoder(w).Encode(Whoami{
+			User: "u1", Agent: "a1", Project: "pa",
+			ProjectDeclared: true, ProjectFixture: s.fixture,
+		})
 	})
 	mux.HandleFunc("GET /api/announcements", func(w http.ResponseWriter, _ *http.Request) {
 		if deny(w) {
@@ -302,6 +308,40 @@ func TestABadTokenIsSaidAndNotPanicked(t *testing.T) {
 	}
 	if !strings.Contains(m.View(), "token refused") {
 		t.Fatal("the refusal is not on screen")
+	}
+}
+
+// The current-project indicator. The status line is the one surface a person
+// looking at this client sees on every screen, and the project a token writes
+// into was on it as a word with nothing to distinguish a fixture from real
+// work - which is how a day of real memory went into the smoke seeder's demo
+// project without anybody noticing. A fixture takes the whole line now, the way
+// a connection error does.
+func TestTheStatusLineSaysWhenTheProjectIsAFixture(t *testing.T) {
+	s := newStub(t)
+	s.fixture = true
+
+	m := testModel(t, NewClient(s.URL, "t"))
+	m.Update(m.whoamiCmd()())
+
+	line := m.statusLine()
+	if !strings.Contains(line, "@pa") {
+		t.Fatalf("the status line does not say which project this token writes into: %q", line)
+	}
+	if !strings.Contains(line, "FIXTURE") {
+		t.Fatalf("the status line does not say the project is a fixture: %q", line)
+	}
+
+	// And it says nothing of the sort about an ordinary project, or the marker
+	// would be noise on every screen of every real node.
+	s.fixture = false
+	plain := testModel(t, NewClient(s.URL, "t"))
+	plain.Update(plain.whoamiCmd()())
+	if strings.Contains(plain.statusLine(), "FIXTURE") {
+		t.Fatalf("an ordinary project is being called a fixture: %q", plain.statusLine())
+	}
+	if !strings.Contains(plain.statusLine(), "@pa") {
+		t.Fatalf("the project is missing from the status line: %q", plain.statusLine())
 	}
 }
 

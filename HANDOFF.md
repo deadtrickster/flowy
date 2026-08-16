@@ -45,14 +45,26 @@ gap-probe, not the backend).
   dump-and-restore (`dump-pg17.sql` kept beside it); the old 17 container is `flowy-dogfood-pg17-kept`
   (stopped) and the old `pgdata/` dir is untouched - drop both once 18 has settled.
 - token: operator token at `~/.config/flowy/token`. More scoped tokens in `~/Projects/flowy-dogfood/ids`.
-- **projects: write real work to `flowy`, not to `pa`.** A project is just a string on a
-  token (there is no projects table), and `~/.config/flowy/token` is scoped to `pa` - which
-  is the *smoke seeder's fixture project* (`cmd/smoke/main.go:556` makes alice and operator
-  in `pa`, bob in `pb`). Writing through the default token therefore files real artifacts
-  into demo seed data, which is what happened to the first batch of shared memory here.
-  `~/.config/flowy/token-flowy` is the same operator principal scoped to project `flowy`;
-  use it for memory, reports and the worklog. Paste it into the console's token field too,
-  or the reports panel shows you `pa` and none of the real work.
+- **projects: write real work to `flowy`, not to `pa`.** `~/.config/flowy/token` is scoped
+  to `pa`, which is the *smoke seeder's fixture project* (`cmd/smoke/main.go` makes alice
+  and operator in `pa`, bob in `pb`, a third token in `pc`). Writing through the default
+  token therefore files real artifacts into demo seed data, which is what happened to the
+  first batch of shared memory here. `~/.config/flowy/token-flowy` is the same operator
+  principal scoped to project `flowy`; use it for memory, reports and the worklog.
+- **the project entity now says so, and it did not before.** There is a `projects` table:
+  a project has to be declared before anything can be written into it, `pa`/`pb`/`pc` are
+  flagged as fixtures, and every surface says which project a token writes into - `flowy
+  projects` on the command line, the TUI status line (red, `@pa [FIXTURE]`), the console's
+  token bar, `GET /api/whoami`, and a `warning` beside anything `mem_write`,
+  `report_write` or `worklog_append` files into a fixture. It would not have refused the
+  `pa` write - `pa` is a legitimate writable project - it makes it visible at the moment it
+  is made. Registry rows are signed and replicate; identity is the name, and the
+  canonicalised git remote on the row is what decides whether two nodes' `flowy` is one
+  project. See the project entity section in README.md.
+- **declare a project before pointing a token at it.** `flowy projects declare --project
+  <name> --origin <remote>` (the remote is read from the work tree if you leave it out).
+  `tokens.project` and `agents.project` are foreign keys into the registry, so a token
+  scoped to an undeclared project is refused by the database as well as by the node.
 - Moving an artifact between projects is a **rewrite, never an UPDATE**. `project` is inside
   the signed payload (`internal/sign/sign.go:101`, asserted by `sign_test.go:53`), so
   `UPDATE artifacts SET project=…` produces rows whose signatures no longer verify - forged

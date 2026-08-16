@@ -161,13 +161,23 @@ func (c *Client) post(ctx context.Context, path string, body, out any) error {
 // server side shows up here as a field that stops being populated rather than
 // as a view that quietly renders nothing.
 
-// Whoami is the (user, agent, project) triple the token resolves to.
+// Whoami is the (user, agent, project) triple the token resolves to, and what
+// the node knows about the project half of it.
+//
+// ProjectFixture is why the extra fields are here at all: the project a token
+// writes into is decided by the token and shown nowhere, which is how a day of
+// real work was filed into a fixture project without anybody seeing it. The
+// status line is the surface that can say so on every screen, so the answer it
+// reads has to carry it.
 type Whoami struct {
-	User      string `json:"user"`
-	Agent     string `json:"agent,omitempty"`
-	AgentKind string `json:"agent_kind,omitempty"`
-	Project   string `json:"project,omitempty"`
-	Operator  bool   `json:"operator,omitempty"`
+	User            string `json:"user"`
+	Agent           string `json:"agent,omitempty"`
+	AgentKind       string `json:"agent_kind,omitempty"`
+	Project         string `json:"project,omitempty"`
+	Operator        bool   `json:"operator,omitempty"`
+	ProjectFixture  bool   `json:"project_fixture,omitempty"`
+	ProjectDeclared bool   `json:"project_declared,omitempty"`
+	ProjectOrigin   string `json:"project_origin,omitempty"`
 }
 
 // Event is one row of the append-only log. A chat message is one of these.

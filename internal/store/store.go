@@ -249,12 +249,21 @@ func (d *DB) InsertAgent(ctx context.Context, a *Agent) error {
 	if !AgentKindOK(a.AgentKind) {
 		return ErrBadAgentKind
 	}
+	// An agent's home project is a project that was declared. It is also a
+	// foreign key on the column, and this is the same rule said where it can
+	// name the project rather than the constraint.
+	if err := requireProject(ctx, d.sql, a.Project); err != nil {
+		return err
+	}
 	if a.AgentKind == "" {
 		a.AgentKind = AgentKindWorker
 	}
 	_, err := d.sql.ExecContext(ctx,
+		// project is NULL rather than '' when an agent has no home: they mean
+		// the same thing to every reader and different things to the foreign
+		// key, which would go looking for a project called ''.
 		`INSERT INTO agents (id, user_id, kind, agent_kind, project, hlc, node)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		 VALUES ($1, $2, $3, $4, nullif($5, ''), $6, $7)`,
 		a.ID, a.UserID, a.Kind, a.AgentKind, a.Project, a.HLC, a.Node)
 	if err != nil {
 		return fmt.Errorf("store: insert agent: %w", err)
@@ -332,6 +341,9 @@ func (d *DB) InsertArtifact(ctx context.Context, a *Artifact) error {
 	}
 	if a.Visibility == "" {
 		a.Visibility = "project"
+	}
+	if err := requireProjectPtr(ctx, d.sql, a.Project); err != nil {
+		return err
 	}
 	// The date is minted here and passed in rather than left to the column's
 	// default, because it is inside the signature - see createdNow.
@@ -411,6 +423,12 @@ func (d *DB) appendEvent(ctx context.Context, q execer, e *Event) error {
 		// A thread with no explicit head is named after its first event.
 		e.Thread = e.ID
 	}
+	// An event lands in a declared project or not at all, exactly as an
+	// artifact does: a chat room, a worklog entry and a status trail all carry
+	// a project, and a project nothing declared is a room nobody can find.
+	if err := requireProjectPtr(ctx, q, e.Project); err != nil {
+		return err
+	}
 	// The date is minted here and passed in rather than left to the column's
 	// default, because it is inside the signature - see createdNow.
 	e.Created = createdNow()
@@ -481,7 +499,8 @@ func (d *DB) ThreadEvents(ctx context.Context, thread string) ([]*Event, error) 
 // Counts returns the row count of each spine table, which is what /healthz
 // reports when it is asked for detail.
 func (d *DB) Counts(ctx context.Context) (map[string]int64, error) {
-	tables := []string{"users", "agents", "tokens", "grants", "artifacts", "events", "tasks", "peers"}
+	tables := []string{"users", "agents", "tokens", "grants", "artifacts", "events", "tasks",
+		"peers", "projects"}
 	out := make(map[string]int64, len(tables))
 	for _, t := range tables {
 		var n int64

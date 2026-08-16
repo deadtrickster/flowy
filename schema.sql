@@ -76,6 +76,82 @@ CREATE TABLE IF NOT EXISTS tokens (
     project  text
 );
 
+-- Phase 10. The project registry: the row every project column points at.
+--
+-- A project used to be a free string. Nothing declared one and nothing checked
+-- one, so a project came into existence the moment somebody wrote it and the
+-- only way to ask what projects there were was a UNION of DISTINCT project over
+-- the tables that carry it - which cannot see a project that has no rows yet,
+-- and cannot tell a typo from a place. A day of real work was filed into `pa`
+-- that way, which is the smoke seeder's fixture project.
+--
+-- So this is a referent and not a convenience list. A token's scope, an
+-- artifact's project and a grant's endpoints name a row here, and a local write
+-- into a project with no row is refused - see store.ErrUndeclaredProject.
+--
+--   id         - the referent itself: exactly the string the other tables carry
+--                and that is already inside their signatures. It is the primary
+--                key rather than a ULID with a UNIQUE name beside it, because
+--                the merge key has to be the thing that is referenced: two
+--                nodes declaring `flowy` independently would otherwise mint two
+--                ids for one name and collide on a column the merge does not
+--                key on. Here they are one row and one ordinary merge.
+--   name       - the label a person reads. Free to differ from the id.
+--   created_by - the user that declared it, when a person did.
+--   provenance - how this row came to exist: declared|seed|backfill|observed|
+--                pinned. It is about the ROW.
+--   fixture    - what the project is FOR: demo seed data rather than real work.
+--                A different question from provenance, which is why it is a
+--                different column. It does not refuse anything: a fixture is a
+--                legitimate writable project, and the flag exists so that
+--                writing real work into one is visible at the moment it is done
+--                rather than six hours later.
+--   origin     - where the project came from, and the only externally checkable
+--                thing this row says: the canonicalised git remote when the
+--                project has one (`git:github.com/owner/name`), and a locally
+--                derived identity when it does not (`derived:<node>/<name>`).
+--                It is what makes a name collision decidable instead of a
+--                judgement call - two nodes on one repo arrive at one origin
+--                without any reconcile protocol, and two different projects
+--                both called `flowy` have different origins and are refused
+--                rather than silently merged. See store.CanonicalOrigin.
+--   superseded - the origins this one replaced, oldest first. A project that
+--                had no repo and then got one, or whose remote was renamed or
+--                transferred, SUBSTITUTES its origin - and substitution is an
+--                alias, never a rewrite: no row's project column is touched,
+--                because `project` is inside the signed payload and rewriting
+--                it would forge every row that named it. Rows keep pointing at
+--                the name, which never changes; the chain is what lets a peer
+--                still holding the old origin be recognised as the same
+--                project. `supersedes` on a report is the same shape.
+--   origin_at  - when origin last changed, so a substitution has a date.
+--
+-- Replicated and signed like every other fabric row, because `project` is
+-- already inside the signed payload of everything that carries it: a node-local
+-- registry would leave the referent local while every reference to it is
+-- federated.
+--
+-- There is no tombstone column, and that is deliberate rather than an omission.
+-- Every other replicated table has one because a row can be deleted; a project
+-- cannot, because deleting it would orphan every row that names it - the
+-- registry adapts to the data and never the other way round - and because a
+-- revocable referent is a referent a peer can revoke: a tombstone arriving from
+-- a peer would stop this node writing into its own project.
+CREATE TABLE IF NOT EXISTS projects (
+    id         text PRIMARY KEY,
+    name       text,
+    created_by text,
+    provenance text DEFAULT 'declared',
+    fixture    boolean DEFAULT false,
+    origin     text,
+    superseded text[],
+    origin_at  timestamptz,
+    hlc        bigint,
+    node       text,
+    sig        bytea,
+    created    timestamptz DEFAULT now()
+);
+
 -- Cross-project sharing. A grant is a capability from one project to another,
 -- optionally narrowed to a subject or a single artifact. Deletes are tombstones
 -- so the row can still merge after it is gone.
@@ -480,6 +556,93 @@ CREATE INDEX IF NOT EXISTS tokens_agent_idx           ON tokens (agent_id);
 -- short enough that the plain one is the same answer.
 CREATE INDEX IF NOT EXISTS fs_intents_applied_idx     ON fs_intents (applied, created);
 CREATE INDEX IF NOT EXISTS fs_intents_artifact_idx    ON fs_intents (artifact, applied);
+
+-- Phase 10. The registry adapts to the data, and never the other way round.
+--
+-- Rows written before this table existed already name pa, pb, pc and flowy, and
+-- those rows stay valid: `project` is inside the signed payload, so rewriting a
+-- project column to fit a registry would produce rows whose signatures no longer
+-- verify - forged rows, by this node's own definition. So the back-fill reads
+-- the names the data already carries and declares them.
+--
+-- It runs here rather than only in Go because the foreign key below cannot be
+-- added to a table whose rows point at projects that have no row yet. The rows
+-- it writes carry no signature and no reading: they are a local statement about
+-- what is already here, and `flowy serve` adopts them on startup - stamping,
+-- signing and dating each one under this node's key, which is what makes them
+-- replicable. See store.BackfillProjects.
+--
+-- The fixture flag is not set here. Which names are the smoke seeder's fixtures
+-- is one list, and it lives in Go beside the seeder that writes them
+-- (store.FixtureProjects); a second copy of it in SQL is a second copy to
+-- forget.
+INSERT INTO projects (id, name, provenance)
+SELECT name, name, 'backfill' FROM (
+    SELECT DISTINCT project      AS name FROM artifacts   WHERE project      IS NOT NULL
+    UNION SELECT DISTINCT project        FROM events      WHERE project      IS NOT NULL
+    UNION SELECT DISTINCT project        FROM tasks       WHERE project      IS NOT NULL
+    UNION SELECT DISTINCT project        FROM tokens      WHERE project      IS NOT NULL
+    UNION SELECT DISTINCT project        FROM agents      WHERE project      IS NOT NULL
+    UNION SELECT DISTINCT project        FROM fs_intents  WHERE project      IS NOT NULL
+    UNION SELECT DISTINCT from_project   FROM grants      WHERE from_project IS NOT NULL
+    UNION SELECT DISTINCT to_project     FROM grants      WHERE to_project   IS NOT NULL
+) AS named
+WHERE name <> '' AND name NOT IN (SELECT id FROM projects);
+
+-- An absent project is NULL and not '', on the two local tables that carry one.
+-- They mean the same thing to every reader - a principal with no home project -
+-- and they do not mean the same thing to a foreign key, which would ask the
+-- registry for a project called ''. Written before the key is added, because a
+-- row like that is what would refuse it.
+UPDATE tokens SET project = NULL WHERE project = '';
+UPDATE agents SET project = NULL WHERE project = '';
+
+-- The referential integrity, on the two tables that can carry it.
+--
+-- tokens and agents are local: they are this node's credentials, they carry no
+-- hlc and no signature, and nothing replicates them. So a foreign key here is a
+-- promise the database can keep - a token cannot be scoped to a project that
+-- was never declared, which is the exact shape of the mistake this table
+-- exists for.
+--
+-- artifacts, events, tasks and grants deliberately do NOT get one, and the
+-- reason is federation rather than tidiness. Those rows arrive from peers, in
+-- pages, in whatever order a page happens to carry, and a page can legitimately
+-- hold an artifact whose project row the puller was never handed - a grant lets
+-- a principal read into a project without being of it. A foreign key there
+-- would turn that into a constraint error that fails the whole transaction,
+-- rather than the counted, explained refusal the merge already has. The rule on
+-- those tables is enforced where the writing happens instead: a LOCAL write
+-- into an undeclared project is refused by the store, and a replicated row
+-- naming a project this node has never heard of records that project as
+-- `observed` rather than being dropped. See internal/store/projects.go.
+--
+-- DROP then ADD, because Postgres has no ADD CONSTRAINT IF NOT EXISTS and this
+-- file is loaded again over a database that already has it. Both statements are
+-- plain SQL: a DO block would be PL/pgSQL, which the header of this file
+-- promises none of.
+ALTER TABLE tokens DROP CONSTRAINT IF EXISTS tokens_project_fkey;
+ALTER TABLE tokens ADD  CONSTRAINT tokens_project_fkey
+    FOREIGN KEY (project) REFERENCES projects (id);
+ALTER TABLE agents DROP CONSTRAINT IF EXISTS agents_project_fkey;
+ALTER TABLE agents ADD  CONSTRAINT agents_project_fkey
+    FOREIGN KEY (project) REFERENCES projects (id);
+
+-- A database whose projects table predates the origin columns picks them up
+-- here, like every other added column in this file. They are nullable and the
+-- adoption in store.BackfillProjects fills them: a row with no origin is a
+-- project this node has not yet said where it came from, and the derived form
+-- is what it gets.
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS origin     text;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS superseded text[];
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS origin_at  timestamptz;
+
+-- Enumeration is "what is here", by name; the fixture read is "and which of
+-- these is demo data"; the origin read is the collision check, which asks
+-- "who else claims this origin" on the way in.
+CREATE INDEX IF NOT EXISTS projects_hlc_idx     ON projects (hlc);
+CREATE INDEX IF NOT EXISTS projects_fixture_idx ON projects (fixture);
+CREATE INDEX IF NOT EXISTS projects_origin_idx  ON projects (origin);
 
 -- ------------------------------------------------------------------- SEARCH
 -- Everything below this line is Postgres full text and is expected to be

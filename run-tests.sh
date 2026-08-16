@@ -724,7 +724,7 @@ mcp_handshake() {
 mcp_tools_list() {
 	mcp tools/list "$TOKEN_A" || return 1
 	local name
-	for name in mem_write mem_read mem_search mem_list todos; do
+	for name in mem_write mem_read mem_search mem_list todos projects; do
 		want_eq "$name in tools/list" \
 			"$(rv "[.result.tools[] | select(.name == \"$name\")] | length")" 1 || return 1
 		if [ "$(rv "[.result.tools[] | select(.name == \"$name\" and (.inputSchema.type == \"object\"))] | length")" != 1 ]; then
@@ -1080,6 +1080,194 @@ entries_are_on_the_timeline_and_not_postable_onto_it() {
 		'{"kind": "worklog", "room": "general", "body": "an entry by the back door"}' || return 1
 	printf 'the entry is on the timeline, and /api/activity will not post one: %s\n' \
 		"$(jqv .error)"
+}
+
+# ------------------------------------------------------- the project entity
+#
+# A project used to be a free string on a token: nothing declared one, nothing
+# checked one, and a project came into existence the moment somebody wrote it.
+# That is how a day of real shared memory was filed into `pa`, which is the
+# smoke seeder's fixture project, with no surface saying so.
+#
+# So these checks are about three separate claims, and it is worth keeping them
+# apart because only one of them refuses anything:
+#
+#   - the registry is a REFERENT. A write into a project that was never declared
+#     is refused, so a typo is not silently a valid target.
+#   - the fixture flag REFUSES NOTHING. pa is a legitimate writable project and
+#     a write into it lands. What the flag does is make that write say so, at
+#     the moment it is made, on every surface that carries it.
+#   - none of it is a PERMISSION. What a principal may read is grants plus
+#     scope, exactly as before, and the enumeration is a list of names narrowed
+#     by the grant edges that already existed.
+
+# The referent. Both ends of a grant name a declared project, so a capability
+# into a project nobody declared is refused rather than stored - a typo that
+# replicates is worse than a typo that is caught.
+a_write_into_an_undeclared_project_is_refused() {
+	recall
+	want_status 400 POST "$TOKEN_A" /api/grants \
+		'{"from_project": "pb-typo", "to_project": "pa"}' || return 1
+	case "$(jqv .error)" in
+	*"never declared here"*) ;;
+	*)
+		printf 'the refusal does not say the project was never declared: %s\n' "$(jqv .error)" >&2
+		return 1
+		;;
+	esac
+	printf 'a grant out of a project nobody declared: %s\n' "$(jqv .error)"
+}
+
+# The indicator. This is the surface whose absence let the pa write stay silent:
+# a token is a (user, agent, project) triple, the project half decides where
+# every write lands, and whoami answered the first two.
+whoami_says_where_this_tokens_writes_land() {
+	recall
+	api GET "$TOKEN_A" /api/whoami || return 1
+	want_eq "status" "$API_STATUS" 200 || return 1
+	want_eq "the project it writes into" "$(jqv .project)" pa || return 1
+	want_eq "which has a registry row" "$(jqv .project_declared)" true || return 1
+	want_eq "and is a fixture" "$(jqv .project_fixture)" true || return 1
+	want_eq "with an origin to decide a collision against" \
+		"$(printf '%s' "$API_BODY" | jq -r 'if .project_origin == "" then "none" else "yes" end')" \
+		yes || return 1
+	printf 'whoami: %s writes into pa, which is demo seed data\n' "$(jqv .user)"
+}
+
+# The same answer from the command line, because the person who needs it is
+# usually on the far end of an ssh session rather than in a browser.
+the_cli_says_which_project_this_token_writes_to() {
+	recall
+	local out
+	out="$(FLOWY_ADDR="http://127.0.0.1:$HTTP_PORT" FLOWY_TOKEN="$TOKEN_A" \
+		./flowy projects 2>&1)" || {
+		printf 'flowy projects exited non-zero:\n%s\n' "$out" >&2
+		return 1
+	}
+	case "$out" in
+	*"this token writes to pa"*"FIXTURE"*) ;;
+	*)
+		printf 'flowy projects does not lead with the fixture warning:\n%s\n' "$out" >&2
+		return 1
+		;;
+	esac
+	printf '%s\n' "$out" | head -1
+}
+
+# The flag refuses nothing, and says so. The write lands - pa is a real
+# project - and the answer carries the sentence nobody was shown.
+a_write_into_a_fixture_lands_and_says_so() {
+	recall
+	want_tool mem_write "$TOKEN_A" \
+		'{"title": "real work into a fixture", "body": "the write is valid", "scope": "project"}' ||
+		return 1
+	want_eq "the item was written" "$(tv .item.project)" pa || return 1
+	case "$(tv .warning)" in
+	*"FIXTURE project"*) ;;
+	*)
+		printf 'the write into a fixture carried no warning: %s\n' "$(tv .warning)" >&2
+		return 1
+		;;
+	esac
+
+	# And the enumeration tool says the same thing without a write.
+	want_tool projects "$TOKEN_A" '{}' || return 1
+	want_eq "the current project" "$(tv .current)" pa || return 1
+	want_eq "and it is flagged" \
+		"$(printf '%s' "$TOOL_JSON" | jq -r '.projects[] | select(.current) | .fixture')" \
+		true || return 1
+	printf 'the write landed in pa and the answer says pa is a fixture\n'
+}
+
+# The enumeration is narrowed by the edges that already existed, and by nothing
+# new. B is in pb and holds a grant with pa by now, so it sees both and does not
+# see pc, which nobody opened to it.
+the_enumeration_is_permission_filtered() {
+	recall
+	api GET "$TOKEN_B" /api/projects || return 1
+	want_eq "status" "$API_STATUS" 200 || return 1
+	want_eq "B is writing into pb" "$(jqv .current)" pb || return 1
+	want_eq "B sees its own project" \
+		"$(printf '%s' "$API_BODY" | jq '[.projects[] | select(.id == "pb")] | length')" 1 || return 1
+	want_eq "and the one it holds a grant with" \
+		"$(printf '%s' "$API_BODY" | jq '[.projects[] | select(.id == "pa")] | length')" 1 || return 1
+	want_eq "and not the one nobody opened to it" \
+		"$(printf '%s' "$API_BODY" | jq '[.projects[] | select(.id == "pc")] | length')" 0 || return 1
+
+	# The same token, in another project, is another principal - and sees pc
+	# rather than pb. This is the existing scope rule and not a new one.
+	api GET "$TOKEN_A_PC" /api/projects || return 1
+	want_eq "A in pc writes into pc" "$(jqv .current)" pc || return 1
+	printf 'B sees pb and pa and not pc; A-in-pc sees pc\n'
+}
+
+# Declaring is open, changing is the operator's. A declaration grants nothing -
+# a project nobody holds a token for is a name and no more, because a write
+# lands in the principal's own project - so anybody may make one. The fixture
+# flag is what the next agent reads to decide whether it is in demo data, so
+# that is the operator's.
+declaring_is_open_and_flagging_a_fixture_is_the_operators() {
+	recall
+	local fresh="gate-declared-$$"
+	want_status 200 POST "$TOKEN_A" /api/projects "{\"id\": \"$fresh\"}" || return 1
+	want_eq "it was declared" "$(jqv .declared)" true || return 1
+	want_eq "by the caller" "$(jqv .project.created_by)" "$USER_A" || return 1
+	want_eq "with a derived identity, having no repository" \
+		"$(printf '%s' "$API_BODY" | jq -r '.project.origin | startswith("derived:")')" true || return 1
+
+	want_status 403 POST "$TOKEN_A" /api/projects "{\"id\": \"$fresh-fixture\", \"fixture\": true}" ||
+		return 1
+	want_status 403 POST "$TOKEN_A" /api/projects \
+		"{\"id\": \"$fresh\", \"pin\": true, \"origin\": \"git@github.com:someone/else.git\"}" ||
+		return 1
+	printf 'anybody declares, only the operator flags and pins\n'
+}
+
+# One repository is one origin however it is spelled, and a project that moves
+# to another one SUBSTITUTES rather than rewrites: the old origin goes into the
+# chain, and no row that names the project is touched. That is the same rule as
+# the pa migration - project is inside the signed payload, so rewriting it
+# anywhere forges every row that carried it.
+an_origin_is_one_string_and_a_move_is_an_alias() {
+	recall
+	local name="gate-origin-$$"
+	want_status 200 POST "$TOKEN_OP" /api/projects \
+		"{\"id\": \"$name\", \"origin\": \"git@github.com:acme/thing.git\"}" || return 1
+	want_eq "the remote, canonicalised" "$(jqv .project.origin)" git:github.com/acme/thing || return 1
+
+	# The same repository, spelled as an https URL: one project, no
+	# substitution, nothing added to the chain.
+	want_status 200 POST "$TOKEN_OP" /api/projects \
+		"{\"id\": \"$name\", \"origin\": \"https://github.com/acme/thing\"}" || return 1
+	want_eq "still the one origin" "$(jqv .project.origin)" git:github.com/acme/thing || return 1
+	want_eq "and nothing was superseded" \
+		"$(printf '%s' "$API_BODY" | jq '.project.superseded // [] | length')" 0 || return 1
+
+	# A move: the remote was transferred. The identity substitutes and the old
+	# one is kept, which is what lets a peer still holding it be recognised.
+	want_status 200 POST "$TOKEN_OP" /api/projects \
+		"{\"id\": \"$name\", \"origin\": \"git@gitlab.com:acme/thing.git\"}" || return 1
+	want_eq "the new identity" "$(jqv .project.origin)" git:gitlab.com/acme/thing || return 1
+	want_eq "and the one it superseded" \
+		"$(printf '%s' "$API_BODY" | jq -r '.project.superseded[0]')" \
+		git:github.com/acme/thing || return 1
+	printf 'one repository is one origin; a transfer is an alias, not a rewrite\n'
+}
+
+# The migration claim, read straight out of the database: the rows that existed
+# before the registry did still name what they named, and their signatures are
+# untouched. Nothing here rewrites a project column to fit a registry.
+the_registry_adapted_to_the_data() {
+	psql_counts "SELECT count(*) FROM projects WHERE id IN ('pa', 'pb', 'pc')" || return 1
+	local unsigned
+	unsigned="$(scalar "SELECT count(*) FROM projects WHERE sig IS NULL AND provenance <> 'observed'")"
+	want_eq "declared rows with no signature" "$unsigned" 0 || return 1
+	local orphans
+	orphans="$(scalar "SELECT count(*) FROM artifacts a
+	                    WHERE a.project IS NOT NULL
+	                      AND NOT EXISTS (SELECT 1 FROM projects p WHERE p.id = a.project)")"
+	want_eq "artifacts naming a project with no registry row" "$orphans" 0 || return 1
+	printf 'every project the data names has a row, and every declared row is signed\n'
 }
 
 # The other transport, and the same handlers behind it: a client that launches
@@ -1912,9 +2100,17 @@ start_pg5() {
 # not fabric state - the schema says so, and nothing replicates them - so two
 # nodes that are meant to authenticate the same people have to be told who those
 # people are out of band, exactly as two machines are handed the same key.
+#
+# projects goes first and is the one table here that DOES replicate. It is
+# copied anyway because it is what the other three point at: an agent's home and
+# a token's scope are foreign keys into the registry, so handing node B alice
+# without handing it pa would be handing it a principal in a project that does
+# not exist there yet. It is the same bootstrap a restore does, and the rows
+# arrive signed by node A, so the first sync merges them with itself and nothing
+# moves.
 copy_principals() {
 	local from=$1 to=$2 table
-	for table in users agents tokens; do
+	for table in projects users agents tokens; do
 		psql -v ON_ERROR_STOP=1 -q -d "$from" -c "\\copy $table to '$WORK/$table.csv' csv" || return 1
 		psql -v ON_ERROR_STOP=1 -q -d "$to" -c "\\copy $table from '$WORK/$table.csv' csv" || return 1
 	done
@@ -1961,6 +2157,160 @@ psql5_counts() {
 		return 1
 	fi
 	printf '%s row(s)\n' "$n"
+}
+
+# ------------------------------------------------ the project entity, federated
+#
+# The registry replicates like every other row, and the whole reason it has to
+# is that `project` is already inside the signed payload of everything that
+# carries one: a node-local registry would leave the referent local while every
+# reference to it is federated.
+#
+# Two things can drift here and only here, and a silent drift in either is
+# indistinguishable from working:
+#
+#   - RECONCILE. Two nodes declare the same project independently, with no
+#     contact. They must end up with ONE identity, not two, and not by accident.
+#   - COLLISION. Two nodes declare the same NAME for two different projects.
+#     They must NOT silently become one. The git remote is what makes that
+#     decidable rather than a judgement call, and an operator pin is what
+#     settles it.
+#
+# The deltas here are moved by hand rather than by `flowy sync`, and deliberately
+# so: the driver's cursors are per peer, and a check that wedges one on purpose
+# would leave every later check syncing from a bookmark this one moved. So each
+# check pulls a page from one node and pushes exactly the project rows out of it
+# at the other, which is the same merge through the same door.
+
+# declare5 PORT TOKEN NAME ORIGIN - declare a project on one of the two nodes.
+declare5() {
+	local port=$1 token=$2 name=$3 origin=$4
+	want_napi 200 "$port" POST "$token" /api/projects \
+		"$(jq -nc --arg id "$name" --arg o "$origin" '{id: $id, origin: $o}')"
+}
+
+# token_in_project DSN TOKEN USER PROJECT - a bearer token for one project, on
+# one node, written the way an operator writes one: straight into the local
+# tokens table, because tokens are local credentials and never replicate.
+#
+# The user is the one FLOWY_PEERS names, so this principal may push; the project
+# is the one being tested, so the merge's reach test sees a principal that is in
+# it. Both halves matter, and they are two different rules.
+token_in_project() {
+	psql -v ON_ERROR_STOP=1 -q -d "$1" \
+		-c "INSERT INTO tokens (token, user_id, project) VALUES ('$2', '$3', '$4')
+		    ON CONFLICT (token) DO UPDATE SET user_id = excluded.user_id,
+		                                      project = excluded.project"
+}
+
+# move_projects FROM_PORT TO_PORT TOKEN - pull a page from one node and push
+# only its project rows at the other, with the identities that verify them. The
+# result of the merge lands in API_BODY, so a caller reads .refused and .reasons
+# off it.
+move_projects() {
+	local from=$1 to=$2 token=$3 delta
+	napi "$from" GET "$token" '/api/sync/pull?since=0' || return 1
+	want_eq "the pull answered" "$API_STATUS" 200 || return 1
+	delta="$(printf '%s' "$API_BODY" | jq -c '{artifacts: [], events: [], tasks: [],
+	          grants: [], projects: (.projects // []), identities: (.identities // []),
+	          hwm: .hwm}')" || return 1
+	napi "$to" POST "$token" /api/sync/push "$delta" || return 1
+	want_eq "the push was accepted as a delta" "$API_STATUS" 200 || return 1
+}
+
+# project5 DSN NAME COLUMN - one column of one registry row on one node.
+project5() { scalar5 "$1" "SELECT coalesce($3::text, '') FROM projects WHERE id = '$2'"; }
+
+# Two nodes, one project, declared on each with no contact between them - and
+# spelled differently, because a remote has three spellings and an identity that
+# is three strings is not an identity. They converge on one row: same origin,
+# same winner, one row each side.
+two_nodes_declaring_one_project_converge() {
+	recall5
+	local name=shared-repo token=tshared-repo
+	declare5 "$N5_PORT_A" "$N5_TOKEN_OP" "$name" 'git@github.com:acme/shared.git' || return 1
+	declare5 "$N5_PORT_B" "$N5_TOKEN_OP" "$name" 'https://github.com/acme/shared' || return 1
+	want_eq "node A canonicalised the remote" \
+		"$(project5 "$N5_DSN_A" "$name" origin)" git:github.com/acme/shared || return 1
+	want_eq "and node B reached the same string from the other spelling" \
+		"$(project5 "$N5_DSN_B" "$name" origin)" git:github.com/acme/shared || return 1
+
+	token_in_project "$N5_DSN_A" "$token" "$N5_USER_B" "$name" || return 1
+	token_in_project "$N5_DSN_B" "$token" "$N5_USER_B" "$name" || return 1
+
+	move_projects "$N5_PORT_A" "$N5_PORT_B" "$token" || return 1
+	want_eq "nothing was refused" "$(printf '%s' "$API_BODY" | jq '[.refused[]] | add')" 0 || return 1
+	move_projects "$N5_PORT_B" "$N5_PORT_A" "$token" || return 1
+	want_eq "nothing was refused the other way either" \
+		"$(printf '%s' "$API_BODY" | jq '[.refused[]] | add')" 0 || return 1
+
+	# One row, not two, on each node - and the same one, which is what
+	# "converge" has to mean when the merge key is the name itself.
+	local rows_a rows_b node_a node_b
+	rows_a="$(scalar5 "$N5_DSN_A" "SELECT count(*) FROM projects WHERE id = '$name'")" || return 1
+	rows_b="$(scalar5 "$N5_DSN_B" "SELECT count(*) FROM projects WHERE id = '$name'")" || return 1
+	want_eq "rows on A" "$rows_a" 1 || return 1
+	want_eq "rows on B" "$rows_b" 1 || return 1
+	node_a="$(project5 "$N5_DSN_A" "$name" node)" || return 1
+	node_b="$(project5 "$N5_DSN_B" "$name" node)" || return 1
+	want_eq "both nodes hold the same winner" "$node_a" "$node_b" || return 1
+	printf 'two independent declarations of %s converged on one row, written by %s\n' \
+		"$name" "$node_a"
+}
+
+# The other half, and the failure the name alone could never catch: two
+# genuinely different projects that are both called `flowy`. They have different
+# remotes, so the merge can say so - and it refuses rather than folding two
+# teams' work under one name.
+two_projects_with_one_name_are_refused_not_merged() {
+	recall5
+	local name=flowy token=tflowy-collide
+	declare5 "$N5_PORT_A" "$N5_TOKEN_OP" "$name" 'git@github.com:acme/flowy.git' || return 1
+	declare5 "$N5_PORT_B" "$N5_TOKEN_OP" "$name" 'git@github.com:someone-else/flowy.git' || return 1
+	token_in_project "$N5_DSN_A" "$token" "$N5_USER_B" "$name" || return 1
+	token_in_project "$N5_DSN_B" "$token" "$N5_USER_B" "$name" || return 1
+
+	move_projects "$N5_PORT_A" "$N5_PORT_B" "$token" || return 1
+	if [ "$(printf '%s' "$API_BODY" | jq '.refused.projects')" -lt 1 ]; then
+		printf 'node B took a project row from a different repository: %s\n' "$API_BODY" >&2
+		return 1
+	fi
+	case "$(printf '%s' "$API_BODY" | jq -r '.reasons | join(" ")')" in
+	*"two projects with one name"*) ;;
+	*)
+		printf 'the refusal does not say what it refused: %s\n' \
+			"$(printf '%s' "$API_BODY" | jq -r '.reasons | join(" ")')" >&2
+		return 1
+		;;
+	esac
+	want_eq "and node B still means its own repository" \
+		"$(project5 "$N5_DSN_B" "$name" origin)" git:github.com/someone-else/flowy || return 1
+	printf 'refused, not merged: %s\n' \
+		"$(printf '%s' "$API_BODY" | jq -r '.reasons[0]')"
+}
+
+# And the way out of it, which is the precedent this fabric already uses for a
+# node's key: the operator says by hand which project this name means here.
+# After the pin, the row that was refused is the same project as the pinned one
+# and merges like any other.
+an_operator_pin_settles_the_collision() {
+	recall5
+	local name=flowy token=tflowy-collide
+	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_OP" /api/projects \
+		"$(jq -nc '{id: "flowy", origin: "git@github.com:acme/flowy.git", pin: true}')" || return 1
+	want_eq "the pin took" "$(jqv .project.provenance)" pinned || return 1
+	want_eq "and kept what it superseded" \
+		"$(printf '%s' "$API_BODY" | jq -r '.project.superseded[0]')" \
+		git:github.com/someone-else/flowy || return 1
+
+	move_projects "$N5_PORT_A" "$N5_PORT_B" "$token" || return 1
+	want_eq "nothing is refused once the operator has said which project this is" \
+		"$(printf '%s' "$API_BODY" | jq '.refused.projects')" 0 || return 1
+	want_eq "and the name means the pinned repository here" \
+		"$(project5 "$N5_DSN_B" "$name" origin)" git:github.com/acme/flowy || return 1
+	want_eq "and the row is still pinned, a merge later" \
+		"$(project5 "$N5_DSN_B" "$name" provenance)" pinned || return 1
+	printf 'the pin settled it, and the chain still holds what it superseded\n'
 }
 
 # ---------------------------------------------------------------- phase 6.5
@@ -3991,7 +4341,7 @@ check "flowy mcp --http comes up" "$WORK/smoke" healthz "http://127.0.0.1:$MCP_P
 
 say "the mcp handshake"
 check "initialize answers without a token, with serverInfo and instructions" mcp_handshake
-check "tools/list offers the five memory tools" mcp_tools_list
+check "tools/list offers the memory tools and the project indicator" mcp_tools_list
 check "the guide is reachable by resource and by tool, behind capped instructions" mcp_instructions_resource
 check "tools/call without a principal is refused" mcp_unauthenticated
 check "an unknown tool is refused" mcp_unknown_tool
@@ -4020,6 +4370,22 @@ check "an entry says what changed, or it is not one" an_entry_says_what_changed
 check "the read is the recent entries, newest first" the_worklog_reads_recent_first
 check "entries are on the timeline, and cannot be posted onto it" \
 	entries_are_on_the_timeline_and_not_postable_onto_it
+
+say "the project entity"
+check "a write into a project nobody declared is refused" \
+	a_write_into_an_undeclared_project_is_refused
+check "whoami says where this token's writes land" whoami_says_where_this_tokens_writes_land
+check "and so does the command line" the_cli_says_which_project_this_token_writes_to
+check "a write into a fixture lands, and says it landed in a fixture" \
+	a_write_into_a_fixture_lands_and_says_so
+check "the enumeration is filtered by the edges that already existed" \
+	the_enumeration_is_permission_filtered
+check "anybody declares, only the operator flags and pins" \
+	declaring_is_open_and_flagging_a_fixture_is_the_operators
+check "one repository is one origin, and a move is an alias" \
+	an_origin_is_one_string_and_a_move_is_an_alias
+check "the registry adapted to the data, and no row was rewritten" \
+	the_registry_adapted_to_the_data
 
 say "the stdio transport"
 check "flowy mcp speaks JSON-RPC over pipes" stdio_transport
@@ -4245,6 +4611,14 @@ check "each node bookmarked the other" both_nodes_know_the_other_as_a_peer
 check "the bookmarks are the operator's view" the_bookmarks_are_the_operators_view
 check "sync refuses a peer it cannot name and a token it cannot resolve" \
 	sync_refuses_a_peer_it_cannot_name
+
+say "projects across the fabric"
+check "two nodes declaring one project converge on one identity" \
+	two_nodes_declaring_one_project_converge
+check "two different projects with one name are refused, not merged" \
+	two_projects_with_one_name_are_refused_not_merged
+check "an operator pin settles which project the name means here" \
+	an_operator_pin_settles_the_collision
 
 say "both databases, as a second client"
 check "the two databases agree, row for row" the_two_databases_agree_row_for_row

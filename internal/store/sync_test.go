@@ -28,7 +28,7 @@ func remote(id string, hlc int64, project *string, owner, title string) *Artifac
 func TestSyncApplyIsLastWriterWinsByHLC(t *testing.T) {
 	ctx, db := open(t)
 
-	project := "pz-" + ulid.NewString()
+	project := declaredProject(t, ctx, db, "pz")
 	owner := "u-" + ulid.NewString()
 	id := ulid.NewString()
 	base := packed(t, db)
@@ -116,7 +116,7 @@ func TestSyncApplyIsLastWriterWinsByHLC(t *testing.T) {
 func TestSyncApplyAdvancesTheClock(t *testing.T) {
 	ctx, db := open(t)
 
-	project := "pz-" + ulid.NewString()
+	project := declaredProject(t, ctx, db, "pz")
 	ahead := packed(t, db) + 60_000<<16 // a full minute of wall clock ahead
 	art := remote(ulid.NewString(), ahead, &project, "u-"+ulid.NewString(), "from the future")
 	if _, err := db.SyncApply(ctx, fromPeer(t, ctx, db, &SyncSet{Artifacts: []*Artifact{art}})); err != nil {
@@ -133,7 +133,7 @@ func TestSyncApplyAdvancesTheClock(t *testing.T) {
 func TestSyncApplyEventsAreAppendOnly(t *testing.T) {
 	ctx, db := open(t)
 
-	project := "pz-" + ulid.NewString()
+	project := declaredProject(t, ctx, db, "pz")
 	first := &Event{
 		ID: ulid.NewString(), Type: "chat", Project: &project, Room: "general",
 		Actor: "u-" + ulid.NewString(), Body: "hello", SeqHLC: packed(t, db),
@@ -190,8 +190,8 @@ func TestSyncApplyEventsAreAppendOnly(t *testing.T) {
 func TestSyncPullIsPermissionFiltered(t *testing.T) {
 	ctx, db := open(t)
 
-	pa := "pa-" + ulid.NewString()
-	pb := "pb-" + ulid.NewString()
+	pa := declaredProject(t, ctx, db, "pa")
+	pb := declaredProject(t, ctx, db, "pb")
 	alice := &User{Handle: "alice-" + ulid.NewString()}
 	bob := &User{Handle: "bob-" + ulid.NewString()}
 	for _, u := range []*User{alice, bob} {
@@ -268,8 +268,8 @@ func TestSyncPullIsPermissionFiltered(t *testing.T) {
 func TestSyncPullPagesAndHoldsTheCursorBack(t *testing.T) {
 	ctx, db := open(t)
 
-	project := "pp-" + ulid.NewString()
-	owner := &User{Handle: "pager-" + ulid.NewString()}
+	project := declaredProject(t, ctx, db, "pp")
+	owner := &User{Handle: declaredProject(t, ctx, db, "pager")}
 	if err := db.InsertUser(ctx, owner); err != nil {
 		t.Fatalf("insert user: %v", err)
 	}
@@ -415,7 +415,7 @@ func TestCheckEventIsWhatTheAPIWouldHaveAllowed(t *testing.T) {
 func TestSyncApplyAsRefusesAForgedEvent(t *testing.T) {
 	ctx, db := open(t)
 
-	project := "pe-" + ulid.NewString()
+	project := declaredProject(t, ctx, db, "pe")
 	peer := &Principal{UserID: "u-" + ulid.NewString(), Project: project}
 	at := packed(t, db)
 
@@ -456,9 +456,9 @@ func TestSyncApplyAsRefusesAForgedEvent(t *testing.T) {
 func TestPulledProjectGrantNeedsALocalOpener(t *testing.T) {
 	ctx, db := open(t)
 
-	home := "ph-" + ulid.NewString()   // the puller's project: the one being opened
-	theirs := "pi-" + ulid.NewString() // the peer's
-	third := "pj-" + ulid.NewString()  // somebody else's entirely
+	home := declaredProject(t, ctx, db, "ph")   // the puller's project: the one being opened
+	theirs := declaredProject(t, ctx, db, "pi") // the peer's
+	third := declaredProject(t, ctx, db, "pj")  // somebody else's entirely
 
 	me := &User{Handle: "opener-" + ulid.NewString()}
 	if err := db.InsertUser(ctx, me); err != nil {
@@ -536,7 +536,7 @@ func grantRows(t *testing.T, db *DB, id string) int {
 func TestPulledMintedEventIsRefused(t *testing.T) {
 	ctx, db := open(t)
 
-	project := "pn-" + ulid.NewString()
+	project := declaredProject(t, ctx, db, "pn")
 	puller := &Principal{UserID: "u-" + ulid.NewString(), Project: project}
 	at := packed(t, db)
 
@@ -580,7 +580,7 @@ func TestPulledMintedEventIsRefused(t *testing.T) {
 func TestSyncApplyObservesTheClockAfterTheCommit(t *testing.T) {
 	ctx, db := open(t)
 
-	project := "pq-" + ulid.NewString()
+	project := declaredProject(t, ctx, db, "pq")
 	owner := "u-" + ulid.NewString()
 	at := packed(t, db)
 	applied := at + 1000
@@ -641,7 +641,7 @@ func TestSyncApplyObservesTheClockAfterTheCommit(t *testing.T) {
 func TestPushedNewArtifactIsThePushersOwn(t *testing.T) {
 	ctx, db := open(t)
 
-	project := "pk-" + ulid.NewString()
+	project := declaredProject(t, ctx, db, "pk")
 	pusher := &Principal{UserID: "u-" + ulid.NewString(), Project: project}
 	at := packed(t, db)
 
@@ -698,7 +698,7 @@ func TestPushedNewArtifactIsThePushersOwn(t *testing.T) {
 func TestPushedTaskAboutAProjectOnlyArtifactIsRefused(t *testing.T) {
 	ctx, db := open(t)
 
-	project := "pl-" + ulid.NewString()
+	project := declaredProject(t, ctx, db, "pl")
 	from := &User{Handle: "from-" + ulid.NewString()}
 	to := &User{Handle: "to-" + ulid.NewString()}
 	for _, u := range []*User{from, to} {
@@ -764,8 +764,8 @@ func TestPushedTaskAboutAProjectOnlyArtifactIsRefused(t *testing.T) {
 func TestPulledArtifactShareIsStillTheOwnersToGive(t *testing.T) {
 	ctx, db := open(t)
 
-	home := "pa-" + ulid.NewString()   // where the artifact and its owner live
-	theirs := "pb-" + ulid.NewString() // where the puller does
+	home := declaredProject(t, ctx, db, "pa")   // where the artifact and its owner live
+	theirs := declaredProject(t, ctx, db, "pb") // where the puller does
 
 	owner := &User{Handle: "owner-" + ulid.NewString()}
 	reader := &User{Handle: "reader-" + ulid.NewString()}
@@ -883,8 +883,8 @@ func TestPulledArtifactShareIsStillTheOwnersToGive(t *testing.T) {
 func TestPulledNewTaskIsTheOwnersHandoffIntoAFreshThread(t *testing.T) {
 	ctx, db := open(t)
 
-	home := "pc-" + ulid.NewString()    // the artifact, the thread and the mate
-	outside := "pd-" + ulid.NewString() // the person being handed the read
+	home := declaredProject(t, ctx, db, "pc")    // the artifact, the thread and the mate
+	outside := declaredProject(t, ctx, db, "pd") // the person being handed the read
 
 	owner := &User{Handle: "owner-" + ulid.NewString()}
 	mate := &User{Handle: "mate-" + ulid.NewString()}
@@ -985,7 +985,7 @@ func TestPulledNewTaskIsTheOwnersHandoffIntoAFreshThread(t *testing.T) {
 func TestPulledEventCannotClaimSomebodyElsesName(t *testing.T) {
 	ctx, db := open(t)
 
-	project := "pk-" + ulid.NewString()
+	project := declaredProject(t, ctx, db, "pk")
 	me := "u-" + ulid.NewString()
 	alice := "u-alice-" + ulid.NewString()
 	puller := &Principal{UserID: me, Project: project}
@@ -1117,7 +1117,7 @@ func TestEventCannotNameAnArtifactItCannotRead(t *testing.T) {
 	ctx, db := open(t)
 
 	// Somebody else's project, and a note in it that no grant reaches.
-	theirs := "pt-" + ulid.NewString()
+	theirs := declaredProject(t, ctx, db, "pt")
 	stranger := "u-" + ulid.NewString()
 	closed := &Artifact{
 		Type: "note", Project: &theirs, OwnerUser: stranger, Visibility: "project-only",
@@ -1127,7 +1127,7 @@ func TestEventCannotNameAnArtifactItCannotRead(t *testing.T) {
 		t.Fatalf("upsert the closed artifact: %v", err)
 	}
 
-	home := "pu-" + ulid.NewString()
+	home := declaredProject(t, ctx, db, "pu")
 	me := "u-" + ulid.NewString()
 	p := &Principal{UserID: me, Project: home}
 
@@ -1208,9 +1208,9 @@ func TestNewlyVisibleRescanIsBoundedAndBatched(t *testing.T) {
 	syncBatch = 4
 	t.Cleanup(func() { syncBatch = was })
 
-	home := "pv-" + ulid.NewString()
-	theirs := "pw-" + ulid.NewString()
-	me := &User{Handle: "puller-" + ulid.NewString()}
+	home := declaredProject(t, ctx, db, "pv")
+	theirs := declaredProject(t, ctx, db, "pw")
+	me := &User{Handle: declaredProject(t, ctx, db, "puller")}
 	them := &User{Handle: "holder-" + ulid.NewString()}
 	for _, u := range []*User{me, them} {
 		if err := db.InsertUser(ctx, u); err != nil {
@@ -1342,8 +1342,8 @@ func TestNewlyVisibleRescanIsBoundedAndBatched(t *testing.T) {
 func TestPulledRowsAreTheAuthoringPartysToAssert(t *testing.T) {
 	ctx, db := open(t)
 
-	project := "pp-" + ulid.NewString()
-	theirs := "pq-" + ulid.NewString()
+	project := declaredProject(t, ctx, db, "pp")
+	theirs := declaredProject(t, ctx, db, "pq")
 	me := "u-me-" + ulid.NewString()
 	alice := "u-alice-" + ulid.NewString()
 	p := &Principal{UserID: me, Project: project}
@@ -1468,7 +1468,7 @@ func TestPulledRowsAreTheAuthoringPartysToAssert(t *testing.T) {
 func TestAPulledRewriteOfAnothersArtifactNeedsAPinnedNode(t *testing.T) {
 	ctx, db := open(t)
 
-	project := "pr-" + ulid.NewString()
+	project := declaredProject(t, ctx, db, "pr")
 	me := "u-me-" + ulid.NewString()
 	alice := "u-alice-" + ulid.NewString()
 	p := &Principal{UserID: me, Project: project}
@@ -1535,9 +1535,9 @@ func TestAPulledRewriteOfAnothersArtifactNeedsAPinnedNode(t *testing.T) {
 func TestBothDoorsRefuseAndApplyTheSameRows(t *testing.T) {
 	ctx, db := open(t)
 
-	home := "px-" + ulid.NewString()   // where this principal writes
-	theirs := "py-" + ulid.NewString() // the far side of a share
-	other := "pz-" + ulid.NewString()  // a second project this node holds a principal in
+	home := declaredProject(t, ctx, db, "px")   // where this principal writes
+	theirs := declaredProject(t, ctx, db, "py") // the far side of a share
+	other := declaredProject(t, ctx, db, "pz")  // a second project this node holds a principal in
 
 	me := &User{Handle: "me-" + ulid.NewString()}
 	alice := &User{Handle: "alice-" + ulid.NewString()}

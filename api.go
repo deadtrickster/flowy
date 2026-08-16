@@ -203,6 +203,14 @@ func (s *server) handleCreateArtifact(w http.ResponseWriter, r *http.Request) {
 		write = s.db.UpsertArtifact
 	}
 	if err := write(r.Context(), art); err != nil {
+		if errors.Is(err, store.ErrUndeclaredProject) {
+			// A project nobody declared is not a target. It is 400 rather than
+			// 404 because there is nothing to hide here - a project's existence
+			// is not a secret, every row that names one says the name - and the
+			// caller's next move is to declare it or fix the spelling.
+			writeJSON(w, http.StatusBadRequest, errorBody(err.Error()))
+			return
+		}
 		if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrTaken) {
 			// The id names a row this principal may not write: somebody else's,
 			// or one that has been deleted, or - on a create - simply one that
@@ -680,6 +688,13 @@ func (s *server) handleCreateGrant(w http.ResponseWriter, r *http.Request) {
 		GrantedBy:   p.UserID,
 	}
 	if err := s.db.InsertGrant(r.Context(), g); err != nil {
+		if errors.Is(err, store.ErrUndeclaredProject) {
+			// Both ends of a grant name a declared project. A capability into a
+			// project nobody declared opens nothing - it is a typo that would
+			// replicate - and the caller is told which end is the problem.
+			writeJSON(w, http.StatusBadRequest, errorBody(err.Error()))
+			return
+		}
 		serverError(w, r, err)
 		return
 	}
@@ -689,9 +704,26 @@ func (s *server) handleCreateGrant(w http.ResponseWriter, r *http.Request) {
 // handleWhoami echoes the principal a token resolved to, which is the quickest
 // way to find out why a read came back empty.
 //
+// It answers where this token's writes land as well as who it is, because the
+// two are one question and only one of them was ever answered. A token is a
+// (user, agent, project) triple and the project half decides which project
+// every artifact, memory item and worklog entry written with it lands in - so
+// "you are alice" without "and everything you write goes into pa, which is a
+// fixture" is the shape of answer that let a day of real work sit in demo seed
+// data. See projects.go.
+//
 // GET /api/whoami
 func (s *server) handleWhoami(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, principalOf(r))
+	p := principalOf(r)
+	out := whoamiResponse{Principal: p}
+	if p != nil {
+		declared, project := s.projectFacts(r.Context(), p.Project)
+		out.Declared = declared
+		if project != nil {
+			out.Fixture, out.Origin = project.Fixture, project.Origin
+		}
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // intParam parses an optional positive integer parameter, treating anything

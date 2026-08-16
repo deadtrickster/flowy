@@ -39,6 +39,33 @@ export interface Whoami {
   agent?: string;
   project?: string;
   operator?: boolean;
+  /**
+   * Where this token's writes land, as the registry sees it. project_fixture
+   * is the one a person has to act on: a fixture is demo seed data and is
+   * perfectly writable, so nothing refuses a write into one - which is exactly
+   * why the console has to say it rather than leave the project as a word.
+   */
+  project_declared?: boolean;
+  project_fixture?: boolean;
+  project_origin?: string;
+}
+
+/** Project is one row of the registry every project column points at. */
+export interface Project {
+  id: string;
+  name: string;
+  created_by?: string;
+  provenance: string;
+  fixture: boolean;
+  origin?: string;
+  superseded?: string[];
+}
+
+export interface ProjectsPage {
+  count: number;
+  current?: string;
+  current_is_fixture: boolean;
+  projects: Project[];
 }
 
 export interface Artifact {
@@ -458,6 +485,9 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 export const api = {
   whoami: () => request<Whoami>("/api/whoami"),
+
+  /** projects is the registry, narrowed to what this token may be shown. */
+  projects: () => request<ProjectsPage>("/api/projects"),
 
   /** room reads a room from a cursor, exclusive. */
   room: (room: string, since = 0) =>

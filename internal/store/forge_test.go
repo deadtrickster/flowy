@@ -18,7 +18,7 @@ import (
 func TestExternalRefRoundTrips(t *testing.T) {
 	ctx, db := open(t)
 
-	project := "pf-" + ulid.NewString()
+	project := declaredProject(t, ctx, db, "pf")
 	owner := &User{Handle: "filer-" + ulid.NewString()}
 	if err := db.InsertUser(ctx, owner); err != nil {
 		t.Fatalf("insert user: %v", err)
@@ -223,7 +223,7 @@ func (r countedResult) RowsAffected() (int64, error) { return int64(r), nil }
 func TestLatestTaskForArtifact(t *testing.T) {
 	ctx, db := open(t)
 
-	project := "pt-" + ulid.NewString()
+	project := declaredProject(t, ctx, db, "pt")
 	from := &User{Handle: "from-" + ulid.NewString()}
 	to := &User{Handle: "to-" + ulid.NewString()}
 	for _, u := range []*User{from, to} {
@@ -276,7 +276,7 @@ func TestLatestTaskForArtifact(t *testing.T) {
 func TestOnlyOneFilingWinsTheLink(t *testing.T) {
 	ctx, db := open(t)
 
-	project := "pfile-" + ulid.NewString()
+	project := declaredProject(t, ctx, db, "pfile")
 	owner := &User{Handle: "twicefiler-" + ulid.NewString()}
 	if err := db.InsertUser(ctx, owner); err != nil {
 		t.Fatalf("insert user: %v", err)
@@ -350,7 +350,7 @@ func TestOnlyOneFilingWinsTheLink(t *testing.T) {
 func TestTwoFilingsAtOnceLeaveOneLink(t *testing.T) {
 	ctx, db := open(t)
 
-	project := "prace-" + ulid.NewString()
+	project := declaredProject(t, ctx, db, "prace")
 	owner := &User{Handle: "racer-" + ulid.NewString()}
 	if err := db.InsertUser(ctx, owner); err != nil {
 		t.Fatalf("insert user: %v", err)

@@ -122,6 +122,14 @@ func (d *DB) UpsertArtifact(ctx context.Context, a *Artifact) error {
 // write on its own, a transaction for one that is half of an operation - and
 // with the reading already stamped on the row by fill or fillAt.
 func (d *DB) upsertArtifact(ctx context.Context, q execer, a *Artifact) error {
+	// A local write lands in a project that was declared, or it does not land.
+	// It is asked here rather than at the handler because every surface writes
+	// through this one function - the API, the memory tools, the reports, the
+	// FUSE drainer - and a rule kept per surface is a rule the next surface
+	// forgets. See store.requireProject.
+	if err := requireProjectPtr(ctx, q, a.Project); err != nil {
+		return err
+	}
 	// The date the row will carry, decided before it is signed rather than by
 	// the column's default afterwards - see createdNow. An update keeps the date
 	// the row already has: an edit is not a new artifact, and the value has to
@@ -235,6 +243,9 @@ func (d *DB) CreateArtifact(ctx context.Context, a *Artifact) error {
 		span.End()
 	}()
 	if err := d.fill(a); err != nil {
+		return err
+	}
+	if err := requireProjectPtr(ctx, d.sql, a.Project); err != nil {
 		return err
 	}
 	// Minted here and signed with the row, not left to the column - see

@@ -123,6 +123,13 @@ func mcpCmd(args []string) error {
 	}
 	defer db.Close()
 
+	// Same as serve: a write through a tool lands in a declared project or it
+	// is refused, so a node reached only over MCP has to adopt what its
+	// database already names before it takes a call.
+	if _, err := db.BackfillProjects(dialCtx); err != nil {
+		return fmt.Errorf("projects: %w", err)
+	}
+
 	m := &mcpServer{
 		db: db, node: *node, started: startedNow(), operator: mcpOperator(),
 		tracer: newTracer(*node, db),

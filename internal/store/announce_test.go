@@ -23,6 +23,7 @@ func TestAnAgentWithNoKindIsAWorker(t *testing.T) {
 		t.Fatalf("insert user: %v", err)
 	}
 
+	declare(t, ctx, db, "pk")
 	plain := &Agent{UserID: user.ID, Kind: "claude", Project: "pk"}
 	if err := db.InsertAgent(ctx, plain); err != nil {
 		t.Fatalf("insert an agent that says nothing about its kind: %v", err)
@@ -93,7 +94,7 @@ func TestAnAgentWithNoKindIsAWorker(t *testing.T) {
 func TestANodeAnnouncementCrossesNeitherDoor(t *testing.T) {
 	ctx, db := open(t)
 
-	project := "pann-" + ulid.NewString()
+	project := declaredProject(t, ctx, db, "pann")
 	user := &User{Handle: "ann-" + ulid.NewString()}
 	if err := db.InsertUser(ctx, user); err != nil {
 		t.Fatalf("insert user: %v", err)

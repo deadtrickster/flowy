@@ -103,7 +103,7 @@ func TestThisNodeSignsAndKeepsItsKey(t *testing.T) {
 	}
 
 	// And a row written here verifies under it, which is the whole point.
-	project := "ps-" + ulid.NewString()
+	project := declaredProject(t, ctx, db, "ps")
 	art := &Artifact{Type: "note", Project: &project, OwnerUser: "u-" + ulid.NewString(),
 		Title: "signed on the way in", Body: "whistlebrick"}
 	if err := db.UpsertArtifact(ctx, art); err != nil {
@@ -272,7 +272,7 @@ func TestAServedIdentityIsSelfSignedAndNeverRotates(t *testing.T) {
 
 	strict := "strict-" + ulid.NewString()
 	strictKey := testKey(strict)
-	project := "pi-" + ulid.NewString()
+	project := declaredProject(t, ctx, db, "pi")
 	owner := "u-" + ulid.NewString()
 	row := &Artifact{
 		ID: ulid.NewString(), Type: "note", Project: &project, OwnerUser: owner,

@@ -111,6 +111,19 @@ poll, it reflows on a resize, it degrades to 16 colours and to none, it binds
 neither `ctrl-a` nor `ctrl-b` because those belong to screen and tmux, and when
 it exits the terminal still echoes.
 
+And under all of it, late and because of an incident: **a project is a declared
+row rather than a string somebody typed**. `project` was a text column on
+artifacts, events, tokens, tasks and both ends of a grant, with no table behind
+it - so a project existed the moment somebody wrote it, and a day of real shared
+memory was filed into `pa`, which is the smoke seeder's fixture project, through
+the operator token everybody shares. The registry is the referent that makes an
+undeclared project a refusal and a typo an error; the git remote on the row is
+what makes two nodes' `flowy` decidably one project or decidably two; the
+fixture flag is what makes writing real work into demo data **visible at the
+moment it is made**, on the status line, in the tool result and in the whoami.
+It is identity and referential integrity and nothing else - permissions are
+grants plus scope, exactly as they were.
+
 ## Run the gate
 
 ```sh
@@ -197,6 +210,7 @@ both empty by default. See [The security fixes](#the-security-fixes).
 | `flowy mcp` | MCP server: shared memory over stdio, or `--http :PORT` |
 | `flowy tui` | the terminal client: rooms, inbox, artifacts, memory, timeline, metrics, announcements and reports, over the HTTP API |
 | `flowy fuse` | mount this principal's memory as files: `--mount <dir>`, or `--reconcile` to apply what an earlier mount queued |
+| `flowy projects` | which project this token writes to, then the registry of what exists: `list`, `declare --project N [--origin R] [--fixture]`, `pin --project N --origin R` |
 | `flowy sync` | replicate with a peer: `--peer <url> --token <t>`, pull then push |
 | `flowy traces` | collect one trace from this node and its peers: `--trace <id> [--peer <url>,...]` |
 | `flowy identity` | this node's signing key, the keys it holds, and how a key gets in |
@@ -735,6 +749,106 @@ Capabilities beyond `read` (`cap` is already on the row) and project membership
 as data both belong to the handoff phase; right now `cap` is recorded and not
 yet enforced.
 
+## The project entity
+
+A project used to be a free string. `project` is a text column on artifacts,
+events, tokens, tasks and both ends of a grant, membership is simply which token
+you hold, and nothing validated the string - so a project came into existence
+the moment somebody wrote it, and enumerating what existed meant a `UNION` of
+`DISTINCT project` that returned a blank row and still could not see a project
+with no rows yet.
+
+That is not a hypothetical. An agent filed a day of real shared memory into
+`pa`, which is the smoke seeder's fixture project: the default operator token is
+scoped there, so every write through the token everyone shares landed in demo
+seed data, and no surface said so.
+
+So there is a `projects` table, and it is a **referent rather than a convenience
+list**. A token's scope, an artifact's project and a grant's two endpoints name a
+row in it, and a local write into a project that was never declared is refused -
+a typo is not silently a valid target. `tokens.project` and `agents.project`
+carry foreign keys into it; `artifacts`, `events`, `tasks` and `grants`
+deliberately do not, because those rows arrive from peers in pages and a
+constraint error there would fail a whole delta rather than refuse one row.
+
+**Identity is the name.** The primary key is exactly the string the other tables
+carry, with no ULID beside it, because `project` is already inside the signed
+payload of every artifact, event, task and grant that names one - a second
+identity axis could only disagree with what is already signed. It is also what
+makes declaration idempotent: two nodes declaring `flowy` with no contact
+converge as an ordinary last-writer-wins merge on one key.
+
+**Origin is where the project came from**, and it is what makes a name collision
+decidable instead of a judgement call. It is a canonicalised git remote when the
+project has one - `git@github.com:x/y.git`, `https://github.com/x/y` and
+`https://github.com/x/y.git` are one repository and three strings, so the
+scheme, the credentials, the port and the `.git` all go and what is left is
+`git:host/path` - and a derived identity (`derived:<node>/<name>`) when it does
+not. A project with no repository is a first-class case, not a placeholder.
+
+Three branches on the way in, and none of them is a silent merge:
+
+- the same remote on both sides: **the same project**, merged.
+- different remotes under one name: **two projects**, refused, with the operator
+  told to pin the one this node means. `flowy projects pin` is the same shape as
+  pinning a peer's signing key, and nothing off the wire overwrites a pinned row.
+- no origin on either side - a row from a build that predates the column:
+  accepted, because inventing a collision out of an empty column would refuse
+  federation with every older node.
+
+**A move is an alias, never a rewrite.** A project that had no repository and
+then got one, or whose remote was renamed or transferred, substitutes its origin
+and keeps the old one in `superseded`. No row's `project` column is touched:
+`project` is inside the signed payload, so `UPDATE artifacts SET project=...`
+produces rows whose signatures no longer verify - forged rows by this node's own
+definition. The name is what rows point at, and the name does not move. It is
+the same rule the `pa` migration is named after, and the same shape as
+`supersedes` on a report.
+
+**Fixtures are flagged.** `pa`, `pb` and `pc` are the smoke seeder's, and the
+flag says so. Be precise about what it buys: it would **not** have refused that
+write, because `pa` is a legitimate writable project and the write was valid. It
+makes the mistake **visible at the moment it is made** - the TUI status line
+turns red and reads `@pa [FIXTURE]`, `flowy projects` leads with *this token
+writes to pa - A FIXTURE PROJECT*, `GET /api/whoami` carries `project_fixture`,
+the console's token bar says *writing into pa - a FIXTURE project*, and
+`mem_write`, `report_write` and `worklog_append` return a `warning` beside the
+item they just wrote.
+
+**It is not a second permission system**, and that is the hard line. Permissions
+are grants plus the token's scope, exactly as they were. The registry decides
+which project *names* a principal is shown - their own, and the ones on the
+other end of a live grant edge - and decides nothing about which *rows* anybody
+may read. If membership ever moved into that table there would be two places
+membership is decided, and the whole claim of this node - one permission filter,
+in SQL - would be gone.
+
+It replicates and it is signed, like every other fabric row, for the reason the
+column already implies: `project` is inside the signed payload of everything
+that carries one, so a node-local registry would leave the referent local while
+every reference to it is federated - drift by construction. There is no
+tombstone column, deliberately: deleting a project would orphan every row that
+names it, and a tombstone arriving from a peer would stop this node writing into
+its own project.
+
+The migration adapts the registry to the data and never the other way round.
+`schema.sql` declares the names the rows already carry - it has to, because the
+foreign key on `tokens` cannot be added while a token points at a project with
+no row - and `flowy serve` adopts those rows on startup, stamping, dating and
+signing each one so a name found here can replicate like one declared here. A
+project named only by a peer's row is recorded as `observed` rather than
+dropped, and an observation is never adopted: signing it would turn a peer's
+declaration into this node's and collide with the real one later.
+
+```sh
+flowy projects                       # what this token writes to, then the registry
+flowy projects declare --project flowy --origin git@github.com:you/flowy.git
+flowy projects pin --project flowy --origin git@github.com:you/flowy.git
+```
+
+`declare` with no `--origin` reads `git remote get-url origin` from the work tree
+it is run in, and falls back to a derived identity when there is no repository.
+
 ## API
 
 All of it is JSON, all of it needs a bearer token, all writes are HLC-stamped
@@ -762,7 +876,9 @@ and deletes are tombstones.
 | `POST /api/task/{id}/state` | move it: `open`\|`delegated`\|`done`. Either party may. Returns `{task, event}` |
 | `PUT /api/me/auto_delegate` | `{on: bool}` - your standing answer to inbound work |
 | `POST /api/grants` | issue a capability: `{from_project,to_project}` for a project-wide one, `{artifact,subject}` for a share |
-| `GET /api/sync/pull?since=&limit=` | the delta a peer may read: `{artifacts, events, tasks, grants, hwm}`, ordered by the clock, tombstones included |
+| `GET /api/projects` | `{"count","current","current_is_fixture","projects":[...]}` - the registry, narrowed to the projects you are in or hold a grant with. `?scope=all` is the operator's whole-node view |
+| `POST /api/projects` | declare one. Body: `id` (the name every row points at), `name?`, `origin?` (a git remote, canonicalised). `fixture?` and `pin?` are the operator's. Declaring one that is already here answers with the row as it stands |
+| `GET /api/sync/pull?since=&limit=` | the delta a peer may read: `{artifacts, events, tasks, grants, projects, hwm}`, ordered by the clock, tombstones included |
 | `POST /api/sync/push` | merge a peer's delta: upsert by id, append-only events, last-writer-wins by `hlc` and `node`. Rows the pushing principal could not have written are refused and counted |
 | `GET /api/peers` | replication bookmarks and their cursors; the operator only |
 | `GET /api/metrics?scope=all` | the six metric groups, filtered to this principal; `scope=all` is the node and is the operator's alone. Every group says whether it was measured, and why not when it was not |
@@ -781,7 +897,7 @@ and deletes are tombstones.
 | `POST /api/announcement/{id}/resolve` | close the window. `409` while the quiesce is `held`, with the pending list in the body; the owner only |
 | `POST /api/quiesce/hold` | `{resource}` - this principal depends on that resource, so a maintenance announcement naming it knows who to wait for |
 | `POST /api/quiesce/release` | `{resource}` - and has let it go. Under `drain` and `pause` that is the answer; under `ack-required` it is not |
-| `GET /api/whoami` | the principal this token resolves to, including `agent_kind` when the token names an agent |
+| `GET /api/whoami` | the principal this token resolves to, including `agent_kind` when the token names an agent, plus `project_declared`, `project_fixture` and `project_origin` - where this token's writes land, and whether that project is demo seed data |
 | `GET /api/node` | this node, its version and its routes |
 
 On `project` in a create, absent, `null` and a string are three different
@@ -1761,7 +1877,8 @@ every table:
 | --- | --- |
 | `users` | people; `auto_delegate` decides whether work can go straight to an agent |
 | `agents` | agents acting for a user; `kind` is the runtime (`claude`\|`glm`\|`opencode`), `agent_kind` is what it is for (`worker`\|`reviewer`\|`system`\|`monitor`, default `worker`) |
-| `tokens` | bearer token to `(user, agent, project)`; local, never replicated |
+| `tokens` | bearer token to `(user, agent, project)`; local, never replicated. `project` is a foreign key into `projects` |
+| `projects` | the registry every `project` column points at: the name as the primary key, `origin` and `superseded` (where the project came from, and what that replaced), `created_by`, `provenance`, `fixture`. Signed and replicated; no tombstone, because a referent a peer can revoke is one a peer can revoke |
 | `grants` | cross-project capabilities, tombstoned rather than deleted |
 | `artifacts` | transcripts, memories, chats, bugs, features, notes |
 | `events` | the append-only log and its DAG |
@@ -1942,7 +2059,7 @@ what a status trail is.
 against a live `flowy serve`:
 
 - `/healthz` comes up and reports `ok:true` with the database up
-- the eight spine tables exist
+- the nine spine tables exist
 - `flowy fuse` with nothing said mounts nothing and says it wants `--mount`,
   and a mount asked for with a token that does not resolve attaches nothing
 - 10000 ULIDs are unique and strictly increasing - sorted order equals
@@ -2026,6 +2143,29 @@ Then Phase 2, against `flowy mcp --http` on a free port and against
 - the entry is **on the activity timeline** as kind `worklog`, with the actor and
   the speaker the node stamped - and `POST /api/activity {"kind": "worklog"}` is
   a `400`, because that door does not check the refs the other one does
+- a grant naming a project nobody declared is a `400` that says so, rather than a
+  capability into a name that came into existence by being typed
+- `GET /api/whoami` says where this token's writes land - `pa`, declared, a
+  fixture, with an origin - and `flowy projects` leads with the same sentence on
+  the command line
+- a `mem_write` into `pa` **lands**, and comes back with a `warning` saying it
+  landed in a fixture: the flag refuses nothing and says everything
+- the enumeration is filtered by the edges that already existed - B sees `pb` and
+  the `pa` it holds a grant with, and not `pc` - and the same token in another
+  project is another principal, which is the existing scope rule and not a new one
+- anybody may declare a project; only the operator may flag one as a fixture or
+  pin one
+- `git@github.com:acme/thing.git` and `https://github.com/acme/thing` canonicalise
+  to one origin, and moving to another remote **supersedes** rather than
+  rewrites - the old origin is kept in the chain and no row that names the
+  project is touched
+- every project the data names has a registry row, every declared row is signed,
+  and no artifact names a project that is not in the registry
+- two nodes declaring one project independently, spelled two ways, converge on
+  **one row** with the same winner on both
+- two *different* projects called `flowy` - two remotes - are **refused, not
+  merged**, with a reason that says so, and an operator pin settles which one the
+  name means here without losing what it superseded
 - `flowy mcp` on a pipe answers the handshake and a `tools/call` one line each,
   and says nothing at all to a notification
 - the item stdio wrote is found by search over HTTP: **one store, two

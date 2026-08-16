@@ -50,6 +50,7 @@ const (
 	domainTask     = "flowy.task.v1"
 	domainEvent    = "flowy.event.v1"
 	domainIdentity = "flowy.identity.v1"
+	domainProject  = "flowy.project.v1"
 )
 
 // Artifact is the authenticated view of an artifacts row.
@@ -154,6 +155,56 @@ func CanonicalGrant(g Grant) []byte {
 	m.number(g.HLC)
 	m.text(g.Node)
 	m.flag(g.Tombstone)
+	return m.bytes()
+}
+
+// Project is the authenticated view of a projects row: the registry entry that
+// every other row's project column points at.
+//
+// ID is the referent itself: the string that already sits in artifacts.project
+// and inside every one of those signatures. Name is the label a person reads.
+//
+// Origin and Superseded are in the signature and are the reason this row can
+// settle a collision. Origin is where the project came from - a canonicalised
+// git remote, or a locally derived identity when there is no repo - and
+// Superseded is the chain of origins it replaced. A merge decides whether two
+// nodes' `flowy` is one project by comparing those, so an origin a peer could
+// rewrite in flight would be a merge a peer could decide.
+//
+// Fixture is in the signature for a smaller version of the same reason: it is
+// the one thing this row says that a person acts on, so a flag outside it is a
+// warning a relay can switch off on somebody else's project.
+type Project struct {
+	ID         string
+	Name       string
+	CreatedBy  string
+	Provenance string
+	Fixture    bool
+	Origin     string
+	Superseded []string
+	OriginAt   time.Time
+	HLC        int64
+	Node       string
+	Created    time.Time
+}
+
+// CanonicalProject is the byte string a project's signature is over.
+//
+// Superseded is encoded in order rather than sorted: it is a chain and not a
+// set, and which origin came before which is the whole of what it records.
+func CanonicalProject(p Project) []byte {
+	m := newMessage(domainProject)
+	m.text(p.ID)
+	m.text(p.Name)
+	m.text(p.CreatedBy)
+	m.text(p.Provenance)
+	m.flag(p.Fixture)
+	m.text(p.Origin)
+	m.list(p.Superseded)
+	m.moment(p.OriginAt)
+	m.number(p.HLC)
+	m.text(p.Node)
+	m.moment(p.Created)
 	return m.bytes()
 }
 

@@ -121,10 +121,12 @@ func toolSpecs() []tool { return allTools() }
 
 // allTools is every tool this server serves.
 func allTools() []tool {
-	out := make([]tool, 0, len(tools)+len(reportTools)+len(worklogTools)+len(observabilityTools))
+	out := make([]tool, 0, len(tools)+len(reportTools)+len(worklogTools)+
+		len(projectTools)+len(observabilityTools))
 	out = append(out, tools...)
 	out = append(out, reportTools...)
 	out = append(out, worklogTools...)
+	out = append(out, projectTools...)
 	out = append(out, observabilityTools...)
 	return out
 }
@@ -337,7 +339,10 @@ func memWrite(ctx context.Context, m *mcpServer, p *store.Principal, raw json.Ra
 		return nil, err
 	}
 
-	return map[string]any{"item": art}, nil
+	// The item, and - when this token writes into a fixture - the sentence
+	// nobody was shown the day a week of real memory went into pa. See
+	// mcp_projects.go.
+	return withFixtureWarning(ctx, m, p, map[string]any{"item": art}), nil
 }
 
 func memRead(ctx context.Context, m *mcpServer, p *store.Principal, raw json.RawMessage) (any, error) {

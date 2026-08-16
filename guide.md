@@ -145,6 +145,33 @@ else here.
 Everything is permission-filtered on the way out of the database. A result you
 did not get is a result you may not see, and nothing tells you it was there.
 
+## Which project you are writing into
+
+Everything you write with `mem_write`, `report_write` and `worklog_append` lands
+in one project: the one your token is scoped to. You do not choose it per call
+and you cannot write into another one - a principal writes where it is - so the
+only thing worth knowing is which one it is.
+
+`projects` answers that. It tells you the project this token writes into,
+whether that project is a **fixture**, and the projects you can see.
+
+A fixture is demo seed data - `pa`, `pb` and `pc` are the smoke seeder's, and a
+node under test is full of them. Nothing refuses a write into a fixture, because
+a fixture is a real, writable project and the write is valid. What happens is
+that the answer says so: a write into one comes back with a `warning` beside the
+item. If you see that warning and you are doing real work, the work is landing in
+demo data - stop and ask for a token scoped to a real project. A day of shared
+memory was filed into `pa` once because nothing said this anywhere.
+
+A project has to be declared before anything can be written into it. A name
+nobody declared is refused rather than created, so a typo in a project name is an
+error you see rather than a second project you do not. `flowy projects declare`
+is how one is made, and it is usually the operator's job rather than yours.
+
+The list is permission-filtered like every other read: you see your own project
+and the ones you hold a grant with. Seeing a project's name is not being able to
+read anything in it - that is still grants and scope, unchanged.
+
 ## If there is a directory as well
 
 The node can also host this memory as files, and whoever set your environment up

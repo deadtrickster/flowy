@@ -193,6 +193,7 @@ func TestAQueuedWriteCannotMoveAnItemBetweenHomes(t *testing.T) {
 	ctx, db := open(t)
 	owner := fsUser(t, ctx, db, "fs-floor")
 	project := "pa"
+	declare(t, ctx, db, project)
 
 	personal := fsIntent(owner.ID, nil, "floor.md", "mine")
 	personal.Visibility = VisibilityPersonal
@@ -357,10 +358,10 @@ func TestTheMountsDirectoriesAreThePermissionFilter(t *testing.T) {
 	ctx, db := open(t)
 	alice := fsUser(t, ctx, db, "fs-dir-alice")
 	bob := fsUser(t, ctx, db, "fs-dir-bob")
-	project := "fsp-" + ulid.NewString()
+	project := declaredProject(t, ctx, db, "fsp")
 
 	aliceP := &Principal{UserID: alice.ID, Project: project}
-	bobP := &Principal{UserID: bob.ID, Project: "fsother-" + ulid.NewString()}
+	bobP := &Principal{UserID: bob.ID, Project: declaredProject(t, ctx, db, "fsother")}
 
 	personal := &Artifact{
 		Type: "memory", OwnerUser: alice.ID, Title: "mine alone",

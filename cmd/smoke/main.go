@@ -312,7 +312,8 @@ func checkHLC() error {
 
 // checkSchema asserts that every spine table exists.
 func checkSchema(ctx context.Context, db *store.DB) error {
-	want := []string{"users", "agents", "tokens", "grants", "artifacts", "events", "tasks", "peers"}
+	want := []string{"users", "agents", "tokens", "grants", "artifacts", "events", "tasks", "peers",
+		"projects"}
 	for _, table := range want {
 		var n int
 		err := db.SQL().QueryRowContext(ctx,
@@ -556,6 +557,24 @@ func seedPrincipals(ctx context.Context, db *store.DB) error {
 		{prefix: "A", handle: "alice", project: "pa", kind: "claude"},
 		{prefix: "B", handle: "bob", project: "pb", kind: "opencode"},
 		{prefix: "OP", handle: "operator", project: "pa", kind: "claude"},
+	}
+
+	// The projects first, because everything below points at them: an agent's
+	// home and a token's scope are foreign keys into the registry now, and a
+	// principal in a project nobody declared is the mistake the registry exists
+	// to make impossible.
+	//
+	// They are declared as fixtures, which is what they are - demo seed data
+	// for the gate and for a seeded node, not anybody's real work. The flag
+	// refuses nothing: pa is a legitimate writable project, and a write into it
+	// lands. What it does is make that write say so, on the status line, in the
+	// whoami and in the tool result, at the moment it is made.
+	for _, name := range store.FixtureProjects {
+		if err := db.DeclareProject(ctx, &store.Project{
+			ID: name, Name: name, Provenance: store.ProvenanceSeed, Fixture: true,
+		}); err != nil {
+			return fmt.Errorf("declare fixture project %s: %w", name, err)
+		}
 	}
 
 	var out []string

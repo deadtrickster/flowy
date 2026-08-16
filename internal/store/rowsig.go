@@ -130,6 +130,18 @@ func (g *Grant) capOrDefault() string {
 	return g.Cap
 }
 
+// canonicalProject is the byte string a registry row's signature is over. The
+// origin chain is in it because the merge decides a name collision by comparing
+// chains - an origin a relay could rewrite in flight would be a decision a
+// relay could make.
+func canonicalProject(p *Project) []byte {
+	return sign.CanonicalProject(sign.Project{
+		ID: p.ID, Name: p.Name, CreatedBy: p.CreatedBy, Provenance: p.Provenance,
+		Fixture: p.Fixture, Origin: p.Origin, Superseded: p.Superseded,
+		OriginAt: p.OriginAt, HLC: p.HLC, Node: p.Node, Created: p.Created,
+	})
+}
+
 func canonicalTask(t *Task) []byte {
 	return sign.CanonicalTask(sign.Task{
 		ID: t.ID, Artifact: t.Artifact, FromUser: t.FromUser, ToUser: t.ToUser,
@@ -168,6 +180,11 @@ func SignGrant(priv ed25519.PrivateKey, g *Grant) { g.Sig = signBytes(priv, cano
 // SignTask stamps t's signature.
 func SignTask(priv ed25519.PrivateKey, t *Task) { t.Sig = signBytes(priv, canonicalTask(t)) }
 
+// SignProject stamps p's signature.
+func SignProject(priv ed25519.PrivateKey, p *Project) {
+	p.Sig = signBytes(priv, canonicalProject(p))
+}
+
 // SignEvent stamps e's signature.
 func SignEvent(priv ed25519.PrivateKey, e *Event) { e.Sig = signBytes(priv, canonicalEvent(e)) }
 
@@ -200,6 +217,12 @@ func SignSet(priv ed25519.PrivateKey, set *SyncSet) {
 	for _, t := range set.Tasks {
 		SignTask(priv, t)
 	}
+	for _, project := range set.Projects {
+		if project.Created.IsZero() {
+			project.Created = createdNow()
+		}
+		SignProject(priv, project)
+	}
 	for _, e := range set.Events {
 		if e.Created.IsZero() {
 			e.Created = createdNow()
@@ -226,6 +249,15 @@ func (d *DB) signGrant(ctx context.Context, g *Grant) error {
 		return err
 	}
 	SignGrant(priv, g)
+	return nil
+}
+
+func (d *DB) signProject(ctx context.Context, p *Project) error {
+	priv, err := d.signer(ctx)
+	if err != nil {
+		return err
+	}
+	SignProject(priv, p)
 	return nil
 }
 

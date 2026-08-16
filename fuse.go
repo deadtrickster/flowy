@@ -69,6 +69,12 @@ func fuseCmd(args []string) error {
 	}
 	defer db.Close()
 
+	// The drainer writes artifacts, so it meets the same rule every other write
+	// path does - see serve, where this is explained.
+	if _, err := db.BackfillProjects(dialCtx); err != nil {
+		return fmt.Errorf("projects: %w", err)
+	}
+
 	if *mountpoint == "" {
 		return reconcileQueue(ctx, db, logger)
 	}

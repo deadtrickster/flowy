@@ -425,9 +425,20 @@ func (d *DB) PrincipalForToken(ctx context.Context, token string) (*Principal, e
 }
 
 // InsertToken writes a bearer token for a principal.
+//
+// The scope is checked against the registry before the row is written, and this
+// is the doorway the whole project entity exists for: a token's project is
+// where every write made with it lands, so a token scoped to a name nobody
+// declared is a whole seat's work filed into a project that does not exist. The
+// column carries a foreign key as well - tokens are local, so the database can
+// hold that promise - and this is the same rule where it can say which project
+// it means.
 func (d *DB) InsertToken(ctx context.Context, p *Principal) error {
+	if err := requireProject(ctx, d.sql, p.Project); err != nil {
+		return err
+	}
 	_, err := d.sql.ExecContext(ctx,
-		`INSERT INTO tokens (token, user_id, agent_id, project) VALUES ($1, $2, $3, $4)
+		`INSERT INTO tokens (token, user_id, agent_id, project) VALUES ($1, $2, $3, nullif($4, ''))
 		 ON CONFLICT (token) DO UPDATE
 		    SET user_id = excluded.user_id, agent_id = excluded.agent_id,
 		        project = excluded.project`,
@@ -457,6 +468,14 @@ func (d *DB) insertGrant(ctx context.Context, q execer, g *Grant) error {
 	// replicated: a value waved through here is a value every peer holds.
 	if !GrantCapOK(g.Cap) {
 		return fmt.Errorf("%w: %s", ErrBadCap, capSaid(g.Cap))
+	}
+	// Both ends of the edge name a declared project. A grant is a capability
+	// between two referents, and one that points at a project nobody declared
+	// opens nothing - it is a typo that replicates.
+	for _, project := range []string{g.FromProject, g.ToProject} {
+		if err := requireProject(ctx, q, project); err != nil {
+			return err
+		}
 	}
 	if err := d.signGrant(ctx, g); err != nil {
 		return err

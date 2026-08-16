@@ -604,7 +604,7 @@ func peerBase(raw string) (string, error) {
 }
 
 func zeroCounts() map[string]int {
-	return map[string]int{"artifacts": 0, "events": 0, "tasks": 0, "grants": 0}
+	return map[string]int{"artifacts": 0, "events": 0, "tasks": 0, "grants": 0, "projects": 0}
 }
 
 // count adds a report's tables up, which is how a caller asks "did anything at

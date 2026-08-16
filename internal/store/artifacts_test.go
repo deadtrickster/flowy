@@ -20,7 +20,7 @@ import (
 func TestTombstoneNamesTheOwner(t *testing.T) {
 	ctx, db := open(t)
 
-	project := "pd-" + ulid.NewString()
+	project := declaredProject(t, ctx, db, "pd")
 	owner := &Principal{UserID: "u-" + ulid.NewString(), Project: project}
 	reader := &Principal{UserID: "u-" + ulid.NewString(), Project: project}
 

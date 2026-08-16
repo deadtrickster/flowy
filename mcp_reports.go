@@ -250,7 +250,10 @@ func reportWrite(ctx context.Context, m *mcpServer, p *store.Principal, raw json
 		return nil, err
 	}
 
-	return map[string]any{"item": art}, nil
+	// A report is the surface most likely to be read months later by somebody
+	// who was not here, which is exactly why it is the worst one to file into
+	// demo seed data - see mcp_projects.go.
+	return withFixtureWarning(ctx, m, p, map[string]any{"item": art}), nil
 }
 
 func reportRead(ctx context.Context, m *mcpServer, p *store.Principal, raw json.RawMessage) (any, error) {

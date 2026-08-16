@@ -44,7 +44,7 @@ func assignmentParts(t *testing.T, db *DB, project string, from, to *User, art *
 func TestWriteAssignmentIsAllOrNothing(t *testing.T) {
 	ctx, db := open(t)
 
-	project := "pw-" + ulid.NewString()
+	project := declaredProject(t, ctx, db, "pw")
 	from := &User{Handle: "from-" + ulid.NewString()}
 	to := &User{Handle: "to-" + ulid.NewString()}
 	for _, u := range []*User{from, to} {
@@ -93,7 +93,7 @@ func TestWriteAssignmentIsAllOrNothing(t *testing.T) {
 func TestMoveArtifactStatusIsAllOrNothing(t *testing.T) {
 	ctx, db := open(t)
 
-	project := "ps-" + ulid.NewString()
+	project := declaredProject(t, ctx, db, "ps")
 	owner := &User{Handle: "owner-" + ulid.NewString()}
 	if err := db.InsertUser(ctx, owner); err != nil {
 		t.Fatalf("insert user: %v", err)
@@ -158,7 +158,7 @@ func rows(t *testing.T, db *DB, table, id string) int {
 func TestUpdateTaskEventIsAllOrNothing(t *testing.T) {
 	ctx, db := open(t)
 
-	project := "pt-" + ulid.NewString()
+	project := declaredProject(t, ctx, db, "pt")
 	from := &User{Handle: "from-" + ulid.NewString()}
 	to := &User{Handle: "to-" + ulid.NewString()}
 	for _, u := range []*User{from, to} {
@@ -232,7 +232,7 @@ func TestUpdateTaskEventIsAllOrNothing(t *testing.T) {
 func TestUpdateTaskEventNeedsTheTaskToBeThere(t *testing.T) {
 	ctx, db := open(t)
 
-	project := "pu-" + ulid.NewString()
+	project := declaredProject(t, ctx, db, "pu")
 	actor := &User{Handle: "actor-" + ulid.NewString()}
 	if err := db.InsertUser(ctx, actor); err != nil {
 		t.Fatalf("insert user: %v", err)
@@ -279,7 +279,7 @@ func TestUpdateTaskEventNeedsTheTaskToBeThere(t *testing.T) {
 func TestADeletedArtifactIsNotMovedOrFiled(t *testing.T) {
 	ctx, db := open(t)
 
-	project := "px-" + ulid.NewString()
+	project := declaredProject(t, ctx, db, "px")
 	owner := &User{Handle: "owner-" + ulid.NewString()}
 	if err := db.InsertUser(ctx, owner); err != nil {
 		t.Fatalf("insert user: %v", err)
@@ -362,7 +362,7 @@ func TestADeletedArtifactIsNotMovedOrFiled(t *testing.T) {
 func TestWriteMemoryIsAllOrNothing(t *testing.T) {
 	ctx, db := open(t)
 
-	project := "pm-" + ulid.NewString()
+	project := declaredProject(t, ctx, db, "pm")
 	owner := &User{Handle: "owner-" + ulid.NewString()}
 	if err := db.InsertUser(ctx, owner); err != nil {
 		t.Fatalf("insert user: %v", err)

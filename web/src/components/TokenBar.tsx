@@ -49,7 +49,20 @@ export function TokenBar() {
         )}
       </div>
       {whoami?.project ? (
-        <div className="text-muted-foreground text-xs">project {whoami.project}</div>
+        whoami.project_fixture ? (
+          /*
+           * The current-project indicator, and the one case it has to shout.
+           * Everything written with this token lands in this project, and a
+           * fixture project is the smoke seeder's demo data - writable, valid,
+           * and not where real work belongs. A day of it went into `pa` because
+           * this line said "project pa" and nothing else.
+           */
+          <div className="font-medium text-destructive text-xs">
+            writing into {whoami.project} - a FIXTURE project (demo seed data)
+          </div>
+        ) : (
+          <div className="text-muted-foreground text-xs">writing into {whoami.project}</div>
+        )
       ) : null}
       {error ? <div className="text-destructive text-xs">{error}</div> : null}
     </form>

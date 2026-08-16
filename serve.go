@@ -128,6 +128,17 @@ func serve(args []string) error {
 		return err
 	}
 	log.Printf("identity: node %q signs with %s", id.NodeID, store.EncodeKey(id.PublicKey))
+
+	// The registry describes the database it was added to. schema.sql declares
+	// the names the rows already carry, because the foreign key on tokens
+	// cannot be added while one points at a project with no row; this adopts
+	// those rows under this node's key, so a name found here can replicate like
+	// one that was declared here. It needs the key, so it runs after it.
+	if n, err := db.BackfillProjects(dialCtx); err != nil {
+		return fmt.Errorf("projects: %w", err)
+	} else if n > 0 {
+		log.Printf("projects: adopted %d project(s) the data already named", n)
+	}
 	if n, err := db.PinFromEnv(dialCtx, *peerKeys); err != nil {
 		return fmt.Errorf("peer keys: %w", err)
 	} else if n > 0 {
@@ -241,6 +252,8 @@ var apiRoutes = []string{
 	"POST /api/task/{id}/state",
 	"PUT /api/me/auto_delegate",
 	"POST /api/grants",
+	"GET /api/projects",
+	"POST /api/projects",
 	"POST /api/announcements",
 	"GET /api/announcements",
 	"GET /api/announcement/{id}/quiesce",
@@ -323,6 +336,12 @@ func (s *server) routes() http.Handler {
 	api.HandleFunc("POST /api/task/{id}/state", s.handleTaskState)
 	api.HandleFunc("PUT /api/me/auto_delegate", s.handleAutoDelegate)
 	api.HandleFunc("POST /api/grants", s.handleCreateGrant)
+	// Phase 10. The project registry: what exists, and how a name comes to
+	// exist. Both are permission-filtered like everything else - the list is
+	// narrowed to the projects the principal is in or holds a grant with - and
+	// neither decides what anybody may read.
+	api.HandleFunc("GET /api/projects", s.handleListProjects)
+	api.HandleFunc("POST /api/projects", s.handleCreateProject)
 	// Phase 9. Announcements, and the quiesce a maintenance one can hold.
 	// Posting is capability-gated on the agent kind rather than on the route,
 	// because the gate is per scope and not per endpoint: anybody may say

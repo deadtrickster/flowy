@@ -19,8 +19,8 @@ func TestCanReadMatchesSQL(t *testing.T) {
 
 	// Fresh project names, so the rows other tests leave behind cannot make
 	// this one pass or fail by accident.
-	px := "px-" + ulid.NewString()
-	py := "py-" + ulid.NewString()
+	px := declaredProject(t, ctx, db, "px")
+	py := declaredProject(t, ctx, db, "py")
 
 	alice := &User{Handle: "alice-" + ulid.NewString()}
 	bob := &User{Handle: "bob-" + ulid.NewString()}
@@ -73,7 +73,7 @@ func TestCanReadMatchesSQL(t *testing.T) {
 		"alice in px":       {UserID: alice.ID, Project: px},
 		"alice's agent":     {UserID: alice.ID, AgentID: aliceAgent.ID, Project: px},
 		"bob in py":         {UserID: bob.ID, Project: py},
-		"stranger in pz":    {UserID: ulid.NewString(), Project: "pz-" + ulid.NewString()},
+		"stranger in pz":    {UserID: ulid.NewString(), Project: declaredProject(t, ctx, db, "pz")},
 		"projectless alice": {UserID: alice.ID},
 	}
 	artifacts := map[string]*Artifact{
@@ -156,8 +156,8 @@ func TestCanReadMatchesSQL(t *testing.T) {
 func TestEventFilterInheritsTheArtifactFloor(t *testing.T) {
 	ctx, db := open(t)
 
-	px := "floorpx-" + ulid.NewString()
-	py := "floorpy-" + ulid.NewString()
+	px := declaredProject(t, ctx, db, "floorpx")
+	py := declaredProject(t, ctx, db, "floorpy")
 
 	alice := &User{Handle: "ev-alice-" + ulid.NewString()}
 	bob := &User{Handle: "ev-bob-" + ulid.NewString()}
@@ -292,8 +292,8 @@ func listedAs(in bool) string {
 func TestEventFilterHomeProjectInheritsTheArtifactFloor(t *testing.T) {
 	ctx, db := open(t)
 
-	pp := "homefloor-pp-" + ulid.NewString()
-	pq := "homefloor-pq-" + ulid.NewString()
+	pp := declaredProject(t, ctx, db, "homefloor-pp")
+	pq := declaredProject(t, ctx, db, "homefloor-pq")
 
 	sharer := &User{Handle: "hf-owner-" + ulid.NewString()}
 	holder := &User{Handle: "hf-holder-" + ulid.NewString()}
@@ -415,8 +415,8 @@ func TestEventFilterHomeProjectInheritsTheArtifactFloor(t *testing.T) {
 func TestEventFloorMatchesTheArtifactFloor(t *testing.T) {
 	ctx, db := open(t)
 
-	px := "matrix-px-" + ulid.NewString()
-	py := "matrix-py-" + ulid.NewString()
+	px := declaredProject(t, ctx, db, "matrix-px")
+	py := declaredProject(t, ctx, db, "matrix-py")
 
 	alice := &User{Handle: "mx-alice-" + ulid.NewString()}
 	bob := &User{Handle: "mx-bob-" + ulid.NewString()}
@@ -461,7 +461,7 @@ func TestEventFloorMatchesTheArtifactFloor(t *testing.T) {
 	// An event about each artifact in each project, written by somebody whose
 	// writes land there. No thread, so the tasks clause cannot decide anything
 	// here: what is under test is the floor.
-	room := "matrix-" + ulid.NewString()
+	room := declaredProject(t, ctx, db, "matrix")
 	type placed struct {
 		event   *Event
 		project string
@@ -486,7 +486,7 @@ func TestEventFloorMatchesTheArtifactFloor(t *testing.T) {
 		"alice in px":    {UserID: alice.ID, Project: px},
 		"bob in py":      {UserID: bob.ID, Project: py},
 		"carol in px":    {UserID: carol.ID, Project: px},
-		"stranger in pz": {UserID: ulid.NewString(), Project: "matrix-pz-" + ulid.NewString()},
+		"stranger in pz": {UserID: ulid.NewString(), Project: declaredProject(t, ctx, db, "matrix-pz")},
 	}
 
 	for pName, p := range principals {
@@ -525,7 +525,7 @@ func TestEventFloorMatchesTheArtifactFloor(t *testing.T) {
 func TestScopeAllIsOperatorOnly(t *testing.T) {
 	ctx, db := open(t)
 
-	project := "scoped-" + ulid.NewString()
+	project := declaredProject(t, ctx, db, "scoped")
 	owner := &User{Handle: "owner-" + ulid.NewString()}
 	if err := db.InsertUser(ctx, owner); err != nil {
 		t.Fatalf("insert user: %v", err)
@@ -535,7 +535,7 @@ func TestScopeAllIsOperatorOnly(t *testing.T) {
 		t.Fatalf("upsert artifact: %v", err)
 	}
 
-	outsider := &Principal{UserID: ulid.NewString(), Project: "elsewhere-" + ulid.NewString()}
+	outsider := &Principal{UserID: ulid.NewString(), Project: declaredProject(t, ctx, db, "elsewhere")}
 	if _, err := db.ReadArtifact(ctx, outsider, art.ID, true); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("scope=all worked for a non-operator: %v", err)
 	}
@@ -555,10 +555,10 @@ func TestScopeAllIsOperatorOnly(t *testing.T) {
 func TestPersonalFloorSurvivesEveryGrant(t *testing.T) {
 	ctx, db := open(t)
 
-	px := "floor-a-" + ulid.NewString()
-	py := "floor-b-" + ulid.NewString()
-	owner := &User{Handle: "floor-owner-" + ulid.NewString()}
-	other := &User{Handle: "floor-other-" + ulid.NewString()}
+	px := declaredProject(t, ctx, db, "floor-a")
+	py := declaredProject(t, ctx, db, "floor-b")
+	owner := &User{Handle: declaredProject(t, ctx, db, "floor-owner")}
+	other := &User{Handle: declaredProject(t, ctx, db, "floor-other")}
 	for _, u := range []*User{owner, other} {
 		if err := db.InsertUser(ctx, u); err != nil {
 			t.Fatalf("insert user: %v", err)
@@ -605,7 +605,7 @@ func TestPersonalFloorSurvivesEveryGrant(t *testing.T) {
 func TestSearchFindsDiscoveryOnlyWords(t *testing.T) {
 	ctx, db := open(t)
 
-	project := "search-" + ulid.NewString()
+	project := declaredProject(t, ctx, db, "search")
 	owner := &User{Handle: "searcher-" + ulid.NewString()}
 	if err := db.InsertUser(ctx, owner); err != nil {
 		t.Fatalf("insert user: %v", err)
@@ -635,7 +635,7 @@ func TestSearchFindsDiscoveryOnlyWords(t *testing.T) {
 
 	// A stranger searching the same word finds nothing at all: the filter is in
 	// the same WHERE clause as the match.
-	stranger := &Principal{UserID: ulid.NewString(), Project: "nowhere-" + ulid.NewString()}
+	stranger := &Principal{UserID: ulid.NewString(), Project: declaredProject(t, ctx, db, "nowhere")}
 	hits, err = db.SearchArtifacts(ctx, stranger, ArtifactQuery{Query: word})
 	if err != nil {
 		t.Fatalf("search as a stranger: %v", err)

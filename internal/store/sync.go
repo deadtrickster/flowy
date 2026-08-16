@@ -85,6 +85,16 @@ type SyncSet struct {
 	Events    []*Event    `json:"events"`
 	Tasks     []*Task     `json:"tasks"`
 	Grants    []Grant     `json:"grants"`
+	// Projects are the registry rows: the referent every other row's project
+	// column points at. They replicate because `project` is already inside the
+	// signed payload of the rows that carry one, so a registry that stayed
+	// local would leave the referent local while every reference to it is
+	// federated - drift by construction.
+	//
+	// They are omitted when empty so that a page from a node that predates the
+	// registry and a page from one that has no projects to offer look the same
+	// on the wire.
+	Projects []*Project `json:"projects,omitempty"`
 	// Identities are the public keys this node holds, and they ride on every
 	// page rather than being fetched separately: a row can only be verified by
 	// the node that wrote it, and on a relayed page that node is neither end of
@@ -100,7 +110,7 @@ func (s *SyncSet) Len() int {
 	if s == nil {
 		return 0
 	}
-	return len(s.Artifacts) + len(s.Events) + len(s.Tasks) + len(s.Grants)
+	return len(s.Artifacts) + len(s.Events) + len(s.Tasks) + len(s.Grants) + len(s.Projects)
 }
 
 // Counts breaks the set down by table, which is what the driver and the push
@@ -114,6 +124,7 @@ func (s *SyncSet) Counts() map[string]int {
 		"events":    len(s.Events),
 		"tasks":     len(s.Tasks),
 		"grants":    len(s.Grants),
+		"projects":  len(s.Projects),
 	}
 }
 
@@ -153,7 +164,8 @@ func (d *DB) SyncPull(ctx context.Context, p *Principal, q SyncQuery) (*SyncSet,
 		return nil, errors.New("store: sync pull without a principal")
 	}
 	limit := q.limit()
-	set := &SyncSet{Artifacts: []*Artifact{}, Events: []*Event{}, Tasks: []*Task{}, Grants: []Grant{}}
+	set := &SyncSet{Artifacts: []*Artifact{}, Events: []*Event{}, Tasks: []*Task{}, Grants: []Grant{},
+		Projects: []*Project{}}
 
 	// Every page carries the keys, because a page can carry a third node's rows
 	// - A pulls from B a row C wrote - and the puller cannot verify those
@@ -188,6 +200,18 @@ func (d *DB) SyncPull(ctx context.Context, p *Principal, q SyncQuery) (*SyncSet,
 		if n >= limit && last > 0 && (capped == 0 || last < capped) {
 			capped = last
 		}
+	}
+
+	// The registry first, because it is what the rows below it point at: a peer
+	// that takes this page learns the project before it learns the artifacts in
+	// it, and does not have to record the name as merely observed.
+	projects, err := d.syncProjects(ctx, p, q.Since, limit)
+	if err != nil {
+		return nil, err
+	}
+	set.Projects = projects
+	if n := len(projects); n > 0 {
+		note(projects[n-1].HLC, n)
 	}
 
 	arts, err := d.syncArtifacts(ctx, p, q.Since, limit)
@@ -799,6 +823,23 @@ func (d *DB) syncGrants(ctx context.Context, p *Principal, since int64, limit in
 		func(g Grant) (int64, string) { return g.HLC, g.ID })
 }
 
+// syncProjects pages the registry, narrowed by the same filter the enumeration
+// uses: the principal's own project, and the ones on the other end of a live
+// grant edge. A peer is handed the names it is already working across and no
+// list of what else this node holds.
+func (d *DB) syncProjects(ctx context.Context, p *Principal, since int64, limit int) ([]*Project, error) {
+	return pageOf(ctx, d, "sync projects", limit,
+		func(a *args, tie *tieAt, lim int) string {
+			return `SELECT ` + projectColumns + `
+	            FROM projects p
+	           WHERE ` + above("coalesce(p.hlc, 0)", "p.id", since, tie, a) + `
+	             AND ` + ProjectFilterSQL(p, "p", a, false) + `
+	           ORDER BY p.hlc, p.id` + limitSQL(a, lim)
+		},
+		scanProject,
+		func(project *Project) (int64, string) { return project.HLC, project.ID })
+}
+
 // SyncResult is what one merge did: the rows it applied, and the rows it
 // refused because the principal that pushed them had no business writing them.
 // The reasons are carried back so a peer that is being refused can be told why
@@ -954,10 +995,12 @@ func (d *DB) syncApply(ctx context.Context, p *Principal, in *SyncSet) (*SyncRes
 	defer span.End()
 	res := &SyncResult{
 		Applied: map[string]int{
-			"artifacts": 0, "events": 0, "tasks": 0, "grants": 0, tableIdentities: 0,
+			"artifacts": 0, "events": 0, "tasks": 0, "grants": 0, "projects": 0,
+			tableIdentities: 0,
 		},
 		Refused: map[string]int{
-			"artifacts": 0, "events": 0, "tasks": 0, "grants": 0, tableIdentities: 0,
+			"artifacts": 0, "events": 0, "tasks": 0, "grants": 0, "projects": 0,
+			tableIdentities: 0,
 		},
 	}
 	if in == nil || (in.Len() == 0 && len(in.Identities) == 0) {
@@ -997,7 +1040,34 @@ func (d *DB) syncApply(ctx context.Context, p *Principal, in *SyncSet) (*SyncRes
 	// row that lands in a project this principal has no reach into is refused.
 	// Then artifacts, which a task is about, then tasks, which open a thread,
 	// then the events in it.
+	// The project names the rows that actually landed carry. They are collected
+	// as each row is applied rather than read off the delta, because a row that
+	// was refused is not a name this node is holding - see ObserveProjects.
+	var named []string
+	note := func(name string) { named = append(named, name) }
+
 	rows := make([]*syncRow, 0, in.Len())
+	// The registry before everything, because it is what the rest of the page
+	// points at: a project applied on this pass is a project the artifacts
+	// below it land in as a declared name rather than an observed one.
+	for _, project := range in.Projects {
+		rows = append(rows, &syncRow{
+			table: "projects", hlc: project.HLC, node: project.Node,
+			verify: func(ctx context.Context, tx *sql.Tx) (string, error) {
+				return d.authentic(ctx, tx, project.Node, canonicalProject(project), project.Sig,
+					"project "+project.ID)
+			},
+			unchanged: func(ctx context.Context, tx *sql.Tx) (bool, error) {
+				return projectLoses(ctx, tx, project)
+			},
+			check: func(ctx context.Context, tx *sql.Tx) (string, error) {
+				return checkProject(ctx, tx, p, project)
+			},
+			apply: func(ctx context.Context, tx *sql.Tx) (int, error) {
+				return upsertProject(ctx, tx, project)
+			},
+		})
+	}
 	for i := range in.Grants {
 		g := &in.Grants[i]
 		rows = append(rows, &syncRow{
@@ -1011,7 +1081,11 @@ func (d *DB) syncApply(ctx context.Context, p *Principal, in *SyncSet) (*SyncRes
 			check: func(ctx context.Context, tx *sql.Tx) (string, error) {
 				return checkGrant(ctx, tx, p, g)
 			},
-			apply: func(ctx context.Context, tx *sql.Tx) (int, error) { return applyGrant(ctx, tx, g) },
+			apply: func(ctx context.Context, tx *sql.Tx) (int, error) {
+				note(g.FromProject)
+				note(g.ToProject)
+				return applyGrant(ctx, tx, g)
+			},
 		})
 	}
 	for _, art := range in.Artifacts {
@@ -1032,7 +1106,12 @@ func (d *DB) syncApply(ctx context.Context, p *Principal, in *SyncSet) (*SyncRes
 			check: func(ctx context.Context, tx *sql.Tx) (string, error) {
 				return checkArtifact(ctx, tx, p, art, shared)
 			},
-			apply: func(ctx context.Context, tx *sql.Tx) (int, error) { return applyArtifact(ctx, tx, art) },
+			apply: func(ctx context.Context, tx *sql.Tx) (int, error) {
+				if art.Project != nil {
+					note(*art.Project)
+				}
+				return applyArtifact(ctx, tx, art)
+			},
 		})
 	}
 	for _, t := range in.Tasks {
@@ -1047,7 +1126,10 @@ func (d *DB) syncApply(ctx context.Context, p *Principal, in *SyncSet) (*SyncRes
 			check: func(ctx context.Context, tx *sql.Tx) (string, error) {
 				return checkTask(ctx, tx, p, t)
 			},
-			apply: func(ctx context.Context, tx *sql.Tx) (int, error) { return applyTask(ctx, tx, t) },
+			apply: func(ctx context.Context, tx *sql.Tx) (int, error) {
+				note(t.Project)
+				return applyTask(ctx, tx, t)
+			},
 		})
 	}
 	for _, e := range in.Events {
@@ -1062,7 +1144,12 @@ func (d *DB) syncApply(ctx context.Context, p *Principal, in *SyncSet) (*SyncRes
 			check: func(ctx context.Context, tx *sql.Tx) (string, error) {
 				return checkEventRow(ctx, tx, p, e)
 			},
-			apply: func(ctx context.Context, tx *sql.Tx) (int, error) { return applyEvent(ctx, tx, e) },
+			apply: func(ctx context.Context, tx *sql.Tx) (int, error) {
+				if e.Project != nil {
+					note(*e.Project)
+				}
+				return applyEvent(ctx, tx, e)
+			},
 		})
 	}
 
@@ -1135,6 +1222,17 @@ func (d *DB) syncApply(ctx context.Context, p *Principal, in *SyncSet) (*SyncRes
 		if len(res.Reasons) < maxReasons {
 			res.Reasons = append(res.Reasons, row.why)
 		}
+	}
+
+	// What landed here naming a project this node has no row for. The merge
+	// does not refuse those rows - a page can carry an artifact whose registry
+	// row the puller was never handed, because a grant reads into a project
+	// without being of it - so the name is recorded as observed instead, in the
+	// same transaction as the rows that named it. Dropping the rows would be
+	// losing replicated work to an ordering accident; saying nothing would be
+	// an enumeration that does not list a project this node is holding.
+	if err := ObserveProjects(ctx, tx, named); err != nil {
+		return nil, err
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -1225,6 +1323,11 @@ func checkReadings(in *SyncSet) error {
 	for i := range in.Grants {
 		if !hlc.BelievableAt(in.Grants[i].HLC, nowMS) {
 			return bad("grant", in.Grants[i].ID, in.Grants[i].HLC)
+		}
+	}
+	for _, project := range in.Projects {
+		if !hlc.BelievableAt(project.HLC, nowMS) {
+			return bad("project", project.ID, project.HLC)
 		}
 	}
 	return nil
@@ -2256,6 +2359,117 @@ func checkGrant(ctx context.Context, tx *sql.Tx, p *Principal, g *Grant) (string
 		return "grant " + g.ID + " is not the owner's to give", nil
 	}
 	return "", nil
+}
+
+// projectHere reads the registry row a merge is about to land on, or nil.
+func projectHere(ctx context.Context, tx *sql.Tx, id string) (*Project, error) {
+	p, err := scanProject(tx.QueryRowContext(ctx,
+		`SELECT `+projectColumns+` FROM projects p WHERE p.id = $1`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("store: sync merge project %s: %w", id, err)
+	}
+	return p, nil
+}
+
+// projectLoses is `loses` for the registry, with one difference that decides
+// whether a name collision can go unnoticed.
+//
+// A row that loses its merge is settled without being checked, because a delta
+// being replayed is not a write. That is right for every other table, where the
+// two rows are the same row. Here they may not be: a peer's `flowy` and this
+// node's `flowy` can be two different projects, and if the peer's row happens
+// to carry the older reading, settling it quietly would be the one thing this
+// column exists to prevent - two projects meeting under one name with nobody
+// told. So a collision is never settled here. It goes to checkProject, which
+// refuses it and says so, whichever way the readings fall.
+func projectLoses(ctx context.Context, tx *sql.Tx, in *Project) (bool, error) {
+	here, err := projectHere(ctx, tx, in.ID)
+	if err != nil || here == nil {
+		return false, err
+	}
+	if same, _ := SameProject(here, in); !same {
+		return false, nil
+	}
+	if here.HLC > in.HLC {
+		return true, nil
+	}
+	return here.HLC == in.HLC && here.Node >= in.Node, nil
+}
+
+// checkProject is the merge's question about a registry row: may this principal
+// hand this name over at all, and is the project it names the project this node
+// already knows by that name.
+//
+// The reach test is ProjectFilterSQL, which is the same filter the pull sends
+// project rows under - one rule at both doors, the way the grant path was made
+// to ask one question. It is a filter over names and it is not a permission: a
+// project row carries no capability, and nothing about what anybody may read
+// changes when one lands.
+//
+// The collision test is the one that matters, and it has three branches with no
+// silent merge in any of them:
+//
+//   - the origins meet, or one side has none to compare. One project, ordinary
+//     last-writer-wins.
+//   - the origins never meet. Two projects with one name, definitively, so the
+//     row is refused and the operator is told to pin the one this node means.
+//     Merging them would fold two teams' work under one name on the strength of
+//     both having typed the same word.
+//   - the row here was pinned by the operator. A pin is out-of-band and
+//     authoritative - the standing a pinned peer key has - so nothing off the
+//     wire overwrites it, including a row that would otherwise be judged the
+//     same project.
+func checkProject(ctx context.Context, tx *sql.Tx, p *Principal, in *Project) (string, error) {
+	if in.ID == "" {
+		return "a project row with no name", nil
+	}
+	if p != nil {
+		reachable, err := projectReachable(ctx, tx, p, in.ID)
+		if err != nil {
+			return "", err
+		}
+		if !reachable {
+			return "project " + in.ID + " is one you are not in and have no grant with", nil
+		}
+	}
+	here, err := projectHere(ctx, tx, in.ID)
+	if err != nil || here == nil {
+		// Nothing here by that name: trusted on first sight, which is what this
+		// node does with a peer key it has never seen. The origin it arrives
+		// with is what a later collision is measured against.
+		return "", err
+	}
+	if same, why := SameProject(here, in); !same {
+		return why + " - refused rather than merged; if this node means the incoming " +
+			"one, pin it: flowy projects pin --project " + in.ID + " --origin <remote>", nil
+	}
+	if here.Provenance == ProvenancePinned && here.Origin != in.Origin {
+		return "project " + in.ID + " is pinned here to " + here.Origin +
+			" and the incoming row says " + in.Origin, nil
+	}
+	return "", nil
+}
+
+// projectReachable reports whether p may be shown this project name at all -
+// their own project, or one on the other end of a live grant edge.
+//
+// The filter is evaluated against the name rather than against a row, because
+// the row may not be here yet: VALUES is what gives ProjectFilterSQL a `p` to
+// be applied to without a second copy of the rule in Go.
+func projectReachable(ctx context.Context, tx *sql.Tx, p *Principal, id string) (bool, error) {
+	a := &args{}
+	idArg := a.next(id)
+	filter := ProjectFilterSQL(p, "p", a, false)
+	var ok bool
+	if err := tx.QueryRowContext(ctx,
+		`SELECT coalesce((SELECT `+filter+` FROM (VALUES (`+idArg+`)) AS p (id)), false)`,
+		a.vals...).Scan(&ok); err != nil {
+		return false, fmt.Errorf("store: sync merge project %s: %w", id, err)
+	}
+	return ok, nil
 }
 
 // grantReaches is GrantFilterSQL's rule in Go, asked of a row in hand: does

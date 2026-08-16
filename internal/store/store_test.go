@@ -39,6 +39,34 @@ func open(t *testing.T) (context.Context, *DB) {
 	return ctx, db
 }
 
+// declaredProject mints a project name for a test and declares it.
+//
+// Declaring is not decoration: a local write into a project with no registry
+// row is refused now, which is the whole point of the registry, so a test that
+// writes into a project has to have declared it exactly as a seeder or an
+// operator would. The name still carries a ULID, so rows another test left
+// behind cannot make this one pass or fail by accident.
+func declaredProject(t *testing.T, ctx context.Context, db *DB, prefix string) string {
+	t.Helper()
+
+	name := prefix + "-" + ulid.NewString()
+	if err := db.DeclareProject(ctx, &Project{ID: name}); err != nil {
+		t.Fatalf("declare project %s: %v", name, err)
+	}
+	return name
+}
+
+// declare declares project names a test chose for itself.
+func declare(t *testing.T, ctx context.Context, db *DB, names ...string) {
+	t.Helper()
+
+	for _, name := range names {
+		if err := db.DeclareProject(ctx, &Project{ID: name}); err != nil {
+			t.Fatalf("declare project %s: %v", name, err)
+		}
+	}
+}
+
 // packed is db.Clock().Pack() for a test: taking a reading can fail now - a
 // clock with nothing left above the last value it gave out refuses rather than
 // repeating itself - and a test that cannot get one has nothing to assert.
@@ -97,6 +125,7 @@ func TestAgentReferencesUser(t *testing.T) {
 		t.Fatalf("insert user: %v", err)
 	}
 
+	declare(t, ctx, db, "flowy")
 	for _, kind := range []string{"claude", "glm", "opencode"} {
 		a := &Agent{UserID: u.ID, Kind: kind, Project: "flowy"}
 		if err := db.InsertAgent(ctx, a); err != nil {
@@ -121,6 +150,7 @@ func TestArtifactArraysAndJSON(t *testing.T) {
 	ctx, db := open(t)
 
 	project := "flowy"
+	declare(t, ctx, db, project)
 	a := &Artifact{
 		Type:      "bug",
 		Project:   &project,

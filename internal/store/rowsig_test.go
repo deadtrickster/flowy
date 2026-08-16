@@ -42,7 +42,7 @@ func TestAHostilePeerCannotRewriteAnothersRow(t *testing.T) {
 	keyA := pinTestNode(t, ctx, db, nodeA)
 	keyB := pinTestNode(t, ctx, db, nodeB)
 
-	project := "pv-" + ulid.NewString()
+	project := declaredProject(t, ctx, db, "pv")
 	owner := "u-" + ulid.NewString()
 	at := packed(t, db)
 	id := ulid.NewString()
@@ -125,7 +125,7 @@ func TestOneFlippedByteIsRefused(t *testing.T) {
 
 	node := "nodet-" + ulid.NewString()
 	key := pinTestNode(t, ctx, db, node)
-	project := "pt-" + ulid.NewString()
+	project := declaredProject(t, ctx, db, "pt")
 	owner := "u-" + ulid.NewString()
 	at := packed(t, db)
 
@@ -186,8 +186,8 @@ func TestAuthenticityAndAuthorisationAreTwoLayers(t *testing.T) {
 	node := "nodeg-" + ulid.NewString()
 	key := pinTestNode(t, ctx, db, node)
 
-	home := "ph-" + ulid.NewString()
-	theirs := "pi-" + ulid.NewString()
+	home := declaredProject(t, ctx, db, "ph")
+	theirs := declaredProject(t, ctx, db, "pi")
 	me := &User{Handle: "opener-" + ulid.NewString()}
 	if err := db.InsertUser(ctx, me); err != nil {
 		t.Fatalf("insert user: %v", err)
@@ -245,7 +245,7 @@ func TestAnIdentityArrivesWithTheRowsItVerifies(t *testing.T) {
 		t.Fatalf("%s is already known here; the test proves nothing", nodeC)
 	}
 
-	project := "pr-" + ulid.NewString()
+	project := declaredProject(t, ctx, db, "pr")
 	owner := "u-" + ulid.NewString()
 	at := packed(t, db)
 	art := &Artifact{
@@ -316,7 +316,7 @@ func TestAKeyDoesNotRotateOverTheWire(t *testing.T) {
 	swap := NodeIdentity{NodeID: node, PublicKey: publicOf(impostor)}
 	swap.Sig = signIdentity(impostor, &swap)
 
-	project := "pu-" + ulid.NewString()
+	project := declaredProject(t, ctx, db, "pu")
 	owner := "u-" + ulid.NewString()
 	row := &Artifact{
 		ID: ulid.NewString(), Type: "note", Project: &project, OwnerUser: owner,
@@ -362,7 +362,7 @@ func TestRequirePinnedPeersRefusesATrustedOnFirstUseNode(t *testing.T) {
 	pinnedKey := pinTestNode(t, ctx, db, pinned)
 	tofuKey := testKey(tofu)
 
-	project := "pw-" + ulid.NewString()
+	project := declaredProject(t, ctx, db, "pw")
 	owner := "u-" + ulid.NewString()
 	at := packed(t, db)
 	row := func(node string, key ed25519.PrivateKey, n int64) *Artifact {
@@ -425,7 +425,7 @@ func TestRequirePinnedPeersRefusesATrustedOnFirstUseNode(t *testing.T) {
 	}
 }
 
-// TestALocalWriteIsSignedForEveryTable walks the four replicated tables through
+// TestALocalWriteIsSignedForEveryTable walks the five replicated tables through
 // the writes the API makes and asserts each row comes out with a signature that
 // verifies under this node's key. A table that is written unsigned is a table
 // that cannot replicate at all.
@@ -436,7 +436,7 @@ func TestALocalWriteIsSignedForEveryTable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("identity: %v", err)
 	}
-	project := "px-" + ulid.NewString()
+	project := declaredProject(t, ctx, db, "px")
 	from := &User{Handle: "from-" + ulid.NewString()}
 	to := &User{Handle: "to-" + ulid.NewString()}
 	for _, u := range []*User{from, to} {
@@ -507,6 +507,24 @@ func TestALocalWriteIsSignedForEveryTable(t *testing.T) {
 		t.Error("the event this node wrote does not verify under its own key")
 	}
 
+	// The registry is the fifth, and it has to be: a project row that could not
+	// be verified would be a referent every other row points at and no peer
+	// could believe.
+	storedProject, err := db.Project(ctx, project)
+	if err != nil {
+		t.Fatalf("get project: %v", err)
+	}
+	if !verifyBytes(id.PublicKey, canonicalProject(storedProject), storedProject.Sig) {
+		t.Error("the project this node declared does not verify under its own key")
+	}
+	// And the origin chain is inside that signature, because the merge decides a
+	// name collision by comparing chains.
+	tampered := *storedProject
+	tampered.Origin = "git:github.com/somebody/else"
+	if verifyBytes(id.PublicKey, canonicalProject(&tampered), storedProject.Sig) {
+		t.Error("a project's origin can be rewritten under its own signature")
+	}
+
 	// A move is a write: the state change re-signs, so the row a peer merges is
 	// the row that is here rather than the one it used to be.
 	storedTask.State = TaskDone
@@ -563,7 +581,7 @@ func TestASignatureSurvivesTheDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("identity: %v", err)
 	}
-	project := "pj-" + ulid.NewString()
+	project := declaredProject(t, ctx, db, "pj")
 	owner := "u-" + ulid.NewString()
 
 	// Whitespace, key order and a number Postgres will write back its own way.
@@ -699,7 +717,7 @@ func TestTheCreatedDateIsInsideTheSignature(t *testing.T) {
 
 	node := "dated-" + ulid.NewString()
 	key := pinTestNode(t, ctx, db, node)
-	project := "pd-" + ulid.NewString()
+	project := declaredProject(t, ctx, db, "pd")
 	owner := "u-" + ulid.NewString()
 	at := packed(t, db)
 	when := time.Date(2026, 8, 15, 9, 30, 0, 0, time.UTC)
@@ -799,7 +817,7 @@ func TestALocalWritesDateIsSignedWithIt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("identity: %v", err)
 	}
-	project := "pl-" + ulid.NewString()
+	project := declaredProject(t, ctx, db, "pl")
 	owner := "u-" + ulid.NewString()
 
 	art := &Artifact{

@@ -957,6 +957,14 @@ func (m *Model) statusLine() string {
 		}
 		if m.who.Project != "" {
 			who += " @" + m.who.Project
+			// The one thing on this line a person has to act on. A fixture
+			// project is demo seed data and it is perfectly writable, so
+			// nothing refuses a write into one - which is exactly why it has to
+			// be said here, on every screen, rather than found out later from
+			// the reports panel showing somebody else's seed rows.
+			if m.who.ProjectFixture {
+				who += " [FIXTURE]"
+			}
 		}
 		if m.who.Operator {
 			who += " (operator)"
@@ -977,6 +985,12 @@ func (m *Model) statusLine() string {
 	}
 	line := left + strings.Repeat(" ", gap) + right
 	if m.connErr != "" {
+		return m.theme.Err.Render(m.theme.clip(line, m.width))
+	}
+	// A fixture takes the whole line, the way a connection error does. Colour
+	// is the only part of a status line somebody reads without looking at it,
+	// and a marker that has to be looked for is a marker that was not there.
+	if m.who != nil && m.who.ProjectFixture {
 		return m.theme.Err.Render(m.theme.clip(line, m.width))
 	}
 	return m.theme.Status.Render(m.theme.clip(line, m.width))
