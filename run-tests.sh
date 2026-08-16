@@ -1804,15 +1804,17 @@ the_waiter_returns_on_the_first_message() {
 		printf 'the message carries no cursor:\n%s\n' "$INBOX_OUT" >&2
 		return 1
 	fi
-	# And the human-facing half went to stderr, or the first fire would corrupt
-	# the JSON stream it is piped into.
-	case "$INBOX_ERR" in
-	*"flowy inbox --as gate-waiter"*) ;;
-	*)
-		printf 'the re-arm line is not on stderr:\n%s\n' "$INBOX_ERR" >&2
+	# And the two streams stay apart, or the first fire corrupts the JSON stream
+	# this is piped into. It used to look for the "re-arm with ..." line as its
+	# sample of human-facing text; 82ec53d removed that advice, because the
+	# listener now forks its own successor instead of asking the caller to arm
+	# another - so the check was left asserting a sentence the design had
+	# dropped. What it always meant is asserted directly instead: nothing on
+	# stderr may parse as the JSON a consumer reads, whatever the wording is.
+	if printf '%s' "$INBOX_ERR" | jq -e . >/dev/null 2>&1; then
+		printf 'stderr carries JSON, so the streams are not separated:\n%s\n' "$INBOX_ERR" >&2
 		return 1
-		;;
-	esac
+	fi
 	printf 'woke after %ss with one JSON line, and nothing else on stdout\n' "$elapsed"
 }
 
