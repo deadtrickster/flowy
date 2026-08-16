@@ -15,7 +15,7 @@
   },
   "overrides": [
     {
-      "files": ["src/routes/ArtifactView.tsx"],
+      "include": ["src/routes/ArtifactView.tsx"],
       "linter": {
         "rules": {
           "security": {
