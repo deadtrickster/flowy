@@ -5,7 +5,6 @@ import {
   Hash,
   Home as HomeIcon,
   Inbox as InboxIcon,
-  ListChecks,
   ListTree,
 } from "lucide-react";
 import type { ReactNode } from "react";
@@ -47,10 +46,6 @@ export function Shell({ children }: { children: ReactNode }) {
           <NavLink to="/reports" className={navClass}>
             <FileText className="h-4 w-4" />
             reports
-          </NavLink>
-          <NavLink to="/todos" className={navClass}>
-            <ListChecks className="h-4 w-4" />
-            todos
           </NavLink>
           <NavLink to="/activity" className={navClass}>
             <ListTree className="h-4 w-4" />

@@ -1,5 +1,6 @@
 import { Badge } from "@/components/ui/badge";
 import type { Presence } from "@/lib/api";
+import { speakerStyle } from "@/lib/speakercolour";
 
 /**
  * Who is in the room, and what the node can honestly say about who has an ear
@@ -31,7 +32,7 @@ export function RoomRoster({ presence }: { presence: Presence | null }) {
           <span className="text-muted-foreground text-xs">nobody has spoken yet</span>
         ) : (
           presence.members.map((m) => (
-            <Badge key={m.actor} variant="secondary">
+            <Badge key={m.actor} variant="secondary" style={speakerStyle(named(m))}>
               {named(m)}
             </Badge>
           ))
@@ -47,7 +48,7 @@ export function RoomRoster({ presence }: { presence: Presence | null }) {
         <ul className="flex flex-col gap-0.5">
           {presence.listeners.map((l) => (
             <li key={l.principal + l.reader} className="flex items-center gap-2 text-xs">
-              <span className="min-w-0 truncate">
+              <span className="min-w-0 truncate" style={{ color: speakerStyle(l.reader).color }}>
                 {l.reader}
                 {l.reader !== l.user_name ? (
                   <span className="text-muted-foreground"> · {l.reader}</span>

@@ -3,6 +3,7 @@ import { useEffect, useRef } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { type FlowyEvent, isAgent } from "@/lib/api";
+import { speakerStyle } from "@/lib/speakercolour";
 import { clock, cn, shortId, speaker } from "@/lib/utils";
 
 interface Props {
@@ -66,7 +67,17 @@ export function MessageList({ events, selected, onSelect, me }: Props) {
                  * room where every line was an id is what this replaces, and
                  * the id stays on the title so it is still there to copy.
                  */}
-                <span className="font-mono text-muted-foreground text-xs" title={event.actor}>
+                {/*
+                  In the speaker's own colour, derived from the name so the
+                  same person is the same colour here, in the roster and on a
+                  todo they own. The name stays: colour is an accelerator for
+                  people who see it, never the only thing carrying who spoke.
+                */}
+                <span
+                  className="rounded px-1.5 py-0.5 font-mono text-xs"
+                  style={speakerStyle(speaker(event))}
+                  title={event.actor}
+                >
                   {speaker(event)}
                 </span>
                 {event.addressee ? (
