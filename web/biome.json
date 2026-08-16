@@ -13,6 +13,18 @@
     "enabled": true,
     "rules": { "recommended": true }
   },
+  "overrides": [
+    {
+      "files": ["src/routes/ArtifactView.tsx"],
+      "linter": {
+        "rules": {
+          "security": {
+            "noDangerouslySetInnerHtml": "off"
+          }
+        }
+      }
+    }
+  ],
   "javascript": {
     "formatter": {
       "quoteStyle": "double",

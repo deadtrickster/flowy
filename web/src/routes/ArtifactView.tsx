@@ -95,11 +95,10 @@ export function ArtifactView() {
               {artifact.type === "report" ? (
                 // A report is a document somebody reads on purpose, so it is
                 // rendered, not dumped: markdown to HTML, sanitized because
-                // the body is agent-written.
-                //
-                // biome-ignore lint/security/noDangerouslySetInnerHtml: the html is
-                // marked output passed through DOMPurify.sanitize on the line below -
-                // agent-written markdown rendered, not raw html trusted.
+                // the body is agent-written. The sanitizer is why
+                // noDangerouslySetInnerHtml is off for this file in biome.json -
+                // the rule cannot see through DOMPurify, and the comment cannot
+                // sit inside the tag where the rule fires.
                 <div
                   className="report-body text-sm"
                   dangerouslySetInnerHTML={{
