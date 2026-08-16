@@ -111,11 +111,6 @@ var ErrUndeclaredProject = errors.New("store: no such project")
 // ErrBadProjectName is a declaration this node will not make.
 var ErrBadProjectName = errors.New("store: not a usable project name")
 
-// ErrOriginCollision is one name claimed by two projects that are demonstrably
-// not the same project. It is refused rather than merged, and an operator pin
-// is how it is settled - see PinProject.
-var ErrOriginCollision = errors.New("store: two different projects claim this name")
-
 // CanonicalOrigin is a git remote as this node records it: one repository, one
 // string, whatever spelling it arrived in.
 //
@@ -299,14 +294,14 @@ func scanProject(sc scanner) (*Project, error) {
 	return &p, nil
 }
 
-// CleanProjectName is the name as it would be stored, or an error saying why it
+// cleanProjectName is the name as it would be stored, or an error saying why it
 // is not a name. Declaration is the one door it is asked at: the back-fill and
 // the observed path take the names the data already carries, because refusing
 // one of those would be the registry telling the data it is wrong.
 //
 // A slash is refused because a project is a directory in the FUSE mount, and a
 // name with a separator in it is a path that means something else there.
-func CleanProjectName(name string) (string, error) {
+func cleanProjectName(name string) (string, error) {
 	name = strings.TrimSpace(name)
 	switch {
 	case name == "":
@@ -344,7 +339,7 @@ func CleanProjectName(name string) (string, error) {
 // Nothing outside this row is touched by that, which is the whole rule: an
 // alias, never a rewrite.
 func (d *DB) DeclareProject(ctx context.Context, p *Project) error {
-	name, err := CleanProjectName(p.ID)
+	name, err := cleanProjectName(p.ID)
 	if err != nil {
 		return err
 	}
@@ -392,27 +387,6 @@ func (d *DB) DeclareProject(ctx context.Context, p *Project) error {
 		p.OriginAt = createdNow()
 	}
 	return d.writeProject(ctx, p)
-}
-
-// PinProject is the operator settling a collision by hand: this name, on this
-// node, means this origin. It is the same shape as pinning a peer's key -
-// out-of-band, authoritative, and the one thing a row arriving over the wire
-// cannot overwrite - and it is the answer the merge points at when it refuses
-// two projects with one name.
-func (d *DB) PinProject(ctx context.Context, name, origin string) (*Project, error) {
-	clean, err := CleanProjectName(name)
-	if err != nil {
-		return nil, err
-	}
-	canonical, err := CanonicalOrigin(origin)
-	if err != nil {
-		return nil, err
-	}
-	p := &Project{ID: clean, Origin: canonical, Provenance: ProvenancePinned}
-	if err := d.DeclareProject(ctx, p); err != nil {
-		return nil, err
-	}
-	return p, nil
 }
 
 // writeProject is DeclareProject without the name rules or the origin
