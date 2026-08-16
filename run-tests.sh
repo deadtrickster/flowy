@@ -2216,14 +2216,19 @@ console_still_renders_the_roomless_todos() {
 a_second_waiter_for_one_name_is_refused() {
 	recall
 	local out first_pid
+	# Its output is KEPT rather than sent to /dev/null. When this check first
+	# ran, the first waiter died on something and the check could only report
+	# that it had died - the one question worth answering was the one thrown
+	# away.
 	FLOWY_TOKEN="$TOKEN_A" "$ROOT/flowy" inbox --as gate-waiter --new \
-		--url "http://127.0.0.1:$HTTP_PORT" --deadline 20 >/dev/null 2>&1 &
+		--url "http://127.0.0.1:$HTTP_PORT" --deadline 20 >"$WORK/waiter1.out" 2>&1 &
 	first_pid=$!
 	# Let it claim the name before racing it. Without this the check would pass
 	# for the wrong reason on a slow machine: nothing to conflict with yet.
 	sleep 2
 	if ! kill -0 "$first_pid" 2>/dev/null; then
-		printf 'the first waiter did not stay up, so nothing was tested\n' >&2
+		printf 'the first waiter did not stay up, so nothing was tested. It said:\n%s\n' \
+			"$(cat "$WORK/waiter1.out" 2>/dev/null)" >&2
 		return 1
 	fi
 	out="$(FLOWY_TOKEN="$TOKEN_A" "$ROOT/flowy" inbox --as gate-waiter \
