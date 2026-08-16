@@ -59,6 +59,17 @@ export function threadLayout(events: FlowyEvent[]): { nodes: Node[]; edges: Edge
             <div className="truncate pb-1 font-mono text-[10px] uppercase tracking-wide opacity-70">
               {speaker(event)} · #{shortId(event.id)}
             </div>
+            {/*
+             * A private message says so on the node, not only on the pane it
+             * happens to be drawn in. This graph is shown in a room, on a task
+             * and on the private page, and a node that looked the same in all
+             * three would be telling the reader nothing where it matters most.
+             */}
+            {event.private ? (
+              <div className="truncate pb-1 font-mono text-[10px] uppercase tracking-wide">
+                private to {shortId(event.addressee ?? "", 8)}
+              </div>
+            ) : null}
             <div className="line-clamp-3 text-xs leading-snug">{event.body}</div>
           </div>
         ),
@@ -66,7 +77,9 @@ export function threadLayout(events: FlowyEvent[]): { nodes: Node[]; edges: Edge
       style: {
         background: "var(--color-card)",
         color: "var(--color-foreground)",
-        border: `1px solid ${agent ? "var(--color-agent)" : "var(--color-human)"}`,
+        border: `1px ${event.private ? "dashed" : "solid"} ${
+          agent ? "var(--color-agent)" : "var(--color-human)"
+        }`,
         borderRadius: "var(--radius-md)",
         padding: "8px 10px",
         width: 200,

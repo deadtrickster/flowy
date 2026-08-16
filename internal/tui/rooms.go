@@ -18,6 +18,11 @@ import (
 func (m *Model) roomsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "i":
+		if m.Room() == dmRoom {
+			// There is no room to fall back to here, so i asks who it is for
+			// rather than opening a box whose message has nowhere to go.
+			return m, m.openInput(inputSayTo, "dm to> ", "")
+		}
 		// A plain say is to the room, so whatever an interrupted "a" left in
 		// the draft does not become the addressee of the next message.
 		m.draft.to = ""
@@ -323,13 +328,19 @@ func (m *Model) roomListLines(width, height int) []string {
 // "how far back am I" impossible to answer by counting rows.
 func (m *Model) streamLines(width, height int) []string {
 	head := fmt.Sprintf("%s (%d)", m.Room(), len(m.msgs))
+	if m.Room() == dmRoom {
+		head = fmt.Sprintf("direct messages (%d) - private", len(m.msgs))
+	}
 	if m.watching {
 		head += " - watching"
 	}
 	lines := []string{m.theme.Title.Render(m.theme.clip(head, width))}
 	if len(m.msgs) == 0 {
-		lines = append(lines, m.theme.Dim.Render(m.theme.clip(
-			"nothing here yet - press i to say something", width)))
+		empty := "nothing here yet - press i to say something"
+		if m.Room() == dmRoom {
+			empty = "no direct messages - press i to send one, and only the two of you read it"
+		}
+		lines = append(lines, m.theme.Dim.Render(m.theme.clip(empty, width)))
 		return lines
 	}
 
@@ -345,10 +356,7 @@ func (m *Model) streamLines(width, height int) []string {
 		// message in the room: the room still holds it and the same people
 		// still read it, which is why the marker goes in front of the body
 		// rather than the message going somewhere else.
-		body := strings.ReplaceAll(e.Body, "\n", " ")
-		if e.Addressee != "" {
-			body = m.addressMark(e.Addressee) + " " + body
-		}
+		body := m.marked(e) + strings.ReplaceAll(e.Body, "\n", " ")
 		// pad rather than %-16s: a clipped name ends in an ellipsis, which is
 		// one column and three bytes, and a column padded by byte count is a
 		// column that stops lining up the moment a name is too long for it.
@@ -380,6 +388,29 @@ func (m *Model) addressMark(addressee string) string {
 		return "->you"
 	}
 	return "->" + shortID(addressee)
+}
+
+// marked is what goes in front of a message's body: who it is for, and whether
+// the two of them are the only ones who can read it.
+//
+// The word is spelled out on every private row rather than shown once at the top
+// of the pane, and that is the point of it. Private messages and room messages
+// are drawn by the same code in the same shapes, they arrive in the same
+// timeline, and a person deciding what to type next is looking at a line and not
+// at a header. A private message that looked identical to a public one would be
+// a trap for whoever writes the next one - which is the direction the mistake
+// goes, because nobody is harmed by being reminded a room is a room.
+//
+// It reads the node's own answer - see Event.Private - and never the pane it is
+// being drawn in.
+func (m *Model) marked(e *Event) string {
+	switch {
+	case e.Private:
+		return "*private " + m.addressMark(e.Addressee) + " "
+	case e.Addressee != "":
+		return m.addressMark(e.Addressee) + " "
+	}
+	return ""
 }
 
 // addressedToMe reports whether a message is directed at this principal by
@@ -433,10 +464,7 @@ func (m *Model) threadLines(width, height int) []string {
 		case len(e.Parents) == 1:
 			mark = "|"
 		}
-		body := e.Body
-		if e.Addressee != "" {
-			body = m.addressMark(e.Addressee) + " " + body
-		}
+		body := m.marked(e) + e.Body
 		// The same speaker the stream draws, in a narrower column: this pane is
 		// a third of the terminal and the mark in front of it is what the pane
 		// is for, so the name gives way first.

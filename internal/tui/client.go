@@ -196,7 +196,13 @@ type Event struct {
 	// Addressee is who the message is directed at, empty for the room. It
 	// changes how a message is drawn and nothing about who may read it.
 	Addressee string `json:"addressee"`
-	Meta      struct {
+	// Private says this is a direct message: the actor and the addressee are
+	// the only two principals who can read it. The node derives it from the
+	// row - no project, no room, an addressee - and the client draws it. It is
+	// a fact about what already happened and never a request: nothing here can
+	// make a message private by setting it.
+	Private bool `json:"private"`
+	Meta    struct {
 		ActorKind string `json:"actor_kind"`
 		ActorUser string `json:"actor_user"`
 		// ActorName is what the speaker was called when they said it, which
@@ -316,15 +322,21 @@ type StatusMove struct {
 // ActivityItem is one line of the timeline: a turn, a log line, a message or a
 // steer.
 type ActivityItem struct {
-	ID        string   `json:"id"`
-	Kind      string   `json:"kind"`
-	Type      string   `json:"type"`
-	Actor     string   `json:"actor"`
-	ActorKind string   `json:"actor_kind,omitempty"`
-	ActorUser string   `json:"actor_user,omitempty"`
-	ActorName string   `json:"actor_name,omitempty"`
-	Project   *string  `json:"project"`
-	Room      string   `json:"room,omitempty"`
+	ID        string  `json:"id"`
+	Kind      string  `json:"kind"`
+	Type      string  `json:"type"`
+	Actor     string  `json:"actor"`
+	ActorKind string  `json:"actor_kind,omitempty"`
+	ActorUser string  `json:"actor_user,omitempty"`
+	ActorName string  `json:"actor_name,omitempty"`
+	Project   *string `json:"project"`
+	Room      string  `json:"room,omitempty"`
+	// Addressee and Private are the message half of a timeline line: who it was
+	// for, and whether the two of them were the only readers. The timeline is
+	// the one pane that shows rooms and private messages side by side, so it is
+	// the one that most needs to say which is which.
+	Addressee string   `json:"addressee,omitempty"`
+	Private   bool     `json:"private,omitempty"`
 	Thread    string   `json:"thread,omitempty"`
 	Artifact  string   `json:"artifact,omitempty"`
 	Parents   []string `json:"parents"`
@@ -576,6 +588,39 @@ func (c *Client) Say(ctx context.Context, room, body string, parents []string,
 	}
 	var out Event
 	return &out, c.post(ctx, "/api/chat/"+url.PathEscape(room)+"/say", req, &out)
+}
+
+// DMs reads the private log from a cursor, exclusive: every direct message this
+// principal is a party to, whoever the other party is.
+//
+// It is a separate call from Room and not a room called "dm", because there is
+// no such room. A direct message carries no room at all - that is part of what
+// makes it one - so there is nothing to put in the path.
+func (c *Client) DMs(ctx context.Context, since int64) (*ChatPage, error) {
+	var out ChatPage
+	return &out, c.get(ctx, "/api/dm?since="+strconv.FormatInt(since, 10), &out)
+}
+
+// WaitDMs is Wait over the private log, with the same finite window and the
+// same contract: it always returns.
+func (c *Client) WaitDMs(ctx context.Context, cursor int64, window int) (*ChatPage, error) {
+	path := fmt.Sprintf("/api/dm/wait?cursor=%d&window=%d", cursor, window)
+	var out ChatPage
+	return &out, c.do(ctx, c.poll, http.MethodGet, path, nil, &out)
+}
+
+// SendDM sends a direct message to one principal. There is no room argument
+// because a direct message is not in one, and to is not optional: who it is for
+// is the whole of what makes it private.
+func (c *Client) SendDM(ctx context.Context, to, body string, parents []string,
+	thread string,
+) (*Event, error) {
+	req := map[string]any{"body": body, "parents": parents}
+	if thread != "" {
+		req["thread"] = thread
+	}
+	var out Event
+	return &out, c.post(ctx, "/api/dm/"+url.PathEscape(to), req, &out)
 }
 
 // Thread reads one thread of the log, whichever room it was said in.

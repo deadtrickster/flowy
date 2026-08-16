@@ -267,6 +267,56 @@ func artifactReachSQL(alias, user, project string) string {
 		  END)`)
 }
 
+// A direct message is the only private conversation this node has, and it is a
+// SHAPE rather than a flag: a chat event with no project, no room, and an
+// addressee. Every part of it is already inside the signature - see
+// sign.CanonicalEvent - so a relay cannot turn a room message into a private one
+// or a private one into a room message without producing bytes that do not
+// verify.
+//
+// It is a shape and not a column for the reason the room is not a permission:
+// nothing here has a per-row privacy flag, and the first one would be a value
+// every future branch of the filter has to remember to consult. A projectless
+// event is already readable by its author and nobody else, so a direct message
+// is not a new kind of secret - it is the floor that was already there, widened
+// by exactly one named principal.
+//
+// The three parts each rule something out rather than decorate:
+//
+//   - project IS NULL is what keeps it off every project read. It is not that
+//     the branches below choose not to show it; they are not reachable for it.
+//   - an empty room is what keeps this from re-reading rows that already exist. A
+//     projectless principal saying something addressed in a room writes a
+//     projectless addressed event today, and that row is its author's alone.
+//     Requiring no room means no row written before this feature changes who
+//     reads it.
+//   - type = 'chat' because a message is the only thing that has parties. A
+//     status move or a worklog entry with an addressee is not a conversation,
+//     and the widening is only sound for rows whose addressee means "this is
+//     for you".
+//
+// IsDirectMessage is the same rule in Go, for the surfaces that render one.
+func privateEventSQL(alias string) string {
+	return strings.NewReplacer("{a}", alias).Replace(
+		`({a}.project IS NULL
+		    AND {a}.type = '` + ChatEventType + `'
+		    AND coalesce({a}.room, '') = ''
+		    AND coalesce({a}.addressee, '') <> '')`)
+}
+
+// IsDirectMessage reports whether e is a direct message: the Go half of
+// privateEventSQL, for the handlers that decide what to write and the clients
+// that decide how to draw it.
+//
+// It decides nothing about who may read one. The SQL is what runs on every read,
+// and this must never become a second answer to that question - a row is private
+// because the database refused it to everybody else, not because a renderer
+// believed it was.
+func IsDirectMessage(e *Event) bool {
+	return e != nil && e.Project == nil && e.Type == ChatEventType &&
+		e.Room == "" && e.Addressee != ""
+}
+
 // ArtifactFilterSQL returns a boolean SQL fragment that is true for exactly the
 // artifacts CanRead would allow, for the table aliased as alias. Its parameters
 // are appended to a.
@@ -293,6 +343,28 @@ func ArtifactFilterSQL(p *Principal, alias string, a *args, scopeAll bool) strin
 // EventFilterSQL narrows the event log the same way, on the event's project.
 // Events carry no visibility column, so the floor is the project-less event: it
 // belongs to whoever wrote it, and only they read it back.
+//
+// The one exception is a direct message, and it is deliberately built into the
+// floor rather than beside it. A DM is a projectless chat event that names its
+// addressee - see privateEventSQL - and all this branch does is widen "the
+// author" to "the author and the principal they named". It is one clause, in the
+// branch that already excludes everybody, so a projectless event stays invisible
+// to every project reader BY CONSTRUCTION: the branches below are not merely
+// false for it, the CASE never reaches them. A privacy that lived on the room
+// instead would be a per-room scope - a table, a join in the hottest predicate
+// here, and a rule every future branch has to remember - and one that lived on
+// the tasks clause below would be worse still, because that clause is OR-ed onto
+// the END of the whole predicate and ADDS readers rather than narrowing them.
+//
+// The addressee is matched against the reader the same way the actor is: the
+// user id and the agent id, and nothing else. That is not an oversight, it is
+// the existing shape of this branch, and it has one consequence worth knowing:
+// a message an AGENT sends is the agent's, so the person it works for does not
+// read it back from their own token, exactly as a projectless event written by
+// an agent has never been readable by its user. Address a person to reach a
+// person - an agent's token inherits its user's id, so a DM to a person is read
+// by that person and by the agents acting for them, which is the pair this node
+// has always treated as one reader.
 //
 // A project-bearing event is two questions, and it is one AND because both have
 // to be answered:
@@ -356,6 +428,9 @@ func EventFilterSQL(p *Principal, alias string, a *args, scopeAll bool) string {
 		`((CASE WHEN {a}.project IS NULL
 		        THEN ({a}.actor = {user} AND {user} <> '')
 		          OR ({a}.actor = {agent} AND {agent} <> '')
+		          OR (` + privateEventSQL("{a}") + `
+		               AND (({a}.addressee = {user} AND {user} <> '')
+		                 OR ({a}.addressee = {agent} AND {agent} <> '')))
 		        ELSE ({a}.project = {project} AND {project} <> ''
 		               OR EXISTS (SELECT 1 FROM grants g
 		                           WHERE coalesce(g.tombstone, false) = false

@@ -60,6 +60,17 @@ export interface FlowyEvent {
    */
   addressee?: string;
   /**
+   * private says this is a direct message: the actor and the addressee are the
+   * only two principals who can read it, decided by one clause in the node's
+   * event filter over the row's own columns - no project, no room, an
+   * addressee.
+   *
+   * The node derives it and the console draws it. Setting it here makes
+   * nothing private: what decided whether this row arrived at all happened in
+   * the database before the response was written.
+   */
+  private?: boolean;
+  /**
    * meta is where the node stamps who is speaking. actor_name is what they
    * were called when they said it, and it is optional in the strong sense:
    * every message said before the node recorded a name has none, so a reader
@@ -490,6 +501,9 @@ export interface ActivityItem {
   actor_name?: string;
   project: string | null;
   room?: string;
+  /** Who a message named, and whether the two of them were its only readers. */
+  addressee?: string;
+  private?: boolean;
   thread?: string;
   artifact?: string;
   parents: string[];
@@ -671,6 +685,29 @@ export const api = {
         ...(to ? { to } : {}),
         ...(cite ? { cite } : {}),
       }),
+    }),
+
+  /**
+   * dms is the private log: every direct message this token is a party to,
+   * whoever the other party is. There is no room in the path because a direct
+   * message is not in one - that is part of what makes it private.
+   */
+  dms: (since = 0) => request<ChatPage>(`/api/dm?since=${since}`),
+
+  /** dmWait is wait over the private log, with the same finite window. */
+  dmWait: (cursor: number, signal?: AbortSignal) =>
+    request<ChatPage>(`/api/dm/wait?cursor=${cursor}`, { signal }),
+
+  /**
+   * sendDm sends a message only the sender and `to` can read. The addressee is
+   * the path and not an optional field: a private message with nobody to send
+   * it to is the one mistake here that would publish something quietly.
+   */
+  sendDm: (to: string, body: string, parents: string[] = [], thread?: string) =>
+    request<FlowyEvent>(`/api/dm/${encodeURIComponent(to)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ body, parents, ...(thread ? { thread } : {}) }),
     }),
 
   inbox: (since = 0) => request<ChatPage>(`/api/inbox?since=${since}`),

@@ -46,10 +46,25 @@ var tabNames = [viewCount]string{
 	"ROOMS", "INBOX", "ARTIFACT", "MEMORY", "TIMELINE", "METRICS", "ANNOUNCE", "REPORTS", "TODOS",
 }
 
+// dmRoom is the entry in the room list that is not a room.
+//
+// Direct messages carry no room - see store.IsDirectMessage - so there is no
+// name to open and nothing on the server this maps to. It sits in the list
+// because the list is how a person moves between conversations, and a private
+// conversation that could only be reached by knowing an endpoint is one nobody
+// would find. Everything about it is local: roomCmd, waitCmd and sayCmd each
+// check for it and call the private endpoints instead.
+//
+// It is first so that "you have private messages" is the first thing in the
+// column rather than something below three rooms, and it is bracketed so it does
+// not read as a room somebody made. A real room by this name would be shadowed
+// by it, which is why rememberRooms refuses to add one.
+const dmRoom = "(direct)"
+
 // defaultRooms are the rooms that exist by convention. Any other is opened by
 // name with o - a room is not a row in a table, it is a column on the event
 // log, so there is nothing to list and everything to open.
-var defaultRooms = []string{"general", "handoffs", "incidents"}
+var defaultRooms = []string{dmRoom, "general", "handoffs", "incidents"}
 
 // inputKind says what the one text box on screen is for, and therefore what
 // enter does with it. One box rather than one per field: at 80x24 there is room
@@ -186,7 +201,7 @@ func New(client *Client, theme Theme) *Model {
 	box.CharLimit = 4000
 	box.KeyMap = tmuxSafeKeyMap()
 
-	return &Model{
+	m := &Model{
 		client:        client,
 		theme:         theme,
 		width:         80,
@@ -198,7 +213,18 @@ func New(client *Client, theme Theme) *Model {
 		tlKind:        "",
 		roomTodosOpen: true,
 	}
+	// Opening on the room and not on the private log. The private entry is first
+	// in the list because that is where a person looks for it, but a client that
+	// started on somebody's direct messages would be a client that puts a
+	// private conversation on the screen of whoever walks past - and the room is
+	// what this is for.
+	m.SetRoom(openingRoom)
+	return m
 }
+
+// openingRoom is where the client starts. It is one of defaultRooms, and it is
+// deliberately not the first of them.
+const openingRoom = "general"
 
 // tmuxSafeKeyMap is the text box's bindings with every control key tmux and
 // screen take out of it.
@@ -386,6 +412,15 @@ func (m *Model) onData(msg tea.Msg) tea.Cmd {
 
 	case sentMsg:
 		if m.note(msg.err) {
+			return nil
+		}
+		// What it says is read off what came back rather than off which pane is
+		// open: the node decides whether a message was private, and a client
+		// that told somebody "sent privately" because of where they were
+		// standing would be a client that can say it about a room message.
+		if msg.event != nil && msg.event.Private {
+			m.say("sent privately to " + shortID(msg.event.Addressee) +
+				" - only the two of you can read it")
 			return nil
 		}
 		m.say("posted to " + m.Room())
@@ -631,6 +666,10 @@ func (m *Model) rememberRooms(events []*Event) {
 	for _, room := range m.rooms {
 		known[room] = true
 	}
+	// The private entry is never added by anything the log says. A room named
+	// the same thing would shadow the one list entry that reaches direct
+	// messages, and a room is something anybody can name.
+	known[dmRoom] = true
 	added := false
 	for _, e := range events {
 		if e.Room != "" && !known[e.Room] {
@@ -765,6 +804,12 @@ func (m *Model) submitInput() (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.draft.to = value
+		// The prompt says which of the two this is, because it is the last
+		// thing on screen before the message is sent and the two are not the
+		// same act: one is said in a room and one is not.
+		if m.Room() == dmRoom {
+			return m, m.openInput(inputSay, "private to "+value+"> ", "")
+		}
 		return m, m.openInput(inputSay, m.Room()+" to "+value+"> ", "")
 
 	case inputSay:
@@ -1103,6 +1148,9 @@ func (m *Model) viewHelp() string {
 	common := "tab/1-9 view  ?help  q quit"
 	switch m.view {
 	case viewRooms:
+		if m.Room() == dmRoom {
+			return "j/k move  i send privately  t thread  n/p room  " + common
+		}
 		return "j/k move  i post  t thread  o open room  n/p room  " + common
 	case viewInbox:
 		return "j/k move  enter artifact  d delegate  x done  " + common
@@ -1144,6 +1192,9 @@ func (m *Model) helpView() string {
 		"  rooms       o open a room by name, n / p next / previous room,",
 		"              t thread pane, T this room's todos, i the message box,",
 		"              a say it to somebody",
+		"  (direct)    the first entry in the room list is not a room: it is the",
+		"              private log. i names somebody and sends them a message only",
+		"              the two of you can read. Every private row says *private.",
 		"  inbox       d delegate to your agent, x mark done, enter the artifact",
 		"  artifact    s move the lifecycle status, then a digit to pick",
 		"  memory      / search, i new, e edit the selected one",

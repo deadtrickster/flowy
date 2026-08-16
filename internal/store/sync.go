@@ -1789,6 +1789,9 @@ func checkEventRow(ctx context.Context, tx *sql.Tx, p *Principal, e *Event) (str
 	if why, err := threadClosed(ctx, tx, p, e.Thread, "event "+e.ID); why != "" || err != nil {
 		return why, err
 	}
+	if why, err := publicEventInAPrivateThread(ctx, tx, e); why != "" || err != nil {
+		return why, err
+	}
 	return artifactClosed(ctx, tx, p, e.Artifact, "event "+e.ID)
 }
 
@@ -1803,12 +1806,24 @@ func eventReadable(ctx context.Context, tx *sql.Tx, p *Principal, e *Event) (boo
 	// reaches the events about it - so the synthetic row carries it, or the
 	// filter would be asked about a column that is not there.
 	artifact := a.next(e.Artifact)
+	// And so are the three a direct message is made of. A DM crosses a node
+	// boundary like anything else - the whole point of addressing a person is
+	// that they may be somewhere else - and a synthetic row missing type, room
+	// or addressee would either fail on a column that is not there or answer
+	// "lands where you read nothing" and refuse every replicated DM. The values
+	// are the incoming row's own, so this asks of the row arriving exactly what
+	// a read will ask of it once it is stored.
+	eventType := a.next(e.Type)
+	room := a.next(e.Room)
+	addressee := a.next(e.Addressee)
 	filter := EventFilterSQL(p, "e", a, false)
 	var ok sql.NullBool
 	err := tx.QueryRowContext(ctx,
 		`SELECT `+filter+`
 		   FROM (SELECT `+project+`::text AS project, `+actor+`::text AS actor,
-		                `+thread+`::text AS thread, `+artifact+`::text AS artifact) e`,
+		                `+thread+`::text AS thread, `+artifact+`::text AS artifact,
+		                `+eventType+`::text AS type, `+room+`::text AS room,
+		                `+addressee+`::text AS addressee) e`,
 		a.vals...).Scan(&ok)
 	if err != nil {
 		return false, fmt.Errorf("store: sync check event %s: %w", e.ID, err)
@@ -1834,6 +1849,40 @@ func threadClosed(
 	}
 	if hidden {
 		return what + " is in thread " + thread + ", which you cannot read", nil
+	}
+	return "", nil
+}
+
+// publicEventInAPrivateThread answers why an event may not join the thread it
+// names, or "" when it may.
+//
+// A private conversation holds nothing but direct messages, and every rule this
+// node has about one leans on that: whether a reply may join it, whether a task
+// may name it, what a client is told the thread is. An event that is not a
+// direct message and lands in one breaks it - the row carries a project, so
+// everybody in that project reads it, in a thread whose every other line is
+// private.
+//
+// It is refused at both merge doors as well as at the three local ones, because
+// the local refusal is about a person being misled by a message box and this one
+// is about the invariant itself. A node that took the row would hold a thread
+// that is half a conversation and half a room, and the next private reply into
+// it would then be refused on that node and taken on the one it came from.
+//
+// It is not about who may READ anything: threadClosed above has already refused
+// a thread the carrier cannot read, and this asks only what the row is doing.
+func publicEventInAPrivateThread(ctx context.Context, tx *sql.Tx, e *Event) (string, error) {
+	if e.Thread == "" || IsDirectMessage(e) {
+		return "", nil
+	}
+	private, err := threadIsPrivate(ctx, tx, e.Thread)
+	if err != nil {
+		return "", err
+	}
+	if private {
+		return "event " + e.ID + " is in thread " + e.Thread +
+			", which is a private conversation: a message carrying a project would be " +
+			"read by everybody in it", nil
 	}
 	return "", nil
 }

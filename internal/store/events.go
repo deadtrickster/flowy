@@ -58,6 +58,10 @@ func scanEvent(sc scanner) (*Event, error) {
 	if e.Parents == nil {
 		e.Parents = []string{}
 	}
+	// Derived from the row that was just read, in the one place every read of an
+	// event goes through, so a surface cannot get it from somewhere else and a
+	// peer cannot send it. See Event.Private.
+	e.Private = IsDirectMessage(&e)
 	return &e, nil
 }
 
@@ -172,7 +176,12 @@ type EventQuery struct {
 	// said, including a log line that is half punctuation and an id somebody
 	// pasted, and to_tsquery drops both. lower(body) LIKE lower(...) means the
 	// same thing on any Postgres-wire store, which the index does not.
-	Contains  string
+	Contains string
+	// Private narrows to direct messages and nothing else. It is a narrowing
+	// like every other field here and never a permission: the filter has already
+	// decided which DMs this principal reaches, and this only stops the answer
+	// carrying rooms as well. GET /api/dm is what asks for it.
+	Private   bool
 	Since     int64
 	NotActors []string
 	ScopeAll  bool
@@ -207,6 +216,9 @@ func (q EventQuery) narrow(a *args, alias string) string {
 	if q.Contains != "" {
 		where += " AND lower(coalesce(" + alias + ".body, '')) LIKE lower(" +
 			a.next("%"+likeEscaped(q.Contains)+"%") + ")"
+	}
+	if q.Private {
+		where += " AND " + privateEventSQL(alias)
 	}
 	for _, actor := range q.NotActors {
 		if actor != "" {

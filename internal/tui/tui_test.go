@@ -467,6 +467,93 @@ func rowWith(t *testing.T, screen, body string) string {
 	return ""
 }
 
+// A private message must not be drawn as a room message. Both are chat, both
+// arrive in the same stream, and the person reading the screen is about to
+// decide what to type next - so the row itself has to say which of the two it
+// is, and who else can read it.
+//
+// The public row is checked in the same breath, because a client that marked
+// everything private would pass a test that only looked at the private one, and
+// would be worse than no marking at all.
+func TestAPrivateMessageIsDrawnAsOne(t *testing.T) {
+	m := testModel(t, NewClient("http://127.0.0.1:1", "t"))
+	// Wider than the default: at 80 columns with the thread pane open the body
+	// is clipped away, and this test is about the marker and the body being on
+	// the same row rather than about the clipping rule beside it.
+	m.Update(tea.WindowSizeMsg{Width: 120, Height: 24})
+	m.who = &Whoami{User: "01HUSERAAAAAAAAAACM5BYZ3W", Project: "pa"}
+
+	private := saidBy("ada", "private-body")
+	private.Private = true
+	private.Addressee = m.who.User
+	private.Room = ""
+	private.Project = nil
+	public := saidBy("bo", "public-body")
+	m.msgs = []*Event{public, private}
+	m.thread, m.threadOpen, m.view = m.msgs, true, viewRooms
+
+	screen := m.View()
+	row := rowWith(t, screen, "private-body")
+	if !strings.Contains(row, "private") {
+		t.Fatalf("a direct message is drawn without saying it is private: %q", row)
+	}
+	if !strings.Contains(row, "->you") {
+		t.Fatalf("a direct message is drawn without saying who it is for: %q", row)
+	}
+	if row := rowWith(t, screen, "public-body"); strings.Contains(row, "private") {
+		t.Fatalf("a room message is drawn as private: %q", row)
+	}
+
+	// And the same on the timeline, which is the one pane that shows rooms and
+	// private conversations side by side.
+	m.view = viewTimeline
+	m.tl = []*ActivityItem{
+		{ID: "1", Kind: "chat", Actor: "01HUSERBBB", Room: "general",
+			Body: "public-item", Created: "2026-08-15T10:11:12Z"},
+		{ID: "2", Kind: "chat", Actor: "01HUSERBBB", Private: true,
+			Addressee: m.who.User, Thread: "01HTHREADZZ",
+			Body: "private-item", Created: "2026-08-15T10:11:13Z"},
+	}
+	screen = m.View()
+	if row := rowWith(t, screen, "private-item"); !strings.Contains(row, "private") {
+		t.Fatalf("the timeline draws a direct message as an ordinary line: %q", row)
+	}
+	if row := rowWith(t, screen, "public-item"); strings.Contains(row, "private") {
+		t.Fatalf("the timeline draws a room message as private: %q", row)
+	}
+}
+
+// The private entry is in the room list, is not a room, and is not where the
+// client opens. A client that started on somebody's direct messages would put a
+// private conversation on the screen of whoever walks past the terminal.
+func TestThePrivateEntryIsInTheListAndIsNotWhereItOpens(t *testing.T) {
+	m := testModel(t, NewClient("http://127.0.0.1:1", "t"))
+	if m.Room() != openingRoom {
+		t.Fatalf("the client opens on %q, want %q", m.Room(), openingRoom)
+	}
+	found := false
+	for _, room := range m.rooms {
+		if room == dmRoom {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the private log is not in the room list: %v", m.rooms)
+	}
+
+	// And nothing the log says can add a room that shadows it.
+	m.rememberRooms([]*Event{{Room: dmRoom}, {Room: "incident-room"}})
+	count := 0
+	for _, room := range m.rooms {
+		if room == dmRoom {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("a room named %q was added from the log: %v", dmRoom, m.rooms)
+	}
+}
+
 // The complaint this column exists for: four agents and a person in one room,
 // and every line drawn as the tail of a ulid. A message that carries a name is
 // drawn under it - in the stream and in the thread pane beside it, because

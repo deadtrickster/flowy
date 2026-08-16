@@ -7,6 +7,7 @@ import {
   Home as HomeIcon,
   Inbox as InboxIcon,
   ListTree,
+  Lock,
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { NavLink } from "react-router-dom";
@@ -43,6 +44,16 @@ export function Shell({ children }: { children: ReactNode }) {
           <NavLink to="/inbox" className={navClass}>
             <InboxIcon className="h-4 w-4" />
             inbox
+          </NavLink>
+          {/*
+            Above the rooms and not among them, because it is not one. The
+            padlock is the point of the row: it is the only place in this
+            console where what you write is read by one named person, and it
+            has to be told apart from a room at a glance.
+          */}
+          <NavLink to="/direct" className={navClass}>
+            <Lock className="h-4 w-4" />
+            direct
           </NavLink>
           <NavLink to="/reports" className={navClass}>
             <FileText className="h-4 w-4" />

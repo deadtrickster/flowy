@@ -156,6 +156,21 @@ func roomOf(r *http.Request) (string, bool) {
 // the caller may not read is closed to them. A thread with nothing in it is
 // nobody's yet, and every conversation starts as one.
 func (s *server) mayWriteThread(w http.ResponseWriter, r *http.Request, thread string) bool {
+	if !s.mayReadThread(w, r, thread) {
+		return false
+	}
+	// And a thread you CAN read is not necessarily one this write belongs in.
+	// Every caller of this is a public write - a room say, POST /api/events, the
+	// timeline - and a private conversation is the one thread a public write
+	// must not join. See mayWritePublicThread. The private send path asks
+	// mayReadThread instead, because for it the answer is the opposite.
+	return s.mayWritePublicThread(w, r, thread)
+}
+
+// mayReadThread is the first half of mayWriteThread: writing into a thread is
+// not a way round reading it. It is separate because the private send path needs
+// exactly this and not the public rule beside it.
+func (s *server) mayReadThread(w http.ResponseWriter, r *http.Request, thread string) bool {
 	p := principalOf(r)
 	hidden, err := s.db.ThreadHidden(r.Context(), p, thread)
 	if err != nil {

@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -166,10 +167,18 @@ func (m *Model) whoamiCmd() tea.Cmd {
 	}
 }
 
+// roomCmd loads whatever the room list is pointing at. The private entry is not
+// a room, so it reads the private log instead - the branch is here rather than
+// in the client because the client's two calls are two different endpoints and
+// pretending otherwise would put a room name into a URL that has none.
 func (m *Model) roomCmd(gen int, room string, since int64) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := callCtx()
 		defer cancel()
+		if room == dmRoom {
+			page, err := m.client.DMs(ctx, since)
+			return roomMsg{gen: gen, page: page, err: err}
+		}
 		page, err := m.client.Room(ctx, room, since)
 		return roomMsg{gen: gen, page: page, err: err}
 	}
@@ -182,19 +191,42 @@ func (m *Model) waitCmd(gen int, room string, cursor int64) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
+		if room == dmRoom {
+			page, err := m.client.WaitDMs(ctx, cursor, 8)
+			return waitMsg{gen: gen, page: page, err: err}
+		}
 		page, err := m.client.Wait(ctx, room, cursor, 8)
 		return waitMsg{gen: gen, page: page, err: err}
 	}
 }
 
+// sayCmd posts what was typed, into a room or as a direct message.
+//
+// A direct message with nobody to send it to never leaves this process. The
+// endpoint would refuse it anyway - the addressee is the path - but a message
+// somebody typed while looking at a private pane must not fall back to a room:
+// that is the one mistake here that would publish something the writer thought
+// was private.
 func (m *Model) sayCmd(room, body, thread, to string, parents []string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := callCtx()
 		defer cancel()
+		if room == dmRoom {
+			if to == "" {
+				return sentMsg{err: errNoAddressee}
+			}
+			event, err := m.client.SendDM(ctx, to, body, parents, thread)
+			return sentMsg{event: event, err: err}
+		}
 		event, err := m.client.Say(ctx, room, body, parents, thread, to)
 		return sentMsg{event: event, err: err}
 	}
 }
+
+// errNoAddressee is what a private message with nobody to send it to comes back
+// as. It is a message and not a refusal from the node, because nothing was sent.
+var errNoAddressee = errors.New(
+	"a direct message needs somebody to send it to - press a and name them")
 
 func (m *Model) threadCmd(thread string) tea.Cmd {
 	return func() tea.Msg {

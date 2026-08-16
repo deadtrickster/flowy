@@ -304,9 +304,17 @@ CREATE TABLE IF NOT EXISTS events (
     -- a user id or an agent id, the same two things actor holds, and it is
     -- nullable because most messages are addressed to nobody in particular.
     --
-    -- It is not a permission column and nothing in the permission filter reads
-    -- it: an addressed message is read by exactly the principals that could
-    -- read the room without it. What it carries is what a reader is TOLD.
+    -- For a message IN A ROOM it is not a permission column: an addressed room
+    -- message is read by exactly the principals that could read the room
+    -- without it, and what the column carries is what a reader is TOLD.
+    --
+    -- For a message with NO PROJECT AND NO ROOM it is the other party to a
+    -- private conversation, and the permission filter does read it - one clause
+    -- in the projectless branch, which is the branch that already restricts a
+    -- row to its author. So the three columns together are the whole of what
+    -- makes a message private: project IS NULL, an empty room, and this. See
+    -- privateEventSQL in internal/store/perm.go, which is the only place that
+    -- decides it.
     addressee text,
     sig       bytea,
     created   timestamptz DEFAULT now()

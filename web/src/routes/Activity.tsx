@@ -140,6 +140,22 @@ export function Activity() {
                 {item.actor_name || shortId(item.actor, 8)}
               </span>
               {item.room ? <Badge variant="outline">#{item.room}</Badge> : null}
+              {/*
+               * A direct message on the everything-view. It has no room to put
+               * in the column beside it, so without this it reads as a bare
+               * thread - indistinguishable from a run. The reply box is on
+               * this page, which is why the line has to say which of the two
+               * somebody is about to answer.
+               */}
+              {item.private ? (
+                <Badge
+                  variant="outline"
+                  className="border-amber-500/60 border-dashed"
+                  title="only the sender and the addressee can read this"
+                >
+                  private to {shortId(item.addressee ?? "", 8)}
+                </Badge>
+              ) : null}
               {item.thread ? (
                 <button
                   type="button"
@@ -208,6 +224,10 @@ function PostBox({
   const send = async () => {
     const said = body.trim();
     if (!said || sending) return;
+    if (into?.private) {
+      setError("that is a private conversation - answer it on the direct page");
+      return;
+    }
     setSending(true);
     setError(null);
     try {
@@ -242,7 +262,21 @@ function PostBox({
           <option value="turn">turn</option>
           <option value="log">log line</option>
         </Select>
-        {into ? (
+        {into?.private ? (
+          /*
+           * This box posts into a room or a run, and both are things other
+           * people read. The node refuses a public write into a private
+           * conversation - which is what would otherwise happen here, quietly,
+           * to somebody who thought picking a line and typing was a reply - so
+           * the button says where to go instead of waiting for the refusal.
+           */
+          <Badge variant="outline" className="border-amber-500/60 border-dashed">
+            that one is private - answer it on <Link to="/direct">direct</Link>
+            <button type="button" className="ml-1" onClick={clear}>
+              ×
+            </button>
+          </Badge>
+        ) : into ? (
           <Badge variant="outline">
             into thread {shortId(into.thread ?? "", 8)}
             <button type="button" className="ml-1" onClick={clear}>

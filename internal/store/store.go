@@ -410,14 +410,33 @@ type Event struct {
 	// Addressee is who a message is directed at - a user id or an agent id -
 	// and is empty when it is directed at the room.
 	//
-	// It is not a permission axis, and that is the whole of what it means. An
-	// addressed message is a room message: the same people read it that read
-	// the room before, EventFilterSQL never looks at this column, and nothing
-	// here narrows or widens a read. What it changes is what a reader is told -
-	// a client can say "this one is for you" instead of leaving every reader to
-	// infer it from the prose - which is a rendering decision and a wake-up
-	// decision, never an access one.
+	// IN A ROOM it is not a permission axis, and that is the whole of what it
+	// means there. An addressed room message is a room message: the same people
+	// read it that read the room before, and nothing about the column narrows or
+	// widens a read. What it changes is what a reader is told - a client can say
+	// "this one is for you" instead of leaving every reader to infer it from the
+	// prose - which is a rendering decision and a wake-up decision, never an
+	// access one.
+	//
+	// WITH NO PROJECT AND NO ROOM it is the other party to a direct message, and
+	// EventFilterSQL does read it: one clause in the projectless branch, which
+	// is the branch that already restricts a row to its author. It widens that
+	// to the author and the one principal named here, and nothing else. See
+	// privateEventSQL, and IsDirectMessage for the same rule in Go.
 	Addressee string `json:"addressee,omitempty"`
+	// Private says this event is a direct message: the addressee is a party to
+	// it rather than somebody it was pointed at, and only the two of them read
+	// it. It is DERIVED and never stored - there is no private column, the
+	// signature does not cover it, and appendEvent does not write it. scanEvent
+	// works it out from the row's own project, type, room and addressee, which
+	// is IsDirectMessage, which is privateEventSQL in Go.
+	//
+	// So it is a rendering fact and never a permission one. A client that
+	// received it over the wire from a peer is holding a claim; what decided
+	// whether the row reached that client at all is EventFilterSQL, in the
+	// database, on the columns. Nothing may ever read this to answer "may they
+	// see it" - by the time it is set, that question has been answered.
+	Private bool `json:"private,omitempty"`
 	// Sig is the writing node's signature over the event - see Artifact.Sig.
 	Sig     []byte    `json:"sig,omitempty"`
 	Created time.Time `json:"created"`
@@ -480,6 +499,10 @@ func (d *DB) appendEvent(ctx context.Context, q execer, e *Event) error {
 	if err != nil {
 		return fmt.Errorf("store: append event: %w", err)
 	}
+	// The handlers answer with the event they just wrote rather than reading it
+	// back, so the derived flag is set here for the same reason scanEvent sets
+	// it: whatever a caller was handed, it was worked out from the columns.
+	e.Private = IsDirectMessage(e)
 	return nil
 }
 

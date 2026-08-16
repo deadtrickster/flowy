@@ -110,6 +110,16 @@ func (m *Model) timelineView(height int) []string {
 		if where == "" && item.Thread != "" {
 			where = shortID(item.Thread)
 		}
+		// A private message on the everything-view. The where column is what a
+		// reader scans to tell one conversation from another, and a direct
+		// message has nothing to put in it, so without this it would read as a
+		// bare thread id - indistinguishable from a run. The body carries who it
+		// was for, because that is what makes it private.
+		body := strings.ReplaceAll(item.Body, "\n", " ")
+		if item.Private {
+			where = "private"
+			body = "->" + shortID(item.Addressee) + " " + body
+		}
 		// The speaker column is fixed at what the tail of an id took, and a
 		// name longer than that is cut to it: this pane is full width and the
 		// body is what a person is reading along it, so a handle is not allowed
@@ -117,7 +127,7 @@ func (m *Model) timelineView(height int) []string {
 		text := fmt.Sprintf("%s %-5s %s %-10s %s",
 			clock(item.Created), item.Kind,
 			pad(m.theme.clip(item.Speaker(), timelineNameWidth), timelineNameWidth),
-			m.theme.clip(where, 10), strings.ReplaceAll(item.Body, "\n", " "))
+			m.theme.clip(where, 10), body)
 		text = m.theme.clip(text, m.width)
 		switch {
 		case i == m.tlSel:

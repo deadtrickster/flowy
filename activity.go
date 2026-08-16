@@ -105,15 +105,26 @@ func kindOfEvent(e *store.Event) string {
 // activityItem is one line of the timeline: what happened, who did it, where,
 // and which trace it was part of.
 type activityItem struct {
-	ID        string          `json:"id"`
-	Kind      string          `json:"kind"`
-	Type      string          `json:"type"`
-	Actor     string          `json:"actor"`
-	ActorKind string          `json:"actor_kind,omitempty"`
-	ActorUser string          `json:"actor_user,omitempty"`
-	ActorName string          `json:"actor_name,omitempty"`
-	Project   *string         `json:"project"`
-	Room      string          `json:"room,omitempty"`
+	ID        string  `json:"id"`
+	Kind      string  `json:"kind"`
+	Type      string  `json:"type"`
+	Actor     string  `json:"actor"`
+	ActorKind string  `json:"actor_kind,omitempty"`
+	ActorUser string  `json:"actor_user,omitempty"`
+	ActorName string  `json:"actor_name,omitempty"`
+	Project   *string `json:"project"`
+	Room      string  `json:"room,omitempty"`
+	// Addressee is who a message names, and Private says the two of them are
+	// the only readers. A timeline that drew a direct message exactly like a
+	// room message would be a trap for whoever writes the next one: the reply
+	// box is on this view, and somebody answering what looks like a room
+	// message has to be told which of the two they are answering.
+	//
+	// Private is the event's, derived from its own columns - see
+	// store.Event.Private. It says what the read already decided; it does not
+	// decide anything.
+	Addressee string          `json:"addressee,omitempty"`
+	Private   bool            `json:"private,omitempty"`
 	Thread    string          `json:"thread,omitempty"`
 	Artifact  string          `json:"artifact,omitempty"`
 	Parents   []string        `json:"parents"`
@@ -222,7 +233,8 @@ func (s *server) handleActivity(w http.ResponseWriter, r *http.Request) {
 func itemOf(e *store.Event) activityItem {
 	item := activityItem{
 		ID: e.ID, Kind: kindOfEvent(e), Type: e.Type, Actor: e.Actor,
-		Project: e.Project, Room: e.Room, Thread: e.Thread, Artifact: e.Artifact,
+		Project: e.Project, Room: e.Room, Addressee: e.Addressee, Private: e.Private,
+		Thread: e.Thread, Artifact: e.Artifact,
 		Parents: e.Parents, Body: e.Body, SeqHLC: e.SeqHLC, Node: e.Node,
 		Created: e.Created.UTC().Format("2006-01-02T15:04:05.999999Z07:00"),
 		Meta:    e.Meta,

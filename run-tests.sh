@@ -2249,6 +2249,261 @@ addressing_changes_nothing_about_who_reads() {
 	printf 'the addressee opened nothing and closed nothing: the grant decided both\n'
 }
 
+# -------------------------------------------------------- direct messages
+#
+# A DM is a chat event with no project, no room and an addressee, and it is read
+# by its author and by the principal it names - one clause in EventFilterSQL's
+# projectless branch, which is the branch that already excludes everybody.
+#
+# THE CHECK THAT MEANS ANYTHING IS THE THIRD PRINCIPAL'S. "Both parties can read
+# it" passes under a completely broken implementation - the one where everybody
+# can read it - so it is written here as a control and never as the assertion.
+# What the assertion is: the operator, who is in pa with A, reads every other
+# message A writes and does not read this one, over the wire, as a third token.
+#
+# Every phrase below is a nonsense word that appears nowhere else in this gate,
+# so a count of what came back is a statement about these rows and not about
+# what an earlier check left in the log.
+DM_PRIVATE_WORD="wombatinairlock"
+DM_PUBLIC_WORD="wombatintheroom"
+readonly DM_PRIVATE_WORD DM_PUBLIC_WORD
+
+# dm TOKEN TO BODY [THREAD] - send a direct message. The addressee is the path:
+# a private message with nobody to send it to is refused by the route itself.
+dm() {
+	local token=$1 to=$2 body=$3 thread=${4-}
+	api POST "$token" "/api/dm/$to" \
+		"$(jq -nc --arg b "$body" --arg t "$thread" \
+			'{body: $b} + (if $t == "" then {} else {thread: $t} end)')"
+}
+
+# items EXPR - how many activity items the last response returned, narrowed by a
+# jq select expression. The timeline's ?q= is the only search in this node that
+# looks at what was SAID, so it is the one a message can leak through.
+items() {
+	printf '%s' "$API_BODY" | jq "[.items[] | select($1)] | length"
+}
+
+# A direct message is between two people, and both of them have it. This is the
+# control for the check below it and not the point: a build where everybody
+# could read it would pass this one.
+a_direct_message_reaches_both_parties() {
+	recall
+	dm "$TOKEN_A" "$USER_B" "the $DM_PRIVATE_WORD is loose" || return 1
+	want_eq "send status" "$API_STATUS" 200 || return 1
+	want_eq "it is a chat event" "$(jqv .type)" chat || return 1
+	want_eq "it carries no project" "$(jqv '.project // "null"')" null || return 1
+	want_eq "it carries no room" "$(jqv '.room // ""')" "" || return 1
+	want_eq "who it is for" "$(jqv .addressee)" "$USER_B" || return 1
+	want_eq "and the node says it is private" "$(jqv .private)" true || return 1
+	local id thread
+	id="$(jqv .id)"
+	thread="$(jqv .thread)"
+	remember DM_ID "$id"
+	remember DM_THREAD "$thread"
+
+	# The sender reads it back through the private log.
+	api GET "$TOKEN_A" '/api/dm?since=0' || return 1
+	want_eq "the sender's private log has it" "$(chat_len ".id == \"$id\"")" 1 || return 1
+	# And the addressee, who is in another project entirely.
+	api GET "$TOKEN_B" '/api/dm?since=0' || return 1
+	want_eq "the addressee's private log has it" "$(chat_len ".id == \"$id\"")" 1 || return 1
+	api GET "$TOKEN_B" '/api/inbox?since=0' || return 1
+	want_eq "and it is in their inbox" "$(chat_len ".id == \"$id\"")" 1 || return 1
+	printf 'private between %s and %s, thread %s\n' "$USER_A" "$USER_B" "$thread"
+}
+
+# THE ONE THAT DECIDES WHETHER THIS FEATURE SHIPS.
+#
+# The operator is a third principal in pa, which is A's project. They are not
+# named on the message, they hold no grant that reaches it, and they are asking
+# as themselves - ?scope=all is not used anywhere here, and the check below it
+# covers that separately. The control is in the same function on purpose: A says
+# something in a room at the same moment, and the operator reads THAT - so a
+# failure here is about the direct message and not about the operator having
+# been left out of everything.
+a_third_principal_in_the_project_cannot_read_a_dm() {
+	recall
+	# The control: an ordinary room message from A, in pa, said now.
+	api POST "$TOKEN_A" /api/chat/dmroom/say \
+		"$(jq -nc --arg b "the $DM_PUBLIC_WORD is fine" '{body: $b}')" || return 1
+	want_eq "say status" "$API_STATUS" 200 || return 1
+	local public
+	public="$(jqv .id)"
+	remember DM_PUBLIC "$public"
+
+	api GET "$TOKEN_OP" /api/chat/dmroom || return 1
+	want_eq "the third principal reads A's room message" \
+		"$(chat_len ".id == \"$public\"")" 1 || return 1
+	api GET "$TOKEN_OP" '/api/dm?since=0' || return 1
+	want_eq "and reads none of the private log" "$(chat_len ".id == \"$DM_ID\"")" 0 || return 1
+	printf 'the operator is in pa, reads %s, and does not read %s\n' "$public" "$DM_ID"
+}
+
+# And it is on none of their surfaces. Each of these is a different read of the
+# same log, and each of them has been the place a row went out before.
+a_dm_is_on_none_of_a_third_principals_surfaces() {
+	recall
+	# The room read it was never in.
+	api GET "$TOKEN_OP" /api/chat/dmroom || return 1
+	want_eq "the room read" "$(chat_len ".id == \"$DM_ID\"")" 0 || return 1
+	# The event list - the widest read there is.
+	api GET "$TOKEN_OP" '/api/events?since=0&limit=500' || return 1
+	want_eq "the event list" "$(chat_len ".id == \"$DM_ID\"")" 0 || return 1
+	# The inbox, which crosses rooms and projects by design.
+	api GET "$TOKEN_OP" '/api/inbox?since=0&limit=500' || return 1
+	want_eq "the inbox" "$(chat_len ".id == \"$DM_ID\"")" 0 || return 1
+	# The activity timeline, and its ?q= - the one search in this node that
+	# looks at what was said rather than at an artifact's text.
+	api GET "$TOKEN_OP" "/api/activity?q=$DM_PRIVATE_WORD" || return 1
+	want_eq "the timeline search" "$(items 'true')" 0 || return 1
+	api GET "$TOKEN_OP" "/api/activity?q=$DM_PUBLIC_WORD" || return 1
+	want_eq "and it does find the room message beside it" "$(items 'true')" 1 || return 1
+	# The artifact search, which is where a body would go out if a message had
+	# ever been one.
+	api GET "$TOKEN_OP" "/api/search?q=$DM_PRIVATE_WORD" || return 1
+	want_eq "the artifact search" "$(hits)" 0 || return 1
+	# And the thread, read by id, which is how the tasks clause used to widen.
+	api GET "$TOKEN_OP" "/api/events?thread=$DM_THREAD" || return 1
+	want_eq "the thread read by id" "$(chat_len 'true')" 0 || return 1
+
+	# The other end of every one of those: the party reads it everywhere.
+	api GET "$TOKEN_B" "/api/activity?q=$DM_PRIVATE_WORD" || return 1
+	want_eq "the addressee's timeline search finds it" "$(items 'true')" 1 || return 1
+	want_eq "and it says private" "$(items '.private == true')" 1 || return 1
+	printf 'room read, event list, inbox, timeline search, artifact search and thread: none\n'
+}
+
+# The escape hatch is not one either. ?scope=all is the operator's window onto
+# their own node and every other read honours it; the private log is the one
+# endpoint that is not a place to read somebody else's conversation from.
+a_dm_is_not_handed_over_by_scope_all() {
+	recall
+	api GET "$TOKEN_OP" '/api/dm?since=0&scope=all' || return 1
+	want_eq "the private log under scope=all" "$(chat_len ".id == \"$DM_ID\"")" 0 || return 1
+	printf 'scope=all is not a way into a private log that is not yours\n'
+}
+
+# A reply stays between the two people the first message was between. The party
+# set is fixed by the opening message, and the read filter cannot see this: every
+# row it judges names exactly one addressee and looks perfectly private on its
+# own, so a thread with three people in it would pass every check above.
+a_reply_to_a_dm_does_not_widen_it() {
+	recall
+	local before after
+	# A party replying to the other party: ordinary, and it stays in the thread.
+	dm "$TOKEN_B" "$USER_A" "the $DM_PRIVATE_WORD is contained" "$DM_THREAD" || return 1
+	want_eq "the reply" "$API_STATUS" 200 || return 1
+	want_eq "it stays in the conversation" "$(jqv .thread)" "$DM_THREAD" || return 1
+	want_eq "and it is private too" "$(jqv .private)" true || return 1
+
+	# A party trying to bring somebody else in, which is the whole point.
+	before="$(scalar "SELECT count(*) FROM events WHERE thread = '$DM_THREAD'")" || return 1
+	dm "$TOKEN_B" "$USER_OP" "come and look at this" "$DM_THREAD" || return 1
+	want_eq "widening the conversation" "$API_STATUS" 400 || return 1
+	after="$(scalar "SELECT count(*) FROM events WHERE thread = '$DM_THREAD'")" || return 1
+	want_eq "rows the refusal wrote" "$((after - before))" 0 || return 1
+
+	# And somebody outside it writing in, which is refused one step earlier: they
+	# cannot read a single row of the thread, so it is not theirs to write to.
+	dm "$TOKEN_OP" "$USER_A" "let me in" "$DM_THREAD" || return 1
+	want_eq "an outsider writing into the conversation" "$API_STATUS" 403 || return 1
+
+	# After all of that, the third principal still reads none of it.
+	api GET "$TOKEN_OP" "/api/events?thread=$DM_THREAD" || return 1
+	want_eq "the outsider's thread read" "$(chat_len 'true')" 0 || return 1
+	api GET "$TOKEN_OP" '/api/dm?since=0' || return 1
+	want_eq "the outsider's private log" "$(chat_len 'true')" 0 || return 1
+	printf 'two people in, two people still in, and nothing written by the two refusals\n'
+}
+
+# The other direction, and the trap that is easiest to fall into: a party writing
+# into their own private thread through a PUBLIC door. The row would carry their
+# home project and be read by everybody in it, from a box that gave no sign of
+# the difference - so every public write path refuses a private conversation.
+a_public_write_cannot_join_a_private_conversation() {
+	recall
+	local before after
+	before="$(scalar "SELECT count(*) FROM events WHERE thread = '$DM_THREAD'")" || return 1
+	api POST "$TOKEN_A" /api/chat/dmroom/say \
+		"$(jq -nc --arg t "$DM_THREAD" --arg b "oops" '{body: $b, thread: $t}')" || return 1
+	want_eq "a room say into a private thread" "$API_STATUS" 400 || return 1
+	api POST "$TOKEN_A" /api/activity \
+		"$(jq -nc --arg t "$DM_THREAD" '{kind: "chat", body: "oops", thread: $t}')" || return 1
+	want_eq "a timeline post into a private thread" "$API_STATUS" 400 || return 1
+	api POST "$TOKEN_A" /api/events \
+		"$(jq -nc --arg t "$DM_THREAD" '{type: "note", body: "oops", thread: $t}')" || return 1
+	want_eq "an event append into a private thread" "$API_STATUS" 400 || return 1
+	after="$(scalar "SELECT count(*) FROM events WHERE thread = '$DM_THREAD'")" || return 1
+	want_eq "rows the three refusals wrote" "$((after - before))" 0 || return 1
+	printf 'three public doors, three refusals, nothing written\n'
+}
+
+# And the reverse of that: a handoff thread is read by the parties to the task,
+# because the tasks clause in EventFilterSQL is OR-ed onto the end of the whole
+# predicate and ADDS readers. A "private" message dropped into one would be read
+# by the assigner, the assignee and the delegated agent, none of whom the sender
+# named. This is the check that fails if a DM is ever built on that clause.
+a_dm_cannot_join_a_handoff_thread() {
+	recall
+	local artifact task thread
+	artifact="$(new_artifact "$TOKEN_A" bug "a handoff a dm must not join")" || return 1
+	assign_as "$TOKEN_A" "$artifact" "$USER_B" "for the dm check" || return 1
+	want_eq "assign status" "$API_STATUS" 200 || return 1
+	task="$(jqv .id)"
+	thread="$(jqv .thread)"
+	dm "$TOKEN_A" "$USER_B" "quietly, in the handoff" "$thread" || return 1
+	want_eq "a private message into a handoff thread" "$API_STATUS" 400 || return 1
+	printf 'task %s keeps its thread: %s\n' "$task" "$(jqv .error)"
+}
+
+# A name nothing answers to is worse here than in a room: a room message to a
+# typo is still said in the room and somebody reads it, and a private message to
+# a typo is read by nobody at all, for ever, while the sender is told it went.
+a_dm_to_a_name_nothing_answers_to_is_refused() {
+	recall
+	local before after
+	before="$(scalar "SELECT count(*) FROM events WHERE project IS NULL AND coalesce(room, '') = ''")" || return 1
+	dm "$TOKEN_A" 01NOSUCHPRINCIPAL0000000AA "into the void" || return 1
+	want_eq "status" "$API_STATUS" 400 || return 1
+	after="$(scalar "SELECT count(*) FROM events WHERE project IS NULL AND coalesce(room, '') = ''")" || return 1
+	want_eq "messages the refusal wrote" "$((after - before))" 0 || return 1
+	printf 'refused, and nothing written: %s\n' "$(jqv .error)"
+}
+
+# Nothing that was readable stopped being readable, and nothing that was private
+# became visible. The rows named here are the ones the phase 3 and addressing
+# checks above created and asserted, re-read now that the filter has a new
+# clause in it - so this is the regression half rather than a fresh claim.
+the_project_rooms_are_unchanged_by_direct_messages() {
+	recall
+	# The phase 3 thread: A's own two messages, still there, still in order.
+	api GET "$TOKEN_A" /api/chat/general || return 1
+	want_eq "A still reads the first message" "$(chat_len ".id == \"$CHAT_M1\"")" 1 || return 1
+	want_eq "A still reads the reply" "$(chat_len ".id == \"$CHAT_M2\"")" 1 || return 1
+	# The addressed room message in pa: read by B across the grant, and by the
+	# operator, who is not named on it at all.
+	api GET "$TOKEN_B" /api/chat/addressing || return 1
+	want_eq "B still reads the pa message that names B" \
+		"$(chat_len ".id == \"$CHAT_TO_B\"")" 1 || return 1
+	api GET "$TOKEN_OP" /api/chat/addressing || return 1
+	want_eq "somebody in pa who is not named still reads it" \
+		"$(chat_len ".id == \"$CHAT_TO_B\"")" 1 || return 1
+	# And a room thread still takes a room reply, which the private-thread
+	# refusal above must not have caught.
+	local thread
+	api POST "$TOKEN_A" /api/chat/dmroom/say '{"body": "opens a room thread"}' || return 1
+	thread="$(jqv .thread)"
+	api POST "$TOKEN_A" /api/chat/dmroom/say \
+		"$(jq -nc --arg t "$thread" '{body: "continues it", thread: $t}')" || return 1
+	want_eq "a room reply into a room thread" "$API_STATUS" 200 || return 1
+	want_eq "and it stayed in the thread" "$(jqv .thread)" "$thread" || return 1
+	# The personal floor, which is the branch the new clause lives in: B still
+	# cannot reach A's personal note, grant or no grant.
+	want_status 404 GET "$TOKEN_B" "/api/artifact/$NOTE" || return 1
+	printf 'the rooms, the grant, the addressee and the personal floor: all unchanged\n'
+}
+
 # ----------------------------------------------------------- the inbox waiter
 #
 # `flowy inbox --as NAME` is the thing that replaces a shell loop, so it is
@@ -4097,6 +4352,32 @@ browser_draws_a_citation() {
 	cd "$ROOT/web" || return 1
 	node scripts/cite-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" quotes \
 		"$HANDLE_OP" "the impeller is cracked" "the flange is fine"
+}
+
+# The private page, mounted against the live node as each of the two principals
+# who matter.
+#
+# As the addressee, the message is on the screen and the page says private - a
+# console that painted a direct message identically to a room message would be a
+# trap for whoever writes the next one.
+#
+# As the THIRD PRINCIPAL, the page loads, is signed in, is asking the same
+# endpoint - and the message is not on it. That is the same claim the API check
+# makes, made again at the surface a person actually reads, because "the API
+# refused it" and "it is not on the screen" have been different answers before:
+# a client that merged pages from two reads, or cached a page from another
+# token, would leak it here and nowhere else.
+console_renders_direct_messages() {
+	recall
+	cd "$ROOT/web" || return 1
+	node scripts/render-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_B" \
+		"$DM_PRIVATE_WORD" /direct || return 1
+	# The compose button belongs to this page and to no other, so it is the
+	# presence half that makes the absence half mean something: without it,
+	# "the message is not on the screen" would also be true of a page that
+	# never painted.
+	node scripts/render-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_OP" \
+		"send privately" /direct "$DM_PRIVATE_WORD"
 }
 
 serves_the_inbox_route() {
@@ -6559,6 +6840,37 @@ check "a name resolves to the one principal it names" \
 check "the addressee is inside what the node signs" \
 	go test -count=1 -run 'TestAnUnaddressedEventEncodesAsItAlwaysDid|TestAnAddresseeCannotBeAddedRemovedOrSwapped' ./internal/sign
 
+# Direct messages. The first check is the control and proves nothing on its own -
+# a build where everybody could read the message would pass it. The second is
+# the one that decides whether this ships: a third principal in the SAME PROJECT
+# as the sender, who reads every other message the sender writes, does not read
+# this one. Asked over the wire, as that third token, and not by reading the SQL.
+say "direct messages"
+check "a direct message reaches both parties, and carries no project or room" \
+	a_direct_message_reaches_both_parties
+check "A THIRD PRINCIPAL IN THE SAME PROJECT CANNOT READ IT" \
+	a_third_principal_in_the_project_cannot_read_a_dm
+check "and it is on none of their surfaces: room, events, inbox, timeline, search, thread" \
+	a_dm_is_on_none_of_a_third_principals_surfaces
+check "scope=all does not hand over somebody else's private log" \
+	a_dm_is_not_handed_over_by_scope_all
+check "a reply does not widen the conversation, and an outsider cannot write into it" \
+	a_reply_to_a_dm_does_not_widen_it
+check "no public door writes into a private conversation" \
+	a_public_write_cannot_join_a_private_conversation
+check "a direct message cannot join a handoff thread, which the task parties read" \
+	a_dm_cannot_join_a_handoff_thread
+check "a private message to a name nothing answers to is refused, and writes no row" \
+	a_dm_to_a_name_nothing_answers_to_is_refused
+check "the project-scoped rooms are exactly as readable as they were" \
+	the_project_rooms_are_unchanged_by_direct_messages
+check "the same rule in the store, over the whole matrix of readers" \
+	go test -count=1 -run 'TestADirectMessageIsInvisibleToAThirdPrincipal|TestADirectMessageThreadKnowsItsParties' ./internal/store
+check "the merge refuses a public message into a private conversation, and takes the private one" \
+	go test -count=1 -run 'TestTheMergeRefusesAPublicEventInAPrivateThread' ./internal/store
+check "the terminal client draws a private message as one, and a room message as one" \
+	go test -count=1 -run 'TestAPrivateMessageIsDrawnAsOne|TestThePrivateEntryIsInTheListAndIsNotWhereItOpens' ./internal/tui
+
 # `flowy inbox --as NAME` - the thing that replaces the shell loop everybody
 # reimplemented. Checked as a process, because what it exits with and which
 # stream it writes on are the contract.
@@ -6704,6 +7016,8 @@ check "unknown api paths are still 404" unknown_api_paths_still_404
 check "the console reads the room over the api and renders it" console_renders_the_room
 check "GET /inbox is the app, and so is a task link" serves_the_inbox_route
 check "the console renders B's inbox with the task in it" console_renders_the_inbox
+check "the console shows a direct message to its addressee and not to a third principal" \
+	console_renders_direct_messages
 
 say "database, as a second client"
 check "psql sees the seeded tokens" psql_counts \

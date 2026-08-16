@@ -4,6 +4,7 @@ import { Shell } from "@/components/Shell";
 import { Activity } from "@/routes/Activity";
 import { ArtifactView } from "@/routes/ArtifactView";
 import { ChatRoom } from "@/routes/ChatRoom";
+import { Direct } from "@/routes/Direct";
 import { Home } from "@/routes/Home";
 import { Inbox } from "@/routes/Inbox";
 import { Metrics } from "@/routes/Metrics";
@@ -25,6 +26,12 @@ export default function App() {
       <Routes>
         <Route path="/" element={<Home />} />
         <Route path="/chat/:room" element={<ChatRoom />} />
+        {/*
+          Not /chat/dm. A direct message is not in a room, so there is no room
+          name to put in the path - and a path that looked like a room's would
+          be the first place somebody assumed a room could be private.
+        */}
+        <Route path="/direct" element={<Direct />} />
         <Route path="/inbox" element={<Inbox />} />
         <Route path="/reports" element={<Reports />} />
         <Route path="/worklog" element={<Worklog />} />

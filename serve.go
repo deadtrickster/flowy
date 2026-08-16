@@ -247,6 +247,9 @@ var apiRoutes = []string{
 	"POST /api/chat/{room}/todo",
 	"GET /api/proposals",
 	"GET /api/proposal/{id}",
+	"POST /api/dm/{to}",
+	"GET /api/dm",
+	"GET /api/dm/wait",
 	"GET /api/inbox",
 	"GET /api/inbox/tasks",
 	"GET /api/inbox/wait",
@@ -345,6 +348,13 @@ func (s *server) routes() http.Handler {
 	// change.
 	api.HandleFunc("GET /api/proposals", s.handleListProposals)
 	api.HandleFunc("GET /api/proposal/{id}", s.handleGetProposal)
+	// Direct messages. They are chat events and they are read back through the
+	// same filter every other event is, so these are three narrowings of reads
+	// that already existed rather than a private surface of their own - the
+	// privacy is on the event, in EventFilterSQL, and not on this route.
+	api.HandleFunc("POST /api/dm/{to}", s.handleDMSay)
+	api.HandleFunc("GET /api/dm", s.handleDMRead)
+	api.HandleFunc("GET /api/dm/wait", s.handleDMWait)
 	api.HandleFunc("GET /api/inbox", s.handleInbox)
 	// The waiter: a long poll over the inbox, and the two calls that keep its
 	// place. The place is on the node rather than in a file beside the client,

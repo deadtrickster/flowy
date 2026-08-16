@@ -18,7 +18,7 @@ interface Props {
    * into that message's body. The reply then quotes exactly those bytes,
    * because the node cuts the quote out of the source with the same offsets.
    */
-  onCite: (event: FlowyEvent, start: number, end: number) => void;
+  onCite?: (event: FlowyEvent, start: number, end: number) => void;
   /** me is the principal reading, so a message for them can say so. */
   me?: { user?: string; agent?: string };
 }
@@ -106,11 +106,23 @@ export function MessageList({ events, selected, onSelect, onCite, me }: Props) {
               className={cn(
                 "rounded-lg border border-border bg-card p-3 text-left transition-colors hover:border-primary/40",
                 forMe && "border-primary/50 bg-primary/5",
+                // A private message is drawn as a different thing, not as a
+                // room message with a note on it. The dashed edge is what a
+                // reader takes in without reading, and the badge below says
+                // which of the two it is in words - a direct message that
+                // looked identical to a room message would be a trap for
+                // whoever writes the next one.
+                event.private && "border-amber-500/60 border-dashed bg-amber-500/5",
                 selected?.id === event.id && "border-primary/70 ring-1 ring-primary/40",
               )}
             >
               <div className="flex items-center gap-2 pb-1">
                 <Badge variant={agent ? "agent" : "human"}>{agent ? "agent" : "human"}</Badge>
+                {event.private ? (
+                  <Badge variant="outline" title="only the sender and the addressee can read this">
+                    private
+                  </Badge>
+                ) : null}
                 {/*
                  * Who said it. The name the node recorded when it was said,
                  * and the tail of the actor id when the message has none - a
@@ -164,7 +176,7 @@ export function MessageList({ events, selected, onSelect, onCite, me }: Props) {
                 className="select-text whitespace-pre-wrap break-words text-sm"
                 onMouseUp={(released) => {
                   const span = selectedSpan(released.currentTarget, event.body);
-                  if (span) onCite(event, span.start, span.end);
+                  if (span && onCite) onCite(event, span.start, span.end);
                 }}
               >
                 {splitBody(event.body, event.meta?.mentions).map((run) =>

@@ -767,7 +767,8 @@ In the order they are applied:
 
 Events are narrowed by `EventFilterSQL`, which asks two questions and takes both
 answers. First, does the reader reach the event's project at all: an event with
-no project belongs to whoever wrote it, an event in your project is yours, a
+no project belongs to whoever wrote it **and to the one principal it names, when
+it is a direct message** (see below), an event in your project is yours, a
 project-wide grant along the edge reaches it, and a **share of the artifact
 reaches the events about that artifact**. Second, if the event names an
 artifact, does the reader reach that artifact - and that test is
@@ -930,7 +931,10 @@ and deletes are tombstones.
 | `GET /api/chat/{room}/wait?cursor=&window=` | long poll: blocks up to 25s for events after `cursor`, returns them or an empty list |
 | `POST /api/chat/{room}/todo` | raise a todo out of this room. Body: `title` (required), `body?`, `status?`, `message?` - the message it came out of. Writes the item and one chat message naming it, under one clock reading. Returns `{item, event}`. `404` on a `message` you cannot read |
 | `POST /api/chat/{room}/todo/{id}/assignee` | say who is carrying one of this room's todos. Body: `assignee` - a handle of at most 64 characters on one line, and an empty one says nobody. Moves the field and says so in the room as an ordinary chat message, under one clock reading, in the thread the todo was raised out of. Returns `{item, event}`. Whoever can read the todo may set it; a todo that is not in this room, or is out of reach, or is not a todo, is `404`/`400` |
-| `GET /api/inbox?since=&room=` | chat you may see and did not write, across rooms |
+| `POST /api/dm/{to}` | send a direct message: no project, no room, read by you and `{to}` and by nobody else. Body: `body` (required), `thread?`, `parents?`. A reply may only name somebody already in the thread |
+| `GET /api/dm?since=&thread=` | `{"private":true,"events":[...],"since","cursor"}` - every direct message you are a party to. Not affected by `?scope=all` |
+| `GET /api/dm/wait?cursor=&window=&thread=` | long poll over the private log, same window and contract as the room watcher |
+| `GET /api/inbox?since=&room=` | chat you may see and did not write, across rooms - direct messages included, because that is what an inbox is |
 | `GET /api/inbox/wait?as=&window=&room=&addressed=&kind=` | long poll the inbox for one named waiter, from the place the node holds for it. Returns `{reader, events, skipped, since, cursor}` and moves nothing. `kind` is `tracked` or `forked` - what this listener can do when it hears something - and anything else, including saying nothing, is recorded as `unknown`. `404` names the waiters that do exist |
 | `GET /api/presence` | the two rosters a room view wants: `members`, who has spoken in what you may read, and `listeners`, who holds a reader in your project with `attached`, `last_poll_at` and `waiter_kind`. The node sees polling, not processes, and the fields say only that |
 | `POST /api/inbox/ack` | `{as, cursor, delivered}` - the waiter has finished with everything up to `cursor`. Forwards only |
@@ -1049,8 +1053,10 @@ who is not the addressee sees it in full. What it changes is what a reader is
 **told** - a console draws it, the TUI marks it `->you`, a waiter can be armed
 to wake only for it - and never what a reader may **see**. If addressing ever
 narrowed or widened a read there would be two places a read is decided, which is
-the one thing this node does not have room for. There is no private message
-here: something that must not be readable by the room does not go in the room.
+the one thing this node does not have room for. Something that must not be
+readable by the room does not go in the room: that is a direct message, and it
+is a different row - no project and no room at all - rather than a room message
+with a flag on it. See below.
 
 **It is inside the signature**, and it had to be. The addressee is what a
 reader's client decides to interrupt them for, so a field a peer could rewrite
@@ -1138,6 +1144,106 @@ the message cites the whole of it - one action either way, no form - and the
 citation is drawn above the reply and above the box, attributed, in the cited
 speaker's colour. The row is a div with a button's role and keyboard handling
 rather than a `<button>`, because text inside a button cannot be selected.
+
+### Direct messages, and where the privacy lives
+
+**Privacy is on the event, not on the room.** A direct message is a chat event
+with **no project, no room, and an addressee** - nothing else - and it is read by
+its author and by the principal it names. There is no DM room, no member table
+and no per-room scope: a room has never had a permission of its own, nothing in
+the filter reads the `room` column, and a room that decided a read would be the
+first per-room scope this fabric has ever had.
+
+It rides the one branch of `EventFilterSQL` that already excludes everybody:
+
+```sql
+CASE WHEN e.project IS NULL
+     THEN e.actor = <user> OR e.actor = <agent>
+       OR (<the DM shape> AND (e.addressee = <user> OR e.addressee = <agent>))
+     ELSE ...
+```
+
+A projectless event was already its author's alone. All this does is widen "the
+author" to "the author and the one principal they named", in the branch that
+already restricts - so a projectless event stays invisible to every project
+reader **by construction** rather than by every future branch remembering to
+exclude it. When the `CASE` takes this branch the grant tests below it are not
+merely false, they are unreachable.
+
+The shape is three columns and each of them rules something out:
+
+| part | why |
+| --- | --- |
+| `project IS NULL` | it is what keeps it off every project read |
+| no `room` | no row written before this feature changes who reads it: a projectless principal saying something addressed **in a room** wrote such a row already, and it is still theirs alone |
+| `type = 'chat'` | a status move with an addressee is not a conversation, and the widening is only sound where the addressee means "this is for you" |
+
+All three are inside the signature - `sign.CanonicalEvent` covers `project`,
+`room`, `type` and `addressee` - so a relay cannot turn a room message into a
+private one or a private one into a room message without producing bytes that do
+not verify.
+
+**Two rules the read filter cannot enforce**, because each row it judges names
+exactly one addressee and looks perfectly private on its own:
+
+- **A reply does not widen the conversation.** The party set is fixed by the
+  first message: every message after it has to name somebody already in the
+  thread, so the set a person was told about when they started is the set it
+  still has when it ends. A thread with three people in it and two on every row
+  would pass every read test there is.
+- **A private message joins a private thread and nothing else.** Not a handoff
+  thread - the tasks clause is OR-ed onto the **end** of the whole predicate and
+  **adds** readers, so a "private" message dropped into one would be read by the
+  assigner, the assignee and the delegated agent. And not a thread with a room
+  message in it. The parents are held to the same rule: a direct message
+  descends from a direct message or from nothing, which is what makes "this
+  thread is private" a property of the whole thread rather than of each row.
+
+And the mirror of the second, at every public door: a **room** say, `POST
+/api/events` and the timeline's message box all refuse a thread that is a
+private conversation. A party writing into their own private thread through one
+of those would write a row carrying their home project - read by everybody in it,
+from a box that gave no sign of the difference.
+
+```sh
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"body":"between the two of us"}' 127.0.0.1:8787/api/dm/01J...
+curl -s -H "Authorization: Bearer $TOKEN" '127.0.0.1:8787/api/dm?since=0'
+curl -s -H "Authorization: Bearer $TOKEN" '127.0.0.1:8787/api/dm/wait?cursor=123'
+```
+
+The addressee is the path and not an optional field, because a private message
+with nobody to send it to is the one mistake here that would be quiet. A name
+nothing answers to is refused at the door: a room message to a typo is still
+said in the room and somebody reads it, and a private message to a typo is read
+by nobody at all, for ever, while the sender is told it went.
+
+**A message an agent sends is the agent's.** The addressee is matched against the
+reader exactly the way the actor already is - the user id and the agent id, and
+nothing else - so the person an agent works for does not read the agent's
+private messages back from their own token, in the same way a projectless event
+written by an agent has never been readable by its user. Address a **person** to
+reach a person: an agent's token inherits its user's id, so a DM to a person is
+read by that person and by the agents acting for them, which is the pair this
+node has always treated as one reader.
+
+`?scope=all` is not a way in. Every other read honours the operator's window
+onto their own node; `GET /api/dm` is the one endpoint that would be reading
+over somebody's shoulder rather than operating, so it does not.
+
+**Every surface says so.** The terminal client carries `(direct)` at the top of
+the room list - it is not a room, and `rememberRooms` refuses to let one by that
+name shadow it - and marks every private row `*private ->who`, in the stream, in
+the thread pane and on the activity timeline. The console has a `/direct` page
+behind a padlock and draws a private message with a dashed edge and a `private`
+badge wherever messages are drawn, including the timeline. The marker is on the
+**row** and not once at the top of a pane, because the person reading is about to
+decide what to type next: a private message that looked identical to a public one
+would be a trap for whoever writes the next one, and nobody is harmed by being
+reminded that a room is a room.
+
+`flowy inbox` delivers them without knowing about them: a DM is a chat event the
+principal may read and did not write, which is what the inbox has always been.
 
 ### `flowy inbox` is the waiter, and the cursor is the node's
 
@@ -2723,6 +2829,45 @@ actually served:
 - the console, signed in with a real token against the live node, **fetches the
   room and renders it**: the same jsdom mount, pointed at the running server,
   waits for A's first message to appear on screen
+
+Then direct messages, and the check that decides whether the feature ships is
+the third one. "Both parties can read it" passes under a build where **everybody**
+can read it, so it is written as a control and never as the assertion:
+
+- A sends B a direct message: it comes back a `chat` event with no project, no
+  room, an addressee and `private: true`, and both A and B read it back through
+  `GET /api/dm` - B, who is in another project entirely, also has it in the inbox
+- **a third principal in the same project as the sender cannot read it.** The
+  operator is in `pa` with A, holds no grant that reaches it and is not named on
+  it. In the same check A says something in a room at the same moment and the
+  operator reads **that** - so a failure is about the message and not about the
+  operator having been left out of everything
+- and it is on none of that principal's surfaces: the room read, `GET
+  /api/events`, the inbox, the activity timeline's `?q=` - the one search in
+  this node that looks at what was **said** - `GET /api/search`, and the thread
+  read by id, which is how the tasks clause used to widen. The addressee's
+  timeline search finds it, marked `private`, in the same check
+- `?scope=all` does not hand it to the operator either
+- **a reply does not widen the conversation**: B answers A and stays in the
+  thread; B addressing the operator in that thread is `400` and writes no row;
+  the operator writing into it is `403`; and afterwards the operator still reads
+  nothing of it
+- no public door writes into a private conversation - a room say, `POST
+  /api/events` and `POST /api/activity` are all `400` on that thread, and the
+  three refusals write nothing
+- a direct message cannot join a **handoff** thread, which the task's parties
+  read through the clause that adds readers
+- a private message to a name nothing answers to is `400` and writes no row
+- **the project-scoped rooms are exactly as readable as they were**: the Phase 3
+  thread still reads back to A, the addressed `pa` message still reads to B
+  across the grant **and** to the operator who is not named on it, a room thread
+  still takes a room reply, and B still gets `404` on A's personal note
+- the same matrix inside the store, over readers and events at once, and the
+  terminal client's rendering: a private row says `*private ->who` and a room
+  row does not
+- the console paints the message on `/direct` for its addressee and **not** for
+  the third principal, who gets the same page, signed in, with the message
+  absent from it
 - A creates a bug in `pc`, which nobody holds a grant into, and B gets `404` on
   it. A assigns it to B, and in one response: the task names the artifact, the
   sender and the receiver; the grant names the artifact and B; the opening
