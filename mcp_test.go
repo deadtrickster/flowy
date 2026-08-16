@@ -3,10 +3,13 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/deadtrickster/flowy/internal/store"
 )
 
 // dispatch runs one request against a server with no database. Everything
@@ -198,6 +201,153 @@ func TestReportSurfaceIsListedAndDocumented(t *testing.T) {
 		if !strings.Contains(instructions, want) {
 			t.Errorf("the instructions never mention %q", want)
 		}
+	}
+}
+
+// The worklog rides the same registration, and an agent that never reads the
+// guide still has to be able to find it: the tool is listed, the write says
+// what it is for, and the short instructions name it. The writes themselves are
+// exercised against a real store and two principals by the gate.
+func TestWorklogSurfaceIsListedAndDocumented(t *testing.T) {
+	resp := dispatch(t, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
+	if resp == nil || resp.Error != nil {
+		t.Fatalf("tools/list failed: %+v", resp)
+	}
+	listed := map[string]tool{}
+	for _, tl := range resp.Result.(map[string]any)["tools"].([]tool) {
+		listed[tl.Name] = tl
+	}
+	for _, want := range []string{"worklog_append", "worklog_read"} {
+		if _, ok := listed[want]; !ok {
+			t.Errorf("tools/list does not offer %s", want)
+		}
+	}
+	// The two invariants, as far as a schema can carry them: an entry says what
+	// changed, and it names the work by id rather than describing it.
+	appendTool, ok := listed["worklog_append"]
+	if !ok {
+		t.Fatal("worklog_append is not listed")
+	}
+	props := appendTool.InputSchema["properties"].(map[string]any)
+	for _, field := range []string{"what", "next", "as_of", "refs"} {
+		if _, has := props[field]; !has {
+			t.Errorf("worklog_append schema has no %s field", field)
+		}
+	}
+	required, _ := appendTool.InputSchema["required"].([]string)
+	if len(required) != 1 || required[0] != "what" {
+		t.Errorf("worklog_append requires %v, want what alone", required)
+	}
+	if refs, _ := props["refs"].(map[string]any); refs["type"] != "array" {
+		t.Errorf("refs is %v, want a list of ids", refs["type"])
+	}
+	for _, want := range []string{"worklog_append", "worklog_read", "refs"} {
+		if !strings.Contains(instructions, want) {
+			t.Errorf("the instructions never mention %q", want)
+		}
+	}
+	// And the detail, which is where the detail goes.
+	for _, want := range []string{"worklog_read", "worklog_append", "chronology"} {
+		if !strings.Contains(guide, want) {
+			t.Errorf("the guide never mentions %q", want)
+		}
+	}
+}
+
+// What worklog_append refuses before it ever reaches the store. Each of these
+// is one of the surface's rules, and each answers rather than writing something
+// half-formed: the server here has no database at all, so a check that got past
+// them would panic instead of passing.
+func TestWorklogAppendRefusesWhatItCannotStamp(t *testing.T) {
+	m := &mcpServer{node: "test"}
+	ctx := context.Background()
+	seat := &store.Principal{UserID: "ua", AgentID: "aa", Project: "pa"}
+
+	// Every entry carries an actor, so a token that resolves to nobody has no
+	// entry to write.
+	if _, err := worklogAppend(ctx, m, &store.Principal{Project: "pa"},
+		json.RawMessage(`{"what":"did a thing"}`)); err == nil {
+		t.Error("a token with no user wrote a worklog entry")
+	}
+	if _, err := worklogAppend(ctx, m, seat, json.RawMessage(`{"next":"pick it up"}`)); err == nil {
+		t.Error("an entry with nothing to say about what changed was accepted")
+	}
+	if _, err := worklogAppend(ctx, m, seat, json.RawMessage(`{"what":"   "}`)); err == nil {
+		t.Error("an entry whose what is whitespace was accepted")
+	}
+
+	// An entry indexes what happened; a document belongs in a report and a fact
+	// in memory, referenced from here.
+	long, err := json.Marshal(map[string]string{"what": strings.Repeat("x", maxWorklogField+1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = worklogAppend(ctx, m, seat, long)
+	if err == nil || !strings.Contains(err.Error(), "report_write") {
+		t.Errorf("an oversize entry answered %v, want a refusal that says where it belongs", err)
+	}
+
+	// And the ceiling on refs, which is checked before the store is asked about
+	// any of them.
+	ids := make([]string, maxWorklogRefs+1)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("01H%027d", i)
+	}
+	many, err := json.Marshal(map[string]any{"what": "touched everything", "refs": ids})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := worklogAppend(ctx, m, seat, many); err == nil {
+		t.Errorf("an entry referencing %d artifacts was accepted", len(ids))
+	}
+}
+
+// An entry reads back as what was written, and an entry from a build that did
+// not write meta still reads as something rather than as a hole in the
+// chronology.
+func TestWorklogEntryReadsBackWhatWasWritten(t *testing.T) {
+	written := &store.Event{
+		ID: "01H", Type: worklogEventType, Actor: "aa", Body: "the body",
+		Meta: json.RawMessage(`{"actor_kind":"agent","actor_user":"ua",` +
+			`"what":"wired the gate","next":"run it from clean","as_of":"0e3b7f6",` +
+			`"refs":["01HREPORT"]}`),
+	}
+	got := entryOf(written)
+	if got.What != "wired the gate" || got.Next != "run it from clean" || got.AsOf != "0e3b7f6" {
+		t.Errorf("entry read back as %+v", got)
+	}
+	if len(got.Refs) != 1 || got.Refs[0] != "01HREPORT" {
+		t.Errorf("refs read back as %v", got.Refs)
+	}
+	if got.Actor != "aa" {
+		t.Errorf("the entry came back with actor %q, want the seat that wrote it", got.Actor)
+	}
+
+	bare := entryOf(&store.Event{ID: "01J", Type: worklogEventType, Actor: "ub", Body: "said only this"})
+	if bare.What != "said only this" {
+		t.Errorf("an entry with no meta read back as %q, want its body", bare.What)
+	}
+	if bare.Refs == nil {
+		t.Error("refs came back null, which a client has to special-case")
+	}
+}
+
+// The speaker survives an event whose meta is not all strings.
+//
+// A worklog entry carries its refs in meta as a list, and the timeline used to
+// decode meta into map[string]string and ignore the error - so one non-string
+// value dropped actor_kind and actor_user off the item, silently, and the
+// console showed the entry as if nobody had written it.
+func TestActivityItemKeepsTheSpeakerBesideAList(t *testing.T) {
+	item := itemOf(&store.Event{
+		ID: "01H", Type: worklogEventType, Actor: "aa",
+		Meta: json.RawMessage(`{"actor_kind":"agent","actor_user":"ua","refs":["01HBUG"]}`),
+	})
+	if item.ActorKind != "agent" || item.ActorUser != "ua" {
+		t.Errorf("the timeline lost the speaker: %+v", item)
+	}
+	if item.Kind != activityWorklog {
+		t.Errorf("a worklog entry shows on the timeline as %q, want %q", item.Kind, activityWorklog)
 	}
 }
 

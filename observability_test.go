@@ -78,6 +78,7 @@ func TestTimelineKinds(t *testing.T) {
 		turnEventType:       activityTurn,
 		logEventType:        activityLog,
 		steerEventType:      activitySteer,
+		worklogEventType:    activityWorklog,
 		taskEventType:       activityOther,
 		statusEventType:     activityOther,
 		"memory.write":      activityOther,
@@ -93,6 +94,22 @@ func TestTimelineKinds(t *testing.T) {
 			if mapped == minted {
 				t.Errorf("the timeline lets a client post %q, which the node mints", minted)
 			}
+		}
+	}
+	// The worklog is readable here and deliberately not postable. Its entries
+	// are the one kind on this timeline whose write validates arguments no event
+	// column carries - the artifact ids in refs, against the writer's own read
+	// filter - so a generic POST /api/activity that accepted the kind would be a
+	// second door onto the stream with none of the checks on the first.
+	if postableKinds[activityWorklog] != "" {
+		t.Error("a client may post a worklog entry over /api/activity, bypassing worklog_append")
+	}
+	if readableKinds[activityWorklog] != worklogEventType {
+		t.Error("the timeline cannot be narrowed to the worklog, so the kind is unreachable")
+	}
+	for kind, eventType := range postableKinds {
+		if readableKinds[kind] != eventType {
+			t.Errorf("kind %q may be posted and not read back", kind)
 		}
 	}
 }

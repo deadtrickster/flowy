@@ -510,6 +510,64 @@ func (d *DB) ReadArtifact(ctx context.Context, p *Principal, id string, scopeAll
 	return art, nil
 }
 
+// UnreadableArtifacts returns the ids that do not name an artifact this
+// principal may read - one that is not here, one that has been deleted, and one
+// that is here and out of reach, which are the same answer for the same reason
+// every filtered read gives it. Duplicates are collapsed and the caller's order
+// is kept, so a refusal names the first one they wrote.
+//
+// It is UnreadableParents for the other column: an id in a list somebody handed
+// over, checked through the read filter before it is stored as a reference. The
+// worklog is what wants it - an entry references the work it is about by
+// artifact id rather than describing it in prose, which is only an index into
+// the fabric if the writer could read what it points at. An id is a guess
+// anybody can make, and a reference to a row the writer cannot see is either a
+// dangling pointer or an assertion about somebody else's work.
+//
+// One query for the whole list, so a long list is not a query per id.
+func (d *DB) UnreadableArtifacts(ctx context.Context, p *Principal, ids []string) ([]string, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	if p == nil {
+		return ids, nil
+	}
+	a := &args{}
+	idsArg := a.next(pq.Array(ids))
+	filter := ArtifactFilterSQL(p, "ar", a, false)
+	rows, err := d.sql.QueryContext(ctx,
+		`SELECT ar.id FROM artifacts ar
+		  WHERE ar.id = ANY(`+idsArg+`) AND coalesce(ar.tombstone, false) = false AND `+filter,
+		a.vals...)
+	if err != nil {
+		return nil, fmt.Errorf("store: read artifact refs: %w", err)
+	}
+	defer rows.Close()
+
+	readable := map[string]bool{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("store: read artifact refs: %w", err)
+		}
+		readable[id] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: read artifact refs: %w", err)
+	}
+
+	var out []string
+	seen := map[string]bool{}
+	for _, id := range ids {
+		if readable[id] || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out, nil
+}
+
 // TombstoneArtifact marks an artifact deleted and bumps its clock, so the
 // delete orders after the writes it removes and can replicate as a row rather
 // than as an absence. It returns ErrNotFound when p cannot read the artifact.

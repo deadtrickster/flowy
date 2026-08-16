@@ -771,7 +771,7 @@ mcp_instructions_resource() {
 		return 1
 	fi
 	local word
-	for word in mem_write report_write personal; do
+	for word in mem_write report_write worklog_append personal; do
 		case "$from_tool" in
 		*"$word"*) ;;
 		*)
@@ -954,6 +954,132 @@ todos_open_and_done() {
 		"$(printf '%s' "$TOOL_JSON" | jq "[.items[] | select(.id == \"$todo\")] | length")" 0 || return 1
 	remember MEM_TODO "$todo"
 	printf 'todo %s: outstanding, then done, then out of the list\n' "$todo"
+}
+
+# --------------------------------------------------------------- the worklog
+#
+# The worklog is events rather than a new artifact type: an append-only
+# per-project stream, which is what the event DAG already is. So what these
+# checks assert is not storage, it is the two invariants the surface exists to
+# hold - every entry carries the seat that wrote it, and an entry references
+# work by artifact id that its author could read - plus the read shape, which is
+# recent-N newest first, because that is the read an agent picking up a seat
+# does.
+
+# wl_args - the arguments of one entry, built with jq so ids interpolate
+# without hand-quoting JSON inside a shell string.
+wl_args() {
+	local what=$1 next=${2-} as_of=${3-} ref=${4-}
+	jq -nc --arg w "$what" --arg n "$next" --arg a "$as_of" --arg r "$ref" \
+		'{what: $w} + (if $n == "" then {} else {next: $n} end)
+		           + (if $a == "" then {} else {as_of: $a} end)
+		           + (if $r == "" then {} else {refs: [$r]} end)'
+}
+
+# Every entry carries an actor, and the actor is the token's: an agent posts as
+# itself and a person as themselves, exactly as a chat message does. There is no
+# actor argument, so an entry cannot be put in another seat's mouth.
+an_entry_carries_the_seat_that_wrote_it() {
+	recall
+	local args
+	args="$(wl_args "wired the quibblewrench into the lexer" \
+		"the continuation case is still open" "0e3b7f6" "$MEM_SHARED")" || return 1
+	want_tool worklog_append "$TOKEN_A_AGENT" "$args" || return 1
+	want_eq "the actor is the agent, not the person behind it" \
+		"$(tv .entry.actor)" "$AGENT_A" || return 1
+	want_eq "what changed" "$(tv .entry.what)" "wired the quibblewrench into the lexer" || return 1
+	want_eq "what is next" "$(tv .entry.next)" "the continuation case is still open" || return 1
+	want_eq "what it is true of" "$(tv .entry.as_of)" 0e3b7f6 || return 1
+	want_eq "the work it is about, by id" "$(tv '.entry.refs[0]')" "$MEM_SHARED" || return 1
+	want_eq "the entry is in the project" "$(tv .entry.project)" pa || return 1
+	if [ "$(tv .entry.seq_hlc)" -le 0 ]; then
+		printf 'the entry came back with seq_hlc %s, want a stamped clock\n' "$(tv .entry.seq_hlc)" >&2
+		return 1
+	fi
+	local entry
+	entry="$(tv .entry.id)"
+	remember WORKLOG_AGENT "$entry"
+
+	args="$(wl_args "read the handoff and picked the parser back up")" || return 1
+	want_tool worklog_append "$TOKEN_A" "$args" || return 1
+	want_eq "a person's entry is the person's" "$(tv .entry.actor)" "$USER_A" || return 1
+	printf 'entry %s by agent %s, and one by user %s\n' \
+		"$entry" "$AGENT_A" "$USER_A"
+}
+
+# The refs invariant, which is what keeps the worklog an index into the fabric
+# rather than a second copy of it: an id is checked through the writer's own
+# read filter before it is stored. A's personal memory is the floor, so B cannot
+# reference it however many grants B holds - and the refusal is the same words
+# an unreadable artifact gets everywhere else.
+an_entry_cannot_reference_what_its_author_cannot_read() {
+	recall
+	local args
+	args="$(wl_args "claiming to have worked on something of A's" "" "" "$MEM_PERSONAL")" || return 1
+	want_tool_fails worklog_append "$TOKEN_B" "$args" "is not an artifact you can read" || return 1
+
+	# And the other half: the grant pb holds on pa is exactly what makes A's
+	# shared item referenceable, so this is a read-filter check and not a
+	# same-project one.
+	args="$(wl_args "picked up the parser handoff" "finish the continuations" "" "$MEM_SHARED")" || return 1
+	want_tool worklog_append "$TOKEN_B" "$args" || return 1
+	want_eq "B's entry references A's shared item" "$(tv '.entry.refs[0]')" "$MEM_SHARED" || return 1
+	want_eq "and it is B's own entry" "$(tv .entry.actor)" "$USER_B" || return 1
+	printf "B cannot reference A's personal item and can reference the shared one\n"
+}
+
+# An entry says what changed. Without that it is a timestamp.
+an_entry_says_what_changed() {
+	recall
+	want_tool_fails worklog_append "$TOKEN_A" '{"next": "somebody carry on"}' \
+		"what is required" || return 1
+}
+
+# The read shape: the most recent entries, newest first, which is the handoff
+# read. Not a query language - an agent picking up a seat wants what happened
+# lately, and search of the whole corpus is mem_search's job.
+the_worklog_reads_recent_first() {
+	recall
+	local shift args
+	for shift in "shift one" "shift two" "shift three"; do
+		args="$(wl_args "$shift")" || return 1
+		want_tool worklog_append "$TOKEN_A" "$args" || return 1
+	done
+
+	want_tool worklog_read "$TOKEN_A" '{"limit": 2}' || return 1
+	want_eq "the limit is honoured" "$(tv .count)" 2 || return 1
+	want_eq "the newest entry is first" "$(tv '.entries[0].what')" "shift three" || return 1
+	want_eq "then the one before it" "$(tv '.entries[1].what')" "shift two" || return 1
+
+	# And the whole stream, which by now holds both seats' entries - the worklog
+	# is the project's and not one agent's.
+	want_tool worklog_read "$TOKEN_A" '{"limit": 50}' || return 1
+	want_eq "the agent's entry is in it" \
+		"$(printf '%s' "$TOOL_JSON" | jq "[.entries[] | select(.id == \"$WORKLOG_AGENT\")] | length")" 1 || return 1
+	printf 'worklog_read: %s entries, newest first\n' "$(tv .count)"
+}
+
+# Entries are events, so they are on the timeline with no new UI - and they are
+# read-only there. POST /api/activity would be a second door onto the stream
+# that skips the refs check on the first one, so the kind is readable and not
+# postable, and the node says so rather than quietly writing an entry with no
+# refs checked.
+entries_are_on_the_timeline_and_not_postable_onto_it() {
+	recall
+	api GET "$TOKEN_A" '/api/activity?kind=worklog&q=quibblewrench' || return 1
+	want_eq "status" "$API_STATUS" 200 || return 1
+	want_eq "the entry is on the timeline once" \
+		"$(printf '%s' "$API_BODY" | jq "[.items[] | select(.id == \"$WORKLOG_AGENT\")] | length")" 1 || return 1
+	want_eq "it shows as a worklog entry" \
+		"$(jqv '.items[0].kind')" worklog || return 1
+	want_eq "and as the agent that wrote it" "$(jqv '.items[0].actor')" "$AGENT_A" || return 1
+	want_eq "with the speaker the node stamped beside the refs" \
+		"$(jqv '.items[0].actor_kind')" agent || return 1
+
+	want_status 400 POST "$TOKEN_A" /api/activity \
+		'{"kind": "worklog", "room": "general", "body": "an entry by the back door"}' || return 1
+	printf 'the entry is on the timeline, and /api/activity will not post one: %s\n' \
+		"$(jqv .error)"
 }
 
 # The other transport, and the same handlers behind it: a client that launches
@@ -3885,6 +4011,15 @@ check "and finds it by search, and in its todos" b_agent_searches_shared_memory
 
 say "todos"
 check "a todo is outstanding until it is done" todos_open_and_done
+
+say "the worklog"
+check "an entry carries the seat that wrote it" an_entry_carries_the_seat_that_wrote_it
+check "an entry cannot reference an artifact its author cannot read" \
+	an_entry_cannot_reference_what_its_author_cannot_read
+check "an entry says what changed, or it is not one" an_entry_says_what_changed
+check "the read is the recent entries, newest first" the_worklog_reads_recent_first
+check "entries are on the timeline, and cannot be posted onto it" \
+	entries_are_on_the_timeline_and_not_postable_onto_it
 
 say "the stdio transport"
 check "flowy mcp speaks JSON-RPC over pipes" stdio_transport

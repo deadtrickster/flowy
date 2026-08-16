@@ -179,6 +179,41 @@ type EventQuery struct {
 
 func (q EventQuery) limit() int { return clampLimit(q.Limit) }
 
+// narrow appends the caller's own filters - the ones that are about what they
+// asked for rather than what they may see, which is the permission filter this
+// is ANDed with and never a substitute for it. The cursor is not in here: it is
+// the one clause the two readers below disagree about, because one pages forward
+// through the log and the other looks back from the end of it.
+func (q EventQuery) narrow(a *args, alias string) string {
+	where := ""
+	if q.Thread != "" {
+		where += " AND " + alias + ".thread = " + a.next(q.Thread)
+	}
+	if q.Room != "" {
+		where += " AND " + alias + ".room = " + a.next(q.Room)
+	}
+	if q.Type != "" {
+		where += " AND " + alias + ".type = " + a.next(q.Type)
+	}
+	if len(q.Types) > 0 {
+		holders := make([]string, 0, len(q.Types))
+		for _, t := range q.Types {
+			holders = append(holders, a.next(t))
+		}
+		where += " AND " + alias + ".type IN (" + strings.Join(holders, ", ") + ")"
+	}
+	if q.Contains != "" {
+		where += " AND lower(coalesce(" + alias + ".body, '')) LIKE lower(" +
+			a.next("%"+likeEscaped(q.Contains)+"%") + ")"
+	}
+	for _, actor := range q.NotActors {
+		if actor != "" {
+			where += " AND coalesce(" + alias + ".actor, '') <> " + a.next(actor)
+		}
+	}
+	return where
+}
+
 // ListEvents returns the events p may read, in log order. The log is
 // append-only, so this is the only read it needs: ordering by seq_hlc then id
 // is total, and it agrees with the order the events were appended in.
@@ -196,34 +231,9 @@ func (d *DB) ListEvents(ctx context.Context, p *Principal, q EventQuery) ([]*Eve
 	return pageOf(ctx, d, "list events", limit,
 		func(a *args, tie *tieAt, lim int) string {
 			filter := EventFilterSQL(p, "e", a, q.ScopeAll)
-			where := ""
-			if q.Thread != "" {
-				where += " AND e.thread = " + a.next(q.Thread)
-			}
-			if q.Room != "" {
-				where += " AND e.room = " + a.next(q.Room)
-			}
-			if q.Type != "" {
-				where += " AND e.type = " + a.next(q.Type)
-			}
-			if len(q.Types) > 0 {
-				holders := make([]string, 0, len(q.Types))
-				for _, t := range q.Types {
-					holders = append(holders, a.next(t))
-				}
-				where += " AND e.type IN (" + strings.Join(holders, ", ") + ")"
-			}
-			if q.Contains != "" {
-				where += " AND lower(coalesce(e.body, '')) LIKE lower(" +
-					a.next("%"+likeEscaped(q.Contains)+"%") + ")"
-			}
+			where := q.narrow(a, "e")
 			if q.Since > 0 || tie != nil {
 				where += " AND " + above("e.seq_hlc", "e.id", q.Since, tie, a)
-			}
-			for _, actor := range q.NotActors {
-				if actor != "" {
-					where += " AND coalesce(e.actor, '') <> " + a.next(actor)
-				}
 			}
 			return `SELECT ` + eventColumns + `
 	            FROM events e
@@ -232,4 +242,34 @@ func (d *DB) ListEvents(ctx context.Context, p *Principal, q EventQuery) ([]*Eve
 		},
 		scanEvent,
 		func(e *Event) (int64, string) { return e.SeqHLC, e.ID })
+}
+
+// RecentEvents is the newest events p may read, newest first.
+//
+// It is the read a fresh seat does: what happened lately, not everything that
+// ever happened. ListEvents cannot answer that with a limit, because it pages
+// forward from a cursor - a limit there takes the oldest rows above the cursor,
+// which is the opposite end of the log from the one recent means.
+//
+// It hands back no cursor, deliberately. A descending page cuts at its old end,
+// and two events written in the same instant on two nodes carry the same
+// seq_hlc, so a cursor taken from the last row of one of these pages would step
+// over whatever shared that reading and was left behind - the rows are not late,
+// they never arrive. A bounded look-back has no use for one; a caller that wants
+// to page the log forwards wants ListEvents, which is built not to cut a reading
+// in half.
+func (d *DB) RecentEvents(ctx context.Context, p *Principal, q EventQuery) ([]*Event, error) {
+	ctx, span := otel.Start(ctx, otel.KindQuery, "events.recent")
+	defer span.End()
+	return readPage(ctx, d, "recent events", func(a *args) string {
+		filter := EventFilterSQL(p, "e", a, q.ScopeAll)
+		where := q.narrow(a, "e")
+		if q.Since > 0 {
+			where += " AND e.seq_hlc > " + a.next(q.Since)
+		}
+		return `SELECT ` + eventColumns + `
+	            FROM events e
+	           WHERE ` + filter + where + `
+	           ORDER BY e.seq_hlc DESC, e.id DESC` + limitSQL(a, q.limit())
+	}, scanEvent)
 }

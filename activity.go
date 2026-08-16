@@ -32,16 +32,17 @@ import (
 // forge bridge did. They are not hidden, because a timeline that quietly omits
 // rows is a timeline that lies about what happened.
 const (
-	activityTurn  = "turn"
-	activityLog   = "log"
-	activityChat  = "chat"
-	activitySteer = "steer"
-	activityOther = "activity"
+	activityTurn    = "turn"
+	activityLog     = "log"
+	activityChat    = "chat"
+	activitySteer   = "steer"
+	activityWorklog = "worklog"
+	activityOther   = "activity"
 )
 
 // turnEventType, logEventType and steerEventType are what the three harness
 // kinds are written as in the log. chat is store.ChatEventType, which was here
-// already.
+// already, and worklogEventType is what worklog_append writes.
 const (
 	turnEventType  = "turn"
 	logEventType   = "run.log"
@@ -54,6 +55,7 @@ var activityKinds = map[string]string{
 	turnEventType:       activityTurn,
 	logEventType:        activityLog,
 	steerEventType:      activitySteer,
+	worklogEventType:    activityWorklog,
 }
 
 // postableKinds are what a client may post into the timeline, and the event
@@ -70,6 +72,27 @@ var postableKinds = map[string]string{
 	activityLog:   logEventType,
 	activitySteer: steerEventType,
 }
+
+// readableKinds are what a read of the timeline may be narrowed to: everything
+// a client may post, plus the kinds this node mints for itself that a reader
+// still wants to single out.
+//
+// The two lists are not the same list, and the worklog is why. worklog_append
+// checks every artifact id an entry references against the writer's own read
+// filter, so an entry cannot point at work its author could not see; POST
+// /api/activity has no such check and could not have one, because the refs are
+// the worklog verb's argument and not a column on an event. Letting a client
+// post the kind here would be a second door onto the same stream that skips the
+// check on the first, which is exactly the shape this fabric refuses elsewhere.
+// Reading is the other direction and opens nothing: the filter narrows what
+// comes back, it does not widen it.
+var readableKinds = func() map[string]string {
+	out := map[string]string{activityWorklog: worklogEventType}
+	for kind, eventType := range postableKinds {
+		out[kind] = eventType
+	}
+	return out
+}()
 
 // kindOfEvent is what the timeline shows an event as.
 func kindOfEvent(e *store.Event) string {
@@ -126,12 +149,12 @@ func (s *server) handleActivity(w http.ResponseWriter, r *http.Request) {
 		if kind == "" {
 			continue
 		}
-		// A kind that is not one of the four narrows to nothing rather than to
+		// A kind that is not one of them narrows to nothing rather than to
 		// everything: a filter nobody implements must not quietly widen a read.
-		eventType, ok := postableKinds[kind]
+		eventType, ok := readableKinds[kind]
 		if !ok {
 			writeJSON(w, http.StatusBadRequest,
-				errorBody("kind must be one of "+strings.Join(sortedKinds(), ", ")))
+				errorBody("kind must be one of "+strings.Join(sortedReadKinds(), ", ")))
 			return
 		}
 		types = append(types, eventType)
@@ -179,13 +202,33 @@ func itemOf(e *store.Event) activityItem {
 	// The speaker, as the node stamped it. It is read off meta rather than
 	// guessed from the actor id, because that is where every other reader of an
 	// event gets it and two ideas about who is talking is one too many.
-	var fields map[string]string
+	//
+	// The decode is into raw messages and not into map[string]string, because
+	// meta is not all strings: a worklog entry carries its refs there as a list,
+	// and one non-string value used to fail the whole unmarshal and drop the
+	// speaker off every event that had one - silently, since the error was
+	// ignored on the reasonable-looking grounds that meta is optional.
+	var fields map[string]json.RawMessage
 	if len(e.Meta) > 0 {
 		if err := json.Unmarshal(e.Meta, &fields); err == nil {
-			item.ActorKind, item.ActorUser = fields["actor_kind"], fields["actor_user"]
+			item.ActorKind, item.ActorUser = metaString(fields, "actor_kind"), metaString(fields, "actor_user")
 		}
 	}
 	return item
+}
+
+// metaString reads one string out of a decoded meta object, and answers "" for
+// a key that is absent or is not a string.
+func metaString(fields map[string]json.RawMessage, key string) string {
+	raw, ok := fields[key]
+	if !ok {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return ""
+	}
+	return s
 }
 
 // activityPost is what posting into the timeline takes: what to say, and where.
@@ -327,9 +370,13 @@ func withTrace(meta json.RawMessage, traceID string) json.RawMessage {
 	return out
 }
 
-func sortedKinds() []string {
-	out := make([]string, 0, len(postableKinds))
-	for kind := range postableKinds {
+func sortedKinds() []string { return sortedNames(postableKinds) }
+
+func sortedReadKinds() []string { return sortedNames(readableKinds) }
+
+func sortedNames(kinds map[string]string) []string {
+	out := make([]string, 0, len(kinds))
+	for kind := range kinds {
 		out = append(out, kind)
 	}
 	sort.Strings(out)

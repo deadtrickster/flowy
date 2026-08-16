@@ -407,6 +407,60 @@ a create with a caller-chosen id: an agent that guessed an id would otherwise
 overwrite a memory it was never allowed to see. Ids for new items are minted by
 the node.
 
+### The worklog
+
+**What the last few seats did, and where they stopped.** An agent picking up
+work on a repository had to recover that by reading 2,581 lines of another
+agent's session transcript off disk - which is how the gate is run, learned from
+a log of somebody typing it. The worklog is what should have been there instead:
+a fresh seat reads the recent entries, follows the ids, and never opens a
+transcript.
+
+| tool | arguments | what it does |
+| --- | --- | --- |
+| `worklog_append` | `what, next?, as_of?, refs?` | append one entry to this project's stream |
+| `worklog_read` | `limit?` | the most recent entries you may read, newest first, default 20 |
+
+**It is events, not a new artifact type**, and that decision is the shape of
+everything else here. An append-only per-project stream is what the event DAG
+already is: two seats appending at once produce two rows and no conflict, and
+the log's cursor, its permission filter and its replication carry the worklog
+with no second copy of any of them. A worklog *artifact* would be one document
+that concurrent seats edit, which is the two-doors problem the reports surface
+already refused once.
+
+Two invariants, held by the write rather than by a convention:
+
+- **Every entry carries an actor** - the token's, an agent as itself and a
+  person as themselves, exactly as a chat message is attributed. There is no
+  actor argument, so an entry cannot be put in another seat's mouth, and "which
+  seat wrote this" is the first thing the next one asks.
+- **Entries reference artifacts by id, never by prose.** `refs` is a list of
+  artifact ids, and each one is checked through the writer's own read filter
+  before the entry is written - the same check `parents` gets on a message, for
+  the same reason, an id being a guess anybody can make. That is what keeps the
+  worklog an index into the fabric rather than a second, staler copy of it: the
+  document goes in a report, the fact goes in memory, and the entry points at
+  both.
+
+An entry says what changed and what is next, as of a commit, version or run id -
+`as_of`, persisted the way `report_write` persists it. There is no id argument
+and no update: something that turned out to be wrong is corrected by the next
+entry saying so, because a chronology that can be rewritten is not one.
+
+**The worklog and memory are different species and are not merged.** Memory is
+durable revisable facts - one row per fact, edited in place as it changes. The
+worklog is chronological continuity - moments, accumulating. Same store, same
+permission filter, two read shapes, and the questions they answer are "what is
+true" against "what happened lately".
+
+Entries are events, so they are on the activity timeline, in the console's
+activity view and in the TUI's with no new UI, as kind `worklog`. The timeline
+can be **narrowed** to them and cannot **post** one: `POST /api/activity` takes
+no `refs` and could not check them, so accepting the kind there would be a
+second door onto the stream that skips the check on the first. Reading narrows,
+which opens nothing.
+
 ### Connecting a client
 
 Claude Code, opencode and anything else that launches a server as a subprocess:
@@ -712,8 +766,8 @@ and deletes are tombstones.
 | `POST /api/sync/push` | merge a peer's delta: upsert by id, append-only events, last-writer-wins by `hlc` and `node`. Rows the pushing principal could not have written are refused and counted |
 | `GET /api/peers` | replication bookmarks and their cursors; the operator only |
 | `GET /api/metrics?scope=all` | the six metric groups, filtered to this principal; `scope=all` is the node and is the operator's alone. Every group says whether it was measured, and why not when it was not |
-| `GET /api/activity?q=&kind=&room=&thread=&since=` | the timeline: turns, run logs, chat and steers this token may read, in log order, with a cursor |
-| `POST /api/activity` | post into it. Body: `kind` (`chat`\|`turn`\|`log`\|`steer`), `body`, and `room` and/or `thread`. Same three gates as `say`: the thread, the parents and the artifact all have to be yours to name |
+| `GET /api/activity?q=&kind=&room=&thread=&since=` | the timeline: turns, run logs, chat, steers and worklog entries this token may read, in log order, with a cursor |
+| `POST /api/activity` | post into it. Body: `kind` (`chat`\|`turn`\|`log`\|`steer` - `worklog` reads and does not post), `body`, and `room` and/or `thread`. Same three gates as `say`: the thread, the parents and the artifact all have to be yours to name |
 | `GET /api/traces?since=&limit=` | recent traces this token may read, one summary each |
 | `GET /api/trace/{id}` | one trace, its spans in start order, and the nodes that recorded them |
 | `GET /api/forge` | which forge this node speaks to, why, and which CLIs it can see |
@@ -1633,9 +1687,9 @@ The result is one trace id in two databases, and `flowy traces --trace <id>
 
 ### The activity timeline
 
-`GET /api/activity` is every turn, run log line, chat message and steer, in one
-order, searchable. They are four kinds of the same event log - `turn`,
-`run.log`, `chat`, `steer` - so the timeline is one read with the event filter
+`GET /api/activity` is every turn, run log line, chat message, steer and worklog
+entry, in one order, searchable. They are five kinds of the same event log -
+`turn`, `run.log`, `chat`, `steer`, `worklog` - so the timeline is one read with the event filter
 in its `WHERE` clause: a run in another project is not on it, a personal item is
 on nobody's but its owner's, and the thread of a handoff is on the timeline of
 the two people it is between. Anything else in the log - a status move, a task
@@ -1648,7 +1702,9 @@ a run's thread, or into a subagent's branch of one, through the same three gates
 `POST /api/chat/{room}/say` keeps. The kinds a client may post are the four; a
 `status` or a `task` event is a claim this node makes by doing the thing, and a
 timeline that let a client write one would be a timeline whose entries mean
-nothing.
+nothing. A worklog entry is the same answer for a different reason: it is
+readable here and written with `worklog_append`, which checks the artifact ids
+it references, and this endpoint has no `refs` to check.
 
 ### The tools an agent gets
 
@@ -1957,6 +2013,19 @@ Then Phase 2, against `flowy mcp --http` on a free port and against
   different principals
 - a todo is outstanding until `mem_write {"id", "status": "done"}` closes it -
   which leaves the title and kind alone - and then it is out of `todos`
+- a worklog entry carries **the seat that wrote it**: A's agent token appends and
+  the entry's actor is the agent, A's own token appends and it is A. There is no
+  actor argument to get it wrong with
+- B cannot reference A's personal item in `refs` - the refusal is the same words
+  an unreadable artifact gets everywhere else - and **can** reference the shared
+  one, which is the grant doing it and not the project: the check is the read
+  filter, run over the ids before the entry is written
+- an entry with nothing to say about what changed is refused
+- `worklog_read {"limit": 2}` answers two entries, newest first, out of a stream
+  holding both seats' entries
+- the entry is **on the activity timeline** as kind `worklog`, with the actor and
+  the speaker the node stamped - and `POST /api/activity {"kind": "worklog"}` is
+  a `400`, because that door does not check the refs the other one does
 - `flowy mcp` on a pipe answers the handshake and a `tools/call` one line each,
   and says nothing at all to a notification
 - the item stdio wrote is found by search over HTTP: **one store, two

@@ -106,6 +106,42 @@ A report and a memory item are different things: a memory item is a fact somebod
 will need later, a report is a document somebody will read on purpose, true of a
 stated point in time. Publish the findings, remember the decision.
 
+## The worklog
+
+The worklog is this project's chronology: one append-only stream of entries, each
+one stamped with the seat that wrote it. It is what the next agent picking up
+this work reads first, instead of trying to recover what happened from somebody
+else's session transcript.
+
+- `worklog_read {limit?}` - the most recent entries, newest first, default 20.
+  **Read this when you start.** It tells you what the last few sessions did,
+  where they stopped, and the ids of the work they were about.
+- `worklog_append {what, next?, as_of?, refs?}` - **append before you stop**, and
+  after anything a later seat would need to know. `what` is what changed, in the
+  past tense. `next` is what to pick up and what is in the way of it. `as_of` is
+  the commit, version or run id the entry is true of. `refs` is a list of
+  artifact ids - the bug, the report, the memory item this shift was about.
+
+Two rules the surface enforces rather than suggests. Every entry carries its
+actor, taken from your token, so an entry cannot be put in another seat's mouth.
+And `refs` are ids, checked against what you may read: an id you cannot read is
+refused, and prose describing the work instead of naming it is how a worklog
+becomes a second, staler copy of the fabric rather than an index into it. Write
+the document with `report_write`, the fact with `mem_write`, and reference them
+here by id.
+
+Entries are never edited - there is no id argument and no update. Something that
+turned out to be wrong is corrected by the next entry saying so, because a
+chronology that can be rewritten is not one. That is also the line between this
+and memory: a memory item is a durable fact, revised in place as it changes; an
+entry here is a moment, and moments accumulate. Both are in the same store behind
+the same permission filter, and they answer different questions - "what is true"
+against "what happened lately".
+
+Entries also show up on the timeline (`activity {kind: "worklog"}`), in the
+console and in the terminal client, because an entry is an event like everything
+else here.
+
 Everything is permission-filtered on the way out of the database. A result you
 did not get is a result you may not see, and nothing tells you it was there.
 

@@ -93,6 +93,7 @@ export function Activity() {
           <option value="log">run logs</option>
           <option value="chat">chat</option>
           <option value="steer">steers</option>
+          <option value="worklog">worklog</option>
         </Select>
         {thread ? (
           <Badge variant="outline">

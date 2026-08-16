@@ -39,12 +39,12 @@ var observabilityTools = []tool{
 	},
 	{
 		Name: "activity",
-		Description: "The timeline: turns, run log lines, chat messages and steers you " +
-			"may read, oldest first. Search it with q, narrow it with kind, room or " +
-			"thread. This is where to look before asking what happened.",
+		Description: "The timeline: turns, run log lines, chat messages, steers and " +
+			"worklog entries you may read, oldest first. Search it with q, narrow it " +
+			"with kind, room or thread. This is where to look before asking what happened.",
 		InputSchema: object(props{
 			"q":      str("Plain substring of what was said. Not a query language."),
-			"kind":   enum("Narrow to one kind.", []string{"chat", "turn", "log", "steer"}),
+			"kind":   enum("Narrow to one kind.", []string{"chat", "turn", "log", "steer", "worklog"}),
 			"room":   str("Narrow to one room."),
 			"thread": str("Narrow to one thread - one run, or one subagent branch of it."),
 			"since":  integer("Packed hlc cursor; the answer carries the next one."),
@@ -142,11 +142,11 @@ func activityTool(ctx context.Context, m *mcpServer, p *store.Principal, raw jso
 	}
 	var types []string
 	if a.Kind != "" {
-		kind, err := oneOf("kind", a.Kind, sortedKinds(), "")
+		kind, err := oneOf("kind", a.Kind, sortedReadKinds(), "")
 		if err != nil {
 			return nil, err
 		}
-		types = append(types, postableKinds[kind])
+		types = append(types, readableKinds[kind])
 	}
 
 	list, err := m.db.ListEvents(ctx, p, store.EventQuery{

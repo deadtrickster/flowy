@@ -317,10 +317,15 @@ export interface TraceSummary {
   errors: number;
 }
 
-/** ActivityItem is one line of the timeline: a turn, a log line, a message or a steer. */
+/**
+ * ActivityItem is one line of the timeline: a turn, a log line, a message, a
+ * steer, or a worklog entry. The worklog kind is read-only here - entries are
+ * written with the worklog_append tool, which checks the artifact ids they
+ * reference, and the post box below deliberately cannot write one.
+ */
 export interface ActivityItem {
   id: string;
-  kind: "turn" | "log" | "chat" | "steer" | "activity";
+  kind: "turn" | "log" | "chat" | "steer" | "worklog" | "activity";
   type: string;
   actor: string;
   actor_kind?: string;

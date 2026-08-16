@@ -18,7 +18,7 @@ import (
 
 // kinds are the filters the node accepts, and the order k cycles them in. The
 // empty string is everything.
-var kinds = []string{"", "turn", "log", "chat", "steer"}
+var kinds = []string{"", "turn", "log", "chat", "steer", "worklog"}
 
 func (m *Model) timelineKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
