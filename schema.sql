@@ -124,6 +124,16 @@ CREATE TABLE IF NOT EXISTS inbox_readers (
     PRIMARY KEY (principal, reader)
 );
 
+-- Presence. A waiter acks only when the cursor moves, so last-ack conflates
+-- room activity with listener health: a busy room makes a dead listener look
+-- fresh, a quiet room makes a healthy one look gone. The poll is the signal
+-- the server actually has - last_poll_at moves on every /api/inbox/wait,
+-- whatever the room is doing, and polls_in_flight is > 0 exactly while a
+-- waiter is attached. Neither is liveness of a process on somebody's machine;
+-- they are the honest ceiling of what the node can see, and the views say so.
+ALTER TABLE inbox_readers ADD COLUMN IF NOT EXISTS last_poll_at timestamptz;
+ALTER TABLE inbox_readers ADD COLUMN IF NOT EXISTS polls_in_flight int NOT NULL DEFAULT 0;
+
 -- Phase 10. The project registry: the row every project column points at.
 --
 -- A project used to be a free string. Nothing declared one and nothing checked

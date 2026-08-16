@@ -47,6 +47,26 @@ export interface ChatPage {
   cursor: number;
 }
 
+/**
+ * Presence is the two rosters a room view wants. Members is who has spoken;
+ * listeners is who holds a reader place. The node sees polling, not processes,
+ * so a listener line says when a poll last started and whether one is in
+ * flight - "polled 4s ago" is checkable, "online" would be a claim.
+ */
+export interface Presence {
+  members: { actor: string; name: string; kind: string }[];
+  listeners: {
+    principal: string;
+    project: string;
+    reader: string;
+    user_name: string;
+    agent_name: string;
+    attached: boolean;
+    last_poll_at?: string | null;
+    updated: string;
+  }[];
+}
+
 export interface Whoami {
   user: string;
   agent?: string;
@@ -530,6 +550,11 @@ export const api = {
 
   inbox: (since = 0) => request<ChatPage>(`/api/inbox?since=${since}`),
   reports: () => request<{ artifacts: Artifact[] }>("/api/artifacts?type=report"),
+  presence: () => request<Presence>("/api/presence"),
+  /** Todos are memory artifacts of kind todo - the same store, filtered by
+   * kind rather than by a type of their own, because a todo is a memory
+   * item with work still in it. */
+  todos: () => request<{ artifacts: Artifact[] }>("/api/artifacts?type=memory&kind=todo"),
 
   artifact: (id: string) => request<Artifact>(`/api/artifact/${encodeURIComponent(id)}`),
 

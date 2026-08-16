@@ -147,6 +147,13 @@ func (s *server) handleInboxWait(w http.ResponseWriter, r *http.Request) {
 	at, skipped := reader.Cursor, 0
 	deliver := []*store.Event{}
 
+	// The poll itself is presence: it is the one signal the node has that does
+	// not depend on the room being busy. Marked on the way in and out however
+	// the wait ends, so a waiter that is merely blocked on a quiet room still
+	// reads as attached.
+	s.db.PollStart(r.Context(), p, name)
+	defer s.db.PollEnd(r.Context(), p, name)
+
 	// The scan does NOT narrow to what will be handed over, and that is the
 	// difference between this and GET /api/inbox. The mark has to pass
 	// everything that was read, the reader's own messages included: a mark that
@@ -629,3 +636,53 @@ func ackInbox(ctx context.Context, client *http.Client, base, bearer, as string,
 // command is a shell loop, and the code is the only part of the answer a shell
 // loop reads.
 var errQuietDeadline = errors.New("the deadline passed and nothing was said")
+
+// handlePresence answers the two rosters a room view wants, honestly. Members
+// is who has spoken in what this caller may read. Listeners is who holds a
+// reader - filtered to the caller's own project, because a reader row names a
+// principal and their project, and who-listens-where is not the whole node's
+// business - with what the node can actually see of their attachment: an
+// in-flight poll, and when a poll last started. "Last polled 4s ago" is a
+// checkable fact; "online" would be a claim about a process on somebody
+// else's machine, and the node does not have it.
+func (s *server) handlePresence(w http.ResponseWriter, r *http.Request) {
+	p := principalOf(r)
+	members, err := s.db.RoomMembers(r.Context(), p)
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	listeners, err := s.db.Presence(r.Context())
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	mine := []*store.PresenceRow{}
+	for _, row := range listeners {
+		if row.Project == p.Project || (p.Operator && row.Project == "") {
+			mine = append(mine, row)
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"members":   members,
+		"listeners": mine,
+	})
+}
+
+// handleInboxReaderDelete drops one of the caller's own reader labels. A
+// reader row outlives its listener, so test labels and retired names would
+// sit in every roster forever without this.
+func (s *server) handleInboxReaderDelete(w http.ResponseWriter, r *http.Request) {
+	p := principalOf(r)
+	name := r.PathValue("name")
+	gone, err := s.db.DeleteInboxReader(r.Context(), p, name)
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	if !gone {
+		s.noSuchReader(w, r, name)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": name})
+}

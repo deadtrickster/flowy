@@ -197,3 +197,143 @@ func (d *DB) inboxHead(ctx context.Context, p *Principal) (int64, error) {
 	}
 	return head.Int64, nil
 }
+
+// PresenceRow is one reader as the room sees it: who holds the label, and what
+// the node can honestly say about their attachment. Attached is a poll in
+// flight; LastPoll is when a poll last started. Neither is a claim about a
+// process on somebody's machine - the node sees the polling, not the listener,
+// and the views render exactly this and no more.
+type PresenceRow struct {
+	Principal string     `json:"principal"`
+	Project   string     `json:"project"`
+	Reader    string     `json:"reader"`
+	UserName  string     `json:"user_name"`
+	AgentName string     `json:"agent_name"`
+	Attached  bool       `json:"attached"`
+	LastPoll  *time.Time `json:"last_poll_at"`
+	Updated   time.Time  `json:"updated"`
+}
+
+// PollStart marks a waiter attaching: the poll is the one signal the server
+// has that does not depend on the room being busy.
+func (d *DB) PollStart(ctx context.Context, p *Principal, name string) {
+	// Swallowed on purpose: presence is observational, and a failed mark must
+	// not refuse a waiter its messages. A stale row reads as less attached,
+	// which is the safe direction.
+	_, _ = d.sql.ExecContext(ctx,
+		`UPDATE inbox_readers
+		    SET last_poll_at = now(), polls_in_flight = polls_in_flight + 1
+		  WHERE principal = $1 AND reader = $2`, readerKey(p), name)
+}
+
+// PollEnd marks the poll leaving, however it left.
+func (d *DB) PollEnd(ctx context.Context, p *Principal, name string) {
+	_, _ = d.sql.ExecContext(ctx,
+		`UPDATE inbox_readers
+		    SET polls_in_flight = greatest(0, polls_in_flight - 1)
+		  WHERE principal = $1 AND reader = $2`, readerKey(p), name)
+}
+
+// DeleteInboxReader drops a reader label outright. A reader row is not a
+// listener - it exists whether or not anything is attached - so a test label
+// or a retired name lives forever in every roster unless it can be deleted.
+// The WHERE scopes to the caller's own principal: nobody deletes somebody
+// else's place in the log.
+func (d *DB) DeleteInboxReader(ctx context.Context, p *Principal, name string) (bool, error) {
+	res, err := d.sql.ExecContext(ctx,
+		`DELETE FROM inbox_readers WHERE principal = $1 AND reader = $2`,
+		readerKey(p), name)
+	if err != nil {
+		return false, fmt.Errorf("store: delete inbox reader %s: %w", name, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("store: delete inbox reader %s: %w", name, err)
+	}
+	return n > 0, nil
+}
+
+// Presence is every reader on the node, with names resolved from the principal
+// key's user and agent ids. It is the roster of who has a place in the log and
+// what the node last saw of their polling - "who is in the room" is who
+// participates, and this table answers "who has an ear on", which is the half
+// of that a reader row can carry.
+func (d *DB) Presence(ctx context.Context) ([]*PresenceRow, error) {
+	// The principal column is user \x1f agent \x1f project. Splitting it in
+	// SQL keeps the join in one round trip; unit separators cannot appear in
+	// an id, so split_part is exact.
+	rows, err := d.sql.QueryContext(ctx,
+		`SELECT r.principal,
+		        split_part(r.principal, chr(31), 3) AS project,
+		        r.reader, coalesce(u.handle, ''), coalesce(a.handle, ''),
+		        r.polls_in_flight > 0, r.last_poll_at, r.updated
+		   FROM inbox_readers r
+		   LEFT JOIN users u  ON u.id = split_part(r.principal, chr(31), 1)
+		   LEFT JOIN agents a ON a.id = split_part(r.principal, chr(31), 2)
+		  ORDER BY r.updated DESC, r.reader`)
+	if err != nil {
+		return nil, fmt.Errorf("store: presence: %w", err)
+	}
+	defer rows.Close()
+
+	out := []*PresenceRow{}
+	for rows.Next() {
+		p := &PresenceRow{}
+		if err := rows.Scan(&p.Principal, &p.Project, &p.Reader, &p.UserName,
+			&p.AgentName, &p.Attached, &p.LastPoll, &p.Updated); err != nil {
+			return nil, fmt.Errorf("store: presence: %w", err)
+		}
+		out = append(out, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: presence: %w", err)
+	}
+	return out, nil
+}
+
+// RoomMember is one participant of the rooms this principal may read: somebody
+// who has spoken, named as the names feature knows them.
+type RoomMember struct {
+	Actor string `json:"actor"`
+	Name  string `json:"name"`
+	Kind  string `json:"kind"`
+}
+
+// RoomMembers is who is in the room: every distinct actor of a chat event the
+// principal may read, newest speaker first. Presence answers who has an ear
+// on; this answers who has ever spoken - the two rosters a room view wants,
+// and neither implies the other.
+func (d *DB) RoomMembers(ctx context.Context, p *Principal) ([]*RoomMember, error) {
+	a := &args{}
+	typeArg := a.next(ChatEventType)
+	filter := EventFilterSQL(p, "e", a, false)
+	rows, err := d.sql.QueryContext(ctx,
+		`SELECT DISTINCT ON (e.actor) e.actor,
+		        coalesce(a2.handle, u.handle, '') AS name,
+		        CASE WHEN a2.id IS NOT NULL THEN 'agent' ELSE 'user' END AS kind,
+		        max(e.seq_hlc) AS last
+		   FROM events e
+		   LEFT JOIN agents a2 ON a2.id = e.actor
+		   LEFT JOIN users u  ON u.id = e.actor
+		  WHERE e.type = `+typeArg+` AND `+filter+`
+		  GROUP BY e.actor, a2.handle, u.handle, a2.id
+		  ORDER BY e.actor, last DESC`, a.vals...)
+	if err != nil {
+		return nil, fmt.Errorf("store: room members: %w", err)
+	}
+	defer rows.Close()
+
+	out := []*RoomMember{}
+	for rows.Next() {
+		m := &RoomMember{}
+		var last int64
+		if err := rows.Scan(&m.Actor, &m.Name, &m.Kind, &last); err != nil {
+			return nil, fmt.Errorf("store: room members: %w", err)
+		}
+		out = append(out, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: room members: %w", err)
+	}
+	return out, nil
+}

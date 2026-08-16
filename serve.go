@@ -249,6 +249,8 @@ var apiRoutes = []string{
 	"GET /api/inbox/wait",
 	"POST /api/inbox/ack",
 	"POST /api/inbox/reader",
+	"DELETE /api/inbox/reader/{name}",
+	"GET /api/presence",
 	"POST /api/assign",
 	"GET /api/task/{id}",
 	"POST /api/task/{id}/delegate",
@@ -336,6 +338,8 @@ func (s *server) routes() http.Handler {
 	api.HandleFunc("GET /api/inbox/wait", s.handleInboxWait)
 	api.HandleFunc("POST /api/inbox/ack", s.handleInboxAck)
 	api.HandleFunc("POST /api/inbox/reader", s.handleInboxReader)
+	api.HandleFunc("DELETE /api/inbox/reader/{name}", s.handleInboxReaderDelete)
+	api.HandleFunc("GET /api/presence", s.handlePresence)
 	// Assignment and the handoff it opens. /api/inbox/tasks is a longer pattern
 	// than /api/inbox, so the mux ranks it first and the two do not collide.
 	api.HandleFunc("GET /api/inbox/tasks", s.handleInboxTasks)

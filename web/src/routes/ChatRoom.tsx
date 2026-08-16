@@ -4,9 +4,10 @@ import { useParams } from "react-router-dom";
 import { AnnouncementBanner } from "@/components/AnnouncementBanner";
 import { MessageBox } from "@/components/MessageBox";
 import { MessageList } from "@/components/MessageList";
+import { RoomRoster } from "@/components/RoomRoster";
 import { ThreadDag } from "@/components/ThreadDag";
 import { Badge } from "@/components/ui/badge";
-import { type FlowyEvent, api } from "@/lib/api";
+import { type FlowyEvent, type Presence, api } from "@/lib/api";
 import { useSession } from "@/lib/session";
 import { shortId } from "@/lib/utils";
 
@@ -37,6 +38,33 @@ export function ChatRoom() {
   const [selected, setSelected] = useState<FlowyEvent | null>(null);
   const [live, setLive] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [presence, setPresence] = useState<Presence | null>(null);
+
+  // Presence refreshes on its own clock. The long poll owns the messages; the
+  // roster is a slower fact, and polling it on every message would make a busy
+  // room the only place the roster ever updates - the exact conflation the
+  // poll-based signal exists to avoid.
+  useEffect(() => {
+    if (!token) {
+      setPresence(null);
+      return;
+    }
+    let stopped = false;
+    const load = () => {
+      api
+        .presence()
+        .then((p) => {
+          if (!stopped) setPresence(p);
+        })
+        .catch(() => {});
+    };
+    load();
+    const every = setInterval(load, 15_000);
+    return () => {
+      stopped = true;
+      clearInterval(every);
+    };
+  }, [token]);
 
   useEffect(() => {
     setEvents([]);
@@ -145,6 +173,7 @@ export function ChatRoom() {
       </section>
 
       <aside className="flex w-[26rem] shrink-0 flex-col border-border border-l">
+        <RoomRoster presence={presence} />
         <header className="flex items-center gap-2 border-border border-b px-4 py-3">
           <h2 className="font-semibold text-sm">thread</h2>
           {thread ? (
