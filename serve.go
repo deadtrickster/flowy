@@ -499,11 +499,19 @@ func (s *server) handleNode(w http.ResponseWriter, _ *http.Request) {
 	if s.forge != nil {
 		forgeKind = s.forge.Kind()
 	}
+	// Which console this binary serves, so a page open across a deploy can find
+	// out it is stale. The hashed bundle name rather than a version string,
+	// because it changes exactly when the bytes do.
+	bundle := ""
+	if s.console != nil {
+		bundle = s.console.bundle
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"node":    s.node,
 		"version": version,
 		"phase":   9,
 		"console": s.console != nil && s.console.index != nil,
+		"bundle":  bundle,
 		"forge":   forgeKind,
 		"routes":  append([]string{"GET /healthz", "GET /version"}, apiRoutes...),
 	})

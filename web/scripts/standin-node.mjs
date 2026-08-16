@@ -29,6 +29,9 @@ import { extname, join, normalize } from "node:path";
 
 const DIST = process.argv[2];
 const PORT = Number(process.argv[3] ?? 8899);
+// The console this stand-in claims to serve. Empty means "whatever the page is
+// running", which the freshness check reads as nothing to do.
+const BUNDLE = process.argv[4] ?? "";
 
 if (!DIST) {
   console.error("usage: node scripts/standin-node.mjs DIST_DIR [PORT]");
@@ -36,6 +39,7 @@ if (!DIST) {
 }
 
 let waits = 0;
+let loads = 0;
 
 const EVENT = {
   id: "01M00000000000000000000001",
@@ -77,6 +81,16 @@ createServer(async (req, res) => {
   const path = new URL(req.url, "http://x").pathname;
 
   if (path === "/__waits") return json(res, { waits });
+  // How many times the app has been loaded from scratch, which is how a caller
+  // counts reloads without asking the page to report on itself - a page that
+  // reloads in a loop cannot be trusted to keep count of its own loops.
+  if (path === "/__loads") return json(res, { loads });
+  // What this stand-in claims to be serving. Told from the command line so one
+  // run can answer "the same console you are running" and another can answer
+  // "a different one", which is the only difference the freshness check reads.
+  if (path === "/api/node") {
+    return json(res, { node: "standin", version: "standin", console: true, bundle: BUNDLE });
+  }
   if (path.startsWith("/api/chat/") && path.endsWith("/wait")) {
     waits++;
     return json(res, PAGE);
@@ -107,6 +121,7 @@ createServer(async (req, res) => {
     // The SPA fallback: /chat/general is a route, not a file.
     file = join(DIST, "index.html");
     body = await readFile(file).catch(() => null);
+    if (body !== null) loads++;
   }
   if (body === null) {
     res.writeHead(404);
