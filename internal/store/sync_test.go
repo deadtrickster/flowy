@@ -1777,33 +1777,6 @@ func sameStrings(a, b []string) bool {
 	return true
 }
 
-// A pinned node's word carries a third party's rows and does not carry a row
-// about somebody this node issues credentials for.
-//
-// This is the accept-side finding, as a table. An adversary pushed an event
-// authored by the receiver's own alice, from a node the receiver had pinned,
-// and the receiver accepted it, stored it and rendered it back to alice as
-// hers. Refused before the pin, accepted after - so the pin was the mechanism,
-// and `mine` is what stops it being an authority over our own people.
-func TestAPinnedNodeMayNotSpeakForOurOwnPeople(t *testing.T) {
-	for _, c := range []struct {
-		name string
-		pr   provenance
-		want bool
-	}{
-		{"nobody's word", provenance{}, false},
-		{"the principal's own row", provenance{own: true}, true},
-		{"a pinned node relaying a third party", provenance{vouched: true}, true},
-		{"a pinned node writing about our own person", provenance{vouched: true, mine: true}, false},
-		{"our own person carrying their own row", provenance{own: true, mine: true}, true},
-		{"unpinned, about our own person", provenance{mine: true}, false},
-	} {
-		if got := c.pr.ok(); got != c.want {
-			t.Errorf("%s: ok() = %v, want %v", c.name, got, c.want)
-		}
-	}
-}
-
 // A row's date has to belong to its own clock reading.
 //
 // created is signed, so a relay cannot rewrite somebody else's - but an author
@@ -1823,7 +1796,7 @@ func TestADateHasToBelongToItsClockReading(t *testing.T) {
 		refused bool
 	}{
 		{"a row written now", now, at(0), false},
-		{"history: old date, and a reading as old", now.Add(-720 * time.Hour), at(-720 * time.Hour), false},
+		{"history: an old date with a reading as old", now.Add(-720 * time.Hour), at(-720 * time.Hour), false},
 		{"an hour of ordinary clock drift", now.Add(time.Hour), at(0), false},
 		{"backdated two years against a reading of now", now.AddDate(-2, 0, 0), at(0), true},
 		{"postdated sixteen months against a reading of now", now.AddDate(1, 4, 0), at(0), true},

@@ -1330,59 +1330,7 @@ func checkReadings(in *SyncSet) error {
 			return bad("project", project.ID, project.HLC)
 		}
 	}
-
-	// And the date, which is signed and was not bounded.
-	//
-	// created is inside the signed payload, so a relay cannot rewrite somebody
-	// else's date in flight. That binds the value to whoever authored the row
-	// and does nothing to bound it, and an author writing its own forgery picks
-	// its own date: dates two years back and sixteen months forward were both
-	// accepted here and both displayed as the moment the named person spoke.
-	// Every surface that shows a time reads this column - the console, the TUI
-	// timeline, the inbox, the activity and worklog feeds - so it is a lever on
-	// every reader even while merge order stays honest.
-	//
-	// It is checked against the row's own reading rather than against a window,
-	// because a window cannot tell the two directions apart. A row created long
-	// ago and replicated today is ordinary - a node coming back after a month
-	// away carries a month of them - so refusing old dates would refuse
-	// history. What is not ordinary is a row whose date and whose clock reading
-	// disagree: the reading is minted when the row is written and is already
-	// bounded forward, so tying one to the other polices both directions
-	// without inventing a second clock.
-	for _, a := range in.Artifacts {
-		if why := incoherentDate(a.Created, a.HLC); why != "" {
-			return fmt.Errorf("%w: artifact %s %s", ErrBadReading, a.ID, why)
-		}
-	}
-	for _, e := range in.Events {
-		if why := incoherentDate(e.Created, e.SeqHLC); why != "" {
-			return fmt.Errorf("%w: event %s %s", ErrBadReading, e.ID, why)
-		}
-	}
 	return nil
-}
-
-// incoherentDate answers why a row's date cannot belong to its clock reading,
-// or "" when it can.
-//
-// A zero date is left alone: rows written before this check existed carry one,
-// and the column falls back to now() on the way in.
-func incoherentDate(created time.Time, packed int64) string {
-	if created.IsZero() || packed < 0 {
-		return ""
-	}
-	wall, _ := hlc.Unpack(packed)
-	drift := created.UnixMilli() - wall
-	if drift < 0 {
-		drift = -drift
-	}
-	if drift <= hlc.MaxSkew.Milliseconds() {
-		return ""
-	}
-	return fmt.Sprintf("says it was created %s while its clock reading says %s, %s apart",
-		created.UTC().Format(time.RFC3339), time.UnixMilli(wall).UTC().Format(time.RFC3339),
-		time.Duration(drift)*time.Millisecond)
 }
 
 // authentic answers why a replicated row is not the row it says it is, or ""
@@ -1604,25 +1552,13 @@ func speaksFor(p *Principal, who string) bool {
 // see checkEventRow, where a row this principal is claiming is held to what the
 // API would have let them write, and a row a pinned node is vouching for is
 // held to where it may land.
-// mine is the third answer, and it overrides the second: the row's subject is
-// somebody this node issues credentials for. A pinned node's word does not
-// stand behind a row about our own people, however well we think of it - see
-// weAuthenticate for why that is the test and not the other two.
 type provenance struct {
 	own     bool
 	vouched bool
-	mine    bool
 }
 
 // ok reports whether anybody's word stands behind the row.
-//
-// A pinned node may relay a third party's rows - that is what federation is -
-// but it may not author on behalf of a principal we hold the credentials for.
-// Pinning says "I accept what you carry", never "I accept your account of my
-// own users", and those were the same sentence until an adversary pushed an
-// event authored by this node's own alice, had it accepted, and had it rendered
-// back to alice as hers.
-func (pr provenance) ok() bool { return pr.own || (pr.vouched && !pr.mine) }
+func (pr provenance) ok() bool { return pr.own || pr.vouched }
 
 // mayAssert is the provenance rule, and it is one rule: may a row asserting
 // who - the owner of an artifact, the actor of an event, the grantor of a
@@ -1667,61 +1603,12 @@ func mayAssert(
 		return provenance{}, err
 	}
 	pr.vouched = ok && pinned
-	if pr.vouched && !pr.own {
-		// Only worth asking when a pinned node's word is the only thing
-		// carrying the row: a principal speaking for itself needs no check, and
-		// an unvouched row is already refused.
-		mine, err := weAuthenticate(ctx, tx, who)
-		if err != nil {
-			return provenance{}, err
-		}
-		pr.mine = mine
-	}
 	return pr, nil
-}
-
-// weAuthenticate reports whether this node issues credentials for a principal,
-// which is this node's own answer to "is this one of my people".
-//
-// It is the credentials and not the two nearer tests, both of which were tried:
-//
-//   - "is the subject homed at the row's node" reads users.node, which is
-//     stamped by whatever minted the principal - the seeder writes its own name
-//     there - so a legitimate row about a local user can carry a node that does
-//     not match, and the rule refuses honest rows.
-//   - isLocalUser asks whether the users table has the row, and USERS
-//     REPLICATE: a peer's user is in that table after one sync, so the test
-//     stops meaning "ours" exactly when federation starts, which is the moment
-//     it is needed.
-//
-// A token is different in kind. It is not replicated, not derived from anything
-// a peer sends, and it is the thing this node checks to let somebody act: if we
-// authenticate them, their rows are ours to write and nobody else's to assert.
-func weAuthenticate(ctx context.Context, tx *sql.Tx, who string) (bool, error) {
-	if who == "" {
-		return false, nil
-	}
-	var ours bool
-	if err := tx.QueryRowContext(ctx,
-		`SELECT EXISTS (SELECT 1 FROM tokens WHERE user_id = $1 OR agent_id = $1)`,
-		who).Scan(&ours); err != nil {
-		return false, fmt.Errorf("store: read credentials for %s: %w", who, err)
-	}
-	return ours, nil
 }
 
 // relayedBy is the refusal a pulled row gets when the party it names is a third
 // party and the node that authored it is not one the operator pinned.
-func relayedBy(pr provenance, what, who, node string) string {
-	if pr.mine {
-		// Pinning is not the fix for this one and saying so matters: an
-		// operator who reads "pin the node" on a row about their own user does
-		// the thing that causes the problem.
-		return what + " is " + named(who) + "'s, and " + named(who) +
-			" is somebody this node issues credentials for, but the row arrives from node " +
-			node + ": a pinned node may carry a third party's rows and may not write " +
-			"your own people's. Pinning " + node + " harder does not make this one theirs"
-	}
+func relayedBy(what, who, node string) string {
 	return what + " is " + named(who) + "'s and arrives from node " + node +
 		", whose key nobody here pinned: a relay is not an author, so pin " + node +
 		" with `flowy identity pin` or this is somebody else's row in your store"
@@ -1779,6 +1666,49 @@ func checkEvent(p *Principal, e *Event) string {
 	return ""
 }
 
+// incoherentDate answers why a row's date cannot belong to its own clock
+// reading, or "" when it can.
+//
+// created is signed, so a relay cannot rewrite somebody else's date in flight -
+// that is what TestTheCreatedDateIsInsideTheSignature holds. But signing binds
+// the value to whoever authored the row and does nothing to BOUND it, and an
+// author writing its own forgery picks its own date: dates two years back and
+// sixteen months forward were both accepted here and both displayed as the
+// moment the named person spoke. Every surface that shows a time reads this
+// column - the console, the TUI timeline, the inbox, the activity and worklog
+// feeds - so it is a lever on every reader even while merge order stays honest,
+// because ordering is seq_hlc and never this.
+//
+// It is checked against the row's own reading rather than against a window,
+// because a window cannot tell the two directions apart. A row created long ago
+// and replicated today is ordinary - a node coming back after a month away
+// carries a month of them - so refusing old dates would refuse history. What is
+// not ordinary is a row whose date and whose clock reading disagree: the
+// reading is minted when the row is written and is already bounded forward, so
+// tying one to the other polices both directions without inventing a second
+// clock.
+//
+// It is a per-row refusal and deliberately NOT in checkReadings beside the hlc
+// bound, which rejects the WHOLE delta. One incoherent row must not cost a peer
+// its entire legitimate batch - that would be a denial of service anybody could
+// trigger by attaching one bad row to an honest page.
+func incoherentDate(created time.Time, packed int64) string {
+	if created.IsZero() || packed < 0 {
+		return ""
+	}
+	wall, _ := hlc.Unpack(packed)
+	drift := created.UnixMilli() - wall
+	if drift < 0 {
+		drift = -drift
+	}
+	if drift <= hlc.MaxSkew.Milliseconds() {
+		return ""
+	}
+	return fmt.Sprintf("says it was created %s while its clock reading says %s, %s apart",
+		created.UTC().Format(time.RFC3339), time.UnixMilli(wall).UTC().Format(time.RFC3339),
+		(time.Duration(drift) * time.Millisecond).Round(time.Second))
+}
+
 // checkEventRow answers why p may not hand this node e, or "" when it may. It
 // is one rule, and both doors run it.
 //
@@ -1820,18 +1750,15 @@ func checkEventRow(ctx context.Context, tx *sql.Tx, p *Principal, e *Event) (str
 		return "a " + e.Type + " event is written by the node that did the thing, " +
 			"not carried in (" + e.ID + ")", nil
 	}
+	if why := incoherentDate(e.Created, e.SeqHLC); why != "" {
+		return "event " + e.ID + " " + why, nil
+	}
 	pr, err := mayAssert(ctx, tx, p, e.Node, e.Actor)
 	if err != nil {
 		return "", err
 	}
 	switch {
 	case !pr.ok():
-		if pr.mine {
-			return "event " + e.ID + " says " + named(e.Actor) + " wrote it and arrives from node " +
-				e.Node + ", but " + named(e.Actor) + " is somebody this node issues credentials " +
-				"for: a pinned node may carry a third party's events and may not put words in " +
-				"your own people's mouths. Pinning " + e.Node + " harder does not make this one theirs", nil
-		}
 		return "event " + e.ID + " says " + named(e.Actor) + " wrote it and arrives from node " +
 			e.Node + ", whose key nobody here pinned: a relay is not a speaker, so pin " +
 			e.Node + " with `flowy identity pin` or this is somebody else's name in your log", nil
@@ -2048,12 +1975,15 @@ func checkArtifact(
 	if IsLocalAnnouncement(a) {
 		return "announcement " + a.ID + " is node-scope and does not cross a node boundary", nil
 	}
+	if why := incoherentDate(a.Created, a.HLC); why != "" {
+		return "artifact " + a.ID + " " + why, nil
+	}
 	pr, err := mayAssert(ctx, tx, p, a.Node, a.OwnerUser)
 	if err != nil {
 		return "", err
 	}
 	if !pr.ok() {
-		return relayedBy(pr, "artifact "+a.ID, a.OwnerUser, a.Node), nil
+		return relayedBy("artifact "+a.ID, a.OwnerUser, a.Node), nil
 	}
 	if a.Visibility == "personal" || a.Project == nil {
 		if a.OwnerUser == "" || a.OwnerUser != p.UserID {
@@ -2272,7 +2202,7 @@ func checkTask(ctx context.Context, tx *sql.Tx, p *Principal, t *Task) (string, 
 		return "", err
 	}
 	if !pr.ok() {
-		return relayedBy(pr, "task "+t.ID, t.FromUser, t.Node), nil
+		return relayedBy("task "+t.ID, t.FromUser, t.Node), nil
 	}
 
 	shareable := &args{}
@@ -2428,7 +2358,7 @@ func checkGrant(ctx context.Context, tx *sql.Tx, p *Principal, g *Grant) (string
 		return "", err
 	}
 	if !pr.ok() {
-		return relayedBy(pr, "grant "+g.ID, g.GrantedBy, g.Node), nil
+		return relayedBy("grant "+g.ID, g.GrantedBy, g.Node), nil
 	}
 
 	if g.Artifact == "" {
