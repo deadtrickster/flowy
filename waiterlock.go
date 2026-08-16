@@ -29,7 +29,17 @@ import (
 // and liveness is `kill -0` on a number.
 
 // waiterLock is a claim on a name, released when the waiter ends.
-type waiterLock struct{ path string }
+//
+// It remembers the pid it WROTE rather than assuming the pid it would write,
+// so releasing can ask "is the claim on disk still the one I made" instead of
+// "is the claim on disk from a process like me". Those come apart whenever two
+// locks exist in one process - a stale lock and the live one that took its file
+// over - and the pid test silently deletes the live claim in that case, which
+// is the guard disabling itself at the one moment it is needed.
+type waiterLock struct {
+	path string
+	pid  int
+}
 
 // unsafeInName is everything that does not belong in a file name. The waiter's
 // name comes from a flag, and a name with a slash in it would otherwise write
@@ -81,10 +91,11 @@ func holdWaiterName(name string) (*waiterLock, error) {
 			name, held, held)
 	}
 
-	if err := os.WriteFile(path, []byte(strconv.Itoa(os.Getpid())+"\n"), 0o600); err != nil {
+	mine := os.Getpid()
+	if err := os.WriteFile(path, []byte(strconv.Itoa(mine)+"\n"), 0o600); err != nil {
 		return nil, fmt.Errorf("cannot record this waiter: %w", err)
 	}
-	return &waiterLock{path: path}, nil
+	return &waiterLock{path: path, pid: mine}, nil
 }
 
 // livePIDIn reports the pid recorded at path, and whether it is still running.
@@ -104,14 +115,27 @@ func livePIDIn(path string) (int, bool) {
 	return pid, err == nil || errors.Is(err, syscall.EPERM)
 }
 
-// release drops the claim. It is safe to call twice.
+// release drops the claim, and only if it is still the claim this lock made.
+//
+// Comparing against what we WROTE rather than against our own pid is what makes
+// this correct when a stale lock and the live one share a process: the stale
+// lock wrote nothing, so it matches nothing, so it removes nothing. Reading our
+// own pid back would have made the two indistinguishable and let a dead lock
+// delete a live waiter's claim - which the test for exactly that caught.
+//
+// It is safe to call twice.
 func (w *waiterLock) release() {
-	if w == nil || w.path == "" {
+	if w == nil || w.path == "" || w.pid == 0 {
 		return
 	}
-	// Only if it is still ours. A waiter that outlived its own claim - a stale
-	// file taken over by somebody else - must not delete the new holder's.
-	if pid, ok := livePIDIn(w.path); ok && pid != os.Getpid() {
+	raw, err := os.ReadFile(w.path)
+	if err != nil {
+		w.path = ""
+		return
+	}
+	if strings.TrimSpace(string(raw)) != strconv.Itoa(w.pid) {
+		// Somebody else's claim now. Ours is already gone.
+		w.path = ""
 		return
 	}
 	os.Remove(w.path)
