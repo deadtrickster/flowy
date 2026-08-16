@@ -2249,13 +2249,16 @@ browser_is_installed() {
 	# "libnspr4.so: cannot open shared object file" - a browser that is present,
 	# verified present, and cannot start.
 	#
-	# --with-deps installs them, and it is apt, so it is only run where this is
-	# already root: the VM the gate runs in. On a workstation it would be a sudo
-	# prompt in the middle of a test run, so there it downloads the browser and
-	# the launch below decides - which is the right split, because a developer's
-	# machine usually has the libraries a browser needs and a fresh VM never
-	# does.
-	if [ "$(id -u)" -eq 0 ]; then
+	# --with-deps installs them, and it is apt, so it needs root. The test is
+	# whether root is available WITHOUT A PROMPT, not whether we are already
+	# root: the gate's VM runs as uid 1000 with passwordless sudo, so an
+	# `id -u` = 0 test skipped the deps in the one place they were missing and
+	# the browser stayed unlaunchable through two gate runs. `sudo -n` asks the
+	# question that matters and answers it without hanging - on a workstation it
+	# fails, no prompt appears mid-run, and the launch below decides, which is
+	# right because a developer's machine usually has these libraries and a
+	# fresh VM never does.
+	if [ "$(id -u)" -eq 0 ] || sudo -n true 2>/dev/null; then
 		npx --no-install playwright install --with-deps chromium
 	else
 		npx --no-install playwright install chromium
