@@ -313,7 +313,14 @@ func (d *DB) RoomMembers(ctx context.Context, p *Principal) ([]*RoomMember, erro
 	filter := EventFilterSQL(p, "e", a, false)
 	rows, err := d.sql.QueryContext(ctx,
 		`SELECT DISTINCT ON (e.actor) e.actor,
-		        coalesce(u.handle, '') AS name,
+		        coalesce(
+		          -- The name a speaker chose beats the registry's fallbacks: it
+		          -- is what every message they sent is rendered under, and the
+		          -- roster should not disagree with the transcript beside it.
+		          (SELECT e2.meta->>'actor_name' FROM events e2
+		            WHERE e2.actor = e.actor AND e2.meta->>'actor_name' IS NOT NULL
+		            ORDER BY e2.seq_hlc DESC LIMIT 1),
+		          u.handle, '') AS name,
 		        CASE WHEN a2.id IS NOT NULL THEN 'agent' ELSE 'user' END AS kind,
 		        max(e.seq_hlc) AS last
 		   FROM events e
