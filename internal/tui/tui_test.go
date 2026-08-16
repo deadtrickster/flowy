@@ -116,6 +116,13 @@ func seed(m *Model) {
 		ID: "01HMEMAAAAAAAAAAAAAAAAAAAA", Type: "memory", Title: "how the gate is run",
 		Body: "run-tests.sh, from clean", Visibility: "personal", Status: "active", Updated: now,
 	}}
+	m.reports = []*Artifact{{
+		ID: "01HREPAAAAAAAAAAAAAAAAAAAA", Type: "report", Project: &project,
+		Title: "the harness architecture", Body: "# the spine\nan event fabric",
+		Visibility: "project", UserTags: []string{"harness-research"},
+		Fields:  json.RawMessage(`{"as_of":"f343027","supersedes":"01HREPBBBBBBBBBBBBBBBBBBBB"}`),
+		Updated: now,
+	}}
 	m.tl = []*ActivityItem{{
 		ID: "01HACTAAAAAAAAAAAAAAAAAAAA", Kind: "chat", Actor: "01HUSERAAAAAAAAAAAAAAAAAAA",
 		Room: "general", Thread: "01HTHREAD1", Body: "something happened",
@@ -214,6 +221,7 @@ type stub struct {
 	*httptest.Server
 	status  int
 	written []map[string]any
+	asked   []string
 }
 
 func newStub(t *testing.T) *stub {
@@ -240,6 +248,21 @@ func newStub(t *testing.T) *stub {
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"announcements": []any{}})
 	})
+	// The two reads a list pane makes, answering with one report so what a pane
+	// asked for can be checked against what it was given.
+	answerWithAReport := func(w http.ResponseWriter, r *http.Request) {
+		if deny(w) {
+			return
+		}
+		s.asked = append(s.asked, r.URL.Path+"?"+r.URL.RawQuery)
+		_ = json.NewEncoder(w).Encode(map[string]any{"artifacts": []Artifact{{
+			ID: "01HREPSTUBAAAAAAAAAAAAAAAA", Type: "report", Title: "a stubbed report",
+			Body: "a body", Visibility: "project",
+			Fields: json.RawMessage(`{"as_of":"deadbee"}`),
+		}}})
+	}
+	mux.HandleFunc("GET /api/artifacts", answerWithAReport)
+	mux.HandleFunc("GET /api/search", answerWithAReport)
 	mux.HandleFunc("POST /api/artifacts", func(w http.ResponseWriter, r *http.Request) {
 		if deny(w) {
 			return
@@ -347,6 +370,133 @@ func TestWritingMemoryDoesNotPromoteIt(t *testing.T) {
 	}
 }
 
+// --------------------------------------------------------------- the reports
+
+// A report says what it is true of, and the list is where that has to be
+// legible: as_of is how a reader tells a current report from a stale one, and
+// that decision is made while looking at the list rather than after opening
+// something. supersedes and the tags belong to the same judgement.
+func TestTheReportsListSaysWhatEachReportIsTrueOf(t *testing.T) {
+	m := testModel(t, NewClient("http://127.0.0.1:1", "t"))
+	seed(m)
+	m.view = viewReports
+
+	screen := m.View()
+	for _, want := range []string{
+		"reports (1)", "the harness architecture", "f343027",
+		"supersedes", "harness-research", "the spine",
+	} {
+		if !strings.Contains(screen, want) {
+			t.Fatalf("the reports pane does not show %q:\n%s", want, screen)
+		}
+	}
+}
+
+// A report whose provenance is missing or malformed is a report with no
+// provenance on screen. The body is still what somebody opened the pane for, so
+// the pane renders rather than failing on a field it could not read.
+func TestAReportWithNoUsableProvenanceStillRenders(t *testing.T) {
+	m := testModel(t, NewClient("http://127.0.0.1:1", "t"))
+	m.view = viewReports
+	m.reports = []*Artifact{
+		{ID: "01HREPNOFIELDS", Type: "report", Title: "no fields at all", Body: "still readable"},
+		{ID: "01HREPBADFIELDS", Type: "report", Title: "fields that do not parse",
+			Body: "also readable", Fields: json.RawMessage(`{"as_of": 17}`)},
+	}
+	for sel := range m.reports {
+		m.repSel = sel
+		screen := m.View()
+		if !strings.Contains(screen, m.reports[sel].Title) {
+			t.Fatalf("report %d is not on screen:\n%s", sel, screen)
+		}
+		if !strings.Contains(screen, "readable") {
+			t.Fatalf("report %d rendered without its body:\n%s", sel, screen)
+		}
+	}
+	if line := provenanceLine(m.reports[1]); line != "" {
+		t.Fatalf("fields that do not parse produced a provenance line: %q", line)
+	}
+}
+
+// Both the list and the search ask for reports and nothing else. A search with
+// no type answers with memories, bugs and notes beside the reports, and a pane
+// that listed those under the word "reports" would be saying something untrue
+// about what a report is.
+func TestTheReportsPaneAsksForReportsOnly(t *testing.T) {
+	s := newStub(t)
+	m := testModel(t, NewClient(s.URL, "t"))
+
+	m.Update(m.reportsCmd("")())
+	if len(m.reports) != 1 || m.repQuery != "" {
+		t.Fatalf("the list did not land: %d reports, query %q", len(m.reports), m.repQuery)
+	}
+	m.Update(m.reportsCmd("caching spine")())
+	if m.repQuery != "caching spine" {
+		t.Fatalf("the pane is showing %q, not the search that was run", m.repQuery)
+	}
+
+	if len(s.asked) != 2 {
+		t.Fatalf("the node was asked %d times, want 2: %v", len(s.asked), s.asked)
+	}
+	for _, asked := range s.asked {
+		if !strings.Contains(asked, "type=report") {
+			t.Fatalf("a read went out without the report type: %q", asked)
+		}
+	}
+	if !strings.Contains(s.asked[0], "/api/artifacts") {
+		t.Fatalf("an empty query did not list: %q", s.asked[0])
+	}
+	if !strings.Contains(s.asked[1], "/api/search") {
+		t.Fatalf("a query did not search: %q", s.asked[1])
+	}
+}
+
+// Opening a report goes to the artifact view, which scrolls, and esc comes back
+// to the list rather than to whichever pane was open before it.
+func TestOpeningAReportComesBackToTheReportsList(t *testing.T) {
+	m := testModel(t, NewClient("http://127.0.0.1:1", "t"))
+	seed(m)
+	m.view = viewReports
+
+	if _, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter}); cmd == nil {
+		t.Fatal("enter on a report issued no read")
+	}
+	if m.view != viewArtifact {
+		t.Fatalf("enter left the view at %s", tabNames[m.view])
+	}
+	if m.backView != viewReports {
+		t.Fatalf("esc would go back to %s, not the reports list", tabNames[m.backView])
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if m.view != viewReports {
+		t.Fatalf("esc landed on %s", tabNames[m.view])
+	}
+}
+
+// Eight tabs of full labels are wider than the terminal this client is written
+// for, so the bar drops to digits rather than dropping the last tab off the
+// right: a view nobody can see the key for is a view nobody finds.
+func TestTheTabBarKeepsEveryDigitOnANarrowTerminal(t *testing.T) {
+	m := testModel(t, NewClient("http://127.0.0.1:1", "t"))
+	for _, size := range []struct{ w, h int }{{80, 24}, {132, 43}} {
+		m.Update(tea.WindowSizeMsg{Width: size.w, Height: size.h})
+		bar := m.tabBarLine()
+		if width := lipgloss.Width(bar); width > size.w {
+			t.Fatalf("the tab bar is %d wide at %d columns: %q", width, size.w, bar)
+		}
+		for i := range tabNames {
+			if !strings.Contains(bar, fmt.Sprint(i+1)) {
+				t.Fatalf("the digit for %s is missing at %d columns: %q",
+					tabNames[i], size.w, bar)
+			}
+		}
+		// The one being looked at keeps its name whatever the width.
+		if !strings.Contains(bar, tabNames[m.view]) {
+			t.Fatalf("the active tab lost its name at %d columns: %q", size.w, bar)
+		}
+	}
+}
+
 // ------------------------------------------------------------ the live gate
 //
 // These run against the gate's own `flowy serve`, driven headless through
@@ -355,7 +505,7 @@ func TestWritingMemoryDoesNotPromoteIt(t *testing.T) {
 // ./...` runnable on its own.
 
 type liveEnv struct {
-	url, token, room, message, memory, task string
+	url, token, room, message, memory, task, report, asOf string
 }
 
 func live(t *testing.T) liveEnv {
@@ -367,6 +517,8 @@ func live(t *testing.T) liveEnv {
 		message: os.Getenv("FLOWY_TUI_MESSAGE"),
 		memory:  os.Getenv("FLOWY_TUI_MEMORY"),
 		task:    os.Getenv("FLOWY_TUI_TASK"),
+		report:  os.Getenv("FLOWY_TUI_REPORT"),
+		asOf:    os.Getenv("FLOWY_TUI_REPORT_AS_OF"),
 	}
 	if env.url == "" || env.token == "" {
 		t.Skip("no live node: set FLOWY_TUI_URL and FLOWY_TUI_TOKEN")
@@ -512,6 +664,25 @@ func TestLiveTUIDrivenByTheKeyboard(t *testing.T) {
 	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("6")})
 	s.waitFor(t, "the metrics", "scope ")
 
+	// The reports, which the seed filed over the API rather than through
+	// report_write - the case this view exists for, since that path emits no
+	// activity event and the timeline therefore cannot show it.
+	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("8")})
+	s.waitFor(t, "the reports header", "reports (")
+	if env.report != "" {
+		s.waitFor(t, "the seeded report", env.report)
+		if env.asOf != "" {
+			// What the report is true of, rendered from fields rather than from
+			// a column. A report listed without it is the claim-with-no-expiry
+			// the type was invented to avoid.
+			s.waitFor(t, "the report's as_of", env.asOf)
+		}
+		tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+		tm.Type(env.report)
+		tm.Send(tea.KeyMsg{Type: tea.KeyEnter})
+		s.waitFor(t, "the report search", `matching "`+env.report+`"`)
+	}
+
 	// A resize, twice, including down to the smallest terminal anybody uses.
 	tm.Send(tea.WindowSizeMsg{Width: 80, Height: 24})
 	tm.Send(tea.WindowSizeMsg{Width: 40, Height: 10})
@@ -548,6 +719,18 @@ func TestLiveTUIDrivenByTheKeyboard(t *testing.T) {
 		}
 		if final.memQuery != env.memory {
 			t.Fatalf("the memory view is showing %q, not the search that was run", final.memQuery)
+		}
+	}
+	if env.report != "" {
+		if len(final.reports) == 0 {
+			t.Fatalf("searching the reports for %q found nothing", env.report)
+		}
+		if final.repQuery != env.report {
+			t.Fatalf("the reports pane is showing %q, not the search that was run", final.repQuery)
+		}
+		if env.asOf != "" && reportProvenance(final.reports[0]).AsOf != env.asOf {
+			t.Fatalf("the report came back without its as_of: %q",
+				string(final.reports[0].Fields))
 		}
 	}
 	if env.task != "" {

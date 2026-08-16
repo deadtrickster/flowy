@@ -3470,7 +3470,9 @@ fuse_await() {
 TUI_MESSAGE="tui-gate-seeded-message"
 TUI_MEMORY="quinceberry"
 TUI_TASK="the tui gate handoff"
-readonly TUI_MESSAGE TUI_MEMORY TUI_TASK
+TUI_REPORT="quinceberry harvest report"
+TUI_REPORT_AS_OF="tui-gate-abc123"
+readonly TUI_MESSAGE TUI_MEMORY TUI_TASK TUI_REPORT TUI_REPORT_AS_OF
 
 # The tui links no database driver and no store package: it reaches the node the
 # way any other client does or it does not reach it at all. This is a structural
@@ -3508,7 +3510,13 @@ tui_needs_a_token() {
 }
 
 # What the headless drive looks for: a message in general, a memory to search
-# for, and a task in A's own inbox.
+# for, a task in A's own inbox, and a report.
+#
+# The report is written over POST /api/artifacts and deliberately not through
+# report_write, because that is the case the reports view exists for: a report
+# filed over the API emits no report.write activity event, so the timeline - the
+# only way the tui reached artifacts before this view - cannot show it. A seed
+# that went through the mcp verb would pass whether or not the view worked.
 tui_seed() {
 	recall
 	api POST "$TOKEN_A" /api/chat/general/say \
@@ -3518,12 +3526,17 @@ tui_seed() {
 		"$(jq -nc --arg t "$TUI_MEMORY pruning notes" \
 			'{type: "memory", title: $t, body: "how to prune a quinceberry"}')" || return 1
 	want_eq "the seeded memory" "$API_STATUS" 200 || return 1
+	api POST "$TOKEN_A" /api/artifacts \
+		"$(jq -nc --arg t "$TUI_REPORT" --arg a "$TUI_REPORT_AS_OF" \
+			'{type: "report", title: $t, body: "how the harvest went",
+			  fields: {as_of: $a}}')" || return 1
+	want_eq "the seeded report" "$API_STATUS" 200 || return 1
 	local artifact
 	artifact="$(new_artifact "$TOKEN_A" bug "$TUI_TASK")" || return 1
 	assign_as "$TOKEN_A" "$artifact" "$USER_A" "for the tui gate" || return 1
 	want_eq "the seeded assignment" "$API_STATUS" 200 || return 1
-	printf 'a message in general, a %s memory, and a task about %s\n' \
-		"$TUI_MEMORY" "$artifact"
+	printf 'a message in general, a %s memory, a report as of %s, and a task about %s\n' \
+		"$TUI_MEMORY" "$TUI_REPORT_AS_OF" "$artifact"
 }
 
 # ran_the_live_tests NAME ENV... - runs one of the teatest drives and insists it
@@ -3557,8 +3570,9 @@ ran_the_live_tests() {
 
 # The client itself, driven by keystrokes against the live node: the room
 # renders, a message typed into the box comes back through the watcher, the
-# inbox has the seeded task, memory search finds the seeded item, the timeline
-# and the metrics render, it is resized twice and then it quits.
+# inbox has the seeded task, memory search finds the seeded item, the reports
+# view lists the seeded report with what it is true of, the timeline and the
+# metrics render, it is resized twice and then it quits.
 tui_headless() {
 	recall
 	ran_the_live_tests TestLiveTUIDrivenByTheKeyboard \
@@ -3567,7 +3581,9 @@ tui_headless() {
 		"FLOWY_TUI_ROOM=general" \
 		"FLOWY_TUI_MESSAGE=$TUI_MESSAGE" \
 		"FLOWY_TUI_MEMORY=$TUI_MEMORY" \
-		"FLOWY_TUI_TASK=$TUI_TASK"
+		"FLOWY_TUI_TASK=$TUI_TASK" \
+		"FLOWY_TUI_REPORT=$TUI_REPORT" \
+		"FLOWY_TUI_REPORT_AS_OF=$TUI_REPORT_AS_OF"
 }
 
 # And the failure the gate has to see: a token the node refuses is a line on the
@@ -8861,7 +8877,7 @@ check "node B survived the announcements" kill -0 "$NODE5B_PID"
 say "the terminal client"
 check "the tui reaches the node only through the HTTP API" tui_talks_only_to_the_api
 check "flowy tui refuses to start with no token anywhere" tui_needs_a_token
-check "a message, a memory and a task are seeded for the tui" tui_seed
+check "a message, a memory, a report and a task are seeded for the tui" tui_seed
 check "the tui, driven headless by the keyboard against the live node" tui_headless
 check "a token the node refuses is a status line, not a panic" \
 	tui_headless_refuses_a_bad_token

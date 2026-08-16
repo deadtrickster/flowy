@@ -92,6 +92,12 @@ type wroteMsg struct {
 	err      error
 }
 
+type reportsMsg struct {
+	query     string
+	artifacts []*Artifact
+	err       error
+}
+
 type activityMsg struct {
 	page *ActivityPage
 	err  error
@@ -262,6 +268,26 @@ func (m *Model) writeMemoryCmd(art *Artifact) tea.Cmd {
 		defer cancel()
 		written, err := m.client.WriteArtifact(ctx, art)
 		return wroteMsg{artifact: written, err: err}
+	}
+}
+
+// reportsCmd lists reports when there is no query and searches them when there
+// is, the same two calls the memory pane makes with the type it cares about.
+//
+// The type is passed on both paths and never left off. A search with no type
+// answers with memories, bugs and notes alongside the reports, and a pane that
+// listed those under the word "reports" would be telling the reader something
+// untrue about what a report is.
+func (m *Model) reportsCmd(query string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := callCtx()
+		defer cancel()
+		if query == "" {
+			list, err := m.client.Artifacts(ctx, "report", 200)
+			return reportsMsg{query: query, artifacts: list, err: err}
+		}
+		hits, err := m.client.Search(ctx, query, "report")
+		return reportsMsg{query: query, artifacts: hits, err: err}
 	}
 }
 

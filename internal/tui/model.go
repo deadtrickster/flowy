@@ -28,13 +28,20 @@ const (
 	viewTimeline
 	viewMetrics
 	viewAnnounce
+	viewReports
 	viewCount
 )
 
 // tabNames are what the tab bar says, in order, and the digit that selects each
-// is its position: 1 is rooms, 7 is announcements.
+// is its position: 1 is rooms, 8 is reports.
+//
+// Reports went on the end rather than beside memory, where it belongs by
+// subject. The digit that selects a view is its position in this list, and
+// moving memory from 4 to 5 would have renumbered five views to put one of them
+// in a tidier place - the keys are muscle memory and the help screen prints
+// them, so a new view is appended.
 var tabNames = [viewCount]string{
-	"ROOMS", "INBOX", "ARTIFACT", "MEMORY", "TIMELINE", "METRICS", "ANNOUNCE",
+	"ROOMS", "INBOX", "ARTIFACT", "MEMORY", "TIMELINE", "METRICS", "ANNOUNCE", "REPORTS",
 }
 
 // defaultRooms are the rooms that exist by convention. Any other is opened by
@@ -58,6 +65,7 @@ const (
 	inputTimelinePost
 	inputAnnTitle
 	inputAnnBody
+	inputRepQuery
 )
 
 // draft is what a two-step compose is holding on to between the steps.
@@ -120,6 +128,11 @@ type Model struct {
 	memQuery string
 	memory   []*Artifact
 	memSel   int
+
+	// reports
+	repQuery string
+	reports  []*Artifact
+	repSel   int
 
 	// timeline
 	tlQuery string
@@ -397,6 +410,17 @@ func (m *Model) onData(msg tea.Msg) tea.Cmd {
 		m.say("wrote " + msg.artifact.ID + " (" + msg.artifact.Visibility + ")")
 		return m.memoryCmd(m.memQuery)
 
+	case reportsMsg:
+		if m.note(msg.err) {
+			return nil
+		}
+		m.repQuery = msg.query
+		m.reports = msg.artifacts
+		if m.repSel >= len(m.reports) {
+			m.repSel = max(0, len(m.reports)-1)
+		}
+		return nil
+
 	case activityMsg:
 		if m.note(msg.err) {
 			return nil
@@ -491,6 +515,8 @@ func (m *Model) refreshCmd() tea.Cmd {
 		return nil
 	case viewMemory:
 		return m.memoryCmd(m.memQuery)
+	case viewReports:
+		return m.reportsCmd(m.repQuery)
 	case viewTimeline:
 		return m.activityCmd(m.tlQuery, m.tlKind)
 	case viewMetrics:
@@ -515,6 +541,10 @@ func (m *Model) enter(v view) tea.Cmd {
 	case viewMemory:
 		if m.memory == nil {
 			return m.memoryCmd("")
+		}
+	case viewReports:
+		if m.reports == nil {
+			return m.reportsCmd("")
 		}
 	case viewTimeline:
 		if m.tl == nil {
@@ -595,7 +625,7 @@ func (m *Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.enter((m.view + 1) % viewCount)
 	case "shift+tab":
 		return m, m.enter((m.view + viewCount - 1) % viewCount)
-	case "1", "2", "3", "4", "5", "6", "7":
+	case "1", "2", "3", "4", "5", "6", "7", "8":
 		if m.statusPin {
 			break // the digits are the status choices while the picker is up
 		}
@@ -614,6 +644,8 @@ func (m *Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.artifactKey(msg)
 	case viewMemory:
 		return m.memoryKey(msg)
+	case viewReports:
+		return m.reportsKey(msg)
 	case viewTimeline:
 		return m.timelineKey(msg)
 	case viewMetrics:
@@ -712,6 +744,10 @@ func (m *Model) submitInput() (tea.Model, tea.Cmd) {
 			art.Visibility = "personal"
 		}
 		return m, m.writeMemoryCmd(art)
+
+	case inputRepQuery:
+		m.closeInput()
+		return m, m.reportsCmd(value)
 
 	case inputTimelineQuery:
 		m.closeInput()
@@ -820,6 +856,8 @@ func (m *Model) pane(height int) []string {
 		return m.artifactView(height)
 	case viewMemory:
 		return m.memoryView(height)
+	case viewReports:
+		return m.reportsView(height)
 	case viewTimeline:
 		return m.timelineView(height)
 	case viewMetrics:
@@ -862,11 +900,24 @@ func (m *Model) bannerLines() []string {
 // tabBarLine is the row of views, with the active one highlighted and its digit
 // beside it. It is one line and it is clipped, so a narrow pane loses the tabs
 // on the right rather than wrapping them onto the row the pane needs.
+//
+// Clipping alone stopped being enough at eight views: the full labels are 86
+// columns and the terminal this is written for is 80, so the last tab fell off
+// the right on the default size and the view it named was one nobody knew was
+// there. When they do not all fit, every tab keeps its digit and only the one
+// being looked at keeps its name. The digit is what selects a view, so a bar
+// that has room for nothing else still says what may be pressed.
 func (m *Model) tabBarLine() string {
+	full := 0
+	for i, name := range tabNames {
+		full += len([]rune(tabLabel(i, name, true)))
+	}
+	long := full <= m.width
+
 	var parts []string
 	used := 0
 	for i, name := range tabNames {
-		label := fmt.Sprintf(" %d %s ", i+1, name)
+		label := tabLabel(i, name, long || view(i) == m.view)
 		// The budget is counted on the plain label, never on the styled one: a
 		// styled string is mostly escape bytes, and clipping one by length is
 		// how a tab bar ends up emitting half an escape sequence.
@@ -881,6 +932,14 @@ func (m *Model) tabBarLine() string {
 		}
 	}
 	return strings.Join(parts, "")
+}
+
+// tabLabel is one tab, with or without its name.
+func tabLabel(i int, name string, withName bool) string {
+	if withName {
+		return fmt.Sprintf(" %d %s ", i+1, name)
+	}
+	return fmt.Sprintf(" %d ", i+1)
 }
 
 // statusLine is who this is, where it is pointed, and whether it is talking to
@@ -944,7 +1003,7 @@ func (m *Model) footerLine() string {
 
 // viewHelp is the one-line key hint for whatever is on screen.
 func (m *Model) viewHelp() string {
-	common := "tab/1-7 view  ?help  q quit"
+	common := "tab/1-8 view  ?help  q quit"
 	switch m.view {
 	case viewRooms:
 		return "j/k move  i post  t thread  o open room  n/p room  " + common
@@ -954,6 +1013,8 @@ func (m *Model) viewHelp() string {
 		return "s status  esc back  " + common
 	case viewMemory:
 		return "j/k move  / search  enter open  i new  e edit  " + common
+	case viewReports:
+		return "j/k move  / search  c clear  enter open  " + common
 	case viewTimeline:
 		return "j/k move  / search  i post  enter artifact  " + common
 	case viewMetrics:
@@ -973,7 +1034,8 @@ func (m *Model) helpView() string {
 		"",
 		"  everywhere",
 		"    tab / shift-tab   next / previous view",
-		"    1 2 3 4 5 6 7     rooms, inbox, artifact, memory, timeline, metrics, announce",
+		"    1 2 3 4 5 6 7 8   rooms, inbox, artifact, memory, timeline,",
+		"                      metrics, announce, reports",
 		"    j / k, up / down  move        g / G   first / last",
 		"    enter             open        r       refresh",
 		"    /                 search      i       insert (post / compose)",
@@ -988,6 +1050,7 @@ func (m *Model) helpView() string {
 		"  timeline    / filter, i post into the selected run or the current room",
 		"  metrics     a ask for the node's own scope (operator only)",
 		"  announce    a acknowledge, v severity, c scope, i post one",
+		"  reports     / search, enter opens it; published with report_write",
 		"",
 		m.theme.Dim.Render("  ctrl-a and ctrl-b are never bound: they belong to tmux and screen."),
 		m.theme.Dim.Render("  no mouse is needed, and none is captured, so selection still works."),

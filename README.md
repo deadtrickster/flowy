@@ -195,7 +195,7 @@ both empty by default. See [The security fixes](#the-security-fixes).
 | --- | --- |
 | `flowy serve` | HTTP server, wired to the store, serving the embedded console |
 | `flowy mcp` | MCP server: shared memory over stdio, or `--http :PORT` |
-| `flowy tui` | the terminal client: rooms, inbox, artifacts, memory, timeline, metrics and announcements, over the HTTP API |
+| `flowy tui` | the terminal client: rooms, inbox, artifacts, memory, timeline, metrics, announcements and reports, over the HTTP API |
 | `flowy fuse` | mount this principal's memory as files: `--mount <dir>`, or `--reconcile` to apply what an earlier mount queued |
 | `flowy sync` | replicate with a peer: `--peer <url> --token <t>`, pull then push |
 | `flowy traces` | collect one trace from this node and its peers: `--trace <id> [--peer <url>,...]` |
@@ -1422,7 +1422,7 @@ flowy tui                                   # $FLOWY_ADDR, $FLOWY_TOKEN
 flowy tui --url http://box:8787 --token tA-…
 ```
 
-Seven views, on a tab bar, each one a digit:
+Eight views, on a tab bar, each one a digit:
 
 | view | what it is |
 | --- | --- |
@@ -1433,10 +1433,18 @@ Seven views, on a tab bar, each one a digit:
 | 5 timeline | the Phase 8 activity log - turns, run logs, chat, steers - searchable and postable-into |
 | 6 metrics | the six metric groups as text panels, with bars and a sparkline drawn in cells |
 | 7 announce | the active announcements, acknowledge, and post one |
+| 8 reports | the published documents, each with what it is true of, and the body under the list |
 
-The banner is above all seven: the active announcements this token may read,
+The banner is above all eight: the active announcements this token may read,
 coloured by severity, on every view. Like the console's, it has no dismiss -
 what clears it is the announcement being resolved.
+
+**Eight labels are wider than eighty columns, so the bar gives up its names
+before it gives up a tab.** The full row is 86 columns and the terminal this
+client is written for is 80; a bar that only clipped would have dropped reports
+off the right, and a view whose key is not on screen is a view nobody finds.
+When they do not all fit, every tab keeps its digit and only the one being
+looked at keeps its name.
 
 **The stream is live and the UI never waits on it.** Every call to the node is a
 `tea.Cmd`, which bubbletea runs on a goroutine of its own and delivers back as a
@@ -1457,7 +1465,7 @@ terminal's own selection and tmux's copy-mode still work.
 
 ```
 j/k or arrows  move          tab / shift-tab  next / previous view
-1 … 7          a view        enter            open
+1 … 8          a view        enter            open
 /              search        i                insert: post, or compose
 esc            leave a box, close the help, go back
 r              refresh       ?  help          q / ctrl-c  quit
@@ -1467,7 +1475,21 @@ Rooms adds `o` to open any room by name, `n`/`p` for the next and previous one
 and `t` for the thread pane; inbox adds `d` delegate and `x` done; artifact adds
 `s`, then a digit off the list the node returned in `next`; memory adds `i` and
 `e`; timeline adds `f` for the kind filter; announcements add `a` to
-acknowledge and `v`/`c` to pick a severity and a scope before posting one.
+acknowledge and `v`/`c` to pick a severity and a scope before posting one;
+reports adds `/` and `c` for the search and clearing it.
+
+**Reports read and do not write, which is the one deliberate asymmetry with
+memory next door.** A report carries what it was true of (`as_of`) and what it
+replaces (`supersedes`), and without those it is a claim with no expiry - the
+thing the type was invented to avoid. `report_write` asks for both; a
+title-then-body compose in a terminal would ask for neither and publish anyway,
+so the composing stays where the provenance is. The view exists because the
+terminal client reached artifacts only through the activity feed, which carries
+what `report_write` emits and nothing else: a report filed straight over
+`POST /api/artifacts` was listed in the console and invisible here, and one
+client seeing what the other cannot is worse than both missing it - the reader
+cannot tell an empty list from a blind one. The gate seeds its report over the
+API for exactly that reason.
 
 **Personal stays personal.** A memory written here is written `personal`, which
 is what the memory surface's own default is, and an edit sends no visibility at
