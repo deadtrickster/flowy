@@ -114,9 +114,40 @@ func wakesFor(p *store.Principal, e *store.Event, want inboxFilter) bool {
 		// isOwnActor asks "is this string this principal", which is the same
 		// question of an addressee as it is of an actor: a message to the
 		// person and a message to the agent working for them both reach here.
-		return isOwnActor(p, e.Addressee)
+		//
+		// OR FROM A PERSON, and that half is not a courtesy. Agents address
+		// each other by habit - "flowy-claude: ..." or --to - so agent traffic
+		// matches this and forces a turn. A person writes "who is here?" with
+		// no name and no addressee, so it did not match, and the human's
+		// messages were STRUCTURALLY THE LEAST LIKELY in the room to be
+		// answered while ours were the most. Nobody was ignoring them; the
+		// filter sorted them to the bottom. The user's own words: "my messages
+		// i post in the web ui are more likely to be ignored, you guys talk to
+		// each other just fine". claude-host fixed the same flaw in the
+		// firecode hook at 9b0a6e2; this is that rule in the other listener.
+		return isOwnActor(p, e.Addressee) || saidByAPerson(e)
 	}
 	return true
+}
+
+// saidByAPerson reports whether a person wrote this, according to the node.
+//
+// It reads meta.actor_kind, which chat.go stamps at write time from the
+// principal itself - so a client cannot claim to be human to force everybody's
+// attention, which is the whole reason this is safe to wake on. A message with
+// no meta, or meta that is not an object, is not a person: absence is not
+// evidence, and falling through to the addressee test is the safe direction.
+func saidByAPerson(e *store.Event) bool {
+	if len(e.Meta) == 0 {
+		return false
+	}
+	var fields struct {
+		ActorKind string `json:"actor_kind"`
+	}
+	if err := json.Unmarshal(e.Meta, &fields); err != nil {
+		return false
+	}
+	return fields.ActorKind == "user"
 }
 
 // handleInboxWait blocks until something this waiter should hear is said.
