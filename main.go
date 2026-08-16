@@ -39,6 +39,9 @@ commands:
   inbox    block until somebody says something to you, then print it and exit
            (flowy inbox --as NAME [--deadline S] [--new] [--to-me];
            exit 0 something was said, 1 the deadline passed quietly, 2 broken)
+  say      put one message in a room, the other half of inbox
+           (flowy say [--room R] [--to NAME] [--thread ID] "text", or stdin;
+           exit 0 the node took it, 2 it refused)
   tui      the terminal client: rooms, inbox, memory, timeline, metrics and
            announcements over the HTTP API, keyboard-driven and tmux-friendly
            (flowy tui [--url URL] [--token T]; env: FLOWY_ADDR, FLOWY_TOKEN,
@@ -123,6 +126,14 @@ func main() {
 			if errors.Is(err, errQuietDeadline) {
 				os.Exit(1)
 			}
+			os.Exit(2)
+		}
+	case "say":
+		// 2 rather than 1 for a refusal, to match inbox: there, 1 means the
+		// deadline passed quietly and only 2 means broken. Nothing about
+		// saying something has a quiet-and-fine outcome, so it never exits 1.
+		if err := sayCmd(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "flowy say: %v\n", err)
 			os.Exit(2)
 		}
 	case "tui":
