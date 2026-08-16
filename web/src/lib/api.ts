@@ -39,6 +39,18 @@ export interface FlowyEvent {
   created: string;
 }
 
+/**
+ * NodeInfo is what the node says about itself. `bundle` is the hashed console
+ * asset this binary embeds - the fingerprint a running tab compares itself
+ * against to find out a deploy has happened underneath it.
+ */
+export interface NodeInfo {
+  node: string;
+  version: string;
+  console: boolean;
+  bundle: string;
+}
+
 /** ChatPage is what a room read or a long poll answers with. */
 export interface ChatPage {
   room?: string;
@@ -519,6 +531,13 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 export const api = {
   whoami: () => request<Whoami>("/api/whoami"),
+
+  /**
+   * What this node is, and which console it serves. `bundle` is the hashed
+   * asset its index.html loads, which is how a tab open across a deploy finds
+   * out it is running code that has since been replaced.
+   */
+  node: () => request<NodeInfo>("/api/node"),
 
   /** projects is the registry, narrowed to what this token may be shown. */
   projects: () => request<ProjectsPage>("/api/projects"),

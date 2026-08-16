@@ -11,6 +11,7 @@ import {
 import type { ReactNode } from "react";
 import { NavLink } from "react-router-dom";
 
+import { FreshBanner } from "@/components/FreshBanner";
 import { TokenBar } from "@/components/TokenBar";
 import { cn } from "@/lib/utils";
 
@@ -82,7 +83,15 @@ export function Shell({ children }: { children: ReactNode }) {
         </div>
       </aside>
 
-      <main className="min-w-0 flex-1 overflow-hidden">{children}</main>
+      <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
+        {/*
+          Above every route rather than inside one: a tab running a replaced
+          console is a fact about the tab, not about whichever page it happens
+          to be showing.
+        */}
+        <FreshBanner />
+        <div className="min-h-0 flex-1 overflow-hidden">{children}</div>
+      </main>
     </div>
   );
 }

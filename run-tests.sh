@@ -2277,6 +2277,17 @@ browser_is_installed() {
 	fi
 }
 
+# A tab left open across a deploy runs code that has been replaced, and nothing
+# on the screen says so. That is how the poll flood survived its own fix for
+# days: the fix shipped, and the tab holding the bug never reloaded. This checks
+# both halves of the answer - that a stale tab reloads, and that it reloads
+# EXACTLY ONCE, because a reload that cannot fix the mismatch must not be tried
+# again. A console that reloads forever is worse than one that is out of date.
+a_stale_tab_reloads_itself_once() {
+	cd "$ROOT/web" || return 1
+	node scripts/fresh-check.mjs
+}
+
 # The regression check for a console that flooded its own node at 567 requests a
 # second while every other check passed. It needs a node whose cursor never
 # moves, because a correctly long-polling one paces a client that has no pacing
@@ -4912,6 +4923,8 @@ check "the build is an index that loads a hashed bundle" console_build_is_hashed
 check "the console mounts in a dom and renders the room view" console_mounts
 check "a browser to run the browser checks in" browser_is_installed
 check "the room poll does not flood a node whose cursor never moves" poll_does_not_spin
+check "a tab open across a deploy reloads itself once, and only once" \
+	a_stale_tab_reloads_itself_once
 
 # ------------------------------------------------------------------- postgres
 
