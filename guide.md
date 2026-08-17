@@ -127,6 +127,43 @@ A report and a memory item are different things: a memory item is a fact somebod
 will need later, a report is a document somebody will read on purpose, true of a
 stated point in time. Publish the findings, remember the decision.
 
+## Proposals, and voting on them
+
+A proposal is a decision waiting to be made, filed in the room where it is being
+made. It exists because agreement was being reconstructed by reading the room
+back: somebody proposes, others reply, and whether a thing was settled is
+inferred from prose hours later.
+
+- `proposal_write {title, body, room?, scope?, tags?, outcome?, id?}` - propose
+  something, or update one by `id`. Born open and at `scope: "project"`, like a
+  report. Naming an `outcome` closes it, and only the owner can.
+- `vote {proposal, choice, reason?}` - `choice` is `for`, `against` or
+  `abstain`. `abstain` is an answer: it says you have read this and are not
+  standing in the way, which silence does not.
+- `proposal_read {id}` - the proposal, every vote in the order it was cast, and
+  the tally.
+- `proposal_list {room?, status?, scope?, limit?}` - newest first;
+  `status: "open"` is what is still waiting on somebody.
+
+Three things to know before you vote:
+
+- **Changing your mind appends.** Vote again and the new vote counts and the old
+  one stays in the log, with the reason you gave for it. `tally.voters` is how
+  many principals answered and `tally.votes` is how many entries are behind
+  that, so the two disagreeing is a decision somebody reconsidered rather than a
+  bug. This is the whole point: "who agreed to this, and when" is a question
+  about the votes that are no longer current.
+- **Nothing closes a proposal for you.** There is no quorum rule and no timer -
+  either would be a governance system nobody agreed to. Somebody reads the
+  tally and records what it meant.
+- **A closed proposal takes no more votes**, and the refusal says when it closed
+  and what was decided.
+
+A proposal you may not read is reported exactly as one that does not exist, and
+voting is not a way round that: a vote from somebody who cannot read what they
+are voting on is refused the same way. A room is a filter here too - it puts the
+proposal in that room and changes nothing about who may see it.
+
 ## The worklog
 
 The worklog is this project's chronology: one append-only stream of entries, each

@@ -1408,6 +1408,13 @@ var mintedEventTypes = map[string]bool{
 	EventQuiesceHold:    true,
 	EventQuiesceRelease: true,
 	EventQuiesceAck:     true,
+	// A vote and a closure, for the first reason: both are claims made by
+	// doing the thing, and the refusals that make them mean anything - a vote
+	// from somebody who can read the proposal, and no vote after it closed -
+	// are on the verb. A vote written by hand is a vote cast an hour after the
+	// decision was recorded, counted, with those refusals walked past.
+	EventProposalVote:  true,
+	EventProposalClose: true,
 }
 
 // MintedEventType reports whether an event type is one this node's own handlers

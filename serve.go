@@ -245,6 +245,8 @@ var apiRoutes = []string{
 	"GET /api/chat/{room}",
 	"GET /api/chat/{room}/wait",
 	"POST /api/chat/{room}/todo",
+	"GET /api/proposals",
+	"GET /api/proposal/{id}",
 	"GET /api/inbox",
 	"GET /api/inbox/tasks",
 	"GET /api/inbox/wait",
@@ -335,6 +337,12 @@ func (s *server) routes() http.Handler {
 	// The room's plan, raised from the room: a todo and the message that raised
 	// it, written where the conversation is.
 	api.HandleFunc("POST /api/chat/{room}/todo", s.handleRoomTodoRaise)
+	// What a room decided, as data: the proposal, the votes in the order they
+	// were cast, and the tally. Read-only here on purpose - the writes are the
+	// MCP verbs, and the console's view of this is deliberately not in this
+	// change.
+	api.HandleFunc("GET /api/proposals", s.handleListProposals)
+	api.HandleFunc("GET /api/proposal/{id}", s.handleGetProposal)
 	api.HandleFunc("GET /api/inbox", s.handleInbox)
 	// The waiter: a long poll over the inbox, and the two calls that keep its
 	// place. The place is on the node rather than in a file beside the client,

@@ -441,6 +441,11 @@ var mintedTypes = map[string]bool{
 	store.EventQuiesceHold:    true,
 	store.EventQuiesceRelease: true,
 	store.EventQuiesceAck:     true,
+	// A vote, and the closure that stops them. Both are written by the verb
+	// that does the thing, because both refusals that make the record worth
+	// reading live there - see store.CastVote.
+	store.EventProposalVote:  true,
+	store.EventProposalClose: true,
 }
 
 // handleAppendEvent appends to the log. The log is append-only: there is no
