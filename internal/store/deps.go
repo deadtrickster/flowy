@@ -93,7 +93,15 @@ const DepRoom = "deps"
 const MemoryType = "memory"
 
 // WorkKinds are the kinds of item the queue holds.
-var WorkKinds = []string{"todo", "feature", "handoff"}
+//
+// "merge" is here, and putting it here rather than in a queue of its own is the
+// decision worth reading twice. A merge request has a status, waits on things,
+// and is carried by somebody - so it is work, and everything this file already
+// does about ordering work applies to it unchanged. The alternative is a second
+// graph with a second ready query, which means two answers to what can start now
+// and no way to tell which one is lying. See mergequeue.go, which adds one
+// opinion to a merge item and no new machinery underneath it.
+var WorkKinds = []string{"todo", "feature", "handoff", MergeKind}
 
 // DoneStatus is the status that takes an item out of the queue, and - read from
 // the other side - the only status that satisfies a dependency.

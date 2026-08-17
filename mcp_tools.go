@@ -29,8 +29,8 @@ const memoryType = store.MemoryType
 // from a tool argument, and it has to reach the same three columns these do.
 var memScopes = store.MemScopes
 
-// The kinds. todos looks at the last three.
-var memKinds = []string{"note", "todo", "feature", "handoff"}
+// The kinds. todos looks at every one of them except "note".
+var memKinds = []string{"note", "todo", "feature", "handoff", store.MergeKind}
 
 // workKinds are the kinds that describe outstanding work. The list is the
 // store's, because the ready query narrows by it too: what is in the queue and
@@ -130,14 +130,19 @@ var tools = []tool{
 	},
 	{
 		Name: "todos",
-		Description: "Outstanding work you may see: todo, feature and handoff items " +
-			"whose status is not done. Narrow to one room to get that room's plan.",
+		Description: "Outstanding work you may see: todo, feature, handoff and merge " +
+			"items whose status is not done. Narrow to one room to get that room's " +
+			"plan, or to one kind to get the merge queue.",
 		InputSchema: object(props{
 			"scope": enum("Narrow to one scope.", memScopes),
 			"room":  str("Only the items raised in this chat room."),
 			"category": enum("Only the items filed as this kind of work. This is what "+
 				"the closed set is for: ask for the bugs and get the bugs.",
 				store.TodoCategories),
+			"kind": enum("Only items of this kind. \"merge\" is the merge queue - a "+
+				"merge request is work like anything else and waits on the same "+
+				"dependency edges, so this is one queue with two views rather than "+
+				"two queues. Leave it out for the whole board.", store.WorkKinds),
 		}, nil),
 		call: todosTool,
 	},
@@ -755,6 +760,7 @@ func todosTool(ctx context.Context, m *mcpServer, p *store.Principal, raw json.R
 		Scope    string `json:"scope"`
 		Room     string `json:"room"`
 		Category string `json:"category"`
+		Kind     string `json:"kind"`
 		Limit    int    `json:"limit"`
 	}
 	if err := decodeParams(raw, &a); err != nil {
@@ -765,6 +771,22 @@ func todosTool(ctx context.Context, m *mcpServer, p *store.Principal, raw json.R
 		return nil, err
 	}
 	q.Kinds = workKinds
+	// One queue, two views. The merge queue is not a separate list - a merge
+	// request is work, ordered by the same dependency edges as everything else -
+	// so the split the console needs is a NARROWING of this read rather than a
+	// second one. kind: "merge" is the merge tab; kind left out is the whole
+	// board, which is what a flattened view is.
+	//
+	// A kind outside the vocabulary is refused rather than answered with an empty
+	// list, because "there is no such kind" and "there is no work of that kind"
+	// are different facts and today cost hours of confusing them.
+	if a.Kind != "" {
+		if !isWorkKind(a.Kind) {
+			return nil, fmt.Errorf("%q is not a kind of work this queue holds: one of %s",
+				a.Kind, strings.Join(workKinds, ", "))
+		}
+		q.Kinds = []string{a.Kind}
+	}
 	q.NotStatus = store.DoneStatus
 	// The room narrows and does not widen: without it this is the whole queue,
 	// items with a room and items without, exactly as it has always been.
