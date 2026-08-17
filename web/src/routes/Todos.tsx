@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 
+import { MergeQueue } from "@/components/MergeQueue";
 import { Badge } from "@/components/ui/badge";
-import type { Artifact, Refused, Withheld } from "@/lib/api";
+import type { Artifact, MergeRequest, Refused, Withheld } from "@/lib/api";
 import { TODO_PAGE, api } from "@/lib/api";
 import { useSession } from "@/lib/session";
 import { speakerStyle } from "@/lib/speakercolour";
@@ -78,6 +79,23 @@ export function Todos() {
    */
   const [kind, setKind] = useState("");
   const [tag, setTag] = useState("");
+  /**
+   * Which tab is open. Two views of one queue rather than two queues: a merge
+   * request is a work item, it waits on the same dependency edges as everything
+   * else, and the store holds it in the same list. What differs is the question
+   * being asked - "what is outstanding" against "what may land" - so the split
+   * is in the reading, not in the data.
+   *
+   * Held here rather than in the URL for the same reason the filters are: it is
+   * a way of reading this page, and a shared link that opens somebody else on a
+   * tab they did not choose is a small lie about what they are looking at.
+   */
+  const [tab, setTab] = useState<"todos" | "merge">("todos");
+  const [merges, setMerges] = useState<MergeRequest[]>([]);
+  const [mergeTip, setMergeTip] = useState("");
+  const [mergeTipFrom, setMergeTipFrom] = useState<"stated" | "deployed" | "none">("none");
+  const [mergeDecided, setMergeDecided] = useState(false);
+  const [mergesLoaded, setMergesLoaded] = useState(false);
 
   useEffect(() => {
     if (!token) {
@@ -91,6 +109,23 @@ export function Todos() {
     let stopped = false;
     // Both reads together: a count with no scope beside it is the sentence this
     // page exists to avoid, so neither half is rendered until both have landed.
+    api
+      .mergeQueue()
+      .then((q) => {
+        if (stopped) return;
+        setMerges(q.items ?? []);
+        setMergeTip(q.target_tip ?? "");
+        setMergeTipFrom(q.tip_from ?? "none");
+        setMergeDecided(Boolean(q.decided));
+      })
+      .catch(() => {
+        // A node without this endpoint is an older node, not a broken page.
+        // The tab says zero and the todos half is unaffected.
+        if (!stopped) setMerges([]);
+      })
+      .finally(() => {
+        if (!stopped) setMergesLoaded(true);
+      });
     Promise.all([api.todos(), api.projects()])
       .then(([queue, registry]) => {
         if (stopped) return;
@@ -128,19 +163,71 @@ export function Todos() {
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex flex-col gap-1 border-border border-b px-4 py-3">
-        <div className="flex flex-wrap items-center gap-2">
-          <h1 className="font-semibold text-base">todos</h1>
-          <span className="text-muted-foreground text-xs">
-            every project you can read, not just the one you write into
-          </span>
-          {answered ? (
-            <span className="ml-auto text-muted-foreground text-xs">
-              {counts.active} active, {counts.open} open, {counts.done} done
-            </span>
-          ) : null}
-        </div>
-        {/*
+      {/*
+        Two views of one queue. The counts live in the tab titles because the
+        question "is there anything waiting to land" should be answerable
+        without opening the tab - a board you have to click through to find out
+        whether it needs you is a board people stop opening.
+      */}
+      <div className="flex items-center gap-1 border-border border-b px-2 pt-2" role="tablist">
+        <TabButton
+          selected={tab === "todos"}
+          onClick={() => setTab("todos")}
+          label="todos"
+          stats={
+            answered ? (
+              <>
+                <Stat colour="#e0a03f" n={counts.active} what="active" />
+                <Stat colour="#8b93a7" n={counts.open} what="open" />
+              </>
+            ) : null
+          }
+        />
+        <TabButton
+          selected={tab === "merge"}
+          onClick={() => setTab("merge")}
+          label="merge queue"
+          stats={
+            mergesLoaded ? (
+              <>
+                <Stat
+                  colour="#4fae7a"
+                  n={merges.filter((m) => m.admissible === true).length}
+                  what="may land"
+                />
+                <Stat
+                  colour="#d1585f"
+                  n={merges.filter((m) => m.admissible === false).length}
+                  what="refused"
+                />
+              </>
+            ) : null
+          }
+        />
+      </div>
+      {tab === "merge" ? (
+        <MergeQueue
+          items={merges}
+          tip={mergeTip}
+          tipFrom={mergeTipFrom}
+          decided={mergeDecided}
+          loaded={mergesLoaded}
+        />
+      ) : (
+        <>
+          <header className="flex flex-col gap-1 border-border border-b px-4 py-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <h1 className="font-semibold text-base">todos</h1>
+              <span className="text-muted-foreground text-xs">
+                every project you can read, not just the one you write into
+              </span>
+              {answered ? (
+                <span className="ml-auto text-muted-foreground text-xs">
+                  {counts.active} active, {counts.open} open, {counts.done} done
+                </span>
+              ) : null}
+            </div>
+            {/*
           The two labels a todo carries, as two controls, because they are two
           different things and reading them as one is the whole confusion this
           round is about. KIND is one word out of a closed set the node refuses
@@ -154,65 +241,65 @@ export function Todos() {
           own reach every time somebody picked a filter would be lying in the one
           place it exists not to.
         */}
-        {answered ? (
-          <div className="flex flex-wrap items-center gap-2 text-xs">
-            <label className="flex items-center gap-1 text-muted-foreground">
-              kind
-              <select
-                data-todo-kind-filter=""
-                aria-label="kind of work"
-                value={kind}
-                onChange={(e) => setKind(e.target.value)}
-                className="rounded border border-border bg-background px-1 py-0.5 text-foreground"
-              >
-                <option value="">any</option>
-                {TODO_KINDS.map((name) => (
-                  <option key={name} value={name}>
-                    {name}
-                  </option>
-                ))}
-                <option value={UNCLASSIFIED}>unclassified</option>
-              </select>
-            </label>
-            <label className="flex items-center gap-1 text-muted-foreground">
-              tag
-              <select
-                data-todo-tag-filter=""
-                aria-label="tag"
-                value={tag}
-                onChange={(e) => setTag(e.target.value)}
-                className="rounded border border-border bg-background px-1 py-0.5 text-foreground"
-              >
-                <option value="">any</option>
-                {tags.map((name) => (
-                  <option key={name} value={name}>
-                    {name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            {/* What the filter is doing to the list, in numbers, beside the
+            {answered ? (
+              <div className="flex flex-wrap items-center gap-2 text-xs">
+                <label className="flex items-center gap-1 text-muted-foreground">
+                  kind
+                  <select
+                    data-todo-kind-filter=""
+                    aria-label="kind of work"
+                    value={kind}
+                    onChange={(e) => setKind(e.target.value)}
+                    className="rounded border border-border bg-background px-1 py-0.5 text-foreground"
+                  >
+                    <option value="">any</option>
+                    {TODO_KINDS.map((name) => (
+                      <option key={name} value={name}>
+                        {name}
+                      </option>
+                    ))}
+                    <option value={UNCLASSIFIED}>unclassified</option>
+                  </select>
+                </label>
+                <label className="flex items-center gap-1 text-muted-foreground">
+                  tag
+                  <select
+                    data-todo-tag-filter=""
+                    aria-label="tag"
+                    value={tag}
+                    onChange={(e) => setTag(e.target.value)}
+                    className="rounded border border-border bg-background px-1 py-0.5 text-foreground"
+                  >
+                    <option value="">any</option>
+                    {tags.map((name) => (
+                      <option key={name} value={name}>
+                        {name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {/* What the filter is doing to the list, in numbers, beside the
                 control that did it. A short list with nothing saying it is short
                 is the same failure as a capped one - see the cap notice above. */}
-            {filtered ? (
-              <span data-todo-filtered={shown.length} className="text-muted-foreground">
-                showing {shown.length} of {todos.length}
-                <button
-                  type="button"
-                  data-todo-filter-clear=""
-                  onClick={() => {
-                    setKind("");
-                    setTag("");
-                  }}
-                  className="ml-2 underline hover:no-underline"
-                >
-                  clear
-                </button>
-              </span>
+                {filtered ? (
+                  <span data-todo-filtered={shown.length} className="text-muted-foreground">
+                    showing {shown.length} of {todos.length}
+                    <button
+                      type="button"
+                      data-todo-filter-clear=""
+                      onClick={() => {
+                        setKind("");
+                        setTag("");
+                      }}
+                      className="ml-2 underline hover:no-underline"
+                    >
+                      clear
+                    </button>
+                  </span>
+                ) : null}
+              </div>
             ) : null}
-          </div>
-        ) : null}
-        {/*
+            {/*
           The scope, in words, on the page. Not a tooltip and not a console line:
           somebody reading this list has to see how far it reaches without
           knowing to ask, because the whole failure mode is two readers who never
@@ -223,93 +310,150 @@ export function Todos() {
           misstating its own scope must not spend a paint saying it reaches
           nothing.
         */}
-        {answered ? (
-          <p
-            data-todo-scope=""
-            data-todo-count={todos.length}
-            data-project-count={projects.length}
-            className="flex flex-wrap items-center gap-1.5 text-muted-foreground text-xs"
-          >
-            <span>{scopeLine({ todos: todos.length, projects: projects.length, personal })}</span>
-            {/* Named, not just counted. A number says how much is out of reach
+            {answered ? (
+              <p
+                data-todo-scope=""
+                data-todo-count={todos.length}
+                data-project-count={projects.length}
+                className="flex flex-wrap items-center gap-1.5 text-muted-foreground text-xs"
+              >
+                <span>
+                  {scopeLine({ todos: todos.length, projects: projects.length, personal })}
+                </span>
+                {/* Named, not just counted. A number says how much is out of reach
                 and a name says what, and "3 projects" with no names is the same
                 unanswerable question one step later. */}
-            {projects.map((name) => (
-              <Badge key={name} variant="outline" data-scope-project={name}>
-                {name}
-              </Badge>
-            ))}
-            {capped ? (
-              <span data-todo-capped="">
-                - the node stopped at {TODO_PAGE} rows, so there may be more
-              </span>
-            ) : null}
-            {/* And what the node would not hand over, which is the other way a
+                {projects.map((name) => (
+                  <Badge key={name} variant="outline" data-scope-project={name}>
+                    {name}
+                  </Badge>
+                ))}
+                {capped ? (
+                  <span data-todo-capped="">
+                    - the node stopped at {TODO_PAGE} rows, so there may be more
+                  </span>
+                ) : null}
+                {/* And what the node would not hand over, which is the other way a
                 list is short. The cap is "there may be more"; this is "there IS
                 more, and here is why you are not being shown it" - a stronger
                 statement and the one that must never be silent. It carries no
                 data-scope-project: those name the projects the list is drawn
                 from, and this is not one of them. */}
-            {withheld ? (
-              <span
-                data-todo-withheld={withheld.rows}
-                title="Rows this node refused because the principal named on them did not
+                {withheld ? (
+                  <span
+                    data-todo-withheld={withheld.rows}
+                    title="Rows this node refused because the principal named on them did not
 sign them and it holds that principal's key. They are refused, not hidden - and
 this says so rather than letting the list read as all the work there is."
-              >
-                - {withheld.rows} row{withheld.rows === 1 ? "" : "s"} withheld: {withheld.reason}
-              </span>
-            ) : null}
-            {/* And the decisions behind them, which are not the same set. A
+                  >
+                    - {withheld.rows} row{withheld.rows === 1 ? "" : "s"} withheld:{" "}
+                    {withheld.reason}
+                  </span>
+                ) : null}
+                {/* And the decisions behind them, which are not the same set. A
                 withheld row may arrive on the next pull; a refused claim never
                 will, unless somebody signs for it. Shown separately so a reader
                 can tell "not here yet" from "not coming". */}
-            {refused ? (
-              <span
-                data-todo-refused={refused.claims}
-                title="Authorship claims this node refused and will not reconsider. A refusal
+                {refused ? (
+                  <span
+                    data-todo-refused={refused.claims}
+                    title="Authorship claims this node refused and will not reconsider. A refusal
 here is a decision, not a delay: it is not re-judged when a key is pinned or an
 epoch moves. The same content signed by the person it names is a different claim
 and lands."
-              >
-                - {refused.claims} claim{refused.claims === 1 ? "" : "s"} refused: {refused.reason}
-              </span>
+                  >
+                    - {refused.claims} claim{refused.claims === 1 ? "" : "s"} refused:{" "}
+                    {refused.reason}
+                  </span>
+                ) : null}
+              </p>
             ) : null}
-          </p>
-        ) : null}
-      </header>
+          </header>
 
-      {error ? (
-        <div className="border-destructive/40 border-b bg-destructive/10 px-4 py-2 text-destructive text-xs">
-          {error}
-        </div>
-      ) : null}
+          {error ? (
+            <div className="border-destructive/40 border-b bg-destructive/10 px-4 py-2 text-destructive text-xs">
+              {error}
+            </div>
+          ) : null}
 
-      <ol aria-label="todos across projects" className="min-h-0 flex-1 overflow-y-auto">
-        {sorted.length === 0 ? (
-          <li className="p-4 text-muted-foreground text-sm">
-            {/* A filter that matched nothing is its own empty, and it is the
+          <ol aria-label="todos across projects" className="min-h-0 flex-1 overflow-y-auto">
+            {sorted.length === 0 ? (
+              <li className="p-4 text-muted-foreground text-sm">
+                {/* A filter that matched nothing is its own empty, and it is the
                 one this page must not report as any of the other four: "no
                 todos in the 3 projects you can read" is a false statement about
                 the fleet when the reader has narrowed to bugs and there are
                 none. So the filter is answered for first, in its own words. */}
-            {filtered && loaded && !error && todos.length > 0
-              ? `none of the ${todos.length} todos here are ${describe(kind, tag)} - the rest of the queue is behind the filter, not missing`
-              : emptyReads({
-                  token: Boolean(token),
-                  loaded,
-                  failed: Boolean(error),
-                  projects: projects.length,
-                  withheld,
-                  refused,
-                })}
-          </li>
-        ) : null}
-        {sorted.map((todo) => (
-          <Row key={todo.id} todo={todo} onTag={setTag} />
-        ))}
-      </ol>
+                {filtered && loaded && !error && todos.length > 0
+                  ? `none of the ${todos.length} todos here are ${describe(kind, tag)} - the rest of the queue is behind the filter, not missing`
+                  : emptyReads({
+                      token: Boolean(token),
+                      loaded,
+                      failed: Boolean(error),
+                      projects: projects.length,
+                      withheld,
+                      refused,
+                    })}
+              </li>
+            ) : null}
+            {sorted.map((todo) => (
+              <Row key={todo.id} todo={todo} onTag={setTag} />
+            ))}
+          </ol>
+        </>
+      )}
     </div>
+  );
+}
+
+/**
+ * One tab, with its own numbers in the title.
+ *
+ * aria-selected and role are not decoration: this is the only control on the
+ * page that changes what the whole panel is about, and a person driving it by
+ * keyboard has to be told which view they are in.
+ */
+function TabButton({
+  selected,
+  onClick,
+  label,
+  stats,
+}: {
+  selected: boolean;
+  onClick: () => void;
+  label: string;
+  stats: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      role="tab"
+      aria-selected={selected}
+      data-queue-tab={label}
+      onClick={onClick}
+      className={`flex items-center gap-2 rounded-t px-3 py-1.5 text-sm ${
+        selected
+          ? "border-border border-x border-t bg-background font-medium"
+          : "text-muted-foreground hover:text-foreground"
+      }`}
+    >
+      {label}
+      {stats}
+    </button>
+  );
+}
+
+/**
+ * One coloured count. The number and the word both appear - colour is the
+ * second signal and never the only one, the same rule the status badges follow,
+ * because a reader who cannot separate these hues gets exactly the same
+ * information a fraction slower.
+ */
+function Stat({ colour, n, what }: { colour: string; n: number; what: string }) {
+  return (
+    <span className="text-xs" style={{ color: colour }} title={`${n} ${what}`}>
+      {n} {what}
+    </span>
   );
 }
 

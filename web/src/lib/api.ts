@@ -283,6 +283,31 @@ export interface Refused {
   reason: string;
 }
 
+/**
+ * One merge request as the node reports it, flat.
+ *
+ * Flat because every reader that has had to dig a value out of `fields` got it
+ * wrong at least once - status read from the wrong level, an owner read from
+ * body text. The node knows where these live; the page should not have to.
+ *
+ * `admissible` is absent, not false, when no tip was stated. Absent means "not
+ * decided"; false means "decided, and no". Collapsing those two is how a page
+ * ends up drawing a green light because nobody asked the question.
+ */
+export interface MergeRequest {
+  id: string;
+  title: string;
+  project?: string;
+  branch: string;
+  target: string;
+  gated_tip: string;
+  gate_run: string;
+  status: string;
+  assignee?: string;
+  admissible?: boolean;
+  reason?: string;
+}
+
 export interface Artifact {
   id: string;
   type: string;
@@ -961,6 +986,28 @@ export const api = {
     request<{ artifacts: Artifact[]; withheld?: Withheld; refused?: Refused }>(
       `/api/artifacts?type=memory&kind=todo&limit=${TODO_PAGE}`,
     ),
+  /**
+   * The merge queue, with a verdict per request.
+   *
+   * The verdicts come from the node, not from here. Whether a branch may land
+   * is one rule - it compares the tip the gate measured against the tip the
+   * merge would land on - and a second implementation of it in TypeScript would
+   * be a second answer, disagreeing with the first on the day it matters.
+   *
+   * A browser has no git, so it cannot know where master is. The node answers
+   * with `tip_from`: "stated" when a caller passed one, "deployed" when it fell
+   * back to the commit the node was built from, "none" when it has neither.
+   * `decided` says outright whether there are verdicts at all, so a page can
+   * never read a missing verdict as a yes.
+   */
+  mergeQueue: () =>
+    request<{
+      target: string;
+      target_tip: string;
+      tip_from: "stated" | "deployed" | "none";
+      decided: boolean;
+      items: MergeRequest[];
+    }>(`/api/merge-queue?limit=${TODO_PAGE}`),
   /**
    * The todos of one room: the same list, narrowed by the room the item was
    * raised in. It is the same endpoint and the same permission filter - room is
