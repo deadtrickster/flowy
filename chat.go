@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -565,6 +566,35 @@ func (s *server) handleChatSay(w http.ResponseWriter, r *http.Request) {
 	if err := s.db.AppendEvent(r.Context(), e); err != nil {
 		serverError(w, r, err)
 		return
+	}
+	// AND THE GRANT THE CITATION MAKES, if it makes one - see citegrant.go for
+	// which citations do. A citation from somebody who may only READ the source
+	// is a pointer and grants nothing; one from somebody who may decide about it
+	// is a grant, recorded with the granter named.
+	//
+	// After the append, not before: the grant exists because this message does,
+	// and a capability written for a message the store then refused would be a
+	// share with nothing pointing at it. The other order fails the other way -
+	// a citation the recipient cannot resolve - and that failure is visible and
+	// harmless where a silent over-share is neither.
+	//
+	// A grant that cannot be written does not fail the message. It has already
+	// been said, and answering 500 to a message that is in the log would have
+	// the caller say it again.
+	if cite.Message != "" && req.To != "" {
+		if src, err := s.db.ReadEvent(r.Context(), p, cite.Message); err == nil && src.Artifact != "" {
+			granted, err := s.db.GrantCitedArtifact(r.Context(), p, src.Artifact, req.To)
+			switch {
+			case err != nil:
+				log.Printf("citations: the grant %s makes on %s was not recorded: %v",
+					e.ID, src.Artifact, err)
+			case granted:
+				// Said out loud, because a share is the kind of thing an
+				// operator reads a log to find afterwards.
+				log.Printf("citations: %s cited %s to %s, which grants read on it",
+					p.UserID, src.Artifact, req.To)
+			}
+		}
 	}
 	writeJSON(w, http.StatusOK, e)
 }
