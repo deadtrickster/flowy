@@ -4535,8 +4535,43 @@ console_says_which_empty_the_queue_is() {
 npm_ci() {
 	cd "$ROOT/web" || return 1
 	npm ci --no-audit --no-fund --prefer-offline --loglevel=error
+
+	# A SUCCESSFUL npm ci CAN STILL LEAVE A BROKEN TREE, and this workspace is
+	# where that bites. The layer keeps node_modules AND the npm cache between
+	# runs, so a run killed mid-install leaves a truncated tarball in the cache;
+	# --prefer-offline then serves that same truncated copy to every later run,
+	# npm ci exits 0, and the package is a directory with a README and no entry
+	# point. `classcat` was exactly that for hours: rollup could not resolve it,
+	# and the failure named the import rather than the cache, so two people read
+	# it as their own code being wrong. A third lost four checks to `fuse` the
+	# same way, and I lost a morning to `jsdom`.
+	#
+	# deps-intact.mjs asks the question npm ls cannot: is the FILE there. npm ls
+	# compares versions out of each package.json, so a package whose entry point
+	# was truncated away still reports as installed - gutting classcat's
+	# index.js leaves npm ls saying OK while the import fails, which is the
+	# state we actually had. The repair drops --prefer-offline so it fetches
+	# rather than re-reading what is already suspect, and it happens once: a
+	# second failure is reported, not retried.
+	if ! node scripts/deps-intact.mjs; then
+		printf 'npm ci exited 0 but the tree does not resolve - treating the cache as poisoned\n'
+		npm cache clean --force --loglevel=error 2>/dev/null || true
+		rm -rf node_modules
+		npm ci --no-audit --no-fund --loglevel=error || return 1
+		if ! node scripts/deps-intact.mjs; then
+			printf 'still incomplete after a clean fetch - this is not the cache\n'
+			return 1
+		fi
+		printf 'repaired: a clean fetch resolves\n'
+	fi
+
+	# maxdepth 3, because a scoped package is node_modules/@scope/name and its
+	# package.json is one level deeper than an unscoped one. At maxdepth 2 every
+	# @scope/* package was invisible, so this line said "installed 98" in the
+	# same breath as npm said "added 168" - two numbers for one install, which
+	# read as a partial install to whoever was already suspicious of one.
 	printf 'installed %s packages from package-lock.json\n' \
-		"$(find node_modules -maxdepth 2 -name package.json | wc -l)"
+		"$(find node_modules -maxdepth 3 -name package.json | wc -l)"
 }
 
 biome_check() {
