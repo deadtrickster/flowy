@@ -1000,6 +1000,14 @@ export const api = {
    * `decided` says outright whether there are verdicts at all, so a page can
    * never read a missing verdict as a yes.
    */
+  /**
+   * The notes: memory items that are not work. The queue tabs show todos and
+   * merges; nothing showed the rest, so a note could be written, searched by an
+   * agent, and never seen by the person who asked for it - which is how the
+   * operator ended up asking the room where a note had been filed.
+   */
+  notes: () =>
+    request<{ artifacts: Artifact[] }>(`/api/artifacts?type=memory&kind=note&limit=${TODO_PAGE}`),
   mergeQueue: () =>
     request<{
       target: string;
