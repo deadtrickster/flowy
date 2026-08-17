@@ -7661,20 +7661,35 @@ a_rewrite_of_what_somebody_wrote_is_refused() {
 # decoration. A fix that made this terminal by row id would pass the first check
 # and be a denial of service on every author it protects.
 
-# The row the two checks below share, offered byte for byte each time.
+# hlc_date PACKED - the wall clock instant a packed reading names, as the date a
+# row carrying that reading would honestly have been created at.
 #
-# created is pinned rather than left to `flowy sign` to stamp, and that is what
-# makes this a re-offer rather than a new row: the date is inside both signatures
-# and inside the claim, so a second signing run would produce different bytes and
-# the ledger would rightly treat them as a different claim. A real peer serves the
-# row it holds, date and all.
-N5_TERMINAL_CREATED="2026-02-03T04:05:06.000007Z"
-readonly N5_TERMINAL_CREATED
+# A row states its date twice, in the created column and in the clock reading
+# beside it, and the merge refuses one where the two disagree by more than a day
+# - see incoherentDate in sync.go, and hlc.MaxSkew for why a day. So the date the
+# row below carries cannot be a literal somebody typed: it has to be derived from
+# the reading the row is offered at, or the gate would be asking this node to take
+# a row it is right to refuse, and reading the refusal as the fix failing.
+#
+# Truncated to the second, which is inside the skew by five orders of magnitude
+# and keeps the value a pure function of its argument - which is the property the
+# checks below actually need.
+hlc_date() { date -u -d "@$((($1 >> 16) / 1000))" +%Y-%m-%dT%H:%M:%SZ; }
 
 # terminal_row ID BODY HLC - the delta both checks offer, as JSON on stdout,
 # unsigned. The caller decides which signatures go on it.
+#
+# created is derived here rather than left to `flowy sign` to stamp, and that is
+# what makes this a re-offer rather than a new row: the date is inside both
+# signatures and inside the claim, so a second signing run would stamp a later
+# date, produce different bytes, and the ledger would rightly treat them as a
+# different claim. Derived from the reading, so the same reading is the same date
+# is the same bytes, on every offer and in both checks. A real peer serves the row
+# it holds, date and all.
 terminal_row() {
-	jq -nc --arg i "$1" --arg b "$2" --arg a "$N5_USER_A" --arg c "$N5_TERMINAL_CREATED" \
+	local created
+	created="$(hlc_date "$3")" || return 1
+	jq -nc --arg i "$1" --arg b "$2" --arg a "$N5_USER_A" --arg c "$created" \
 		--argjson h "$3" '
 		{artifacts: [], tasks: [], grants: [], hwm: 0, events: [
 		  {id: $i, type: "chat", project: "pb", room: "pb/bugs", thread: $i, parents: [],
@@ -7809,9 +7824,16 @@ the_refused_claims_are_counted_where_a_reader_would_have_seen_them() {
 	fi
 	want_eq "the reason it carries" "$(jqv '.refused.reason')" \
 		"refused authorship, and the refusal stands" || return 1
+	# The same set spelled out independently of the query that produced the
+	# number, which is the only way this says anything: what this reader reaches
+	# is their own project AND pa, because the grant that made pa replicable at
+	# all - up in "what replicates" - is a project-wide read from pb into pa, and
+	# the rewrite refused in pa above is a claim about a row they read. A refusal
+	# personal to somebody else is the one they are not told about, and there is
+	# none here to be told about.
 	want_eq "and it matches what node B actually holds" "$claims" \
 		"$(scalar5 "$N5_DSN_B" "SELECT count(*) FROM refused_authorship
-		    WHERE project = 'pb' AND visibility = 'shared'")" || return 1
+		    WHERE project IN ('pb', 'pa') AND visibility <> 'personal'")" || return 1
 
 	# Who is told is the artifact read rule over the ledger's own columns, so a
 	# refusal in a project a reader cannot reach is not a second way to learn
