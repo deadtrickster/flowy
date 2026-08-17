@@ -37,6 +37,18 @@ type mergeQueueItem struct {
 	Assignee   string `json:"assignee,omitempty"`
 	Admissible *bool  `json:"admissible,omitempty"`
 	Reason     string `json:"reason,omitempty"`
+	// Gating is true while a run is MEASURING this branch and has not reported.
+	//
+	// The rule as first written protected the lander and nobody else: "a branch
+	// lands only on the tip its gate measured" says nothing about the gate
+	// ALREADY RUNNING, so every landing silently invalidated every in-flight run
+	// and the invalidated party found out by reading a number that was already
+	// worthless. That happened twice in one hour on the night this was written.
+	//
+	// A run is in flight when its request names the run and has no verdict yet.
+	// Recording the verdict afterwards is what made the window invisible; naming
+	// the run when it STARTS is what makes it visible.
+	Gating bool `json:"gating"`
 }
 
 func (s *server) handleMergeQueue(w http.ResponseWriter, r *http.Request) {
@@ -105,6 +117,7 @@ func (s *server) handleMergeQueue(w http.ResponseWriter, r *http.Request) {
 		if a.Project != nil {
 			it.Project = *a.Project
 		}
+		it.Gating = it.GateRun != "" && it.GatedTip == ""
 		if tip != "" {
 			err := store.MergeAdmissible(a, tip)
 			ok := err == nil
@@ -116,9 +129,20 @@ func (s *server) handleMergeQueue(w http.ResponseWriter, r *http.Request) {
 		items = append(items, it)
 	}
 
+	// How many runs are measuring right now. A lander reads this before merging:
+	// landing while somebody is gating invalidates their evidence, and the queue
+	// saying so is the difference between a decision and an accident.
+	gating := 0
+	for _, it := range items {
+		if it.Gating {
+			gating++
+		}
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"target":     target,
 		"target_tip": tip,
+		"gating":     gating,
 		"tip_from":   tipFrom,
 		"items":      items,
 		// Stated rather than inferred from a missing field. A console that

@@ -97,6 +97,14 @@ export function MergeQueue({
                 {m.status || "todo"}
               </Badge>
               <Verdict item={m} decided={decided} />
+              {/* A run is measuring this right now. Landing anything else on the
+                  target while this is up invalidates its evidence - which is the
+                  thing nobody could see before, and cost two rebuilds in an hour. */}
+              {m.gating ? (
+                <Badge variant="outline" data-merge-gating="">
+                  gating
+                </Badge>
+              ) : null}
             </div>
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-muted-foreground text-xs">
               <span>

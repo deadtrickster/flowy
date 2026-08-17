@@ -306,6 +306,8 @@ export interface MergeRequest {
   assignee?: string;
   admissible?: boolean;
   reason?: string;
+  /** True while a run is measuring this branch and has not reported yet. */
+  gating: boolean;
 }
 
 export interface Artifact {
@@ -1014,6 +1016,7 @@ export const api = {
       target_tip: string;
       tip_from: "stated" | "deployed" | "none";
       decided: boolean;
+      gating: number;
       items: MergeRequest[];
     }>(`/api/merge-queue?limit=${TODO_PAGE}`),
   /**
