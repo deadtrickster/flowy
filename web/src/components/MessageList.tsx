@@ -381,6 +381,21 @@ export function MessageList({ events, selected, onSelect, onCite, me, onSeen }: 
                         >
                           {run.text}
                         </span>
+                      ) : run.href ? (
+                        // A link somebody typed. rel is not decoration: the
+                        // body is text a peer wrote, so the target must not be
+                        // handed a window handle it can navigate back, and the
+                        // referrer is nobody else's business. splitBody only
+                        // ever produces http and https hrefs.
+                        <a
+                          key={run.key}
+                          href={run.href}
+                          target="_blank"
+                          rel="noreferrer noopener"
+                          className="text-primary underline underline-offset-2"
+                        >
+                          {run.text}
+                        </a>
                       ) : (
                         run.text
                       ),

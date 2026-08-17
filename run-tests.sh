@@ -5503,6 +5503,15 @@ browser_draws_the_mentions() {
 		"$HANDLE_A" "$HANDLE_B" nobody-at-all-here
 }
 
+# A URL somebody typed is a link, and the mention beside it survives. The second
+# half is the point: linkifying by sending the body through the markdown
+# renderer would work and would silently drop mention chips and span citations,
+# which is why it happens on the plain path instead.
+a_typed_url_is_a_link() {
+	cd "$ROOT/web" || return 1
+	node scripts/link-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" links "$HANDLE_A"
+}
+
 # Two waiters under one name share one cursor, so the second takes deliveries
 # the first should have made and BOTH LOOK HEALTHY while somebody's room goes
 # quiet. It silenced the orchestrator's watcher, and the finding that flowy
@@ -9829,6 +9838,8 @@ check "each speaker is drawn in their own colour, in a browser" \
 	browser_colours_the_speakers
 check "the roster draws what each listener can do, distinctly, in a browser" \
 	browser_shows_what_a_listener_can_do
+check "a typed URL is a link, and the mention beside it survives" \
+	a_typed_url_is_a_link
 check "an @name is drawn as a mention, in their colour, in a browser" \
 	browser_draws_the_mentions
 check "a pin puts a message up in the room's strip" a_pin_puts_a_message_up_in_the_room

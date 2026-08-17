@@ -34,6 +34,8 @@ export interface BodyRun {
   name?: string;
   /** The principal that name resolved to, as the node resolved it. */
   id?: string;
+  /** The URL this run links to, when the run is a bare link somebody typed. */
+  href?: string;
 }
 
 /**
@@ -56,9 +58,41 @@ export function mentionIds(meta?: string): Map<string, string> {
  * resolved. A body with no mentions comes back as one run, which is exactly
  * what every message written before this feature existed is.
  */
+/**
+ * LINK is a bare URL somebody typed. Only http and https: a body is text a peer
+ * wrote, so anything that could execute - javascript:, data: - must never become
+ * something clickable. Trailing punctuation is excluded because a sentence
+ * ending in a URL is more common here than a URL ending in a full stop.
+ */
+const LINK = /https?:\/\/[^\s<>"']+[^\s<>"'.,;:!?)\]]/g;
+
+/**
+ * links splits one run of plain text into text and link runs.
+ *
+ * It runs on the PLAIN path rather than through the markdown renderer, because
+ * that path is where mention chips and span citations live - a body rendered as
+ * markdown loses both, which is why isMarkdown is deliberately narrow. So a
+ * message with a URL in it stays plain, and only the URL becomes a link.
+ */
+function links(text: string, keyBase: string): BodyRun[] {
+  const out: BodyRun[] = [];
+  let plain = 0;
+  LINK.lastIndex = 0;
+  for (let m = LINK.exec(text); m !== null; m = LINK.exec(text)) {
+    if (m.index > plain) {
+      out.push({ key: `${keyBase}t${plain}`, text: text.slice(plain, m.index) });
+    }
+    out.push({ key: `${keyBase}l${m.index}`, text: m[0], href: m[0] });
+    plain = m.index + m[0].length;
+  }
+  if (plain === 0) return [{ key: keyBase, text }];
+  if (plain < text.length) out.push({ key: `${keyBase}t${plain}`, text: text.slice(plain) });
+  return out;
+}
+
 export function splitBody(body: string, meta?: string): BodyRun[] {
   const known = mentionIds(meta);
-  if (known.size === 0) return [{ key: "0", text: body }];
+  if (known.size === 0) return links(body, "0");
 
   const runs: BodyRun[] = [];
   let plain = 0;
@@ -77,10 +111,10 @@ export function splitBody(body: string, meta?: string): BodyRun[] {
     const id = known.get(name.toLowerCase());
     if (!name || !id) continue;
 
-    if (start > plain) runs.push({ key: `t${plain}`, text: body.slice(plain, start) });
+    if (start > plain) runs.push(...links(body.slice(plain, start), `t${plain}`));
     runs.push({ key: `m${start}`, text: `@${name}`, name, id });
     plain = start + 1 + name.length;
   }
-  if (plain < body.length) runs.push({ key: `t${plain}`, text: body.slice(plain) });
+  if (plain < body.length) runs.push(...links(body.slice(plain), `t${plain}`));
   return runs;
 }
