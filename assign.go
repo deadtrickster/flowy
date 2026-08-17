@@ -43,6 +43,16 @@ import (
 // empty one means nobody.
 type assigneeRequest struct {
 	Assignee string `json:"assignee"`
+	// Expect turns a handover into a CLAIM. It is the holder the caller read
+	// before deciding to take the row - "" for a row nobody held - and when the
+	// key is PRESENT the write is refused, naming the winner, if the row moved
+	// in between. Absent, this is an ordinary assignment and stays
+	// last-write-wins, because handing somebody work is not a race.
+	//
+	// A pointer, so absent and present-but-empty are different requests. That
+	// distinction is the whole feature: claiming an unowned row is exactly
+	// expect:"".
+	Expect *string `json:"expect"`
 }
 
 // assignView is one todo's assignment as every surface hands it back: the item,
@@ -110,9 +120,22 @@ func (s *server) handleTodoAssign(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorBody("bad request body: "+err.Error()))
 		return
 	}
-	art, _, err := s.db.AssignTodo(r.Context(), p, r.PathValue("id"), req.Assignee, nil)
+	// TWO VERBS THROUGH ONE DOOR, told apart by whether the caller stated what
+	// it expected to find. Without `expect` this is a handover and behaves as it
+	// always has; with it, it is a claim and exactly one of two racing callers
+	// wins. Giving the claim its own door would have been cleaner and would have
+	// meant every existing caller keeps using the racy one.
+	var (
+		art *store.Artifact
+		err error
+	)
+	if req.Expect != nil {
+		art, _, err = s.db.ClaimTodo(r.Context(), p, r.PathValue("id"), req.Assignee, *req.Expect)
+	} else {
+		art, _, err = s.db.AssignTodo(r.Context(), p, r.PathValue("id"), req.Assignee, nil)
+	}
 	if err != nil {
-		writeQueueError(w, r, err)
+		writeAssignError(w, r, err)
 		return
 	}
 	view, err := viewAssignment(r.Context(), s.db, p, art)
@@ -295,4 +318,19 @@ func assignmentSaid(title, was, now string) string {
 	default:
 		return "moved " + title + " from " + was + " to " + now
 	}
+}
+
+// writeAssignError maps this door's refusals.
+//
+// A lost claim is 409 rather than 400: the request was well formed, the caller
+// may make it again against another row, and a client retrying needs to tell
+// "somebody beat you" apart from "you asked wrongly". Everything else keeps the
+// mapping the queue verbs already share.
+func writeAssignError(w http.ResponseWriter, r *http.Request, err error) {
+	var held store.ErrHeldBy
+	if errors.As(err, &held) {
+		writeJSON(w, http.StatusConflict, errorBody(held.Error()))
+		return
+	}
+	writeQueueError(w, r, err)
 }
