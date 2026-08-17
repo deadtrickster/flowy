@@ -25,13 +25,23 @@
  * growing, asserts the reader is at the end, and then keeps asking for
  * WATCH_MS while nothing whatsoever arrives.
  *
- * It needs MORE THAN ONE PAGE of history, because a room that arrives in a
- * single answer scrolls once and has no race to lose. The seed is sized from
- * the node's own page limit rather than a number copied from it.
- *
  * The pill is asserted too, and it is not a nicety here: "N new messages" over
  * a room nobody has touched means the view counted history it was still
  * drawing as unread, which is the same stale reading seen from the other side.
+ *
+ * AND THE CUTOFF, which is the same complaint answered at the source. The room
+ * opens on a bounded window now rather than reading itself from the beginning
+ * and paging the whole history in behind the poll - reported by the operator as
+ * "on reload the whole chat history loads". So the seed is still MORE THAN ONE
+ * PAGE, and what it now proves is the opposite of what it used to: the room
+ * holds far more than the view fetched.
+ *
+ * The history is still reachable, and reaching it must not move the reader. The
+ * last part of this check scrolls to the top, waits for the page before the
+ * window to arrive, and asserts THE SAME MESSAGE IS STILL WHERE IT WAS - the
+ * prepend pushes everything on screen down by the height of what arrived, and a
+ * reader thrown a window up the room by their own scroll is the reported bug
+ * again, just triggered deliberately rather than by a poll.
  */
 
 import { chromium } from "playwright";
@@ -52,10 +62,10 @@ refuseRemote(base, "stay-check");
 const room = roomArg || "staycheck";
 
 /**
- * A page of chat is 200 rows (store.defaultLimit), so the seed has to be
- * comfortably over that or the whole room lands in the first answer and the
- * batches this is about never happen. Two and a bit pages is enough to have
- * three different stale targets to lose to, and cheap enough to seed.
+ * A page of chat is 200 rows (store.defaultLimit) and the room opens on a
+ * window smaller than that, so a seed of two and a bit pages is a room that
+ * comfortably outgrows what the view fetches - which is the cutoff this now
+ * asserts, and enough history to page back through afterwards.
  */
 const PAGE = 200;
 const SEED = PAGE * 2 + 50;
@@ -159,32 +169,30 @@ try {
     await page.waitForTimeout(400);
   }
   const rowsSettled = await rows();
-  // ENOUGH TO PAGE, NOT EVERY LAST ROW. This asked for all SEED rows and
-  // refused at 449 of 450 - one row still in flight after the count had been
-  // stable for 1.2s, so the check declined to test a view that was working.
-  // The seed exists to force a BATCHED arrival, and a page is what makes it
-  // batched: any count past one page has already produced the condition under
-  // test, and holding out for the last row makes the check fail on a poll
-  // cycle rather than on the behaviour.
+  // THE CUTOFF. The room holds `inTheRoom` messages and the view settled on
+  // `rowsSettled` of them, so this is the operator's complaint stated as a
+  // number: a room does not load its whole history to be read.
   //
-  // The floor stays well above a page so a genuinely broken seed - a room that
-  // arrived nearly empty - is still refused rather than tested.
-  const enough = Math.max(PAGE + 1, Math.floor(SEED * 0.9));
-  if (rowsSettled < enough) {
+  // The room is read back rather than assumed from SEED, because a re-run does
+  // not re-seed and another check sharing the node could have said something
+  // here. What the assertion needs is that the room is BIGGER than the window,
+  // and only the node can say how big it is.
+  const inTheRoom = await held();
+  if (rowsSettled === 0) {
+    console.error("nothing rendered at all, so nothing about scrolling was tested");
+    process.exit(1);
+  }
+  if (inTheRoom <= PAGE) {
     console.error(
-      `the room never finished arriving: ${rowsSettled} rows on screen, ${SEED} seeded,
-  and ${enough} is the fewest that still produces a batched arrival.
-  Nothing about scrolling was tested - this is the poll or the seed, not the view.`,
+      `#${room} holds ${inTheRoom} messages, which is not more than one page (${PAGE}).
+  A room no bigger than a page proves nothing about a cutoff - seed more.`,
     );
     process.exit(1);
   }
-  if (rowsSettled <= PAGE) {
-    // The whole point is a room that arrives in SEVERAL answers. One that fits
-    // in a page scrolls once, has no losing animation, and would pass this
-    // check under the bug it exists for.
+  if (rowsSettled >= inTheRoom) {
     console.error(
-      `#${room} arrived in one page (${rowsSettled} rows, page is ${PAGE}), so the batched
-  arrival this check is about never happened. Seed more than a page.`,
+      `the room loaded its whole history: ${rowsSettled} rows on screen out of ${inTheRoom} in the room.
+  Opening a room fetches a bounded window and pages back on demand - see ChatRoom.CHAT_WINDOW.`,
     );
     process.exit(1);
   }
@@ -231,9 +239,82 @@ try {
     process.exit(1);
   }
 
+  // AND THE HISTORY IS STILL THERE, AND REACHING IT DOES NOT MOVE THE READER.
+  //
+  // Scrolling to the top asks for the page before the window. That page is
+  // prepended, so every message on screen is pushed down by the height of what
+  // arrived - and if the view does nothing about it, the reader is thrown a
+  // window's worth of room away from the line they were reading. That is the
+  // reported bug again, reached by scrolling instead of by waiting.
+  //
+  // The anchor is taken INSIDE the same evaluate that scrolls, so the reading
+  // is the DOM before the fetch: setting scrollTop cannot resolve a request
+  // synchronously, so nothing can have landed between the two lines.
+  const anchor = await scroller.evaluate((el) => {
+    el.scrollTop = 0;
+    const top = el.getBoundingClientRect().top;
+    const seen = [...el.querySelectorAll("[data-body]")];
+    const row = seen.find((r) => r.getBoundingClientRect().bottom > top) || seen[0];
+    if (!row) return null;
+    return {
+      id: row.getAttribute("data-body"),
+      at: Math.round(row.getBoundingClientRect().top - top),
+    };
+  });
+  if (!anchor) {
+    console.error("no message rows to hold on to at the top of the transcript");
+    process.exit(1);
+  }
+
+  let grew = 0;
+  for (let waited = 0; waited < 10_000; waited += 200) {
+    grew = await rows();
+    if (grew > rowsSettled) break;
+    await page.waitForTimeout(200);
+  }
+  if (grew <= rowsSettled) {
+    console.error(
+      `scrolling to the top of #${room} fetched nothing: still ${grew} rows, and the room holds ${inTheRoom}.
+  A bounded window is only acceptable because the rest arrives when somebody scrolls up for it.`,
+    );
+    process.exit(1);
+  }
+
+  // Where that same message is now. It must be where it was, near enough that
+  // nobody's eye moved - the tolerance is the app's own idea of "did not move".
+  const moved = await scroller.evaluate((el, id) => {
+    const row = el.querySelector(`[data-body="${id}"]`);
+    if (!row) return null;
+    return Math.round(row.getBoundingClientRect().top - el.getBoundingClientRect().top);
+  }, anchor.id);
+  if (moved === null) {
+    console.error(
+      `the message the reader was on (${anchor.id}) is not on screen after paging back`,
+    );
+    process.exit(1);
+  }
+  if (Math.abs(moved - anchor.at) > AT_END) {
+    console.error(
+      `paging back moved the reader: the message they were on was ${anchor.at}px into the view and is now ${moved}px.
+  Older messages are prepended, so the view has to put the reader back on the line they were reading
+  before the browser paints - see the layout effect in MessageList.`,
+    );
+    process.exit(1);
+  }
+
+  // And the page it fetched is not offered as news. History the reader asked
+  // for, counted as unread, is the "319 new messages" bug wearing the other hat.
+  if ((await pill.count()) > 0) {
+    console.error(
+      `paging back offers "${(await pill.first().textContent())?.trim()}" over messages OLDER than everything on screen.`,
+    );
+    process.exit(1);
+  }
+
   console.log(
-    `ok  the room landed at the end and stayed: ${rowsSettled} rows over ${Math.ceil(rowsSettled / PAGE)} pages, ` +
-      `worst drift ${worst.fromEnd}px over ${WATCH_MS / 1000}s, no pill`,
+    `ok  #${room} holds ${inTheRoom}, opened on ${rowsSettled}, stayed at the end ` +
+      `(worst drift ${worst.fromEnd}px over ${WATCH_MS / 1000}s, no pill), ` +
+      `and paging back to ${grew} rows moved the reader ${Math.abs(moved - anchor.at)}px`,
   );
 } finally {
   await browser.close();

@@ -5407,8 +5407,15 @@ browser_does_not_scroll_a_reader_away() {
 #
 # A's AGENT seeds it, for the reason the check above learned twice: it has to be
 # somebody else, and it has to be somebody in A's project, because rooms are per
-# project. It needs MORE THAN ONE PAGE of history or the room arrives in a
-# single answer, scrolls once, and has no race to lose.
+# project.
+#
+# The seed is still MORE THAN ONE PAGE, and it now proves the other half of the
+# same complaint: the operator also reported that a reload loads the entire
+# history, so a room opens on a bounded window and pages back when somebody
+# scrolls up. This asserts the room holds far more than the view fetched, that
+# the history is still reachable, and that reaching it leaves the reader on the
+# line they were reading - a prepend displaces a reader exactly as a stale
+# scroll did.
 browser_leaves_a_room_load_at_the_end() {
 	recall
 	cd "$ROOT/web" || return 1
@@ -9859,7 +9866,7 @@ check "clicking a message answers nothing; its reply control does, by pointer an
 	browser_replies_only_when_asked
 check "a message arriving does not scroll a reader out of the history" \
 	browser_does_not_scroll_a_reader_away
-check "opening a room lands at the end and is still there twelve seconds later" \
+check "a room opens on a window, lands at the end, stays, and pages back without moving the reader" \
 	browser_leaves_a_room_load_at_the_end
 check "the unread badge counts, clears when the room is read, and ignores your own" \
 	browser_clears_the_unread_badge

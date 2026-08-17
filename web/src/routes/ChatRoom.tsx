@@ -29,6 +29,25 @@ function merge(current: FlowyEvent[], incoming: FlowyEvent[]): FlowyEvent[] {
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
+ * How much of a room is on screen when it opens, and how much one scroll back
+ * fetches.
+ *
+ * A room used to open on `since=0`, which pages FORWARDS: the first answer was
+ * the OLDEST 200 messages and the long poll then dragged the rest in, batch
+ * after batch, until the whole history was in memory. The operator reported it
+ * as "on reload the whole chat history loads", and it is also what put four of
+ * eight measured loads of a 718 message room hundreds of thousands of pixels
+ * short of the end - a view cannot pin itself to a transcript that keeps
+ * growing underneath it.
+ *
+ * So the room opens on its last screenful and asks for more only when somebody
+ * scrolls up to look. 60 is several screens of chat at any window size this
+ * console is usable at, which matters: a window shorter than the viewport does
+ * not scroll, and a transcript that does not scroll cannot ask for more.
+ */
+const CHAT_WINDOW = 60;
+
+/**
  * One room: the messages, a box to say something as the person holding the
  * token, and the thread of whichever message is selected drawn as its DAG.
  *
@@ -62,6 +81,19 @@ export function ChatRoom() {
   const [mergeTip, setMergeTip] = useState("");
   const [pane, setPane] = useState<"todos" | "merges">("todos");
   const [todoError, setTodoError] = useState<string | null>(null);
+  // HOW FAR BACK THIS VIEW HAS BEEN, held in a ref because the scroll handler
+  // that reads it fires between renders and a reading React has not committed
+  // yet is how the last three scrolling bugs in here happened.
+  //
+  // `before` is the node's cursor for the next older page, strictly exclusive;
+  // zero means the beginning of the room has been reached and there is nothing
+  // left to ask for. `read` is the generation of the room this belongs to - a
+  // page of #general still in flight when the reader opens #build must not be
+  // prepended into #build, which is the same out-of-order answer the todo panel
+  // drops below, arriving at the top of the transcript instead of in a panel.
+  const older = useRef({ before: 0, loading: false, read: 0 });
+  const [moreOlder, setMoreOlder] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
   // Which thread view. The list is the default because almost every thread here
   // is a straight line and a straight line drawn as a graph makes the reader do
   // layout in their head; the DAG is the honest structure and stays one key
@@ -177,6 +209,9 @@ export function ChatRoom() {
     // strip then hides - so it would look like the new room had unpinned
     // everything rather than like the console had not caught up.
     setPinned([]);
+    older.current = { before: 0, loading: false, read: older.current.read + 1 };
+    setMoreOlder(false);
+    setLoadingOlder(false);
     if (!token) return;
 
     let stopped = false;
@@ -185,9 +220,18 @@ export function ChatRoom() {
     const watch = async () => {
       let cursor = 0;
       try {
-        const page = await api.room(room);
+        // THE LAST SCREENFUL, NOT THE FIRST. See CHAT_WINDOW: a forward read
+        // from zero opens the room on its oldest page and then pages the entire
+        // history in behind the poll. The window comes back in log order and
+        // carries both ends - `cursor` to follow the room forwards, `before` to
+        // walk it backwards when somebody scrolls up.
+        const page = await api.roomWindow(room, CHAT_WINDOW);
         if (stopped) return;
         setEvents(page.events);
+        // Short of the window means the whole room fits on screen, so there is
+        // nothing older to offer and the transcript says where it begins.
+        older.current.before = page.before ?? 0;
+        setMoreOlder(page.events.length >= CHAT_WINDOW && (page.before ?? 0) > 0);
         cursor = page.cursor;
         setLive(true);
         void loadTodos();
@@ -246,6 +290,56 @@ export function ChatRoom() {
       controller.abort();
     };
   }, [room, token, loadTodos, loadPins, clear]);
+
+  /**
+   * The page before the one on screen, asked for because somebody scrolled up
+   * to look for it.
+   *
+   * It is safe to call as often as a scroll fires: one read at a time, and
+   * nothing at all once the beginning of the room has been reached. The node's
+   * `before` is strictly exclusive and its window ends on a complete clock
+   * reading, so a page never repeats a message and never steps over one - see
+   * store.EventsBefore.
+   *
+   * WHAT THE READER SEES IS THE TRANSCRIPT'S JOB, not this one's. Prepending
+   * moves everything on screen down by the height of what arrived, and holding
+   * the reader on the message they were looking at has to happen before the
+   * browser paints - see MessageList, which does it in a layout effect.
+   */
+  const loadOlder = useCallback(async () => {
+    const at = older.current;
+    if (at.loading || at.before <= 0) return;
+    const mine = at.read;
+    at.loading = true;
+    setLoadingOlder(true);
+    try {
+      const page = await api.roomWindow(room, CHAT_WINDOW, at.before);
+      // A different room now, so this page belongs to a transcript that is no
+      // longer on screen. Dropped rather than merged: the ids would not collide
+      // but the messages would, and a room showing another room's history is a
+      // worse failure than a scroll that fetched nothing.
+      if (older.current.read !== mine) return;
+      if (page.events.length === 0) {
+        older.current.before = 0;
+        setMoreOlder(false);
+        return;
+      }
+      setEvents((current) => merge(current, page.events));
+      older.current.before = page.before ?? 0;
+      setMoreOlder(page.events.length >= CHAT_WINDOW && (page.before ?? 0) > 0);
+    } catch (err) {
+      // Left as it was on purpose: `before` still points at the same page, so
+      // the next scroll retries it. The room's own error line carries this
+      // rather than a second one, because a failed look further back is the
+      // same node being unreachable as a failed poll.
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (older.current.read === mine) {
+        older.current.loading = false;
+        setLoadingOlder(false);
+      }
+    }
+  }, [room]);
 
   const send = useCallback(
     async (body: string, to: string) => {
@@ -309,8 +403,14 @@ export function ChatRoom() {
           <h1 className="font-semibold text-base">#{room}</h1>
           {whoami?.project ? <Badge variant="outline">{whoami.project}</Badge> : null}
           <Badge variant={live ? "default" : "outline"}>{live ? "watching" : "idle"}</Badge>
+          {/*
+            ON SCREEN, not "in the room". It used to be able to say either,
+            because the view held everything the room had ever said; it opens on
+            a window now, so a count with no qualifier would report 60 for a room
+            of seven hundred messages and be read as the room's size.
+          */}
           <span className="text-muted-foreground text-xs">
-            {events.length} message{events.length === 1 ? "" : "s"}
+            {events.length} message{events.length === 1 ? "" : "s"} on screen
           </span>
           <RoomSearch />
         </header>
@@ -355,6 +455,10 @@ export function ChatRoom() {
           onCite={citeSpan}
           me={{ user: whoami?.user, agent: whoami?.agent }}
           onSeen={seen}
+          onOlder={loadOlder}
+          moreOlder={moreOlder}
+          loadingOlder={loadingOlder}
+          room={room}
         />
 
         {/*

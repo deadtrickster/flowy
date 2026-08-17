@@ -186,8 +186,18 @@ type EventQuery struct {
 	// like every other field here and never a permission: the filter has already
 	// decided which DMs this principal reaches, and this only stops the answer
 	// carrying rooms as well. GET /api/dm is what asks for it.
-	Private   bool
-	Since     int64
+	Private bool
+	Since   int64
+	// Before is the other end of the log, and only EventsBefore reads it: the
+	// newest events STRICTLY BELOW this reading. Zero means the newest events
+	// there are, which is where a room opens.
+	//
+	// It is a separate field from Since rather than a sign on it because the two
+	// page in opposite directions and no read wants both: Since walks forward
+	// from where a reader got to, Before walks backward from where a reader
+	// started, and a query carrying both would have to decide which end its
+	// Limit came off.
+	Before    int64
 	NotActors []string
 	ScopeAll  bool
 	Limit     int
@@ -315,4 +325,69 @@ func (d *DB) RecentEvents(ctx context.Context, p *Principal, q EventQuery) ([]*E
 	           WHERE ` + filter + where + `
 	           ORDER BY e.seq_hlc DESC, e.id DESC` + limitSQL(a, q.limit())
 	}, scanEvent)
+}
+
+// EventsBefore is a window of the log taken from its NEW end, handed back in log
+// order: the newest Limit events p may read that are strictly below q.Before, or
+// simply the newest ones there are when Before is zero.
+//
+// It exists because neither read above can open a room on its last screenful.
+// ListEvents pages forward, so a limit there takes the OLDEST rows - opening a
+// busy room on its first day and dragging the rest in behind the long poll,
+// which is the whole complaint this answers. RecentEvents takes the right end
+// but is a look-back and nothing more: it hands back no cursor, so there is no
+// way to ask for the screenful before the one you got.
+//
+// THE CURSOR IS THE POINT, AND IT IS THE OLD END THAT HAS TO BE HONEST. A
+// descending page cuts where its limit runs out, and that cut is at the OLD end;
+// two events written in the same instant on two nodes carry the same seq_hlc, so
+// a page that stopped between them and handed its last row's reading back would
+// have the caller ask for "strictly below that reading" and step over whatever
+// shared it. Those rows are not late, they never arrive, and nothing says so.
+//
+// So a page that filled its limit is followed by the REST OF THE READING it
+// stopped in - every row at that seq_hlc sorting below the last id it took. The
+// rows above that id at the same reading were already taken, because the order
+// is descending, so the page ends on a complete reading and `< seq_hlc` is then
+// exact in both directions: no message repeats and none is skipped. That is
+// pageOf's rule, run off the other end of the log.
+func (d *DB) EventsBefore(ctx context.Context, p *Principal, q EventQuery) ([]*Event, error) {
+	ctx, span := otel.Start(ctx, otel.KindQuery, "events.before")
+	defer span.End()
+	limit := q.limit()
+
+	read := func(tie *tieAt, lim int) ([]*Event, error) {
+		return readPage(ctx, d, "events before", func(a *args) string {
+			filter := EventFilterSQL(p, "e", a, q.ScopeAll)
+			where := q.narrow(a, "e")
+			if q.Before > 0 || tie != nil {
+				where += " AND " + below("e.seq_hlc", "e.id", q.Before, tie, a)
+			}
+			return `SELECT ` + eventColumns + `
+	            FROM events e
+	           WHERE ` + filter + where + `
+	           ORDER BY e.seq_hlc DESC, e.id DESC` + limitSQL(a, lim)
+		}, scanEvent)
+	}
+
+	page, err := read(nil, limit)
+	if err != nil {
+		return nil, err
+	}
+	if limit > 0 && len(page) == limit {
+		last := page[len(page)-1]
+		rest, err := read(&tieAt{hlc: last.SeqHLC, id: last.ID}, 0)
+		if err != nil {
+			return nil, err
+		}
+		page = append(page, rest...)
+	}
+	// Into log order. The read has to be descending to take the right end of the
+	// log, but what a caller does with this is draw a transcript or prepend to
+	// one, and both want oldest first - the same order every other read hands
+	// back, so a view never has to know which read filled it.
+	for i, j := 0, len(page)-1; i < j; i, j = i+1, j-1 {
+		page[i], page[j] = page[j], page[i]
+	}
+	return page, nil
 }
