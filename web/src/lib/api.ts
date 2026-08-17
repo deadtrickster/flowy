@@ -34,8 +34,20 @@ export interface FlowyEvent {
    * were called when they said it, and it is optional in the strong sense:
    * every message said before the node recorded a name has none, so a reader
    * falls back to the actor id rather than drawing a gap.
+   *
+   * mentions is the @names in the body that meant somebody, as the node
+   * resolved them when the message was said: "name:id" pairs, space separated,
+   * in the order they were written. The first of them is also the addressee -
+   * see mentions.go. Optional in the same strong sense: absent on every
+   * message that named nobody, which is every message written before mentions
+   * existed.
    */
-  meta?: { actor_kind?: "user" | "agent"; actor_user?: string; actor_name?: string };
+  meta?: {
+    actor_kind?: "user" | "agent";
+    actor_user?: string;
+    actor_name?: string;
+    mentions?: string;
+  };
   created: string;
 }
 

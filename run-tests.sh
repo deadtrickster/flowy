@@ -1658,6 +1658,93 @@ an_unknown_addressee_is_refused() {
 	printf 'refused, and nothing written: %s\n' "$(jqv .error)"
 }
 
+# ------------------------------------------------------------------ @mentions
+#
+# The same field, filled in by the words instead of by a flag. `to` works and
+# nobody types it mid-sentence, so agents addressed each other constantly and
+# the person in the room addressed nobody - see mentions.go. What these check is
+# that an @name lands in the addressee column and nowhere else, and that the
+# three things that are NOT mentions are not treated as ones.
+
+# say_body TOKEN ROOM BODY - a message with nothing but a body, so whatever
+# fills the addressee in can only be the words.
+say_body() {
+	api POST "$1" "/api/chat/$2/say" "$(jq -nc --arg b "$3" '{body: $b}')"
+}
+
+# mentions_meta - the "name:id" pairs the node stamped on the last message.
+mentions_meta() {
+	printf '%s' "$API_BODY" | jq -r '.meta.mentions // ""'
+}
+
+a_mention_addresses_the_message() {
+	recall
+	say_body "$TOKEN_A" addressing "@$HANDLE_B the deploy looks wrong to me" || return 1
+	want_eq "say status" "$API_STATUS" 200 || return 1
+	want_eq "who the words addressed it to" "$(jqv .addressee)" "$USER_B" || return 1
+	want_eq "and the body is what was written" \
+		"$(jqv .body)" "@$HANDLE_B the deploy looks wrong to me" || return 1
+	# Mid-sentence, which is the case the flag could never cover: the same
+	# message with --to is a message somebody remembered to flag.
+	say_body "$TOKEN_A" addressing "the gearbox again, @$HANDLE_B - can you look?" || return 1
+	want_eq "a name inside the sentence addresses too" "$(jqv .addressee)" "$USER_B" || return 1
+	# And the same name shouted at the start of a sentence is the same person.
+	local shouted
+	shouted="$(printf '%s' "$HANDLE_B" | tr 'a-z' 'A-Z')"
+	say_body "$TOKEN_A" addressing "@$shouted please" || return 1
+	want_eq "the case it was written in does not matter" "$(jqv .addressee)" "$USER_B" || return 1
+	printf 'the name in the prose is the addressing: %s\n' "$USER_B"
+}
+
+# Several names in one message. The event carries ONE addressee, so the first
+# one takes it and the rest ride in meta - and that is a decision worth
+# asserting rather than leaving to whichever the map iterated first.
+the_first_mention_addresses_and_the_rest_are_recorded() {
+	recall
+	say_body "$TOKEN_A" addressing "@$HANDLE_B and @$HANDLE_OP, one of you please" || return 1
+	want_eq "say status" "$API_STATUS" 200 || return 1
+	want_eq "the first name addressed it" "$(jqv .addressee)" "$USER_B" || return 1
+	case "$(mentions_meta)" in
+	"$HANDLE_B:$USER_B $HANDLE_OP:$USER_OP") ;;
+	*)
+		printf 'the mentions on the message are %q, want both pairs in order\n' \
+			"$(mentions_meta)" >&2
+		return 1
+		;;
+	esac
+	# An explicit `to` is a field somebody filled in deliberately, so it wins.
+	say_to "$TOKEN_A" addressing "$USER_OP" "@$HANDLE_B ask the operator about this" || return 1
+	want_eq "to beats a mention" "$(jqv .addressee)" "$USER_OP" || return 1
+	printf 'first mention addresses, the rest are on the message, --to still wins\n'
+}
+
+# The three things that look like mentions and are not. The email address is the
+# one that would have broken the naive version - `@(\w+)` turns every address
+# anybody pastes into a room into a mention of whoever holds that handle, and it
+# is the case nobody writes the feature for.
+what_is_not_a_mention_addresses_nobody() {
+	recall
+	say_body "$TOKEN_A" addressing "write to $HANDLE_B@example.com about the gearbox" || return 1
+	want_eq "an email address addresses nobody" "$(jqv '.addressee // ""')" "" || return 1
+	want_eq "and stamps no mentions" "$(mentions_meta)" "" || return 1
+
+	# A name nothing answers to is NOT a refusal - people type names that do not
+	# exist, and losing what somebody wrote over a word in it is the worse
+	# failure by a distance. It stays as text.
+	local before after
+	before="$(scalar "SELECT count(*) FROM events WHERE room = 'addressing'")" || return 1
+	say_body "$TOKEN_A" addressing "@nobody-at-all-here is not here" || return 1
+	want_eq "a name nobody answers to is still a message" "$API_STATUS" 200 || return 1
+	want_eq "addressed at nobody" "$(jqv '.addressee // ""')" "" || return 1
+	want_eq "with the word left in it" "$(jqv .body)" "@nobody-at-all-here is not here" || return 1
+	after="$(scalar "SELECT count(*) FROM events WHERE room = 'addressing'")" || return 1
+	want_eq "and it was written" "$((after - before))" 1 || return 1
+
+	say_body "$TOKEN_A" addressing "the build is red@" || return 1
+	want_eq "a bare @ addresses nobody" "$(jqv '.addressee // ""')" "" || return 1
+	printf 'an address, a name nobody answers to and a stray @: none of them addressed anybody\n'
+}
+
 # The one that matters, in both directions.
 #
 # It does not widen: a message said in pc and addressed at B, who holds no grant
@@ -1898,6 +1985,42 @@ to_me_wakes_only_for_what_names_this_principal() {
 		return 1
 	fi
 	printf 'woken by the addressed one, told about the rest, mark past both\n'
+}
+
+# The whole reason @mentions exist: a name written into the sentence has to wake
+# a waiter exactly as `to` does, or the parse is decoration.
+#
+# Both directions, because either half alone is a feature that looks like it
+# works. Woken by a mention of itself, and NOT woken by a mention of somebody
+# else - a version that woke on any message with an @ in it would pass the first
+# and make --to-me useless, which is the filter this whole thing rides on.
+#
+# The messages come from A's AGENT rather than from a person, deliberately: a
+# person's message wakes a --to-me waiter whatever it says, so only an agent's
+# can show that the mention did it.
+a_mention_wakes_a_to_me_waiter() {
+	recall
+	local poster
+	api POST "$TOKEN_A_AGENT" "/api/chat/$INBOX_ROOM/say" \
+		"{\"body\": \"@$HANDLE_B could you take a look at this one\"}" || return 1
+	want_eq "say status" "$API_STATUS" 200 || return 1
+	want_eq "it was addressed at B by the words" "$(jqv .addressee)" "$USER_B" || return 1
+
+	inbox_run --token "$TOKEN_A" --as gate-waiter --to-me --deadline 6
+	want_eq "exit code for a room where somebody else was named" "$INBOX_STATUS" 1 || return 1
+	want_eq "and it handed nothing over" "$INBOX_OUT" "" || return 1
+
+	poster="$(say_in_background "$INBOX_ROOM" "$TOKEN_A_AGENT" \
+		"@$HANDLE_A the build is red, can you look")"
+	inbox_run --token "$TOKEN_A" --as gate-waiter --to-me --deadline 40
+	wait "$poster" 2>/dev/null || true
+
+	want_eq "exit code when its own name was written" "$INBOX_STATUS" 0 || return 1
+	want_eq "what it woke for" \
+		"$(printf '%s' "$INBOX_OUT" | jq -r .body)" "@$HANDLE_A the build is red, can you look" ||
+		return 1
+	want_eq "addressed at" "$(printf '%s' "$INBOX_OUT" | jq -r .addressee)" "$USER_A" || return 1
+	printf 'slept through @%s and woke on @%s, with no --to anywhere\n' "$HANDLE_B" "$HANDLE_A"
 }
 
 # A waiter that cannot tell a broken configuration from a quiet room cannot be
@@ -2221,6 +2344,30 @@ browser_colours_the_speakers() {
 		'{"title": "marrowbone the gasket", "status": "done"}' || return 1
 	cd "$ROOT/web" || return 1
 	node scripts/colour-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A"
+}
+
+# And the @names inside a body, on the screen, as elements.
+#
+# Its own room, with its own three messages, because what it asserts is about
+# the exact words in them - a check that read whatever the rest of the run had
+# left in general would be asserting about a room that changes underneath it.
+#
+# They are said by A's AGENT and read as A, so the mention of A is a mention of
+# whoever is reading, the mention of B is a mention of somebody else, and the
+# difference between the two is the thing worth drawing. The agent speaks under
+# A's handle - which is how the colour of a mention can be compared with the
+# colour that person speaks in on the same page.
+browser_draws_the_mentions() {
+	recall
+	api POST "$TOKEN_A_AGENT" /api/chat/mentions/say \
+		"{\"body\": \"@$HANDLE_A the gearbox is stripped again\"}" || return 1
+	want_eq "say status" "$API_STATUS" 200 || return 1
+	api POST "$TOKEN_A_AGENT" /api/chat/mentions/say \
+		"{\"body\": \"@$HANDLE_B please review, cc @nobody-at-all-here\"}" || return 1
+	want_eq "say status" "$API_STATUS" 200 || return 1
+	cd "$ROOT/web" || return 1
+	node scripts/mention-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" mentions \
+		"$HANDLE_A" "$HANDLE_B" nobody-at-all-here
 }
 
 # Two waiters under one name share one cursor, so the second takes deliveries
@@ -5254,6 +5401,15 @@ check "an agent is an addressee too" an_agent_can_be_addressed
 check "a message to the room carries none" an_unaddressed_message_is_still_a_message
 check "a name nothing answers to is refused, and writes no row" an_unknown_addressee_is_refused
 check "being named on a message is not a capability" addressing_changes_nothing_about_who_reads
+check "an @name in the body fills the same field in" a_mention_addresses_the_message
+check "the first mention addresses, the rest are on the message" \
+	the_first_mention_addresses_and_the_rest_are_recorded
+check "an email address, an unknown name and a stray @ address nobody" \
+	what_is_not_a_mention_addresses_nobody
+check "what counts as a mention, and what only looks like one" \
+	go test -count=1 -run 'TestWhatCountsAsAMention|TestAnUnresolvedMentionIsPlainTextAndNotARefusal|TestTheFirstMentionAddressesAndTheRestAreOnTheMessage' .
+check "a name resolves to the one principal it names" \
+	go test -count=1 -run 'TestANameResolvesToTheOnePrincipalItNames|TestAnAmbiguousNameResolvesToNobody|TestAnAgentWhosePersonHasAHandleIsNamedByTheHandle' ./internal/store
 check "the addressee is inside what the node signs" \
 	go test -count=1 -run 'TestAnUnaddressedEventEncodesAsItAlwaysDid|TestAnAddresseeCannotBeAddedRemovedOrSwapped' ./internal/sign
 
@@ -5273,6 +5429,10 @@ check "its own messages do not wake it, and the mark passes them anyway" \
 	its_own_messages_do_not_wake_it_and_the_mark_still_passes_them
 check "--to-me wakes for what names it and counts what it skipped" \
 	to_me_wakes_only_for_what_names_this_principal
+check "--to-me wakes on an @name in the body, and not on somebody else's" \
+	a_mention_wakes_a_to_me_waiter
+check "the wake-up rule for a mention, in the unit" \
+	go test -count=1 -run TestAWaiterNarrowedToItsOwnMailWakesOnAMentionOfIt .
 check "a bad token, no token and a dead node are exit 2, never exit 1" \
 	a_broken_waiter_is_exit_2_and_not_exit_1
 
@@ -5301,6 +5461,8 @@ check "the room's todo panel is on the screen in a browser, as an element" \
 	browser_renders_the_rooms_todos
 check "each speaker is drawn in their own colour, in a browser" \
 	browser_colours_the_speakers
+check "an @name is drawn as a mention, in their colour, in a browser" \
+	browser_draws_the_mentions
 
 # ------------------------------------------------------------------- phase 4
 #

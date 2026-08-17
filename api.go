@@ -547,6 +547,12 @@ const actorMetaPrefix = store.ActorMetaPrefix
 // Meta is still carried, because it is where a client puts what an event is
 // about; it is simply not a channel for saying who is talking.
 //
+// The mentions key is the same rule for addressing. It says which words in a
+// body the node resolved to people, and the console draws those words in that
+// person's colour and rings the reader's own - so a client that could write it
+// would be putting somebody's name, or the reader's, on a message that named
+// nobody. The node stamps it where it does the resolving, in mentions.go.
+//
 // The trace key is the same rule for correlation rather than for attribution.
 // A trace id in meta is what carries a handoff across the node boundary, and
 // the far node reads it back off the thread and continues that trace - so a
@@ -565,7 +571,8 @@ func speakerStripped(meta json.RawMessage) json.RawMessage {
 		return nil
 	}
 	for k := range fields {
-		if strings.HasPrefix(k, actorMetaPrefix) || k == store.TraceMetaKey {
+		if strings.HasPrefix(k, actorMetaPrefix) ||
+			k == store.TraceMetaKey || k == store.MentionsMetaKey {
 			delete(fields, k)
 		}
 	}
