@@ -335,6 +335,21 @@ type Artifact struct {
 	// filter fill it, and every other way of getting an Artifact leaves it
 	// empty, because the answer depends on who is asking.
 	ReplacedBy string `json:"replaced_by,omitempty"`
+	// Assignee is who is carrying the work, put where Status already is so ONE
+	// read answers both. It is derived at read time by AssigneeOf - the fields
+	// key first, the body's legacy OWNER line second - and filled in the same
+	// three read paths as ReplacedBy, never in scanArtifact, so it does not ride
+	// the sync paths or the signature.
+	//
+	// It is here because its absence cost three agents an afternoon. Status is
+	// top level, assignee was one level down in fields, and neither is
+	// discoverable from the other: one agent filtered status inside .fields and
+	// called 23 finished rows open; another parsed the owner out of the body with
+	// the wrong prefix, got twelve honest blanks, and reassigned three rows that
+	// were already claimed. Both reads succeeded. Both were about the wrong
+	// population. A queue whose two most-read facts live in two different shapes
+	// invites exactly that, and the fix is not to document where they are.
+	Assignee string `json:"assignee,omitempty"`
 	// Reported and External are the forge link: whether this artifact has been
 	// filed as an issue somewhere, and where. Both are written only by the
 	// forge endpoints - see SetArtifactExternal - so an ordinary update of the

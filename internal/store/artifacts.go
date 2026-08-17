@@ -728,7 +728,26 @@ func (d *DB) ListArtifacts(ctx context.Context, p *Principal, q ArtifactQuery) (
 	if err := d.replacedBy(ctx, p, out, q.ScopeAll); err != nil {
 		return nil, err
 	}
+	fillAssignee(out)
 	return out, nil
+}
+
+// fillAssignee puts the current assignee on the row itself, beside Status.
+//
+// No query: the value is already on the artifact, either in the fields key or in
+// the body's legacy OWNER line, and AssigneeOf is the one function that decides
+// between them. Calling it here rather than leaving every reader to look means
+// there is one answer to "who has this" instead of one per client - and the
+// clients that rolled their own got it wrong, which is why this exists.
+//
+// It is filled beside ReplacedBy, in the permission-filtered read paths only, so
+// a derived value never reaches the sync paths or the signature.
+func fillAssignee(arts []*Artifact) {
+	for _, art := range arts {
+		if art != nil {
+			art.Assignee = AssigneeOf(art)
+		}
+	}
 }
 
 // replacedBy fills ReplacedBy on every artifact in arts that a readable
@@ -849,6 +868,7 @@ func (d *DB) SearchArtifacts(ctx context.Context, p *Principal, q ArtifactQuery)
 	if err := d.replacedBy(ctx, p, found, q.ScopeAll); err != nil {
 		return nil, err
 	}
+	fillAssignee(found)
 	return out, nil
 }
 
@@ -893,6 +913,7 @@ func (d *DB) ReadArtifact(ctx context.Context, p *Principal, id string, scopeAll
 	if err := d.replacedBy(ctx, p, []*Artifact{art}, scopeAll); err != nil {
 		return nil, err
 	}
+	fillAssignee([]*Artifact{art})
 	return art, nil
 }
 

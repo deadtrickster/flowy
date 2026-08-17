@@ -231,3 +231,74 @@ func TestTheVerbRefusesANameThatIsNotOne(t *testing.T) {
 		t.Fatalf("the refused name still moved the assignee to %q", got)
 	}
 }
+
+// TestAReadSaysWhoIsCarryingItWithoutDiggingIntoFields is the queue's two
+// most-read facts arriving in one shape.
+//
+// Status was top level and assignee was one level down in fields, and neither
+// was discoverable from the other. Three agents misread the board in one
+// afternoon because of it, every read succeeding and every read about the wrong
+// population: one filtered status inside .fields and called 23 finished rows
+// open, another parsed the owner out of the body with the wrong prefix, got
+// twelve honest blanks, and reassigned three rows somebody else had claimed.
+//
+// So a read now answers both from the row itself, resolved the one way -
+// AssigneeOf - rather than each client rolling its own and getting it wrong.
+// The legacy OWNER line still resolves, because most of this queue predates the
+// field.
+func TestAReadSaysWhoIsCarryingItWithoutDiggingIntoFields(t *testing.T) {
+	ctx, db := open(t)
+
+	project := declaredProject(t, ctx, db, "pax")
+	author := &Principal{UserID: "u-" + ulid.NewString(), Project: project}
+
+	claimed := todoIn(t, ctx, db, author, "reseat the intake valve", VisibilityShared, "")
+	if _, _, err := db.AssignTodo(ctx, author, claimed.ID, "a-welder", nil); err != nil {
+		t.Fatalf("assign: %v", err)
+	}
+
+	// Written the way the whole queue was before the field existed.
+	legacy := todoIn(t, ctx, db, author, "rewrite the pruning notes", VisibilityShared, "")
+	legacy.Body = "OWNER: a-gardener\n\nthe notes are stale"
+	if err := db.UpsertArtifact(ctx, legacy); err != nil {
+		t.Fatalf("legacy todo: %v", err)
+	}
+
+	unowned := todoIn(t, ctx, db, author, "nobody has this one", VisibilityShared, "")
+
+	want := map[string]string{
+		claimed.ID: "a-welder",
+		legacy.ID:  "a-gardener",
+		unowned.ID: "",
+	}
+
+	// Through the LIST path, which is what every board read uses.
+	arts, err := db.ListArtifacts(ctx, author, ArtifactQuery{Type: "memory", Kind: "todo"})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	seen := 0
+	for _, a := range arts {
+		expect, ours := want[a.ID]
+		if !ours {
+			continue
+		}
+		seen++
+		if a.Assignee != expect {
+			t.Errorf("%q: read says assignee %q, want %q - a reader would have to dig into fields",
+				a.Title, a.Assignee, expect)
+		}
+	}
+	if seen != len(want) {
+		t.Fatalf("saw %d of the %d todos written here", seen, len(want))
+	}
+
+	// And through the single-artifact path, so the two doors cannot disagree.
+	one, err := db.ReadArtifact(ctx, author, claimed.ID, false)
+	if err != nil {
+		t.Fatalf("read one: %v", err)
+	}
+	if one.Assignee != "a-welder" {
+		t.Errorf("reading one artifact says assignee %q, want %q", one.Assignee, "a-welder")
+	}
+}

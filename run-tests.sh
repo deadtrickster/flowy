@@ -8786,6 +8786,8 @@ check "read permission is the whole bar for assigning, in the store" \
 	./internal/store
 check "the latest claim wins and the log keeps the ones before it, in the store" \
 	go test -count=1 -run TestTheLatestClaimWinsAndTheLogKeepsTheRest ./internal/store
+check "one read says both what state a todo is in and who is carrying it" \
+	go test -count=1 -run TestAReadSaysWhoIsCarryingItWithoutDiggingIntoFields ./internal/store
 
 # And a todo gets FINISHED. The same ruling one field along: the queue metadata
 # on an item changes hands, its words do not, and read permission is the whole
