@@ -272,6 +272,12 @@ var apiRoutes = []string{
 	"POST /api/work/{id}/claim",
 	"POST /api/work/{id}/release",
 	"POST /api/work/{id}/done",
+	// Correcting a todo nobody has started. It is on this list for the reason
+	// the queue doors are: a client asks /api/node what this node can do, and an
+	// editor who cannot find the door falls back to mem_write, which is the
+	// unguarded write this one exists to replace.
+	"POST /api/todo/{id}/edit",
+	"GET /api/todo/{id}/edits",
 	"GET /api/proposals",
 	"GET /api/proposal/{id}",
 	"GET /api/attachment/{id}",
@@ -412,6 +418,14 @@ func (s *server) routes() http.Handler {
 	// internal/store/todocategory.go, and category.go for this door.
 	api.HandleFunc("POST /api/todo/{id}/category", s.handleTodoCategory)
 	api.HandleFunc("GET /api/todo/{id}/category", s.handleTodoCategoryRead)
+	// The words, which is the other half and the one with a race in it. An
+	// author may correct a todo NOBODY HAS STARTED, and the edit carries the
+	// status they saw: if somebody picked the row up while they were typing the
+	// write is refused naming who took it, rather than landing on top of what
+	// that agent is working from. See todoedit.go and
+	// internal/store/todoedit.go.
+	api.HandleFunc("POST /api/todo/{id}/edit", s.handleTodoEdit)
+	api.HandleFunc("GET /api/todo/{id}/edits", s.handleTodoEdits)
 	// An attachment's bytes, permission-filtered exactly as the row is - the
 	// card a reader sees names this, and "the card is there but the bytes are
 	// not" is a real state the filter produces, answered as metadata without

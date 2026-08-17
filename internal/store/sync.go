@@ -1529,6 +1529,12 @@ var mintedEventTypes = map[string]bool{
 	// refuses one rather than silently writing a verdict only its reporter
 	// could read back.
 	EventFindingRun: true,
+	// And an edit of a todo's words. Minted for the first reason and for the
+	// one this verb is entirely made of: the entry says the edit was written
+	// against a state the row was actually in, and the only thing that makes
+	// that true is the compare-and-set on the verb. An entry handed over here
+	// would be a lost update with a record behind it claiming it was not one.
+	EventTodoEdit: true,
 }
 
 // MintedEventType reports whether an event type is one this node's own handlers

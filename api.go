@@ -541,6 +541,12 @@ var mintedTypes = map[string]bool{
 	// read the finding rather than only by whoever reported it - is on the
 	// verb. See store.RecordFindingRun.
 	store.EventFindingRun: true,
+	// And an edit of a todo's words, which is the sharpest case on this list:
+	// the entry's whole content is "this was written against a row that had not
+	// moved", and the compare-and-set on the verb is the only thing that makes
+	// that sentence true. One typed by hand would be a lost update carrying a
+	// record that says it was not one. See store.EditTodo.
+	store.EventTodoEdit: true,
 }
 
 // handleAppendEvent appends to the log. The log is append-only: there is no

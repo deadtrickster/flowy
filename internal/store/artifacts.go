@@ -382,20 +382,112 @@ func (d *DB) setArtifactFields(
 			return fmt.Errorf("store: set fields of %s: %w", a.ID, err)
 		}
 		if n == 0 {
-			// WHICH OF THE TWO, because they are different facts and the caller
-			// acts differently on them: the row is gone, or the row is not as
-			// this write required. A guarded write that reported ErrNotFound
-			// would tell a work queue its item had vanished when somebody had
-			// simply taken it.
-			if guard != "" {
-				var here bool
-				if err := tx.QueryRowContext(ctx,
-					`SELECT true FROM artifacts WHERE id = $1 AND coalesce(tombstone, false) = false`,
-					a.ID).Scan(&here); err == nil && here {
-					return fmt.Errorf("%w: artifact %s", ErrGuardFailed, a.ID)
-				}
+			return missingOrGuarded(ctx, tx, a.ID, guard, "set fields")
+		}
+		for _, e := range events {
+			if err := d.appendEvent(ctx, tx, e); err != nil {
+				return err
 			}
-			return fmt.Errorf("store: set fields: %w: artifact %s", ErrNotFound, a.ID)
+		}
+		return nil
+	})
+}
+
+// missingOrGuarded says WHICH OF THE TWO a guarded write that touched nothing
+// hit, because they are different facts and the caller acts differently on
+// them: the row is gone, or the row is here and is not in the state this write
+// required. A guarded write that reported ErrNotFound would tell a work queue
+// its item had vanished when somebody had simply taken it, and would tell an
+// editor their todo was deleted when somebody had started it.
+//
+// An unguarded write has only one of the two available to it, so it is answered
+// as absent without the second query.
+func missingOrGuarded(ctx context.Context, tx *sql.Tx, id, guard, what string) error {
+	if guard != "" {
+		var here bool
+		if err := tx.QueryRowContext(ctx,
+			`SELECT true FROM artifacts WHERE id = $1 AND coalesce(tombstone, false) = false`,
+			id).Scan(&here); err == nil && here {
+			return fmt.Errorf("%w: artifact %s", ErrGuardFailed, id)
+		}
+	}
+	return fmt.Errorf("store: %s: %w: artifact %s", what, ErrNotFound, id)
+}
+
+// SetArtifactWordsIf replaces an artifact's title and body under a
+// COMPARE-AND-SET, and writes the events that record the change, in one
+// transaction and under one clock reading.
+//
+// It is SetArtifactFieldsIf for the other half of an item - the WORDS rather
+// than the queue metadata - and it exists for the same reason: an edit written
+// against a row that has moved is a lost update, and a read-then-write cannot
+// tell one from an ordinary write. The editor read "nobody has started this",
+// somebody started it, and the edit lands on top of whatever the person who
+// picked it up was working from - with a 200 telling both of them they
+// succeeded. Here the guard is in the WHERE, so a moved row touches nothing, no
+// event is appended, and the answer is ErrGuardFailed for the caller to turn
+// into a sentence naming who moved it.
+//
+// guard is a boolean SQL fragment over the artifacts row and must be a literal
+// in this package rather than anything off the wire.
+//
+// THREE COLUMNS MOVE THAT A STATUS MOVE LEAVES ALONE. search, because a title
+// nobody can find is worse than the old one; author_sig, because title and body
+// are INSIDE the owner's own signature - see sign.CanonicalArtifactAuthorship -
+// so an edit that carried the old author signature forward would leave a row
+// that no longer verifies, which is this fabric's own definition of a forgery;
+// and authorship with it, since what this node can say about the row is decided
+// by whether it could make that signature. signArtifact settles both.
+func (d *DB) SetArtifactWordsIf(
+	ctx context.Context, a *Artifact, title, body, guard string, events ...*Event,
+) error {
+	ctx, span := otel.Start(ctx, otel.KindIngest, "artifact.words.cas")
+	defer func() {
+		span.SetArtifact(a.ID)
+		span.End()
+	}()
+	at, err := d.clock.Pack()
+	if err != nil {
+		return fmt.Errorf("store: set words of %s: %w", a.ID, err)
+	}
+	a.Title, a.Body = title, body
+	a.HLC = at
+	a.Node = d.node
+	if err := d.signArtifact(ctx, a); err != nil {
+		return err
+	}
+	// The first event shares the row's reading and the rest take their own, for
+	// the reason written down in SetArtifactFields: two events under one reading
+	// are two events a page boundary can fall between.
+	for i, e := range events {
+		if i == 0 {
+			e.SeqHLC = at
+		}
+		e.Artifact, e.Project = a.ID, a.Project
+	}
+
+	return d.inTx(ctx, "set words of "+a.ID, func(tx *sql.Tx) error {
+		where := `id = $1 AND coalesce(tombstone, false) = false`
+		if guard != "" {
+			where += " AND " + guard
+		}
+		res, err := tx.ExecContext(ctx,
+			`UPDATE artifacts
+			    SET title = $2, body = $3, search = `+fmt.Sprintf(artifactSearchSQL, 4)+`,
+			        hlc = $5, node = $6, sig = $7, author_sig = $8, authorship = $9,
+			        updated = now()
+			  WHERE `+where,
+			a.ID, a.Title, a.Body, searchText(a), a.HLC, a.Node, a.Sig, a.AuthorSig,
+			authorshipOr(a.Authorship))
+		if err != nil {
+			return fmt.Errorf("store: set words of %s: %w", a.ID, err)
+		}
+		n, err := affectedRows(res)
+		if err != nil {
+			return fmt.Errorf("store: set words of %s: %w", a.ID, err)
+		}
+		if n == 0 {
+			return missingOrGuarded(ctx, tx, a.ID, guard, "set words")
 		}
 		for _, e := range events {
 			if err := d.appendEvent(ctx, tx, e); err != nil {
