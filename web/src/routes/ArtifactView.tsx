@@ -31,6 +31,10 @@ export function ArtifactView() {
   const { token } = useSession();
   const [artifact, setArtifact] = useState<Artifact | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Where the replacement lives, from ITS OWN ref rather than from the row on
+  // screen. Built out of this artifact's project and type it was a guess: a
+  // replacement is a different row and may sit in another project or be another
+  // type. Without a ref there is no route to offer, so the id shows as text.
   const replacedPath = refPath(artifact?.replaced_by_ref);
   // The words somebody has selected in the document, and the ones they have
   // asked to quote. Two states rather than one: selecting is reading, and the
@@ -80,51 +84,6 @@ export function ArtifactView() {
   }, [token, id]);
 
   return (
-    <div className="h-full overflow-y-auto p-6">
-      <div className="mx-auto flex max-w-3xl flex-col gap-4">
-        <div className="flex items-center gap-2 text-muted-foreground text-xs">
-          <Link to="/" className="hover:text-foreground">
-            overview
-          </Link>
-          <span>/</span>
-          <span>{project}</span>
-          <span>/</span>
-          <span>{type}</span>
-          <span>/</span>
-          <span className="font-mono">{id}</span>
-        </div>
-
-        {error ? <div className="text-destructive text-sm">{error}</div> : null}
-        {!token ? <div className="text-muted-foreground text-sm">no token</div> : null}
-
-        {/*
-         * A report that has been superseded says so where somebody reads it,
-         * above the document rather than in a badge beside the title: whoever
-         * opened this is about to act on what it says, and the one thing they
-         * need before that is that a newer one exists. The node derives
-         * replaced_by through the same filter as the row, so the link is only
-         * ever offered when it goes somewhere this token can follow.
-         *
-         * Where it goes comes from replaced_by_ref, which is the replacement's
-         * own project and type. This used to be built out of the project and
-         * type of the row on screen, which is a guess: a replacement is a
-         * different row and may sit in another project or be another type.
-         * Without a ref there is no route to offer, so the id is shown as text.
-         */}
-        {artifact?.replaced_by ? (
-          <div
-            data-replaced-by={artifact.replaced_by}
-            className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-destructive text-sm"
-          >
-            this report has been replaced -{" "}
-            {replacedPath ? (
-              <Link className="font-mono underline" to={replacedPath}>
-                {artifact.replaced_by}
-              </Link>
-            ) : (
-              <span className="font-mono">{artifact.replaced_by}</span>
-            )}{" "}
-            supersedes it
     <div className="flex h-full min-h-0">
       {/*
         The document column listens for the end of a selection - mouse-up and
@@ -168,12 +127,13 @@ export function ArtifactView() {
               className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-destructive text-sm"
             >
               this report has been replaced -{" "}
-              <Link
-                className="font-mono underline"
-                to={`/p/${artifact.project ?? "_"}/${artifact.type}/${artifact.replaced_by}`}
-              >
-                {artifact.replaced_by}
-              </Link>{" "}
+              {replacedPath ? (
+                <Link className="font-mono underline" to={replacedPath}>
+                  {artifact.replaced_by}
+                </Link>
+              ) : (
+                <span className="font-mono">{artifact.replaced_by}</span>
+              )}{" "}
               supersedes it
             </div>
           ) : null}
