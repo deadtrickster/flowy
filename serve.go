@@ -337,6 +337,8 @@ func (s *server) routes() http.Handler {
 	// The room's plan, raised from the room: a todo and the message that raised
 	// it, written where the conversation is.
 	api.HandleFunc("POST /api/chat/{room}/todo", s.handleRoomTodoRaise)
+	// And who is carrying one, said in the room the same way raising it is.
+	api.HandleFunc("POST /api/chat/{room}/todo/{id}/assignee", s.handleRoomTodoAssign)
 	// What a room decided, as data: the proposal, the votes in the order they
 	// were cast, and the tally. Read-only here on purpose - the writes are the
 	// MCP verbs, and the console's view of this is deliberately not in this

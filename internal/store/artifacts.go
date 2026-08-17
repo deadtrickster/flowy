@@ -223,6 +223,71 @@ func (d *DB) WriteMemory(ctx context.Context, a *Artifact, e *Event) error {
 	})
 }
 
+// SetArtifactFields replaces one artifact's fields column and writes the event
+// that records the change, in one transaction and under one clock reading.
+//
+// It is setArtifactStatus's shape rather than an upsert, and for the same
+// reason: this changes one column, and replacing the row would make "somebody
+// took a todo" look to every peer that merges it like a rewrite of the whole
+// artifact - title, body, tags and all - by whichever node the assignment
+// happened to be made on.
+//
+// fields is inside the signature (see sign.CanonicalArtifact), so the row is
+// re-signed here: a fields column that moved without the signature moving with
+// it is a row that no longer verifies, which is a forgery by this node's own
+// definition of one.
+//
+// A deleted artifact has no fields to set. The handlers gate on a filtered
+// read, and the read is not the write - between the two the owner's delete can
+// land - so the predicate says so and ErrNotFound is what the caller would have
+// got had the delete landed a moment earlier.
+func (d *DB) SetArtifactFields(ctx context.Context, a *Artifact, fields json.RawMessage, e *Event) error {
+	ctx, span := otel.Start(ctx, otel.KindIngest, "artifact.fields")
+	defer func() {
+		span.SetArtifact(a.ID)
+		span.End()
+	}()
+	at, err := d.clock.Pack()
+	if err != nil {
+		return fmt.Errorf("store: set fields of %s: %w", a.ID, err)
+	}
+	a.Fields = fields
+	a.HLC = at
+	a.Node = d.node
+	if err := d.signArtifact(ctx, a); err != nil {
+		return err
+	}
+	// The event's artifact and project are taken from the item rather than from
+	// the caller, as WriteMemory takes them: an entry naming anything else
+	// would not be a record of this write, and a projectless event is readable
+	// by its own actor and nobody else (see EventFilterSQL) - which for a
+	// message announcing a change to a room's plan is the room never hearing.
+	e.SeqHLC = at
+	e.Artifact, e.Project = a.ID, a.Project
+
+	return d.inTx(ctx, "set fields of "+a.ID, func(tx *sql.Tx) error {
+		var column any
+		if len(a.Fields) > 0 {
+			column = []byte(a.Fields)
+		}
+		res, err := tx.ExecContext(ctx,
+			`UPDATE artifacts SET fields = $2, hlc = $3, node = $4, sig = $5, updated = now()
+			  WHERE id = $1 AND coalesce(tombstone, false) = false`,
+			a.ID, column, a.HLC, a.Node, a.Sig)
+		if err != nil {
+			return fmt.Errorf("store: set fields of %s: %w", a.ID, err)
+		}
+		n, err := affectedRows(res)
+		if err != nil {
+			return fmt.Errorf("store: set fields of %s: %w", a.ID, err)
+		}
+		if n == 0 {
+			return fmt.Errorf("store: set fields: %w: artifact %s", ErrNotFound, a.ID)
+		}
+		return d.appendEvent(ctx, tx, e)
+	})
+}
+
 // CreateArtifact writes an artifact that is not here yet, and never writes over
 // one that is. An id already in the table comes back as ErrTaken with nothing
 // written at all.
@@ -361,6 +426,28 @@ const SupersedesField = "supersedes"
 // is to be done and the message says what was being talked about when somebody
 // decided it had to be.
 const MessageField = "message"
+
+// AssigneeField is who is carrying the work, beside the room it was agreed in.
+//
+// It is a claim somebody made, not a principal: a handle, whatever the person
+// or agent doing the work is called around here, and the node resolves it to
+// nothing. owner_user is already on the row and answers a different question -
+// who wrote it - which for a whole queue filed by one operator is the same id
+// every time and tells nobody who has what.
+//
+// It rides fields for the reason the room does, and with the same consequence:
+// the permission filter never looks at this key, so naming somebody in it hands
+// them nothing. Being assigned a todo you cannot read leaves you unable to read
+// it; the surface that hands over a readable copy of something is an assignment
+// and a share and a task, and it is POST /api/assign, which is a different verb
+// on purpose.
+//
+// A key that is present and empty is not the same as no key at all: it is
+// somebody saying out loud that nobody is carrying this, and it has to outrank
+// the `OWNER:` line that the queue was written with before this field existed.
+// So a read that finds the key takes it verbatim, and only a read that finds no
+// key at all falls back to the body.
+const AssigneeField = "assignee"
 
 // ArtifactQuery narrows a list or a search. Every field is optional; the
 // permission filter is not, and is added by the methods below.

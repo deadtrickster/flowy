@@ -71,6 +71,30 @@ export function todoOwner(body: string): string {
  */
 const NOBODY = new Set(["?", "-", "none", "nobody", "tbd", "unassigned", "unowned", "n/a"]);
 
+/**
+ * Who is carrying a todo: the `assignee` field if the item has one, and the
+ * body's OWNER line if it does not.
+ *
+ * The order is the compatibility, and it is the same order the node and the
+ * terminal client read these in. The whole queue predates the field, and those
+ * items still read the way they always did. But a field that is THERE wins even
+ * when it is empty - somebody who unassigned a todo through this panel said so
+ * out loud, and falling through to the OWNER line still sitting in the body
+ * would quietly put the old name back on the next render.
+ *
+ * So the presence of the key is the question, not its truthiness: `""` is a
+ * value here and `undefined` is a silence, which is why this cannot go through
+ * fieldOf below.
+ */
+export function todoAssignee(artifact: Artifact): string {
+  const fields = artifact.fields;
+  if (fields && typeof fields === "object") {
+    const named = (fields as Record<string, unknown>).assignee;
+    if (typeof named === "string") return named.trim();
+  }
+  return todoOwner(artifact.body ?? "");
+}
+
 /** The body without the OWNER line, which is rendered as its own column. */
 export function todoDetail(body: string): string {
   return body

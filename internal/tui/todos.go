@@ -66,17 +66,24 @@ func sortTodos(list []*Artifact) []*Artifact {
 	return list
 }
 
-// todoOwner is who is doing it: the name on the OWNER line the queue's items
-// start with.
+// todoOwner is who is doing it: the assignee field if the item carries one, and
+// the OWNER line the queue's older items start with if it does not.
 //
-// It is read out of the body rather than off owner_user, which is the ulid of
-// whoever wrote the row - usually the one agent that filed the whole queue, and
-// never the answer to "who is doing this". Two items in the queue carry no
-// OWNER line at all, and those render with a dash: an unowned todo is a fact
-// about the queue worth seeing, not a row to hide.
+// Neither is owner_user, which is the ulid of whoever wrote the row - usually
+// the one agent that filed the whole queue, and never the answer to "who is
+// doing this". Items that say neither render with a dash: an unowned todo is a
+// fact about the queue worth seeing, not a row to hide.
+//
+// The field wins even when it is empty, which is the same order the console and
+// the node read these in. Somebody who unassigned a todo through a panel said
+// so; falling back to the OWNER line still in its body would undo them here and
+// leave the two clients disagreeing about who has the work.
 func todoOwner(a *Artifact) string {
 	if a == nil {
 		return ""
+	}
+	if named := todoProvenance(a).Assignee; named != nil {
+		return strings.TrimSpace(*named)
 	}
 	for _, line := range splitLines(a.Body) {
 		line = strings.TrimSpace(line)
@@ -92,14 +99,19 @@ func todoOwner(a *Artifact) string {
 	return ""
 }
 
-// todoFields is what a todo carries in fields: where it was raised, and the
-// message it came out of. It rides fields rather than columns for the reason a
-// report's as_of does - see reportProvenance, which is the same read of the
-// same column - and anything that does not parse leaves both empty, which is a
-// todo with no room on screen and is the truth.
+// todoFields is what a todo carries in fields: where it was raised, the message
+// it came out of, and who is carrying it. It rides fields rather than columns
+// for the reason a report's as_of does - see reportProvenance, which is the same
+// read of the same column - and anything that does not parse leaves them empty,
+// which is a todo with no room on screen and is the truth.
+//
+// Assignee is a pointer because an empty one is a value: "nobody is carrying
+// this" is a thing somebody said, and it has to be told apart from an item that
+// predates the field and whose owner is still a line in its body.
 type todoFields struct {
-	Room    string `json:"room"`
-	Message string `json:"message"`
+	Room     string  `json:"room"`
+	Message  string  `json:"message"`
+	Assignee *string `json:"assignee"`
 }
 
 func todoProvenance(a *Artifact) todoFields {

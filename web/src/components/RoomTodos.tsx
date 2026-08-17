@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import type { Artifact, FlowyEvent } from "@/lib/api";
 import { speakerStyle } from "@/lib/speakercolour";
-import { countTodos, sortTodos, statusStyle, todoOwner } from "@/lib/todos";
+import { countTodos, sortTodos, statusStyle, todoAssignee } from "@/lib/todos";
 import { shortId } from "@/lib/utils";
 
 interface Props {
@@ -17,6 +17,9 @@ interface Props {
   disabled: boolean;
   error: string | null;
   onRaise: (title: string) => Promise<void>;
+  /** onAssign says who is carrying one. An empty name says nobody is. It has to
+   * land on the node and come back from it - see the assignee cell below. */
+  onAssign: (id: string, assignee: string) => Promise<void>;
 }
 
 /**
@@ -30,14 +33,26 @@ interface Props {
  * somebody else raises appears here without a reload, because that is the case
  * the panel exists for.
  *
- * A row is status, owner and title, because a panel beside a conversation is
+ * A row is status, assignee and title, because a panel beside a conversation is
  * narrow and those are the three things somebody glances at it for. The rest of
  * the item is one click away in the artifact view.
+ *
+ * The assignee cell is also the control. Somebody in the room takes a line of
+ * the plan while the conversation that produced it is still on screen, which is
+ * the whole reason the panel is here rather than a page away - and a queue you
+ * can read and not answer is the surface this replaced.
  */
-export function RoomTodos({ room, todos, raiseFrom, disabled, error, onRaise }: Props) {
+export function RoomTodos({ room, todos, raiseFrom, disabled, error, onRaise, onAssign }: Props) {
   const [title, setTitle] = useState("");
   const [raising, setRaising] = useState(false);
   const [failed, setFailed] = useState<string | null>(null);
+  // Which row is being edited, and what has been typed into it. The name being
+  // typed is NOT the row's assignee: what a person has half-written is theirs
+  // until they commit it, and the cell keeps showing the node's answer until
+  // the node has a new one.
+  const [editing, setEditing] = useState<string | null>(null);
+  const [named, setNamed] = useState("");
+  const [assigning, setAssigning] = useState(false);
 
   const raise = async (event: FormEvent) => {
     event.preventDefault();
@@ -52,6 +67,37 @@ export function RoomTodos({ room, todos, raiseFrom, disabled, error, onRaise }: 
       setFailed(err instanceof Error ? err.message : String(err));
     } finally {
       setRaising(false);
+    }
+  };
+
+  const edit = (todo: Artifact) => {
+    setEditing(todo.id);
+    setNamed(todoAssignee(todo));
+    setFailed(null);
+  };
+
+  /**
+   * Committing writes to the NODE and nothing else: onAssign posts and reloads
+   * the list, so what the cell says next is what the store holds.
+   *
+   * Nothing optimistic here on purpose. An assignee kept in this component
+   * looks perfect until the room's long poll comes back with the node's list
+   * and replaces it, which is the bug this panel would have shipped with -
+   * somebody takes a piece of work, somebody else says something in the room,
+   * and the name silently reverts.
+   */
+  const commit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!editing || assigning) return;
+    setAssigning(true);
+    setFailed(null);
+    try {
+      await onAssign(editing, named.trim());
+      setEditing(null);
+    } catch (err) {
+      setFailed(err instanceof Error ? err.message : String(err));
+    } finally {
+      setAssigning(false);
     }
   };
 
@@ -78,7 +124,7 @@ export function RoomTodos({ room, todos, raiseFrom, disabled, error, onRaise }: 
         ) : null}
         <ul className="flex flex-col">
           {sortTodos(todos).map((todo) => {
-            const owner = todoOwner(todo.body ?? "");
+            const owner = todoAssignee(todo);
             return (
               <li
                 key={todo.id}
@@ -95,17 +141,47 @@ export function RoomTodos({ room, todos, raiseFrom, disabled, error, onRaise }: 
                   {todo.status || "todo"}
                 </Badge>
                 {/*
-                  The owner in their own colour, the same one they speak in
+                  The assignee in their own colour, the same one they speak in
                   just above - so "who is carrying this" and "who said that"
                   are the same glance rather than two lookups. Unowned stays
                   grey, because nobody is not a person.
+
+                  And it is the control, in place rather than behind a menu: the
+                  cell that answers "who has this" is the one you click to say.
+                  Empty means nobody, which is how the work is put back down.
                 */}
-                <span
-                  className="shrink-0 rounded px-1 text-muted-foreground"
-                  style={owner ? speakerStyle(owner) : undefined}
-                >
-                  {owner || "unowned"}
-                </span>
+                {editing === todo.id ? (
+                  <form onSubmit={commit}>
+                    <Input
+                      className="h-6 w-24 px-1 text-xs"
+                      value={named}
+                      // The input replaced the cell that was just clicked, so
+                      // the caret belongs in it: the click was the request to
+                      // type here, and it is never on screen unmounted.
+                      autoFocus
+                      disabled={assigning}
+                      onChange={(event) => setNamed(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Escape") setEditing(null);
+                      }}
+                      placeholder="nobody"
+                      aria-label={`who is carrying ${todo.title || todo.id}`}
+                    />
+                  </form>
+                ) : (
+                  <button
+                    type="button"
+                    data-assignee=""
+                    disabled={disabled}
+                    onClick={() => edit(todo)}
+                    className="shrink-0 rounded px-1 text-muted-foreground hover:underline disabled:no-underline"
+                    style={owner ? speakerStyle(owner) : undefined}
+                    title="say who is carrying this"
+                    aria-label={`assignee of ${todo.title || todo.id}`}
+                  >
+                    {owner || "unowned"}
+                  </button>
+                )}
                 <span className="min-w-0 flex-1 break-words">{todo.title || todo.id}</span>
               </li>
             );

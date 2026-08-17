@@ -2666,6 +2666,23 @@ ROOM_TODO_GLOBAL="a todo nobody raised in any room"
 ROOM_TODO_MCP="marrowbone the room filter"
 readonly ROOM_TODO_BUILD ROOM_TODO_GENERAL ROOM_TODO_GLOBAL ROOM_TODO_MCP
 
+# The assignee checks get a room of their own, because what the browser one
+# asserts is about the exact rows in the panel - a check reading whatever the
+# rest of the run had left in #build or #general would be asserting about a
+# queue that changes underneath it.
+#
+# Two todos: one nobody is carrying, and one written the way the whole queue was
+# before the field existed, with OWNER as the first line of its body. The second
+# is the discriminating one - a panel that can set an assignee and not override
+# the OWNER line looks finished and puts the old name back.
+ROOM_PLAN="plan"
+PLAN_TODO_FREE="grease the mainspring"
+PLAN_TODO_OWNED="strip the countershaft"
+PLAN_OWNER="a-bench"
+PLAN_TAKER="a-writer"
+PLAN_SECOND="a-second"
+readonly ROOM_PLAN PLAN_TODO_FREE PLAN_TODO_OWNED PLAN_OWNER PLAN_TAKER PLAN_SECOND
+
 # has_todo TITLE - whether the last /api/artifacts response listed that title.
 has_todo() {
 	printf '%s' "$API_BODY" | jq --arg t "$1" -e \
@@ -2881,6 +2898,209 @@ a_room_that_is_not_one_is_refused() {
 	long="$(printf 'r%.0s' $(seq 1 65))"
 	want_status 400 POST "$TOKEN_A" "/api/chat/$long/todo" \
 		'{"title": "raised into a room nothing can ask for"}' || return 1
+}
+
+# Who is carrying one, set from the room and then moved. The override is the
+# half a write-once version gets wrong, and it is the ordinary case: work
+# changes hands more often than it is first picked up.
+#
+# The todo this drives was raised with `OWNER: a-bench` as its body, so the
+# first move also asserts the compatibility the whole feature rests on - the
+# node reads that line as the assignee until a field says otherwise, and the
+# sentence the room is told names it as the previous holder.
+a_todo_takes_an_assignee_and_an_override() {
+	recall
+	local at="/api/chat/build/todo/$ROOM_TODO_ID/assignee"
+
+	api GET "$TOKEN_A" "/api/artifact/$ROOM_TODO_ID" || return 1
+	want_eq "no assignee field to begin with" "$(jqv .fields.assignee)" null || return 1
+
+	api POST "$TOKEN_A" "$at" "$(jq -nc --arg a "$PLAN_TAKER" '{assignee: $a}')" || return 1
+	want_eq "set status" "$API_STATUS" 200 || return 1
+	want_eq "who has it" "$(jqv .item.fields.assignee)" "$PLAN_TAKER" || return 1
+	# Saying who is carrying something is not re-filing it: where it was raised
+	# and what it came out of are untouched.
+	want_eq "still #build's" "$(jqv .item.fields.room)" build || return 1
+	want_eq "still out of that message" \
+		"$(jqv .item.fields.message)" "$ROOM_TODO_MESSAGE" || return 1
+	# And the room heard, as an ordinary message in the thread the todo was
+	# raised out of - the conversation that produced the plan is the one that
+	# says who picked it up. The sentence names the OWNER line as who had it,
+	# which is the compatibility, said out loud.
+	want_eq "the room heard about it" "$(jqv .event.room)" build || return 1
+	want_eq "as a chat message" "$(jqv .event.type)" chat || return 1
+	want_eq "naming the todo" "$(jqv .event.artifact)" "$ROOM_TODO_ID" || return 1
+	want_eq "and saying it changed hands" \
+		"$(jqv .event.body)" "moved $ROOM_TODO_BUILD from $PLAN_OWNER to $PLAN_TAKER" || return 1
+
+	# The override.
+	api POST "$TOKEN_A" "$at" "$(jq -nc --arg a "$PLAN_SECOND" '{assignee: $a}')" || return 1
+	want_eq "override status" "$API_STATUS" 200 || return 1
+	want_eq "who has it now" "$(jqv .item.fields.assignee)" "$PLAN_SECOND" || return 1
+	want_eq "and the handover is two names" \
+		"$(jqv .event.body)" "moved $ROOM_TODO_BUILD from $PLAN_TAKER to $PLAN_SECOND" || return 1
+
+	# Putting it down. An empty name is a value and not a silence: the key stays
+	# on the item, saying nobody, which is what outranks the OWNER line still in
+	# the body - the next set says "gave", not "moved from a-bench".
+	api POST "$TOKEN_A" "$at" '{"assignee": ""}' || return 1
+	want_eq "unassign status" "$API_STATUS" 200 || return 1
+	want_eq "nobody has it" "$(jqv .item.fields.assignee)" "" || return 1
+	want_eq "said as a handover back" \
+		"$(jqv .event.body)" "took $ROOM_TODO_BUILD off $PLAN_SECOND" || return 1
+	# The words the queue has always used for nobody land in the same state, so
+	# every surface has one word for it.
+	api POST "$TOKEN_A" "$at" '{"assignee": "unassigned"}' || return 1
+	want_eq "unassigned is nobody" "$(jqv .item.fields.assignee)" "" || return 1
+	want_eq "and nothing changed hands" \
+		"$(jqv .event.body)" "left $ROOM_TODO_BUILD unassigned" || return 1
+
+	api POST "$TOKEN_A" "$at" "$(jq -nc --arg a "$PLAN_TAKER" '{assignee: $a}')" || return 1
+	want_eq "the empty field outranked the OWNER line" \
+		"$(jqv .event.body)" "gave $ROOM_TODO_BUILD to $PLAN_TAKER" || return 1
+
+	# The ROOM hears it, not only whoever said it. An event with no project on
+	# it is readable by its own actor and nobody else - see EventFilterSQL - so
+	# a message announcing that the plan changed hands would be a message the
+	# room never got, which is indistinguishable from the feature working from
+	# everywhere except somebody else's screen.
+	want_eq "the message is the project's" "$(jqv .event.project)" pa || return 1
+	api GET "$TOKEN_OP" /api/chat/build || return 1
+	want_eq "somebody else in the project heard it" \
+		"$(printf '%s' "$API_BODY" | jq --arg b "gave $ROOM_TODO_BUILD to $PLAN_TAKER" \
+			'[.events[] | select(.body == $b)] | length')" 1 || return 1
+
+	# And it is on the list the panel reads, not only on the item.
+	api GET "$TOKEN_A" "/api/artifacts?type=memory&kind=todo&room=build" || return 1
+	want_eq "the panel's read of who has it" \
+		"$(printf '%s' "$API_BODY" | jq -r --arg t "$ROOM_TODO_BUILD" \
+			'.artifacts[] | select(.title == $t) | .fields.assignee')" "$PLAN_TAKER" || return 1
+	printf 'set, moved twice, put down and picked up again, said in #build each time\n'
+}
+
+# What it refuses. A panel edits its own room's plan, a todo is what carries an
+# assignee, and a name is a handle on one line.
+an_assignee_is_refused_where_it_is_not_one() {
+	recall
+	# An id is a guess anybody can make, so #general's panel writing into
+	# #build's queue - and announcing it in #general, where nobody in #build
+	# would ever see it said - is not a thing this surface does.
+	want_status 404 POST "$TOKEN_A" "/api/chat/general/todo/$ROOM_TODO_ID/assignee" \
+		'{"assignee": "a-stranger"}' || return 1
+	want_status 404 POST "$TOKEN_A" \
+		"/api/chat/build/todo/01HNOSUCHTODO000000000000/assignee" \
+		'{"assignee": "a-stranger"}' || return 1
+	# Not a todo. What a bug's lifecycle means is a different question with a
+	# different verb, and this one does not answer it. A bug filed here rather
+	# than phase 1's, which has been deleted by now and would read as absent -
+	# a 404 that says nothing about what this refuses on a live row.
+	api POST "$TOKEN_A" /api/artifacts \
+		'{"type": "bug", "title": "not a todo and not assignable", "status": "open"}' || return 1
+	want_eq "the bug this refuses on" "$API_STATUS" 200 || return 1
+	want_status 400 POST "$TOKEN_A" "/api/chat/build/todo/$(jqv .id)/assignee" \
+		'{"assignee": "a-stranger"}' || return 1
+	case "$(jqv .error)" in
+	*"carries no assignee"*) ;;
+	*)
+		printf 'a bug was refused, but not for being one: %s\n' "$(jqv .error)" >&2
+		return 1
+		;;
+	esac
+	want_status 400 POST "$TOKEN_A" "/api/chat/build/todo/$ROOM_TODO_ID/assignee" \
+		'{"assignee": "two\nlines"}' || return 1
+	local long
+	long="$(printf 'n%.0s' $(seq 1 65))"
+	want_status 400 POST "$TOKEN_A" "/api/chat/build/todo/$ROOM_TODO_ID/assignee" \
+		"$(jq -nc --arg a "$long" '{assignee: $a}')" || return 1
+	# A todo out of reach reads as one that is not there, which is the answer a
+	# read of it gives.
+	want_status 404 POST "$TOKEN_B" "/api/chat/build/todo/$ROOM_TODO_ID/assignee" \
+		'{"assignee": "a-stranger"}' || return 1
+	# And none of that wrote anything.
+	api GET "$TOKEN_A" "/api/artifact/$ROOM_TODO_ID" || return 1
+	want_eq "whoever had it still has it" "$(jqv .fields.assignee)" "$PLAN_TAKER" || return 1
+}
+
+# Being given a piece of work is not being given a copy of it. The assignee is a
+# name somebody wrote down - the node resolves it to no principal and the
+# permission filter has never looked at that key - so naming somebody hands them
+# nothing. The surface that DOES hand over a readable copy is an assignment: a
+# share and a task and a thread written together, POST /api/assign, which is a
+# different verb on purpose.
+an_assignee_hands_the_named_party_nothing() {
+	recall
+	api POST "$TOKEN_A" "/api/chat/build/todo/$ROOM_TODO_ID/assignee" \
+		"$(jq -nc --arg a "$HANDLE_B" '{assignee: $a}')" || return 1
+	want_eq "named the other project's person" "$(jqv .item.fields.assignee)" "$HANDLE_B" || return 1
+
+	want_status 404 GET "$TOKEN_B" "/api/artifact/$ROOM_TODO_ID" || return 1
+	api GET "$TOKEN_B" "/api/artifacts?type=memory&kind=todo&room=build" || return 1
+	want_eq "what B gets out of the room it was named in" "$(hits)" 0 || return 1
+	api GET "$TOKEN_B" "/api/artifacts?type=memory&kind=todo" || return 1
+	want_todos "B's queue after being named on A's todo" -- "$ROOM_TODO_BUILD" || return 1
+
+	# Put it back, because the checks after this one read it.
+	api POST "$TOKEN_A" "/api/chat/build/todo/$ROOM_TODO_ID/assignee" \
+		"$(jq -nc --arg a "$PLAN_TAKER" '{assignee: $a}')" || return 1
+	want_eq "handed back" "$(jqv .item.fields.assignee)" "$PLAN_TAKER" || return 1
+	printf 'B was named on A todo and still reads none of it\n'
+}
+
+# The same field over MCP, which is where an agent says it. It rides fields
+# beside the room, an update that does not restate it keeps it, and an empty one
+# is a value rather than a silence.
+mem_write_takes_an_assignee() {
+	recall
+	want_tool mem_write "$TOKEN_A" \
+		"$(jq -nc --arg t "quarry the idler shaft" --arg a "$PLAN_TAKER" \
+			'{title: $t, body: "OWNER: a-bench", scope: "project", kind: "todo",
+			  room: "build", assignee: $a}')" || return 1
+	want_eq "the assignee rode the write" "$(tv .item.fields.assignee)" "$PLAN_TAKER" || return 1
+	want_eq "beside the room" "$(tv .item.fields.room)" build || return 1
+	local id
+	id="$(tv .item.id)"
+
+	want_tool mem_write "$TOKEN_A" "{\"id\": \"$id\", \"status\": \"active\"}" || return 1
+	want_eq "kept by an update that did not restate it" \
+		"$(tv .item.fields.assignee)" "$PLAN_TAKER" || return 1
+
+	# Nobody, said on purpose - and the OWNER line still in the body does not
+	# quietly put the old name back.
+	want_tool mem_write "$TOKEN_A" "{\"id\": \"$id\", \"assignee\": \"\"}" || return 1
+	want_eq "put down over MCP" "$(tv .item.fields.assignee)" "" || return 1
+	want_eq "with the body it came with untouched" "$(tv .item.body)" "OWNER: a-bench" || return 1
+
+	want_tool_fails mem_write "$TOKEN_A" \
+		"{\"id\": \"$id\", \"assignee\": \"two\nlines\"}" "is not a name" || return 1
+}
+
+# The panel SETS one, OVERRIDES one, and a poll of the room does not wipe it -
+# in a real browser, driving the control a person drives.
+#
+# The last clause is the one this exists for. The panel is refilled from the
+# node by every long poll that comes back, so an assignee held in the tab's own
+# state looks finished until somebody says something in the room and then
+# silently reverts - which is the bug this feature would otherwise have shipped
+# with. The check provokes the poll rather than waiting for one, and waits for
+# the provoking message to reach the screen, so "the poll came back" is asserted
+# and not assumed.
+#
+# Its own room, with two todos of its own: one nobody is carrying, and one
+# written the way the whole queue was before there was a field, with OWNER as
+# the first line of its body.
+browser_sets_and_overrides_an_assignee() {
+	recall
+	api POST "$TOKEN_A" "/api/chat/$ROOM_PLAN/todo" \
+		"$(jq -nc --arg t "$PLAN_TODO_FREE" '{title: $t}')" || return 1
+	want_eq "the unowned one" "$API_STATUS" 200 || return 1
+	api POST "$TOKEN_A" "/api/chat/$ROOM_PLAN/todo" \
+		"$(jq -nc --arg t "$PLAN_TODO_OWNED" --arg b "OWNER: $PLAN_OWNER" \
+			'{title: $t, body: $b}')" || return 1
+	want_eq "the one whose body names an owner" "$API_STATUS" 200 || return 1
+	cd "$ROOT/web" || return 1
+	node scripts/assignee-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" \
+		"$ROOM_PLAN" "$PLAN_TODO_FREE" "$PLAN_TODO_OWNED" \
+		"$PLAN_OWNER" "$PLAN_TAKER" "$PLAN_SECOND"
 }
 
 # The console, on the page: the room's todos have to be on the rendered room,
@@ -6111,10 +6331,22 @@ check "mem_write carries the room, and todos narrows by it" \
 	mem_write_takes_a_room_and_todos_narrows_by_it
 check "a room name that is not one is refused at both surfaces" \
 	a_room_that_is_not_one_is_refused
+check "the room says who is carrying a todo, and who it was before" \
+	a_todo_takes_an_assignee_and_an_override
+check "an assignee is refused on another room's todo, on a bug, and as a paragraph" \
+	an_assignee_is_refused_where_it_is_not_one
+check "naming somebody on a todo hands them nothing" \
+	an_assignee_hands_the_named_party_nothing
+check "the assignee is not a permission axis, in the store" \
+	go test -count=1 -run TestAnAssigneeHandsTheNamedPartyNothing ./internal/store
+check "mem_write carries the assignee, and an empty one means nobody" \
+	mem_write_takes_an_assignee
 check "the console paints the room's todos on the room page" \
 	console_renders_the_rooms_todos
 check "the room's todo panel is on the screen in a browser, as an element" \
 	browser_renders_the_rooms_todos
+check "the panel sets and overrides one, in a browser, and a poll does not wipe it" \
+	browser_sets_and_overrides_an_assignee
 check "each speaker is drawn in their own colour, in a browser" \
 	browser_colours_the_speakers
 check "the roster draws what each listener can do, distinctly, in a browser" \

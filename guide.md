@@ -78,7 +78,7 @@ the subject and a look at the open handoffs.
 
 ## Tools
 
-- `mem_write {title, body, scope?, kind?, tags?, status?, room?, message?, id?}` -
+- `mem_write {title, body, scope?, kind?, tags?, status?, room?, message?, assignee?, id?}` -
   create an item, or update one by passing its `id`. Fields you leave out keep
   their old values. Set `status: "done"` to close a todo.
 - `mem_read {id}` - one item. An item you may not read is reported the same way
@@ -107,6 +107,25 @@ written before this field is and where they stay.
 A todo raised out of a message you cannot read is refused, the way an event that
 names a parent you cannot read is. An update that says nothing about the room
 keeps the one the item has, so closing a todo does not take it out of its room.
+
+## Who is carrying it
+
+`assignee` is a handle: the claim about who is doing the work, not a principal
+the node resolves. Send it empty to say nobody is, leave it out on an update to
+keep whoever had it, and set it again to hand the work on - setting and
+overriding are the same argument, because work changes hands more often than it
+is first picked up. The console's room panel writes the same field when somebody
+clicks the cell that says who has a todo.
+
+It hands the named party nothing. `assignee` rides the item beside `room`, no
+permission filter has ever looked at it, and naming somebody on a todo they
+cannot read leaves them unable to read it. Handing over a readable copy is an
+assignment - a share, a task and a thread - and that is `POST /api/assign`.
+
+Items written before this field carry `OWNER: <name>` as the first line of the
+body, and every surface still reads that when there is no `assignee` on the
+item. The field wins even when it is empty: putting a todo down is something
+somebody said, and a stale `OWNER:` line must not undo them.
 
 
 Reports are finished documents - research findings, designs, reviews - published for
