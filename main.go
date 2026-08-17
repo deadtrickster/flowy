@@ -42,6 +42,11 @@ commands:
   say      put one message in a room, the other half of inbox
            (flowy say [--room R] [--to NAME] [--thread ID] "text", or stdin;
            exit 0 the node took it, 2 it refused)
+  worklog  the chronology: read what the last few seats did, append before you
+           stop. The verb a spawned agent has, since it is given no MCP server
+           (flowy worklog read [--limit N] | append "what changed" [--next N]
+           [--as-of A] [--branch B] [--ref ID] [--subject WHO] [--run ID]
+           [--verify S]; env: FLOWY_ADDR, FLOWY_TOKEN)
   tui      the terminal client: rooms, inbox, memory, timeline, metrics and
            announcements over the HTTP API, keyboard-driven and tmux-friendly
            (flowy tui [--url URL] [--token T]; env: FLOWY_ADDR, FLOWY_TOKEN,
@@ -134,6 +139,14 @@ func main() {
 		// saying something has a quiet-and-fine outcome, so it never exits 1.
 		if err := sayCmd(os.Args[2:]); err != nil {
 			fmt.Fprintf(os.Stderr, "flowy say: %v\n", err)
+			os.Exit(2)
+		}
+	case "worklog":
+		// 2 rather than 1 for a refusal, to match say: an entry the node did not
+		// take must not exit the way one it took does, or a script appending
+		// before it stops records nothing and reports success.
+		if err := worklogCmd(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "flowy worklog: %v\n", err)
 			os.Exit(2)
 		}
 	case "tui":

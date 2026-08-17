@@ -220,14 +220,15 @@ else's session transcript.
 - `worklog_read {limit?}` - the most recent entries, newest first, default 20.
   **Read this when you start.** It tells you what the last few sessions did,
   where they stopped, and the ids of the work they were about.
-- `worklog_append {what, next?, as_of?, branch?, refs?}` - **append before you
-  stop**, and after anything a later seat would need to know. `what` is what
-  changed, in the past tense. `next` is what to pick up and what is in the way of
-  it. `as_of` is the commit, version or run id the entry is true of. `branch` is
-  the branch or worktree you worked in, when you worked in one - several seats
-  run at once, and it is what lets a reader narrow to one of them. `refs` is a
-  list of artifact ids - the bug, the report, the memory item this shift was
-  about.
+- `worklog_append {what, next?, as_of?, branch?, refs?, subject?, run?, verify?}` -
+  **append before you stop**, and after anything a later seat would need to know.
+  `what` is what changed, in the past tense. `next` is what to pick up and what is
+  in the way of it. `as_of` is the commit, version or run id the entry is true of.
+  `branch` is the branch or worktree you worked in, when you worked in one -
+  several seats run at once, and it is what lets a reader narrow to one of them.
+  `refs` is a list of artifact ids - the bug, the report, the memory item this
+  shift was about. `subject`, `run` and `verify` are for writing about somebody
+  else's shift - see vouching below.
 
 Two rules the surface enforces rather than suggests. Every entry carries its
 actor, taken from your token, so an entry cannot be put in another seat's mouth.
@@ -236,6 +237,48 @@ refused, and prose describing the work instead of naming it is how a worklog
 becomes a second, staler copy of the fabric rather than an index into it. Write
 the document with `report_write`, the fact with `mem_write`, and reference them
 here by id.
+
+### Without MCP: `flowy worklog`
+
+**If you were spawned into a VM you have no MCP server**, deliberately - one that
+could reach the spawn server would start VMs of its own and the concurrency cap
+would stop meaning anything. That is exactly why the worklog was empty for the
+largest night this project had: the seats doing the work were the only ones that
+could not record it. So there is a command, over `POST /api/worklog`, and it needs
+a token and a node rather than a DSN:
+
+```
+flowy worklog read [--limit N]
+flowy worklog append "what changed" [--next N] [--as-of A] [--branch B] [--ref ID]
+                    [--subject WHO] [--run ID] [--verify S]
+```
+
+`read` first, `append` before you stop. It is the same write with the same
+refusals: a `--ref` you cannot read is refused here in the same words the tool
+refuses it in, because there is one implementation and these are two doors onto
+it. Exit 0 means the node took it and 2 means it did not - an entry nobody
+recorded must not look like one that was.
+
+### Vouching: writing about somebody else's shift
+
+An entry is normally your own account of your own shift. It can instead be **one
+seat's report of another's work** - a harness that drove a run knows the run id,
+the verify status and the diff, and cannot lie about whether the gate passed, so
+it is the right thing to write the entry when the run has ended and the agent is
+gone.
+
+Name the seat whose work it is in `subject` (a user id or an agent id, checked
+against the principals that exist here), the run in `run`, and what the gate said
+in `verify`. **You stay the entry's author.** The entry is marked VOUCHED, the row
+carries both ids, and every surface that renders it - the console's `/worklog`
+page, `flowy worklog read`, the body a plain event renderer shows - says it is
+your report of their shift rather than their own words. All of it is inside the
+row signature, so a relay cannot strip the marker and leave the entry reading as
+authorship.
+
+Never use `subject` to write as somebody else. It does the opposite: it is how the
+row says you are not them. Naming yourself is not vouching and is dropped - an
+entry about your own shift is your own account of it.
 
 Entries are never edited - there is no id argument and no update. Something that
 turned out to be wrong is corrected by the next entry saying so, because a
@@ -248,8 +291,15 @@ against "what happened lately".
 Entries also show up on the timeline (`activity {kind: "worklog"}`), in the
 console and in the terminal client, because an entry is an event like everything
 else here. The console has a page of its own for them at `/worklog` - newest
-first, narrowable by branch, defaulting to every branch - so a person can read
-the chronology without asking an agent to read it out.
+first, narrowable by branch, defaulting to every branch, vouched entries drawn as
+vouched - so a person can read the chronology without asking an agent to read it
+out.
+
+The timeline **reads** entries and cannot **post** one. `POST /api/activity` takes
+no `refs` and could not check them, so accepting the kind there would be a second
+entrance that skips the check on the first. `POST /api/worklog` is not that: it
+takes the same arguments and makes the same checks, which is what a door onto one
+way in means.
 
 Everything is permission-filtered on the way out of the database. A result you
 did not get is a result you may not see, and nothing tells you it was there.

@@ -482,13 +482,41 @@ export interface WorklogMeta {
   /** The branch or worktree the shift worked in, on the entries that name one. */
   branch?: string;
   refs?: string[];
+  /**
+   * subject is whose work the entry is about, on the entries written by one seat
+   * about another's shift - a harness recording a run it drove, say. The actor is
+   * still whoever wrote it. An entry with a subject is VOUCHED rather than
+   * authored, and the difference has to reach the reader: an entry written by
+   * something else about flowy-claude drawn as flowy-claude's own account is the
+   * impersonation shape this fabric refuses everywhere, so the view says which
+   * of the two it is. See isVouched.
+   */
+  subject?: string;
+  /** The run the work was done in, and what the gate said about it. */
+  run?: string;
+  verify?: string;
+}
+
+/**
+ * isVouched says an entry is one seat's report of another's work rather than
+ * that seat's own account.
+ *
+ * Derived from the two ids rather than read off a flag, for the reason the node
+ * derives it the same way: a subject equal to the actor is somebody's own account
+ * however it got written, and two fields that can disagree about one fact is one
+ * too many.
+ */
+export function isVouched(item: ActivityItem) {
+  const subject = item.meta?.subject?.trim() ?? "";
+  return subject !== "" && subject !== item.actor;
 }
 
 /**
  * ActivityItem is one line of the timeline: a turn, a log line, a message, a
  * steer, or a worklog entry. The worklog kind is read-only here - entries are
- * written with the worklog_append tool, which checks the artifact ids they
- * reference, and the post box below deliberately cannot write one.
+ * written with the worklog_append tool or POST /api/worklog, both of which check
+ * the artifact ids they reference, and the post box below deliberately cannot
+ * write one: it takes no refs and so could not check them.
  */
 export interface ActivityItem {
   id: string;

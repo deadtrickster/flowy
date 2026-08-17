@@ -431,6 +431,13 @@ func (s *server) routes() http.Handler {
 	api.HandleFunc("GET /api/metrics", s.handleMetrics)
 	api.HandleFunc("GET /api/activity", s.handleActivity)
 	api.HandleFunc("POST /api/activity", s.handlePostActivity)
+	// The worklog's own write verb, because the agents doing the work are given
+	// no MCP server and could not record it. There is no GET beside it on
+	// purpose: the read is GET /api/activity narrowed to the kind, and a second
+	// read door would be a second place the permission filter can be missing.
+	// The write needs a verb of its own because it has arguments - the refs - the
+	// generic door cannot check. See worklog.go.
+	api.HandleFunc("POST /api/worklog", s.handleWorklogAppend)
 	api.HandleFunc("GET /api/traces", s.handleListTraces)
 	api.HandleFunc("GET /api/trace/{id}", s.handleReadTrace)
 	// A path under /api/ that nothing claims is a 404 in JSON. Without this it

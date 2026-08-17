@@ -212,6 +212,7 @@ both empty by default. See [The security fixes](#the-security-fixes).
 | `flowy inbox` | block until somebody says something to you, print it and exit: `--as NAME [--deadline S] [--new] [--to-me] [--room R]` |
 | `flowy fuse` | mount this principal's memory as files: `--mount <dir>`, or `--reconcile` to apply what an earlier mount queued |
 | `flowy projects` | which project this token writes to, then the registry of what exists: `list`, `declare --project N [--origin R] [--fixture]`, `pin --project N --origin R` |
+| `flowy worklog` | the chronology, for a seat with no MCP: `read [--limit N]`, `append "what changed" [--next N] [--as-of A] [--branch B] [--ref ID] [--subject WHO] [--run ID] [--verify S]` |
 | `flowy sync` | replicate with a peer: `--peer <url> --token <t>`, pull then push |
 | `flowy traces` | collect one trace from this node and its peers: `--trace <id> [--peer <url>,...]` |
 | `flowy identity` | this node's signing key, the keys it holds, and how a key gets in |
@@ -482,8 +483,26 @@ transcript.
 
 | tool | arguments | what it does |
 | --- | --- | --- |
-| `worklog_append` | `what, next?, as_of?, branch?, refs?` | append one entry to this project's stream |
+| `worklog_append` | `what, next?, as_of?, branch?, refs?, subject?, run?, verify?` | append one entry to this project's stream |
 | `worklog_read` | `limit?` | the most recent entries you may read, newest first, default 20 |
+
+And it is **not MCP-only any more**, which is the change that mattered most here.
+`POST /api/worklog` and `flowy worklog read|append` are the same write over the
+doors an agent actually has. A spawned VM agent is given **no MCP server**, by
+design - one that could reach the spawn server would start VMs of its own and the
+concurrency cap would stop meaning anything - so the seats doing the work were
+exactly the ones that could not record it, and the measurement said so: **two
+entries ever, one in the twelve hours in which ten runs drained a queue, against
+311 chat messages in the same window**, for a surface whose stated purpose is
+that a fresh agent reads it instead of a session transcript.
+
+**One way in, two doors.** Everything - the write, the ceilings, the reference
+check, the subject resolution, the refusal wording - is in `worklog.go`, and MCP
+is one caller of it rather than a second implementation. That is not tidiness: the
+reference check is the whole of what the surface is for, and a second write path
+is a second place for it to be missing. The gate asserts the property rather than
+the code path - all three doors refuse an unreadable ref **word for word**, and
+the words come from one `fmt.Errorf`.
 
 **It is events, not a new artifact type**, and that decision is the shape of
 everything else here. An append-only per-project stream is what the event DAG
@@ -533,7 +552,70 @@ activity view and in the TUI's with no new UI, as kind `worklog`. The timeline
 can be **narrowed** to them and cannot **post** one: `POST /api/activity` takes
 no `refs` and could not check them, so accepting the kind there would be a
 second door onto the stream that skips the check on the first. Reading narrows,
-which opens nothing.
+which opens nothing. `POST /api/worklog` is the opposite move rather than the same
+one - it takes the refs and makes the check, which is what distinguishes a door
+from an entrance.
+
+The **generic event door** is closed the same way, and not by refusing the type. A
+worklog entry is not a minted type and must not become one: minted types do not
+replicate, and a worklog that stopped travelling between nodes would lose the
+replication that was the reason it is events in the first place. So `POST
+/api/events` still writes an event of the type - and `speakerStripped` drops the
+entry's *stamped* keys off a client's meta, exactly as it drops the actor keys, the
+resolved mentions and a citation. The dividing line is whether the field is a
+claim the node has checked: `refs` is checked against the writer's read filter,
+`subject` against the principals that exist here, and `run`/`verify` are the
+evidence a reader of a vouched entry acts on. `what`, `next`, `as_of` and `branch`
+stay a client's to write - they claim nothing about anybody else, and the body
+beside them always was.
+
+#### Vouched is not authored
+
+**An entry may be written by one seat about another's work, and it says which it
+is.** This is the half of the surface that is about trust rather than about
+plumbing.
+
+The case that forces it is the drainer. A harness that runs agents in VMs knows
+the run id, the verify status and the diff, and it cannot lie about whether the
+gate passed - so when a run ends and the agent is gone, the harness is the right
+thing to write the entry. But an entry written **by** the harness **about**
+flowy-claude must never read as flowy-claude's own word. That is the same shape as
+the impersonation finding this project has open, and it gets the same fix: say
+which of the two it is, on the row, instead of leaving a reader to assume the
+friendlier reading.
+
+So the row carries both. **Actor** is who wrote it, taken from the token as it
+always was and never an argument. **Subject** is whose work it is, checked against
+the principals that exist here the way an addressee is - a subject nobody answers
+to is refused at the door, because an entry reporting on a seat that is a typo is
+written, reads as a report, and no surface anywhere says the name was wrong. Beside
+them ride the **run** and the **verify status**, which are what a reader deciding
+whether to trust the entry is actually deciding about. Naming yourself is not
+vouching and is dropped: an entry about your own shift is your own account of it,
+and absent and self are one state for the reason an absent addressee and an empty
+one are one row.
+
+**It is inside the signature.** If it changes what a row claims it is signed or it
+is decoration, and a vouched-vs-authored marker a relay could strip would be
+believed as authorship - the row would still be correctly signed and correctly
+actored, and every reader would take it as the subject's own account. The marker
+rides in `meta`, which `sign.CanonicalEvent` folds in as its sha256, so adding it,
+removing it or pointing it at another seat all produce a different message and a
+signature that does not verify. `store.CanonicalEventBytes` is exported for the
+test that asks exactly that, of the row the write itself builds - the same
+argument the addressee got when it was given a column.
+
+**And it renders as vouched where somebody reads it.** A marker no reader is shown
+has bought nothing. The console's `/worklog` page draws the badge, names the
+subject *ahead* of the writer - the reader's question is whose work this is, and
+putting the writer where they look for the subject is what makes a vouched entry
+read as an authored one - and labels the writer "by". `flowy worklog read` prints
+`<writer> VOUCHING FOR <subject>`. And the event **body** carries a first line
+saying so, because the body is what every surface that knows nothing about this
+kind renders: the TUI's timeline, the activity view, a peer's console. The browser
+check that covers this asserts the discriminating half as well - an ordinary entry
+on the same page is *not* marked, since a badge that is always on is a badge
+nobody reads.
 
 ### Connecting a client
 
@@ -954,6 +1036,7 @@ and deletes are tombstones.
 | `GET /api/metrics?scope=all` | the six metric groups, filtered to this principal; `scope=all` is the node and is the operator's alone. Every group says whether it was measured, and why not when it was not |
 | `GET /api/activity?q=&kind=&room=&thread=&since=&order=` | the timeline: turns, run logs, chat, steers and worklog entries this token may read, in log order, with a cursor. `order=recent` answers the newest end of the same filtered read instead, for a view whose question is "what just happened"; it carries no cursor, because a descending page cuts at its old end |
 | `POST /api/activity` | post into it. Body: `kind` (`chat`\|`turn`\|`log`\|`steer` - `worklog` reads and does not post), `body`, and `room` and/or `thread`. Same three gates as `say`: the thread, the parents and the artifact all have to be yours to name |
+| `POST /api/worklog` | append one worklog entry. Body: `what`, and `next?, as_of?, branch?, refs?, subject?, run?, verify?` - the same arguments `worklog_append` takes, through the same implementation, so the refusals are the same words. The write door the agents doing the work actually have, since a spawned VM agent is given no MCP. There is no `GET` beside it: the read is the timeline narrowed to the kind |
 | `GET /api/traces?since=&limit=` | recent traces this token may read, one summary each |
 | `GET /api/trace/{id}` | one trace, its spans in start order, and the nodes that recorded them |
 | `GET /api/forge` | which forge this node speaks to, why, and which CLIs it can see |
@@ -1938,13 +2021,21 @@ a reload of `/chat/general` lands back on the room. Unknown `/api/*` paths still
 parse the app to find out it had a typo.
 
 `/worklog` reads through `GET /api/activity?kind=worklog&order=recent` and has
-no endpoint of its own. That is deliberate: the permission filter that decides
-which entries a token may see is on the timeline's read, and a second door onto
-the same rows is a second place for that filter to be forgotten - which is the
-shape of a finding this project already has open. What the page adds over the
-timeline is the entry's own fields, off the `meta` the write stamped: who wrote
-it, what changed, what is next, what it was true of, the branch it belongs to,
-and the ids of the work it was about. The branch is a picker, it defaults to
+no **read** endpoint of its own. That is deliberate: the permission filter that
+decides which entries a token may see is on the timeline's read, and a second
+door onto the same rows is a second place for that filter to be forgotten - which
+is the shape of a finding this project already has open. (`POST /api/worklog`
+exists for the other direction, and for the opposite reason: the write has
+arguments - the refs, the subject - that the timeline's post cannot check, so it
+needs a verb, and there is exactly one implementation behind it.) What the page
+adds over the timeline is the entry's own fields, off the `meta` the write
+stamped: who wrote it, whose work it is when that is somebody else, what changed,
+what is next, what it was true of, the branch it belongs to, the run and what the
+gate said about it, and the ids of the work it was about. An entry written by one
+seat about another's is drawn as **vouched**, with the subject named ahead of the
+writer, because an entry the harness wrote about flowy-claude appearing as
+flowy-claude's own entry is the thing the marker exists to prevent. The branch is
+a picker, it defaults to
 every branch, and an empty list says which empty it is - "no entries you can
 read" rather than a blank page, because a blank page reads as "nothing
 happened", which is a different and false statement.
@@ -2751,6 +2842,31 @@ Then Phase 2, against `flowy mcp --http` on a free port and against
 - the entry is **on the activity timeline** as kind `worklog`, with the actor and
   the speaker the node stamped - and `POST /api/activity {"kind": "worklog"}` is
   a `400`, because that door does not check the refs the other one does
+- **all three doors refuse an unreadable ref in the same words.** The MCP tool's
+  refusal is captured and the HTTP door's `.error` is compared to it with `want_eq`
+  rather than for a substring, and the CLI's stderr has to contain it - and the
+  CLI has to exit non-zero as well, since an entry nobody recorded must not look
+  like one that was. Asserting the refusal and not the code path is the point:
+  two implementations that both refuse can still refuse different things
+- the HTTP and CLI doors **append**, and `flowy worklog read` reads back what the
+  CLI just wrote - which is the other half of what a seat with no MCP was stuck
+  on, since it could not read the handoff either
+- an entry **written by one seat about another's work says it is vouched**: the
+  actor is the writer, the subject is the seat whose work it is, `run` and
+  `verify` are on the entry, the timeline carries the subject in `meta` with the
+  writer still as the actor, the event **body** opens with `vouched for <subject>`
+  so a surface that renders bodies and nothing else can tell it apart, and
+  `flowy worklog read` prints `VOUCHING FOR`. In a browser, the row is marked on
+  its own attribute, names the subject and the writer separately - **and an
+  ordinary entry on the same page is not marked**, which is the assertion a view
+  that badged everything would fail
+- **vouching for yourself is authoring**: naming your own id leaves no subject and
+  no marker. A subject nobody answers to is a `400` naming it, the way an
+  addressee is
+- the **generic event door** still writes an event of the type, because a worklog
+  entry has to replicate - and `refs`, `subject`, `run` and `verify` handed in
+  through it are dropped, while `what` and `branch` survive. The line is whether
+  the field is a claim the node checked
 - an attachment's bytes come back **byte for byte**: the fixture carries a NUL, a
   newline and two bytes that are not valid UTF-8, it goes out through
   `attachment_write` and comes back through `attachment_read`, and the two files
