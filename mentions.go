@@ -25,6 +25,8 @@ package main
 import (
 	"context"
 	"strings"
+
+	"github.com/deadtrickster/flowy/internal/store"
 )
 
 // mentionNames pulls the @names out of a message body, in the order they were
@@ -194,7 +196,15 @@ func mentionMeta(found []mention) string {
 
 // principalsNamed is the store's answer, as chat.go hands it to the parser.
 func (s *server) principalsNamed(ctx context.Context) mentionResolver {
+	return principalsNamedBy(ctx, s.db)
+}
+
+// principalsNamedBy is the same resolver for a caller that has a database and no
+// server, which is what the say path is now that two doors share it - see
+// sayInRoom. One resolver is what makes "@alice" mean the same principal
+// whichever door the message came through.
+func principalsNamedBy(ctx context.Context, db *store.DB) mentionResolver {
 	return func(names []string) (map[string]string, error) {
-		return s.db.PrincipalsNamed(ctx, names)
+		return db.PrincipalsNamed(ctx, names)
 	}
 }

@@ -207,14 +207,22 @@ func looksLikeID(s string) bool {
 // the trace it already had. It is telemetry: it does not widen anything and it
 // must not fail a request.
 func (s *server) adoptThreadTrace(r *http.Request, thread string) {
-	if thread == "" || s.tracer == nil {
+	adoptThreadTraceOf(r.Context(), s.db, principalOf(r), thread)
+}
+
+// adoptThreadTraceOf is that move for a caller with a context and no request.
+// The say path is one - it runs behind two doors now, see sayInRoom - and a
+// message said over MCP into a handoff's thread belongs in that handoff's trace
+// exactly as one said over HTTP does.
+//
+// The tracer is taken from the context rather than from a server, which is what
+// makes the guard the same on both sides: no tracer means nothing to adopt into,
+// and the store is not asked.
+func adoptThreadTraceOf(ctx context.Context, db *store.DB, p *store.Principal, thread string) {
+	if thread == "" || p == nil || otel.TracerFrom(ctx) == nil {
 		return
 	}
-	p := principalOf(r)
-	if p == nil {
-		return
-	}
-	id, err := s.db.TraceOfThread(r.Context(), p, thread)
+	id, err := db.TraceOfThread(ctx, p, thread)
 	if err != nil {
 		log.Printf("traces: could not read the trace of thread %s: %v", thread, err)
 		return
@@ -222,8 +230,8 @@ func (s *server) adoptThreadTrace(r *http.Request, thread string) {
 	if id == "" {
 		return
 	}
-	if otel.Adopt(r.Context(), id) {
-		if span := otel.SpanFrom(r.Context()); span != nil {
+	if otel.Adopt(ctx, id) {
+		if span := otel.SpanFrom(ctx); span != nil {
 			span.SetAttr("trace.adopted_from", "thread "+thread)
 		}
 	}

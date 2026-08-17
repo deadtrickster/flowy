@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -258,22 +259,28 @@ func (s *server) dmThread(w http.ResponseWriter, r *http.Request, req *dmSayRequ
 // question about who may read a row, it is a question about which conversation a
 // row is being added to. Every public write path asks it.
 func (s *server) mayWritePublicThread(w http.ResponseWriter, r *http.Request, thread string) bool {
+	return s.allowed(w, r, mayWritePublicThreadOf(r.Context(), s.db, thread))
+}
+
+// mayWritePublicThreadOf is that rule for a caller with a database and no
+// request - the MCP say path asks it through mayWriteThreadOf, because a tool
+// that could drop a room message into a private conversation would be the same
+// leak through a different door.
+func mayWritePublicThreadOf(ctx context.Context, db *store.DB, thread string) error {
 	if thread == "" {
-		return true
+		return nil
 	}
-	private, err := s.db.ThreadIsPrivate(r.Context(), thread)
+	private, err := db.ThreadIsPrivate(ctx, thread)
 	if err != nil {
-		serverError(w, r, err)
-		return false
+		return err
 	}
 	if private {
-		writeJSON(w, http.StatusBadRequest,
-			errorBody("thread "+thread+" is a private conversation; a message written here "+
+		return refuseChat(http.StatusBadRequest,
+			"thread "+thread+" is a private conversation; a message written here "+
 				"would carry your project and be read by everybody in it - "+
-				"answer it with POST /api/dm/{to} instead"))
-		return false
+				"answer it with POST /api/dm/{to} instead")
 	}
-	return true
+	return nil
 }
 
 // mayNamePrivateParents reports whether every parent the writer named is itself

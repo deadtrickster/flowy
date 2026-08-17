@@ -124,6 +124,11 @@ the subject and a look at the open handoffs.
 - `mem_search {q, scope?, kind?, limit?}` - ranked full-text search over title,
   body and tags, filtered to what you may read.
 - `mem_list {scope?, kind?, limit?}` - newest first.
+- `chat_say {room, text, to?, thread?}` - say something in a room. The way to
+  answer anybody; `to` addresses it at one principal and wakes that seat. See
+  *Saying something, and hearing it* below.
+- `chat_read {room, limit?, before?}` - the newest messages in a room, oldest
+  first, filtered to what you may read. `before` pages backwards through it.
 - `todos {scope?, room?, category?}` - todo, feature and handoff items that are
   not done, optionally narrowed to one chat room or to one kind of work. It answers `withheld: {rows, reason}`
   when this node refused rows it would otherwise have handed you - a row naming
@@ -412,8 +417,66 @@ read anything in it - that is still grants and scope, unchanged.
 
 ## Saying something, and hearing it
 
-The rooms are the same event log this memory is, seen from the side, and there
-are two things about them worth knowing before you use them.
+The rooms are the same event log this memory is, seen from the side. Two verbs
+reach them from here, and the rest of this section is what is worth knowing
+before you use either.
+
+**`chat_say {room, text, to?, thread?}` says something in a room, and
+`chat_read {room, limit?, before?}` reads one back.** You need both, and the
+reason is not symmetry. Reading a room's todos is not being in the room:
+`todos {room: "build"}` tells you what work was raised there and nothing about
+what anybody is saying, so an agent that only reads the board answers questions
+nobody asked and misses the one that was aimed at it. And an answer is not a
+write to a todo. When somebody asks you something, the thing they are waiting
+for is a message in the room they asked in, under your name.
+
+This exists because it did not, and the way that failed is worth knowing. An
+agent whose only door was this surface could read a room and could not answer
+it, and the nearest chat verb in its tool list belonged to a different system
+entirely - its own harness's room, on the machine it was running on. It answered
+into that for a whole session: fourteen messages, none of them visible to the
+operator, while it believed it was replying. It ended with the operator asking
+"why you dont reply in the chat?". A verb that is missing does not read as
+missing; it reads as the wrong verb being the right one, and nothing anywhere
+says otherwise.
+
+**`to` is what makes somebody wakeable by name.** An agent waits on its inbox,
+the inbox delivers chat events, and the addressee is how a message reaches one
+seat rather than the room: a waiter armed with `--to-me` wakes for what names
+it, so an addressed message forces a turn and an unaddressed one is ambient -
+read whenever whoever is in the room next looks. So answer *to* the principal
+you are answering. A reply that is technically in the right room and addressed
+to nobody can sit unread beside the question it answers, which from the other
+end is indistinguishable from having been ignored. Writing `@their-name` in the
+text does the same thing - the name in the prose is the addressing, resolved
+into the same field - and either way a name nothing answers to is refused at the
+door rather than delivered to nobody. A handle is accepted as well as an id, and
+what is stored is the id, so the message keeps meaning the same principal if the
+handle changes later. The answer tells you which principal the name resolved to.
+It routes and wakes and it hides nothing, which is the paragraph below.
+
+**A conversation is a thread.** Leave `thread` out and the message starts one;
+the answer carries the thread it was given, and passing that back is what keeps
+a reply beside what it answers instead of starting a second conversation about
+the same thing. A thread holding messages you cannot read is refused, and so is
+writing a room message into a private one - the say path decides both, whichever
+door the message came through.
+
+**`chat_read` opens on the newest end of the log**, oldest-first within the
+window, the way the console does. That is deliberate: the beginning of a busy
+room is the one page nobody wants, and an agent catching up needs what was said
+while it was working. `before` pages backwards from there - hand back the
+`before` the previous answer gave you, exactly as a string, and you get the
+window older than it. The cursors are strings because a packed clock reading is
+wider than a JSON number survives intact in some clients, and a rounded cursor
+skips messages that are never redelivered. A room you cannot read and a room
+nobody has ever spoken in answer the same way, with an empty list, because that
+is what a read of it says.
+
+Both verbs are the same door the console and `flowy say` use - one say path, one
+read, one permission filter, one place the speaker's name is stamped - so a
+message sent from here is a message like any other: it carries your name, it
+lands in the room's log, and it wakes whoever it names.
 
 **A message can be addressed at somebody.** `to` on a say names one principal -
 a user or an agent - and the message is still a message in the room: the same

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/deadtrickster/flowy/internal/otel"
 	"github.com/deadtrickster/flowy/internal/store"
 	"github.com/deadtrickster/flowy/internal/ulid"
 )
@@ -153,11 +154,57 @@ func isOwnActor(p *store.Principal, actor string) bool {
 // it has to survive being put back into a URL by a client, and a name with a
 // slash in it does not.
 func roomOf(r *http.Request) (string, bool) {
-	room := strings.TrimSpace(r.PathValue("room"))
+	room, err := roomNamed(r.PathValue("room"))
+	return room, err == nil
+}
+
+// roomNamed is that check for a caller whose room did not arrive in a path - an
+// MCP argument, say. The rule is the URL's either way: a tool that accepted
+// "a/b" would be writing rooms nothing else can address.
+func roomNamed(room string) (string, error) {
+	room = strings.TrimSpace(room)
 	if room == "" || strings.Contains(room, "/") {
-		return "", false
+		return "", refuseChat(http.StatusBadRequest, "room must be one non-empty path segment")
 	}
-	return room, true
+	return room, nil
+}
+
+// chatFault is a refusal about the REQUEST rather than about the store: a room
+// that is not one segment, an id out of reach, a thread that is not this
+// writer's to join. It carries the status the HTTP door answers with, so the
+// rule is written once and each door says it in its own idiom - a 4xx with a
+// body over HTTP, a tool refusal over MCP, where a 403 becomes the protocol
+// error mcp.go's `forbidden` describes.
+//
+// Anything else these paths return is the store failing, which is a 500 at one
+// door and an error at the other, and which must never be reworded into a
+// refusal: "the database was unreachable" and "you may not do that" are the two
+// answers a caller has to be able to tell apart.
+type chatFault struct {
+	status int
+	why    string
+}
+
+func (f chatFault) Error() string { return f.why }
+
+// refuseChat builds one.
+func refuseChat(status int, why string) error { return chatFault{status: status, why: why} }
+
+// allowed answers a rule that refused, and reports whether it did not. It is
+// what turns the shared rules below back into the HTTP behaviour every handler
+// already had: the fault's own status and wording, or a 500 that says nothing
+// about the query.
+func (s *server) allowed(w http.ResponseWriter, r *http.Request, err error) bool {
+	if err == nil {
+		return true
+	}
+	var fault chatFault
+	if errors.As(err, &fault) {
+		writeJSON(w, fault.status, errorBody(fault.why))
+		return false
+	}
+	serverError(w, r, err)
+	return false
 }
 
 // mayWriteThread reports whether the principal may say something in a thread it
@@ -172,34 +219,43 @@ func roomOf(r *http.Request) (string, bool) {
 // the caller may not read is closed to them. A thread with nothing in it is
 // nobody's yet, and every conversation starts as one.
 func (s *server) mayWriteThread(w http.ResponseWriter, r *http.Request, thread string) bool {
-	if !s.mayReadThread(w, r, thread) {
-		return false
+	return s.allowed(w, r, mayWriteThreadOf(r.Context(), s.db, principalOf(r), thread))
+}
+
+// mayWriteThreadOf is that rule for a caller that has a database and no request,
+// which is what the MCP surface is - the same split, for the same reason, as
+// speakerName and speakerNameOf above. A second copy of this would be the second
+// place a thread decides who may join it, and the two would drift.
+func mayWriteThreadOf(ctx context.Context, db *store.DB, p *store.Principal, thread string) error {
+	if err := mayReadThreadOf(ctx, db, p, thread); err != nil {
+		return err
 	}
 	// And a thread you CAN read is not necessarily one this write belongs in.
 	// Every caller of this is a public write - a room say, POST /api/events, the
 	// timeline - and a private conversation is the one thread a public write
 	// must not join. See mayWritePublicThread. The private send path asks
 	// mayReadThread instead, because for it the answer is the opposite.
-	return s.mayWritePublicThread(w, r, thread)
+	return mayWritePublicThreadOf(ctx, db, thread)
 }
 
 // mayReadThread is the first half of mayWriteThread: writing into a thread is
 // not a way round reading it. It is separate because the private send path needs
 // exactly this and not the public rule beside it.
 func (s *server) mayReadThread(w http.ResponseWriter, r *http.Request, thread string) bool {
-	p := principalOf(r)
-	hidden, err := s.db.ThreadHidden(r.Context(), p, thread)
+	return s.allowed(w, r, mayReadThreadOf(r.Context(), s.db, principalOf(r), thread))
+}
+
+func mayReadThreadOf(ctx context.Context, db *store.DB, p *store.Principal, thread string) error {
+	hidden, err := db.ThreadHidden(ctx, p, thread)
 	if err != nil {
-		serverError(w, r, err)
-		return false
+		return err
 	}
 	if hidden {
-		writeJSON(w, http.StatusForbidden,
-			errorBody("thread "+thread+" is a conversation you cannot read; "+
-				"leave thread out and this starts one of its own"))
-		return false
+		return refuseChat(http.StatusForbidden,
+			"thread "+thread+" is a conversation you cannot read; "+
+				"leave thread out and this starts one of its own")
 	}
-	return true
+	return nil
 }
 
 // mayNameParents reports whether every id the writer named as a parent is an
@@ -214,18 +270,20 @@ func (s *server) mayReadThread(w http.ResponseWriter, r *http.Request, thread st
 // that is out of reach get the same answer, which is the same answer a read of
 // it would give.
 func (s *server) mayNameParents(w http.ResponseWriter, r *http.Request, parents []string) bool {
-	unreadable, err := s.db.UnreadableParents(r.Context(), principalOf(r), parents)
+	return s.allowed(w, r, mayNameParentsOf(r.Context(), s.db, principalOf(r), parents))
+}
+
+func mayNameParentsOf(ctx context.Context, db *store.DB, p *store.Principal, parents []string) error {
+	unreadable, err := db.UnreadableParents(ctx, p, parents)
 	if err != nil {
-		serverError(w, r, err)
-		return false
+		return err
 	}
 	if len(unreadable) > 0 {
-		writeJSON(w, http.StatusBadRequest,
-			errorBody("parent "+unreadable[0]+" is not an event you can read; "+
-				"an event descends from what is in front of you or from nothing"))
-		return false
+		return refuseChat(http.StatusBadRequest,
+			"parent "+unreadable[0]+" is not an event you can read; "+
+				"an event descends from what is in front of you or from nothing")
 	}
-	return true
+	return nil
 }
 
 // mayCarryAttachments reports whether every attachment id the writer named is
@@ -236,24 +294,25 @@ func (s *server) mayNameParents(w http.ResponseWriter, r *http.Request, parents 
 // reach - and a card for bytes the speaker cannot read would be a message
 // laundering a reference into a room that could not have made it.
 func (s *server) mayCarryAttachments(w http.ResponseWriter, r *http.Request, ids []string) bool {
+	return s.allowed(w, r, mayCarryAttachmentsOf(r.Context(), s.db, principalOf(r), ids))
+}
+
+func mayCarryAttachmentsOf(ctx context.Context, db *store.DB, p *store.Principal, ids []string) error {
 	for _, id := range ids {
-		art, err := s.db.ReadArtifact(r.Context(), principalOf(r), id, false)
+		art, err := db.ReadArtifact(ctx, p, id, false)
 		switch {
 		case errors.Is(err, store.ErrNotFound):
-			writeJSON(w, http.StatusBadRequest,
-				errorBody("attachment "+id+" is not an attachment you can read; "+
-					"a message carries what is in front of you or nothing"))
-			return false
+			return refuseChat(http.StatusBadRequest,
+				"attachment "+id+" is not an attachment you can read; "+
+					"a message carries what is in front of you or nothing")
 		case err != nil:
-			serverError(w, r, err)
-			return false
+			return err
 		case art.Type != attachmentType:
-			writeJSON(w, http.StatusBadRequest,
-				errorBody(id+" is not an attachment; a message carries attachments, not other rows"))
-			return false
+			return refuseChat(http.StatusBadRequest,
+				id+" is not an attachment; a message carries attachments, not other rows")
 		}
 	}
-	return true
+	return nil
 }
 
 // mayNameArtifact reports whether the artifact an event says it is about is one
@@ -322,52 +381,55 @@ func (s *server) mayNameArtifact(w http.ResponseWriter, r *http.Request, artifac
 // and --to alice can never disagree about who alice is, which is exactly the
 // disagreement a second implementation eventually produces.
 func (s *server) resolveAddressee(w http.ResponseWriter, r *http.Request, to string) (string, bool) {
+	id, err := resolveAddresseeOf(r.Context(), s.db, to)
+	return id, s.allowed(w, r, err)
+}
+
+// resolveAddresseeOf is that resolution for a caller with a database and no
+// request. It takes no principal because there is no permission in it: an
+// addressed message is a room message, and this only decides whether the name
+// means anybody at all.
+func resolveAddresseeOf(ctx context.Context, db *store.DB, to string) (string, error) {
 	if to == "" {
-		return "", true
+		return "", nil
 	}
-	ctx := r.Context()
-	_, err := s.db.GetUser(ctx, to)
+	_, err := db.GetUser(ctx, to)
 	if err == nil {
-		return to, true
+		return to, nil
 	}
 	if !errors.Is(err, store.ErrNotFound) {
-		serverError(w, r, err)
-		return "", false
+		return "", err
 	}
-	if _, err = s.db.GetAgent(ctx, to); err == nil {
-		return to, true
+	if _, err = db.GetAgent(ctx, to); err == nil {
+		return to, nil
 	}
 	if !errors.Is(err, store.ErrNotFound) {
-		serverError(w, r, err)
-		return "", false
+		return "", err
 	}
 
 	// Not an id this node holds. Try it as a name.
-	named, err := s.db.PrincipalsNamed(ctx, []string{to})
+	named, err := db.PrincipalsNamed(ctx, []string{to})
 	if err != nil {
-		serverError(w, r, err)
-		return "", false
+		return "", err
 	}
 	if id, found := named[strings.ToLower(to)]; found {
 		if id == "" {
 			// Two principals answer to it. Refusing is the only honest
 			// answer: picking one delivers to somebody the sender did not
 			// mean, and posting unaddressed tells them it was delivered.
-			writeJSON(w, http.StatusBadRequest,
-				errorBody("more than one principal is called "+to+" here, so it is "+
-					"not an address: name the id you mean"))
-			return "", false
+			return "", refuseChat(http.StatusBadRequest,
+				"more than one principal is called "+to+" here, so it is "+
+					"not an address: name the id you mean")
 		}
 		// Stored as the id, always. A handle can be changed later and a
 		// message addressed to a string would silently retarget with it -
 		// the addressee is a principal, not a spelling.
-		return id, true
+		return id, nil
 	}
 
-	writeJSON(w, http.StatusBadRequest,
-		errorBody("no principal called "+to+" here: an addressee is a user or an agent, "+
-			"by id or by handle, and a message with none is addressed to the room"))
-	return "", false
+	return "", refuseChat(http.StatusBadRequest,
+		"no principal called "+to+" here: an addressee is a user or an agent, "+
+			"by id or by handle, and a message with none is addressed to the room")
 }
 
 // mayCite reads the citation a client asked for, and answers the request
@@ -385,8 +447,15 @@ func (s *server) resolveAddressee(w http.ResponseWriter, r *http.Request, to str
 // that cannot be edited - and the only moment anybody can still fix it is this
 // one.
 func (s *server) mayCite(w http.ResponseWriter, r *http.Request, req *chatCite) (store.CiteRef, bool) {
+	ref, err := mayCiteOf(r.Context(), s.db, principalOf(r), req)
+	return ref, s.allowed(w, r, err)
+}
+
+func mayCiteOf(
+	ctx context.Context, db *store.DB, p *store.Principal, req *chatCite,
+) (store.CiteRef, error) {
 	if req == nil {
-		return store.CiteRef{}, true
+		return store.CiteRef{}, nil
 	}
 	ref := store.CiteRef{
 		Message: strings.TrimSpace(req.Message),
@@ -394,35 +463,35 @@ func (s *server) mayCite(w http.ResponseWriter, r *http.Request, req *chatCite) 
 		End:     req.End,
 	}
 	if ref.Message == "" {
-		writeJSON(w, http.StatusBadRequest,
-			errorBody("a citation names the message it is of; leave cite out and this message cites none"))
-		return ref, false
+		return ref, refuseChat(http.StatusBadRequest,
+			"a citation names the message it is of; leave cite out and this message cites none")
 	}
-	source, err := s.db.ReadEvent(r.Context(), principalOf(r), ref.Message)
+	source, err := db.ReadEvent(ctx, p, ref.Message)
 	if errors.Is(err, store.ErrNotFound) {
-		writeJSON(w, http.StatusNotFound,
-			errorBody("message "+ref.Message+" is not one you can read; "+
-				"a citation quotes a message in front of you, or nothing"))
-		return ref, false
+		return ref, refuseChat(http.StatusNotFound,
+			"message "+ref.Message+" is not one you can read; "+
+				"a citation quotes a message in front of you, or nothing")
 	}
 	if err != nil {
-		serverError(w, r, err)
-		return ref, false
+		return ref, err
 	}
 	if !ref.Whole() {
-		if fault := store.CiteSpanFault(source.Body, ref.Start, ref.End); fault != "" {
-			writeJSON(w, http.StatusBadRequest, errorBody(fault))
-			return ref, false
+		if bad := store.CiteSpanFault(source.Body, ref.Start, ref.End); bad != "" {
+			return ref, refuseChat(http.StatusBadRequest, bad)
 		}
 	}
-	return ref, true
+	return ref, nil
 }
 
 // handleChatSay appends a message to a room.
 //
 // POST /api/chat/{room}/say  {body, thread?, parents?, to?, cite?}
+//
+// The door and nothing else: it reads the request, hands it to sayInRoom, and
+// turns whatever comes back into a status. Every rule about what a message may
+// name and who it may be for is down there, where the MCP surface reaches it too
+// - see the header of sayInRoom for why that matters.
 func (s *server) handleChatSay(w http.ResponseWriter, r *http.Request) {
-	p := principalOf(r)
 	room, ok := roomOf(r)
 	if !ok {
 		writeJSON(w, http.StatusBadRequest, errorBody("room must be one non-empty path segment"))
@@ -434,28 +503,57 @@ func (s *server) handleChatSay(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorBody("bad request body: "+err.Error()))
 		return
 	}
-	if strings.TrimSpace(req.Body) == "" {
-		writeJSON(w, http.StatusBadRequest, errorBody("body is required"))
+
+	said, err := sayInRoom(r.Context(), s.db, principalOf(r), room, req)
+	if err != nil {
+		// Which writes the refusal the say path made, or a 500 when it was the
+		// store that failed.
+		s.allowed(w, r, err)
 		return
+	}
+	writeJSON(w, http.StatusOK, said)
+}
+
+// sayInRoom is what saying something in a room IS: the checks, the speaker's
+// name, the thread it lands in, the row, and the grant a citation makes.
+//
+// It is a function of a context and a database rather than of a request because
+// there are two doors onto it and there must never be two implementations of it.
+// POST /api/chat/{room}/say is one; chat_say on the MCP surface is the other,
+// and until that tool existed an agent whose only door is MCP could read a room
+// and not answer it. A second write path would be a second answer to every
+// question here - which threads are closed, which names address somebody, what a
+// speaker is called - and the two would drift the first time one of them was
+// fixed.
+//
+// The refusals come back as chatFault, so each door can say them in its own
+// idiom without deciding them.
+func sayInRoom(
+	ctx context.Context, db *store.DB, p *store.Principal, room string, req chatSayRequest,
+) (*store.Event, error) {
+	room, err := roomNamed(room)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(req.Body) == "" {
+		return nil, refuseChat(http.StatusBadRequest, "body is required")
 	}
 	if req.Parents == nil {
 		req.Parents = []string{}
 	}
 	req.To = strings.TrimSpace(req.To)
-	to, ok := s.resolveAddressee(w, r, req.To)
-	if !ok {
-		return
+	if req.To, err = resolveAddresseeOf(ctx, db, req.To); err != nil {
+		return nil, err
 	}
-	req.To = to
-	if !s.mayNameParents(w, r, req.Parents) {
-		return
+	if err := mayNameParentsOf(ctx, db, p, req.Parents); err != nil {
+		return nil, err
 	}
-	if !s.mayCarryAttachments(w, r, req.Attachments) {
-		return
+	if err := mayCarryAttachmentsOf(ctx, db, p, req.Attachments); err != nil {
+		return nil, err
 	}
-	cite, ok := s.mayCite(w, r, req.Cite)
-	if !ok {
-		return
+	cite, err := mayCiteOf(ctx, db, p, req.Cite)
+	if err != nil {
+		return nil, err
 	}
 	if req.Thread == "" {
 		// A message that answers something inherits that message's thread, so
@@ -484,19 +582,17 @@ func (s *server) handleChatSay(w http.ResponseWriter, r *http.Request) {
 		// store had been unreachable. ThreadHidden below has always told the
 		// two apart; this asks the same question.
 		if len(req.Parents) > 0 {
-			parent, err := s.db.ReadEvent(r.Context(), p, req.Parents[0])
+			parent, err := db.ReadEvent(ctx, p, req.Parents[0])
 			switch {
 			case errors.Is(err, store.ErrNotFound):
 				// Deliberate: a fresh thread, and no 403 for a thread the
 				// caller never named.
 			case err != nil:
-				serverError(w, r, err)
-				return
+				return nil, err
 			case parent.Thread != "":
-				hidden, err := s.db.ThreadHidden(r.Context(), p, parent.Thread)
+				hidden, err := db.ThreadHidden(ctx, p, parent.Thread)
 				if err != nil {
-					serverError(w, r, err)
-					return
+					return nil, err
 				}
 				if !hidden {
 					req.Thread = parent.Thread
@@ -506,13 +602,13 @@ func (s *server) handleChatSay(w http.ResponseWriter, r *http.Request) {
 		if req.Thread == "" {
 			req.Thread = ulid.NewString()
 		}
-	} else if !s.mayWriteThread(w, r, req.Thread) {
-		return
+	} else if err := mayWriteThreadOf(ctx, db, p, req.Thread); err != nil {
+		return nil, err
 	}
 	// A message into a thread that is already part of a trace joins it. On the
 	// far side of a handoff this is what makes "the assignee replied" a span in
 	// the story of the handoff rather than a request nothing connects to.
-	s.adoptThreadTrace(r, req.Thread)
+	adoptThreadTraceOf(ctx, db, p, req.Thread)
 
 	// The @names in the body, resolved here rather than left to every reader.
 	// An addressee written into the sentence is the same fact as one written
@@ -521,17 +617,21 @@ func (s *server) handleChatSay(w http.ResponseWriter, r *http.Request) {
 	// An explicit `to` still wins. It is a field somebody filled in
 	// deliberately, and a message that says "@alice, ask bob" with --to bob is
 	// a writer being specific about which of the two names is the addressing.
-	found, err := resolveMentions(req.Body, s.principalsNamed(r.Context()))
+	found, err := resolveMentions(req.Body, principalsNamedBy(ctx, db))
 	if err != nil {
-		serverError(w, r, err)
-		return
+		return nil, err
 	}
 	if req.To == "" {
 		req.To = mentionAddressee(found)
 	}
 
+	// The speaker's name, stamped the way every other message stamps it. A
+	// message written without it renders as anonymous forever - actor_name is
+	// absent, the console falls back to an id, and nothing says who spoke - so
+	// this is the one line a second write path would be most likely to leave out
+	// and the room would be least likely to forgive.
 	actor, kind := chatActor(p)
-	fields := speakerMeta(p, kind, s.speakerName(r.Context(), p))
+	fields := speakerMeta(p, kind, speakerNameOf(ctx, db, p))
 	if len(found) > 0 {
 		fields[store.MentionsMetaKey] = mentionMeta(found)
 	}
@@ -547,8 +647,7 @@ func (s *server) handleChatSay(w http.ResponseWriter, r *http.Request) {
 	}
 	meta, err := json.Marshal(fields)
 	if err != nil {
-		serverError(w, r, err)
-		return
+		return nil, err
 	}
 
 	// A message lands in the principal's home project, like every other write:
@@ -569,11 +668,10 @@ func (s *server) handleChatSay(w http.ResponseWriter, r *http.Request) {
 		Actor:     actor,
 		Addressee: req.To,
 		Body:      req.Body,
-		Meta:      withTrace(json.RawMessage(meta), traceIDOf(r)),
+		Meta:      withTrace(json.RawMessage(meta), otel.TraceID(ctx)),
 	}
-	if err := s.db.AppendEvent(r.Context(), e); err != nil {
-		serverError(w, r, err)
-		return
+	if err := db.AppendEvent(ctx, e); err != nil {
+		return nil, err
 	}
 	// AND THE GRANT THE CITATION MAKES, if it makes one - see citegrant.go for
 	// which citations do. A citation from somebody who may only READ the source
@@ -590,8 +688,8 @@ func (s *server) handleChatSay(w http.ResponseWriter, r *http.Request) {
 	// been said, and answering 500 to a message that is in the log would have
 	// the caller say it again.
 	if cite.Message != "" && req.To != "" {
-		if src, err := s.db.ReadEvent(r.Context(), p, cite.Message); err == nil && src.Artifact != "" {
-			granted, err := s.db.GrantCitedArtifact(r.Context(), p, src.Artifact, req.To)
+		if src, err := db.ReadEvent(ctx, p, cite.Message); err == nil && src.Artifact != "" {
+			granted, err := db.GrantCitedArtifact(ctx, p, src.Artifact, req.To)
 			switch {
 			case err != nil:
 				log.Printf("citations: the grant %s makes on %s was not recorded: %v",
@@ -604,7 +702,7 @@ func (s *server) handleChatSay(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	writeJSON(w, http.StatusOK, e)
+	return e, nil
 }
 
 // handleChatRead reads a room in log order, filtered to what the principal may
@@ -809,8 +907,19 @@ func (s *server) readRoom(r *http.Request, room, thread string, since int64, lim
 // why its old end is a complete reading and `before` is therefore exact.
 func (s *server) readRoomBefore(r *http.Request, room, thread string, before int64, limit int) ([]*store.Event, error) {
 	p := principalOf(r)
-	all := scopeAll(r, p)
-	list, err := s.db.EventsBefore(r.Context(), p, store.EventQuery{
+	return roomBefore(r.Context(), s.db, p, room, thread, before, limit, scopeAll(r, p))
+}
+
+// roomBefore is that read for a caller with a database and no request: the MCP
+// surface's chat_read is the other one, and it opens on the same end of the log
+// the console opens on. A room read that started at the beginning of a busy log
+// would hand an agent the oldest hundred messages of a conversation it is trying
+// to catch up with, which is the one page nobody wants.
+func roomBefore(
+	ctx context.Context, db *store.DB, p *store.Principal,
+	room, thread string, before int64, limit int, all bool,
+) ([]*store.Event, error) {
+	list, err := db.EventsBefore(ctx, p, store.EventQuery{
 		Type:     chatEventType,
 		Room:     room,
 		Thread:   thread,
@@ -821,7 +930,7 @@ func (s *server) readRoomBefore(r *http.Request, room, thread string, before int
 	if err != nil {
 		return nil, err
 	}
-	if err := s.db.Citations(r.Context(), p, list, all); err != nil {
+	if err := db.Citations(ctx, p, list, all); err != nil {
 		return nil, err
 	}
 	return list, nil
@@ -845,14 +954,7 @@ func (s *server) readRoomBefore(r *http.Request, room, thread string, before int
 // A client can tell whether anything older exists without another request: the
 // window filled its limit or it did not.
 func writeChatWindow(w http.ResponseWriter, room string, before int64, list []*store.Event) {
-	cursor := before
-	older := int64(0)
-	if n := len(list); n > 0 {
-		if before == 0 {
-			cursor = list[n-1].SeqHLC
-		}
-		older = list[0].SeqHLC
-	}
+	cursor, older := chatWindowEnds(before, list)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"room":   room,
 		"events": list,
@@ -860,6 +962,20 @@ func writeChatWindow(w http.ResponseWriter, room string, before int64, list []*s
 		"cursor": cursor,
 		"before": older,
 	})
+}
+
+// chatWindowEnds is the arithmetic behind those two cursors, so the tool surface
+// pages a room exactly as the console does rather than working it out again. See
+// writeChatWindow above for what each end is for.
+func chatWindowEnds(before int64, list []*store.Event) (cursor, older int64) {
+	cursor = before
+	if n := len(list); n > 0 {
+		if before == 0 {
+			cursor = list[n-1].SeqHLC
+		}
+		older = list[0].SeqHLC
+	}
+	return cursor, older
 }
 
 // writeChatEvents answers with the events and the cursor to ask for next, so a
