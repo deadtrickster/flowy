@@ -19,12 +19,31 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/deadtrickster/flowy/internal/store"
 )
 
 var mergeTools = []tool{
+	{
+		Name: "merge_gate",
+		Description: "Declare that a gate is now MEASURING a merge request, or record " +
+			"the verdict it produced. Declare it when the run STARTS, not when it " +
+			"finishes: for the whole length of a run, nothing else records that " +
+			"somebody is measuring against a tip, so anybody who lands meanwhile " +
+			"silently destroys the evidence and the runner finds out afterwards by " +
+			"reading a number that is already worthless. Call it again with " +
+			"gated_tip when the run reports.",
+		InputSchema: object(props{
+			"id":  str("The merge request."),
+			"run": str("The run doing the measuring, so a claim of green points at a log."),
+			"gated_tip": str("The commit the gate measured. Leave it out while the run " +
+				"is still going - that is what says the verdict is not in yet."),
+		}, []string{"id", "run"}),
+		call: mergeGate,
+	},
 	{
 		Name: "merge_queue",
 		Description: "The merge queue: every merge request you can read that is not " +
@@ -133,4 +152,44 @@ func mergeQueueTool(ctx context.Context, m *mcpServer, p *store.Principal, raw j
 		// this is guarding.
 		"decided": tip != "",
 	}, nil
+}
+
+// mergeGate declares a run against a request, or records what it measured.
+//
+// It is deliberately the same verb for both, because they are the same fact at
+// two moments: this run is about this branch. Splitting them into "start" and
+// "finish" would let a caller record a verdict for a run nobody ever declared,
+// which is exactly the invisible window this exists to close.
+func mergeGate(ctx context.Context, m *mcpServer, p *store.Principal, raw json.RawMessage) (any, error) {
+	var a struct {
+		ID       string `json:"id"`
+		Run      string `json:"run"`
+		GatedTip string `json:"gated_tip"`
+	}
+	if err := decodeParams(raw, &a); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(a.ID) == "" || strings.TrimSpace(a.Run) == "" {
+		return nil, errors.New("merge_gate needs the request id and the run measuring it")
+	}
+	old, err := m.db.ReadArtifact(ctx, p, a.ID, false)
+	if err != nil {
+		return nil, err
+	}
+	if old.Kind != store.MergeKind {
+		return nil, fmt.Errorf("%s is a %q, not a merge request", a.ID, old.Kind)
+	}
+	// A declaration moves the row to active: something is happening to it, and a
+	// board that still offers it as free work is how two people gate one branch.
+	args := map[string]any{"id": a.ID, "gate_run": strings.TrimSpace(a.Run)}
+	if tip := strings.TrimSpace(a.GatedTip); tip != "" {
+		args["gated_tip"] = tip
+	} else {
+		args["status"] = store.ActiveStatus
+	}
+	out, err := json.Marshal(args)
+	if err != nil {
+		return nil, err
+	}
+	return memWrite(ctx, m, p, out)
 }

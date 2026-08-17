@@ -43,3 +43,27 @@ func TestEveryListedToolHasAnImplementation(t *testing.T) {
 		seen[tl.Name] = true
 	}
 }
+
+// merge_gate is the write half of the in-flight window: it is what makes a run
+// visible while it is measuring, rather than only after it reports.
+func TestMergeGateIsRegisteredAndTakesARun(t *testing.T) {
+	var found *tool
+	for i := range mergeTools {
+		if mergeTools[i].Name == "merge_gate" {
+			found = &mergeTools[i]
+		}
+	}
+	if found == nil {
+		t.Fatal("merge_gate is not in mergeTools, so nothing can declare a run")
+	}
+	if found.call == nil {
+		t.Fatal("merge_gate is listed with no implementation")
+	}
+	req, _ := found.InputSchema["required"].([]string)
+	// id AND run are both required, because a declaration that does not name the
+	// run is a status change - it tells a lander that something is happening and
+	// not what, which is half the information and none of the accountability.
+	if len(req) != 2 {
+		t.Fatalf("merge_gate must require both the request and the run, got %v", req)
+	}
+}
