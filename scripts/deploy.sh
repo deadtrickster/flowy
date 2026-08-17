@@ -105,7 +105,13 @@ say "    fresh bundle: $bundle"
 say "==> building the binary"
 tmp=$(mktemp -t flowy-deploy-XXXXXX) || die "cannot make a temp file"
 trap 'rm -f "$tmp"' EXIT
-go build -o "$tmp" . || die "go build failed"
+# STAMP THE COMMIT IN. main.go has carried a buildStamp ldflag for exactly this
+# since it was written - "a version that is only the release is a version that
+# cannot answer the question" - and nothing ever set it, so every node has
+# reported a bare release and no way to tell which commit it is running. Today
+# that question came up repeatedly and the only answers were shell access to
+# the host or comparing bundle hashes by hand.
+go build -ldflags "-X main.buildStamp=$commit" -o "$tmp" . || die "go build failed"
 
 # THE CHECK THAT WOULD HAVE CAUGHT IT. Read the asset name back out of the
 # binary rather than trusting that the build order was right, because a binary
@@ -184,6 +190,24 @@ say "    served bundle: ${served:-NOTHING}"
 	printf 'the node serves %s but this deploy built %s\n' "${served:-nothing}" "assets/$bundle" >&2
 	rollback
 }
+
+# And ask the node WHICH COMMIT IT THINKS IT IS. The stamp file above records
+# what this script deployed; this reads back what the running binary says, so
+# the two can disagree out loud instead of silently. Answering "is the node on
+# master?" should not require shell access to the host.
+if [ -n "$token" ]; then
+	reported=$(curl -sS -m 10 -H "Authorization: Bearer $token" "$URL/api/node" 2>/dev/null |
+		grep -o '"version":"[^"]*"' | head -1 | cut -d'"' -f4)
+	say "    node reports version: ${reported:-unknown}"
+	case "$reported" in
+	*"+$commit") : ;;
+	*)
+		printf 'the node reports version "%s", which does not carry this deploy\x27s commit %s\n' \
+			"${reported:-unknown}" "$commit" >&2
+		rollback
+		;;
+	esac
+fi
 
 printf '%s\n' "$commit" >"$STAMP"
 say ""
