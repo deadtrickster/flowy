@@ -27,7 +27,7 @@ func likeEscaped(term string) string {
 
 // eventColumns is the read list, in the order scanEvent expects.
 const eventColumns = `id, type, project, room, thread, parents, actor, artifact, seq_hlc,
-	node, body, meta, addressee, sig, created`
+	node, body, meta, addressee, sig, author_sig, authorship, created`
 
 // scanEvent reads one row of eventColumns.
 func scanEvent(sc scanner) (*Event, error) {
@@ -35,15 +35,20 @@ func scanEvent(sc scanner) (*Event, error) {
 		e                              Event
 		typeCol, project, room, thread sql.NullString
 		actor, artifact, nodeCol, body sql.NullString
-		addressee                      sql.NullString
+		addressee, authorship          sql.NullString
 		meta                           []byte
 		seq                            sql.NullInt64
 	)
 	err := sc.Scan(&e.ID, &typeCol, &project, &room, &thread, pq.Array(&e.Parents), &actor,
-		&artifact, &seq, &nodeCol, &body, &meta, &addressee, &e.Sig, &e.Created)
+		&artifact, &seq, &nodeCol, &body, &meta, &addressee, &e.Sig, &e.AuthorSig, &authorship,
+		&e.Created)
 	if err != nil {
 		return nil, err
 	}
+	// Whatever the column holds, a reader is told one of the two things this
+	// node can actually say - see authorshipOr. A row from a store written
+	// before the column existed reads as attributed, which is what it is.
+	e.Authorship = authorshipOr(authorship.String)
 	if project.Valid {
 		p := project.String
 		e.Project = &p

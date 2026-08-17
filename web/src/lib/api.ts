@@ -98,6 +98,23 @@ export interface FlowyEvent {
   };
   /** What this message is answering, as the node resolved it for this reader. */
   citation?: Citation;
+  /**
+   * authorship is what THIS node can say about who wrote the message, and it is
+   * the node's finding rather than a claim on the row: "authored" means a
+   * signature made with the actor's own key verified here, "attributed" means
+   * it did not and the message rests on the word of whichever node relayed it.
+   *
+   * A message carries two signatures. The node's says which machine wrote the
+   * bytes; the principal's says who the words are from. Pinning a peer's node
+   * key is agreeing to carry what it relays - which is what federation is - and
+   * was being read as agreeing to whatever it said about who wrote what, so a
+   * pinned peer could put words in anybody's mouth and every reader here saw
+   * them as that person's own.
+   *
+   * Most rows are attributed today, and that is honest rather than alarming: it
+   * is what a store holds until principals have keys.
+   */
+  authorship?: "authored" | "attributed";
   created: string;
 }
 
@@ -221,6 +238,15 @@ export interface Artifact {
    * did is out of reach, and the console cannot tell those apart on purpose.
    */
   replaced_by?: string;
+  /**
+   * authorship is what this node can say about the owner's claim to the words:
+   * "authored" when a signature made with the owner's own key verified here,
+   * "attributed" when it did not and the row rests on the word of whichever
+   * node relayed it. See FlowyEvent.authorship - it is the same finding about
+   * the other kind of row, and what an owner signs is what only an owner writes
+   * (title, body, project, tags), so a party's status move does not disturb it.
+   */
+  authorship?: "authored" | "attributed";
 }
 
 /**

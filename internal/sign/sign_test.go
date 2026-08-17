@@ -351,3 +351,84 @@ func digestHex(msg []byte) string {
 	sum := sha256.Sum256(msg)
 	return hex.EncodeToString(sum[:])
 }
+
+// An authorship signature is a different claim from a node signature, and the
+// encodings have to make that structural rather than a convention: a node's
+// signature over a row must never be usable as the author's, in either
+// direction. The domain is the first field of both, so they cannot collide.
+func TestAnAuthorshipMessageIsNotTheRowsOwnMessage(t *testing.T) {
+	e := Event{
+		ID: "e-1", Actor: "u-1", Type: "chat", Body: "said it", HLC: 11,
+		Node: "nodeA", Room: "general", Created: written,
+	}
+	if bytes.Equal(CanonicalEvent(e), CanonicalEventAuthorship("u-1", e)) {
+		t.Fatal("an event and its authorship claim encode to the same bytes")
+	}
+	// And the claim names the principal: the same row claimed by two different
+	// people is two different messages.
+	if bytes.Equal(CanonicalEventAuthorship("u-1", e), CanonicalEventAuthorship("u-2", e)) {
+		t.Fatal("who is claiming authorship is not inside the message")
+	}
+	// Everything about the event is in it, because an event is immutable.
+	moved := e
+	moved.Body = "said something else"
+	if bytes.Equal(CanonicalEventAuthorship("u-1", e), CanonicalEventAuthorship("u-1", moved)) {
+		t.Fatal("the words are not inside the authorship claim")
+	}
+}
+
+// An artifact's authorship claim covers what only its owner writes, and it has
+// to leave out what other people legitimately write - or the first ordinary
+// status move by a party would strip the row of its authorship and its owner's
+// peers would then refuse it. That is a federation break dressed as a security
+// fix, so the two halves are asserted here rather than left to a comment.
+func TestAnArtifactsAuthorshipCoversTheOwnersFieldsAndNoOthers(t *testing.T) {
+	project := "flowy"
+	a := Artifact{
+		ID: "a-1", OwnerUser: "u-1", Project: &project, Visibility: "project",
+		Type: "bug", Kind: "", Title: "it breaks", Body: "here is how", Status: "open",
+		HLC: 11, Node: "nodeA", Created: written,
+	}
+	base := CanonicalArtifactAuthorship("u-1", a)
+
+	// What a party may write, and what the reading and the relay do to a row in
+	// flight: none of it may change the claim.
+	for _, other := range []struct {
+		what   string
+		change func(*Artifact)
+	}{
+		{"a status move", func(x *Artifact) { x.Status = "in-review" }},
+		{"a todo's fields", func(x *Artifact) { x.Fields = []byte(`{"assignee":"u-2"}`) }},
+		{"a forge link", func(x *Artifact) { x.Reported = true; x.External = []byte(`{"repo":"o/r"}`) }},
+		{"a fresh reading", func(x *Artifact) { x.HLC = 99 }},
+		{"another node writing it", func(x *Artifact) { x.Node = "nodeB" }},
+		{"a delete", func(x *Artifact) { x.Tombstone = true }},
+	} {
+		moved := a
+		other.change(&moved)
+		if !bytes.Equal(base, CanonicalArtifactAuthorship("u-1", moved)) {
+			t.Errorf("%s changed the owner's authorship claim", other.what)
+		}
+	}
+
+	// And what only the owner writes: every one of these is the owner's word
+	// about their own artifact, so changing it has to change the claim.
+	for _, mine := range []struct {
+		what   string
+		change func(*Artifact)
+	}{
+		{"the title", func(x *Artifact) { x.Title = "it does not break" }},
+		{"the body", func(x *Artifact) { x.Body = "here is how, allegedly" }},
+		{"the owner", func(x *Artifact) { x.OwnerUser = "u-2" }},
+		{"the type", func(x *Artifact) { x.Type = "note" }},
+		{"the project", func(x *Artifact) { other := "elsewhere"; x.Project = &other }},
+		{"the visibility", func(x *Artifact) { x.Visibility = "personal" }},
+		{"the tags", func(x *Artifact) { x.Tags = []string{"urgent"} }},
+	} {
+		moved := a
+		mine.change(&moved)
+		if bytes.Equal(base, CanonicalArtifactAuthorship("u-1", moved)) {
+			t.Errorf("%s did not change the owner's authorship claim", mine.what)
+		}
+	}
+}

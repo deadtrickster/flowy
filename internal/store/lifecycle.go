@@ -43,6 +43,11 @@ func (d *DB) setArtifactStatus(
 		return err
 	}
 	res, err := q.ExecContext(ctx,
+		// author_sig is not in the SET list and must not be: a status move is
+		// written by a party rather than by the owner, and status is outside what
+		// the owner signs precisely so that this write carries their signature
+		// forward instead of invalidating it. See
+		// sign.CanonicalArtifactAuthorship.
 		`UPDATE artifacts SET status = $2, hlc = $3, node = $4, sig = $5, updated = now()
 		  WHERE id = $1 AND coalesce(tombstone, false) = false`,
 		art.ID, art.Status, art.HLC, art.Node, art.Sig)

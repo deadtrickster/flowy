@@ -40,7 +40,7 @@ func searchText(a *Artifact) string {
 // artifactColumns is the read list, in the order scanArtifact expects.
 const artifactColumns = `id, type, kind, project, owner_user, title, body, discovery, status,
 	severity, tags, user_tags, related, visibility, file_path, fields, hlc, node,
-	tombstone, created, updated, reported, external, sig`
+	tombstone, created, updated, reported, external, sig, author_sig, authorship`
 
 // scanner is what both *sql.Row and *sql.Rows satisfy.
 type scanner interface{ Scan(dest ...any) error }
@@ -51,20 +51,24 @@ func scanArtifact(sc scanner, rank *float64) (*Artifact, error) {
 		a                                          Artifact
 		typeCol, kind, project, owner, title, body sql.NullString
 		disc, status, severity, vis, filePath      sql.NullString
-		nodeCol                                    sql.NullString
+		nodeCol, authorship                        sql.NullString
 		fields, external                           []byte
 		clockVal                                   sql.NullInt64
 		tomb, reported                             sql.NullBool
 	)
 	dest := []any{&a.ID, &typeCol, &kind, &project, &owner, &title, &body, &disc, &status, &severity,
 		pq.Array(&a.Tags), pq.Array(&a.UserTags), pq.Array(&a.Related), &vis, &filePath,
-		&fields, &clockVal, &nodeCol, &tomb, &a.Created, &a.Updated, &reported, &external, &a.Sig}
+		&fields, &clockVal, &nodeCol, &tomb, &a.Created, &a.Updated, &reported, &external, &a.Sig,
+		&a.AuthorSig, &authorship}
 	if rank != nil {
 		dest = append(dest, rank)
 	}
 	if err := sc.Scan(dest...); err != nil {
 		return nil, err
 	}
+	// One of the two things this node can say, whatever the column holds - see
+	// authorshipOr and scanEvent, which does the same.
+	a.Authorship = authorshipOr(authorship.String)
 	if project.Valid {
 		p := project.String
 		a.Project = &p
@@ -158,9 +162,10 @@ func (d *DB) upsertArtifact(ctx context.Context, q execer, a *Artifact) error {
 	err = q.QueryRowContext(ctx,
 		`INSERT INTO artifacts (id, type, kind, project, owner_user, title, body, discovery,
 		                        status, severity, tags, user_tags, related, visibility,
-		                        file_path, fields, hlc, node, tombstone, search, sig, created)
+		                        file_path, fields, hlc, node, tombstone, search, sig, created,
+		                        author_sig, authorship)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
-		         $19, `+fmt.Sprintf(artifactSearchSQL, 20)+`, $21, $22)
+		         $19, `+fmt.Sprintf(artifactSearchSQL, 20)+`, $21, $22, $23, $24)
 		 ON CONFLICT (id) DO UPDATE SET
 		     type = excluded.type, kind = excluded.kind, project = excluded.project,
 		     owner_user = excluded.owner_user,
@@ -170,6 +175,7 @@ func (d *DB) upsertArtifact(ctx context.Context, q execer, a *Artifact) error {
 		     visibility = excluded.visibility, file_path = excluded.file_path,
 		     fields = excluded.fields, hlc = excluded.hlc, node = excluded.node,
 		     tombstone = excluded.tombstone, search = excluded.search, sig = excluded.sig,
+		     author_sig = excluded.author_sig, authorship = excluded.authorship,
 		     created = excluded.created, updated = now()
 		  WHERE artifacts.owner_user = excluded.owner_user
 		    AND coalesce(artifacts.tombstone, false) = false
@@ -177,7 +183,7 @@ func (d *DB) upsertArtifact(ctx context.Context, q execer, a *Artifact) error {
 		a.ID, a.Type, a.Kind, a.Project, a.OwnerUser, a.Title, a.Body, a.Discovery,
 		a.Status, a.Severity, pq.Array(a.Tags), pq.Array(a.UserTags), pq.Array(a.Related),
 		a.Visibility, a.FilePath, fields, a.HLC, a.Node, a.Tombstone, searchText(a), a.Sig,
-		a.Created).
+		a.Created, a.AuthorSig, authorshipOr(a.Authorship)).
 		Scan(&a.Created, &a.Updated)
 	if errors.Is(err, sql.ErrNoRows) {
 		// The id is taken, and not by this owner. Nothing was written.
@@ -338,15 +344,16 @@ func (d *DB) createArtifact(ctx context.Context, q execer, a *Artifact) error {
 	err := q.QueryRowContext(ctx,
 		`INSERT INTO artifacts (id, type, kind, project, owner_user, title, body, discovery,
 		                        status, severity, tags, user_tags, related, visibility,
-		                        file_path, fields, hlc, node, tombstone, search, sig, created)
+		                        file_path, fields, hlc, node, tombstone, search, sig, created,
+		                        author_sig, authorship)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
-		         $19, `+fmt.Sprintf(artifactSearchSQL, 20)+`, $21, $22)
+		         $19, `+fmt.Sprintf(artifactSearchSQL, 20)+`, $21, $22, $23, $24)
 		 ON CONFLICT (id) DO NOTHING
 		 RETURNING created, updated`,
 		a.ID, a.Type, a.Kind, a.Project, a.OwnerUser, a.Title, a.Body, a.Discovery,
 		a.Status, a.Severity, pq.Array(a.Tags), pq.Array(a.UserTags), pq.Array(a.Related),
 		a.Visibility, a.FilePath, fields, a.HLC, a.Node, a.Tombstone, searchText(a), a.Sig,
-		a.Created).
+		a.Created, a.AuthorSig, authorshipOr(a.Authorship)).
 		Scan(&a.Created, &a.Updated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrTaken

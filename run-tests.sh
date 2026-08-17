@@ -6983,6 +6983,247 @@ fuse_await() {
 	return 1
 }
 
+# ------------------------------------------------------- whose word a row is
+#
+# The accept-side impersonation hole, and the thing that closes it.
+#
+# A row carries the signature of the node that wrote it, and the merge checked
+# that signature and then believed what the row said about who WROTE it. Those
+# are two different claims. Pinning a peer's node key is agreeing to carry what
+# it relays - which is what federation IS, since a relay's whole job is other
+# people's rows - and it was being read as agreeing to whatever that peer said
+# about authorship. So a pinned peer could push chat as this node's own alice,
+# in alice's room, and every surface here rendered it as alice's own word.
+#
+# The fix is a second key: rows authored by a principal are signed by that
+# PRINCIPAL, and the node signature stays beside it as the relay envelope. Two
+# claims, two keys. A principal carries an EPOCH - a clock reading - and from it
+# a row naming them without their signature is refused; below it, rows are taken
+# as they always were and shown as attributed rather than as that person's own
+# word. That epoch is why this is not the home-node floor that had to be
+# reverted: nothing already in either store stops replicating, and the rule
+# applies to one principal at a time, from the reading their key was made at.
+#
+# What it buys, exactly: the trust boundary moves from any-pinned-node to the
+# one node holding that principal's key. Not "forgery is impossible" - the node
+# holding alice's key can still write as alice, because that is what holding a
+# key means.
+#
+# These run last of the federated checks, and deliberately: from here on node A
+# and node B both hold alice's epoch, so a row of hers that nothing signed is a
+# row they refuse, and every earlier check hands them exactly that.
+
+# principal_seed NAME - the 32 byte seed node A mints a principal's key from.
+# Derived from the name so the gate holds the private half as well, which is
+# what lets the checks below produce a signature that verifies AND one that does
+# not, over otherwise identical rows.
+principal_seed() { seed_of "phase5 principal $1"; }
+
+# sign5_as DSN NODE PRINCIPAL SEED - sign a delta read on stdin twice: as the
+# node, the way sign5 does, and as the principal whose rows it carries.
+sign5_as() {
+	DATABASE_URL="$1" FLOWY_NODE="$2" "$ROOT/flowy" sign --as "$3" --principal-seed "$4"
+}
+
+# The provisioning, done the way an operator does it and out of band: keygen on
+# the node the principal writes from, pin on the node that receives their rows.
+# Nothing about a principal key travels on a page - a key a relay could serve
+# would be an authorship a relay could grant itself, which is the hole.
+a_principal_gets_a_key_on_the_node_it_writes_from() {
+	recall5
+	local out key epoch
+	out="$(DATABASE_URL="$N5_DSN_A" "$ROOT/flowy" principal keygen --node nodeA \
+		--as "$N5_USER_A" --seed "$(principal_seed "$N5_USER_A")")" || return 1
+	key="$(printf '%s' "$out" | jq -r .public_key)"
+	epoch="$(printf '%s' "$out" | jq -r .epoch)"
+	if [ -z "$key" ] || [ -z "$epoch" ] || [ "$epoch" = "null" ]; then
+		printf 'keygen answered %s\n' "$out" >&2
+		return 1
+	fi
+	want_eq "node A holds the private half" \
+		"$(printf '%s' "$out" | jq -r .local)" true || return 1
+
+	# Node B gets the public half and the epoch, and nothing else: it can check
+	# alice's rows and it cannot write one.
+	DATABASE_URL="$N5_DSN_B" "$ROOT/flowy" principal pin --node nodeB \
+		--as "$N5_USER_A" --key "$key" --epoch "$epoch" >/dev/null || return 1
+	want_eq "the key node B pinned" \
+		"$(scalar5 "$N5_DSN_B" "SELECT encode(public_key, 'hex') FROM principal_identity
+		    WHERE principal = '$N5_USER_A'")" "$key" || return 1
+	want_eq "the epoch it pinned it from" \
+		"$(scalar5 "$N5_DSN_B" "SELECT epoch_hlc FROM principal_identity
+		    WHERE principal = '$N5_USER_A'")" "$epoch" || return 1
+	want_eq "the private half on node B" \
+		"$(scalar5 "$N5_DSN_B" "SELECT coalesce(length(private_key), 0) FROM principal_identity
+		    WHERE principal = '$N5_USER_A'")" 0 || return 1
+
+	remember5 N5_ALICE_KEY "$key"
+	remember5 N5_ALICE_EPOCH "$epoch"
+	printf 'nodeA signs for %s from reading %s; nodeB holds the public half\n' \
+		"$N5_USER_A" "$epoch"
+}
+
+# The write side, and the other half of the claim: the node holding the key
+# signs what that principal writes, the row crosses the boundary carrying the
+# signature, and the node that did NOT write it can say it is hers.
+#
+# Without this the fix would be indistinguishable from a rule that refuses
+# everything about a principal with a key, which is a break and not a fix.
+a_message_from_the_node_holding_the_key_is_authored() {
+	recall5
+	local id thread mine
+	want_napi 200 "$N5_PORT_A" POST "$N5_TOKEN_A" /api/events \
+		'{"type":"chat","room":"general","body":"signed with my own key"}' || return 1
+	id="$(jqv .id)"
+	thread="$(jqv .thread)"
+	want_eq "what node A says about it" "$(jqv .authorship)" authored || return 1
+
+	sync_round || return 1
+	want_eq "what node B stored" \
+		"$(scalar5 "$N5_DSN_B" "SELECT authorship FROM events WHERE id = '$id'")" authored || return 1
+	# And a reader on node B is told, over the wire, on the node that did not
+	# write it and does not hold the key it was signed with.
+	want_napi 200 "$N5_PORT_B" GET "$N5_TOKEN_A" "/api/events?thread=$thread" || return 1
+	want_eq "what node B tells a reader" "$(jqv '.events[0].authorship')" authored || return 1
+
+	# A principal with no key anywhere is attributed, which is what every row in
+	# a fabric that has provisioned nothing is. It is honest rather than
+	# alarming: it says this node is holding somebody's word for it.
+	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_B" /api/events \
+		'{"type":"chat","room":"general","body":"and nobody signed for this one"}' || return 1
+	mine="$(jqv .authorship)"
+	want_eq "a principal with no key here" "$mine" attributed || return 1
+	printf 'message %s is %s on both nodes\n' "$id" authored
+}
+
+# The finding itself. Node A is pinned by node B - the operators exchanged keys
+# in the section above - so this delta is correctly signed by a node node B has
+# agreed to believe, it lands in a room the pusher reads, and every rule the
+# merge had before this one says yes to it.
+#
+# Two rows, and the difference between them is one clock reading: one above
+# alice's epoch, which is refused, and one below it, which is taken and marked
+# attributed. That pair is the migration seam - a fabric's back catalogue keeps
+# replicating - and it is the whole reason this does not break the federation
+# checks the way the reverted home-node floor did.
+a_pinned_peer_cannot_speak_for_a_principal_with_a_key() {
+	recall5
+	local forged old delta
+	forged="forged-as-alice-$$-$(date +%s)"
+	old="before-the-epoch-$$-$(date +%s)"
+	delta="$(jq -nc --arg f "$forged" --arg o "$old" --arg a "$N5_USER_A" \
+		--argjson after "$((N5_ALICE_EPOCH + 65536))" \
+		--argjson before "$((N5_ALICE_EPOCH - 65536))" '
+		{artifacts: [], tasks: [], grants: [], hwm: 0, events: [
+		  {id: $f, type: "chat", project: "pb", room: "pb/bugs", thread: $f, parents: [],
+		   actor: $a, artifact: "", seq_hlc: $after, node: "nodeA",
+		   body: "ship it, no review needed"},
+		  {id: $o, type: "chat", project: "pb", room: "pb/bugs", thread: $o, parents: [],
+		   actor: $a, artifact: "", seq_hlc: $before, node: "nodeA",
+		   body: "from before there was a key"}]}' | sign5 "$N5_DSN_A" nodeA)" || return 1
+
+	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_B" /api/sync/push "$delta" || return 1
+	want_eq "events received" "$(jqv '.received.events')" 2 || return 1
+	want_eq "events refused" "$(jqv '.refused.events')" 1 || return 1
+	want_eq "events applied" "$(jqv '.applied.events')" 1 || return 1
+	want_eq "rows in B's log for the forgery" \
+		"$(scalar5 "$N5_DSN_B" "SELECT count(*) FROM events WHERE id = '$forged'")" 0 || return 1
+	want_eq "rows for the one below the epoch" \
+		"$(scalar5 "$N5_DSN_B" "SELECT count(*) FROM events WHERE id = '$old'")" 1 || return 1
+	want_eq "and what node B says about that one" \
+		"$(scalar5 "$N5_DSN_B" "SELECT authorship FROM events WHERE id = '$old'")" attributed ||
+		return 1
+	printf 'the message a pinned peer wrote as %s was refused: %s\n' \
+		"$N5_USER_A" "$(jqv '.reasons[0]')"
+}
+
+# And the refusal is about the KEY and not about the reading: the same row, at
+# the same reading, above the same epoch, signed by alice lands and is hers, and
+# signed by somebody else's key is refused.
+#
+# A signature is not a password: a well-formed signature by the wrong key is as
+# refused as none at all.
+a_signature_that_is_not_the_principals_is_not_authorship() {
+	recall5
+	local wrong right hlc row delta
+	hlc="$((N5_ALICE_EPOCH + 131072))"
+	wrong="stranger-signed-$$-$(date +%s)"
+	right="alice-signed-$$-$(date +%s)"
+	row='{id: $i, type: "chat", project: "pb", room: "pb/bugs", thread: $i, parents: [],
+	      actor: $a, artifact: "", seq_hlc: $h, node: "nodeA", body: "the same words either way"}'
+
+	# Signed as alice by a key that is not alice's.
+	delta="$(jq -nc --arg i "$wrong" --arg a "$N5_USER_A" --argjson h "$hlc" \
+		"{artifacts: [], tasks: [], grants: [], hwm: 0, events: [$row]}" |
+		sign5_as "$N5_DSN_A" nodeA "$N5_USER_A" "$(seed_of "not $N5_USER_A")")" || return 1
+	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_B" /api/sync/push "$delta" || return 1
+	want_eq "a signature by the wrong key" "$(jqv '.refused.events')" 1 || return 1
+
+	# And by hers.
+	delta="$(jq -nc --arg i "$right" --arg a "$N5_USER_A" --argjson h "$((hlc + 65536))" \
+		"{artifacts: [], tasks: [], grants: [], hwm: 0, events: [$row]}" |
+		sign5_as "$N5_DSN_A" nodeA "$N5_USER_A" "$(principal_seed "$N5_USER_A")")" || return 1
+	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_B" /api/sync/push "$delta" || return 1
+	want_eq "a signature by hers" "$(jqv '.applied.events')" 1 || return 1
+	want_eq "and node B says whose it is" \
+		"$(scalar5 "$N5_DSN_B" "SELECT authorship FROM events WHERE id = '$right'")" authored ||
+		return 1
+	want_eq "the one the stranger signed" \
+		"$(scalar5 "$N5_DSN_B" "SELECT count(*) FROM events WHERE id = '$wrong'")" 0 || return 1
+	printf 'one delta, two keys: %s landed as hers and %s was refused\n' "$right" "$wrong"
+}
+
+# The other half of the finding: not chat as somebody, but a rewrite of what
+# somebody wrote. An artifact is mutable and a party other than its owner
+# legitimately writes parts of it - a status move, a todo's assignee - so what
+# the owner signs is what only the owner writes: what the thing is and what it
+# says. A party's status move carries that signature forward; a rewrite of the
+# body under her name cannot produce one.
+a_rewrite_of_what_somebody_wrote_is_refused() {
+	recall5
+	local id delta rewrite at
+	want_napi 200 "$N5_PORT_A" POST "$N5_TOKEN_A" /api/artifacts \
+		'{"type":"bug","title":"the drainer stops","body":"and here is how"}' || return 1
+	id="$(jqv .id)"
+	want_eq "what node A says about it" "$(jqv .authorship)" authored || return 1
+	sync_round || return 1
+	want_eq "what node B stored" \
+		"$(scalar5 "$N5_DSN_B" "SELECT authorship FROM artifacts WHERE id = '$id'")" authored ||
+		return 1
+
+	# The same row, her name, her project, one changed sentence, at a later
+	# reading - which is all last-writer-wins needs to make it the truth here
+	# and on every node downstream.
+	rewrite='{id: $i, type: "bug", project: "pa", owner_user: $a, visibility: "project",
+	          title: "the drainer stops", body: "actually it was operator error",
+	          hlc: $h, node: "nodeA", tombstone: false}'
+	# Above node B's own clock, and so above the reading the row already has
+	# there: an artifact is last-writer-wins, and a rewrite that loses its merge
+	# would be settled without being judged, which is not what is being asked.
+	at="$(forged_hlc "$N5_PORT_B")" || return 1
+	delta="$(jq -nc --arg i "$id" --arg a "$N5_USER_A" --argjson h "$at" \
+		"{events: [], tasks: [], grants: [], hwm: 0, artifacts: [$rewrite]}" |
+		sign5 "$N5_DSN_A" nodeA)" || return 1
+	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_B" /api/sync/push "$delta" || return 1
+	want_eq "artifacts refused" "$(jqv '.refused.artifacts')" 1 || return 1
+	printf 'the rewrite was refused: %s\n' "$(jqv '.reasons[0]')"
+	want_eq "what node B still holds" \
+		"$(scalar5 "$N5_DSN_B" "SELECT body FROM artifacts WHERE id = '$id'")" \
+		"and here is how" || return 1
+
+	# And an edit she signs is an edit: the rule is her key, not her row being
+	# frozen.
+	delta="$(jq -nc --arg i "$id" --arg a "$N5_USER_A" --argjson h "$((at + 65536))" \
+		"{events: [], tasks: [], grants: [], hwm: 0, artifacts: [$rewrite]}" |
+		sign5_as "$N5_DSN_A" nodeA "$N5_USER_A" "$(principal_seed "$N5_USER_A")")" || return 1
+	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_B" /api/sync/push "$delta" || return 1
+	want_eq "artifacts applied" "$(jqv '.applied.artifacts')" 1 || return 1
+	want_eq "the body she signed for" \
+		"$(scalar5 "$N5_DSN_B" "SELECT body FROM artifacts WHERE id = '$id'")" \
+		"actually it was operator error" || return 1
+	printf 'the unsigned rewrite of %s was refused and the signed one landed\n' "$id"
+}
+
 # -------------------------------------------------------------- phase 10 tui
 #
 # `flowy tui` is another client of this same API - the console's endpoints, the
@@ -13067,6 +13308,28 @@ check "a forged federation announcement is refused on merge" \
 	a_forged_federation_announcement_is_refused
 check "node A survived the announcements" kill -0 "$NODE5A_PID"
 check "node B survived the announcements" kill -0 "$NODE5B_PID"
+
+say "whose word a row is"
+check "a principal gets a signing key on the node it writes from, and the peer pins it" \
+	a_principal_gets_a_key_on_the_node_it_writes_from
+check "a message written where the key is lands on the other node as that person's own" \
+	a_message_from_the_node_holding_the_key_is_authored
+check "a pinned peer cannot speak for a principal with a key, and rows below the epoch still land" \
+	a_pinned_peer_cannot_speak_for_a_principal_with_a_key
+check "a well-formed signature by the wrong key is refused, and hers is not" \
+	a_signature_that_is_not_the_principals_is_not_authorship
+check "a rewrite of what somebody wrote is refused, and an edit they signed is not" \
+	a_rewrite_of_what_somebody_wrote_is_refused
+check "the same rules in the store, row by row" \
+	go test -count=1 -run 'TestAPinnedNodeCannotSpeakForAPrincipalWithAKey|TestARowBelowTheEpochIsStillTaken|TestAPrincipalSignedEventIsAuthored|TestTheEpochHoldsWhoeverIsCarryingTheRow|TestALocalWriteCarriesThePrincipalsSignature|TestAPartysWriteKeepsTheOwnersSignature|TestARewrittenArtifactIsRefusedAfterTheEpoch|TestAPrincipalKeyIsNotReplacedInPlace' \
+	./internal/store
+check "an authorship signature is not a node signature, and covers what its owner writes" \
+	go test -count=1 -run 'TestAnAuthorshipMessageIsNotTheRowsOwnMessage|TestAnArtifactsAuthorshipCoversTheOwnersFieldsAndNoOthers' \
+	./internal/sign
+check "the terminal draws a speaker nobody signed for as attributed" \
+	go test -count=1 -run TestASpeakerNobodySignedForIsDrawnAsAttributed ./internal/tui
+check "node A survived the authorship checks" kill -0 "$NODE5A_PID"
+check "node B survived the authorship checks" kill -0 "$NODE5B_PID"
 
 # -------------------------------------------------------------- phase 10 tui
 

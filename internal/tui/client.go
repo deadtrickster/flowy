@@ -202,7 +202,14 @@ type Event struct {
 	// a fact about what already happened and never a request: nothing here can
 	// make a message private by setting it.
 	Private bool `json:"private"`
-	Meta    struct {
+	// Authorship is what the node can say about who wrote this: "authored" when
+	// a signature made with the speaker's own key verified there, "attributed"
+	// when it did not and the row rests on the word of whichever node relayed
+	// it. It is the node's finding and never a claim on the row - see
+	// internal/store/principal.go - and the client draws it because a reader
+	// who cannot tell the two apart is the reader a pinned peer speaks to.
+	Authorship string `json:"authorship"`
+	Meta       struct {
 		ActorKind string `json:"actor_kind"`
 		ActorUser string `json:"actor_user"`
 		// ActorName is what the speaker was called when they said it, which
@@ -232,6 +239,24 @@ func (e *Event) Speaker() string {
 		return shortID(e.Meta.ActorUser) + "'s agent"
 	}
 	return shortID(e.Actor)
+}
+
+// Attributed reports whether the node could NOT verify that the speaker wrote
+// this - which is nearly every row in a fabric whose principals have no keys
+// yet, and is exactly the row a pinned peer writes under somebody else's name.
+func (e *Event) Attributed() bool { return e.Authorship != "authored" }
+
+// Named is the speaker as a terminal draws them: the name, with a ~ in front of
+// it when nothing but a node's word puts it there.
+//
+// One character, because it goes in a fixed-width column on an 80-column
+// terminal and the alternative was a word per row. What it means is in ?help,
+// beside the other marks this client draws.
+func (e *Event) Named() string {
+	if e.Attributed() {
+		return "~" + e.Speaker()
+	}
+	return e.Speaker()
 }
 
 // ChatPage is what a room read or a long poll answers with.

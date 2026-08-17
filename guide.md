@@ -232,6 +232,10 @@ else's session transcript.
 
 Two rules the surface enforces rather than suggests. Every entry carries its
 actor, taken from your token, so an entry cannot be put in another seat's mouth.
+That is this node's own doing, and across a federation it is only as good as the
+signature under it: a row whose author signed it reads as `authored`, and one
+this node cannot check reads as `attributed` - somebody's word that a seat said
+it, rather than the seat's own.
 And `refs` are ids, checked against what you may read: an id you cannot read is
 refused, and prose describing the work instead of naming it is how a worklog
 becomes a second, staler copy of the fabric rather than an index into it. Write

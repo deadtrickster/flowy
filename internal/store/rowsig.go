@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -32,9 +33,13 @@ import (
 // node_identity they can edit directly too. Verification is at the merge,
 // which is where rows arrive from somewhere else.
 
-// canonicalArtifact is the byte string an artifact's signature is over.
-func canonicalArtifact(a *Artifact) []byte {
-	return sign.CanonicalArtifact(sign.Artifact{
+// artifactView is the row as the signing package sees it. It is split out from
+// canonicalArtifact because two different signatures are made over two
+// different cuts of the same struct - the node's, over all of it, and the
+// author's, over the fields only the owner writes - and one adapter is one
+// place to forget a column rather than two.
+func artifactView(a *Artifact) sign.Artifact {
+	return sign.Artifact{
 		ID: a.ID, OwnerUser: a.OwnerUser, Project: a.Project, Visibility: a.Visibility,
 		Type: a.Type, Title: a.Title, Body: a.Body, HLC: a.HLC, Node: a.Node,
 		Tombstone: a.Tombstone,
@@ -42,7 +47,19 @@ func canonicalArtifact(a *Artifact) []byte {
 		Tags: a.Tags, UserTags: a.UserTags, Related: a.Related, FilePath: a.FilePath,
 		Fields: canonicalJSON(a.Fields), Reported: a.Reported, External: externalBytes(a.External),
 		Created: a.Created,
-	})
+	}
+}
+
+// canonicalArtifact is the byte string an artifact's signature is over.
+func canonicalArtifact(a *Artifact) []byte {
+	return sign.CanonicalArtifact(artifactView(a))
+}
+
+// canonicalArtifactAuthorship is the byte string the OWNER's signature over an
+// artifact is made against: a subset of the above, and see
+// sign.CanonicalArtifactAuthorship for why it has to be one.
+func canonicalArtifactAuthorship(principal string, a *Artifact) []byte {
+	return sign.CanonicalArtifactAuthorship(principal, artifactView(a))
 }
 
 // canonicalJSON is a jsonb column as the bytes that are signed: parsed and
@@ -150,12 +167,21 @@ func canonicalTask(t *Task) []byte {
 	})
 }
 
-func canonicalEvent(e *Event) []byte {
-	return sign.CanonicalEvent(sign.Event{
+// eventView is the row as the signing package sees it - see artifactView.
+func eventView(e *Event) sign.Event {
+	return sign.Event{
 		ID: e.ID, Artifact: e.Artifact, Thread: e.Thread, Actor: e.Actor, Type: e.Type,
 		Body: e.Body, Meta: canonicalJSON(e.Meta), Parents: e.Parents, HLC: e.SeqHLC, Node: e.Node,
 		Project: e.Project, Room: e.Room, Created: e.Created, Addressee: e.Addressee,
-	})
+	}
+}
+
+func canonicalEvent(e *Event) []byte { return sign.CanonicalEvent(eventView(e)) }
+
+// canonicalEventAuthorship is the byte string the ACTOR's signature over an
+// event is made against: the whole event, because an event is immutable.
+func canonicalEventAuthorship(principal string, e *Event) []byte {
+	return sign.CanonicalEventAuthorship(principal, eventView(e))
 }
 
 // CanonicalEventBytes is canonicalEvent, for a caller outside this package that
@@ -203,6 +229,23 @@ func SignProject(priv ed25519.PrivateKey, p *Project) {
 
 // SignEvent stamps e's signature.
 func SignEvent(priv ed25519.PrivateKey, e *Event) { e.Sig = signBytes(priv, canonicalEvent(e)) }
+
+// SignEventAs stamps the AUTHOR's signature on an event: the second of the two
+// signatures a row can carry, made with the key of the principal named in its
+// actor column rather than with any node's. See internal/store/principal.go for
+// what the two claims are and why they are never one.
+//
+// It takes the principal rather than reading e.Actor so that signing as
+// somebody the row does not name is possible to write, which is how the refusal
+// is tested.
+func SignEventAs(priv ed25519.PrivateKey, principal string, e *Event) {
+	e.AuthorSig = signBytes(priv, canonicalEventAuthorship(principal, e))
+}
+
+// SignArtifactAs stamps the OWNER's signature on an artifact.
+func SignArtifactAs(priv ed25519.PrivateKey, principal string, a *Artifact) {
+	a.AuthorSig = signBytes(priv, canonicalArtifactAuthorship(principal, a))
+}
 
 // SignSet signs every row of a delta with one key. It does not touch the node
 // column: a row says which node wrote it, and signing is not the place to
@@ -256,7 +299,84 @@ func (d *DB) signArtifact(ctx context.Context, a *Artifact) error {
 		return err
 	}
 	SignArtifact(priv, a)
-	return nil
+	return d.authorArtifact(ctx, a)
+}
+
+// authorArtifact puts the owner's own signature on a row this node is about to
+// write, when this node is the one holding that owner's key.
+//
+// It does not clear an author signature it cannot make. A status move, a todo's
+// assignee or a forge link is written by somebody who is not the owner, and the
+// signature already on the row covers none of those columns - see
+// sign.CanonicalArtifactAuthorship - so it is still the owner's signature over
+// the owner's words and it travels on. Clearing it would turn every party's
+// ordinary write into a row the owner's peers then refuse.
+func (d *DB) authorArtifact(ctx context.Context, a *Artifact) error {
+	priv, held, err := d.principalSigner(ctx, a.OwnerUser)
+	if err != nil {
+		return err
+	}
+	if held {
+		SignArtifactAs(priv, a.OwnerUser, a)
+		a.Authorship = AuthorshipAuthored
+		return nil
+	}
+	a.Authorship, err = d.authorshipHere(ctx, a.OwnerUser,
+		canonicalArtifactAuthorship(a.OwnerUser, a), a.AuthorSig)
+	return err
+}
+
+func (d *DB) signEvent(ctx context.Context, e *Event) error {
+	priv, err := d.signer(ctx)
+	if err != nil {
+		return err
+	}
+	SignEvent(priv, e)
+	return d.authorEvent(ctx, e)
+}
+
+// authorEvent puts the actor's own signature on an entry this node is about to
+// append. An event's actor is decided by the token that appended it - that is
+// what POST /api/events enforces and what checkEvent enforces at the merge - so
+// this node signing as that principal is this node saying what its own
+// credentials already said, with a key rather than with a claim.
+func (d *DB) authorEvent(ctx context.Context, e *Event) error {
+	priv, held, err := d.principalSigner(ctx, e.Actor)
+	if err != nil {
+		return err
+	}
+	if held {
+		SignEventAs(priv, e.Actor, e)
+		e.Authorship = AuthorshipAuthored
+		return nil
+	}
+	e.Authorship, err = d.authorshipHere(ctx, e.Actor, canonicalEventAuthorship(e.Actor, e), e.AuthorSig)
+	return err
+}
+
+// authorshipHere is what a local write may claim about a row it cannot sign: a
+// signature that verifies under the public key this node holds for the author,
+// or attributed.
+//
+// The second case is nearly everything today and it is not a failure. A node
+// that holds no key for a principal is in the position every node was in before
+// principal signing existed, and the mark says so rather than dressing the
+// node's own word up as the author's.
+func (d *DB) authorshipHere(ctx context.Context, author string, msg, sig []byte) (string, error) {
+	if author == "" || len(sig) == 0 {
+		return AuthorshipAttributed, nil
+	}
+	held, err := d.GetPrincipalKey(ctx, author)
+	if errors.Is(err, ErrNotFound) {
+		return AuthorshipAttributed, nil
+	}
+	if err != nil {
+		return AuthorshipAttributed, err
+	}
+	if verifyBytes(held.PublicKey, msg, sig) {
+		return AuthorshipAuthored, nil
+	}
+	return AuthorshipAttributed, nil
 }
 
 func (d *DB) signGrant(ctx context.Context, g *Grant) error {
@@ -283,15 +403,6 @@ func (d *DB) signTask(ctx context.Context, t *Task) error {
 		return err
 	}
 	SignTask(priv, t)
-	return nil
-}
-
-func (d *DB) signEvent(ctx context.Context, e *Event) error {
-	priv, err := d.signer(ctx)
-	if err != nil {
-		return err
-	}
-	SignEvent(priv, e)
 	return nil
 }
 

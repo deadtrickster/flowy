@@ -280,6 +280,13 @@ CREATE TABLE IF NOT EXISTS artifacts (
     node       text,
     tombstone  boolean DEFAULT false,
     sig        bytea,
+    -- The owner's own signature over the fields only an owner writes, and what
+    -- this node can say about it. See principal_identity: sig is the node that
+    -- wrote the bytes, author_sig is the person whose words they are, and
+    -- authorship is authored|attributed, decided here and never taken from a
+    -- payload.
+    author_sig bytea,
+    authorship text NOT NULL DEFAULT 'attributed',
     created    timestamptz DEFAULT now(),
     updated    timestamptz DEFAULT now()
 );
@@ -317,6 +324,12 @@ CREATE TABLE IF NOT EXISTS events (
     -- decides it.
     addressee text,
     sig       bytea,
+    -- The actor's own signature over the whole event, and what this node can
+    -- say about it - see the same two columns on artifacts. An event is where
+    -- the two claims come apart most sharply: the actor column is the whole of
+    -- what a message means, and a node signature says nothing about it.
+    author_sig bytea,
+    authorship text NOT NULL DEFAULT 'attributed',
     created   timestamptz DEFAULT now()
 );
 
@@ -376,6 +389,44 @@ CREATE TABLE IF NOT EXISTS node_identity (
     pinned      boolean NOT NULL DEFAULT false,
     created_hlc bigint,
     sig         bytea
+);
+
+-- Whose word a row is. One row per principal - a person or an agent - whose
+-- authorship this node can check, keyed by the id that appears in an event's
+-- actor column and an artifact's owner_user.
+--
+-- A node signature answers "which machine wrote these bytes" and was, until
+-- this table, the only signature a row carried. It is the wrong signature for
+-- "who said this": a peer whose key the operator pinned - which is what pinning
+-- is FOR, since a relay carries other people's rows - could write rows
+-- attributed to anybody at all, this node's own people included, and every
+-- surface rendered them as that person's own word. So authorship gets a key of
+-- its own, and the two claims stay apart: the node signs the envelope, the
+-- principal signs the words.
+--
+--   private_key - set only for the principals that write HERE. It is the seed
+--                 half of an ed25519 keypair, it never leaves this machine, and
+--                 nothing that replicates ever selects it. `flowy principal
+--                 keygen` writes it.
+--   epoch_hlc   - the clock reading from which this principal's rows must carry
+--                 their own signature. A row naming them, at or after it, with
+--                 no valid principal signature, is REFUSED by the merge; a row
+--                 below it is taken exactly as it always was and marked
+--                 attributed. That is the migration seam: a fabric that has
+--                 been running for months keeps every row it has, and the rule
+--                 bites from the moment a key is provisioned.
+--
+-- It is LOCAL, like tokens and node_identity's private half: no hlc, no node,
+-- no signature, and nothing replicates it. That is deliberate rather than
+-- unfinished - a principal key a peer could serve would be an authorship a peer
+-- could grant itself, which is the hole this table closes. Distribution is the
+-- operator's, out of band, exactly as a pinned node key is.
+CREATE TABLE IF NOT EXISTS principal_identity (
+    principal   text PRIMARY KEY,
+    public_key  bytea NOT NULL,
+    private_key bytea,
+    epoch_hlc   bigint NOT NULL DEFAULT 0,
+    created     timestamptz DEFAULT now()
 );
 
 -- Replication bookmarks, one row per peer node.
@@ -632,6 +683,26 @@ ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS sig bytea;
 ALTER TABLE events    ADD COLUMN IF NOT EXISTS sig bytea;
 ALTER TABLE tasks     ADD COLUMN IF NOT EXISTS sig bytea;
 ALTER TABLE grants    ADD COLUMN IF NOT EXISTS sig bytea;
+
+-- Per-principal authorship. The columns are in the CREATE TABLEs above; the
+-- ALTERs are here so a database created by an earlier phase picks them up on
+-- the next load.
+--
+-- author_sig is nullable and carries no rule of its own, exactly as sig does:
+-- the rule is at the merge, which refuses a row naming an author this node
+-- holds a key for, at or after that key's epoch, with no signature that
+-- verifies. Every row written before this existed carries no signature and is
+-- below every epoch, so nothing already in a store becomes a forgery by this
+-- node's own definition - which is what a NOT NULL here would have said.
+--
+-- authorship defaults to 'attributed' for the same reason and it is the honest
+-- default: a row this node cannot check the authorship of is one it holds on
+-- somebody's word, and it says so rather than rendering it as the named
+-- person's own.
+ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS author_sig bytea;
+ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS authorship text NOT NULL DEFAULT 'attributed';
+ALTER TABLE events    ADD COLUMN IF NOT EXISTS author_sig bytea;
+ALTER TABLE events    ADD COLUMN IF NOT EXISTS authorship text NOT NULL DEFAULT 'attributed';
 
 -- Chat addressing. A message can be directed at one principal while still being
 -- a message in the room, and the column is in the CREATE TABLE above; the ALTER

@@ -67,7 +67,12 @@ commands:
            env: DATABASE_URL, FLOWY_NODE, FLOWY_TOKEN, FLOWY_OPERATOR)
   identity this node's signing key, and the peer keys it holds
            (flowy identity | list | pin --node N --key K | keygen --node N)
-  sign     sign a replication delta read on stdin (flowy sign [--seed HEX])
+  principal
+           whose word a row is: the principal keys this node signs with and
+           checks against (flowy principal [list] | keygen --as P [--epoch N]
+           | pin --as P --key K [--epoch N])
+  sign     sign a replication delta read on stdin (flowy sign [--seed HEX]
+           [--as P --principal-seed HEX])
   version  print the version and exit
   help     print this message
 `
@@ -177,6 +182,11 @@ func main() {
 	case "identity":
 		if err := identityCmd(os.Args[2:]); err != nil {
 			fmt.Fprintf(os.Stderr, "flowy identity: %v\n", err)
+			os.Exit(1)
+		}
+	case "principal":
+		if err := principalCmd(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "flowy principal: %v\n", err)
 			os.Exit(1)
 		}
 	case "sign":

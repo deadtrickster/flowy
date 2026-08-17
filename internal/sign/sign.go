@@ -51,6 +51,12 @@ const (
 	domainEvent    = "flowy.event.v1"
 	domainIdentity = "flowy.identity.v1"
 	domainProject  = "flowy.project.v1"
+	// domainAuthorship is the second signature a row can carry, and it is a
+	// different claim from every domain above it. Those are a NODE saying "I
+	// wrote these bytes"; this one is a PRINCIPAL saying "I am the author". Two
+	// claims, two keys, and the domain is what keeps a signature made for one of
+	// them from ever counting as the other.
+	domainAuthorship = "flowy.authorship.v1"
 )
 
 // Artifact is the authenticated view of an artifacts row.
@@ -315,6 +321,65 @@ func CanonicalEvent(e Event) []byte {
 	if e.Addressee != "" {
 		m.text(e.Addressee)
 	}
+	return m.bytes()
+}
+
+// CanonicalEventAuthorship is the byte string a principal's signature over an
+// event is made against: who is claiming to have written it, and the whole of
+// the event as the node signs it, folded in as a digest.
+//
+// The whole event, because an event is immutable. The log is append-only and
+// nothing here ever rewrites a row of it, so every field of it is the author's
+// and there is nothing a later, legitimate writer could change underneath a
+// signature made now. That is exactly what is NOT true of an artifact - see
+// below.
+func CanonicalEventAuthorship(principal string, e Event) []byte {
+	m := newMessage(domainAuthorship)
+	m.text(principal)
+	m.text(domainEvent)
+	m.digest(CanonicalEvent(e))
+	return m.bytes()
+}
+
+// CanonicalArtifactAuthorship is the byte string a principal's signature over
+// an artifact is made against: the owner, and the fields only the owner writes.
+//
+// It is a SUBSET of CanonicalArtifact and the subset is the whole point. An
+// artifact row is mutable and other people legitimately write it: a party moves
+// its status, a todo's assignee lands in fields, the forge bridge stamps the
+// issue it was filed as, and each of those bumps hlc and node. A signature over
+// the full row would stop verifying the first time anybody but the owner
+// touched it - so the owner's rows would be refused by their own peers on an
+// ordinary status move, which is a federation break dressed as a security fix.
+//
+// So what the owner signs is what the owner alone may write: what the thing is,
+// what it says, whose it is and where it lives. status, fields, external,
+// reported, tombstone, hlc and node are all deliberately outside it. A party's
+// status move carries this signature forward untouched and it still verifies,
+// and a forger who rewrites the title or the body of somebody else's bug cannot
+// produce one.
+//
+// The honest limit of that, said plainly: this signature says the owner wrote
+// these words. It does not say who moved the status, and nothing here claims
+// it does - the status move is an event, and the event carries its own author's
+// signature.
+func CanonicalArtifactAuthorship(principal string, a Artifact) []byte {
+	m := newMessage(domainAuthorship)
+	m.text(principal)
+	m.text(domainArtifact)
+	m.text(a.ID)
+	m.text(a.OwnerUser)
+	m.optional(a.Project)
+	m.text(a.Visibility)
+	m.text(a.Type)
+	m.text(a.Kind)
+	m.text(a.Title)
+	m.digest([]byte(a.Body))
+	m.text(a.FilePath)
+	m.list(a.Tags)
+	m.list(a.UserTags)
+	m.list(a.Related)
+	m.moment(a.Created)
 	return m.bytes()
 }
 

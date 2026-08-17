@@ -894,6 +894,20 @@ var ErrBadReading = errors.New("store: clock reading is not believable")
 // different questions with different answers, and a peer that answers the first
 // honestly can still forge the second. Authorisation stops a peer minting
 // beyond its rights; authenticity stops it impersonating a node. Both ship.
+//
+// And there is a THIRD question, which the two above cannot answer between
+// them: did the person named as the author write it? A node signature is the
+// node's word, and mayAssert reads a pinned node's word as good enough for a
+// third party's row - which it has to, because relaying other people's rows is
+// what federation is. So a pinned peer could write rows attributed to anybody,
+// this node's own people included, and every surface rendered them as that
+// person's own word. Authorship gets its own signature, made with the
+// principal's key rather than any node's, and its own check - see authorshipOf
+// in principal.go, run in the verify step beside authentic, on both doors and
+// whatever principal is carrying the page. Being asked of every row whoever
+// carries it is the point: the old rule only looked when the row named somebody
+// other than the carrier, so a node syncing AS the impersonated principal
+// walked straight past it.
 
 // SyncApply merges a delta into this node with no principal at all, and reports
 // how many rows of each table it actually changed. A row that lost its merge -
@@ -1097,8 +1111,21 @@ func (d *DB) syncApply(ctx context.Context, p *Principal, in *SyncSet) (*SyncRes
 		rows = append(rows, &syncRow{
 			table: "artifacts", hlc: art.HLC, node: art.Node,
 			verify: func(ctx context.Context, tx *sql.Tx) (string, error) {
-				return d.authentic(ctx, tx, art.Node, canonicalArtifact(art), art.Sig,
+				why, err := d.authentic(ctx, tx, art.Node, canonicalArtifact(art), art.Sig,
 					"artifact "+art.ID)
+				if why != "" || err != nil {
+					return why, err
+				}
+				// And then the other signature, which answers the other
+				// question: the node said it wrote the bytes, and this says
+				// whether the owner said they are theirs.
+				mark, why, err := authorshipOf(ctx, tx, art.OwnerUser, "artifact "+art.ID,
+					art.HLC, canonicalArtifactAuthorship(art.OwnerUser, art), art.AuthorSig)
+				if why != "" || err != nil {
+					return why, err
+				}
+				art.Authorship = mark
+				return "", nil
 			},
 			unchanged: func(ctx context.Context, tx *sql.Tx) (bool, error) {
 				return loses(ctx, tx, "artifacts", art.ID, art.HLC, art.Node)
@@ -1136,7 +1163,21 @@ func (d *DB) syncApply(ctx context.Context, p *Principal, in *SyncSet) (*SyncRes
 		rows = append(rows, &syncRow{
 			table: "events", hlc: e.SeqHLC, node: e.Node,
 			verify: func(ctx context.Context, tx *sql.Tx) (string, error) {
-				return d.authentic(ctx, tx, e.Node, canonicalEvent(e), e.Sig, "event "+e.ID)
+				why, err := d.authentic(ctx, tx, e.Node, canonicalEvent(e), e.Sig, "event "+e.ID)
+				if why != "" || err != nil {
+					return why, err
+				}
+				// The node's word that it relayed this, then the actor's own
+				// word that they wrote it. The second is the one the log needs:
+				// a signature from a pinned relay says nothing whatever about
+				// whose name is in the actor column.
+				mark, why, err := authorshipOf(ctx, tx, e.Actor, "event "+e.ID,
+					e.SeqHLC, canonicalEventAuthorship(e.Actor, e), e.AuthorSig)
+				if why != "" || err != nil {
+					return why, err
+				}
+				e.Authorship = mark
+				return "", nil
 			},
 			unchanged: func(ctx context.Context, tx *sql.Tx) (bool, error) {
 				return eventIsHere(ctx, tx, e.ID)
@@ -1569,6 +1610,12 @@ func speaksFor(p *Principal, who string) bool {
 // see checkEventRow, where a row this principal is claiming is held to what the
 // API would have let them write, and a row a pinned node is vouching for is
 // held to where it may land.
+//
+// What it is NOT, and was read as being: an answer to who wrote the row. A
+// pinned node's word is enough to carry somebody else's row here and is not
+// enough to make the actor column true - that is authorshipOf, which has
+// already run in the verify step by the time anything below is asked. This
+// rule decides where a row may land; that one decides whose word it is.
 type provenance struct {
 	own     bool
 	vouched bool
@@ -1743,12 +1790,21 @@ func incoherentDate(created time.Time, packed int64) string {
 //     them exactly, the meta beside it does not name somebody else, the project
 //     is one they write in, and the type is not minted. That is checkEvent, and
 //     it is what POST /api/events enforces.
+//
 //   - the row is a third party's, and a node the operator pinned authored it.
 //     Then the actor column is taken as written - that is what pinning is for,
 //     and it is how alice's message reaches bob's node under alice's name - and
 //     what is checked instead is where the row lands: an event in a project
 //     this principal has no reach into is a peer writing into a corner of this
 //     node it has nothing to do with. The meta may not outrun the actor.
+//
+//     "Taken as written" is exactly as far as pinning goes, and it used to be
+//     the end of the story: a pinned peer could therefore write under anybody's
+//     name. It is no longer, because authorshipOf has already run on this row -
+//     if this node holds a key for the actor, a row at or after that key's
+//     epoch without their signature never reaches here at all, and one that
+//     does is marked attributed rather than as their own word.
+//
 //   - neither, and the event is refused. A signature says the node wrote the
 //     bytes and nothing about whether the actor column is honest, so an
 //     unpinned relay's event under somebody else's name would otherwise land
@@ -2714,10 +2770,10 @@ func applyArtifact(ctx context.Context, tx *sql.Tx, a *Artifact) (int, error) {
 		`INSERT INTO artifacts (id, type, kind, project, owner_user, title, body, discovery,
 		                        status, severity, tags, user_tags, related, visibility,
 		                        file_path, fields, hlc, node, tombstone, search, created, updated,
-		                        reported, external, sig)
+		                        reported, external, sig, author_sig, authorship)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
 		         $19, `+fmt.Sprintf(artifactSearchSQL, 20)+`, coalesce($21::timestamptz, now()), now(),
-		         $22, $23, $24)
+		         $22, $23, $24, $25, $26)
 		 ON CONFLICT (id) DO UPDATE SET
 		     type = excluded.type, kind = excluded.kind, project = excluded.project,
 		     owner_user = excluded.owner_user, title = excluded.title, body = excluded.body,
@@ -2727,6 +2783,10 @@ func applyArtifact(ctx context.Context, tx *sql.Tx, a *Artifact) (int, error) {
 		     fields = excluded.fields, hlc = excluded.hlc, node = excluded.node,
 		     tombstone = excluded.tombstone, search = excluded.search, updated = now(),
 		     reported = excluded.reported, external = excluded.external, sig = excluded.sig,
+		     -- The author's signature travels with the row and this node's own
+		     -- finding about it lands beside it: what is written here is what the
+		     -- verify step decided, never what the payload claimed.
+		     author_sig = excluded.author_sig, authorship = excluded.authorship,
 		     -- created is inside the signature now, so the stored date has to be
 		     -- the one the sig column beside it was made over: a row kept at this
 		     -- node's own date, under the author's signature over theirs, is a row
@@ -2739,7 +2799,7 @@ func applyArtifact(ctx context.Context, tx *sql.Tx, a *Artifact) (int, error) {
 		a.ID, a.Type, a.Kind, a.Project, a.OwnerUser, a.Title, a.Body, a.Discovery,
 		a.Status, a.Severity, pq.Array(a.Tags), pq.Array(a.UserTags), pq.Array(a.Related),
 		a.Visibility, a.FilePath, fields, a.HLC, a.Node, a.Tombstone, searchText(a),
-		nullTime(a.Created), a.Reported, external, a.Sig)
+		nullTime(a.Created), a.Reported, external, a.Sig, a.AuthorSig, authorshipOr(a.Authorship))
 	if err != nil {
 		return 0, fmt.Errorf("store: sync apply artifact %s: %w", a.ID, err)
 	}
@@ -2759,12 +2819,17 @@ func applyEvent(ctx context.Context, tx *sql.Tx, e *Event) (int, error) {
 	}
 	res, err := tx.ExecContext(ctx,
 		`INSERT INTO events (id, type, project, room, thread, parents, actor, artifact,
-		                     seq_hlc, node, body, meta, addressee, sig, created)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, nullif($13, ''), $14,
-		         coalesce($15::timestamptz, now()))
+		                     seq_hlc, node, body, meta, addressee, sig, author_sig, authorship,
+		                     created)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, nullif($13, ''), $14, $15,
+		         $16, coalesce($17::timestamptz, now()))
 		 ON CONFLICT (id) DO NOTHING`,
 		e.ID, e.Type, e.Project, e.Room, e.Thread, pq.Array(e.Parents), e.Actor,
-		e.Artifact, e.SeqHLC, e.Node, e.Body, meta, e.Addressee, e.Sig, nullTime(e.Created))
+		e.Artifact, e.SeqHLC, e.Node, e.Body, meta, e.Addressee, e.Sig, e.AuthorSig,
+		// This node's own finding about the row's authorship, put there by the
+		// verify step above - never the value that arrived in the payload. See
+		// syncApply, where it is set, and authorshipOf, which decides it.
+		authorshipOr(e.Authorship), nullTime(e.Created))
 	if err != nil {
 		return 0, fmt.Errorf("store: sync apply event %s: %w", e.ID, err)
 	}

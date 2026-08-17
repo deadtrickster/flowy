@@ -579,6 +579,40 @@ func TestARoomDrawsTheNameOfWhoeverSpoke(t *testing.T) {
 	}
 }
 
+// A name on a message is not the same claim as a signature under it, and the
+// room has to draw the difference.
+//
+// A node signature says which machine relayed a row and nothing about who wrote
+// it, so a peer whose key an operator pinned could put words in anybody's mouth
+// and this pane rendered them exactly like that person's own. The ~ is one
+// character because the column is 17 wide and most rows have it: what it means
+// is in ?help, beside the other marks.
+func TestASpeakerNobodySignedForIsDrawnAsAttributed(t *testing.T) {
+	m := testModel(t, NewClient("http://127.0.0.1:1", "t"))
+	signed := saidBy("ada", "she signed this one")
+	signed.Authorship = "authored"
+	relayed := saidBy("ada", "and this one she did not")
+	relayed.Authorship = "attributed"
+	m.msgs = []*Event{signed, relayed}
+	m.view = viewRooms
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	screen := m.View()
+	if row := rowWith(t, screen, signed.Body); strings.Contains(row, "~ada") {
+		t.Fatalf("a message the node verified is drawn as attributed: %q", row)
+	}
+	if row := rowWith(t, screen, relayed.Body); !strings.Contains(row, "~ada") {
+		t.Fatalf("a message nobody signed for is drawn as ada's own word: %q", row)
+	}
+	// A row from a node that has never heard of authorship carries no mark at
+	// all in the column, and that is the same answer as attributed: the client
+	// says what it can check, not what it was told.
+	old := saidBy("ada", "from before any of this")
+	if !old.Attributed() {
+		t.Fatal("a row with no authorship reads as verified")
+	}
+}
+
 // The discriminating half, and the one that covers the whole existing log:
 // every message said before the node stamped a name has none, and those rows
 // have to go on rendering exactly as they did - the tail of the actor's id, and

@@ -90,6 +90,10 @@ func serve(args []string) error {
 	peerKeys := fs.String("peer-keys", os.Getenv("FLOWY_PEER_KEYS"),
 		"comma-separated node=publickey pairs to pin, the key in hex or base64 "+
 			"(default $FLOWY_PEER_KEYS)")
+	principalKeys := fs.String("principal-keys", os.Getenv("FLOWY_PRINCIPAL_KEYS"),
+		"comma-separated principal=publickey[@epoch] pairs to pin, so that rows naming "+
+			"those principals as their author have to carry their own signature "+
+			"(default $FLOWY_PRINCIPAL_KEYS)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -143,6 +147,14 @@ func serve(args []string) error {
 		return fmt.Errorf("peer keys: %w", err)
 	} else if n > 0 {
 		log.Printf("identity: %d peer key(s) pinned by the operator", n)
+	}
+	// And the principal keys beside them, which are a different claim: a node
+	// key says which machine relayed a row, a principal key says who wrote it.
+	// See internal/store/principal.go.
+	if n, err := db.PinPrincipalsFromEnv(dialCtx, *principalKeys); err != nil {
+		return fmt.Errorf("principal keys: %w", err)
+	} else if n > 0 {
+		log.Printf("authorship: %d principal key(s) pinned by the operator", n)
 	}
 	if db.RequirePinnedPeers() {
 		log.Print("identity: rows are taken only from nodes this operator pinned " +

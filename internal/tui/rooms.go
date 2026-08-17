@@ -105,9 +105,14 @@ func (m *Model) roomsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // costs the body nothing it was not costing already. The thread pane is a third
 // of the terminal, so its column is narrower and the mark and the body still
 // have somewhere to go.
+//
+// One more than that since authorship: the column holds a ~ in front of a name
+// this node cannot check a signature for - see Event.Named - and taking that
+// character out of the name would have shortened every name in the fabric to
+// pay for a mark that is on most of them.
 const (
-	streamNameWidth = 16
-	threadNameWidth = 12
+	streamNameWidth = 17
+	threadNameWidth = 13
 )
 
 // selectedMessage is the message the cursor is on, or nil when the room is
@@ -351,7 +356,11 @@ func (m *Model) streamLines(width, height int) []string {
 		// has none - see Event.Speaker. A room of four agents where every row
 		// said CM5BYZ3W is what this column is for: the ids differ, and no
 		// reader can tell which of them is which.
-		who := e.Speaker()
+		// ...with a ~ in front of it when this node holds no signature of that
+		// speaker's own for the row - see Event.Named. A message relayed by a
+		// pinned peer under somebody else's name is drawn exactly like their own
+		// message without it, which is the whole of what that peer was buying.
+		who := e.Named()
 		// An addressed message is drawn as one and is otherwise an ordinary
 		// message in the room: the room still holds it and the same people
 		// still read it, which is why the marker goes in front of the body
@@ -469,7 +478,7 @@ func (m *Model) threadLines(width, height int) []string {
 		// a third of the terminal and the mark in front of it is what the pane
 		// is for, so the name gives way first.
 		lines = append(lines, m.theme.clip(fmt.Sprintf("%s %s %s",
-			mark, m.theme.clip(e.Speaker(), threadNameWidth), body), width))
+			mark, m.theme.clip(e.Named(), threadNameWidth), body), width))
 	}
 	return lines
 }

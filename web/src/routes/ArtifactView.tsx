@@ -145,7 +145,23 @@ export function ArtifactView() {
                 </div>
               ) : null}
               <div className="font-mono text-muted-foreground text-xs">
-                hlc {artifact.hlc} · node {artifact.node} · owner {artifact.owner_user}
+                hlc {artifact.hlc} · node {artifact.node} · owner {artifact.owner_user} ·{" "}
+                {/*
+                  Whose words these are, which the node beside it does not
+                  answer: a node signature says which machine relayed the row,
+                  not who wrote it. "attributed" is not an accusation - it is
+                  most rows, and it says this node is holding somebody's word
+                  that the owner wrote them.
+                */}
+                <span
+                  title={
+                    artifact.authorship === "authored"
+                      ? "the owner signed these words with their own key, and this node verified it"
+                      : "attributed: this node holds no signature of the owner's own for these words, so they are here on the word of the node that relayed the row"
+                  }
+                >
+                  {artifact.authorship === "authored" ? "authored" : "attributed"}
+                </span>
               </div>
             </CardContent>
           </Card>

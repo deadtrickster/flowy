@@ -40,6 +40,17 @@ type DB struct {
 	keyMu sync.Mutex
 	priv  ed25519.PrivateKey
 
+	// authorMu guards authors, which is the principal signing keys this node
+	// holds: the private half of a keypair belonging to a person or an agent
+	// rather than to this machine, read from principal_identity the first time
+	// that principal writes here and kept for the life of the process. Only the
+	// keys that were FOUND are kept - see principalSigner - because a key
+	// provisioned against a running node has to take effect on the next write
+	// and not on the next restart. It never leaves this struct, for the same
+	// reason priv does not.
+	authorMu sync.Mutex
+	authors  map[string]ed25519.PrivateKey
+
 	// requirePinned refuses a replicated row from any node whose key this
 	// node's operator has not pinned by hand, which is FLOWY_REQUIRE_PINNED_
 	// PEERS. It is a deployment's choice, so it is configuration and not a row.
@@ -336,9 +347,21 @@ type Artifact struct {
 	// Sig is the signature of the node named in Node over this row's
 	// authenticated fields - see internal/sign. It travels with the row and is
 	// what the merge on the far side checks before it looks at anything else.
-	Sig     []byte    `json:"sig,omitempty"`
-	Created time.Time `json:"created"`
-	Updated time.Time `json:"updated"`
+	Sig []byte `json:"sig,omitempty"`
+	// AuthorSig is the OWNER's own signature over the fields only an owner
+	// writes - see sign.CanonicalArtifactAuthorship. It is a different claim
+	// from Sig, made with a different key: Sig says which node wrote these
+	// bytes, this says who the words are from. A row can carry both, one, or
+	// neither.
+	AuthorSig []byte `json:"author_sig,omitempty"`
+	// Authorship is what THIS node can say about that claim: authored when a
+	// principal signature over the row verified here, attributed otherwise. It
+	// is decided on the way in - at the local write, or at the merge - and never
+	// taken from the wire, because it is this node's own finding and not
+	// something a peer gets to assert about itself.
+	Authorship string    `json:"authorship,omitempty"`
+	Created    time.Time `json:"created"`
+	Updated    time.Time `json:"updated"`
 }
 
 // InsertArtifact writes an artifact, stamping id/hlc/node when unset.
@@ -365,14 +388,15 @@ func (d *DB) InsertArtifact(ctx context.Context, a *Artifact) error {
 	err := d.sql.QueryRowContext(ctx,
 		`INSERT INTO artifacts (id, type, kind, project, owner_user, title, body, discovery,
 		                        status, severity, tags, user_tags, related, visibility,
-		                        file_path, fields, hlc, node, tombstone, search, sig, created)
+		                        file_path, fields, hlc, node, tombstone, search, sig, created,
+		                        author_sig, authorship)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
-		         $19, `+fmt.Sprintf(artifactSearchSQL, 20)+`, $21, $22)
+		         $19, `+fmt.Sprintf(artifactSearchSQL, 20)+`, $21, $22, $23, $24)
 		 RETURNING created, updated`,
 		a.ID, a.Type, a.Kind, a.Project, a.OwnerUser, a.Title, a.Body, a.Discovery,
 		a.Status, a.Severity, pq.Array(a.Tags), pq.Array(a.UserTags), pq.Array(a.Related),
 		a.Visibility, a.FilePath, fields, a.HLC, a.Node, a.Tombstone, searchText(a), a.Sig,
-		a.Created).
+		a.Created, a.AuthorSig, authorshipOr(a.Authorship)).
 		Scan(&a.Created, &a.Updated)
 	if err != nil {
 		return fmt.Errorf("store: insert artifact: %w", err)
@@ -438,8 +462,15 @@ type Event struct {
 	// see it" - by the time it is set, that question has been answered.
 	Private bool `json:"private,omitempty"`
 	// Sig is the writing node's signature over the event - see Artifact.Sig.
-	Sig     []byte    `json:"sig,omitempty"`
-	Created time.Time `json:"created"`
+	Sig []byte `json:"sig,omitempty"`
+	// AuthorSig is the ACTOR's own signature over the whole event, and
+	// Authorship is what this node can say about it - see Artifact.AuthorSig
+	// and Artifact.Authorship. An event is the row where the two claims come
+	// apart most sharply: the actor column is the whole of what a message
+	// means, and a node signature says nothing about it.
+	AuthorSig  []byte    `json:"author_sig,omitempty"`
+	Authorship string    `json:"authorship,omitempty"`
+	Created    time.Time `json:"created"`
 	// Citation is the message this one says it is about, resolved for whoever
 	// is reading - see citations.go. It is derived at read time rather than
 	// stored, exactly as Artifact.ReplacedBy is: what the row holds is a
@@ -490,11 +521,14 @@ func (d *DB) appendEvent(ctx context.Context, q execer, e *Event) error {
 	// empty string, and the signature is over the empty string either way.
 	err := q.QueryRowContext(ctx,
 		`INSERT INTO events (id, type, project, room, thread, parents, actor, artifact,
-		                     seq_hlc, node, body, meta, addressee, sig, created)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, nullif($13, ''), $14, $15)
+		                     seq_hlc, node, body, meta, addressee, sig, author_sig, authorship,
+		                     created)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, nullif($13, ''), $14, $15,
+		         $16, $17)
 		 RETURNING created`,
 		e.ID, e.Type, e.Project, e.Room, e.Thread, pq.Array(e.Parents), e.Actor,
-		e.Artifact, e.SeqHLC, e.Node, e.Body, meta, e.Addressee, e.Sig, e.Created).
+		e.Artifact, e.SeqHLC, e.Node, e.Body, meta, e.Addressee, e.Sig, e.AuthorSig,
+		authorshipOr(e.Authorship), e.Created).
 		Scan(&e.Created)
 	if err != nil {
 		return fmt.Errorf("store: append event: %w", err)

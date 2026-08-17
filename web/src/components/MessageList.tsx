@@ -144,6 +144,36 @@ export function MessageList({ events, selected, onSelect, onCite, me }: Props) {
                 >
                   {speaker(event)}
                 </span>
+                {/*
+                  Whose word this is, which is a different question from whose
+                  name is on it. "authored" means this node verified a signature
+                  made with the speaker's own key; "attributed" means it could
+                  not, and the message rests on the word of whichever node
+                  relayed it - honest, possibly, and not the speaker's own word.
+                  The distinction is drawn because it was not: a peer whose node
+                  key an operator had pinned could write messages under anybody's
+                  name and they were rendered here exactly like this person's own.
+
+                  Nearly everything is attributed until principals have keys, so
+                  the attributed mark is quiet - muted text, no border - and the
+                  verified one is the badge. Neither is hidden: a reader who
+                  cannot tell the two apart is the reader this replaces.
+                */}
+                {event.authorship === "authored" ? (
+                  <Badge
+                    variant="outline"
+                    title={`${speaker(event)} signed this with their own key, and this node verified it`}
+                  >
+                    signed
+                  </Badge>
+                ) : (
+                  <span
+                    className="text-[11px] text-muted-foreground"
+                    title="attributed: this node holds no signature of the speaker's own for this message, so it rests on the word of the node that relayed it"
+                  >
+                    attributed
+                  </span>
+                )}
                 {event.addressee ? (
                   <Badge variant="outline">to {forMe ? "you" : shortId(event.addressee, 8)}</Badge>
                 ) : null}

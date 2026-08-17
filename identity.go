@@ -241,6 +241,10 @@ func signCmd(args []string) error {
 	withIdentity := fs.Bool("identity", false,
 		"put the signing node's own self-signed identity on the delta, the way a page from "+
 			"that node carries it")
+	as := fs.String("as", "",
+		"also sign, as this principal, every row of the delta that names them as its author")
+	principalSeedHex := fs.String("principal-seed", "",
+		"32 byte hex seed of that principal's key; --as names who, this is what signs")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -259,6 +263,12 @@ func signCmd(args []string) error {
 		return err
 	}
 	store.SignSet(priv, &set)
+	// The authorship signature goes on after the node one, because it is made
+	// over the row as it will travel - dates and all - and SignSet is what
+	// dates a row that arrived without one.
+	if err := signAuthorship(&set, *as, *principalSeedHex); err != nil {
+		return err
+	}
 	if *withIdentity {
 		id, _, err := store.NewIdentity(*node, priv.Seed())
 		if err != nil {
@@ -275,6 +285,42 @@ func signCmd(args []string) error {
 		return err
 	}
 	fmt.Println(string(out))
+	return nil
+}
+
+// signAuthorship puts a principal's own signature on the rows of a delta that
+// name them as their author - the second of the two signatures a row can carry.
+//
+// It is `flowy sign --as P --principal-seed S`, and it is the same tool as the
+// rest of this file: it makes a delta a node will take, and - by signing as the
+// wrong principal, or over words that were then changed - the deltas a node
+// must refuse.
+func signAuthorship(set *store.SyncSet, as, seedHex string) error {
+	if as == "" && seedHex == "" {
+		return nil
+	}
+	if as == "" || seedHex == "" {
+		return errors.New("--as and --principal-seed go together: one names the author, " +
+			"the other is the key that signs")
+	}
+	seed, err := principalSeed(seedHex)
+	if err != nil {
+		return err
+	}
+	priv, err := store.PrincipalKeyFromSeed(seed)
+	if err != nil {
+		return err
+	}
+	for _, e := range set.Events {
+		if e.Actor == as {
+			store.SignEventAs(priv, as, e)
+		}
+	}
+	for _, a := range set.Artifacts {
+		if a.OwnerUser == as {
+			store.SignArtifactAs(priv, as, a)
+		}
+	}
 	return nil
 }
 

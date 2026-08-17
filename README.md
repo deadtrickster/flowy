@@ -68,6 +68,18 @@ operator pin or trust-on-first-use, a node's key never changes over the wire,
 and `FLOWY_REQUIRE_PINNED_PEERS` narrows a deployment to nodes its operator
 named by hand.
 
+That signature says which machine relayed a row and nothing about who wrote it,
+so **rows are also signed by the principal who authored them**: a second key,
+belonging to a person or an agent rather than to a machine, and a per-principal
+epoch from which a row naming them without their signature is refused. Pinning a
+peer is agreeing to carry what it relays, which is what federation is - it was
+being read as agreeing to whatever it said about who wrote what, and a pinned
+peer could therefore write chat as your alice, in alice's room. Every artifact
+and event now says which of the two it is, `authored` or `attributed`, and no
+surface renders the second as that person's own word. What this buys is exact
+and worth stating plainly: the trust boundary moves from *any pinned node* to
+*the one node holding that principal's key*. See *Whose word a row is*.
+
 Phase 7 is the file layer: **`flowy fuse` mounts a principal's memory as files,
 so an agent writes memory where it already writes files**. The path is the
 scope - `/<project>/<user>/<type>/<id>.md`, with `_personal` for the floor -
@@ -216,6 +228,7 @@ both empty by default. See [The security fixes](#the-security-fixes).
 | `flowy sync` | replicate with a peer: `--peer <url> --token <t>`, pull then push |
 | `flowy traces` | collect one trace from this node and its peers: `--trace <id> [--peer <url>,...]` |
 | `flowy identity` | this node's signing key, the keys it holds, and how a key gets in |
+| `flowy principal` | whose word a row is: the principal keys this node signs with and checks against |
 | `flowy sign` | sign a replication delta read on stdin |
 | `flowy version` | build version |
 | `flowy help` | usage |
@@ -290,6 +303,32 @@ by this node's stored key, or by the key a `--seed` makes. It leaves the `node`
 column of each row exactly as it found it, because a row says which node wrote
 it and signing is not the place to decide that. `--identity` puts the signer's
 own self-signed identity on the delta, the way a page from that node carries it.
+
+`flowy principal` is the same decision about a different subject - not which
+machine wrote the bytes, but who wrote the words. See *Whose word a row is*
+below for what the two signatures are and why pinning a node was never an answer
+to the second question:
+
+| command | what it does |
+| --- | --- |
+| `flowy principal` | every principal key this node holds, with its epoch and whether the private half is here |
+| `flowy principal keygen --as P [--seed HEX] [--epoch N]` | mint P a keypair here, and sign what P writes here with it |
+| `flowy principal pin --as P --key K [--epoch N]` | record P's public key and the reading their rows must carry it from |
+
+```sh
+# on the node alice works from
+flowy principal keygen --as u-alice
+{"epoch":117109652390084608,"local":true,"principal":"u-alice","public_key":"52de6e96...eab851"}
+
+# on every node that receives her rows
+flowy principal pin --as u-alice --key 52de6e96...eab851 --epoch 117109652390084608
+```
+
+`flowy sign --as P --principal-seed HEX` signs the rows of a delta that name P
+as their author with P's key as well as with the node's. It is a test's tool
+rather than an operator's, like the rest of `flowy sign`: it is how a check
+hands a node a row it will take as somebody's own word, and - by signing with
+the wrong key - one it must refuse.
 
 `flowy fuse` mounts one principal's memory, and takes the token that says
 whose:
@@ -1746,12 +1785,99 @@ rule on both merge doors instead of two different partial ones. Federation
 between two pinned nodes is unaffected; a relay whose key merely arrived on a
 page can hand over only rows the carrier could have written itself.
 
-**Pinning a node means trusting everything it says about who did what, including
-about your own users.** A pinned peer can serve rows naming your own users as
-their author - an artifact owned by one of them, a message under their name, a
-share they are said to have given - and those rows are applied, at either merge
-door, because that is exactly what pinning it said. So pin only nodes whose
-operator you trust with your users' identities.
+**Pinning a node is agreeing to carry what it relays. It is not agreeing to what
+it says about who wrote what** - and until per-principal signing those were the
+same sentence. A pinned peer could serve rows naming anybody at all as their
+author, this node's own users included - an artifact owned by one of them, a
+message under their name, a rewrite of a bug one of them wrote - and every one
+of them was applied at either merge door and rendered as that person's own word.
+That is closed for principals whose signing key this node holds, and only for
+those; see the next section, which also says exactly how far it goes.
+
+### Whose word a row is: per-principal signing
+
+A row now carries two signatures, and they are two different claims made with
+two different keys:
+
+| | says | signed with |
+| --- | --- | --- |
+| `sig` | *this node relayed these bytes, unaltered* | the node's key, from `node_identity` |
+| `author_sig` | *I wrote this* | the principal's key, from `principal_identity` |
+
+Never conflated. The node signature was the only one there was, so the merge
+checked it and then believed what the row said in its `actor` or `owner_user`
+column - which is a claim the node signature says nothing whatever about.
+
+**The epoch is what makes this deployable.** Every principal this node holds a
+key for carries one: a clock reading, from which their rows must be signed. A
+row naming them as its author, at or after that reading, that does not carry a
+signature of theirs, is **refused** at both merge doors with the reason. A row
+below it is taken exactly as it always was and marked attributed. So a fabric
+that has been running for months keeps every row it has, and the rule bites for
+one principal, from the reading their key was made at, and not one reading
+earlier. An earlier attempt at this finding refused any incoming row authored by
+one of this node's own users; it took 28 federation checks down with it, because
+**shared identity across nodes is what this federation is for** - the same
+person legitimately exists on several nodes - and it was reverted. This rule is
+not about whose user it is. It is about whether the author signed.
+
+The check runs in the merge's verify step, beside the node-signature check, and
+it is asked of **every row whatever principal is carrying the page, including
+none at all**. That matters: the old provenance rule only looked at who was
+vouching when a row named somebody *other* than the carrier, so a node syncing
+*as* the impersonated principal walked past it with everything.
+
+**AUTHORED or ATTRIBUTED.** Every artifact and event carries `authorship`, which
+is this node's own finding and never a value off the wire: `authored` when a
+principal signature verified here, `attributed` when it did not. On a message
+the console draws a `signed` badge for the first and the word *attributed* for
+the second, and the TUI puts a `~` in front of the speaker's name (`?help` says
+so); an artifact says which it is in the footer beside its node and its owner.
+Nearly everything is attributed until principals have keys, and that is honest
+rather than alarming - it says this node is holding somebody's word for it.
+
+**What an artifact's author signature covers is a subset of the row**, and it
+has to be. An artifact is mutable and other people legitimately write parts of
+it: a party moves the status, a todo's assignee lands in `fields`, the forge
+bridge stamps the issue it was filed as. A signature over the whole row would
+stop verifying the first time anybody but the owner touched it, and the owner's
+peers would then refuse an ordinary status move - a federation break dressed as
+a security fix. So the owner signs what only the owner writes: id, owner,
+project, visibility, type, kind, title, body, file path, tags, created. A
+party's status move carries that signature forward intact; a rewrite of the
+words under somebody else's name cannot produce one. An event is signed whole,
+because the log is append-only and nothing ever rewrites a row of it.
+
+**Provisioning is local and out of band**, which is the same shape as a pinned
+node key and for the same reason - a principal key a relay could serve would be
+an authorship a relay could grant itself:
+
+| | |
+| --- | --- |
+| `flowy principal keygen --as P` | on the node P writes from. The private half is written there and nowhere else, and that node signs what P writes |
+| `flowy principal pin --as P --key K --epoch N` | on every node that receives P's rows. It can check P's rows and cannot write one |
+| `FLOWY_PRINCIPAL_KEYS` | `principal=key@epoch`, comma separated, the same decision made at startup |
+
+Both default the epoch to this node's clock now. A second, different key for a
+principal already here is refused, as a node key is: **rotation and key
+distribution are out of scope.**
+
+**BE CLEAR ABOUT WHAT THIS BUYS.** Not "forgery is now impossible". The trust
+boundary moves from *any pinned node* to *the one node holding that principal's
+key*. That node can still write anything at all as them - that is what holding
+the key means - and a principal with no key provisioned is exactly where every
+principal was before: their rows rest on the word of whichever node relayed
+them, and the store now says so on every row instead of leaving the reader to
+assume otherwise.
+
+Two gaps, named rather than implied. A **pre-epoch** artifact modified after the
+epoch by a party on a node that does not hold the owner's private key gets a
+reading above the epoch with no signature anywhere that covers it, and the
+owner's peers refuse that write; provisioning the key on the nodes a principal
+works from is the answer, and it is the trust-boundary sentence again. And
+`author_sig` is **outside** the node signature, so a relay can strip it: that
+turns a row into a refusal or into an attributed one, never into somebody
+else's word, which is the direction a stripped field should fail in.
 
 ## Announcements, system agents and the quiesce protocol
 
