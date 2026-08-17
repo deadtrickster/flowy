@@ -57,11 +57,39 @@ var terminalStatus = map[string]bool{
 	statusDuplicate: true,
 }
 
-// lifecycleTypes are the artifact types that have a lifecycle at all. A
-// transcript has no status to move and a memory item's status is its own thing -
-// mem_write uses it to mark a todo done - so neither is dragged into this.
+// lifecycleTypes are the artifact types that move through THIS workflow. A
+// transcript has no status to move, and a queue item has a lifecycle of its own
+// - todo, active, done, with reopening - so it is not dragged through the issue
+// line. See store.SetTodoStatus, and queueStatusMove below for the door.
+//
+// It used to say a memory has no lifecycle at all, and that sentence was the
+// defect: a todo is a memory item, and the one artifact whose entire purpose is
+// to be finished was the one that could not be moved. What was missing was never
+// a type. It was a verb and a vocabulary, and the vocabulary the queue already
+// reads is not this one.
 var lifecycleTypes = map[string]bool{
 	"bug": true, "feature": true, "note": true, "task": true,
+}
+
+// nextQueueStatuses is everywhere a queue item at from may go: the other two.
+//
+// The current one is left out because this is what a dropdown is drawn from and
+// a move to where it already is changes nothing a reader could see - the verb
+// takes a restatement (it is somebody saying the work still stands) but a
+// console offering it as a choice would be offering a no-op.
+//
+// Nothing is terminal here. Done is a claim about the work, and work that turns
+// out not to be done is REOPENED rather than refiled - the trail of what
+// actually happened to it is the thing a fresh row would lose.
+func nextQueueStatuses(from string) []string {
+	out := []string{}
+	for _, s := range store.QueueStatuses {
+		if s != from {
+			out = append(out, s)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // knownStatus reports whether s is one of the seven.
@@ -119,7 +147,14 @@ type statusRequest struct {
 // the person it was assigned to as well as the project it lives in. That is the
 // point of the assignment: the share is what makes them a participant, and a
 // participant who cannot say "I am working on this" has to ask somebody else to
-// say it for them.
+// say it for them. A queue item is the same rule and the same reason - read
+// permission and nothing else - which is the ruling that made assignment
+// collaborative, one field along. See store.SetTodoStatus.
+//
+// WHICH LIFECYCLE a row is in is a property of the row, so the status word is
+// checked against that lifecycle and not against the union of both: this door
+// used to check the word first and answer 400 for "done" on a todo before it had
+// looked at what it was holding. The read moved above it for that reason.
 //
 // POST /api/artifact/{id}/status  {status}
 func (s *server) handleArtifactStatus(w http.ResponseWriter, r *http.Request) {
@@ -133,11 +168,6 @@ func (s *server) handleArtifactStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	to := strings.TrimSpace(req.Status)
-	if !knownStatus(to) {
-		writeJSON(w, http.StatusBadRequest, errorBody(
-			"status must be one of open, triaged, in-progress, in-review, done, wont-fix, duplicate"))
-		return
-	}
 
 	art, err := s.db.ReadArtifact(ctx, p, id, false)
 	if errors.Is(err, store.ErrNotFound) {
@@ -148,9 +178,22 @@ func (s *server) handleArtifactStatus(w http.ResponseWriter, r *http.Request) {
 		serverError(w, r, err)
 		return
 	}
+	// The queue's own lifecycle, and its own verb. Everything this handler does
+	// below - the line, the terminal states, the trail event - is the issue
+	// workflow's, and a todo is not in it.
+	if store.IsQueueItem(art) {
+		s.queueStatusMove(w, r, art, to)
+		return
+	}
+	if !knownStatus(to) {
+		writeJSON(w, http.StatusBadRequest, errorBody(
+			"status must be one of open, triaged, in-progress, in-review, done, wont-fix, duplicate"))
+		return
+	}
 	if !lifecycleTypes[art.Type] {
 		writeJSON(w, http.StatusBadRequest,
-			errorBody("a "+art.Type+" has no lifecycle; bug, feature, note and task do"))
+			errorBody("a "+whatItIs(art)+" has no lifecycle; bug, feature, note and task do, "+
+				"and a queue item has one of its own ("+strings.Join(store.QueueStatuses, ", ")+")"))
 		return
 	}
 
@@ -180,6 +223,40 @@ func (s *server) handleArtifactStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"artifact": art, "event": event})
 }
 
+// whatItIs is how a refusal names the row it refused: the type, narrowed by the
+// kind when it has one. "a memory has no lifecycle" was true of a note and false
+// of a todo, and told the reader of the sentence which of the two they were
+// holding either way.
+func whatItIs(art *store.Artifact) string {
+	if art.Kind != "" {
+		return art.Type + "/" + art.Kind
+	}
+	return art.Type
+}
+
+// queueStatusMove is this door for a queue item: the same route, the same
+// request body and the same answer, over the queue's own vocabulary and the
+// queue's own verb.
+//
+// It is four lines because the rules are in the store, which is the shape the
+// assignment surface already has and for the same reason: an operator clicking
+// "done" in the console, an agent closing its own work over MCP and a drainer
+// posting here must not be able to reach three ideas of when work is finished.
+// store.SetTodoStatus is the only thing in this program that moves one.
+//
+// The answer is {artifact, event}, which is what this route has always answered
+// with - the console reads one shape whichever lifecycle the row is in.
+func (s *server) queueStatusMove(
+	w http.ResponseWriter, r *http.Request, art *store.Artifact, to string,
+) {
+	art, event, err := s.db.SetTodoStatus(r.Context(), principalOf(r), art.ID, to)
+	if err != nil {
+		writeQueueError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"artifact": art, "event": event})
+}
+
 // handleArtifactHistory is the trail: every status move on this artifact, in
 // order, with the parent links that chain them.
 //
@@ -204,15 +281,26 @@ func (s *server) handleArtifactHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	events, err := s.db.ArtifactEvents(ctx, art.ID, statusEventType)
+	// A queue item's trail is its own entries, in its own vocabulary. Reading the
+	// issue workflow's type here would answer "no moves" for a todo that has been
+	// closed and reopened twice - a history that is empty because it was asked
+	// the wrong question, which reads exactly like a history that is empty.
+	eventType, at := statusEventType, statusOf(art)
+	next := nextStatuses(at)
+	if store.IsQueueItem(art) {
+		eventType, at = store.EventTodoStatus, store.TodoStatusOf(art)
+		next = nextQueueStatuses(at)
+	}
+
+	events, err := s.db.ArtifactEvents(ctx, art.ID, eventType)
 	if err != nil {
 		serverError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"artifact": art.ID,
-		"status":   statusOf(art),
-		"next":     nextStatuses(statusOf(art)),
+		"status":   at,
+		"next":     next,
 		"events":   events,
 	})
 }

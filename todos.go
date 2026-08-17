@@ -183,9 +183,19 @@ func (s *server) handleRoomTodoRaise(w http.ResponseWriter, r *http.Request) {
 	}
 	// The status a queue reads: active, todo, done. An unstated one is todo -
 	// raising something is saying it has to happen, not that anybody started.
-	status := strings.TrimSpace(req.Status)
-	if status == "" {
-		status = todoKind
+	//
+	// A stated one goes through the same door every other write of a queue status
+	// goes through, which is what keeps the vocabulary one vocabulary: a row
+	// raised as "finished" here would be a todo that nothing downstream counts as
+	// done, and the refusal it gets from every other surface would arrive a day
+	// later. See store.NormalizeTodoStatus.
+	status := store.TodoStatus
+	if strings.TrimSpace(req.Status) != "" {
+		status, err = store.NormalizeTodoStatus(req.Status)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, errorBody(err.Error()))
+			return
+		}
 	}
 
 	fields, err := json.Marshal(withRoom(nil, room, req.Message))

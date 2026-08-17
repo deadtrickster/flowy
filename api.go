@@ -489,6 +489,11 @@ var mintedTypes = map[string]bool{
 	// handover that never happened, claimed about work the writer may not be able
 	// to see. See store.AssignTodo.
 	store.EventTodoAssign: true,
+	// And a queue move, which is the same argument about the other half of the
+	// metadata: "this is done" is the claim the whole queue is drained on, and one
+	// typed by hand would be a closure with none of the verb's refusals asked and
+	// nothing on the row to match it. See store.SetTodoStatus.
+	store.EventTodoStatus: true,
 }
 
 // handleAppendEvent appends to the log. The log is append-only: there is no

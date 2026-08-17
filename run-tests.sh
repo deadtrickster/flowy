@@ -4162,6 +4162,250 @@ mem_write_refuses_an_update_it_will_not_make() {
 	printf 'refused as an error with a code, twice, and the item is as its author left it\n'
 }
 
+# --------------------------------------------------------------- a todo finishes
+#
+# The other half of the same ruling. Assignment was made collaborative and
+# COMPLETION was left private, and the shape of what that cost is why these
+# checks are written the way they are: an agent built and deployed a pane, the
+# row had been raised by somebody else, and the agent got 403 at one door and
+# "belongs to somebody else" at the other - so finished work went on advertising
+# itself as open and the queue produced five duplicated builds in a day.
+#
+# STATUS IS A CLAIM ABOUT THE WORK AND NOT ABOUT THE TEXT, so read permission is
+# the whole bar, exactly as it is for who is carrying the item. Every check below
+# drives a principal who did NOT raise the todo, and the last one is the pair
+# that says what changes hands and what does not: the same seat, the same item,
+# refused on the body and allowed on the status.
+#
+# Its own room and its own title, because the item is closed, reopened and closed
+# again here, which is not a state to leave in a room another check reads.
+ROOM_CLOSE="closing"
+CLOSE_TODO="ship the linear-thread pane"
+CLOSE_BODY="OWNER: a-bench"
+readonly ROOM_CLOSE CLOSE_TODO CLOSE_BODY
+
+# THE ONE THAT MATTERS. A principal who did not raise a todo can move it through
+# its lifecycle, at both doors, and the item stays its author's in every other
+# respect.
+#
+# The status route goes first because that is the door that could not do it at
+# all: it answered "a memory has no lifecycle; bug, feature, note and task do"
+# for the one artifact whose entire purpose is to be finished. Then the operator
+# closes it over MCP, so the two doors are shown writing one answer that the
+# other reads back - the property that makes them one implementation rather than
+# two that agree today.
+a_todo_is_closed_by_somebody_who_did_not_write_it() {
+	recall
+	api POST "$TOKEN_A" "/api/chat/$ROOM_CLOSE/todo" \
+		"$(jq -nc --arg t "$CLOSE_TODO" --arg b "$CLOSE_BODY" '{title: $t, body: $b}')" || return 1
+	want_eq "raise status" "$API_STATUS" 200 || return 1
+	local id
+	id="$(jqv .item.id)"
+	remember CLOSE_ID "$id"
+	want_eq "raised open" "$(jqv .item.status)" todo || return 1
+
+	# The operator: a second person in the project, who wrote none of this and
+	# cannot rewrite a word of it.
+	api POST "$TOKEN_OP" "/api/artifact/$id/status" '{"status": "active"}' || return 1
+	want_eq "picked up" "$API_STATUS" 200 || return 1
+	want_eq "the row moved" "$(jqv .artifact.status)" active || return 1
+	want_eq "and it left an entry" "$(jqv .event.type)" todo.status || return 1
+	want_eq "naming both ends" "$(jqv .event.body)" "todo->active" || return 1
+
+	# The second door: mem_write with nothing on it but the status. This is the
+	# call that answered "belongs to somebody else" for everybody but the author.
+	want_tool mem_write "$TOKEN_OP" "{\"id\": \"$id\", \"status\": \"done\"}" || return 1
+	want_eq "closed over MCP" "$(tv .item.status)" "done" || return 1
+
+	# What the AUTHOR reads. A closure moves one column and takes nothing over.
+	api GET "$TOKEN_A" "/api/artifact/$id" || return 1
+	want_eq "the author read of where it is" "$(jqv .status)" "done" || return 1
+	want_eq "still its author item" "$(jqv .owner_user)" "$USER_A" || return 1
+	want_eq "with the title its author gave it" "$(jqv .title)" "$CLOSE_TODO" || return 1
+	want_eq "and the body its author wrote" "$(jqv .body)" "$CLOSE_BODY" || return 1
+	printf 'the operator finished work they did not file, over both doors\n'
+}
+
+# Read permission is the bar, and it is a real bar. A principal who cannot read
+# the todo is refused at both doors and told exactly what a read of the id would
+# have told them - nothing about the row - and nothing moves.
+#
+# The last two are the caller mistakes that have to be loud rather than quiet: an
+# id that is not here, and a word that is not a status. A queue holding
+# "finished" beside "done" is a queue where half the dependencies are satisfied
+# and nothing says why.
+closing_a_todo_you_cannot_read_is_refused() {
+	recall
+	local id="$CLOSE_ID"
+
+	want_status 404 POST "$TOKEN_B" "/api/artifact/$id/status" '{"status": "todo"}' || return 1
+	want_tool_fails mem_write "$TOKEN_B" "{\"id\": \"$id\", \"status\": \"todo\"}" \
+		"no such memory item" || return 1
+
+	want_status 404 POST "$TOKEN_A" "/api/artifact/01HNOSUCHTODO000000000000/status" \
+		'{"status": "done"}' || return 1
+	want_status 400 POST "$TOKEN_OP" "/api/artifact/$id/status" '{"status": "finished"}' || return 1
+	case "$API_BODY" in
+	*"active, todo, done"*) ;;
+	*)
+		printf 'the refusal does not say what a status may be: %s\n' "$API_BODY" >&2
+		return 1
+		;;
+	esac
+	want_tool_fails mem_write "$TOKEN_OP" "{\"id\": \"$id\", \"status\": \"finished\"}" \
+		"is not a status a queue item has" || return 1
+
+	# And it is still where it was. A refusal that wrote the status and then said
+	# no would be this round own failure, from the other end.
+	api GET "$TOKEN_A" "/api/artifact/$id" || return 1
+	want_eq "still where it was" "$(jqv .status)" "done" || return 1
+	api GET "$TOKEN_A" "/api/artifact/$id/history" || return 1
+	want_eq "and nobody added an entry" \
+		"$(printf '%s' "$API_BODY" | jq --arg b "$USER_B" \
+			'[.events[] | select(.actor == $b)] | length')" 0 || return 1
+	printf 'B was refused at both doors and the queue did not move\n'
+}
+
+# move_of FROM TO - the entry in the last history answer for that one move, and
+# a failure when the trail does not hold it.
+#
+# The trail is read by WHICH MOVE each entry is rather than by position, for the
+# reason claim_of is read by actor: the doors this todo was moved through are two
+# PROCESSES - `flowy serve` and `flowy mcp`, each holding a clock of its own - so
+# which of two moves a millisecond apart sorts first is those two clocks'
+# business rather than this surface's. That the entries append and the latest
+# wins is asked where it is one clock's question and has one answer: see the
+# store check beside this one, TestAClosedTodoIsReopenedAndTheLogKeepsBoth.
+#
+# Every move this todo makes is a distinct pair, which is what makes the pair an
+# address: picked up (todo->active), finished (active->done), reopened
+# (done->todo), finished again (todo->done).
+move_of() {
+	local entry
+	entry="$(printf '%s' "$API_BODY" | jq -c --arg f "$1" --arg t "$2" \
+		'first(.events[] | select(.meta.from == $f and .meta.status == $t)) // empty')"
+	if [ -z "$entry" ]; then
+		printf 'the trail holds no %s->%s move:\n%s\n' "$1" "$2" \
+			"$(printf '%s' "$API_BODY" | jq -c '[.events[].body]')" >&2
+		return 1
+	fi
+	printf '%s' "$entry"
+}
+
+# A closure says WHO made it and WHEN, which is the whole reason it is an event
+# and not a field write. A column records THAT something changed; the log says
+# the operator picked this up and an agent closed it, and that somebody reopened
+# it afterwards because it was not done after all.
+#
+# The trail is the queue own vocabulary, not the issue workflow. Reading the
+# other type here would answer "no moves" for a todo that has been closed twice,
+# which reads exactly like a todo nobody has touched.
+a_closure_records_who_made_it_and_a_reopen_appends() {
+	recall
+	local id="$CLOSE_ID" pickup closure reopen refinish
+
+	api GET "$TOKEN_A" "/api/artifact/$id/history" || return 1
+	want_eq "the trail is the queue own" \
+		"$(jqv '[.events[].type] | unique | join(",")')" todo.status || return 1
+	want_eq "both moves are in it" "$(jqv '.events | length')" 2 || return 1
+	want_eq "where it is now" "$(jqv .status)" "done" || return 1
+	# Nothing is terminal here: work that was called done and was not is reopened
+	# rather than refiled, and the console draws that list rather than keeping its
+	# own copy of the rule.
+	want_eq "and where it may go from there" "$(jqv '.next | join(",")')" "active,todo" || return 1
+
+	pickup="$(move_of todo "active")" || return 1
+	closure="$(move_of active "done")" || return 1
+	want_eq "picked up by the operator" "$(claimv "$pickup" .meta.actor_user)" "$USER_OP" || return 1
+	want_eq "as a person" "$(claimv "$pickup" .meta.actor_kind)" user || return 1
+	said_when "the pick-up" "$(claimv "$pickup" .created)" || return 1
+	want_eq "closed by the operator too" "$(claimv "$closure" .meta.actor_user)" "$USER_OP" || return 1
+	said_when "the closure" "$(claimv "$closure" .created)" || return 1
+
+	# Reopened. This is the case a lifecycle with a terminal state cannot express,
+	# and the one the room asked for by name.
+	want_tool mem_write "$TOKEN_OP" "{\"id\": \"$id\", \"status\": \"todo\"}" || return 1
+	want_eq "open again" "$(tv .item.status)" todo || return 1
+	# And the author closing their own item leaves an entry as well: a status that
+	# sometimes has a claim behind it and sometimes does not is a log that cannot
+	# answer the question it exists for.
+	want_tool mem_write "$TOKEN_A" "{\"id\": \"$id\", \"status\": \"done\"}" || return 1
+
+	api GET "$TOKEN_A" "/api/artifact/$id/history" || return 1
+	want_eq "four moves now" "$(jqv '.events | length')" 4 || return 1
+	want_eq "and it is closed again" "$(jqv .status)" "done" || return 1
+	reopen="$(move_of "done" todo)" || return 1
+	refinish="$(move_of todo "done")" || return 1
+	want_eq "reopened by the operator" "$(claimv "$reopen" .meta.actor_user)" "$USER_OP" || return 1
+	want_eq "and the author own write is in the trail too" \
+		"$(claimv "$refinish" .meta.actor_user)" "$USER_A" || return 1
+	# An override APPENDS: the first closure is still there with the seat that
+	# made it, so "this was called done on friday" stays answerable.
+	want_eq "both closures are in it" \
+		"$(printf '%s' "$API_BODY" | jq '[.events[] | select(.meta.status == "done")] | length')" \
+		2 || return 1
+
+	# And an entry is minted: the refusal that makes it worth reading is on the
+	# verb, so one handed in through the generic event door would be a closure
+	# nobody made about work that never moved.
+	want_status 403 POST "$TOKEN_A" /api/events \
+		"$(jq -nc --arg i "$id" --arg r "$ROOM_CLOSE" '{type: "todo.status", room: $r,
+		   artifact: $i, body: "done->todo", meta: {status: "todo", from: "done"}}')" || return 1
+	api GET "$TOKEN_A" "/api/artifact/$id/history" || return 1
+	want_eq "so the forged move is not in the trail" "$(jqv '.events | length')" 4 || return 1
+	printf 'four moves by three seats, each saying who and when; a forged one refused\n'
+}
+
+# THE PAIR THAT SAYS WHERE THE LINE IS. The same seat, the same item: refused on
+# the words, allowed on the queue metadata.
+#
+# A stranger may say "this is done"; they may not rewrite what you wrote. And a
+# write that states both is refused ENTIRELY rather than half-applied - a success
+# envelope that changed something other than what it was asked to is the same lie
+# as one that changed nothing, and this project has paid for that lie seven times
+# in a day.
+a_stranger_may_close_a_todo_and_may_not_rewrite_it() {
+	recall
+	local id="$CLOSE_ID"
+
+	mcp tools/call "$TOKEN_OP" \
+		"$(jq -nc --arg i "$id" '{name: "mem_write",
+		   arguments: {id: $i, status: "todo", body: "rewritten by somebody else"}}')" || return 1
+	want_eq "no result envelope at all" "$(rv '.result // "none"')" none || return 1
+	want_eq "a protocol error with a code" "$(rv .error.code)" -32003 || return 1
+	case "$(rv .error.message)" in
+	*"body is not yours to change"*) ;;
+	*)
+		printf 'the refusal does not say what it refused: %s\n' "$(rv .error.message)" >&2
+		return 1
+		;;
+	esac
+
+	# Neither half landed, including the half that would have been allowed on its
+	# own. Nothing here ever writes part of what it was asked for.
+	api GET "$TOKEN_A" "/api/artifact/$id" || return 1
+	want_eq "the body its author wrote" "$(jqv .body)" "$CLOSE_BODY" || return 1
+	want_eq "and the status it had" "$(jqv .status)" "done" || return 1
+
+	want_tool_fails mem_write "$TOKEN_OP" \
+		"$(jq -nc --arg i "$id" '{id: $i, title: "retitled by a stranger"}')" \
+		"not yours to change" || return 1
+	# A write that names nothing it is allowed to move is an error rather than a
+	# success that changed nothing.
+	want_tool_fails mem_write "$TOKEN_OP" "{\"id\": \"$id\"}" \
+		"which piece of the queue metadata" || return 1
+
+	# And the discriminating half: the status alone, by the same seat that was
+	# just refused, goes through.
+	want_tool mem_write "$TOKEN_OP" "{\"id\": \"$id\", \"status\": \"active\"}" || return 1
+	want_eq "the stranger moved the queue metadata" "$(tv .item.status)" active || return 1
+	want_eq "and left the words alone" "$(tv .item.title)" "$CLOSE_TODO" || return 1
+	api GET "$TOKEN_A" "/api/artifact/$id" || return 1
+	want_eq "the title its author gave it" "$(jqv .title)" "$CLOSE_TODO" || return 1
+	want_eq "the body its author wrote" "$(jqv .body)" "$CLOSE_BODY" || return 1
+	printf 'a stranger finished the work and could not rewrite a word of it\n'
+}
+
 # The panel SETS one, OVERRIDES one, and a poll of the room does not wipe it -
 # in a real browser, driving the control a person drives.
 #
@@ -8542,6 +8786,33 @@ check "read permission is the whole bar for assigning, in the store" \
 	./internal/store
 check "the latest claim wins and the log keeps the ones before it, in the store" \
 	go test -count=1 -run TestTheLatestClaimWinsAndTheLogKeepsTheRest ./internal/store
+
+# And a todo gets FINISHED. The same ruling one field along: the queue metadata
+# on an item changes hands, its words do not, and read permission is the whole
+# bar for both. Until this round the status route answered a todo with "a memory
+# has no lifecycle" and mem_write refused everybody but the author, so the one
+# artifact whose purpose is to be finished was the one that could not be.
+say "a todo is finished"
+check "somebody who did not write a todo can close it, at both doors" \
+	a_todo_is_closed_by_somebody_who_did_not_write_it
+check "a todo you cannot read is a todo you cannot close" \
+	closing_a_todo_you_cannot_read_is_refused
+check "a closure says who made it and when, and a reopen appends" \
+	a_closure_records_who_made_it_and_a_reopen_appends
+check "a stranger may close a todo and may not rewrite it" \
+	a_stranger_may_close_a_todo_and_may_not_rewrite_it
+check "read permission is the whole bar for closing, in the store" \
+	go test -count=1 \
+	-run 'TestAnybodyWhoCanReadATodoCanCloseIt|TestAPrincipalWhoCannotReadATodoCannotCloseIt' \
+	./internal/store
+check "a closed todo reopens and the log keeps every move, in the store" \
+	go test -count=1 -run TestAClosedTodoIsReopenedAndTheLogKeepsBoth ./internal/store
+check "the queue lifecycle is the queue own, and its vocabulary is one, in the store" \
+	go test -count=1 \
+	-run 'TestOnlyAQueueItemHasTheQueuesLifecycle|TestTheVerbRefusesAStatusThatIsNotOne' \
+	./internal/store
+check "closing a todo unblocks what waits on it, in the store" \
+	go test -count=1 -run TestClosingATodoUnblocksWhatWaitsOnIt ./internal/store
 
 check "the console paints the room's todos on the room page" \
 	console_renders_the_rooms_todos

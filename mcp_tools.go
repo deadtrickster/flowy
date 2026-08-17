@@ -72,8 +72,11 @@ var tools = []tool{
 			"scope": enum("Who may read it. Default personal.", memScopes),
 			"kind":  enum("What the item is for. Default note.", memKinds),
 			"tags":  strArray("Free-form subject labels; searched with the title and the body."),
-			"status": str("Optional lifecycle status. Set \"done\" to take a todo off the " +
-				"todo list."),
+			"status": str("Where a queue item is: todo, active or done. Set \"done\" to take " +
+				"a todo off the todo list, and \"todo\" to reopen one that was not finished " +
+				"after all. Any principal who can READ a todo may move it - saying work is " +
+				"done is a claim about the WORK, not about the text - so on somebody else's " +
+				"item send {id, status} and nothing else."),
 			"room": str("The chat room this belongs to, e.g. general. It puts the item in " +
 				"that room's panel and narrows nothing else: who may read it is unchanged. " +
 				"Leave it out and the item is the project's, which is where every item " +
@@ -84,7 +87,9 @@ var tools = []tool{
 				"Send it empty to say nobody is. It hands the named party nothing - " +
 				"who may read the item is unchanged - and leaving it out on an update " +
 				"keeps whatever the item already said."),
-			"id": str("Update the item with this id instead of creating one."),
+			"id": str("Update the item with this id instead of creating one. An item " +
+				"somebody else wrote takes status and assignee - the queue metadata anybody " +
+				"who can read it may move - and refuses everything else."),
 		}, nil),
 		call: memWrite,
 	},
@@ -283,6 +288,10 @@ func memWrite(ctx context.Context, m *mcpServer, p *store.Principal, raw json.Ra
 		}
 	}
 	var fields map[string]any
+	// Where the item was before this write, which is what the status entry names
+	// as the end it came from. Empty on a create, and empty for a row that never
+	// had a status at all.
+	var was string
 
 	if a.ID != "" {
 		old, err := m.db.ReadArtifact(ctx, p, a.ID, false)
@@ -302,18 +311,14 @@ func memWrite(ctx context.Context, m *mcpServer, p *store.Principal, raw json.Ra
 			return nil, notThere(a.ID)
 		}
 		if old.OwnerUser != p.UserID {
-			// Readable, and not this principal's to change. It is a FORBIDDEN
-			// refusal rather than an ordinary tool error, which is what makes it
-			// arrive as an error rather than inside a success envelope - see
-			// forbidden in mcp.go for what that cost. The sentence names the door
-			// that does work, because "you may not edit this" is only half an
-			// answer when the thing the caller was trying to do is allowed: an
-			// item's words are its author's, and who is carrying it is not.
-			return nil, refuseForbidden("memory item %s belongs to somebody else, so its "+
-				"title, body, tags and status are not yours to change. Who is CARRYING it "+
-				"is: use todo_assign (or POST /api/todo/%s/assignee) - any principal who "+
-				"can read a todo may set or override its assignee", a.ID, a.ID)
+			// Readable, and not this principal's to REWRITE - which is not the
+			// same as not theirs to move. An item's words are its author's; the
+			// queue metadata on it is the room's, so this write goes down the
+			// path that changes that and nothing else. See memWriteQueueOnly,
+			// which refuses everything else loudly.
+			return memWriteQueueOnly(ctx, m, p, old, a)
 		}
+		was = old.Status
 		// An update states what changes; the rest of the item stands.
 		if art.Title == "" {
 			art.Title = old.Title
@@ -354,6 +359,17 @@ func memWrite(ctx context.Context, m *mcpServer, p *store.Principal, raw json.Ra
 		home = old.Project
 	} else if art.Title == "" && strings.TrimSpace(art.Body) == "" {
 		return nil, errors.New("a memory item needs a title or a body")
+	}
+
+	// A queue item's status is a lifecycle state and not free text, wherever it
+	// arrives: one vocabulary, checked in one place, so that a todo written here
+	// and a todo closed through POST /api/artifact/{id}/status cannot end up in
+	// two states no reader can compare. See store.NormalizeTodoStatus. A note's
+	// status is still whatever its author typed - a note is not in a lifecycle.
+	if a.Status != "" && isWorkKind(art.Kind) {
+		if art.Status, err = store.NormalizeTodoStatus(a.Status); err != nil {
+			return nil, err
+		}
 	}
 
 	fields = withRoom(fields, room, strings.TrimSpace(a.Message))
@@ -444,6 +460,30 @@ func memWrite(ctx context.Context, m *mcpServer, p *store.Principal, raw json.Ra
 		}
 		events = append(events, entry)
 	}
+	// And a write that says WHERE a queue item is leaves the status entry, in the
+	// same transaction and for the same reason: the author closing their own todo
+	// here and somebody else closing it through the status route are the same
+	// claim, and a status that sometimes has an entry behind it is a log that
+	// cannot answer who finished the work. See store.TodoStatusEntryEvent.
+	//
+	// Only for the kinds the queue holds. A note's status is a word on a row that
+	// nothing acts on - it is not in a lifecycle, and giving it a trail would be
+	// inventing one here rather than in the store where it belongs.
+	if a.Status != "" && isWorkKind(art.Kind) {
+		// Where it came from. Empty on a create - there was no previous state,
+		// and the entry says so rather than inventing one - and the word the
+		// queue reads a blank column as on an update of a row that never had a
+		// status set.
+		from := was
+		if a.ID != "" && from == "" {
+			from = store.TodoStatus
+		}
+		entry, err := store.TodoStatusEntryEvent(art, p, from, art.Status)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, entry)
+	}
 	if err := m.db.WriteMemory(ctx, art, events...); err != nil {
 		return nil, err
 	}
@@ -452,6 +492,107 @@ func memWrite(ctx context.Context, m *mcpServer, p *store.Principal, raw json.Ra
 	// nobody was shown the day a week of real memory went into pa. See
 	// mcp_projects.go.
 	return withFixtureWarning(ctx, m, p, map[string]any{"item": art}), nil
+}
+
+// memWriteQueueOnly is mem_write on an item this principal did not write.
+//
+// THE QUEUE METADATA CHANGES HANDS AND THE WORDS DO NOT. A todo is not the
+// property of whoever typed it: the room drains the queue, so who is carrying an
+// item and whether it is finished are claims about the WORK, and the principal
+// in a position to make them is whoever did the work rather than whoever raised
+// the row. That is the ruling behind todo_assign, and closing is the other half
+// of it - the half that was missing, which left the agent that had built and
+// deployed a thing unable to say so on either door because somebody else had
+// raised the line. Read permission is the whole bar, and both verbs ask it
+// again themselves.
+//
+// TITLE, BODY, TAGS, KIND, SCOPE AND WHERE IT WAS RAISED ARE THE AUTHOR'S. They
+// are somebody's words about their own work, and a stranger saying "this is
+// done" is not a stranger rewriting what you wrote. Stating one of them here is
+// refused rather than dropped: a write that silently kept the old title would be
+// a success envelope that changed something other than what it was asked to,
+// which is the same lie as one that changed nothing.
+//
+// EVERY REFUSAL IS A PROTOCOL ERROR. It is a forbidden refusal, so it arrives as
+// an error with a code rather than as a result with a flag - see forbidden in
+// mcp.go, and the three hours that distinction cost once.
+//
+// The two verbs are two writes, and each leaves its own entry. They are not one
+// transaction because they are not one claim: "b-drainer has it" and "it is
+// done" are separate facts with separate records, and either one landing without
+// the other is a true statement about the queue rather than half of a broken
+// one.
+func memWriteQueueOnly(
+	ctx context.Context, m *mcpServer, p *store.Principal, old *store.Artifact, a memWriteArgs,
+) (any, error) {
+	var stated []string
+	for _, field := range []struct {
+		name  string
+		given bool
+	}{
+		{"title", strings.TrimSpace(a.Title) != ""},
+		{"body", a.Body != ""},
+		{"tags", a.Tags != nil},
+		{"kind", a.Kind != ""},
+		{"scope", a.Scope != ""},
+		{"room", a.Room != ""},
+		{"message", a.Message != ""},
+	} {
+		if field.given {
+			stated = append(stated, field.name)
+		}
+	}
+	if len(stated) > 0 {
+		// The sentence names the doors that DO work, because half of what went
+		// wrong here was that the thing being attempted is allowed: an item's
+		// words are its author's, and where the work has got to is not.
+		return nil, refuseForbidden("memory item %s belongs to somebody else, so its %s "+
+			"%s not yours to change: an item's words are its author's. The queue metadata "+
+			"on it is not - mem_write {id, status} and {id, assignee}, todo_assign, and "+
+			"POST /api/artifact/%s/status all work for any principal who can READ the todo. "+
+			"This write stated more than that, so none of it was made",
+			a.ID, strings.Join(stated, ", "), plural(len(stated), "is", "are"), a.ID)
+	}
+	if !isWorkKind(old.Kind) {
+		return nil, refuseForbidden("memory item %s belongs to somebody else and is a %s, "+
+			"which the queue does not hold: nothing on it changes hands. A todo, a feature "+
+			"or a handoff carries a status and an assignee that anybody who can read it may "+
+			"move", a.ID, kindOrType(old))
+	}
+	if a.Assignee == nil && a.Status == "" {
+		return nil, refuseForbidden("memory item %s belongs to somebody else, so this write "+
+			"has to say which piece of the queue metadata it is moving: status, assignee, "+
+			"or both. Its title and body are its author's", a.ID)
+	}
+
+	art := old
+	if a.Assignee != nil {
+		moved, _, err := m.db.AssignTodo(ctx, p, a.ID, *a.Assignee, nil)
+		if err != nil {
+			return nil, err
+		}
+		art = moved
+	}
+	if a.Status != "" {
+		moved, _, err := m.db.SetTodoStatus(ctx, p, a.ID, a.Status)
+		if err != nil {
+			return nil, err
+		}
+		// The status verb reads the row again through the same filter before it
+		// writes, so what it hands back already carries the assignment above it:
+		// a caller that moved two things reads both of them back.
+		art = moved
+	}
+	return withFixtureWarning(ctx, m, p, map[string]any{"item": art}), nil
+}
+
+// kindOrType names what an item is, for a refusal that has to say why the queue
+// does not hold it.
+func kindOrType(art *store.Artifact) string {
+	if art.Kind != "" {
+		return art.Kind
+	}
+	return art.Type
 }
 
 func memRead(ctx context.Context, m *mcpServer, p *store.Principal, raw json.RawMessage) (any, error) {

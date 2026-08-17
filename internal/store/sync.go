@@ -1481,6 +1481,11 @@ var mintedEventTypes = map[string]bool{
 	// see, and the value that entry is the record of would have been written by
 	// nobody.
 	EventTodoAssign: true,
+	// A queue move, for the same two reasons. The refusal that makes it safe is
+	// on the verb - the mover has to be able to READ the todo - and the status it
+	// records is written in the same transaction, so an entry handed over here
+	// would be a closure nobody made about work that never moved.
+	EventTodoStatus: true,
 }
 
 // MintedEventType reports whether an event type is one this node's own handlers
