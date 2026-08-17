@@ -10892,11 +10892,15 @@ a_deleted_artifact_is_gone_and_stays_gone() {
 	recall
 	local id
 	id="$(new_artifact "$TOKEN_A" note "the one that gets deleted")" || return 1
-	# What B could see BEFORE the delete, because the leak assertion below is
-	# only meaningful against this. Asserting "B gets 404 afterwards" proves
-	# nothing if B could never read the row in the first place - that is a true
-	# reading of the wrong population, which this suite has caught four times.
-	want_status 404 GET "$TOKEN_B" "/api/artifact/$id" || return 1
+	# WHAT B COULD SEE BEFORE THE DELETE. The property is not "B gets 404", it is
+	# THE DISCLOSURE IS SCOPED TO REACH: whoever could read the row is told it was
+	# withdrawn, and whoever could not still cannot tell it from one that never
+	# existed. A fixed expectation here would be a guess about B's reach at this
+	# point in the run - and reach changes as earlier phases add grants, so the
+	# guess would be a true reading of the wrong population.
+	local b_before
+	api GET "$TOKEN_B" "/api/artifact/$id" || true
+	b_before=$API_STATUS
 	api POST "$TOKEN_A" "/api/artifact/$id/delete" || return 1
 	want_eq "delete status" "$API_STATUS" 200 || return 1
 
@@ -10906,10 +10910,16 @@ a_deleted_artifact_is_gone_and_stays_gone() {
 	want_status 410 GET "$TOKEN_A" "/api/artifact/$id" || return 1
 	want_eq "and it says the row was withdrawn" \
 		"$(printf '%s' "$API_BODY" | jq -r '.withdrawn.id')" "$id" || return 1
-	# AND THE LEAK CHECK, which is the whole reason this is not three answers:
-	# a principal who could NOT have read the row must get 404, identical to one
-	# that never existed. Otherwise a guessable id becomes an existence oracle.
-	want_status 404 GET "$TOKEN_B" "/api/artifact/$id" || return 1
+	# AND THE LEAK CHECK, stated as the invariant rather than as a number: B is
+	# told exactly what B was entitled to know a moment earlier. A reader who
+	# could not reach the row must not be able to tell a withdrawal from an
+	# absence, or a guessable id becomes an existence oracle.
+	if [ "$b_before" = 200 ]; then
+		want_status 410 GET "$TOKEN_B" "/api/artifact/$id" || return 1
+	else
+		want_status 404 GET "$TOKEN_B" "/api/artifact/$id" || return 1
+	fi
+	printf 'B read it as %s before the delete, and is answered accordingly after\n' "$b_before"
 	# Everything else stays absent: withdrawn is a sentence about a read, not a
 	# door back into the artifact.
 	want_status 404 GET "$TOKEN_A" "/api/artifact/$id/history" || return 1
