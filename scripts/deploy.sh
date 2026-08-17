@@ -15,6 +15,15 @@
 #
 #   SCHEMA GOES FIRST. schema.sql must be applied BEFORE the new binary starts,
 #   or it serves errors for every read against columns that do not exist yet.
+#   This script used to REFUSE when it noticed schema.sql had changed and tell
+#   you to go and apply it by hand. That is what it was doing on the day the
+#   refusal-ledger table landed: the deploy was done without a stamp to compare
+#   against, so nothing was noticed, nothing was applied, and every
+#   /api/artifacts read was a 500 for four minutes against a database with no
+#   `refused_authorship` in it. A step that lives in a document is a step that
+#   gets skipped. So it applies the schema itself now, through
+#   scripts/migrate.sh, against the DSN the unit will actually open - see the
+#   migration section below.
 #
 # So this does the steps in the only order that works, and then checks the
 # thing that is actually SERVED rather than the commands that were run. A
@@ -80,15 +89,55 @@ if [ -n "$previous" ] && git cat-file -e "$previous^{commit}" 2>/dev/null; then
 	if ! git diff --quiet "$previous" HEAD -- schema.sql; then
 		say "SCHEMA CHANGED between $previous and $commit:"
 		git diff --stat "$previous" HEAD -- schema.sql
-		say ""
-		say "Apply it to the dogfood database BEFORE restarting, or every read"
-		say "returns 500 while healthz keeps answering 200. Then re-run this."
-		die "schema.sql changed - apply it first, deliberately"
+	else
+		say "schema.sql unchanged since $previous"
 	fi
 else
-	say "note: no usable deploy stamp, so a schema change cannot be detected."
-	say "      Check schema.sql yourself if this is not a routine deploy."
+	say "note: no usable deploy stamp, so this cannot say whether schema.sql moved."
 fi
+# Either way the migration below runs. The stamp comparison is a report, not a
+# gate: it was the gate, and the deploy that took the node down had no stamp to
+# compare against, so it reported nothing and applied nothing. What the database
+# actually holds is a question for the database, and scripts/migrate.sh asks it.
+
+# WHICH DATABASE. It has to be the one the unit will open, not one this script
+# guessed, or the migration lands somewhere the node never looks and the deploy
+# reports success. The unit's own environment file is therefore the first place
+# asked - that file IS what the node connects to.
+find_dsn() {
+	local line value candidate
+	if [ -n "${FLOWY_DATABASE_URL:-}" ]; then
+		printf '%s\n' "$FLOWY_DATABASE_URL"
+		return 0
+	fi
+	for candidate in "$LIVE_DIR/serve.env" "$LIVE_DIR/.env"; do
+		[ -r "$candidate" ] || continue
+		line=$(grep -m1 -E '^[[:space:]]*(export[[:space:]]+)?DATABASE_URL=' "$candidate") || continue
+		value=${line#*=}
+		# systemd EnvironmentFile permits either quote around the value.
+		value=${value#\"}
+		value=${value%\"}
+		value=${value#\'}
+		value=${value%\'}
+		[ -n "$value" ] && {
+			printf '%s\n' "$value"
+			return 0
+		}
+	done
+	if [ -r "$LIVE_DIR/PG_DSN" ]; then
+		value=$(tr -d '\r' <"$LIVE_DIR/PG_DSN" | head -1)
+		[ -n "$value" ] && {
+			printf '%s\n' "$value"
+			return 0
+		}
+	fi
+	return 1
+}
+
+dsn=$(find_dsn) || die "no database URL: set FLOWY_DATABASE_URL, or put DATABASE_URL= in $LIVE_DIR/serve.env, or a DSN in $LIVE_DIR/PG_DSN - a deploy that cannot reach the database cannot migrate it, and restarting onto an unmigrated schema is the outage this script exists to stop"
+# Print the host and database, never the DSN: it can carry a password, and this
+# script's output goes into logs and into chat.
+say "database: $(printf '%s' "$dsn" | sed -E 's#^[^:]*://([^@/]*@)?#\1#; s#^[^@]*@##; s#\?.*$##')"
 
 # ------------------------------------------------------------------- build
 
@@ -123,12 +172,25 @@ say "    binary embeds: ${embedded:-NOTHING}"
 
 if [ "$DRY" = yes ]; then
 	say ""
-	say "DRY RUN: built and verified, nothing deployed."
+	say "DRY RUN: built and verified, nothing deployed and NOTHING MIGRATED."
 	say "  commit  $commit"
 	say "  bundle  $bundle"
 	say "  binary  $tmp (kept)"
 	trap - EXIT
 	exit 0
+fi
+
+# ----------------------------------------------------------------- migrate
+#
+# Here, and not earlier: a failed build must not leave a migrated database
+# behind. The two orderings are not symmetric. An OLD binary on a NEW schema is
+# fine - every change in schema.sql is additive, so the old binary simply does
+# not read the new column. A NEW binary on an OLD schema is the four minutes of
+# 500s. So the schema goes first within the deploy, and the deploy only starts
+# once there is a verified binary to install.
+
+if ! "$REPO/scripts/migrate.sh" "$dsn"; then
+	die "the migration failed - nothing was installed and the node is still serving the old binary"
 fi
 
 # ------------------------------------------------------------------ deploy

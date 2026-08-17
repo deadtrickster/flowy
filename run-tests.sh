@@ -63,8 +63,11 @@ NODE5A_LOG="$WORK/nodeA.log"
 NODE5B_LOG="$WORK/nodeB.log"
 # Phase 6: where the gate's fake gh writes when something runs it.
 GH_CANARY="$WORK/gh-invoked"
+# The schema-drift section: an older database, brought up to date and made to
+# serve. Everything it needs to hand from one check to the next lives here.
+UPG="$WORK/upgrade"
 readonly ROOT WORK PGDATA PGSOCK PGLOG SERVE_LOG MCP_LOG DBNAME
-readonly PGDATA5A PGDATA5B PGSOCK5A PGSOCK5B NODE5A_LOG NODE5B_LOG GH_CANARY
+readonly PGDATA5A PGDATA5B PGSOCK5A PGSOCK5B NODE5A_LOG NODE5B_LOG GH_CANARY UPG
 
 PG_BIN=""
 PGPORT=""
@@ -221,6 +224,383 @@ psql_counts() {
 		return 1
 	fi
 	printf '%s row(s)\n' "$n"
+}
+
+# ------------------------------------------ an older database meets this binary
+#
+# THE FAILURE THIS SECTION EXISTS FOR, and why nothing above it can see it.
+#
+# The refusal-ledger work added a table. The live node was redeployed with the
+# binary that queries it, onto a database that never got the table, and every
+# /api/artifacts read returned 500 for four minutes:
+#
+#     store: count what was refused: pq: relation "refused_authorship" does not exist
+#
+# That code had passed the whole gate, twice. It could not have failed here.
+# EVERY CHECK ABOVE RUNS AGAINST A DATABASE BUILT FROM schema.sql THIS RUN, and
+# a database built from the current schema.sql has, by construction, every table
+# the current binary asks for. The live node is the only place an EXISTING
+# database meets NEW code, and until now nothing in this repository migrated one
+# or tested one. The bug was not that a check was wrong; it was that the whole
+# gate was standing in a place from which this class of failure is invisible.
+#
+# So these checks start somewhere else: from the schema as it was at an earlier
+# commit, which is where the live node's database actually is at the moment of a
+# deploy.
+#
+# WHICH earlier commit. The baseline is the newest revision of schema.sql whose
+# DDL differs from the working tree's - that is, the schema as it stood
+# immediately before the most recent schema change landed. Three reasons over
+# the alternatives:
+#
+#   - It is exactly the state the live database is in when a deploy carrying a
+#     schema change arrives. That is the state that broke, and it is the state
+#     no other check has ever occupied.
+#   - It never goes stale and needs no maintenance. A pinned baseline file
+#     checked into the repo would be a second copy of the schema that somebody
+#     has to remember to update - and "somebody has to remember" is the whole
+#     of the incident being fixed here. A merge-base with a previous release
+#     would be better still, but there are no releases to take one against.
+#   - It is always genuinely older. Comment-only edits to schema.sql are
+#     skipped when picking it, so the baseline is never a database that is
+#     already up to date and the checks below are never vacuously green.
+#
+# FLOWY_BASELINE_REV overrides it with any commit, which is how you point this
+# at what the dogfood node is really running:
+#
+#     FLOWY_BASELINE_REV=$(cat ~/Projects/flowy-dogfood/.deployed-commit) ./run-tests.sh
+#
+# IT FAILS, IT DOES NOT SKIP. If no baseline can be resolved - no git, no
+# history, a squashed tree - the first check FAILS and the rest fail behind it.
+# A check that quietly does nothing when it cannot find its fixture reports
+# green for a run in which it tested nothing, and this gate has already been
+# bitten twice by exactly that.
+
+# upg_dsn NAME - a DSN for one of this section's databases on the gate cluster.
+upg_dsn() { printf 'postgres://%s@127.0.0.1:%s/%s?sslmode=disable\n' "$PGUSER" "$PGPORT" "$1"; }
+
+# upg_fingerprint DB FILE - the structure of one database, written sorted.
+# scripts/schema-fingerprint.sql is the single definition of what that means;
+# scripts/migrate.sh reads the same file, so the gate and the deploy cannot
+# drift apart on the question of what a schema is.
+upg_fingerprint() {
+	psql -v ON_ERROR_STOP=1 -tAq -F'|' -d "$1" -f "$ROOT/scripts/schema-fingerprint.sql" |
+		LC_ALL=C sort >"$2"
+}
+
+# upg_ddl - schema.sql with the prose taken out, on stdin. Whole-line comments
+# and blank lines only: enough that rewording a comment does not read as a
+# schema change, without pretending to parse SQL.
+upg_ddl() { sed -e 's/[[:space:]]*$//' -e '/^[[:space:]]*--/d' -e '/^[[:space:]]*$/d'; }
+
+# upg_code PATH [TOKEN] - the status of one request against this section's node.
+upg_code() {
+	local path=$1 token=${2-} port
+	port="$(cat "$UPG/port")"
+	local -a curl_args=(--silent --show-error -o /dev/null -w '%{http_code}' -m 15)
+	[ -n "$token" ] && curl_args+=(-H "Authorization: Bearer $token")
+	curl "${curl_args[@]}" "http://127.0.0.1:$port$path"
+}
+
+# upg_token - the seeded user token for this section's database.
+upg_token() {
+	# shellcheck source=/dev/null
+	. "$UPG/ids"
+	printf '%s' "${TOKEN_A:-}"
+}
+
+# The baseline: the newest revision of schema.sql whose DDL differs from the
+# working tree's. Fails loudly rather than picking nothing.
+upgrade_baseline_is_a_real_older_schema() {
+	local rev current
+	mkdir -p "$UPG"
+	if ! git -C "$ROOT" rev-parse HEAD >/dev/null 2>&1; then
+		printf 'no git history here, so there is no older schema to start from.\n' >&2
+		printf 'This check does not skip: without it the gate only ever sees a fresh\n' >&2
+		printf 'database, which is how the refusal-ledger outage got through twice.\n' >&2
+		printf 'Set FLOWY_BASELINE_REV to a commit that has a schema.sql.\n' >&2
+		return 1
+	fi
+	if [ -n "${FLOWY_BASELINE_REV:-}" ]; then
+		rev="$FLOWY_BASELINE_REV"
+		if ! git -C "$ROOT" show "$rev:schema.sql" >"$UPG/baseline-schema.sql" 2>/dev/null; then
+			printf 'FLOWY_BASELINE_REV=%s has no schema.sql\n' "$rev" >&2
+			return 1
+		fi
+	else
+		current="$(upg_ddl <"$ROOT/schema.sql")"
+		rev=""
+		while read -r candidate; do
+			[ -n "$candidate" ] || continue
+			# Skip revisions whose DDL is what the working tree already has:
+			# the newest one usually is, and a comment-only edit would
+			# otherwise hand these checks a database that is already current.
+			if [ "$(git -C "$ROOT" show "$candidate:schema.sql" 2>/dev/null | upg_ddl)" = "$current" ]; then
+				continue
+			fi
+			rev="$candidate"
+			break
+		done < <(git -C "$ROOT" log --format=%H -- schema.sql)
+		if [ -z "$rev" ]; then
+			printf 'every revision of schema.sql in this history has the DDL the working\n' >&2
+			printf 'tree has, so there is no older schema to migrate FROM.\n' >&2
+			printf 'This check FAILS rather than skipping: a run that cannot build an\n' >&2
+			printf 'older database has not tested the migration, and saying so is the\n' >&2
+			printf 'whole point of it. Set FLOWY_BASELINE_REV to a commit further back.\n' >&2
+			return 1
+		fi
+		git -C "$ROOT" show "$rev:schema.sql" >"$UPG/baseline-schema.sql" || return 1
+	fi
+	printf '%s\n' "$rev" >"$UPG/baseline.rev"
+	printf 'baseline %s\n' "$(git -C "$ROOT" log -1 --format='%h %ad %s' --date=short "$rev" | cut -c1-100)"
+	printf 'schema.sql there is %s lines, here is %s\n' \
+		"$(wc -l <"$UPG/baseline-schema.sql")" "$(wc -l <"$ROOT/schema.sql")"
+}
+
+# A database at the baseline schema, and a fresh one beside it to compare to.
+upgrade_baseline_database_loads() {
+	"$PG_BIN/createdb" gate_baseline || return 1
+	psql -v ON_ERROR_STOP=1 -q -d gate_baseline -f "$UPG/baseline-schema.sql" || return 1
+	upg_fingerprint gate_baseline "$UPG/fp-baseline.txt"
+	printf 'gate_baseline holds %s schema objects\n' "$(wc -l <"$UPG/fp-baseline.txt")"
+}
+
+# NO FALSE POSITIVES. If the fingerprint reported a difference between two
+# databases that are the same schema, every check below it would be noise, and
+# the first person to see one would start ignoring them. The gate's own
+# database - the one every other check in this run passed against - is compared
+# to a fresh load of schema.sql, and they must be byte-identical.
+upgrade_fingerprint_agrees_with_the_gates_own_database() {
+	"$PG_BIN/createdb" gate_fresh || return 1
+	psql -v ON_ERROR_STOP=1 -q -d gate_fresh -f "$ROOT/schema.sql" || return 1
+	upg_fingerprint gate_fresh "$UPG/fp-fresh.txt"
+	upg_fingerprint "$DBNAME" "$UPG/fp-gate.txt"
+	if ! diff -u "$UPG/fp-gate.txt" "$UPG/fp-fresh.txt" >"$UPG/diff-gate-fresh.txt"; then
+		printf 'the gate database and a fresh one are not the same schema:\n' >&2
+		head -40 "$UPG/diff-gate-fresh.txt" >&2
+		return 1
+	fi
+	printf '%s objects, identical to the database the rest of this run uses\n' \
+		"$(wc -l <"$UPG/fp-fresh.txt")"
+}
+
+# AND TEETH. The other way a fingerprint can be useless is by seeing nothing
+# wherever it looks. A database with no schema in it at all must come back
+# empty, and must differ from a fresh one - if this passes vacuously, so does
+# every comparison below.
+upgrade_fingerprint_sees_an_empty_database() {
+	local n
+	"$PG_BIN/createdb" gate_empty || return 1
+	upg_fingerprint gate_empty "$UPG/fp-empty.txt"
+	n="$(wc -l <"$UPG/fp-empty.txt")"
+	if [ "$n" -ne 0 ]; then
+		printf 'an empty database fingerprinted %s objects, want 0\n' "$n" >&2
+		return 1
+	fi
+	if diff -q "$UPG/fp-empty.txt" "$UPG/fp-fresh.txt" >/dev/null; then
+		printf 'an empty database and a fresh one fingerprinted the same - the\n' >&2
+		printf 'comparison cannot see a missing table, so nothing below it means anything\n' >&2
+		return 1
+	fi
+	printf 'empty is 0 objects and differs from fresh by %s lines\n' \
+		"$(diff "$UPG/fp-empty.txt" "$UPG/fp-fresh.txt" | grep -c '^[<>]')"
+}
+
+# The drift itself: what the baseline database is missing, named. This is the
+# gap the deploy has to close, and on the day this was written it was one table
+# called refused_authorship.
+upgrade_baseline_is_behind_the_current_schema() {
+	if diff -q "$UPG/fp-baseline.txt" "$UPG/fp-fresh.txt" >/dev/null; then
+		printf 'the baseline database already matches the current schema, so these\n' >&2
+		printf 'checks would migrate nothing and prove nothing. Pick an older\n' >&2
+		printf 'FLOWY_BASELINE_REV.\n' >&2
+		return 1
+	fi
+	printf 'the baseline database is missing %s objects the current schema has:\n' \
+		"$(comm -13 "$UPG/fp-baseline.txt" "$UPG/fp-fresh.txt" | wc -l)"
+	comm -13 "$UPG/fp-baseline.txt" "$UPG/fp-fresh.txt" | head -20
+}
+
+# THE MIGRATION PATH ITSELF - the script scripts/deploy.sh runs, not a second
+# implementation of it that happens to agree today.
+upgrade_migrate_brings_the_baseline_up() {
+	"$ROOT/scripts/migrate.sh" "$(upg_dsn gate_baseline)"
+}
+
+# THE CHECK THIS SECTION IS FOR. A database that started at the baseline and had
+# the migration applied must be structurally IDENTICAL to one built fresh from
+# schema.sql. Anything left over is drift that would reach production, and the
+# shape it takes is not hypothetical: schema.sql is CREATE TABLE IF NOT EXISTS
+# throughout, so a column added inside a CREATE TABLE body and nowhere else is a
+# no-op on every database that already has the table. It works on a fresh
+# database. It works in every check above this section. It is a 500 on the node.
+upgrade_migrated_matches_a_fresh_database() {
+	upg_fingerprint gate_baseline "$UPG/fp-migrated.txt"
+	if diff -u "$UPG/fp-fresh.txt" "$UPG/fp-migrated.txt" >"$UPG/diff-migrated.txt"; then
+		printf 'the migrated baseline is the same schema as a fresh database (%s objects)\n' \
+			"$(wc -l <"$UPG/fp-migrated.txt")"
+		return 0
+	fi
+	printf 'applying schema.sql to an older database did NOT bring it up to date.\n' >&2
+	printf 'Lines marked - are in a fresh database and missing after the migration;\n' >&2
+	printf '+ are left over in the migrated one. This is drift that reaches the live\n' >&2
+	printf 'node, where it is a 500 on whatever reads it first.\n' >&2
+	printf 'The usual cause is a column or a constraint added to a CREATE TABLE IF\n' >&2
+	printf 'NOT EXISTS body with no matching ALTER TABLE ... IF NOT EXISTS beside it.\n' >&2
+	head -60 "$UPG/diff-migrated.txt" >&2
+	return 1
+}
+
+# And from nothing at all, which is the other end of the same path: a brand new
+# node's database is created by running exactly this.
+upgrade_migrate_brings_an_empty_database_up() {
+	"$ROOT/scripts/migrate.sh" "$(upg_dsn gate_empty)" >"$UPG/migrate-empty.log" 2>&1 || {
+		cat "$UPG/migrate-empty.log" >&2
+		return 1
+	}
+	upg_fingerprint gate_empty "$UPG/fp-empty-migrated.txt"
+	if ! diff -u "$UPG/fp-fresh.txt" "$UPG/fp-empty-migrated.txt" >"$UPG/diff-empty.txt"; then
+		printf 'migrating an empty database did not produce the current schema:\n' >&2
+		head -40 "$UPG/diff-empty.txt" >&2
+		return 1
+	fi
+	printf 'an empty database migrates to the same %s objects as a fresh one\n' \
+		"$(wc -l <"$UPG/fp-empty-migrated.txt")"
+}
+
+# Principals in the older database, so the reads below are real reads with a
+# real token rather than a 401 that never reaches the store.
+upgrade_seed_the_baseline() {
+	DATABASE_URL="$(upg_dsn gate_baseline)" "$WORK/smoke" seed >"$UPG/ids" 2>"$UPG/seed.err" || {
+		cat "$UPG/seed.err" >&2
+		return 1
+	}
+	grep -q '^TOKEN_A=' "$UPG/ids" || {
+		printf 'the seed wrote no TOKEN_A:\n' >&2
+		cat "$UPG/ids" >&2
+		return 1
+	}
+	printf 'seeded %s principals into the older database\n' "$(grep -c '^USER_' "$UPG/ids")"
+}
+
+# HEALTHZ IS NOT A READ, demonstrated rather than asserted from memory. The node
+# comes up against a database that is behind it and answers 200 on /healthz the
+# whole time - which is why the outage ran for four minutes before anybody knew.
+# What a real read does here depends on whether the last schema change happened
+# to touch a read path, so it is REPORTED and not asserted; the deterministic
+# version of that assertion is the missing-relation check further down, which
+# does not depend on what changed.
+upgrade_node_is_up_on_the_older_database() {
+	local health read
+	health="$(upg_code /healthz)"
+	read="$(upg_code /api/artifacts "$(upg_token)")"
+	if [ "$health" != "200" ]; then
+		printf 'the node did not come up against the older database: /healthz %s\n' "$health" >&2
+		tail -30 "$UPG/serve.log" >&2
+		return 1
+	fi
+	printf '/healthz 200 on a database that is behind the binary\n'
+	printf 'a real read there: /api/artifacts -> %s%s\n' "$read" \
+		"$([ "$read" = 200 ] || printf ' (this is the outage)')"
+}
+
+upgrade_read_serves_after_the_migration() {
+	local code
+	code="$(upg_code /api/artifacts "$(upg_token)")"
+	if [ "$code" != "200" ]; then
+		printf '/api/artifacts is %s against the migrated database, want 200\n' "$code" >&2
+		tail -30 "$UPG/serve.log" >&2
+		return 1
+	fi
+	printf 'the older database, migrated, serves the read that took the node down\n'
+}
+
+# THE TEETH ON THE TWO CHECKS ABOVE. A check that only ever watches a working
+# node cannot tell you it would have noticed a broken one. So break it, in the
+# way production broke: take away a relation the binary queries. `artifacts` is
+# chosen because /api/artifacts reads it by definition - that will still be true
+# whatever schema.sql does next, so this check can never quietly go vacuous the
+# way a check pinned to whatever changed most recently would.
+upgrade_a_missing_relation_is_an_outage_the_gate_can_see() {
+	local health read
+	psql -v ON_ERROR_STOP=1 -q -d gate_baseline -c 'DROP TABLE artifacts' || return 1
+	read="$(upg_code /api/artifacts "$(upg_token)")"
+	health="$(upg_code /healthz)"
+	if [ "$read" = "200" ]; then
+		printf 'a read served 200 against a database with no artifacts table.\n' >&2
+		printf 'That means the check above cannot fail, and a green run here would\n' >&2
+		printf 'say nothing about whether the migration worked.\n' >&2
+		return 1
+	fi
+	if [ "$health" != "200" ]; then
+		printf 'note: /healthz is %s, not 200 - it used to stay 200 through this\n' "$health"
+	else
+		printf '/api/artifacts -> %s while /healthz still says 200: the outage, exactly\n' "$read"
+	fi
+}
+
+upgrade_migrate_repairs_it() {
+	"$ROOT/scripts/migrate.sh" "$(upg_dsn gate_baseline)" >"$UPG/migrate-repair.log" 2>&1 || {
+		cat "$UPG/migrate-repair.log" >&2
+		return 1
+	}
+	local code
+	code="$(upg_code /api/artifacts "$(upg_token)")"
+	if [ "$code" != "200" ]; then
+		printf 'after re-applying the schema the read is still %s\n' "$code" >&2
+		tail -30 "$UPG/serve.log" >&2
+		return 1
+	fi
+	printf 'the same running node serves 200 again once the relation is back\n'
+}
+
+# The deploy has to apply the schema BEFORE it restarts the unit, or it is the
+# incident with extra steps. Order in a script is a fact about the file, so it
+# is read out of the file rather than trusted.
+upgrade_deploy_migrates_before_it_restarts() {
+	local deploy migrate restart
+	deploy="$ROOT/scripts/deploy.sh"
+	[ -x "$deploy" ] || {
+		printf '%s is not executable\n' "$deploy" >&2
+		return 1
+	}
+	migrate="$(grep -n 'scripts/migrate\.sh' "$deploy" | grep -v '^[0-9]*:#' | head -1 | cut -d: -f1)"
+	restart="$(grep -n 'systemctl --user restart' "$deploy" | grep -v '^[0-9]*:#' | head -1 | cut -d: -f1)"
+	if [ -z "$migrate" ]; then
+		printf 'scripts/deploy.sh never runs scripts/migrate.sh, so a deploy still\n' >&2
+		printf 'restarts the node onto whatever schema the database happens to have.\n' >&2
+		return 1
+	fi
+	if [ -z "$restart" ]; then
+		printf 'scripts/deploy.sh no longer restarts the unit - this check needs\n' >&2
+		printf 'updating to whatever replaced it, not deleting.\n' >&2
+		return 1
+	fi
+	if [ "$migrate" -ge "$restart" ]; then
+		printf 'deploy.sh migrates at line %s and restarts at line %s: the new binary\n' \
+			"$migrate" "$restart" >&2
+		printf 'would start before the schema it needs exists.\n' >&2
+		return 1
+	fi
+	printf 'migrate at line %s, restart at line %s\n' "$migrate" "$restart"
+}
+
+# A migration that cannot reach the database must say so and stop, while the old
+# binary is still serving. Shrugging and letting the deploy carry on is the
+# outage with a log line in front of it.
+upgrade_migrate_refuses_a_database_it_cannot_reach() {
+	local out status
+	out="$("$ROOT/scripts/migrate.sh" "postgres://nobody@127.0.0.1:$PGPORT/no_such_database?sslmode=disable" 2>&1)"
+	status=$?
+	if [ "$status" -eq 0 ]; then
+		printf 'migrate.sh exited 0 against a database that does not exist:\n%s\n' "$out" >&2
+		return 1
+	fi
+	printf '%s\n' "$out" | grep -q 'REFUSED' || {
+		printf 'it failed, but did not say it refused:\n%s\n' "$out" >&2
+		return 1
+	}
+	printf 'exit %s, and says REFUSED\n' "$status"
 }
 
 # ------------------------------------------------------- phase 1 http helpers
@@ -8381,6 +8761,75 @@ say "unit tests"
 # -count=1 so the live store tests really talk to the database this run rather
 # than replaying a cached result from an earlier one.
 check "go test ./..." go test -count=1 ./...
+
+# ------------------------------------------ an older database meets this binary
+#
+# Here, early, because a schema that does not migrate is a broken deploy and
+# there is no point learning that after five hundred other checks. Everything
+# this needs already exists at this point: the cluster, `./flowy`, and
+# `$WORK/smoke`. Nothing it does touches the gate's own database - it works in
+# databases of its own on the same cluster, and its node runs on a port of its
+# own and is stopped before the one every other check uses starts.
+#
+# The long version of why this section exists, and how the baseline is chosen,
+# is at the helpers above.
+
+say "an older database meets this binary"
+mkdir -p "$UPG"
+check "the baseline is a real, older revision of schema.sql" \
+	upgrade_baseline_is_a_real_older_schema
+check "a database built from the baseline schema loads" \
+	upgrade_baseline_database_loads
+check "the fingerprint agrees with the database the rest of this run uses" \
+	upgrade_fingerprint_agrees_with_the_gates_own_database
+check "the fingerprint sees a database with nothing in it" \
+	upgrade_fingerprint_sees_an_empty_database
+check "the baseline database is behind the current schema, and says by what" \
+	upgrade_baseline_is_behind_the_current_schema
+check "principals seed into the older database" upgrade_seed_the_baseline
+
+UPG_PORT="$(free_port 9300)"
+printf '%s\n' "$UPG_PORT" >"$UPG/port"
+# Started here rather than inside a check: a check runs in a command
+# substitution, and a background process that inherits its stdout holds that
+# substitution open forever.
+upg_op="$(sed -n 's/^USER_OP=//p' "$UPG/ids" 2>/dev/null | head -1 || true)"
+upg_url="$(upg_dsn gate_baseline)"
+DATABASE_URL="$upg_url" FLOWY_NODE=upgrade FLOWY_OPERATOR="$upg_op" FLOWY_FORGE=mock \
+	FLOWY_FORGE_REPOS=o/r \
+	./flowy serve -addr "127.0.0.1:$UPG_PORT" >"$UPG/serve.log" 2>&1 &
+UPG_PID=$!
+printf '%s\n' "$UPG_PID" >"$WORK/upgrade-node.pid"
+printf 'flowy serve pid %s on 127.0.0.1:%s, against the OLDER database\n' "$UPG_PID" "$UPG_PORT"
+
+check "the node comes up against a database that is behind it" \
+	"$WORK/smoke" healthz "http://127.0.0.1:$UPG_PORT/healthz"
+check "healthz says 200 either way, which is why the outage ran for four minutes" \
+	upgrade_node_is_up_on_the_older_database
+check "scripts/migrate.sh brings the baseline database up to the current schema" \
+	upgrade_migrate_brings_the_baseline_up
+check "A MIGRATED DATABASE IS STRUCTURALLY IDENTICAL TO A FRESH ONE" \
+	upgrade_migrated_matches_a_fresh_database
+check "scripts/migrate.sh brings an empty database up to the current schema too" \
+	upgrade_migrate_brings_an_empty_database_up
+check "the older database, migrated, serves the read that took the node down" \
+	upgrade_read_serves_after_the_migration
+check "a relation the binary queries, missing, is an outage this gate can see" \
+	upgrade_a_missing_relation_is_an_outage_the_gate_can_see
+check "and scripts/migrate.sh repairs it, on the same running node" \
+	upgrade_migrate_repairs_it
+check "scripts/deploy.sh applies the schema before it restarts the unit" \
+	upgrade_deploy_migrates_before_it_restarts
+check "a migration that cannot reach its database refuses instead of shrugging" \
+	upgrade_migrate_refuses_a_database_it_cannot_reach
+check "the node survived the schema-drift checks" kill -0 "$UPG_PID"
+
+# Stopped before the gate's own node starts, so nothing below this can be
+# reading the wrong port or the wrong database.
+kill "$UPG_PID" 2>/dev/null || true
+wait "$UPG_PID" 2>/dev/null || true
+rm -f "$WORK/upgrade-node.pid"
+UPG_PID=""
 
 say "principals"
 # Seeded before the node starts, because who the operator is is a flag on the
