@@ -3002,8 +3002,12 @@ what a status trail is.
 
 ## What the gate asserts
 
-`schema.sql` loads and reloads, `go build`, `gofmt`, `go vet`, `go test`, then
-against a live `flowy serve`:
+`schema.sql` loads and reloads, `go build`, `gofmt`, `go vet`, `go test`, then a
+section that builds a database from an EARLIER commit's `schema.sql`, migrates
+it with `scripts/migrate.sh` and asserts the result is structurally identical to
+a fresh one and serves a real read - see **Deployment** for why a gate that only
+ever sees a fresh database cannot fail the way the node did. Then, against a
+live `flowy serve`:
 
 - `/healthz` comes up and reports `ok:true` with the database up
 - the nine spine tables exist
@@ -5068,6 +5072,71 @@ phase and the stamp is the build, so build with `go build -ldflags "-X
 main.buildStamp=$(git rev-parse --short HEAD)"` and `GET /healthz`, `GET
 /version`, the MCP `serverInfo` and `flowy version` all name the commit the
 binary came from. A build with no flags reports `+src`.
+
+**The schema goes first, and the deploy applies it.** `scripts/deploy.sh` runs
+`scripts/migrate.sh` against the DSN the unit will actually open - read out of
+`serve.env`, or `PG_DSN`, or `$FLOWY_DATABASE_URL` - after the binary is built
+and verified and before the unit is restarted. It prints which objects that
+added, from the catalogue rather than from psql's exit status, because "psql
+exited 0" is equally true of a database that was already current and one that
+was missing a table. A deploy that cannot find a DSN refuses instead of
+restarting onto whatever the database happens to hold.
+
+The two orderings are not symmetric, which is why the migration sits where it
+does. An OLD binary on a NEW schema is fine - every change in `schema.sql` is
+additive, so it simply does not read the new column. A NEW binary on an OLD
+schema is an outage: the refusal-ledger table landed that way and every
+`/api/artifacts` read was a 500 for four minutes, while `/healthz` answered 200
+throughout. Migrating late in the script, after there is a verified binary to
+install, also means a failed build never leaves a migrated database behind.
+
+**There is no ordered-migrations table, deliberately.** `schema.sql` is `CREATE
+TABLE IF NOT EXISTS` / `ADD COLUMN IF NOT EXISTS` throughout and the whole file
+is one transaction, so applying it wholesale to a database at any earlier state
+is already idempotent and atomic. A migrations table buys two things this schema
+does not have yet - destructive steps, which cannot be expressed idempotently
+and which `schema.sql` contains none of, and a record of which steps ran, which
+the catalogue answers directly - and one new way to be wrong, a migration
+numbered and applied on one node and not another. The day the first `DROP`,
+`RENAME` or backfill lands is the day to build it, and the gate is what will
+refuse that change until it is.
+
+**The gate starts from an older database, because a fresh one cannot fail the
+way production did.** Every other check in `run-tests.sh` runs against a
+database built from the current `schema.sql` this run, which by construction has
+every table the current binary asks for - so the code that took the node down
+passed 547 checks twice. The `an older database meets this binary` section
+builds a database from `schema.sql` as of an earlier commit, applies
+`scripts/migrate.sh` to it, and asserts the result is **structurally identical**
+to a fresh database - relations, columns, indexes and constraints, compared over
+`scripts/schema-fingerprint.sql`, the same definition `migrate.sh` reports its
+delta from.
+
+That comparison is what catches the shape this schema is most exposed to: a
+column added inside a `CREATE TABLE IF NOT EXISTS` body and nowhere else is a
+no-op on every database that already has the table. It works on a fresh
+database, it passes every other check in the file, and it is a 500 on the node.
+The fix is the matching `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` beside it.
+
+The baseline is the newest revision of `schema.sql` whose DDL differs from the
+working tree's - where the live database is when a deploy carrying a schema
+change arrives. It never goes stale the way a pinned baseline file would, and
+comment-only edits are skipped so it is never already current. If none can be
+resolved the check **fails and says what to set**; it does not skip, because a
+run that could not build an older database has not tested the migration.
+`FLOWY_BASELINE_REV` points it anywhere, which is how to aim it at what a node
+is really running:
+
+```sh
+FLOWY_BASELINE_REV=$(cat ~/Projects/flowy-dogfood/.deployed-commit) ./run-tests.sh
+```
+
+To migrate without deploying, or to create a database from nothing - the path is
+the same one, and the gate checks both ends of it:
+
+```sh
+scripts/migrate.sh 'postgres://user@127.0.0.1:5432/flowy?sslmode=disable'
+```
 
 The store speaks the Postgres wire and nothing else. The spine of `schema.sql`
 depends on nothing that is Postgres the storage engine - no extensions, no
