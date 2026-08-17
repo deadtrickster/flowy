@@ -1,5 +1,5 @@
 import { CornerDownLeft, X } from "lucide-react";
-import { type KeyboardEvent, useState } from "react";
+import { type KeyboardEvent, useEffect, useRef, useState } from "react";
 
 import { CitedMessage } from "@/components/CitedMessage";
 import { Button } from "@/components/ui/button";
@@ -41,6 +41,21 @@ export function MessageBox({ citation, clearReply, disabled, onSend }: Props) {
   const [to, setTo] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // The box is disabled while a send is in flight, and A DISABLED ELEMENT LOSES
+  // FOCUS - the browser blurs it and nothing gives it back, so pressing enter
+  // dropped the caret and the next keystroke went nowhere. In a room where the
+  // normal rhythm is several short messages, that is a bug per message.
+  //
+  // Restored when the send finishes rather than inside send(), because the
+  // element is still disabled at that point and focus() on a disabled element
+  // is a no-op. It waits for the render that re-enables it.
+  const box = useRef<HTMLTextAreaElement>(null);
+  const wasSending = useRef(false);
+  useEffect(() => {
+    if (wasSending.current && !sending && !disabled) box.current?.focus();
+    wasSending.current = sending;
+  }, [sending, disabled]);
 
   const send = async () => {
     const body = draft.trim();
@@ -101,6 +116,7 @@ export function MessageBox({ citation, clearReply, disabled, onSend }: Props) {
       />
 
       <Textarea
+        ref={box}
         value={draft}
         disabled={disabled || sending}
         onChange={(event) => setDraft(event.target.value)}
