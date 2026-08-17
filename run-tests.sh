@@ -10892,6 +10892,11 @@ a_deleted_artifact_is_gone_and_stays_gone() {
 	recall
 	local id
 	id="$(new_artifact "$TOKEN_A" note "the one that gets deleted")" || return 1
+	# What B could see BEFORE the delete, because the leak assertion below is
+	# only meaningful against this. Asserting "B gets 404 afterwards" proves
+	# nothing if B could never read the row in the first place - that is a true
+	# reading of the wrong population, which this suite has caught four times.
+	want_status 404 GET "$TOKEN_B" "/api/artifact/$id" || return 1
 	api POST "$TOKEN_A" "/api/artifact/$id/delete" || return 1
 	want_eq "delete status" "$API_STATUS" 200 || return 1
 
