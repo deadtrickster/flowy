@@ -393,6 +393,14 @@ func (s *server) routes() http.Handler {
 	// internal/store/assign.go, and assign.go for the room's door beside this one.
 	api.HandleFunc("POST /api/todo/{id}/assignee", s.handleTodoAssign)
 	api.HandleFunc("GET /api/todo/{id}/assignee", s.handleTodoAssignee)
+	// The third piece of queue metadata, on the same terms as the other two:
+	// WHAT KIND OF WORK this is, out of a closed set that REFUSES anything else -
+	// which is what makes it countable and routable, and is the difference
+	// between it and the free-form tags beside it. Whoever can read the todo may
+	// set it, and the call lands as an entry naming who made it. See
+	// internal/store/todocategory.go, and category.go for this door.
+	api.HandleFunc("POST /api/todo/{id}/category", s.handleTodoCategory)
+	api.HandleFunc("GET /api/todo/{id}/category", s.handleTodoCategoryRead)
 	// An attachment's bytes, permission-filtered exactly as the row is - the
 	// card a reader sees names this, and "the card is there but the bytes are
 	// not" is a real state the filter produces, answered as metadata without

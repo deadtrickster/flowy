@@ -972,6 +972,21 @@ CREATE INDEX IF NOT EXISTS artifacts_supersedes_idx
     ON artifacts ((fields ->> 'supersedes'))
  WHERE fields ? 'supersedes';
 
+-- What KIND of work a queue item is, out of a closed set - see
+-- internal/store/todocategory.go, and note that the column above this one
+-- already means something else by "kind", which is why this key is not called
+-- that. Narrowing by it is the routing half of having a closed vocabulary at all
+-- ("give me the bugs"), so it is a WHERE clause on every such read and wants an
+-- index rather than a sequential scan.
+--
+-- Partial, exactly as the supersedes one is: the whole queue predates this key
+-- and none of it is backfilled, so the rows that carry it are a minority for as
+-- long as it takes the queue to turn over - and a row with no category is not a
+-- row this index has anything to say about.
+CREATE INDEX IF NOT EXISTS artifacts_category_idx
+    ON artifacts ((fields ->> 'category'))
+ WHERE fields ? 'category';
+
 -- ------------------------------------------------------------------- SEARCH
 -- Everything below this line is Postgres full text and is expected to be
 -- deleted when the store moves to SereneDB and search becomes vector search.

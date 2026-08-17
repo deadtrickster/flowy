@@ -1493,6 +1493,12 @@ var mintedEventTypes = map[string]bool{
 	// records is written in the same transaction, so an entry handed over here
 	// would be a closure nobody made about work that never moved.
 	EventTodoStatus: true,
+	// And a classification, for the same two reasons plus the one that is this
+	// field's own: the CLOSED SET is enforced by the verb. An entry a client
+	// could hand over would be a category outside the vocabulary with an entry
+	// behind it saying somebody chose it, which is precisely the row that makes a
+	// count wrong and unauditable at the same time.
+	EventTodoCategory: true,
 }
 
 // MintedEventType reports whether an event type is one this node's own handlers

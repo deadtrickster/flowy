@@ -6,7 +6,18 @@ import type { Artifact, Refused, Withheld } from "@/lib/api";
 import { TODO_PAGE, api } from "@/lib/api";
 import { useSession } from "@/lib/session";
 import { speakerStyle } from "@/lib/speakercolour";
-import { countTodos, sortTodos, statusStyle, todoAssignee, todoRoom } from "@/lib/todos";
+import {
+  TODO_KINDS,
+  countTodos,
+  kindStyle,
+  sortTodos,
+  statusStyle,
+  tagsIn,
+  todoAssignee,
+  todoKind,
+  todoRoom,
+  todoTags,
+} from "@/lib/todos";
 
 /**
  * The queue across projects: every todo this token can read, wherever it is.
@@ -52,6 +63,21 @@ export function Todos() {
   const [refused, setRefused] = useState<Refused | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
+  /**
+   * The two narrowings, and they are two because the things they narrow are two.
+   *
+   * kind is one value out of the closed set the node enforces - so this control
+   * is a fixed list, offers "unclassified" as the state most of the queue is in,
+   * and can be trusted to mean the same thing on every row. tag is a free label
+   * with no schema, so its list is built from what is actually on the page.
+   *
+   * Both are held here rather than in the URL because they are a way of reading
+   * this page rather than a place: what is worth linking to is the queue, and a
+   * shared link that silently hides two thirds of it is the sort of short list
+   * this page spends its whole header refusing to hand anybody.
+   */
+  const [kind, setKind] = useState("");
+  const [tag, setTag] = useState("");
 
   useEffect(() => {
     if (!token) {
@@ -85,8 +111,11 @@ export function Todos() {
     };
   }, [token]);
 
-  const sorted = sortTodos(todos);
+  const shown = narrow(todos, kind, tag);
+  const sorted = sortTodos(shown);
   const counts = countTodos(todos);
+  const tags = tagsIn(todos);
+  const filtered = kind !== "" || tag !== "";
   const { projects, personal } = scopeOf(todos, reach);
   const capped = todos.length >= TODO_PAGE;
   /**
@@ -111,6 +140,78 @@ export function Todos() {
             </span>
           ) : null}
         </div>
+        {/*
+          The two labels a todo carries, as two controls, because they are two
+          different things and reading them as one is the whole confusion this
+          round is about. KIND is one word out of a closed set the node refuses
+          anything outside of - a fixed list, and "unclassified" is on it because
+          that is the state most of this queue is in and it has to be askable
+          for. TAG is a free label with no schema, so its list is whatever is
+          actually written on the rows in front of you.
+
+          Both narrow the ROWS and neither narrows the counts or the scope line
+          above: those describe the queue, and a page that quietly restated its
+          own reach every time somebody picked a filter would be lying in the one
+          place it exists not to.
+        */}
+        {answered ? (
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <label className="flex items-center gap-1 text-muted-foreground">
+              kind
+              <select
+                data-todo-kind-filter=""
+                aria-label="kind of work"
+                value={kind}
+                onChange={(e) => setKind(e.target.value)}
+                className="rounded border border-border bg-background px-1 py-0.5 text-foreground"
+              >
+                <option value="">any</option>
+                {TODO_KINDS.map((name) => (
+                  <option key={name} value={name}>
+                    {name}
+                  </option>
+                ))}
+                <option value={UNCLASSIFIED}>unclassified</option>
+              </select>
+            </label>
+            <label className="flex items-center gap-1 text-muted-foreground">
+              tag
+              <select
+                data-todo-tag-filter=""
+                aria-label="tag"
+                value={tag}
+                onChange={(e) => setTag(e.target.value)}
+                className="rounded border border-border bg-background px-1 py-0.5 text-foreground"
+              >
+                <option value="">any</option>
+                {tags.map((name) => (
+                  <option key={name} value={name}>
+                    {name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {/* What the filter is doing to the list, in numbers, beside the
+                control that did it. A short list with nothing saying it is short
+                is the same failure as a capped one - see the cap notice above. */}
+            {filtered ? (
+              <span data-todo-filtered={shown.length} className="text-muted-foreground">
+                showing {shown.length} of {todos.length}
+                <button
+                  type="button"
+                  data-todo-filter-clear=""
+                  onClick={() => {
+                    setKind("");
+                    setTag("");
+                  }}
+                  className="ml-2 underline hover:no-underline"
+                >
+                  clear
+                </button>
+              </span>
+            ) : null}
+          </div>
+        ) : null}
         {/*
           The scope, in words, on the page. Not a tooltip and not a console line:
           somebody reading this list has to see how far it reaches without
@@ -187,18 +288,25 @@ and lands."
       <ol aria-label="todos across projects" className="min-h-0 flex-1 overflow-y-auto">
         {sorted.length === 0 ? (
           <li className="p-4 text-muted-foreground text-sm">
-            {emptyReads({
-              token: Boolean(token),
-              loaded,
-              failed: Boolean(error),
-              projects: projects.length,
-              withheld,
-              refused,
-            })}
+            {/* A filter that matched nothing is its own empty, and it is the
+                one this page must not report as any of the other four: "no
+                todos in the 3 projects you can read" is a false statement about
+                the fleet when the reader has narrowed to bugs and there are
+                none. So the filter is answered for first, in its own words. */}
+            {filtered && loaded && !error && todos.length > 0
+              ? `none of the ${todos.length} todos here are ${describe(kind, tag)} - the rest of the queue is behind the filter, not missing`
+              : emptyReads({
+                  token: Boolean(token),
+                  loaded,
+                  failed: Boolean(error),
+                  projects: projects.length,
+                  withheld,
+                  refused,
+                })}
           </li>
         ) : null}
         {sorted.map((todo) => (
-          <Row key={todo.id} todo={todo} />
+          <Row key={todo.id} todo={todo} onTag={setTag} />
         ))}
       </ol>
     </div>
@@ -313,18 +421,32 @@ function emptyReads({
  * cross-project list where those cannot be told apart is worse than no list -
  * somebody closes one believing they closed the other.
  */
-function Row({ todo }: { todo: Artifact }) {
+function Row({ todo, onTag }: { todo: Artifact; onTag: (tag: string) => void }) {
   const owner = todoAssignee(todo);
   const room = todoRoom(todo);
   const project = todo.project ?? "";
+  const kind = todoKind(todo);
+  const tags = todoTags(todo);
   return (
     <li
       data-todo-row={todo.id}
+      data-todo-kind={kind}
       className="flex flex-wrap items-baseline gap-2 border-border/60 border-b px-4 py-2 text-sm"
     >
       <Badge variant="secondary" style={statusStyle(todo.status)}>
         {todo.status || "todo"}
       </Badge>
+      {/* What kind of work it is, beside what state it is in, because those are
+          the two questions somebody scanning a queue is asking at once. Drawn
+          only when there is one: a row nobody classified says nothing rather
+          than being labelled "unclassified" on every line, which would put the
+          least informative word on the page more often than any other. The
+          filter above is where "which ones have no kind" is asked. */}
+      {kind ? (
+        <Badge variant="secondary" data-todo-kind-badge={kind} style={kindStyle(kind)}>
+          {kind}
+        </Badge>
+      ) : null}
       {/* Which project, in the same colour scheme the rest of the console names
           things in. The empty case is a todo with no project at all: personal to
           its owner, and said in those words rather than left blank, because a
@@ -344,6 +466,23 @@ function Row({ todo }: { todo: Artifact }) {
       >
         {todo.title || todo.id}
       </Link>
+      {/* The free labels, which are as many as somebody wrote and are nobody's
+          schema. Each one is the control that filters by it: a tag is only worth
+          drawing if the answer to "what else is tagged like this" is one click
+          away, and a list of words you can read and not act on is decoration. */}
+      {tags.map((name) => (
+        <button
+          key={name}
+          type="button"
+          data-todo-tag={name}
+          onClick={() => onTag(name)}
+          title={`show only todos tagged ${name}`}
+        >
+          <Badge variant="outline" className="cursor-pointer text-xs">
+            {name}
+          </Badge>
+        </button>
+      ))}
       {/* Where it was agreed, when it was agreed anywhere. It is a link back to
           that room's own panel, which is the surface that can answer it. */}
       {room ? (
@@ -353,4 +492,34 @@ function Row({ todo }: { todo: Artifact }) {
       ) : null}
     </li>
   );
+}
+
+/**
+ * UNCLASSIFIED is the filter value for "has no kind at all", and it is a word
+ * the node never sees: the closed set holds four kinds and absence is not one of
+ * them. It has to be askable for anyway - most of the queue is in that state,
+ * and "which of these has nobody classified" is the question somebody
+ * classifying them needs answered.
+ */
+const UNCLASSIFIED = "-none-";
+
+/** The rows a filter leaves. Both narrowings are ANDed: two controls that meant
+ * OR would make picking a second one WIDEN the list, which is not what a person
+ * setting two filters is asking for. */
+function narrow(todos: Artifact[], kind: string, tag: string): Artifact[] {
+  return todos.filter((todo) => {
+    if (kind === UNCLASSIFIED && todoKind(todo) !== "") return false;
+    if (kind !== "" && kind !== UNCLASSIFIED && todoKind(todo) !== kind) return false;
+    if (tag !== "" && !todoTags(todo).includes(tag)) return false;
+    return true;
+  });
+}
+
+/** What the filter is asking for, in the sentence an empty result gets. */
+function describe(kind: string, tag: string): string {
+  const parts: string[] = [];
+  if (kind === UNCLASSIFIED) parts.push("unclassified");
+  else if (kind !== "") parts.push(kind);
+  if (tag !== "") parts.push(`tagged ${tag}`);
+  return parts.join(" and ");
 }

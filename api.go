@@ -295,17 +295,30 @@ func (req *artifactRequest) fillFrom(old *store.Artifact) {
 
 // handleListArtifacts lists what the principal may read.
 //
-// GET /api/artifacts?type=&project=&status=&room=
+// GET /api/artifacts?type=&project=&status=&room=&category=
 //
 // room narrows to what was raised in one chat room, and is a narrowing like
 // type and kind beside it: the permission filter is the same clause it always
 // was, and a list with no room in it is every artifact the caller may read,
 // including the ones that carry no room at all.
+//
+// category is the same kind of narrowing over what kind of work a queue item is
+// - and it is the reason that set is closed, because "give me the bugs" is only
+// a question with an answer if there is one word for bugs.
 func (s *server) handleListArtifacts(w http.ResponseWriter, r *http.Request) {
 	p := principalOf(r)
 	q := r.URL.Query()
 
 	room, err := roomArg(q.Get("room"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody(err.Error()))
+		return
+	}
+	// What kind of work, out of the closed set. It goes through the same door
+	// every write of one goes through, so asking for a category that is not in
+	// the vocabulary is a refusal naming the vocabulary rather than an empty page
+	// that reads exactly like "there are no bugs".
+	category, err := store.NormalizeTodoCategory(q.Get("category"))
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, errorBody(err.Error()))
 		return
@@ -316,6 +329,7 @@ func (s *server) handleListArtifacts(w http.ResponseWriter, r *http.Request) {
 		Project:  q.Get("project"),
 		Status:   q.Get("status"),
 		Room:     room,
+		Category: category,
 		ScopeAll: scopeAll(r, p),
 		Limit:    intParam(q.Get("limit")),
 	})
@@ -499,6 +513,12 @@ var mintedTypes = map[string]bool{
 	// typed by hand would be a closure with none of the verb's refusals asked and
 	// nothing on the row to match it. See store.SetTodoStatus.
 	store.EventTodoStatus: true,
+	// And a classification. The closed set is the whole value of that field, and
+	// the only thing holding it closed is the verb - an entry typed in here would
+	// be "somebody filed this as a defect" recorded as a decision, with no such
+	// category on the row and nothing able to count either. See
+	// store.SetTodoCategory.
+	store.EventTodoCategory: true,
 }
 
 // handleAppendEvent appends to the log. The log is append-only: there is no

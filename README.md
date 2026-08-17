@@ -427,11 +427,11 @@ bug holds here, and the grant that opens a project opens the memories in it.
 
 | tool | arguments | what it does |
 | --- | --- | --- |
-| `mem_write` | `title, body, scope?, kind?, tags?, status?, room?, message?, assignee?, id?` | create an item, or update one by `id`. `room` puts a todo in that chat room's panel and `message` keeps the message it was raised out of - both filters, neither a visibility. `assignee` is who is carrying it, as a claim: sending it empty says nobody is, leaving it out on an update keeps whoever had it, and naming somebody hands them nothing |
+| `mem_write` | `title, body, scope?, kind?, tags?, status?, room?, message?, assignee?, category?, id?` | create an item, or update one by `id`. `room` puts a todo in that chat room's panel and `message` keeps the message it was raised out of - both filters, neither a visibility. `assignee` is who is carrying it, as a claim: sending it empty says nobody is, leaving it out on an update keeps whoever had it, and naming somebody hands them nothing |
 | `mem_read` | `id` | one item, or the same answer a missing id gets |
 | `mem_search` | `q, scope?, kind?, limit?` | ranked full text over title, body and tags |
 | `mem_list` | `scope?, kind?, limit?` | newest first |
-| `todos` | `scope?, room?` | `todo`, `feature` and `handoff` items that are not done, optionally narrowed to one room |
+| `todos` | `scope?, room?, category?` | `todo`, `feature` and `handoff` items that are not done, optionally narrowed to one room or to one kind of work |
 
 `scope` is `personal` (default), `project` or `shared`, and it is the item's
 visibility:
@@ -1039,7 +1039,7 @@ and deletes are tombstones.
 | route | what it does |
 | --- | --- |
 | `POST /api/artifacts` | create, or replace one you own **and can read**. Body: `type` (required), `kind`, `title`, `body`, `discovery`, `status`, `severity`, `tags`, `user_tags`, `related`, `visibility`, `project`, `file_path`, `fields`, `id?`. A new `id` is a ULID; `hlc` and `node` are stamped. An `id` that names a row you cannot read - another project's, a deleted one - is `404` and writes nothing |
-| `GET /api/artifacts?type=&kind=&project=&status=&room=` | `{"artifacts":[...]}`, permission-filtered, newest first, tombstones omitted. `room` narrows to what was raised in one chat room, beside `type` and `kind` and inside the same permission filter |
+| `GET /api/artifacts?type=&kind=&project=&status=&room=&category=` | `{"artifacts":[...]}`, permission-filtered, newest first, tombstones omitted. `room` narrows to what was raised in one chat room, beside `type` and `kind` and inside the same permission filter. `category` narrows to one kind of work out of the closed set - `bug`, `feature`, `chore`, `question` - and a word outside it is `400` naming the set rather than an empty page |
 | `GET /api/artifact/{id}` | the artifact, or `404` if it is missing **or** out of reach |
 | `POST /api/artifact/{id}/delete` | tombstone it and bump the clock past the write it removes |
 | `POST /api/artifact/{id}/status` | move it through the lifecycle. Body: `status`. Returns `{artifact, event}`. `409` on a move the workflow does not allow, `404` on one you cannot read |
@@ -1050,7 +1050,7 @@ and deletes are tombstones.
 | `POST /api/chat/{room}/say` | say something. Body: `body` (required), `thread?`, `parents?`, `to?` - the principal it is directed at, a user or an agent this node knows - and `cite?` `{message, start?, end?}`, the message this one is about and the byte span of it being quoted. Returns the event |
 | `GET /api/chat/{room}?since=&thread=` | `{"room","events":[...],"since","cursor"}` with `seq_hlc > since`, in log order |
 | `GET /api/chat/{room}/wait?cursor=&window=` | long poll: blocks up to 25s for events after `cursor`, returns them or an empty list |
-| `POST /api/chat/{room}/todo` | raise a todo out of this room. Body: `title` (required), `body?`, `status?`, `message?` - the message it came out of. Writes the item and one chat message naming it, under one clock reading. Returns `{item, event}`. `404` on a `message` you cannot read |
+| `POST /api/chat/{room}/todo` | raise a todo out of this room. Body: `title` (required), `body?`, `status?`, `category?` - one of `bug`, `feature`, `chore`, `question`, and anything else is `400` - and `message?`, the message it came out of. Writes the item and one chat message naming it, under one clock reading. Returns `{item, event}`. `404` on a `message` you cannot read |
 | `POST /api/chat/{room}/todo/{id}/assignee` | say who is carrying one of this room's todos. Body: `assignee` - a handle of at most 64 characters on one line, and an empty one says nobody. Moves the field and says so in the room as an ordinary chat message, under one clock reading, in the thread the todo was raised out of. Returns `{item, event}`. Whoever can read the todo may set it; a todo that is not in this room, or is out of reach, or is not a todo, is `404`/`400` |
 | `POST /api/dm/{to}` | send a direct message: no project, no room, read by you and `{to}` and by nobody else. Body: `body` (required), `thread?`, `parents?`. A reply may only name somebody already in the thread |
 | `GET /api/dm?since=&thread=` | `{"private":true,"events":[...],"since","cursor"}` - every direct message you are a party to. Not affected by `?scope=all` |
@@ -1634,6 +1634,105 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/
   -d '{"status":"triaged"}' 127.0.0.1:8787/api/artifact/01H.../status
 curl -s -H "Authorization: Bearer $TOKEN" 127.0.0.1:8787/api/artifact/01H.../history
 ```
+
+## What kind of work a todo is
+
+A todo carries **two** kinds of label and they are not variants of each other.
+
+**`tags` are free labels.** Any number of them, any word, nobody's schema, and
+they are folded into the search vector so a word that only ever appears in a tag
+still finds the item. Nothing refuses a tag and nothing is going to.
+
+**`category` is one word out of a closed set, and an unknown one is an ERROR.**
+
+```
+bug        something is broken and was not meant to be
+feature    something new that did not exist
+chore      work that has to happen and changes nothing anybody asked for
+question   it is not yet known what the work is
+```
+
+That is the whole vocabulary, and the refusal is the entire point of it. Tags
+cannot be counted or routed on: *how much of this queue is bugs* asked over a
+tag column answers whatever the last agent felt like typing, and
+`bug`/`bugs`/`defect`/`broken` are four populations that each look like a
+confident answer. A set that also took `defect` would be tags with extra steps.
+So `todos {category: "bug"}` and `GET /api/artifacts?...&category=bug` answer
+with the bugs, and a word outside the four is `400` naming the four rather than
+an empty page that reads exactly like *there are no bugs*.
+
+The bar for a fifth word is that somebody can say what the system would DO
+differently with it. Everything else is a tag.
+
+**It is `category` on the wire and "Kind" on screen.** A todo already IS
+`kind=todo` one level up - `artifacts.kind` is what makes the row a queue item
+at all - so a second field called `kind` would be one word meaning two things on
+one row, which is the defect that produced three separate misreadings of this
+queue in a single afternoon (status at the top level against assignee down in
+`fields`; a reader name against a principal). The operator never types the
+internal name, so the console labels it the way a person says it and the store
+keeps a word that can only mean one thing. A `memory/feature` item filed as a
+`chore` is then a sentence that reads correctly rather than a collision.
+
+**It sits where the other queue metadata sits.** The value rides `fields`
+beside `room`, `message` and `assignee`, and is lifted onto the row at read time
+by `CategoryOf` - beside `status` and `assignee`, in the same three
+permission-filtered read paths as `replaced_by`, never in `scanArtifact`. So ONE
+read answers all three, which is `e891944`'s finding and is not re-learned here:
+queue facts kept in two shapes get read wrong by clients that roll their own
+accessor, and every one of those reads looks like a success.
+
+**Absent is a value.** The whole queue predates this field and none of it is
+backfilled. Nothing refuses a row for having no category, nothing guesses one
+from a title - an inferred category is a number in a count that nobody asserted
+- and an unclassified todo reads, lists and drains exactly as it did before. It
+is simply not on the page that asked for the bugs. Setting one to empty is
+allowed too, and is how a wrong call is taken back.
+
+**Whoever can READ the todo may set it**, and may override what somebody else
+called it. Same ruling as the assignee and the status, for the same reason: what
+kind of work something is is a claim about the WORK, and the seat that picked
+the row up and found a bug underneath is routinely not the seat that typed the
+title. It hands nobody anything - the permission filter has never looked at this
+key - so a principal who cannot see the todo gets the `404` a read would give.
+Title and body stay the author's, and `mem_write` still refuses a stranger
+rewriting the words, loudly.
+
+**A classification is an event.** `type='todo.category'`, naming the todo, both
+ends of the move and the seat that made it, appended in the same transaction and
+under the same clock reading as the value on the row - so the row and the fold
+cannot disagree, and *who called this a bug* is answerable. An override appends
+rather than erasing, because a reclassification is an argument somebody had. The
+entry is minted (`mintedEventTypes`), so `POST /api/events` refuses one: the
+closed set is held closed by the verb, and an entry handed in by a client would
+be a category outside the vocabulary with a record saying somebody chose it.
+Like the other minted entries it does not cross a node boundary, so *who called
+it a bug* is answered on the node it was called one on; the value itself is on
+the row and replicates.
+
+Four doors, one implementation - `store.SetTodoCategory`:
+
+```sh
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"category":"bug"}' 127.0.0.1:8787/api/todo/01H.../category
+curl -s -H "Authorization: Bearer $TOKEN" 127.0.0.1:8787/api/todo/01H.../category
+curl -s -H "Authorization: Bearer $TOKEN" \
+  '127.0.0.1:8787/api/artifacts?type=memory&kind=todo&category=bug'
+```
+
+and `todo_category {todo, category}` over MCP, `mem_write {id, category}` as
+part of a write, and `POST /api/chat/{room}/todo {title, category}` at the
+raise. The read answer carries the vocabulary itself, so a client draws its
+control from the node rather than from a copy of the list that drifts.
+
+The console draws it as a badge beside the status badge - only when there is
+one, because labelling every unclassified row "unclassified" would put the least
+informative word on the page more often than any other - and the queue page has
+two controls: **kind**, a fixed list with `unclassified` on it, and **tag**,
+built from the labels actually on the rows. Each tag on a row is itself the
+filter for that tag. Neither narrows the counts or the scope line above them:
+those describe the queue, and a page that restated its own reach every time
+somebody picked a filter would be lying in the one place it exists not to.
 
 ## Federation
 

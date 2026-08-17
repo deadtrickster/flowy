@@ -613,13 +613,18 @@ func ownerLine(body string) string {
 // ArtifactQuery narrows a list or a search. Every field is optional; the
 // permission filter is not, and is added by the methods below.
 type ArtifactQuery struct {
-	Type       string
-	Kind       string   // one kind
-	Kinds      []string // any of these kinds; ORed with nothing, ANDed with the rest
-	Project    string
-	Status     string
-	NotStatus  string // exclude one status - what "still open" means for a todo
-	Room       string // the chat room the artifact was raised in - fields->>'room'
+	Type      string
+	Kind      string   // one kind
+	Kinds     []string // any of these kinds; ORed with nothing, ANDed with the rest
+	Project   string
+	Status    string
+	NotStatus string // exclude one status - what "still open" means for a todo
+	Room      string // the chat room the artifact was raised in - fields->>'room'
+	// Category narrows to one kind of work out of the closed set - see
+	// TodoCategories. This is the routing half of what a closed set is FOR: "give
+	// me the bugs" has to be a query the node answers rather than a filter each
+	// client writes over a free-text column, or the ontology is decoration.
+	Category   string
 	Visibility string // personal|project|shared - the memory scopes
 	Query      string // free text; SearchArtifacts only
 	ScopeAll   bool   // ?scope=all - honoured only for the operator principal
@@ -690,6 +695,15 @@ func (q ArtifactQuery) narrow(a *args, alias string) string {
 		// are global, and they are still on the page that shows all of them.
 		where += " AND " + alias + ".fields->>'" + RoomField + "' = " + a.next(q.Room)
 	}
+	if q.Category != "" {
+		// What kind of work it is, out of fields, and narrowing exactly as the
+		// room does: a todo nobody classified drops out of a narrowed list and
+		// stays in every unnarrowed one. The index that keeps this off a
+		// sequential scan is artifacts_category_idx, and it is partial for the
+		// same reason the supersedes one is - the rows carrying the key are the
+		// minority while the queue catches up.
+		where += " AND " + alias + ".fields->>'" + CategoryField + "' = " + a.next(q.Category)
+	}
 	return where
 }
 
@@ -729,6 +743,7 @@ func (d *DB) ListArtifacts(ctx context.Context, p *Principal, q ArtifactQuery) (
 		return nil, err
 	}
 	fillAssignee(out)
+	fillCategory(out)
 	return out, nil
 }
 
@@ -746,6 +761,25 @@ func fillAssignee(arts []*Artifact) {
 	for _, art := range arts {
 		if art != nil {
 			art.Assignee = AssigneeOf(art)
+		}
+	}
+}
+
+// fillCategory puts what kind of work the item is on the row itself, beside
+// Status and Assignee.
+//
+// It is fillAssignee one field along and for fillAssignee's reason: the three
+// facts a queue is read by must come back in one shape from one read, or each
+// client digs for the ones that are nested and some of them dig wrong. No query
+// - the value is already on the artifact, under CategoryField.
+//
+// Called beside fillAssignee in the permission-filtered read paths only, so a
+// derived value never reaches the sync paths or the signature. An item nobody
+// has classified is left empty, which is what it is.
+func fillCategory(arts []*Artifact) {
+	for _, art := range arts {
+		if art != nil {
+			art.Category = CategoryOf(art)
 		}
 	}
 }
@@ -869,6 +903,7 @@ func (d *DB) SearchArtifacts(ctx context.Context, p *Principal, q ArtifactQuery)
 		return nil, err
 	}
 	fillAssignee(found)
+	fillCategory(found)
 	return out, nil
 }
 
@@ -914,6 +949,7 @@ func (d *DB) ReadArtifact(ctx context.Context, p *Principal, id string, scopeAll
 		return nil, err
 	}
 	fillAssignee([]*Artifact{art})
+	fillCategory([]*Artifact{art})
 	return art, nil
 }
 

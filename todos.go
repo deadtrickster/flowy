@@ -121,10 +121,11 @@ func readableMessage(ctx context.Context, db *store.DB, p *store.Principal, id s
 // title is optional: the point of the surface is that it costs one line in the
 // middle of a conversation.
 type roomTodoRequest struct {
-	Title   string `json:"title"`
-	Body    string `json:"body"`
-	Status  string `json:"status"`
-	Message string `json:"message"`
+	Title    string `json:"title"`
+	Body     string `json:"body"`
+	Status   string `json:"status"`
+	Message  string `json:"message"`
+	Category string `json:"category"`
 }
 
 // handleRoomTodoRaise files a todo out of a room, and says so in the room.
@@ -198,7 +199,24 @@ func (s *server) handleRoomTodoRaise(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	fields, err := json.Marshal(withRoom(nil, room, req.Message))
+	// What kind of work it is, out of the closed set, and refused here rather
+	// than stored as whatever was typed: the vocabulary is one vocabulary at
+	// every door or it is not closed at all. Unstated is unclassified, which is
+	// what every todo raised before this field is - a room raising a line in the
+	// middle of a conversation is not made to classify it first.
+	category, err := store.NormalizeTodoCategory(req.Category)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody(err.Error()))
+		return
+	}
+	raised := withRoom(nil, room, req.Message)
+	if category != "" {
+		if raised == nil {
+			raised = map[string]any{}
+		}
+		raised[store.CategoryField] = category
+	}
+	fields, err := json.Marshal(raised)
 	if err != nil {
 		serverError(w, r, err)
 		return
@@ -246,7 +264,20 @@ func (s *server) handleRoomTodoRaise(w http.ResponseWriter, r *http.Request) {
 		Body:    "raised a todo: " + title,
 		Meta:    withTrace(json.RawMessage(meta), traceIDOf(r)),
 	}
-	if err := s.db.WriteMemory(r.Context(), art, e); err != nil {
+	events := []*store.Event{e}
+	// A stated category leaves its entry in the same transaction, for the reason
+	// mem_write's does: the author filing this as a bug and somebody else
+	// reclassifying it later are the same claim, and a value that sometimes has an
+	// entry behind it is a log that cannot answer who called it one.
+	if category != "" {
+		entry, err := store.TodoCategoryEntryEvent(art, principalOf(r), "", category)
+		if err != nil {
+			serverError(w, r, err)
+			return
+		}
+		events = append(events, entry)
+	}
+	if err := s.db.WriteMemory(r.Context(), art, events...); err != nil {
 		serverError(w, r, err)
 		return
 	}

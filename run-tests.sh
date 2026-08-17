@@ -4801,6 +4801,338 @@ a_stranger_may_close_a_todo_and_may_not_rewrite_it() {
 	printf 'a stranger finished the work and could not rewrite a word of it\n'
 }
 
+# ------------------------------------------------- what kind of work a todo is
+#
+# THE THIRD PIECE OF QUEUE METADATA, on the same terms as the other two, and one
+# property none of the others have: THE SET IS CLOSED AND IT REFUSES.
+#
+# The queue has always carried free labels - tags, many per item, anybody's word
+# for anything - and they are right for what they are. What they cannot do is be
+# counted or routed: "how much of this is bugs" over a tag column answers
+# whatever the last agent felt like typing, and bug/bugs/defect/broken are four
+# populations that all look like confident answers. So a todo also carries ONE
+# word out of four, and a fifth word is an ERROR rather than a row nothing can
+# act on.
+#
+# It is `category` on the wire and "Kind" on screen. A todo already IS kind=todo
+# one level up, and the same word meaning two things on one row is precisely the
+# defect that cost this room three misreadings in one day.
+#
+# Every check below drives a principal who did NOT raise the todo, because that
+# is the ruling: what kind of work something is, is a claim about the WORK - the
+# seat that picked the row up and found a bug underneath is usually not the seat
+# that typed the title.
+#
+# Its own room and its own titles: the item is reclassified three times here,
+# which is not a state to leave in a room another check reads.
+ROOM_KIND="filing"
+KIND_TODO="the pane loses the scroll position"
+KIND_PLAIN="a todo nobody has classified"
+KIND_TAGGED="quarry the idler shaft again"
+KIND_TAG="gearbox"
+readonly ROOM_KIND KIND_TODO KIND_PLAIN KIND_TAGGED KIND_TAG
+
+# call_of ACTOR - the entry one seat left in the last /api/todo/{id}/category
+# answer, and empty when that seat left none.
+#
+# Read by WHO made each call rather than by position, for claim_of's reason: the
+# doors this todo is filed through are two PROCESSES, each holding a clock of its
+# own, so which of two calls a millisecond apart sorts first is those clocks'
+# business. That the latest call wins and the ones before it stay is asked where
+# it is one clock's question: see TestAnybodyWhoCanReadATodoCanCategoriseIt.
+call_of() {
+	printf '%s' "$API_BODY" | jq -c --arg a "$1" 'first(.log[] | select(.actor == $a)) // empty'
+}
+
+# THE ONE THAT MATTERS. A principal who did not raise a todo can say what kind of
+# work it is, at both doors, and the item stays its author's in every other
+# respect.
+#
+# The operator goes first: a second person in the project, holding no share of
+# the item. Then A's agent disagrees over MCP, so the two doors are shown writing
+# one answer that the other reads back - the property that makes them one
+# implementation rather than two that agree today.
+a_todo_is_classified_by_somebody_who_did_not_write_it() {
+	recall
+	api POST "$TOKEN_A" "/api/chat/$ROOM_KIND/todo" \
+		"$(jq -nc --arg t "$KIND_TODO" '{title: $t}')" || return 1
+	want_eq "raise status" "$API_STATUS" 200 || return 1
+	local id
+	id="$(jqv .item.id)"
+	remember KIND_ID "$id"
+	want_eq "raised with no kind at all" "$(jqv .item.fields.category)" null || return 1
+
+	api POST "$TOKEN_OP" "/api/todo/$id/category" '{"category": "bug"}' || return 1
+	want_eq "file status" "$API_STATUS" 200 || return 1
+	want_eq "what kind of work it is" "$(jqv .category)" bug || return 1
+	# On the row as well as in the answer, and at the TOP LEVEL beside the status
+	# and the assignee: one read gets all three, which is what this field is put
+	# here for rather than left for each client to dig out of fields.
+	want_eq "and the item says so" "$(jqv .item.category)" bug || return 1
+	want_eq "with the status beside it" "$(jqv .item.status)" todo || return 1
+	# Absent rather than empty: nobody carrying it is omitted from the row the way
+	# every other empty derived value is, so the read normalises it here.
+	want_eq "and who is carrying it beside that" "$(jqv '.item.assignee // ""')" "" || return 1
+	# The rest of the item is still the author's.
+	want_eq "still its author's" "$(jqv .item.owner_user)" "$USER_A" || return 1
+	want_eq "with the title its author gave it" "$(jqv .item.title)" "$KIND_TODO" || return 1
+	want_eq "still #filing's" "$(jqv .item.fields.room)" "$ROOM_KIND" || return 1
+	# The vocabulary rides the answer, so a client draws the control from the node
+	# rather than from its own copy of a list that drifts.
+	want_eq "the vocabulary is on the answer" \
+		"$(jqv '.vocabulary | join(",")')" "bug,feature,chore,question" || return 1
+
+	# What the AUTHOR reads, which is the half that fails when the entry hangs off
+	# the wrong row.
+	api GET "$TOKEN_A" "/api/todo/$id/category" || return 1
+	want_eq "the author's read of what it is" "$(jqv .category)" bug || return 1
+
+	# The second door, and a third seat: A's agent says it is a chore after all.
+	want_tool todo_category "$TOKEN_A_AGENT" \
+		"$(jq -nc --arg i "$id" '{todo: $i, category: "chore"}')" || return 1
+	want_eq "reclassified over MCP" "$(tv .category)" chore || return 1
+	api GET "$TOKEN_OP" "/api/todo/$id/category" || return 1
+	want_eq "read back through the other door" "$(jqv .category)" chore || return 1
+	printf 'the operator and an agent both filed somebody else todo, over both doors\n'
+}
+
+# THE REFUSAL IS THE FEATURE. A word outside the set is an ERROR at every door
+# and nothing is written - a vocabulary that quietly took "defect" would hold two
+# words for one population, and the count that is the whole reason for having a
+# closed set would be wrong with nothing on screen to say so.
+#
+# The rest are the refusals every queue verb makes: an id that is not here, and
+# an id that is here and is not a queue item, get one answer.
+a_category_that_is_not_one_is_refused() {
+	recall
+	local id="$KIND_ID"
+
+	want_status 400 POST "$TOKEN_OP" "/api/todo/$id/category" '{"category": "defect"}' || return 1
+	case "$API_BODY" in
+	*"bug, feature, chore, question"*) ;;
+	*)
+		printf 'the refusal does not say what a kind may be: %s\n' "$API_BODY" >&2
+		return 1
+		;;
+	esac
+	want_tool_fails todo_category "$TOKEN_OP" \
+		"$(jq -nc --arg i "$id" '{todo: $i, category: "epic"}')" \
+		"is not a kind of work this queue has" || return 1
+	want_tool_fails mem_write "$TOKEN_A" \
+		"$(jq -nc --arg i "$id" '{id: $i, category: "urgent"}')" \
+		"is not a kind of work this queue has" || return 1
+	# The narrowed READ takes the same door: asking for a kind that is not one is
+	# a refusal naming the vocabulary rather than an empty list, which would read
+	# exactly like "there are no bugs".
+	want_status 400 GET "$TOKEN_A" "/api/artifacts?type=memory&kind=todo&category=defect" || return 1
+	want_tool_fails todos "$TOKEN_A" '{"category": "defect"}' \
+		"is not a kind of work this queue has" || return 1
+
+	# And none of that wrote anything.
+	api GET "$TOKEN_A" "/api/todo/$id/category" || return 1
+	want_eq "whatever it was, it still is" "$(jqv .category)" chore || return 1
+	want_eq "and nobody added an entry for a word that is not one" \
+		"$(printf '%s' "$API_BODY" | jq '[.log[] | select(.category == "defect" or .category == "epic")] | length')" \
+		0 || return 1
+
+	want_status 404 POST "$TOKEN_A" "/api/todo/01HNOSUCHTODO000000000000/category" \
+		'{"category": "bug"}' || return 1
+	# A bug is readable and is not a queue item: same answer, because naming an id
+	# here is not a way to find out what else it might be.
+	api POST "$TOKEN_A" /api/artifacts \
+		'{"type": "bug", "title": "readable, and not a queue item either", "status": "open"}' || return 1
+	want_eq "the bug this refuses on" "$API_STATUS" 200 || return 1
+	local bug
+	bug="$(jqv .id)"
+	want_status 200 GET "$TOKEN_A" "/api/artifact/$bug" || return 1
+	want_status 404 POST "$TOKEN_A" "/api/todo/$bug/category" '{"category": "bug"}' || return 1
+	printf 'five words outside the set refused at four doors, and nothing moved\n'
+}
+
+# Read permission is the bar, and it is a real bar. A principal who cannot read
+# the todo is refused at both doors and told exactly what a read of the id would
+# have told them - nothing about the row - and nothing moves.
+classifying_a_todo_you_cannot_read_is_refused() {
+	recall
+	local id="$KIND_ID"
+
+	want_status 404 POST "$TOKEN_B" "/api/todo/$id/category" '{"category": "feature"}' || return 1
+	want_status 404 GET "$TOKEN_B" "/api/todo/$id/category" || return 1
+	want_tool_fails todo_category "$TOKEN_B" \
+		"$(jq -nc --arg i "$id" '{todo: $i, category: "feature"}')" "no such todo" || return 1
+
+	api GET "$TOKEN_A" "/api/todo/$id/category" || return 1
+	want_eq "whatever it was, it still is" "$(jqv .category)" chore || return 1
+	want_eq "and nobody added an entry" \
+		"$(printf '%s' "$API_BODY" | jq --arg b "$USER_B" \
+			'[.log[] | select(.actor == $b)] | length')" 0 || return 1
+	printf 'B was refused at both doors and the todo is filed as it was\n'
+}
+
+# A classification says WHO made it and WHEN, which is the whole reason it is an
+# event and not a field write. A column records THAT something changed; the log
+# says the operator called this a bug and an agent called it a chore afterwards,
+# which is an argument with two sides rather than a value with no history.
+a_classification_records_who_made_it() {
+	recall
+	local id="$KIND_ID" op agent
+
+	api GET "$TOKEN_A" "/api/todo/$id/category" || return 1
+	want_eq "both calls are in the log" "$(jqv '.log | length')" 2 || return 1
+	op="$(call_of "$USER_OP")"
+	agent="$(call_of "$AGENT_A")"
+	if [ -z "$op" ] || [ -z "$agent" ]; then
+		printf 'the log does not name both seats: %s\n' \
+			"$(printf '%s' "$API_BODY" | jq -c .log)" >&2
+		return 1
+	fi
+	want_eq "the operator called it" "$(claimv "$op" .category)" bug || return 1
+	want_eq "as a person" "$(claimv "$op" .actor_kind)" user || return 1
+	want_eq "out of nothing" "$(claimv "$op" .from)" "" || return 1
+	want_eq "and the agent called it" "$(claimv "$agent" .category)" chore || return 1
+	want_eq "as an agent" "$(claimv "$agent" .actor_kind)" agent || return 1
+	want_eq "acting for its person" "$(claimv "$agent" .actor_user)" "$USER_A" || return 1
+	want_eq "naming what it was before" "$(claimv "$agent" .from)" bug || return 1
+	said_when "the operator's" "$(claimv "$op" .created)" || return 1
+	said_when "the agent's" "$(claimv "$agent" .created)" || return 1
+	# The standing call is one of the ones that were actually made, and it says
+	# when - a fold naming an entry nobody can find would be a claim with no
+	# provenance behind it, which is what this log exists to prevent.
+	want_eq "the standing call is one of the ones in the log" \
+		"$(printf '%s' "$API_BODY" | jq --arg e "$(jqv .standing.entry)" \
+			'[.log[] | select(.id == $e)] | length')" 1 || return 1
+	said_when "the standing call" "$(jqv .standing.at)" || return 1
+	# WHICH of the two the fold stands on is deliberately not asserted here, and
+	# the first version of this check asserting it is why. The two calls were made
+	# through two PROCESSES - `flowy serve` and `flowy mcp`, each holding a clock
+	# of its own - so which of them sorts last is those clocks' business rather
+	# than this surface's, exactly as it is for a claim and for a status move. The
+	# ROW is the deterministic answer and is asserted above, through both doors.
+	# That the latest call wins and the ones before it stay is asked where it is
+	# one clock's question and has one answer: see the store check beside this
+	# one, TestAnybodyWhoCanReadATodoCanCategoriseIt.
+
+	# Taking it back is a call too: the empty value is something somebody chose,
+	# and the log says so rather than saying nothing.
+	api POST "$TOKEN_OP" "/api/todo/$id/category" '{"category": ""}' || return 1
+	want_eq "unclassified again" "$(jqv .category)" "" || return 1
+	want_eq "and the operator's unfiling is in the log, by them" \
+		"$(printf '%s' "$API_BODY" | jq --arg a "$USER_OP" \
+			'[.log[] | select(.category == "" and .actor == $a)] | length')" 1 || return 1
+	want_eq "naming what it took it back from" \
+		"$(printf '%s' "$API_BODY" | jq -r --arg a "$USER_OP" \
+			'first(.log[] | select(.category == "" and .actor == $a)).from')" chore || return 1
+
+	# The author's own write leaves an entry as well. A value that sometimes has a
+	# call behind it and sometimes does not is a log that cannot answer the
+	# question it exists for, so mem_write appends one in the same transaction.
+	want_tool mem_write "$TOKEN_A" \
+		"$(jq -nc --arg i "$id" '{id: $i, category: "bug"}')" || return 1
+	api GET "$TOKEN_A" "/api/todo/$id/category" || return 1
+	want_eq "four calls now" "$(jqv '.log | length')" 4 || return 1
+	want_eq "the author left one too" "$(claimv "$(call_of "$USER_A")" .category)" bug || return 1
+	want_eq "and the unfiling is still in the log" \
+		"$(printf '%s' "$API_BODY" | jq '[.log[] | select(.category == "")] | length')" 1 || return 1
+
+	# And an entry is minted: the closed set is held closed by the verb, so one
+	# handed in through the generic event door would be a category outside the
+	# vocabulary with a record saying somebody chose it.
+	want_status 403 POST "$TOKEN_A" /api/events \
+		"$(jq -nc --arg i "$id" --arg r "$ROOM_KIND" '{type: "todo.category", room: $r,
+		   artifact: $i, body: "filed as defect", meta: {category: "defect", from: ""}}')" || return 1
+	api GET "$TOKEN_A" "/api/todo/$id/category" || return 1
+	want_eq "so the forged call is not in the log" "$(jqv '.log | length')" 4 || return 1
+	printf 'four calls by three seats, each saying who and when; a forged one refused\n'
+}
+
+# A TODO WITH NO KIND READS AND LISTS EXACTLY AS IT DID YESTERDAY, and the
+# narrowed read is the other half of what a closed set is for.
+#
+# Absent is a value. The whole queue predates this field and none of it is
+# backfilled: nothing refuses a row for having no kind, nothing guesses one from
+# a title, and an unclassified todo is on every page it was on before. What it is
+# NOT on is the page that asked for the bugs - which is the property that makes
+# `?category=bug` an answer rather than a suggestion.
+an_unclassified_todo_reads_and_lists_fine() {
+	recall
+	# The bug this narrows to, restated rather than inherited. A restatement is
+	# accepted - saying a bug is still a bug is somebody agreeing out loud - and a
+	# check that depended on where the check before it happened to leave the row
+	# would be asserting about the run rather than about the filter.
+	api POST "$TOKEN_A" "/api/todo/$KIND_ID/category" '{"category": "bug"}' || return 1
+	want_eq "the bug this narrows to" "$(jqv .category)" bug || return 1
+
+	api POST "$TOKEN_A" "/api/chat/$ROOM_KIND/todo" \
+		"$(jq -nc --arg t "$KIND_PLAIN" '{title: $t}')" || return 1
+	want_eq "raise status" "$API_STATUS" 200 || return 1
+	local plain
+	plain="$(jqv .item.id)"
+
+	# It reads, and says it is unclassified rather than failing or inventing one.
+	api GET "$TOKEN_A" "/api/artifact/$plain" || return 1
+	want_eq "read status" "$API_STATUS" 200 || return 1
+	want_eq "no kind on it" "$(jqv '.category // ""')" "" || return 1
+	want_eq "and no key in fields either" "$(jqv .fields.category)" null || return 1
+	# Its own log is empty rather than missing: nobody has classified it, which is
+	# not the same as a reader who cannot see the calls.
+	api GET "$TOKEN_A" "/api/todo/$plain/category" || return 1
+	want_eq "log status" "$API_STATUS" 200 || return 1
+	want_eq "no calls behind it" "$(jqv '.log | length')" 0 || return 1
+	want_eq "and no standing call" "$(jqv '.standing // "none"')" none || return 1
+
+	# It lists, beside the classified one.
+	api GET "$TOKEN_A" "/api/artifacts?type=memory&kind=todo&room=$ROOM_KIND" || return 1
+	want_todos "the room's panel" "$KIND_TODO" "$KIND_PLAIN" || return 1
+
+	# And the narrowed read is the bugs: the classified row and not the other.
+	api GET "$TOKEN_A" "/api/artifacts?type=memory&kind=todo&room=$ROOM_KIND&category=bug" || return 1
+	want_todos "the bugs in that room" "$KIND_TODO" -- "$KIND_PLAIN" || return 1
+	want_eq "and every row on it is a bug" \
+		"$(printf '%s' "$API_BODY" | jq '[.artifacts[] | select(.category != "bug")] | length')" \
+		0 || return 1
+	# The same question over MCP, which is where a drainer asks it.
+	want_tool todos "$TOKEN_A" "$(jq -nc --arg r "$ROOM_KIND" '{room: $r, category: "bug"}')" || return 1
+	want_eq "one bug over MCP" "$(tv '[.items[] | select(.title == "'"$KIND_TODO"'")] | length')" 1 || return 1
+	want_eq "and the unclassified one is not in it" \
+		"$(tv '[.items[] | select(.title == "'"$KIND_PLAIN"'")] | length')" 0 || return 1
+	printf 'an unclassified todo reads, lists, and stays out of the list of bugs\n'
+}
+
+# The same field over MCP and at the raise, which is where an agent states it.
+# It rides fields beside the room, an update that does not restate it keeps it,
+# and an empty one is a value rather than a silence. The tags beside it are free
+# labels and nothing here refuses them - which is the whole distinction, checked
+# on one item.
+mem_write_takes_a_category_and_tags_take_anything() {
+	recall
+	want_tool mem_write "$TOKEN_A" \
+		"$(jq -nc --arg t "$KIND_TAGGED" --arg g "$KIND_TAG" \
+			'{title: $t, scope: "project", kind: "todo", room: "filing",
+			  category: "feature", tags: [$g, "whatever-word-somebody-liked"]}')" || return 1
+	want_eq "the kind rode the write" "$(tv .item.fields.category)" feature || return 1
+	want_eq "beside the room" "$(tv .item.fields.room)" filing || return 1
+	want_eq "and the free labels went in unjudged" \
+		"$(tv '.item.tags | join(",")')" "$KIND_TAG,whatever-word-somebody-liked" || return 1
+	local id
+	id="$(tv .item.id)"
+
+	want_tool mem_write "$TOKEN_A" "{\"id\": \"$id\", \"status\": \"active\"}" || return 1
+	want_eq "kept by an update that did not restate it" \
+		"$(tv .item.fields.category)" feature || return 1
+
+	want_tool mem_write "$TOKEN_A" "{\"id\": \"$id\", \"category\": \"\"}" || return 1
+	want_eq "unfiled over MCP" "$(tv .item.fields.category)" "" || return 1
+
+	# And the raise door takes one, refusing a word that is not one in the same
+	# words - the vocabulary is one vocabulary at every door, or it is not closed.
+	api POST "$TOKEN_A" "/api/chat/$ROOM_KIND/todo" \
+		'{"title": "raised as a question", "category": "question"}' || return 1
+	want_eq "raised with a kind on it" "$(jqv .item.fields.category)" question || return 1
+	want_status 400 POST "$TOKEN_A" "/api/chat/$ROOM_KIND/todo" \
+		'{"title": "raised as nothing this queue has", "category": "wishlist"}' || return 1
+	printf 'the kind rode a write, survived an update, came off, and rode a raise\n'
+}
+
 # The panel SETS one, OVERRIDES one, and a poll of the room does not wipe it -
 # in a real browser, driving the control a person drives.
 #
@@ -5326,6 +5658,17 @@ the_reach_is_narrower_than_the_enumeration() {
 	want_eq "which is shown all the same" \
 		"$(printf '%s' "$API_BODY" | jq '[.projects[] | select(.id == "pb")] | length')" 1 || return 1
 	printf 'pc is shown pa and reads only pc; pa reads pa and pc and not pb\n'
+}
+
+# The two labels, in a browser: the kind badge on a row and the two controls that
+# narrow by kind and by tag. It runs against the rows the classification checks
+# above left behind - one bug, one nobody classified, one tagged - because a
+# filter is only shown to work by a page holding rows it must drop.
+console_filters_the_queue_by_kind_and_tag() {
+	recall
+	cd "$ROOT/web" || return 1
+	node scripts/kind-filter-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" \
+		"$KIND_TODO" "$KIND_PLAIN" "$KIND_TAGGED" "$KIND_TAG"
 }
 
 # The page itself, in a browser, for both principals - the check that discovers a
@@ -9434,6 +9777,36 @@ check "the queue lifecycle is the queue own, and its vocabulary is one, in the s
 	./internal/store
 check "closing a todo unblocks what waits on it, in the store" \
 	go test -count=1 -run TestClosingATodoUnblocksWhatWaitsOnIt ./internal/store
+
+# And a todo says WHAT KIND OF WORK IT IS, out of a closed set of four, beside
+# the free-form tags that have always been on it. The two are not variants of
+# each other: tags are unlimited and refuse nothing, and this one refuses
+# everything outside the set - which is the only reason a queue can be counted or
+# routed by it. The same ruling as the other two pieces of queue metadata, so
+# every check here drives a principal who did not raise the row.
+say "a todo is what kind of work"
+check "somebody who did not write a todo can say what kind of work it is, at both doors" \
+	a_todo_is_classified_by_somebody_who_did_not_write_it
+check "A KIND THAT IS NOT ONE IS REFUSED, at every door, and nothing is written" \
+	a_category_that_is_not_one_is_refused
+check "a todo you cannot read is a todo you cannot classify" \
+	classifying_a_todo_you_cannot_read_is_refused
+check "a classification says who made it and when, and an override appends" \
+	a_classification_records_who_made_it
+check "a todo with no kind reads and lists fine, and is not one of the bugs" \
+	an_unclassified_todo_reads_and_lists_fine
+check "mem_write and the raise both carry the kind, and tags take any word at all" \
+	mem_write_takes_a_category_and_tags_take_anything
+check "read permission is the whole bar for classifying, in the store" \
+	go test -count=1 \
+	-run 'TestAnybodyWhoCanReadATodoCanCategoriseIt|TestAPrincipalWhoCannotReadATodoCannotCategoriseIt' \
+	./internal/store
+check "the set is closed and the verb refuses anything outside it, in the store" \
+	go test -count=1 -run TestTheVerbRefusesACategoryThatIsNotOne ./internal/store
+check "an unclassified todo reads, lists, and drops out of a narrowed list, in the store" \
+	go test -count=1 -run TestATodoWithNoCategoryReadsAndListsFine ./internal/store
+check "the console draws the kind and filters by it and by a tag, in a browser" \
+	console_filters_the_queue_by_kind_and_tag
 
 check "the console paints the room's todos on the room page" \
 	console_renders_the_rooms_todos

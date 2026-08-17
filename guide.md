@@ -54,6 +54,44 @@ so a word you only ever put in a tag still finds the item. Tag by subject
 (`auth`, `deploy`, `postgres`) rather than by date or by session - the search
 already ranks by relevance and the store already keeps the clock.
 
+There is no list of allowed tags and there will not be one. Anything you want to
+say about an item that is not one of the four words below goes here.
+
+## What kind of work a todo is
+
+`category` is the other kind of label, and it is the opposite of a tag: ONE
+value, out of a CLOSED set, and anything else is REFUSED rather than stored.
+
+    bug        something is broken and was not meant to be
+    feature    something new that did not exist
+    chore      work that has to happen and changes nothing anybody asked for
+    question   it is not yet known what the work is
+
+That is the whole vocabulary. It is small on purpose: the point of a closed set
+is that `todos {category: "bug"}` answers with the bugs, and a set that also
+took `defect` and `bugs` and `broken` would answer with a third of them while
+looking exactly as confident. Everything the four words do not cover is a tag.
+
+The console calls this "Kind" because that is what a person calls it. The wire
+calls it `category` because `kind` already means something else one level up -
+`kind: "todo"` is what makes the item a queue item at all - and one word for two
+things is how three agents read the same queue three different ways in an
+afternoon.
+
+Empty means unclassified. That is legal, it is what every todo raised before
+this field is, and nothing is going to guess one from your title. Send it empty
+to take back a call you got wrong.
+
+- `todo_category {todo, category}` - set or override it on any todo you can
+  READ, yours or not. What kind of work something is, is a claim about the work:
+  the seat that picked the row up and found a bug underneath is usually not the
+  seat that typed the title. The call is recorded as a signed entry naming both
+  ends, so an argument about what something is has two sides on the record.
+- `mem_write {id, category}` - the same value as part of a write. On somebody
+  else's item, send `category` (and `status` and `assignee`) and nothing else:
+  the queue metadata changes hands, the words do not.
+- `todos {category}` narrows the queue to one kind of work.
+
 ## When to store
 
 Store when the fact will still be true after this session ends and would cost
@@ -78,7 +116,7 @@ the subject and a look at the open handoffs.
 
 ## Tools
 
-- `mem_write {title, body, scope?, kind?, tags?, status?, room?, message?, assignee?, id?}` -
+- `mem_write {title, body, scope?, kind?, tags?, status?, room?, message?, assignee?, category?, id?}` -
   create an item, or update one by passing its `id`. Fields you leave out keep
   their old values. Set `status: "done"` to close a todo.
 - `mem_read {id}` - one item. An item you may not read is reported the same way
@@ -86,8 +124,8 @@ the subject and a look at the open handoffs.
 - `mem_search {q, scope?, kind?, limit?}` - ranked full-text search over title,
   body and tags, filtered to what you may read.
 - `mem_list {scope?, kind?, limit?}` - newest first.
-- `todos {scope?, room?}` - todo, feature and handoff items that are not done,
-  optionally narrowed to one chat room. It answers `withheld: {rows, reason}`
+- `todos {scope?, room?, category?}` - todo, feature and handoff items that are
+  not done, optionally narrowed to one chat room or to one kind of work. It answers `withheld: {rows, reason}`
   when this node refused rows it would otherwise have handed you - a row naming
   somebody whose signing key is here and not signed with it. Read it: the list is
   short by that many, and an empty queue with a `withheld` on it is not the same

@@ -87,9 +87,15 @@ var tools = []tool{
 				"Send it empty to say nobody is. It hands the named party nothing - " +
 				"who may read the item is unchanged - and leaving it out on an update " +
 				"keeps whatever the item already said."),
+			"category": enumOrEmpty("What KIND of work a queue item is, out of a closed "+
+				"set - anything else is refused. It is what the queue is counted and routed "+
+				"by; use tags for every other label, they are free-form and unlimited. "+
+				"Empty means unclassified, which is legal and is what most items are. "+
+				"Leaving it out on an update keeps what the item is filed as.",
+				store.TodoCategories),
 			"id": str("Update the item with this id instead of creating one. An item " +
-				"somebody else wrote takes status and assignee - the queue metadata anybody " +
-				"who can read it may move - and refuses everything else."),
+				"somebody else wrote takes status, assignee and category - the queue " +
+				"metadata anybody who can read it may move - and refuses everything else."),
 		}, nil),
 		call: memWrite,
 	},
@@ -129,6 +135,9 @@ var tools = []tool{
 		InputSchema: object(props{
 			"scope": enum("Narrow to one scope.", memScopes),
 			"room":  str("Only the items raised in this chat room."),
+			"category": enum("Only the items filed as this kind of work. This is what "+
+				"the closed set is for: ask for the bugs and get the bugs.",
+				store.TodoCategories),
 		}, nil),
 		call: todosTool,
 	},
@@ -154,13 +163,14 @@ func toolSpecs() []tool { return allTools() }
 // allTools is every tool this server serves.
 func allTools() []tool {
 	out := make([]tool, 0, len(tools)+len(reportTools)+len(proposalTools)+len(depTools)+
-		len(assignTools)+len(attachmentTools)+len(worklogTools)+len(projectTools)+
-		len(observabilityTools))
+		len(assignTools)+len(categoryTools)+len(attachmentTools)+len(worklogTools)+
+		len(projectTools)+len(observabilityTools))
 	out = append(out, tools...)
 	out = append(out, reportTools...)
 	out = append(out, proposalTools...)
 	out = append(out, depTools...)
 	out = append(out, assignTools...)
+	out = append(out, categoryTools...)
 	out = append(out, attachmentTools...)
 	out = append(out, worklogTools...)
 	out = append(out, projectTools...)
@@ -229,6 +239,11 @@ type memWriteArgs struct {
 	// sends it empty says nobody is. Every other string on this struct means
 	// "unstated" when it is empty, which is why this one cannot be a string.
 	Assignee *string `json:"assignee"`
+	// A pointer for the same reason, one field along: "" is unclassified, which
+	// is a value somebody may choose and is what the whole queue already is, so
+	// an update that leaves the argument out has to keep the item filed as
+	// whatever it is filed as.
+	Category *string `json:"category"`
 }
 
 // memWrite creates a memory item, or replaces one the principal owns.
@@ -287,11 +302,24 @@ func memWrite(ctx context.Context, m *mcpServer, p *store.Principal, raw json.Ra
 			return nil, err
 		}
 	}
+	// The closed set is checked wherever the word arrives, exactly as the status
+	// vocabulary is: a category only this one door understands is a row nothing
+	// downstream can count, which is the one thing this field exists to prevent.
+	// See store.NormalizeTodoCategory.
+	category := ""
+	if a.Category != nil {
+		if category, err = store.NormalizeTodoCategory(*a.Category); err != nil {
+			return nil, err
+		}
+	}
 	var fields map[string]any
 	// Where the item was before this write, which is what the status entry names
 	// as the end it came from. Empty on a create, and empty for a row that never
 	// had a status at all.
 	var was string
+	// And what it was filed as, for the entry the classification leaves. Empty on
+	// a create and on every row raised before this field, which is most of them.
+	var wasCategory string
 
 	if a.ID != "" {
 		old, err := m.db.ReadArtifact(ctx, p, a.ID, false)
@@ -319,6 +347,9 @@ func memWrite(ctx context.Context, m *mcpServer, p *store.Principal, raw json.Ra
 			return memWriteQueueOnly(ctx, m, p, old, a)
 		}
 		was = old.Status
+		// And what it was filed as, which is the end the classification entry
+		// names as where it came from.
+		wasCategory = store.CategoryOf(old)
 		// An update states what changes; the rest of the item stands.
 		if art.Title == "" {
 			art.Title = old.Title
@@ -381,6 +412,14 @@ func memWrite(ctx context.Context, m *mcpServer, p *store.Principal, raw json.Ra
 			fields = map[string]any{}
 		}
 		fields[store.AssigneeField] = assignee
+	}
+	// Same rule for the category: written when it was stated, including empty,
+	// and an update that says nothing about it keeps what the item is filed as.
+	if a.Category != nil {
+		if fields == nil {
+			fields = map[string]any{}
+		}
+		fields[store.CategoryField] = category
 	}
 	if len(fields) > 0 {
 		raw, err := json.Marshal(fields)
@@ -484,6 +523,22 @@ func memWrite(ctx context.Context, m *mcpServer, p *store.Principal, raw json.Ra
 		}
 		events = append(events, entry)
 	}
+	// And a write that says WHAT KIND of work a queue item is leaves the
+	// classification entry, in the same transaction and for the third time for
+	// the same reason: the author filing their own todo as a bug here and
+	// somebody else reclassifying it through todo_category are the same claim,
+	// and a value that sometimes has an entry behind it is a log that cannot
+	// answer who called this a bug. See store.TodoCategoryEntryEvent.
+	//
+	// Only for the kinds the queue holds. A note is not work: filing one as a
+	// chore would be inventing an ontology for a thing that is not in the queue.
+	if a.Category != nil && isWorkKind(art.Kind) {
+		entry, err := store.TodoCategoryEntryEvent(art, p, wasCategory, category)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, entry)
+	}
 	if err := m.db.WriteMemory(ctx, art, events...); err != nil {
 		return nil, err
 	}
@@ -548,8 +603,9 @@ func memWriteQueueOnly(
 		// words are its author's, and where the work has got to is not.
 		return nil, refuseForbidden("memory item %s belongs to somebody else, so its %s "+
 			"%s not yours to change: an item's words are its author's. The queue metadata "+
-			"on it is not - mem_write {id, status} and {id, assignee}, todo_assign, and "+
-			"POST /api/artifact/%s/status all work for any principal who can READ the todo. "+
+			"on it is not - mem_write {id, status}, {id, assignee} and {id, category}, "+
+			"todo_assign, todo_category, and POST /api/artifact/%s/status all work for any "+
+			"principal who can READ the todo. "+
 			"This write stated more than that, so none of it was made",
 			a.ID, strings.Join(stated, ", "), plural(len(stated), "is", "are"), a.ID)
 	}
@@ -559,13 +615,23 @@ func memWriteQueueOnly(
 			"or a handoff carries a status and an assignee that anybody who can read it may "+
 			"move", a.ID, kindOrType(old))
 	}
-	if a.Assignee == nil && a.Status == "" {
+	if a.Assignee == nil && a.Status == "" && a.Category == nil {
 		return nil, refuseForbidden("memory item %s belongs to somebody else, so this write "+
 			"has to say which piece of the queue metadata it is moving: status, assignee, "+
-			"or both. Its title and body are its author's", a.ID)
+			"category, or any of them. Its title and body are its author's", a.ID)
 	}
 
 	art := old
+	if a.Category != nil {
+		// First, because it is the one most likely to be refused: a write that
+		// names a category outside the vocabulary should not have moved the
+		// assignee on its way to finding that out.
+		filed, _, err := m.db.SetTodoCategory(ctx, p, a.ID, *a.Category)
+		if err != nil {
+			return nil, err
+		}
+		art = filed
+	}
 	if a.Assignee != nil {
 		moved, _, err := m.db.AssignTodo(ctx, p, a.ID, *a.Assignee, nil)
 		if err != nil {
@@ -686,9 +752,10 @@ func guideTool(_ context.Context, _ *mcpServer, _ *store.Principal, _ json.RawMe
 
 func todosTool(ctx context.Context, m *mcpServer, p *store.Principal, raw json.RawMessage) (any, error) {
 	var a struct {
-		Scope string `json:"scope"`
-		Room  string `json:"room"`
-		Limit int    `json:"limit"`
+		Scope    string `json:"scope"`
+		Room     string `json:"room"`
+		Category string `json:"category"`
+		Limit    int    `json:"limit"`
 	}
 	if err := decodeParams(raw, &a); err != nil {
 		return nil, err
@@ -702,6 +769,13 @@ func todosTool(ctx context.Context, m *mcpServer, p *store.Principal, raw json.R
 	// The room narrows and does not widen: without it this is the whole queue,
 	// items with a room and items without, exactly as it has always been.
 	if q.Room, err = roomArg(a.Room); err != nil {
+		return nil, err
+	}
+	// And so does the category, through the same door every write of one goes
+	// through: asking for a kind of work that is not in the vocabulary is a
+	// refusal that names the vocabulary, rather than an empty list that reads
+	// like "there are no bugs".
+	if q.Category, err = store.NormalizeTodoCategory(a.Category); err != nil {
 		return nil, err
 	}
 

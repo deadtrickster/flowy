@@ -145,6 +145,93 @@ export function todoAssignee(artifact: Artifact): string {
   return todoOwner(artifact.body ?? "");
 }
 
+/**
+ * THE KIND OF WORK, which the node calls `category`.
+ *
+ * Two different things are labelled on a todo and they are not variants of each
+ * other. TAGS are free labels: any number of them, any word, nobody's schema,
+ * and they are searched with the title and the body. THIS is one value out of a
+ * closed set the node REFUSES anything outside of - which is the only reason it
+ * can be counted or routed on. A filter over tags answers "whatever people
+ * typed"; a filter over this answers "the bugs".
+ *
+ * It is called "Kind" here and `category` on the wire, and the difference is not
+ * an accident. A todo already IS kind=todo one level up, so the node cannot use
+ * that word twice without the two meanings being told apart by context - which
+ * is exactly the confusion this console should not pass on to the person reading
+ * it. They see one word, in the place a person expects it; the wire keeps a word
+ * that can only mean one thing.
+ *
+ * Empty is a todo nobody has classified. That is legal, it is most of this
+ * queue, and it is drawn as such rather than being guessed at from the title.
+ */
+export const TODO_KINDS = ["bug", "feature", "chore", "question"] as const;
+
+export type TodoKind = (typeof TODO_KINDS)[number];
+
+/** What the node calls it, off fields. Unknown words read as unclassified: the
+ * node refuses them on the way in, so one here came from somewhere this console
+ * cannot fix and is not a word to paint as though it were in the set. */
+export function todoKind(artifact: Artifact): string {
+  const named = fieldOf(artifact, "category").trim().toLowerCase();
+  return (TODO_KINDS as readonly string[]).includes(named) ? named : "";
+}
+
+/**
+ * The colour a kind is drawn in, on the same terms as statusStyle: the word
+ * stays inside the badge, so colour is the second signal and never the only
+ * one, and the colours are picked for what each one means.
+ *
+ * RED for a bug, because it is the one an operator scans for. BLUE for a
+ * feature, GREY-GREEN for a chore - work that has to happen and is nobody's
+ * news - and VIOLET for a question, which is the one that is not yet a piece of
+ * work at all.
+ */
+export function kindStyle(kind: string): { color: string; backgroundColor: string } {
+  const colour = KIND_COLOUR[kind] ?? "#8b93a7";
+  return { color: colour, backgroundColor: `color-mix(in srgb, ${colour} 18%, transparent)` };
+}
+
+const KIND_COLOUR: Record<string, string> = {
+  bug: "#d1626b", // red - something is broken
+  feature: "#5b8dd6", // blue - something new
+  chore: "#7d9c8a", // quiet green - has to happen, is not news
+  question: "#a481d4", // violet - not yet a piece of work
+};
+
+/**
+ * The free labels on an item: the author's tags and the node's own, as one
+ * list, deduplicated and in a stable order.
+ *
+ * Both columns are shown because both are labels a person put there - user_tags
+ * is what somebody typed on their own item and tags is what the surfaces that
+ * write items fill in - and a console that drew one of them would be hiding half
+ * the labels behind a distinction nobody reading the queue is making.
+ */
+export function todoTags(artifact: Artifact): string[] {
+  const all = [...(artifact.tags ?? []), ...(artifact.user_tags ?? [])];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of all) {
+    const tag = raw.trim();
+    if (!tag || seen.has(tag)) continue;
+    seen.add(tag);
+    out.push(tag);
+  }
+  return out.sort((a, b) => a.localeCompare(b));
+}
+
+/** Every tag in a queue, for the filter to offer. It is built from the rows on
+ * the page rather than from a list somewhere: tags have no schema, so what
+ * exists is whatever has been written. */
+export function tagsIn(list: Artifact[]): string[] {
+  const seen = new Set<string>();
+  for (const todo of list) {
+    for (const tag of todoTags(todo)) seen.add(tag);
+  }
+  return [...seen].sort((a, b) => a.localeCompare(b));
+}
+
 /** The body without the OWNER line, which is rendered as its own column. */
 export function todoDetail(body: string): string {
   return body

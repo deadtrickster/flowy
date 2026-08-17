@@ -350,6 +350,18 @@ type Artifact struct {
 	// population. A queue whose two most-read facts live in two different shapes
 	// invites exactly that, and the fix is not to document where they are.
 	Assignee string `json:"assignee,omitempty"`
+	// Category is WHAT KIND OF WORK this is, out of a closed set - see
+	// TodoCategories. It is put where Status and Assignee already are so that ONE
+	// read answers all three, which is the whole of e891944's finding and is not
+	// worth learning twice; it is derived at read time by CategoryOf and filled in
+	// the same three read paths as ReplacedBy, never in scanArtifact, so it does
+	// not ride the sync paths or the signature.
+	//
+	// It is called category and not kind because Kind is directly above it and
+	// means "this row is a todo". The console labels it "Kind" for the operator,
+	// who never sees this name. Empty is a todo nobody has classified, which is
+	// legal and is most of the queue.
+	Category string `json:"category,omitempty"`
 	// Reported and External are the forge link: whether this artifact has been
 	// filed as an issue somewhere, and where. Both are written only by the
 	// forge endpoints - see SetArtifactExternal - so an ordinary update of the
