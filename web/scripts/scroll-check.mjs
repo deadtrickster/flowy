@@ -5,7 +5,7 @@
  * back down offered instead. Reported by the user, who was reading the
  * transcript and kept being dragged to the end whenever anybody spoke.
  *
- *   node scripts/scroll-check.mjs BASE_URL TOKEN [POST_TOKEN]
+ *   node scripts/scroll-check.mjs BASE_URL TOKEN [POST_TOKEN] [ROOM]
  *
  * The assertion is THE SCROLL POSITION, not the pill. A version that renders
  * the pill and still jumps would pass any check that only asked whether the
@@ -23,11 +23,20 @@
 
 import { chromium } from "playwright";
 
-const [base, token, postToken] = process.argv.slice(2);
+const [base, token, postToken, roomArg] = process.argv.slice(2);
 if (!base || !token) {
-  console.error("usage: node scripts/scroll-check.mjs BASE_URL TOKEN [POST_TOKEN]");
+  console.error("usage: node scripts/scroll-check.mjs BASE_URL TOKEN [POST_TOKEN] [ROOM]");
   process.exit(2);
 }
+
+// ITS OWN ROOM BY DEFAULT, because this check WRITES - it seeds padding to have
+// something to scroll back through. Against the gate's throwaway node that is
+// harmless; pointed at a live node it dumps fixtures into whatever room you
+// named, and #general is the room the operator reads. That happened: fifty
+// padding messages in a person's transcript, from running a check by hand
+// against production. Rooms are a column here, so a fixture room costs nothing
+// and a shared one costs somebody their reading.
+const room = roomArg || "scrollcheck";
 
 // The app calls a reader "at the bottom" when they are within 24px of it, and
 // auto-scrolls those readers on purpose - following the room is right when you
@@ -44,7 +53,7 @@ const NEED_SCROLLBACK = 900;
 /** seedHistory posts until the transcript is tall enough to read back into. */
 async function seedHistory(base, poster, howMany) {
   for (let i = 0; i < howMany; i++) {
-    const r = await fetch(`${base}/api/chat/general/say`, {
+    const r = await fetch(`${base}/api/chat/${room}/say`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${poster}` },
       body: JSON.stringify({
@@ -66,7 +75,7 @@ try {
   await seedHistory(base, postToken || token, 25);
   const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
   await page.addInitScript((t) => localStorage.setItem("flowy.token", t), token);
-  await page.goto(`${base}/chat/general`, { timeout: 20_000 }).catch(() => {});
+  await page.goto(`${base}/chat/${room}`, { timeout: 20_000 }).catch(() => {});
   await page.waitForSelector("main div.whitespace-pre-wrap", { timeout: 15_000 }).catch(() => {});
 
   // The scroller is the element that actually overflows, found by asking the
@@ -81,6 +90,21 @@ try {
   if (!scrollable) {
     console.error("the transcript does not scroll here, so nothing about scrolling was tested");
     process.exit(1);
+  }
+
+  // WAIT FOR THE ROOM TO STOP GROWING before taking a position to compare
+  // against. The seeded messages arrive by the same poll as everything else, so
+  // loading the page immediately after seeding means the transcript is still
+  // filling in while the reader is placed - the content grows underneath them
+  // and the position drifts for a reason that has nothing to do with the
+  // behaviour under test. Measured: 375 -> 409 in a freshly seeded room, a
+  // "jump" that was just the last of the padding landing.
+  let settled = -1;
+  for (let waited = 0; waited < 15_000; waited += 400) {
+    const h = await scroller.evaluate((el) => el.scrollHeight);
+    if (h === settled) break;
+    settled = h;
+    await page.waitForTimeout(400);
   }
 
   // Scroll well back into the history, the way somebody reading does.
@@ -101,7 +125,7 @@ try {
     console.error(
       `not enough history to test: the reader is only ${Math.round(fromBottom)}px from the bottom, and the app treats anything under 24px as "at the end".
   A reader this close cannot tell "held position" apart from "followed the room", so a jump here would not be evidence of the bug.
-  Seed more messages into #general before this check.`,
+  Seed more messages into #${room} before this check.`,
     );
     process.exit(1);
   }
@@ -116,7 +140,7 @@ try {
   // indistinguishable from success - including when it is your own harness
   // doing the not-seeing.
   const poster = postToken || token;
-  const said = await fetch(`${base}/api/chat/general/say`, {
+  const said = await fetch(`${base}/api/chat/${room}/say`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${poster}` },
     body: JSON.stringify({ body: `scroll-check probe ${Date.now()}` }),
@@ -146,7 +170,7 @@ try {
     // faults wearing one sentence - the room never got it, the reader cannot
     // see it, or the page is not polling - and the next person should not have
     // to run this again with print statements to find out which.
-    const seen = await fetch(`${base}/api/chat/general?limit=500`, {
+    const seen = await fetch(`${base}/api/chat/${room}?limit=500`, {
       headers: { Authorization: `Bearer ${token}` },
     })
       .then((r) => r.json())

@@ -112,94 +112,97 @@ export function MessageList({ events, selected, onSelect, onCite, me }: Props) {
   };
 
   return (
-    <div
-      ref={scroller}
-      onScroll={onScroll}
-      className="relative flex flex-1 flex-col gap-2 overflow-y-auto p-4"
-    >
-      {pending > 0 ? (
-        <button
-          type="button"
-          onClick={jumpToBottom}
-          className="sticky bottom-2 z-10 mx-auto rounded-full border border-border bg-card px-3 py-1 text-xs shadow-sm hover:border-primary/50"
-        >
-          {pending} new message{pending === 1 ? "" : "s"} - jump to latest
-        </button>
-      ) : null}
-      <AnimatePresence initial={false}>
-        {events.map((event) => {
-          const agent = isAgent(event);
-          // For you, and not from you. An addressed message is still an
-          // ordinary message in the room - the same people read it, it sits in
-          // the same place - so this is a ring around it and never a filter.
-          const forMe = isMe(event.addressee) && !isMe(event.actor);
-          return (
-            <motion.div
-              key={event.id}
-              role="button"
-              tabIndex={0}
-              layout
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.18, ease: "easeOut" }}
-              onClick={(clicked) => {
-                // A click that ended a text selection has already cited that
-                // span - onMouseUp on the body fires before this - so selecting
-                // the message here would widen the citation straight back to
-                // the whole message.
-                const selection = window.getSelection();
-                if (
-                  selection &&
-                  !selection.isCollapsed &&
-                  selection.anchorNode &&
-                  clicked.currentTarget.contains(selection.anchorNode)
-                ) {
-                  return;
-                }
-                onSelect(event);
-              }}
-              onKeyDown={(keyed) => onKeyDown(keyed, event)}
-              className={cn(
-                "rounded-lg border border-border bg-card p-3 text-left transition-colors hover:border-primary/40",
-                forMe && "border-primary/50 bg-primary/5",
-                // A private message is drawn as a different thing, not as a
-                // room message with a note on it. The dashed edge is what a
-                // reader takes in without reading, and the badge below says
-                // which of the two it is in words - a direct message that
-                // looked identical to a room message would be a trap for
-                // whoever writes the next one.
-                event.private && "border-amber-500/60 border-dashed bg-amber-500/5",
-                selected?.id === event.id && "border-primary/70 ring-1 ring-primary/40",
-              )}
-            >
-              <div className="flex items-center gap-2 pb-1">
-                <Badge variant={agent ? "agent" : "human"}>{agent ? "agent" : "human"}</Badge>
-                {event.private ? (
-                  <Badge variant="outline" title="only the sender and the addressee can read this">
-                    private
-                  </Badge>
-                ) : null}
-                {/*
-                 * Who said it. The name the node recorded when it was said,
-                 * and the tail of the actor id when the message has none - a
-                 * room where every line was an id is what this replaces, and
-                 * the id stays on the title so it is still there to copy.
-                 */}
-                {/*
+    // The pill lives OUTSIDE the scroller, absolutely positioned over it.
+    // Inside, it was a flex child - `sticky` still occupies its slot in flow -
+    // so the moment it appeared it added its own height plus the gap to the
+    // content and pushed the reader down by exactly that much. Measured
+    // deterministically at 34px on three consecutive runs: 2988 -> 3022,
+    // 5601 -> 5635, 8214 -> 8248. Offering somebody a way back to the bottom
+    // must not itself move them, which is the whole complaint this component
+    // was fixed for.
+    <div className="relative flex min-h-0 flex-1 flex-col">
+      <div
+        ref={scroller}
+        onScroll={onScroll}
+        className="flex flex-1 flex-col gap-2 overflow-y-auto p-4"
+      >
+        <AnimatePresence initial={false}>
+          {events.map((event) => {
+            const agent = isAgent(event);
+            // For you, and not from you. An addressed message is still an
+            // ordinary message in the room - the same people read it, it sits in
+            // the same place - so this is a ring around it and never a filter.
+            const forMe = isMe(event.addressee) && !isMe(event.actor);
+            return (
+              <motion.div
+                key={event.id}
+                role="button"
+                tabIndex={0}
+                layout
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.18, ease: "easeOut" }}
+                onClick={(clicked) => {
+                  // A click that ended a text selection has already cited that
+                  // span - onMouseUp on the body fires before this - so selecting
+                  // the message here would widen the citation straight back to
+                  // the whole message.
+                  const selection = window.getSelection();
+                  if (
+                    selection &&
+                    !selection.isCollapsed &&
+                    selection.anchorNode &&
+                    clicked.currentTarget.contains(selection.anchorNode)
+                  ) {
+                    return;
+                  }
+                  onSelect(event);
+                }}
+                onKeyDown={(keyed) => onKeyDown(keyed, event)}
+                className={cn(
+                  "rounded-lg border border-border bg-card p-3 text-left transition-colors hover:border-primary/40",
+                  forMe && "border-primary/50 bg-primary/5",
+                  // A private message is drawn as a different thing, not as a
+                  // room message with a note on it. The dashed edge is what a
+                  // reader takes in without reading, and the badge below says
+                  // which of the two it is in words - a direct message that
+                  // looked identical to a room message would be a trap for
+                  // whoever writes the next one.
+                  event.private && "border-amber-500/60 border-dashed bg-amber-500/5",
+                  selected?.id === event.id && "border-primary/70 ring-1 ring-primary/40",
+                )}
+              >
+                <div className="flex items-center gap-2 pb-1">
+                  <Badge variant={agent ? "agent" : "human"}>{agent ? "agent" : "human"}</Badge>
+                  {event.private ? (
+                    <Badge
+                      variant="outline"
+                      title="only the sender and the addressee can read this"
+                    >
+                      private
+                    </Badge>
+                  ) : null}
+                  {/*
+                   * Who said it. The name the node recorded when it was said,
+                   * and the tail of the actor id when the message has none - a
+                   * room where every line was an id is what this replaces, and
+                   * the id stays on the title so it is still there to copy.
+                   */}
+                  {/*
                   In the speaker's own colour, derived from the name so the
                   same person is the same colour here, in the roster and on a
                   todo they own. The name stays: colour is an accelerator for
                   people who see it, never the only thing carrying who spoke.
                 */}
-                <span
-                  className="rounded px-1.5 py-0.5 font-mono text-xs"
-                  style={speakerStyle(speaker(event))}
-                  title={event.actor}
-                >
-                  {speaker(event)}
-                </span>
-                {/*
+                  <span
+                    className="rounded px-1.5 py-0.5 font-mono text-xs"
+                    style={speakerStyle(speaker(event))}
+                    title={event.actor}
+                  >
+                    {speaker(event)}
+                  </span>
+                  {/*
                   Whose word this is, which is a different question from whose
                   name is on it. "authored" means this node verified a signature
                   made with the speaker's own key; "attributed" means it could
@@ -214,36 +217,38 @@ export function MessageList({ events, selected, onSelect, onCite, me }: Props) {
                   verified one is the badge. Neither is hidden: a reader who
                   cannot tell the two apart is the reader this replaces.
                 */}
-                {event.authorship === "authored" ? (
-                  <Badge
-                    variant="outline"
-                    title={`${speaker(event)} signed this with their own key, and this node verified it`}
-                  >
-                    signed
-                  </Badge>
-                ) : (
-                  <span
-                    className="text-[11px] text-muted-foreground"
-                    title="attributed: this node holds no signature of the speaker's own for this message, so it rests on the word of the node that relayed it"
-                  >
-                    attributed
+                  {event.authorship === "authored" ? (
+                    <Badge
+                      variant="outline"
+                      title={`${speaker(event)} signed this with their own key, and this node verified it`}
+                    >
+                      signed
+                    </Badge>
+                  ) : (
+                    <span
+                      className="text-[11px] text-muted-foreground"
+                      title="attributed: this node holds no signature of the speaker's own for this message, so it rests on the word of the node that relayed it"
+                    >
+                      attributed
+                    </span>
+                  )}
+                  {event.addressee ? (
+                    <Badge variant="outline">
+                      to {forMe ? "you" : shortId(event.addressee, 8)}
+                    </Badge>
+                  ) : null}
+                  <span className="ml-auto text-muted-foreground text-xs">
+                    {clock(event.created)}
                   </span>
-                )}
-                {event.addressee ? (
-                  <Badge variant="outline">to {forMe ? "you" : shortId(event.addressee, 8)}</Badge>
-                ) : null}
-                <span className="ml-auto text-muted-foreground text-xs">
-                  {clock(event.created)}
-                </span>
-              </div>
-              {/*
+                </div>
+                {/*
                 What this message is answering, above what it says. The words
                 are the node's, cut out of the message being quoted for
                 whoever is reading - see CitedMessage - so this is a quotation
                 and not the citing speaker's account of one.
               */}
-              {event.citation ? <CitedMessage citation={event.citation} /> : null}
-              {/*
+                {event.citation ? <CitedMessage citation={event.citation} /> : null}
+                {/*
                 The body, with the @names the node resolved drawn in the
                 colour of whoever they name - the same colour that person
                 speaks in above, because both come from the name. A mention of
@@ -258,74 +263,84 @@ export function MessageList({ events, selected, onSelect, onCite, me }: Props) {
                 citation above and the ids below would each shift every offset
                 by their own length.
               */}
-              <div
-                data-body={event.id}
-                className="select-text whitespace-pre-wrap break-words text-sm"
-                onMouseUp={(released) => {
-                  // Markdown-rendered bodies carry rendered text, not the raw
-                  // body, so a span measured here would quote the wrong bytes.
-                  if (isMarkdown(event.body)) return;
-                  const span = selectedSpan(released.currentTarget, event.body);
-                  if (span && onCite) onCite(event, span.start, span.end);
-                }}
-              >
-                {isMarkdown(event.body) ? (
-                  // A body with structure renders as what it is - the code
-                  // block a log is, the list a plan is - rather than as a
-                  // wall of signs. Sanitized because bodies are agent-written;
-                  // the same renderer the report page uses, at chat size.
-                  //
-                  // Span citations are skipped for these: a cite records byte
-                  // offsets into the RAW body, and markdown rendering changes
-                  // the visible text, so a span selected against the rendered
-                  // DOM would quote the wrong bytes. Whole-message replies
-                  // still work - they name the id, not a span.
-                  //
-                  <div
-                    className="report-body text-sm"
-                    dangerouslySetInnerHTML={{
-                      __html: DOMPurify.sanitize(
-                        marked.parse(event.body, { async: false }) as string,
+                <div
+                  data-body={event.id}
+                  className="select-text whitespace-pre-wrap break-words text-sm"
+                  onMouseUp={(released) => {
+                    // Markdown-rendered bodies carry rendered text, not the raw
+                    // body, so a span measured here would quote the wrong bytes.
+                    if (isMarkdown(event.body)) return;
+                    const span = selectedSpan(released.currentTarget, event.body);
+                    if (span && onCite) onCite(event, span.start, span.end);
+                  }}
+                >
+                  {isMarkdown(event.body) ? (
+                    // A body with structure renders as what it is - the code
+                    // block a log is, the list a plan is - rather than as a
+                    // wall of signs. Sanitized because bodies are agent-written;
+                    // the same renderer the report page uses, at chat size.
+                    //
+                    // Span citations are skipped for these: a cite records byte
+                    // offsets into the RAW body, and markdown rendering changes
+                    // the visible text, so a span selected against the rendered
+                    // DOM would quote the wrong bytes. Whole-message replies
+                    // still work - they name the id, not a span.
+                    //
+                    <div
+                      className="report-body text-sm"
+                      dangerouslySetInnerHTML={{
+                        __html: DOMPurify.sanitize(
+                          marked.parse(event.body, { async: false }) as string,
+                        ),
+                      }}
+                    />
+                  ) : (
+                    splitBody(event.body, event.meta?.mentions).map((run) =>
+                      run.name ? (
+                        <span
+                          key={run.key}
+                          data-mention={run.id}
+                          className={cn(
+                            "rounded px-0.5 font-medium",
+                            isMe(run.id) && "ring-1 ring-primary/70",
+                          )}
+                          style={speakerStyle(run.name)}
+                        >
+                          {run.text}
+                        </span>
+                      ) : (
+                        run.text
                       ),
-                    }}
-                  />
-                ) : (
-                  splitBody(event.body, event.meta?.mentions).map((run) =>
-                    run.name ? (
-                      <span
-                        key={run.key}
-                        data-mention={run.id}
-                        className={cn(
-                          "rounded px-0.5 font-medium",
-                          isMe(run.id) && "ring-1 ring-primary/70",
-                        )}
-                        style={speakerStyle(run.name)}
-                      >
-                        {run.text}
-                      </span>
-                    ) : (
-                      run.text
-                    ),
-                  )
-                )}
-              </div>
-              {event.meta?.attachments ? (
-                <AttachmentCards ids={event.meta.attachments.split(" ").filter(Boolean)} />
-              ) : null}
-              <div className="flex gap-2 pt-1 font-mono text-[11px] text-muted-foreground">
-                <span>#{shortId(event.id)}</span>
-                <span>thread {shortId(event.thread)}</span>
-                {event.parents.length > 0 ? (
-                  <span>← {event.parents.map((id) => shortId(id)).join(" ")}</span>
-                ) : (
-                  <span>opens a thread</span>
-                )}
-              </div>
-            </motion.div>
-          );
-        })}
-      </AnimatePresence>
-      <div ref={bottom} />
+                    )
+                  )}
+                </div>
+                {event.meta?.attachments ? (
+                  <AttachmentCards ids={event.meta.attachments.split(" ").filter(Boolean)} />
+                ) : null}
+                <div className="flex gap-2 pt-1 font-mono text-[11px] text-muted-foreground">
+                  <span>#{shortId(event.id)}</span>
+                  <span>thread {shortId(event.thread)}</span>
+                  {event.parents.length > 0 ? (
+                    <span>← {event.parents.map((id) => shortId(id)).join(" ")}</span>
+                  ) : (
+                    <span>opens a thread</span>
+                  )}
+                </div>
+              </motion.div>
+            );
+          })}
+        </AnimatePresence>
+        <div ref={bottom} />
+      </div>
+      {pending > 0 ? (
+        <button
+          type="button"
+          onClick={jumpToBottom}
+          className="-translate-x-1/2 absolute bottom-2 left-1/2 z-10 rounded-full border border-border bg-card px-3 py-1 text-xs shadow-sm hover:border-primary/50"
+        >
+          {pending} new message{pending === 1 ? "" : "s"} - jump to latest
+        </button>
+      ) : null}
     </div>
   );
 }
