@@ -245,7 +245,17 @@ func (d *DB) CreateArtifact(ctx context.Context, a *Artifact) error {
 	if err := d.fill(a); err != nil {
 		return err
 	}
-	if err := requireProjectPtr(ctx, d.sql, a.Project); err != nil {
+	return d.createArtifact(ctx, d.sql, a)
+}
+
+// createArtifact is CreateArtifact against whatever is in hand, with the
+// reading already stamped on the row - the pool for a create on its own, a
+// transaction for one that is half of an operation. It is upsertArtifact's
+// counterpart, and it is split out for the same reason: an operation that
+// writes an artifact and something else as one thing has to write both through
+// the same tx, and the alternative is a second copy of this INSERT.
+func (d *DB) createArtifact(ctx context.Context, q execer, a *Artifact) error {
+	if err := requireProjectPtr(ctx, q, a.Project); err != nil {
 		return err
 	}
 	// Minted here and signed with the row, not left to the column - see
@@ -260,7 +270,7 @@ func (d *DB) CreateArtifact(ctx context.Context, a *Artifact) error {
 	if len(a.Fields) > 0 {
 		fields = []byte(a.Fields)
 	}
-	err := d.sql.QueryRowContext(ctx,
+	err := q.QueryRowContext(ctx,
 		`INSERT INTO artifacts (id, type, kind, project, owner_user, title, body, discovery,
 		                        status, severity, tags, user_tags, related, visibility,
 		                        file_path, fields, hlc, node, tombstone, search, sig, created)

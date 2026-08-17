@@ -40,10 +40,9 @@ const reportType = "report"
 // a document a person reads, and it keeps the searchable thing and the
 // readable thing the same thing: the body is what report_search reaches, so a
 // corpus that quietly outgrew the row would become a corpus search cannot see.
-// Anything larger is an attachment referenced from the body - a summary plus a
-// content-addressed reference - which is a path this surface does not open
-// yet; the refusal says so rather than truncating a document behind the
-// caller's back.
+// Anything larger is an attachment referenced from the body - a summary plus
+// the id attachment_write hands back - and the refusal says so rather than
+// truncating a document behind the caller's back.
 const maxReportBody = 100_000
 
 // reportTools is the report surface, appended in allTools rather than written
@@ -135,8 +134,9 @@ func reportWrite(ctx context.Context, m *mcpServer, p *store.Principal, raw json
 
 	if len(a.Body) > maxReportBody {
 		return nil, fmt.Errorf("report body is %d bytes, over the %d ceiling - "+
-			"publish a summary as the body and reference the full document as an "+
-			"attachment instead of carrying it in the row", len(a.Body), maxReportBody)
+			"publish a summary as the body and put the full document through "+
+			"attachment_write, naming the id it hands back, instead of carrying it "+
+			"in the row", len(a.Body), maxReportBody)
 	}
 
 	art := &store.Artifact{

@@ -1082,6 +1082,210 @@ entries_are_on_the_timeline_and_not_postable_onto_it() {
 		"$(jqv .error)"
 }
 
+# ----------------------------------------------------------------- attachments
+#
+# An attachment is an artifact with bytes, and every one of these checks is
+# about the bytes: the artifact half rides the same store, the same filter and
+# the same write as a memory item, and is already asserted above.
+#
+# They are driven over the wire like the rest of the MCP checks, and for a
+# sharper reason here than elsewhere. What is being claimed is that a payload
+# survives a JSON-RPC envelope, a base64 hop, a bytea column and the trip back -
+# so a check that called the handler in-process would be asserting the one part
+# of that path nobody doubted.
+
+# att_fixture FILE - the payload, written to a file because a bash variable
+# cannot hold it: a NUL byte terminates a C string, so a fixture typed as a
+# shell string is silently a shorter fixture. That is the same class of bug
+# these checks exist to catch, one layer down.
+#
+# A newline, a NUL, and two bytes that are not valid UTF-8. Anything ASCII would
+# round-trip through a text-only path that mangles binary.
+att_fixture() {
+	printf 'BUILD log\n\000panic: nil\n\377\376\000\r\nend' >"$1"
+}
+
+# att_args FILE TITLE [CLAIM] - the arguments of one attachment_write, built as
+# a file. The content is megabytes at its ceiling and execve caps a single
+# argument at 128 KiB, so nothing here passes a payload as an argument to
+# anything: jq reads it with --rawfile and curl posts the request from disk.
+att_args() {
+	local payload=$1 title=$2 claim=${3-} b64="$WORK/att-b64"
+	base64 -w0 "$payload" >"$b64" || return 1
+	jq -n --arg t "$title" --arg c "$claim" --rawfile b "$b64" \
+		'{title: $t, content_base64: ($b | rtrimstr("\n"))}
+		 + (if $c == "" then {} else {content_type: $c} end)' >"$WORK/att-args.json"
+}
+
+# tool_file NAME TOKEN ARGS_FILE - one tools/call whose arguments are on disk.
+# Same three outputs as `tool`, so the assertions read the same.
+tool_file() {
+	local name=$1 token=$2 file=$3
+	jq -n --arg n "$name" --slurpfile a "$file" \
+		'{jsonrpc: "2.0", id: 1, method: "tools/call",
+		  params: {name: $n, arguments: $a[0]}}' >"$WORK/att-req.json" || return 1
+	MCP_BODY="$(curl --silent --show-error -X POST -H 'Content-Type: application/json' \
+		-H "Authorization: Bearer $token" --data-binary "@$WORK/att-req.json" \
+		"http://127.0.0.1:$MCP_PORT/mcp")" || return 1
+	TOOL_ERR="$(printf '%s' "$MCP_BODY" |
+		jq -r '.error.message // (if .result.isError then .result.content[0].text else "" end)')"
+	TOOL_JSON="$(printf '%s' "$MCP_BODY" |
+		jq -r 'if .error or .result.isError then "null" else .result.content[0].text end')"
+}
+
+# The claim the surface rests on: what came out is what went in, compared byte
+# for byte with cmp rather than by eye or by length.
+an_attachment_round_trips_byte_for_byte() {
+	recall
+	local in="$WORK/att-in" out="$WORK/att-out"
+	att_fixture "$in"
+	att_args "$in" "the build log that panicked" || return 1
+
+	tool_file attachment_write "$TOKEN_A" "$WORK/att-args.json" || return 1
+	if [ -n "$TOOL_ERR" ]; then
+		printf 'attachment_write failed: %s\n' "$TOOL_ERR" >&2
+		return 1
+	fi
+	want_eq "type" "$(tv .item.type)" attachment || return 1
+	want_eq "scope defaults to project" "$(tv .item.visibility)" project-only || return 1
+	want_eq "project" "$(tv .item.project)" pa || return 1
+	want_eq "owner" "$(tv .item.owner_user)" "$USER_A" || return 1
+	want_eq "the size it recorded" "$(tv .size)" "$(wc -c <"$in")" || return 1
+	want_eq "the digest it recorded" "$(tv .sha256)" "$(sha256sum <"$in" | cut -d' ' -f1)" || return 1
+
+	local id
+	id="$(tv .item.id)"
+	remember ATTACHMENT "$id"
+
+	# The bytes are not in the artifact row: body is the prose, and a text
+	# column could not have held that NUL anyway.
+	want_eq "the row carries no payload in its body" "$(tv .item.body)" "" || return 1
+
+	want_tool attachment_read "$TOKEN_A" "{\"id\": \"$id\"}" || return 1
+	tv .content_base64 | base64 -d >"$out" || return 1
+	if ! cmp -s "$in" "$out"; then
+		printf 'the bytes did not survive the round trip:\n' >&2
+		cmp -l "$in" "$out" | head -5 >&2
+		return 1
+	fi
+	want_eq "the size it read back" "$(tv .size)" "$(wc -c <"$in")" || return 1
+	printf 'attachment %s: %s bytes back, identical (NUL and newline included)\n' \
+		"$id" "$(wc -c <"$out")"
+}
+
+# The ceiling, and the number in the refusal. Over it is refused whole: an
+# upload that came back as a shorter attachment with nothing said would be
+# somebody debugging against half a log without knowing it.
+an_attachment_over_the_ceiling_is_refused_with_the_number() {
+	recall
+	local big="$WORK/att-big"
+	head -c 4194305 /dev/urandom >"$big" || return 1
+	att_args "$big" "one byte over" || return 1
+
+	tool_file attachment_write "$TOKEN_A" "$WORK/att-args.json" || return 1
+	if [ -z "$TOOL_ERR" ]; then
+		printf 'an attachment of %s bytes was accepted\n' "$(wc -c <"$big")" >&2
+		return 1
+	fi
+	# Kept, because the list below is another call and TOOL_ERR is the last
+	# call's.
+	local refusal=$TOOL_ERR want
+	for want in 4194305 4194304 truncat; do
+		case "$refusal" in
+		*"$want"*) ;;
+		*)
+			printf 'the refusal is %q and never says %q\n' "$refusal" "$want" >&2
+			return 1
+			;;
+		esac
+	done
+
+	# And nothing landed: the refusal is not a half write with a message.
+	want_tool attachment_list "$TOKEN_A" '{"limit": 200}' || return 1
+	want_eq "nothing was stored under the refused title" \
+		"$(printf '%s' "$TOOL_JSON" | jq '[.items[] | select(.title == "one byte over")] | length')" 0 || return 1
+	printf 'over the ceiling: %s\n' "$refusal"
+}
+
+# Empty is not legal, and the refusal says which of the two things went wrong.
+an_empty_attachment_is_refused() {
+	recall
+	want_tool_fails attachment_write "$TOKEN_A" \
+		'{"title": "nothing at all", "content_base64": ""}' "no bytes" || return 1
+	want_tool_fails attachment_write "$TOKEN_A" \
+		'{"title": "not encoded", "content_base64": "panic: nil pointer !!!"}' "base64" || return 1
+}
+
+# The permission filter, on the new read path. B holds the pb -> pa grant the
+# memory checks issued and A's attachment is at scope=project, which is the
+# floor a grant does not reach - so this asserts what B GETS, by id and in the
+# list, rather than that some code called some filter.
+b_cannot_read_or_list_as_attachment() {
+	recall
+	want_tool_fails attachment_read "$TOKEN_B" "{\"id\": \"$ATTACHMENT\"}" \
+		"no such attachment" || return 1
+	want_tool_fails attachment_read "$TOKEN_B_AGENT" "{\"id\": \"$ATTACHMENT\"}" \
+		"no such attachment" || return 1
+
+	want_tool attachment_list "$TOKEN_B" '{"limit": 200}' || return 1
+	want_eq "B's list holds A's attachment" \
+		"$(printf '%s' "$TOOL_JSON" | jq "[.items[] | select(.id == \"$ATTACHMENT\")] | length")" 0 || return 1
+
+	# The positive control, so the refusal above is about the principal and not
+	# about a surface that refuses everybody: A's own agent reads the bytes.
+	want_tool attachment_read "$TOKEN_A_AGENT" "{\"id\": \"$ATTACHMENT\"}" || return 1
+	want_eq "A's agent gets the same digest" \
+		"$(tv .sha256)" "$(sha256sum <"$WORK/att-in" | cut -d' ' -f1)" || return 1
+
+	# One namespace: a memory item's id is not an attachment, and says so in
+	# the words an id that is not there gets.
+	want_tool_fails attachment_read "$TOKEN_A" "{\"id\": \"$MEM_SHARED\"}" \
+		"no such attachment" || return 1
+	printf "B is told A's attachment does not exist, and A's agent reads it\n"
+}
+
+# What a reader renders from is decided from the bytes. The claim is recorded
+# beside it, under a name that says it is a claim: a console that drew whatever
+# a client asserted would be an injection surface, and the way that happens is a
+# field called content_type holding somebody else's word for it.
+the_content_type_is_not_the_clients_to_decide() {
+	recall
+	local lie="$WORK/att-lie"
+	printf '<html><body><script>alert(1)</script></body></html>' >"$lie"
+	att_args "$lie" "a screenshot, allegedly" "image/png" || return 1
+
+	tool_file attachment_write "$TOKEN_A" "$WORK/att-args.json" || return 1
+	if [ -n "$TOOL_ERR" ]; then
+		printf 'attachment_write failed: %s\n' "$TOOL_ERR" >&2
+		return 1
+	fi
+	want_eq "the claim is recorded as a claim" \
+		"$(tv '.item.fields.claimed_type')" image/png || return 1
+	case "$(tv '.item.fields.content_type')" in
+	text/*) ;;
+	*)
+		printf 'the bytes are markup and the node calls them %q\n' \
+			"$(tv '.item.fields.content_type')" >&2
+		return 1
+		;;
+	esac
+	want_eq "the kind follows the bytes" "$(tv .item.kind)" text || return 1
+
+	local id
+	id="$(tv .item.id)"
+	want_tool attachment_read "$TOKEN_A" "{\"id\": \"$id\"}" || return 1
+	case "$(tv .content_type)" in
+	text/*) ;;
+	*)
+		printf 'the read says the payload is %q\n' "$(tv .content_type)" >&2
+		return 1
+		;;
+	esac
+	want_eq "and still reports what was claimed" \
+		"$(tv '.item.fields.claimed_type')" image/png || return 1
+	printf 'claimed %s, is %s\n' "$(tv '.item.fields.claimed_type')" "$(tv .content_type)"
+}
+
 # ------------------------------------------------------- the project entity
 #
 # A project used to be a free string on a token: nothing declared one, nothing
@@ -5195,6 +5399,17 @@ check "an entry says what changed, or it is not one" an_entry_says_what_changed
 check "the read is the recent entries, newest first" the_worklog_reads_recent_first
 check "entries are on the timeline, and cannot be posted onto it" \
 	entries_are_on_the_timeline_and_not_postable_onto_it
+
+say "attachments"
+check "the bytes come back byte for byte, NUL and newline included" \
+	an_attachment_round_trips_byte_for_byte
+check "over the ceiling is refused, and the refusal names it" \
+	an_attachment_over_the_ceiling_is_refused_with_the_number
+check "an attachment with no bytes is not an attachment" an_empty_attachment_is_refused
+check "an attachment B may not read is not readable and not listable" \
+	b_cannot_read_or_list_as_attachment
+check "the content type is decided from the bytes, and the claim is kept as a claim" \
+	the_content_type_is_not_the_clients_to_decide
 
 say "the project entity"
 check "a write into a project nobody declared is refused" \

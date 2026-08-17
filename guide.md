@@ -115,8 +115,8 @@ lifecycle:
 
 - `report_write {title, body, scope?, tags?, as_of?, supersedes?, status?, id?}` -
   write to the project (that is the default scope, unlike a memory item's personal),
-  or update one by `id`. Body is markdown, up to 100KB; larger documents are a
-  summary in the body plus a reference to the full thing. Say `as_of` - the commit,
+  or update one by `id`. Body is markdown, up to 100KB; a larger document is a
+  summary in the body plus the id of an attachment. Say `as_of` - the commit,
   version or run the report is true of - and `supersedes` when it replaces an
   earlier report. Genre (research, design, review) rides `tags`.
 - `report_read {id}`, `report_search {q, scope?, limit?}`,
@@ -126,6 +126,34 @@ lifecycle:
 A report and a memory item are different things: a memory item is a fact somebody
 will need later, a report is a document somebody will read on purpose, true of a
 stated point in time. Publish the findings, remember the decision.
+
+## Attaching bytes
+
+An attachment is an artifact with bytes: a log, a diff, a capture, a screenshot -
+anything that does not belong in a message body or a report body. Same scopes,
+same permission filter, same project.
+
+- `attachment_write {content_base64, title?, content_type?, filename?, body?, scope?, tags?, room?, message?}` -
+  the bytes go in base64, which is what makes a binary come back out identical.
+  Up to 4194304 bytes; over that is refused with the number and nothing is stored -
+  attach the part that matters or split it, but do not expect a truncated one.
+  Empty is refused too. Scope defaults to `project`. It hands back the id, the
+  size and the sha256.
+- `attachment_read {id}` - the bytes, base64, exactly as they went in, with the
+  size and the digest. One you may not read is reported as one that does not exist.
+- `attachment_list {scope?, kind?, limit?}` - newest first, without the bytes.
+
+There is no update: an attachment is written once, so an id and a digest somebody
+was handed still mean the same bytes tomorrow. Write another one and say which it
+replaces.
+
+`content_type` is what you claim the bytes are and is recorded as your claim; what
+the bytes actually are is decided here, from the bytes, and that is what a reader
+renders from. `kind` follows the same decision - `text` or `binary`. `filename` is
+a name for a person to read, not a path.
+
+Reference an attachment by its id from the report, the memory item or the message
+it belongs to - `message` puts it beside the conversation it came out of.
 
 ## The worklog
 
