@@ -307,14 +307,72 @@ func (d *DB) SetArtifactFields(
 		e.Artifact, e.Project = a.ID, a.Project
 	}
 
+	return d.setArtifactFields(ctx, a, "", events...)
+}
+
+// ErrGuardFailed is a conditional write whose condition did not hold: the row is
+// there and readable, and it is not in the state the caller wrote against.
+//
+// It is its own error because the caller is the only one who can say what the
+// failure MEANS. To a work queue's take it means somebody else got there first
+// and this caller must be told they lost; to anything else it may mean retry.
+var ErrGuardFailed = errors.New("store: the row was not in the state this write required")
+
+// SetArtifactFieldsIf is SetArtifactFields with a COMPARE-AND-SET.
+//
+// guard is a boolean SQL fragment over the artifacts row, ANDed into the WHERE
+// of the one UPDATE this makes, and it must be a literal in this package rather
+// than anything off the wire. When it does not hold the write touches nothing,
+// no event is appended, and the answer is ErrGuardFailed.
+//
+// A read-then-write cannot do this. Two callers both read "nobody has it",
+// both write, both are told they succeeded, and the queue has manufactured the
+// confidence that makes both of them act - which is the failure the work queue
+// exists to prevent and the reason this is one statement rather than two.
+func (d *DB) SetArtifactFieldsIf(
+	ctx context.Context, a *Artifact, fields json.RawMessage, guard string, events ...*Event,
+) error {
+	ctx, span := otel.Start(ctx, otel.KindIngest, "artifact.fields.cas")
+	defer func() {
+		span.SetArtifact(a.ID)
+		span.End()
+	}()
+	at, err := d.clock.Pack()
+	if err != nil {
+		return fmt.Errorf("store: set fields of %s: %w", a.ID, err)
+	}
+	a.Fields = fields
+	a.HLC = at
+	a.Node = d.node
+	if err := d.signArtifact(ctx, a); err != nil {
+		return err
+	}
+	for i, e := range events {
+		if i == 0 {
+			e.SeqHLC = at
+		}
+		e.Artifact, e.Project = a.ID, a.Project
+	}
+	return d.setArtifactFields(ctx, a, guard, events...)
+}
+
+// setArtifactFields is the one write both doors make. The row has already been
+// stamped and signed by the caller.
+func (d *DB) setArtifactFields(
+	ctx context.Context, a *Artifact, guard string, events ...*Event,
+) error {
 	return d.inTx(ctx, "set fields of "+a.ID, func(tx *sql.Tx) error {
 		var column any
 		if len(a.Fields) > 0 {
 			column = []byte(a.Fields)
 		}
+		where := `id = $1 AND coalesce(tombstone, false) = false`
+		if guard != "" {
+			where += " AND " + guard
+		}
 		res, err := tx.ExecContext(ctx,
 			`UPDATE artifacts SET fields = $2, hlc = $3, node = $4, sig = $5, updated = now()
-			  WHERE id = $1 AND coalesce(tombstone, false) = false`,
+			  WHERE `+where,
 			a.ID, column, a.HLC, a.Node, a.Sig)
 		if err != nil {
 			return fmt.Errorf("store: set fields of %s: %w", a.ID, err)
@@ -324,6 +382,19 @@ func (d *DB) SetArtifactFields(
 			return fmt.Errorf("store: set fields of %s: %w", a.ID, err)
 		}
 		if n == 0 {
+			// WHICH OF THE TWO, because they are different facts and the caller
+			// acts differently on them: the row is gone, or the row is not as
+			// this write required. A guarded write that reported ErrNotFound
+			// would tell a work queue its item had vanished when somebody had
+			// simply taken it.
+			if guard != "" {
+				var here bool
+				if err := tx.QueryRowContext(ctx,
+					`SELECT true FROM artifacts WHERE id = $1 AND coalesce(tombstone, false) = false`,
+					a.ID).Scan(&here); err == nil && here {
+					return fmt.Errorf("%w: artifact %s", ErrGuardFailed, a.ID)
+				}
+			}
 			return fmt.Errorf("store: set fields: %w: artifact %s", ErrNotFound, a.ID)
 		}
 		for _, e := range events {

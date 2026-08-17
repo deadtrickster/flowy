@@ -267,6 +267,11 @@ var apiRoutes = []string{
 	"POST /api/chat/{room}/todo/{id}/assignee",
 	"POST /api/todo/{id}/assignee",
 	"GET /api/todo/{id}/assignee",
+	// The work queue, for the same reason: a door nobody finds is a door
+	// nobody uses, and this one has to be cheaper to use than doing the thing.
+	"POST /api/work/{id}/claim",
+	"POST /api/work/{id}/release",
+	"POST /api/work/{id}/done",
 	"GET /api/proposals",
 	"GET /api/proposal/{id}",
 	"GET /api/attachment/{id}",
@@ -394,6 +399,10 @@ func (s *server) routes() http.Handler {
 	// it reaches exactly the todo's readers and says who made it. See
 	// internal/store/assign.go, and assign.go for the room's door beside this one.
 	api.HandleFunc("POST /api/todo/{id}/assignee", s.handleTodoAssign)
+	// The work queue: take one, put it back, say it is done. See work.go.
+	api.HandleFunc("POST /api/work/{id}/claim", s.handleWorkClaim)
+	api.HandleFunc("POST /api/work/{id}/release", s.handleWorkRelease)
+	api.HandleFunc("POST /api/work/{id}/done", s.handleWorkDone)
 	api.HandleFunc("GET /api/todo/{id}/assignee", s.handleTodoAssignee)
 	// The third piece of queue metadata, on the same terms as the other two:
 	// WHAT KIND OF WORK this is, out of a closed set that REFUSES anything else -
