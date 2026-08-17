@@ -60,7 +60,6 @@ export function MessageList({ events, selected, onSelect, onCite, me, onSeen }: 
   // is the pair the node treats as one reader everywhere else.
   const isMe = (id?: string) => !!id && (id === me?.user || id === me?.agent);
 
-  const bottom = useRef<HTMLDivElement>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const count = events.length;
 
@@ -74,28 +73,66 @@ export function MessageList({ events, selected, onSelect, onCite, me, onSeen }: 
   // So: follow only when you are ALREADY at the bottom. Being scrolled up is
   // the reader saying they are reading, and nothing arriving should overrule
   // that. What arrives instead is a count and a way back down.
+
+  // FOLLOWING IS A REF, NOT STATE.
+  //
+  // Whether the reader is at the end has to be true the instant they get there
+  // and the instant they leave, because the thing that reads it is an effect
+  // that runs when messages land - and messages land between a scroll and the
+  // render that state would have carried it in. `atBottom` is still kept, but
+  // only as a render input for the pill; nothing decides anything from it.
+  //
+  // It starts true, which is what places somebody in a room they have just
+  // opened: there is nothing on screen to be at the end of yet, and the first
+  // page arriving is the transcript, not an arrival.
+  const following = useRef(true);
   const [pending, setPending] = useState(0);
   const [atBottom, setAtBottom] = useState(true);
 
-  // Within a few pixels counts as the bottom: a smooth scroll lands
-  // fractionally short, and an exact comparison would decide the reader had
-  // scrolled away from a view they never moved.
-  //
-  // Inline rather than a helper because it reads only refs: as a function
-  // defined in the body it would be a new value every render, which the
-  // exhaustive-deps rule is right to object to.
-  const onScroll = useCallback(() => {
+  // Within a few pixels counts as the bottom: a row's fractional height leaves
+  // the end a pixel or so short of an exact comparison, which would decide the
+  // reader had scrolled away from a view they never moved.
+  const atEnd = useCallback(() => {
     const el = scroller.current;
-    if (!el) return;
-    const bottomNow = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+    if (!el) return true;
+    return el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+  }, []);
+
+  // THE END AS IT IS NOW, NOT AS IT WAS WHEN THE SCROLL STARTED.
+  //
+  // This was `bottom.current.scrollIntoView({ behavior: "smooth" })`, and a
+  // smooth scroll latches its destination offset at the moment it is called.
+  // The room's history does not arrive in one answer - the first GET carries a
+  // page of 200 and the long poll delivers the rest - so opening a full room
+  // fired this once per batch and left four animations in flight, each aimed at
+  // the bottom of a different, shorter transcript. Whichever one Chrome
+  // finished last decided where the reader ended up, and the browser then fired
+  // scrollend there, so nothing retried. Measured over eight loads of a 718
+  // message room: three landed at the end, four at 251527 - the bottom of the
+  // room as it stood at 399 messages - and one at 377934, the bottom at 599.
+  // That is the "scrolls to a random place on reload" the operator reported: it
+  // is not random, it is the end of a stale prefix.
+  //
+  // Setting scrollTop reads the height at the instant it runs and cannot be
+  // raced by an animation. The lost smoothness is not a loss: the animation
+  // that was being smoothed is a 450,000 pixel slide nobody watches, and it is
+  // the only thing that ever put the reader somewhere they did not ask to be.
+  const toEnd = useCallback(() => {
+    const el = scroller.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, []);
+
+  const onScroll = useCallback(() => {
+    const bottomNow = atEnd();
+    following.current = bottomNow;
     setAtBottom(bottomNow);
     // Arriving under your own steam clears the badge - it is a way back, not
     // a receipt, so it should not need dismissing once you are there.
     if (bottomNow) setPending(0);
-  }, []);
+  }, [atEnd]);
 
   const jumpToBottom = () => {
-    bottom.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    toEnd();
     setPending(0);
   };
 
@@ -108,17 +145,28 @@ export function MessageList({ events, selected, onSelect, onCite, me, onSeen }: 
     if (count === 0) return;
     const added = count - seen.current;
     seen.current = count;
-    if (atBottom) {
-      bottom.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-      // Read, as opposed to delivered. This fires on arrival while the reader
-      // is at the bottom AND when a reader scrolls back down to it - atBottom
-      // is a dependency, so reaching the end is a run of this effect - which
-      // is the whole of what "what was seen" means here.
+    // The ref, not the state: a batch of history landing one frame after a
+    // scroll was measured against a reading React had not committed yet, and
+    // the room decided the reader had wandered off. That is how a plain reload
+    // of a 718 message room offered "319 new messages" to somebody who had not
+    // touched it - the history it was itself still drawing, called new.
+    if (following.current) {
+      toEnd();
+      // Read, as opposed to delivered: this is a reader sitting at the end
+      // while something arrives, which is the whole of what "seen" means.
       if (newest) onSeen?.(newest);
     } else if (added > 0) {
       setPending((n) => n + added);
     }
-  }, [count, atBottom, newest, onSeen]);
+  }, [count, newest, onSeen, toEnd]);
+
+  // The other way to reach the newest message: scrolling back down to it. It is
+  // its own effect rather than a dependency of the one above, because that one
+  // now asks the element and never reads this state - and an effect carrying a
+  // dependency it does not use is a dependency nobody can check.
+  useEffect(() => {
+    if (atBottom && newest) onSeen?.(newest);
+  }, [atBottom, newest, onSeen]);
 
   // Enter and space are what a button answers to, and this row is not one any
   // more. Keeping them is not politeness: selecting a message is how a reply
@@ -350,7 +398,6 @@ export function MessageList({ events, selected, onSelect, onCite, me, onSeen }: 
             );
           })}
         </AnimatePresence>
-        <div ref={bottom} />
       </div>
       {pending > 0 ? (
         <button
