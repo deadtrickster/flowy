@@ -348,6 +348,15 @@ func (s *server) routes() http.Handler {
 	// change.
 	api.HandleFunc("GET /api/proposals", s.handleListProposals)
 	api.HandleFunc("GET /api/proposal/{id}", s.handleGetProposal)
+	// DEPENDS-ON, and the queue that reads it. The edges are events on the
+	// BLOCKED todo, so they reach exactly its readers - and the ready query is
+	// computed per reader over that graph, never stored, because two principals
+	// seeing different halves of a cross-project edge correctly disagree about
+	// whether the same todo can be started. See internal/store/deps.go.
+	api.HandleFunc("POST /api/todo/{id}/deps", s.handleAddDep)
+	api.HandleFunc("DELETE /api/todo/{id}/deps/{blocker}", s.handleRemoveDep)
+	api.HandleFunc("GET /api/todo/{id}/deps", s.handleGetDeps)
+	api.HandleFunc("GET /api/ready", s.handleReady)
 	// Direct messages. They are chat events and they are read back through the
 	// same filter every other event is, so these are three narrowings of reads
 	// that already existed rather than a private surface of their own - the

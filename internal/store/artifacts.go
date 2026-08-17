@@ -410,6 +410,32 @@ func (d *DB) fillAt(a *Artifact, at int64) {
 // conversation: which of the project's todos came out of this room.
 const RoomField = "room"
 
+// RoomOf is the room an artifact belongs to, or "" for one that names none.
+//
+// It is one function rather than one per surface because the key is one key:
+// a todo, a proposal and the entry a dependency leaves in the log all read it,
+// and three readers of the same key are three chances to disagree about what an
+// absent room means.
+func RoomOf(a *Artifact) string {
+	room, _ := artifactField(a, RoomField).(string)
+	return room
+}
+
+// artifactField reads one key out of an artifact's fields, and nil for a row
+// that carries none or carries JSON that does not parse. A row whose fields are
+// unreadable is a row that says nothing about this key, which is what every
+// caller here already does with one.
+func artifactField(a *Artifact, key string) any {
+	if a == nil || len(a.Fields) == 0 {
+		return nil
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(a.Fields, &fields); err != nil {
+		return nil
+	}
+	return fields[key]
+}
+
 // SupersedesField is where a report names the report it replaces: a key in
 // fields, beside as_of, for the reason RoomField is one.
 //
@@ -448,6 +474,67 @@ const MessageField = "message"
 // So a read that finds the key takes it verbatim, and only a read that finds no
 // key at all falls back to the body.
 const AssigneeField = "assignee"
+
+// nobodyWords are the ways this queue has said "nobody is carrying this". They
+// all collapse to the empty assignee, so every surface says ONE word for one
+// state.
+//
+// Raised as a todo through the panel itself: 'todo list has "unowned" and
+// "unassigned" - looks identical'. Two words for one state read as two states,
+// and a reader goes looking for a distinction that is not there.
+//
+// It is here rather than beside the HTTP surface that first had it because the
+// ready query reads the same key: whether a todo is carried is half of whether
+// it can be started, and a queue that answered "nobody" on one surface and "n/a"
+// on another would be a queue where one of the two is ready and the other is
+// not. The console keeps its own list in web/src/lib/todos.ts for the bodies
+// that were written before the field existed.
+var nobodyWords = map[string]bool{
+	"?": true, "-": true, "none": true, "nobody": true,
+	"tbd": true, "unassigned": true, "unowned": true, "n/a": true,
+}
+
+// NobodyName reports whether name is one of them.
+func NobodyName(name string) bool { return nobodyWords[strings.ToLower(strings.TrimSpace(name))] }
+
+// AssigneeOf is who a todo says is carrying it: the field if it has one, and the
+// body's OWNER line if it does not.
+//
+// The order is the compatibility. Every todo in this queue was written before
+// there was a field, with `OWNER: <name>` as the first line of the body, and
+// those still read the way they always did. But a key that is there wins even
+// when it is empty - somebody said out loud that nobody is carrying this, and a
+// read that fell through to a stale OWNER line would quietly undo them.
+func AssigneeOf(a *Artifact) string {
+	if named := artifactField(a, AssigneeField); named != nil {
+		name, _ := named.(string)
+		return strings.TrimSpace(name)
+	}
+	if a == nil {
+		return ""
+	}
+	return ownerLine(a.Body)
+}
+
+// ownerLine reads the convention: `OWNER: <name>` as the FIRST line of the body.
+// Further down it is a sentence about somebody else's item, not a claim about
+// this one, which is the same read the TUI and the console each make.
+func ownerLine(body string) string {
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if rest, found := strings.CutPrefix(line, "OWNER:"); found {
+			name := strings.TrimSpace(rest)
+			if NobodyName(name) {
+				return ""
+			}
+			return name
+		}
+		if line != "" {
+			return ""
+		}
+	}
+	return ""
+}
 
 // ArtifactQuery narrows a list or a search. Every field is optional; the
 // permission filter is not, and is added by the methods below.

@@ -17,7 +17,7 @@ import (
 )
 
 // memoryType is the artifact type every one of these tools reads and writes.
-const memoryType = "memory"
+const memoryType = store.MemoryType
 
 // The scopes, in the order they widen: personal is the floor no grant reaches
 // through, project is everyone in the project and nobody else, shared is the
@@ -32,8 +32,10 @@ var memScopes = store.MemScopes
 // The kinds. todos looks at the last three.
 var memKinds = []string{"note", "todo", "feature", "handoff"}
 
-// workKinds are the kinds that describe outstanding work.
-var workKinds = []string{"todo", "feature", "handoff"}
+// workKinds are the kinds that describe outstanding work. The list is the
+// store's, because the ready query narrows by it too: what is in the queue and
+// what the queue orders have to be one answer.
+var workKinds = store.WorkKinds
 
 // tool is one MCP tool: what a client is told about it, and what runs.
 type tool struct {
@@ -134,11 +136,12 @@ func toolSpecs() []tool { return allTools() }
 
 // allTools is every tool this server serves.
 func allTools() []tool {
-	out := make([]tool, 0, len(tools)+len(reportTools)+len(proposalTools)+
+	out := make([]tool, 0, len(tools)+len(reportTools)+len(proposalTools)+len(depTools)+
 		len(attachmentTools)+len(worklogTools)+len(projectTools)+len(observabilityTools))
 	out = append(out, tools...)
 	out = append(out, reportTools...)
 	out = append(out, proposalTools...)
+	out = append(out, depTools...)
 	out = append(out, attachmentTools...)
 	out = append(out, worklogTools...)
 	out = append(out, projectTools...)
@@ -173,6 +176,10 @@ func str(desc string) map[string]any {
 
 func integer(desc string) map[string]any {
 	return map[string]any{"type": "integer", "description": desc}
+}
+
+func boolean(desc string) map[string]any {
+	return map[string]any{"type": "boolean", "description": desc}
 }
 
 func strArray(desc string) map[string]any {
@@ -511,7 +518,7 @@ func todosTool(ctx context.Context, m *mcpServer, p *store.Principal, raw json.R
 		return nil, err
 	}
 	q.Kinds = workKinds
-	q.NotStatus = "done"
+	q.NotStatus = store.DoneStatus
 	// The room narrows and does not widen: without it this is the whole queue,
 	// items with a room and items without, exactly as it has always been.
 	if q.Room, err = roomArg(a.Room); err != nil {

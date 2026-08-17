@@ -248,20 +248,6 @@ func (s *server) handleRoomTodoRaise(w http.ResponseWriter, r *http.Request) {
 // pasted into the box lands as a refusal rather than as a row nobody can read.
 const maxAssigneeName = 64
 
-// nobodyWords are the ways the queue has said "nobody is carrying this". They
-// all collapse to the empty assignee, so every surface says ONE word for one
-// state.
-//
-// Raised as a todo through the panel itself: 'todo list has "unowned" and
-// "unassigned" - looks identical'. Two words for one state read as two states,
-// and a reader goes looking for a distinction that is not there. The console
-// keeps the same list in web/src/lib/todos.ts, for the bodies that were written
-// before the field existed.
-var nobodyWords = map[string]bool{
-	"?": true, "-": true, "none": true, "nobody": true,
-	"tbd": true, "unassigned": true, "unowned": true, "n/a": true,
-}
-
 // assigneeArg validates a name a write hands a todo, and returns it normalised.
 //
 // Empty is the ordinary case and means nobody: unassigning is a thing somebody
@@ -270,7 +256,7 @@ var nobodyWords = map[string]bool{
 // come back as the empty name, which is what makes the panel say one word.
 func assigneeArg(name string) (string, error) {
 	name = strings.TrimSpace(name)
-	if name == "" || nobodyWords[strings.ToLower(name)] {
+	if name == "" || store.NobodyName(name) {
 		return "", nil
 	}
 	if strings.ContainsAny(name, "\n\r\t") || len(name) > maxAssigneeName {
@@ -280,49 +266,11 @@ func assigneeArg(name string) (string, error) {
 	return name, nil
 }
 
-// assigneeOf is who a todo says is carrying it: the field if it has one, and
-// the body's OWNER line if it does not.
-//
-// The order is the compatibility. Every todo in this queue was written before
-// there was a field, with `OWNER: <name>` as the first line of the body, and
-// those still read the way they always did. But a key that is there wins even
-// when it is empty - somebody said out loud that nobody is carrying this, and a
-// read that fell through to a stale OWNER line would quietly undo them.
-func assigneeOf(art *store.Artifact) string {
-	if art == nil {
-		return ""
-	}
-	if len(art.Fields) > 0 {
-		var fields map[string]any
-		if err := json.Unmarshal(art.Fields, &fields); err == nil {
-			if named, found := fields[store.AssigneeField]; found {
-				name, _ := named.(string)
-				return strings.TrimSpace(name)
-			}
-		}
-	}
-	return ownerLine(art.Body)
-}
-
-// ownerLine reads the convention: `OWNER: <name>` as the FIRST line of the
-// body. Further down it is a sentence about somebody else's item, not a claim
-// about this one, which is the same read the TUI and the console each make.
-func ownerLine(body string) string {
-	for _, line := range strings.Split(body, "\n") {
-		line = strings.TrimSpace(line)
-		if rest, found := strings.CutPrefix(line, "OWNER:"); found {
-			name := strings.TrimSpace(rest)
-			if nobodyWords[strings.ToLower(name)] {
-				return ""
-			}
-			return name
-		}
-		if line != "" {
-			return ""
-		}
-	}
-	return ""
-}
+// assigneeOf is who a todo says is carrying it. The rule is the store's - see
+// store.AssigneeOf - because the ready query asks the same question of the same
+// key, and being carried is half of whether a todo can be started. Two readers
+// of one key are two chances to disagree about whether somebody is on it.
+func assigneeOf(art *store.Artifact) string { return store.AssigneeOf(art) }
 
 // assigneeRequest is what saying who is carrying a todo takes. One field, and
 // an empty one means nobody.

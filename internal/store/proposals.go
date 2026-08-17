@@ -170,17 +170,7 @@ func ProposalClosure(a *Artifact) (at, outcome string) {
 
 // ProposalRoomOf is the room a proposal belongs to, or "" for one that names
 // none. It is RoomField and nothing else - the same key a todo carries.
-func ProposalRoomOf(a *Artifact) string {
-	if a == nil || len(a.Fields) == 0 {
-		return ""
-	}
-	var fields map[string]any
-	if err := json.Unmarshal(a.Fields, &fields); err != nil {
-		return ""
-	}
-	room, _ := fields[RoomField].(string)
-	return room
-}
+func ProposalRoomOf(a *Artifact) string { return RoomOf(a) }
 
 // voteActor is the actor a principal writes a vote as: the agent when the token
 // names one, the person behind it otherwise.
