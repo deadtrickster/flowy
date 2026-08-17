@@ -4,6 +4,7 @@ import { useParams } from "react-router-dom";
 import { AnnouncementBanner } from "@/components/AnnouncementBanner";
 import { MessageBox } from "@/components/MessageBox";
 import { MessageList } from "@/components/MessageList";
+import { PinnedStrip } from "@/components/PinnedStrip";
 import { RoomRoster } from "@/components/RoomRoster";
 import { RoomSearch } from "@/components/RoomSearch";
 import { RoomTodos } from "@/components/RoomTodos";
@@ -46,6 +47,11 @@ export function ChatRoom() {
   // always named it as the parent here; now the reply says so on its face.
   const { selected, citation, cite, select, citeSpan, clear } = useCitation();
   const [live, setLive] = useState(false);
+  // WHAT THIS ROOM DECIDED. Held here rather than inside the strip because the
+  // strip draws messages this view already has - the pin carries an id and
+  // nothing else, so the text comes from the transcript and not from a second
+  // copy that could disagree with it.
+  const [pinned, setPinned] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [presence, setPresence] = useState<Presence | null>(null);
   const [todos, setTodos] = useState<Artifact[]>([]);
@@ -126,12 +132,36 @@ export function ChatRoom() {
     }
   }, [room]);
 
+  // The strip rides the room's clock, the way the todo panel does: the poll
+  // returns when somebody speaks and when its window runs out, which is exactly
+  // when a pin could have been put up or taken down. A second timer would be a
+  // second idea of how often this room is alive.
+  //
+  // A failed read leaves the strip as it was rather than emptying it. A room
+  // whose decisions vanish on one bad request looks like a room that unpinned
+  // them, and that is a worse lie than a strip a few seconds out of date.
+  const loadPins = useCallback(async () => {
+    try {
+      const view = await api.pins(room);
+      // ?? [] because Go marshals an empty slice as null, and a null here
+      // reaches the strip as a value that cannot be mapped over.
+      setPinned(view.pinned ?? []);
+    } catch {
+      /* keep what is on screen */
+    }
+  }, [room]);
+
   useEffect(() => {
     setEvents([]);
     clear();
     setLive(false);
     setError(null);
     setTodos([]);
+    // A room's decisions are its own. Carrying the last room's strip across
+    // would draw pins pointing at messages this room does not have, which the
+    // strip then hides - so it would look like the new room had unpinned
+    // everything rather than like the console had not caught up.
+    setPinned([]);
     if (!token) return;
 
     let stopped = false;
@@ -146,6 +176,7 @@ export function ChatRoom() {
         cursor = page.cursor;
         setLive(true);
         void loadTodos();
+        void loadPins();
       } catch (err) {
         if (!stopped) setError(err instanceof Error ? err.message : String(err));
         return;
@@ -172,6 +203,7 @@ export function ChatRoom() {
           // have moved - and a second timer would be a second idea of how
           // often this room is alive.
           void loadTodos();
+          void loadPins();
           // The invariant, enforced rather than assumed: a successful wait
           // either blocked out its window or moved the cursor. If it did
           // neither, this loop is spinning - 567 requests a second, measured
@@ -198,7 +230,7 @@ export function ChatRoom() {
       stopped = true;
       controller.abort();
     };
-  }, [room, token, loadTodos, clear]);
+  }, [room, token, loadTodos, loadPins, clear]);
 
   const send = useCallback(
     async (body: string, to: string) => {
@@ -276,6 +308,25 @@ export function ChatRoom() {
         */}
         <AnnouncementBanner />
 
+        {/*
+          What this room decided, above the transcript rather than in it. A pin
+          is not a message and must not scroll away with them - that is the
+          whole reason a room pins anything.
+        */}
+        <PinnedStrip
+          pinned={pinned}
+          events={events}
+          onSelect={select}
+          onUnpin={(id) => {
+            // Optimistic on purpose, unlike the assignee cell: unpinning is
+            // reversible in one click and the poll corrects it within a window,
+            // whereas leaving the line up until the next poll reads as a button
+            // that did nothing.
+            setPinned((current) => current.filter((pin) => pin !== id));
+            api.unpin(room, id).catch(() => void loadPins());
+          }}
+        />
+
         {error ? (
           <div className="border-destructive/40 border-b bg-destructive/10 px-4 py-2 text-destructive text-xs">
             {error}
@@ -290,6 +341,29 @@ export function ChatRoom() {
           me={{ user: whoami?.user, agent: whoami?.agent }}
           onSeen={seen}
         />
+
+        {/*
+          Pinning acts on the SELECTED message, and it lives here rather than on
+          the row itself. Selecting is already how a reply attaches and how a
+          span is cited; adding a third control to every row would put three
+          affordances on a thing whose main job is to be readable. Selected is
+          also the message the reader has just decided matters, which is exactly
+          when they reach for the pin.
+        */}
+        {selected && !pinned.includes(selected.id) ? (
+          <div className="border-border border-t px-4 py-1 text-xs">
+            <button
+              type="button"
+              className="text-muted-foreground hover:text-foreground"
+              onClick={() => {
+                setPinned((current) => [...current, selected.id]);
+                api.pin(room, selected.id).catch(() => void loadPins());
+              }}
+            >
+              📌 pin the selected message
+            </button>
+          </div>
+        ) : null}
 
         <MessageBox citation={citation} clearReply={clear} disabled={!token} onSend={send} />
       </section>

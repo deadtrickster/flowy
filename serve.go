@@ -257,6 +257,9 @@ var apiRoutes = []string{
 	"GET /api/chat/{room}",
 	"GET /api/chat/{room}/wait",
 	"POST /api/chat/{room}/todo",
+	"POST /api/chat/{room}/pin",
+	"DELETE /api/chat/{room}/pin/{id}",
+	"GET /api/chat/{room}/pins",
 	// The assignment doors. They are on this list because an operator went
 	// looking for one and found nothing: /api/node is what a client asks when it
 	// wants to know what this node can do, and a door that is not on the answer is
@@ -362,6 +365,9 @@ func (s *server) routes() http.Handler {
 	// The room's plan, raised from the room: a todo and the message that raised
 	// it, written where the conversation is.
 	api.HandleFunc("POST /api/chat/{room}/todo", s.handleRoomTodoRaise)
+	api.HandleFunc("POST /api/chat/{room}/pin", s.handleRoomPin)
+	api.HandleFunc("DELETE /api/chat/{room}/pin/{id}", s.handleRoomUnpin)
+	api.HandleFunc("GET /api/chat/{room}/pins", s.handleRoomPins)
 	// And who is carrying one, said in the room the same way raising it is.
 	api.HandleFunc("POST /api/chat/{room}/todo/{id}/assignee", s.handleRoomTodoAssign)
 	// What a room decided, as data: the proposal, the votes in the order they

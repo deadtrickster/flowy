@@ -4918,6 +4918,65 @@ browser_colours_the_speakers() {
 	node scripts/colour-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A"
 }
 
+# A room remembers its decisions: a pin puts a message in the strip, and the
+# strip is answerable from the room's own log.
+a_pin_puts_a_message_up_in_the_room() {
+	local PIN_MESSAGE
+	api POST "$TOKEN_A" /api/chat/general/say \
+		'{"body": "quicklime: we settled on the cgroup for liveness"}' || return 1
+	PIN_MESSAGE=$(jqv .id)
+	api POST "$TOKEN_A" "/api/chat/general/pin" "{\"message\": \"$PIN_MESSAGE\"}" || return 1
+	api GET "$TOKEN_A" /api/chat/general/pins || return 1
+	want_eq "the pinned message" "$(jqv '.pinned[-1]')" "$PIN_MESSAGE" || return 1
+	# The log is the record, and it is what answers WHO decided this was the
+	# decision - a list of ids cannot.
+	want_eq "the log names the pinner" "$(jqv '.log[-1].verb')" "pin.add"
+}
+
+# Taking one down leaves the strip empty AND the log complete. A pin that was up
+# for a day and then removed is a different history from one that never existed,
+# and only the log can tell them apart.
+# Self-contained, because `check` runs each of these in a command substitution
+# and a variable set in the previous one is gone by the time this starts. The
+# first version leaned on PIN_MESSAGE from the check above and died on an
+# unbound variable - which is a check that cannot fail for the reason it is
+# about.
+an_unpin_takes_it_down_and_the_log_remembers_both() {
+	local PIN_MESSAGE
+	api POST "$TOKEN_A" /api/chat/general/say \
+		'{"body": "quicklime: and this one we later changed our minds about"}' || return 1
+	PIN_MESSAGE=$(jqv .id)
+	api POST "$TOKEN_A" "/api/chat/general/pin" "{\"message\": \"$PIN_MESSAGE\"}" || return 1
+	api DELETE "$TOKEN_A" "/api/chat/general/pin/$PIN_MESSAGE" || return 1
+	api GET "$TOKEN_A" /api/chat/general/pins || return 1
+	local still
+	still=$(jqv "[.pinned[] | select(. == \"$PIN_MESSAGE\")] | length")
+	want_eq "it is down" "$still" "0" || return 1
+	want_eq "both entries are in the log" \
+		"$(jqv "[.log[] | select(.message == \"$PIN_MESSAGE\")] | length")" "2"
+}
+
+# A pin belongs to the room the message is in. Without this a strip can be made
+# to point at a message this room's readers cannot open - the line would be
+# visible and the thing it names would not.
+a_message_from_another_room_cannot_be_pinned_here() {
+	api POST "$TOKEN_A" /api/chat/elsewhere/say '{"body": "said somewhere else"}' || return 1
+	local other
+	other=$(jqv .id)
+	want_status 400 POST "$TOKEN_A" "/api/chat/general/pin" "{\"message\": \"$other\"}" || return 1
+	printf '%s\n' "$API_BODY" | grep -q "not in" || {
+		printf 'the refusal does not say which room it was said in: %s\n' "$API_BODY" >&2
+		return 1
+	}
+}
+
+# A pin event written by hand is a strip anybody can put a line in, with none of
+# the refusals asked. Same rule the dep edges and the votes are under.
+a_pin_event_cannot_be_written_by_hand() {
+	want_status 403 POST "$TOKEN_A" /api/events \
+		'{"type": "pin.add", "room": "general", "body": ""}'
+}
+
 # A person can select and copy what was said, which is not a styling question.
 #
 # Every message row was a <button>, and a browser refuses to select a button's
@@ -9359,6 +9418,12 @@ check "the roster draws what each listener can do, distinctly, in a browser" \
 	browser_shows_what_a_listener_can_do
 check "an @name is drawn as a mention, in their colour, in a browser" \
 	browser_draws_the_mentions
+check "a pin puts a message up in the room's strip" a_pin_puts_a_message_up_in_the_room
+check "an unpin takes it down, and the log remembers both" \
+	an_unpin_takes_it_down_and_the_log_remembers_both
+check "a message from another room cannot be pinned here" \
+	a_message_from_another_room_cannot_be_pinned_here
+check "a pin event cannot be written by hand" a_pin_event_cannot_be_written_by_hand
 check "a person can select and copy a message, in a browser, by dragging" \
 	browser_lets_a_person_copy_a_message
 check "clicking a message answers nothing; its reply control does, by pointer and by keyboard" \

@@ -472,6 +472,11 @@ var mintedTypes = map[string]bool{
 	store.EventQuiesceHold:    true,
 	store.EventQuiesceRelease: true,
 	store.EventQuiesceAck:     true,
+	// A pin, and the entry that takes it down. Written by the verb because the
+	// refusals that make a room's strip trustworthy are there: the message
+	// exists, this reader can see it, and it was said in this room.
+	store.EventPinAdd:    true,
+	store.EventPinRemove: true,
 	// A vote, and the closure that stops them. Both are written by the verb
 	// that does the thing, because both refusals that make the record worth
 	// reading live there - see store.CastVote.
