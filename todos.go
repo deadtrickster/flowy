@@ -243,6 +243,229 @@ func (s *server) handleRoomTodoRaise(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"item": art, "event": e})
 }
 
+// maxAssigneeName is the longest name a write may hand a todo. A handle around
+// here is a word, and a panel column is narrow: the bar exists so that a body
+// pasted into the box lands as a refusal rather than as a row nobody can read.
+const maxAssigneeName = 64
+
+// nobodyWords are the ways the queue has said "nobody is carrying this". They
+// all collapse to the empty assignee, so every surface says ONE word for one
+// state.
+//
+// Raised as a todo through the panel itself: 'todo list has "unowned" and
+// "unassigned" - looks identical'. Two words for one state read as two states,
+// and a reader goes looking for a distinction that is not there. The console
+// keeps the same list in web/src/lib/todos.ts, for the bodies that were written
+// before the field existed.
+var nobodyWords = map[string]bool{
+	"?": true, "-": true, "none": true, "nobody": true,
+	"tbd": true, "unassigned": true, "unowned": true, "n/a": true,
+}
+
+// assigneeArg validates a name a write hands a todo, and returns it normalised.
+//
+// Empty is the ordinary case and means nobody: unassigning is a thing somebody
+// does on purpose, and it is the same argument with nothing in it rather than a
+// second verb. So are the words the queue has always used for nobody - they
+// come back as the empty name, which is what makes the panel say one word.
+func assigneeArg(name string) (string, error) {
+	name = strings.TrimSpace(name)
+	if name == "" || nobodyWords[strings.ToLower(name)] {
+		return "", nil
+	}
+	if strings.ContainsAny(name, "\n\r\t") || len(name) > maxAssigneeName {
+		return "", fmt.Errorf("%q is not a name: an assignee is a handle of at most %d "+
+			"characters on one line", name, maxAssigneeName)
+	}
+	return name, nil
+}
+
+// assigneeOf is who a todo says is carrying it: the field if it has one, and
+// the body's OWNER line if it does not.
+//
+// The order is the compatibility. Every todo in this queue was written before
+// there was a field, with `OWNER: <name>` as the first line of the body, and
+// those still read the way they always did. But a key that is there wins even
+// when it is empty - somebody said out loud that nobody is carrying this, and a
+// read that fell through to a stale OWNER line would quietly undo them.
+func assigneeOf(art *store.Artifact) string {
+	if art == nil {
+		return ""
+	}
+	if len(art.Fields) > 0 {
+		var fields map[string]any
+		if err := json.Unmarshal(art.Fields, &fields); err == nil {
+			if named, found := fields[store.AssigneeField]; found {
+				name, _ := named.(string)
+				return strings.TrimSpace(name)
+			}
+		}
+	}
+	return ownerLine(art.Body)
+}
+
+// ownerLine reads the convention: `OWNER: <name>` as the FIRST line of the
+// body. Further down it is a sentence about somebody else's item, not a claim
+// about this one, which is the same read the TUI and the console each make.
+func ownerLine(body string) string {
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if rest, found := strings.CutPrefix(line, "OWNER:"); found {
+			name := strings.TrimSpace(rest)
+			if nobodyWords[strings.ToLower(name)] {
+				return ""
+			}
+			return name
+		}
+		if line != "" {
+			return ""
+		}
+	}
+	return ""
+}
+
+// assigneeRequest is what saying who is carrying a todo takes. One field, and
+// an empty one means nobody.
+type assigneeRequest struct {
+	Assignee string `json:"assignee"`
+}
+
+// handleRoomTodoAssign says who is carrying one of the room's todos, and says
+// it in the room.
+//
+// POST /api/chat/{room}/todo/{id}/assignee  {assignee}
+//
+// It is the raise's shape one step on: the field moves and the room hears about
+// it in an ordinary chat message, under one clock reading, in the thread the
+// todo was raised out of - so the conversation that produced the plan is also
+// the conversation that says who picked it up.
+//
+// Whoever can READ the todo can say who is carrying it, which is the rule a
+// status move already keeps (see handleArtifactStatus) and the right one for a
+// room's plan: the point of a queue beside a conversation is that somebody in
+// the conversation takes a line of it. It hands nobody anything - the assignee
+// is a name in fields, and the permission filter has never looked there - so
+// the widest this can be is "a person who can see the plan can edit the plan",
+// and a principal who cannot see it gets the 404 a read would have given.
+func (s *server) handleRoomTodoAssign(w http.ResponseWriter, r *http.Request) {
+	p := principalOf(r)
+	room, ok := roomOf(r)
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, errorBody("room must be one non-empty path segment"))
+		return
+	}
+	room, err := roomArg(room)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody(err.Error()))
+		return
+	}
+	id := r.PathValue("id")
+
+	var req assigneeRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody("bad request body: "+err.Error()))
+		return
+	}
+	name, err := assigneeArg(req.Assignee)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody(err.Error()))
+		return
+	}
+
+	art, err := s.db.ReadArtifact(r.Context(), p, id, false)
+	if errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, errorBody("no such todo"))
+		return
+	}
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	if art.Type != memoryType || art.Kind != todoKind {
+		what := art.Type
+		if art.Kind != "" {
+			what += "/" + art.Kind
+		}
+		writeJSON(w, http.StatusBadRequest, errorBody(
+			"a "+what+" carries no assignee; a todo does"))
+		return
+	}
+
+	// The room in the path has to be the room on the item. A panel edits its
+	// own room's plan, and an id is a guess anybody can make: without this,
+	// #general's panel could write into #build's queue and say so in #general,
+	// which is a change nobody in #build would ever see said out loud.
+	var fields map[string]any
+	if len(art.Fields) > 0 {
+		if err := json.Unmarshal(art.Fields, &fields); err != nil {
+			serverError(w, r, fmt.Errorf("todo %s carries fields that do not parse: %w", id, err))
+			return
+		}
+	}
+	if was, _ := fields[store.RoomField].(string); was != room {
+		writeJSON(w, http.StatusNotFound, errorBody("no todo "+id+" in #"+room))
+		return
+	}
+
+	was := assigneeOf(art)
+	if fields == nil {
+		fields = map[string]any{}
+	}
+	fields[store.AssigneeField] = name
+	raw, err := json.Marshal(fields)
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+
+	actor, kind := chatActor(p)
+	meta, err := json.Marshal(speakerMeta(p, kind, s.speakerName(r.Context(), p)))
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	// Under the message the todo was raised out of, so the assignment lands in
+	// the conversation that produced it rather than at the bottom of the room
+	// on its own. A todo raised out of nothing starts a thread here.
+	message, _ := fields[store.MessageField].(string)
+	thread, parents, err := s.raisedFrom(r, message)
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+
+	e := &store.Event{
+		Type:    chatEventType,
+		Room:    room,
+		Thread:  thread,
+		Parents: parents,
+		Actor:   actor,
+		Body:    assignmentSaid(art.Title, was, name),
+		Meta:    withTrace(json.RawMessage(meta), traceIDOf(r)),
+	}
+	if err := s.db.SetArtifactFields(r.Context(), art, raw, e); err != nil {
+		serverError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"item": art, "event": e})
+}
+
+// assignmentSaid is the sentence the room reads. It names the previous holder
+// when there was one, because "who has this now" and "who had it" are the two
+// halves of a handover and the log is where the second one lives.
+func assignmentSaid(title, was, now string) string {
+	switch {
+	case now == "" && was == "":
+		return "left " + title + " unassigned"
+	case now == "":
+		return "took " + title + " off " + was
+	case was == "":
+		return "gave " + title + " to " + now
+	default:
+		return "moved " + title + " from " + was + " to " + now
+	}
+}
+
 // raisedFrom decides where in the log the "raised a todo" message goes: under
 // the message it came out of when there is one, and on its own otherwise.
 //

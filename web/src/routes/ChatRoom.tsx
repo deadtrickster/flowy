@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 
 import { AnnouncementBanner } from "@/components/AnnouncementBanner";
@@ -69,16 +69,28 @@ export function ChatRoom() {
     };
   }, [token]);
 
+  // Which read of the todos is the current one. Two of them are in flight at
+  // once whenever somebody edits the panel - the write's own reload, and the
+  // long poll's, because the write puts a message in the room and the poll
+  // comes back for it - and they can answer out of order. The older answer is
+  // dropped rather than painted: it is a picture of the queue from before the
+  // edit, and letting it land would show the assignee reverting for exactly as
+  // long as it takes the next poll to correct it.
+  const todoRead = useRef(0);
+
   /**
    * The room's todos, read through the same permission filter as everything
    * else: room is a narrowing on the artifact list, not a second visibility.
    */
   const loadTodos = useCallback(async () => {
+    const mine = ++todoRead.current;
     try {
       const page = await api.roomTodos(room);
+      if (mine !== todoRead.current) return;
       setTodos(page.artifacts);
       setTodoError(null);
     } catch (err) {
+      if (mine !== todoRead.current) return;
       setTodoError(err instanceof Error ? err.message : String(err));
     }
   }, [room]);
@@ -181,6 +193,19 @@ export function ChatRoom() {
     [room, selected, loadTodos],
   );
 
+  /**
+   * Who is carrying one of them. The write goes to the node and the panel is
+   * refilled from the node's answer - the same list the long poll refills it
+   * with - so there is no second idea of who has what for a poll to overwrite.
+   */
+  const assign = useCallback(
+    async (id: string, assignee: string) => {
+      await api.assignTodo(room, id, assignee);
+      await loadTodos();
+    },
+    [room, loadTodos],
+  );
+
   const thread = selected?.thread ?? events.at(-1)?.thread;
   const threadEvents = thread ? events.filter((event) => event.thread === thread) : [];
 
@@ -242,6 +267,7 @@ export function ChatRoom() {
           disabled={!token}
           error={todoError}
           onRaise={raise}
+          onAssign={assign}
         />
 
         <section className="flex min-h-0 flex-1 flex-col">

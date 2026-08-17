@@ -387,7 +387,7 @@ bug holds here, and the grant that opens a project opens the memories in it.
 
 | tool | arguments | what it does |
 | --- | --- | --- |
-| `mem_write` | `title, body, scope?, kind?, tags?, status?, room?, message?, id?` | create an item, or update one by `id`. `room` puts a todo in that chat room's panel and `message` keeps the message it was raised out of - both filters, neither a visibility |
+| `mem_write` | `title, body, scope?, kind?, tags?, status?, room?, message?, assignee?, id?` | create an item, or update one by `id`. `room` puts a todo in that chat room's panel and `message` keeps the message it was raised out of - both filters, neither a visibility. `assignee` is who is carrying it, as a claim: sending it empty says nobody is, leaving it out on an update keeps whoever had it, and naming somebody hands them nothing |
 | `mem_read` | `id` | one item, or the same answer a missing id gets |
 | `mem_search` | `q, scope?, kind?, limit?` | ranked full text over title, body and tags |
 | `mem_list` | `scope?, kind?, limit?` | newest first |
@@ -929,6 +929,7 @@ and deletes are tombstones.
 | `GET /api/chat/{room}?since=&thread=` | `{"room","events":[...],"since","cursor"}` with `seq_hlc > since`, in log order |
 | `GET /api/chat/{room}/wait?cursor=&window=` | long poll: blocks up to 25s for events after `cursor`, returns them or an empty list |
 | `POST /api/chat/{room}/todo` | raise a todo out of this room. Body: `title` (required), `body?`, `status?`, `message?` - the message it came out of. Writes the item and one chat message naming it, under one clock reading. Returns `{item, event}`. `404` on a `message` you cannot read |
+| `POST /api/chat/{room}/todo/{id}/assignee` | say who is carrying one of this room's todos. Body: `assignee` - a handle of at most 64 characters on one line, and an empty one says nobody. Moves the field and says so in the room as an ordinary chat message, under one clock reading, in the thread the todo was raised out of. Returns `{item, event}`. Whoever can read the todo may set it; a todo that is not in this room, or is out of reach, or is not a todo, is `404`/`400` |
 | `GET /api/inbox?since=&room=` | chat you may see and did not write, across rooms |
 | `GET /api/inbox/wait?as=&window=&room=&addressed=&kind=` | long poll the inbox for one named waiter, from the place the node holds for it. Returns `{reader, events, skipped, since, cursor}` and moves nothing. `kind` is `tracked` or `forked` - what this listener can do when it hears something - and anything else, including saying nothing, is recorded as `unknown`. `404` names the waiters that do exist |
 | `GET /api/presence` | the two rosters a room view wants: `members`, who has spoken in what you may read, and `listeners`, who holds a reader in your project with `attached`, `last_poll_at` and `waiter_kind`. The node sees polling, not processes, and the fields say only that |
@@ -1794,12 +1795,45 @@ readable from everywhere except the place it is agreed: two agents and a person
 settle in `#build` what has to happen, and until the room grew a panel the
 settling lived in the messages, so finding out what the room had decided meant
 reading the room back. The panel is `GET /api/artifacts?type=memory&kind=todo&
-room=<room>` - status, owner and title, compact, because a column beside a
+room=<room>` - status, assignee and title, compact, because a column beside a
 conversation is narrow and those are the three things somebody glances at it
 for - **and it refreshes on the room's own clock**: the same long poll that
 brings a message back reloads the panel, so a todo somebody else raises appears
 without a reload and without a second timer disagreeing about how often this
 room is alive.
+
+**The assignee cell is also the control.** Clicking it opens a box, and what you
+type goes to `POST /api/chat/{room}/todo/{id}/assignee`, which moves the field
+and says so in the room - so somebody takes a line of the plan while the
+conversation that produced it is still on screen, which is the whole reason the
+panel is here rather than a page away. Setting it and overriding it are one
+verb: work changes hands more often than it is first picked up, and an empty
+name puts it back down.
+
+Nothing about it is held in the browser. The write goes to the node and the
+panel is refilled from the node's answer - the same list the long poll refills
+it with - because an assignee kept in the tab looks finished until the next poll
+comes back and silently reverts it, which is the one bug this feature could
+plausibly have shipped with. The gate drives the control in a real browser,
+provokes a poll by saying something in the room from outside it, waits for that
+message to reach the screen, and then re-reads the cells and the node.
+
+Reading it is `assignee` in `fields` if the item carries one, and the `OWNER:`
+line at the top of the body if it does not - the convention the whole queue was
+written with before the field existed, so those rows read the way they always
+did. The field wins even when it is EMPTY: somebody who put a todo down said so,
+and falling back to a stale `OWNER:` line would hand it straight back to them.
+The console, the terminal client and the node all read it in that order, and the
+words that have meant nobody around here - `?`, `-`, `none`, `nobody`, `tbd`,
+`unassigned`, `unowned`, `n/a` - all collapse to the one empty state, because
+two words for one state read as two states.
+
+It is a claim about the work and not a grant on it. `assignee` rides `fields`
+beside `room`, the permission filter has never looked there, and the node
+resolves the name to no principal - so naming somebody on a todo they cannot
+read leaves them unable to read it. The surface that does hand over a readable
+copy is an assignment: a share, a task and a thread written together, which is
+`POST /api/assign` and a different verb on purpose.
 
 **Raising one is the point.** The box under the panel writes `POST
 /api/chat/{room}/todo`, which files the item and one ordinary chat message in
@@ -1935,10 +1969,13 @@ in the header - a list that buries what is in flight under what is finished
 answers none of the three questions somebody opens it to ask. The row is the
 status, the owner and the title, and the owner is the point: the queue was four
 agents and a person deep and there was no surface that said who had what. It
-comes off the `OWNER:` line the items are written with rather than off
-`owner_user`, which is the id of whoever filed the row and is the same id for
-the whole queue; the two items with no owner draw a dash rather than being
-hidden. The selected item's body goes under the rule, which is where its
+comes off the item's `assignee` field, falling back to the `OWNER:` line the
+older items are written with, rather than off `owner_user`, which is the id of
+whoever filed the row and is the same id for the whole queue; the items with
+neither draw a dash rather than being hidden. The field wins even when it is
+empty, which is the order the console and the node read these in as well - a
+todo somebody put down in a room panel does not come back owned in here. The
+selected item's body goes under the rule, which is where its
 `DEPENDS ON:` line is - the "what depends on what" half of the same question.
 
 A todo is an artifact of type `memory` with kind `todo`, so both narrowings go
@@ -2444,6 +2481,32 @@ Then Phase 2, against `flowy mcp --http` on a free port and against
 - `mem_write` carries the room the way `report_write` carries `as_of`, an update
   that says only `status: done` keeps it, `todos {room}` narrows to that room -
   and `todos {}` still answers with the whole queue, roomless items included
+- **who is carrying a todo is set from the room and then moved.** The one raised
+  in `#build` with `OWNER: a-bench` in its body is handed to somebody else, and
+  the sentence the room is told names the OWNER line as who had it - which is
+  the compatibility, asserted rather than assumed. Then it is moved again, put
+  down, given one of the words that have always meant nobody, and picked up
+  again, and each of the five says the right thing in `#build`. The empty field
+  outranks the `OWNER:` line still sitting in the body, so the last pick-up
+  reads `gave` and not `moved from a-bench`
+- an assignee is refused where it is not one: another room's todo through this
+  room's panel, an id that is nothing, a bug, a name over 64 characters or with
+  a newline in it, and a todo the caller cannot read - which answers exactly as
+  a read of it would. None of the six writes anything
+- **naming somebody hands them nothing.** A's todo is assigned to B's handle and
+  B still `404`s on the artifact, reads nothing out of `#build`'s panel and has
+  nothing new in its own queue. The store test beside it asks the same question
+  of the read filter and adds the second half: the row still verifies under this
+  node's key afterwards, because `fields` is inside the signature
+- **and the panel does it, in a browser.** The built console is driven at
+  `/chat/plan`: the cell that says who is carrying a todo is clicked, a name is
+  typed into it and committed, then overridden with a second name, and the same
+  is done to a todo whose body carries an `OWNER:` line the panel was showing.
+  Then a message is posted to the room from OUTSIDE the browser to provoke the
+  long poll, the check waits for that message to reach the screen, and only then
+  re-reads both cells and the node. That last clause is the one the feature
+  could plausibly have failed: an assignee held in the tab looks perfect until
+  the poll refills the panel from the node and reverts it
 - **and both are on the screen, not in an endpoint**: the built console is
   mounted against the live node at `/chat/general` and the room's todo has to be
   in the text it painted, and at `/todos` the roomless one has to be in that

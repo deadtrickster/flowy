@@ -80,8 +80,12 @@ ${shown}`);
     // identical". The app was right and the check was wrong: a word banned from
     // a column is not a word banned from the page, and content is allowed to
     // discuss the thing the column must not say.
+    //
+    // By the attribute rather than by position in the row: the cell became the
+    // control that sets the assignee, and a check pinned to "the second child"
+    // silently moves to whatever is second next time the row is rearranged.
     const owners = await panel
-      .locator("li span:nth-child(2)")
+      .locator("li [data-assignee]")
       .evaluateAll((nodes) => nodes.map((n) => (n.textContent || "").trim()));
     // A selector that matches nothing would report "never says it" about a
     // column it never found - the same shape as counting zero requests from a

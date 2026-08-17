@@ -635,6 +635,23 @@ export const api = {
       body: JSON.stringify({ title, body, ...(message ? { message } : {}) }),
     }),
 
+  /**
+   * Say who is carrying one of the room's todos. An empty name says nobody is.
+   *
+   * The room is in the path as well as the id because a panel edits its own
+   * room's plan: the node refuses a todo that is not in this room, so a stale
+   * id cannot write into another room's queue and announce it in this one.
+   */
+  assignTodo: (room: string, id: string, assignee: string) =>
+    request<{ item: Artifact; event: FlowyEvent }>(
+      `/api/chat/${encodeURIComponent(room)}/todo/${encodeURIComponent(id)}/assignee`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ assignee }),
+      },
+    ),
+
   artifact: (id: string) => request<Artifact>(`/api/artifact/${encodeURIComponent(id)}`),
 
   /** thread reads one thread of the log, whichever room it was said in. */

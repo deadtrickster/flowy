@@ -66,6 +66,10 @@ var tools = []tool{
 				"written before this field is."),
 			"message": str("Id of the chat message that raised this - the conversation it " +
 				"came out of, kept on the item. A message you cannot read is refused."),
+			"assignee": str("Who is carrying this: a handle, as a claim about the work. " +
+				"Send it empty to say nobody is. It hands the named party nothing - " +
+				"who may read the item is unchanged - and leaving it out on an update " +
+				"keeps whatever the item already said."),
 			"id": str("Update the item with this id instead of creating one."),
 		}, nil),
 		call: memWrite,
@@ -194,6 +198,11 @@ type memWriteArgs struct {
 	Tags    []string `json:"tags"`
 	Room    string   `json:"room"`
 	Message string   `json:"message"`
+	// A pointer, because "" is a value here and not a silence: an update that
+	// leaves the argument out keeps whoever is carrying the item, and one that
+	// sends it empty says nobody is. Every other string on this struct means
+	// "unstated" when it is empty, which is why this one cannot be a string.
+	Assignee *string `json:"assignee"`
 }
 
 // memWrite creates a memory item, or replaces one the principal owns.
@@ -245,6 +254,12 @@ func memWrite(ctx context.Context, m *mcpServer, p *store.Principal, raw json.Ra
 	}
 	if err := readableMessage(ctx, m.db, p, a.Message); err != nil {
 		return nil, err
+	}
+	assignee := ""
+	if a.Assignee != nil {
+		if assignee, err = assigneeArg(*a.Assignee); err != nil {
+			return nil, err
+		}
 	}
 	var fields map[string]any
 
@@ -311,6 +326,15 @@ func memWrite(ctx context.Context, m *mcpServer, p *store.Principal, raw json.Ra
 	}
 
 	fields = withRoom(fields, room, strings.TrimSpace(a.Message))
+	// Written whenever it was stated, including empty: the key being there at
+	// all is what says somebody decided, and what outranks a stale OWNER line
+	// in the body. An update that says nothing about it keeps what is there.
+	if a.Assignee != nil {
+		if fields == nil {
+			fields = map[string]any{}
+		}
+		fields[store.AssigneeField] = assignee
+	}
 	if len(fields) > 0 {
 		raw, err := json.Marshal(fields)
 		if err != nil {
