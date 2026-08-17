@@ -88,6 +88,13 @@ var tools = []tool{
 				"Send it empty to say nobody is. It hands the named party nothing - " +
 				"who may read the item is unchanged - and leaving it out on an update " +
 				"keeps whatever the item already said."),
+			"expect": str("TAKING A QUEUE ITEM OFF THE QUEUE: send who you read as " +
+				"carrying it just before you decided to take it - empty for a row nobody " +
+				"held - together with id and assignee and NOTHING ELSE. The write is then " +
+				"refused, naming whoever got there first, if the row moved in between, so " +
+				"of two agents claiming one row at the same moment exactly one comes away " +
+				"holding it. Leave it out and assignee behaves as it always has and the " +
+				"last write wins, which is right for handing somebody work."),
 			"category": enumOrEmpty("What KIND of work a queue item is, out of a closed "+
 				"set - anything else is refused. It is what the queue is counted and routed "+
 				"by; use tags for every other label, they are free-form and unlimited. "+
@@ -275,6 +282,12 @@ type memWriteArgs struct {
 	// an update that leaves the argument out has to keep the item filed as
 	// whatever it is filed as.
 	Category *string `json:"category"`
+	// Who the caller read as carrying the item before it decided to take it.
+	// Present, this write is a CLAIM and is guarded; absent, it is the write it
+	// has always been. A pointer for the third time and for the sharpest reason
+	// of the three: claiming a row nobody holds is expect:"", so absent and
+	// present-but-empty cannot be the same request. See memClaim.
+	Expect *string `json:"expect"`
 	// What a MERGE request is about: the branch, and the verdict that measured
 	// it. Plain strings rather than pointers, because unlike assignee and
 	// category there is no meaningful "set it back to empty" here - a merge
@@ -299,6 +312,13 @@ func memWrite(ctx context.Context, m *mcpServer, p *store.Principal, raw json.Ra
 	var a memWriteArgs
 	if err := decodeParams(raw, &a); err != nil {
 		return nil, err
+	}
+	// EXPECT TURNS THIS WRITE INTO A CLAIM, and a claim is not an edit: it takes
+	// its own path and never reaches the general write below. Before the check
+	// under it, because taking a row off the queue is not owning anything - read
+	// permission is the whole bar and store.ClaimTodo asks it itself.
+	if a.Expect != nil {
+		return memClaim(ctx, m, p, a)
 	}
 	if p.UserID == "" {
 		return nil, errors.New("this token resolves to no user, so it cannot own a memory item")
@@ -618,6 +638,99 @@ func memWrite(ctx context.Context, m *mcpServer, p *store.Principal, raw json.Ra
 	return withFixtureWarning(ctx, m, p, map[string]any{"item": art}), nil
 }
 
+// memClaim is mem_write TAKING a queue item rather than editing one.
+//
+// A CLAIM IS A RACE EVERY TIME AND AN EDIT IS NOT. The guard, the write and the
+// refusal are store.ClaimTodo's - one guarded UPDATE against the holder the caller
+// says it read, and an ErrHeldBy naming whoever got there first - so this tool and
+// POST /api/todo/{id}/assignee refuse the same contest in the same words rather
+// than in two implementations that agree until they drift. See the header of
+// internal/store/claimtodo.go for why the claim needed a guard the handover must
+// not have. The guard lived only on the HTTP door, and every agent in this fleet
+// claims through MCP, so the door that was actually used still folded
+// last-write-wins: seven collisions in one night, two of them a release quietly
+// erasing somebody else's claim.
+//
+// A CLAIM STATES ID, ASSIGNEE AND EXPECT AND NOTHING ELSE, and a write that
+// carries more is refused rather than half-made. That is memWriteQueueOnly's rule
+// for its reason - a success envelope that changed something other than what it
+// was asked to is the same lie as one that changed nothing - and it is also what
+// combining them would actually mean: the general write above rebuilds the whole
+// fields blob from a read taken before any guard could run, so an edit carrying a
+// claim would be a guard whose answer the very next statement overwrites. Claim
+// the row, then write the rest, and the refusal says so.
+func memClaim(ctx context.Context, m *mcpServer, p *store.Principal, a memWriteArgs) (any, error) {
+	if a.ID == "" {
+		return nil, errors.New("expect states what a row said before this write, so a claim has " +
+			"to name the row it is taking: send id. An item this call creates gets a fresh id " +
+			"and carries whoever it names - there is nobody to race for it")
+	}
+	if a.Assignee == nil {
+		return nil, fmt.Errorf("this write says who it expected to be carrying memory item %s "+
+			"but not who is taking it: send assignee as well. Empty is how work is put down",
+			a.ID)
+	}
+	stated := memWriteAuthorFields(a)
+	for _, field := range []struct {
+		name  string
+		given bool
+	}{
+		{"status", a.Status != ""},
+		{"category", a.Category != nil},
+		{"branch", a.Branch != ""},
+		{"target", a.Target != ""},
+		{"gated_tip", a.GatedTip != ""},
+		{"gate_run", a.GateRun != ""},
+	} {
+		if field.given {
+			stated = append(stated, field.name)
+		}
+	}
+	if len(stated) > 0 {
+		return nil, fmt.Errorf("a claim on memory item %s decides one thing - who is carrying "+
+			"it - so it takes id, assignee and expect and nothing else. This write also stated "+
+			"%s, so none of it was made: claim the row, then send the rest as a second write",
+			a.ID, strings.Join(stated, ", "))
+	}
+	// The assignment entry ClaimTodo also writes is in the log already; what
+	// comes back here is what every other mem_write comes back as, so a caller
+	// that claimed a row reads it in the shape it reads every other write in.
+	art, _, err := m.db.ClaimTodo(ctx, p, a.ID, *a.Assignee, *a.Expect)
+	if err != nil {
+		return nil, err
+	}
+	return withFixtureWarning(ctx, m, p, map[string]any{"item": art}), nil
+}
+
+// memWriteAuthorFields names the fields of a mem_write that are THE ITEM'S
+// AUTHOR'S - its words, what it is, and where it was raised - out of the ones this
+// call actually stated.
+//
+// One list, two refusals. They are the fields a principal who did not write the
+// item may not touch, and the fields a claim has no business carrying, and those
+// are the same fields for the same reason: everything else on a queue item is a
+// claim about the WORK. Two spellings would drift.
+func memWriteAuthorFields(a memWriteArgs) []string {
+	var stated []string
+	for _, field := range []struct {
+		name  string
+		given bool
+	}{
+		{"title", strings.TrimSpace(a.Title) != ""},
+		{"body", a.Body != ""},
+		{"tags", a.Tags != nil},
+		{"kind", a.Kind != ""},
+		{"scope", a.Scope != ""},
+		{"room", a.Room != ""},
+		{"message", a.Message != ""},
+	} {
+		if field.given {
+			stated = append(stated, field.name)
+		}
+	}
+	return stated
+}
+
 // memWriteQueueOnly is mem_write on an item this principal did not write.
 //
 // THE QUEUE METADATA CHANGES HANDS AND THE WORDS DO NOT. A todo is not the
@@ -649,23 +762,7 @@ func memWrite(ctx context.Context, m *mcpServer, p *store.Principal, raw json.Ra
 func memWriteQueueOnly(
 	ctx context.Context, m *mcpServer, p *store.Principal, old *store.Artifact, a memWriteArgs,
 ) (any, error) {
-	var stated []string
-	for _, field := range []struct {
-		name  string
-		given bool
-	}{
-		{"title", strings.TrimSpace(a.Title) != ""},
-		{"body", a.Body != ""},
-		{"tags", a.Tags != nil},
-		{"kind", a.Kind != ""},
-		{"scope", a.Scope != ""},
-		{"room", a.Room != ""},
-		{"message", a.Message != ""},
-	} {
-		if field.given {
-			stated = append(stated, field.name)
-		}
-	}
+	stated := memWriteAuthorFields(a)
 	if len(stated) > 0 {
 		// The sentence names the doors that DO work, because half of what went
 		// wrong here was that the thing being attempted is allowed: an item's

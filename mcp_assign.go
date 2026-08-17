@@ -4,11 +4,12 @@ package main
 //
 // There is nothing here but the tool declaration and one adapter. The write, the
 // read-is-the-bar rule, the entry it leaves in the log and the refusal wording are
-// store.AssignTodo's, and this is one caller of that path rather than a parallel
-// implementation of it - which is what makes "the HTTP door refuses what this tool
-// refuses" one fact instead of two that have to be kept in step. See the header of
-// internal/store/assign.go for what an assignment is and why it is shaped this
-// way, and assign.go for the doors beside this one.
+// store.AssignTodo's and store.ClaimTodo's, and this is one caller of those paths
+// rather than a parallel implementation of them - which is what makes "the HTTP
+// door refuses what this tool refuses" one fact instead of two that have to be
+// kept in step. See the header of internal/store/assign.go for what an assignment
+// is and why it is shaped this way, internal/store/claimtodo.go for why a claim is
+// the other verb, and assign.go for the doors beside this one.
 
 import (
 	"context"
@@ -37,27 +38,52 @@ var assignTools = []tool{
 			"todo": str("The todo's id."),
 			"assignee": str("Who is carrying it: a handle, as a claim about the work. " +
 				"Empty means nobody is."),
+			"expect": str("TURNS THIS INTO A CLAIM. Send who you read as carrying the " +
+				"todo just before you decided to take it - empty for a row nobody held. " +
+				"The write is then refused, naming whoever got there first, if the row " +
+				"moved in between, so of two agents claiming one row at the same moment " +
+				"exactly one comes away holding it. Leave it out and this is an ordinary " +
+				"handover that overwrites whatever is there, because handing somebody " +
+				"work is not a race."),
 		}, []string{"todo", "assignee"}),
 		call: todoAssign,
 	},
 }
 
-// todoAssign is the tool over store.AssignTodo.
+// todoAssign is the tool over store.AssignTodo and store.ClaimTodo.
 //
 // assignee is a required argument here and a pointer on mem_write, and the
 // difference is deliberate: on an update that also carries a title and a status,
 // an absent assignee has to mean "keep whoever has it", while a verb whose whole
 // job is to move the assignee has nothing to do when it is not told one. Empty is
 // still a value - it is how work is put down.
+//
+// expect is a pointer for the reason assigneeRequest.Expect is one over HTTP:
+// absent and present-but-empty are different requests, and claiming a row nobody
+// holds is exactly expect:"". That distinction is the whole feature.
 func todoAssign(ctx context.Context, m *mcpServer, p *store.Principal, raw json.RawMessage) (any, error) {
 	var a struct {
-		Todo     string `json:"todo"`
-		Assignee string `json:"assignee"`
+		Todo     string  `json:"todo"`
+		Assignee string  `json:"assignee"`
+		Expect   *string `json:"expect"`
 	}
 	if err := decodeParams(raw, &a); err != nil {
 		return nil, err
 	}
-	art, _, err := m.db.AssignTodo(ctx, p, a.Todo, a.Assignee, nil)
+	// TWO VERBS THROUGH ONE TOOL, told apart by whether the caller stated what it
+	// expected to find, exactly as POST /api/todo/{id}/assignee tells them apart -
+	// see handleTodoAssign, whose branch this is the twin of. Every agent in the
+	// fleet claims through MCP rather than over HTTP, so a guard that only the
+	// HTTP door had was a guard on the door nobody uses.
+	var (
+		art *store.Artifact
+		err error
+	)
+	if a.Expect != nil {
+		art, _, err = m.db.ClaimTodo(ctx, p, a.Todo, a.Assignee, *a.Expect)
+	} else {
+		art, _, err = m.db.AssignTodo(ctx, p, a.Todo, a.Assignee, nil)
+	}
 	if err != nil {
 		return nil, err
 	}
