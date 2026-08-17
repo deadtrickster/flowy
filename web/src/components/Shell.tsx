@@ -10,11 +10,13 @@ import {
   ListTree,
   Lock,
 } from "lucide-react";
-import type { ReactNode } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { NavLink } from "react-router-dom";
 
 import { FreshBanner } from "@/components/FreshBanner";
 import { TokenBar } from "@/components/TokenBar";
+import { api } from "@/lib/api";
+import { useSession } from "@/lib/session";
 import { cn } from "@/lib/utils";
 
 /** rooms the sidebar offers by name. Any other room is reachable by URL. */
@@ -27,8 +29,56 @@ function navClass({ isActive }: { isActive: boolean }) {
   );
 }
 
+/**
+ * Unread is what the inbox holds per room: messages this token may read and did
+ * not write, said since the node's reader mark moved for it. It is the same
+ * permission filter every read carries, and it is not a per-tab latch - opening
+ * a room does not clear the badge, the inbox does, because the waiter's mark is
+ * the one position the log keeps for this principal.
+ */
+function useUnreadByRoom(): Record<string, number> {
+  const { token } = useSession();
+  const [counts, setCounts] = useState<Record<string, number>>({});
+  useEffect(() => {
+    if (!token) {
+      setCounts({});
+      return;
+    }
+    let stopped = false;
+    const load = () => {
+      api
+        .inbox()
+        .then((page) => {
+          if (stopped) return;
+          const next: Record<string, number> = {};
+          for (const e of page.events) next[e.room] = (next[e.room] ?? 0) + 1;
+          setCounts(next);
+        })
+        .catch(() => {});
+    };
+    load();
+    const every = setInterval(load, 20_000);
+    return () => {
+      stopped = true;
+      clearInterval(every);
+    };
+  }, [token]);
+  return counts;
+}
+
+/** UnreadDot is the badge itself: there when something waits, absent when not. */
+function UnreadDot({ n }: { n: number }) {
+  if (n <= 0) return null;
+  return (
+    <span className="ml-auto inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 font-mono text-[10px] text-primary-foreground">
+      {n > 99 ? "99+" : n}
+    </span>
+  );
+}
+
 /** Shell is the frame every route renders inside: navigation, and the token. */
 export function Shell({ children }: { children: ReactNode }) {
+  const unread = useUnreadByRoom();
   return (
     <div className="flex h-full">
       <aside className="flex w-60 shrink-0 flex-col gap-4 border-border border-r bg-card/40 p-3">
@@ -94,6 +144,7 @@ export function Shell({ children }: { children: ReactNode }) {
             <NavLink key={room} to={`/chat/${room}`} className={navClass}>
               <Hash className="h-4 w-4" />
               {room}
+              <UnreadDot n={unread[room] ?? 0} />
             </NavLink>
           ))}
         </div>

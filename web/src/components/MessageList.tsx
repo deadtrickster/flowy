@@ -1,4 +1,6 @@
+import DOMPurify from "dompurify";
 import { AnimatePresence, motion } from "framer-motion";
+import { marked } from "marked";
 import { type KeyboardEvent, useEffect, useRef } from "react";
 
 import { CitedMessage } from "@/components/CitedMessage";
@@ -175,26 +177,51 @@ export function MessageList({ events, selected, onSelect, onCite, me }: Props) {
                 data-body={event.id}
                 className="select-text whitespace-pre-wrap break-words text-sm"
                 onMouseUp={(released) => {
+                  // Markdown-rendered bodies carry rendered text, not the raw
+                  // body, so a span measured here would quote the wrong bytes.
+                  if (isMarkdown(event.body)) return;
                   const span = selectedSpan(released.currentTarget, event.body);
                   if (span && onCite) onCite(event, span.start, span.end);
                 }}
               >
-                {splitBody(event.body, event.meta?.mentions).map((run) =>
-                  run.name ? (
-                    <span
-                      key={run.key}
-                      data-mention={run.id}
-                      className={cn(
-                        "rounded px-0.5 font-medium",
-                        isMe(run.id) && "ring-1 ring-primary/70",
-                      )}
-                      style={speakerStyle(run.name)}
-                    >
-                      {run.text}
-                    </span>
-                  ) : (
-                    run.text
-                  ),
+                {isMarkdown(event.body) ? (
+                  // A body with structure renders as what it is - the code
+                  // block a log is, the list a plan is - rather than as a
+                  // wall of signs. Sanitized because bodies are agent-written;
+                  // the same renderer the report page uses, at chat size.
+                  //
+                  // Span citations are skipped for these: a cite records byte
+                  // offsets into the RAW body, and markdown rendering changes
+                  // the visible text, so a span selected against the rendered
+                  // DOM would quote the wrong bytes. Whole-message replies
+                  // still work - they name the id, not a span.
+                  //
+                  <div
+                    className="report-body text-sm"
+                    dangerouslySetInnerHTML={{
+                      __html: DOMPurify.sanitize(
+                        marked.parse(event.body, { async: false }) as string,
+                      ),
+                    }}
+                  />
+                ) : (
+                  splitBody(event.body, event.meta?.mentions).map((run) =>
+                    run.name ? (
+                      <span
+                        key={run.key}
+                        data-mention={run.id}
+                        className={cn(
+                          "rounded px-0.5 font-medium",
+                          isMe(run.id) && "ring-1 ring-primary/70",
+                        )}
+                        style={speakerStyle(run.name)}
+                      >
+                        {run.text}
+                      </span>
+                    ) : (
+                      run.text
+                    ),
+                  )
                 )}
               </div>
               <div className="flex gap-2 pt-1 font-mono text-[11px] text-muted-foreground">
@@ -213,4 +240,16 @@ export function MessageList({ events, selected, onSelect, onCite, me }: Props) {
       <div ref={bottom} />
     </div>
   );
+}
+
+/**
+ * isMarkdown says whether a body carries structure worth rendering: a fenced
+ * code block, a list, a heading, or a table. Prose with a bold word stays on
+ * the plain path - that path is where mention colours and span citations
+ * live, and neither survives markdown rendering, so the upgrade is only for
+ * the bodies that need it.
+ */
+function isMarkdown(body: string): boolean {
+  if (body.includes("```")) return true;
+  return /^(\s*[-*+]\s+\S|\s*\d+\.\s+\S|#{1,6}\s+\S|\|.*\|)/m.test(body);
 }

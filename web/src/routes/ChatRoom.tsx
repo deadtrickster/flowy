@@ -5,6 +5,7 @@ import { AnnouncementBanner } from "@/components/AnnouncementBanner";
 import { MessageBox } from "@/components/MessageBox";
 import { MessageList } from "@/components/MessageList";
 import { RoomRoster } from "@/components/RoomRoster";
+import { RoomSearch } from "@/components/RoomSearch";
 import { RoomTodos } from "@/components/RoomTodos";
 import { ThreadDag } from "@/components/ThreadDag";
 import { ThreadList } from "@/components/ThreadList";
@@ -251,9 +252,10 @@ export function ChatRoom() {
           <h1 className="font-semibold text-base">#{room}</h1>
           {whoami?.project ? <Badge variant="outline">{whoami.project}</Badge> : null}
           <Badge variant={live ? "default" : "outline"}>{live ? "watching" : "idle"}</Badge>
-          <span className="ml-auto text-muted-foreground text-xs">
+          <span className="text-muted-foreground text-xs">
             {events.length} message{events.length === 1 ? "" : "s"}
           </span>
+          <RoomSearch />
         </header>
 
         {/*
