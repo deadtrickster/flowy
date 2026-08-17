@@ -67,8 +67,14 @@ var terminalStatus = map[string]bool{
 // to be finished was the one that could not be moved. What was missing was never
 // a type. It was a verb and a vocabulary, and the vocabulary the queue already
 // reads is not this one.
+//
+// finding behaves exactly like bug: open -> triaged -> in-progress -> in-review
+// -> done, exiting to wont-fix or duplicate same as any of them. It gets no
+// column of its own - Kind, Severity, Tags, Related, Discovery and Fields
+// already exist on Artifact and already carry what a finding needs to say - so
+// the only change a finding required here was one more word in this set.
 var lifecycleTypes = map[string]bool{
-	"bug": true, "feature": true, "note": true, "task": true,
+	"bug": true, "feature": true, "note": true, "task": true, "finding": true,
 }
 
 // nextQueueStatuses is everywhere a queue item at from may go: the other two.
@@ -192,7 +198,7 @@ func (s *server) handleArtifactStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	if !lifecycleTypes[art.Type] {
 		writeJSON(w, http.StatusBadRequest,
-			errorBody("a "+whatItIs(art)+" has no lifecycle; bug, feature, note and task do, "+
+			errorBody("a "+whatItIs(art)+" has no lifecycle; bug, feature, note, task and finding do, "+
 				"and a queue item has one of its own ("+strings.Join(store.QueueStatuses, ", ")+")"))
 		return
 	}
