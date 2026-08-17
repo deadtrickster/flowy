@@ -47,6 +47,14 @@ export default function App() {
           project-scoped list here would be the old mistake with a new route.
         */}
           <Route path="/todos" element={<Todos />} />
+          {/*
+          The merge tab was a useState in Todos.tsx until now, which made
+          "opened the merge queue" invisible to the URL: reload or back landed
+          on the todo list with no trace the merge view had ever been open.
+          Same component, second path - it reads which tab from the route it
+          was given rather than from its own state.
+        */}
+          <Route path="/todos/merge" element={<Todos />} />
           <Route path="/memory" element={<Memory />} />
           <Route path="/reports" element={<Reports />} />
           <Route path="/worklog" element={<Worklog />} />

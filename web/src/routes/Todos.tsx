@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 
 import { MergeQueue } from "@/components/MergeQueue";
 import { Badge } from "@/components/ui/badge";
@@ -86,11 +86,21 @@ export function Todos() {
    * being asked - "what is outstanding" against "what may land" - so the split
    * is in the reading, not in the data.
    *
-   * Held here rather than in the URL for the same reason the filters are: it is
-   * a way of reading this page, and a shared link that opens somebody else on a
-   * tab they did not choose is a small lie about what they are looking at.
+   * Read from the path, unlike kind/tag below: those narrow the rows you are
+   * looking at from a page you are already on, but the tab decides which page
+   * that is - "the merge queue" is a thing a person links to, bookmarks and
+   * expects the back button to leave, not a filter on "todos". Keeping it in
+   * useState made /todos and the merge queue the same URL, so a reload or a
+   * back-button press after opening the merge queue silently dropped you back
+   * on the todo list with no way to tell that had happened.
    */
-  const [tab, setTab] = useState<"todos" | "merge">("todos");
+  const location = useLocation();
+  const navigate = useNavigate();
+  const tab: "todos" | "merge" = location.pathname === "/todos/merge" ? "merge" : "todos";
+  const setTab = (next: "todos" | "merge") => {
+    if (next === tab) return;
+    navigate(next === "merge" ? "/todos/merge" : "/todos");
+  };
   const [merges, setMerges] = useState<MergeRequest[]>([]);
   const [mergeTip, setMergeTip] = useState("");
   const [mergeTipFrom, setMergeTipFrom] = useState<"stated" | "deployed" | "none">("none");
