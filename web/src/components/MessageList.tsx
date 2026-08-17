@@ -3,6 +3,7 @@ import { useEffect, useRef } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { type FlowyEvent, isAgent } from "@/lib/api";
+import { splitBody } from "@/lib/mentions";
 import { speakerStyle } from "@/lib/speakercolour";
 import { clock, cn, shortId, speaker } from "@/lib/utils";
 
@@ -87,7 +88,35 @@ export function MessageList({ events, selected, onSelect, me }: Props) {
                   {clock(event.created)}
                 </span>
               </div>
-              <div className="whitespace-pre-wrap break-words text-sm">{event.body}</div>
+              {/*
+                The body, with the @names the node resolved drawn in the
+                colour of whoever they name - the same colour that person
+                speaks in above, because both come from the name. A mention of
+                YOU is ringed as well, which is the treatment the row already
+                gives a message addressed at you: the ring says "this one is
+                yours" whether it is around the message or around your name
+                inside it. An @word the node resolved to nobody is left as the
+                text it is.
+              */}
+              <div className="whitespace-pre-wrap break-words text-sm">
+                {splitBody(event.body, event.meta?.mentions).map((run) =>
+                  run.name ? (
+                    <span
+                      key={run.key}
+                      data-mention={run.id}
+                      className={cn(
+                        "rounded px-0.5 font-medium",
+                        isMe(run.id) && "ring-1 ring-primary/70",
+                      )}
+                      style={speakerStyle(run.name)}
+                    >
+                      {run.text}
+                    </span>
+                  ) : (
+                    run.text
+                  ),
+                )}
+              </div>
               <div className="flex gap-2 pt-1 font-mono text-[11px] text-muted-foreground">
                 <span>#{shortId(event.id)}</span>
                 <span>thread {shortId(event.thread)}</span>

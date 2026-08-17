@@ -42,7 +42,8 @@ const waitTick = 250 * time.Millisecond
 // To is who the message is directed at, and it is orthogonal to all three of
 // those: a thread is where a message sits in the log, an addressee is who it is
 // for. Leave it out and the message is for the room, which is what a message
-// has always been here.
+// has always been here - unless the body names somebody with an @, which is the
+// same field said in prose and fills it in. See mentions.go.
 type chatSayRequest struct {
 	Body    string   `json:"body"`
 	Thread  string   `json:"thread"`
@@ -347,8 +348,28 @@ func (s *server) handleChatSay(w http.ResponseWriter, r *http.Request) {
 	// the story of the handoff rather than a request nothing connects to.
 	s.adoptThreadTrace(r, req.Thread)
 
+	// The @names in the body, resolved here rather than left to every reader.
+	// An addressee written into the sentence is the same fact as one written
+	// into the `to` field, so it lands in the same column - see mentions.go.
+	//
+	// An explicit `to` still wins. It is a field somebody filled in
+	// deliberately, and a message that says "@alice, ask bob" with --to bob is
+	// a writer being specific about which of the two names is the addressing.
+	found, err := resolveMentions(req.Body, s.principalsNamed(r.Context()))
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	if req.To == "" {
+		req.To = mentionAddressee(found)
+	}
+
 	actor, kind := chatActor(p)
-	meta, err := json.Marshal(speakerMeta(p, kind, s.speakerName(r.Context(), p)))
+	fields := speakerMeta(p, kind, s.speakerName(r.Context(), p))
+	if len(found) > 0 {
+		fields[store.MentionsMetaKey] = mentionMeta(found)
+	}
+	meta, err := json.Marshal(fields)
 	if err != nil {
 		serverError(w, r, err)
 		return

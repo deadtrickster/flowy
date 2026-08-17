@@ -115,6 +115,14 @@ func wakesFor(p *store.Principal, e *store.Event, want inboxFilter) bool {
 		// question of an addressee as it is of an actor: a message to the
 		// person and a message to the agent working for them both reach here.
 		//
+		// AN @NAME IN THE BODY ARRIVES AS AN ADDRESSEE, so it arrives here.
+		// chat.go resolves the names in a message into this same column at say
+		// time rather than inventing a second field for them - see mentions.go
+		// - which is what makes "@thatname can you look" force a turn while
+		// "@somebodyelse can you look" does not. Narrowing this clause to a
+		// `to` somebody remembered to fill in would take the feature out from
+		// under the words without touching the parser at all.
+		//
 		// OR FROM A PERSON, and that half is not a courtesy. Agents address
 		// each other by habit - "flowy-claude: ..." or --to - so agent traffic
 		// matches this and forces a turn. A person writes "who is here?" with
