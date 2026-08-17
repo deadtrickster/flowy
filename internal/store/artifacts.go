@@ -1154,15 +1154,27 @@ func (d *DB) TombstoneArtifact(ctx context.Context, p *Principal, id string) (*A
 	}
 	art.HLC = at
 	art.Node = d.node
+	// WHO TOOK IT BACK, AND WHEN, travel in the row itself - see markWithdrawn.
+	// A tombstone that records only that it is a tombstone can be read back as
+	// "gone" and nothing else, and "somebody withdrew this at 23:14" is a
+	// different answer from "this never happened" only if the row is carrying
+	// the difference. It is stamped before the signature because the signature
+	// covers fields.
+	fields, err := markWithdrawn(art, p)
+	if err != nil {
+		return nil, err
+	}
+	art.Fields = fields
 	// The delete is a write like any other and travels as a row, so it is signed
 	// as one: a tombstone nobody signed is a delete a peer could have invented.
 	if err := d.signArtifact(ctx, art); err != nil {
 		return nil, err
 	}
 	res, err := d.sql.ExecContext(ctx,
-		`UPDATE artifacts SET tombstone = true, hlc = $2, node = $3, sig = $5, updated = now()
+		`UPDATE artifacts SET tombstone = true, hlc = $2, node = $3, sig = $5, fields = $6,
+		        updated = now()
 		  WHERE id = $1 AND coalesce(owner_user, '') = $4`,
-		art.ID, art.HLC, art.Node, p.UserID, art.Sig)
+		art.ID, art.HLC, art.Node, p.UserID, art.Sig, []byte(art.Fields))
 	if err != nil {
 		return nil, fmt.Errorf("store: tombstone artifact %s: %w", id, err)
 	}

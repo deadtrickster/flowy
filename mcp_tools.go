@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/deadtrickster/flowy/internal/store"
 )
@@ -741,7 +742,7 @@ func memRead(ctx context.Context, m *mcpServer, p *store.Principal, raw json.Raw
 
 	art, err := m.db.ReadArtifact(ctx, p, a.ID, false)
 	if errors.Is(err, store.ErrNotFound) {
-		return nil, notThere(a.ID)
+		return nil, m.notThereOrWithdrawn(ctx, p, a.ID)
 	}
 	if err != nil {
 		return nil, err
@@ -757,6 +758,33 @@ func memRead(ctx context.Context, m *mcpServer, p *store.Principal, raw json.Raw
 
 // notThere is the only thing an unreadable id ever gets back.
 func notThere(id string) error { return fmt.Errorf("no such memory item: %s", id) }
+
+// notThereOrWithdrawn is notThere, except for the one case a reader is entitled
+// to hear about: an id THIS principal could have read, which was taken back.
+//
+// It is the MCP door's half of what GET /api/artifact/{id} answers with 410, and
+// it is here because this is the door an agent actually knocks on. Twenty
+// minutes went into ids that came back "no such memory item" - the cause was
+// visibility=personal, and the reply could not say so.
+//
+// It still cannot say so, and must not: exists-but-not-for-you stays word for
+// word identical to never-existed, because an id is guessable and a reply that
+// distinguished them would let anybody enumerate what a project holds. The only
+// thing that changes the answer is ReadWithdrawn's permission filter, which is
+// the same filter the read that just failed used.
+func (m *mcpServer) notThereOrWithdrawn(ctx context.Context, p *store.Principal, id string) error {
+	wd, err := m.db.ReadWithdrawn(ctx, p, id, false)
+	if err != nil || wd == nil {
+		return notThere(id)
+	}
+	who := wd.Actor
+	if who == "" {
+		who = "somebody"
+	}
+	return fmt.Errorf("memory item %s was withdrawn by %s at %s - it is not there to read, "+
+		"and it is not coming back by being written to",
+		id, who, wd.At.UTC().Format(time.RFC3339))
+}
 
 func memSearch(ctx context.Context, m *mcpServer, p *store.Principal, raw json.RawMessage) (any, error) {
 	var a struct {

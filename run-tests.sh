@@ -970,6 +970,68 @@ tombstone_leaves_list_and_search() {
 	printf 'gone from both, for its owner as well as for anyone else\n'
 }
 
+# A tombstone that only says "gone" is a delete with extra steps. What makes it
+# worth keeping the row is that it can name who took it back and when, so the
+# reader who goes looking gets an answer instead of a silence.
+#
+# B is asked as well as A, and that is the half that matters: B holds the pa
+# grant and could have read the bug right up until it went, so B is a principal
+# the row would otherwise have been readable by, and B is told.
+tombstone_says_who_took_it_back() {
+	recall
+	want_status 410 GET "$TOKEN_A" "/api/artifact/$BUG" || return 1
+	want_eq "the withdrawn id" "$(jqv .withdrawn.id)" "$BUG" || return 1
+	want_eq "who withdrew it" "$(jqv .withdrawn.actor)" "$USER_A" || return 1
+	want_eq "what it was" "$(jqv .withdrawn.type)" bug || return 1
+	if [ -z "$(jqv .withdrawn.at)" ] || [ "$(jqv .withdrawn.at)" = null ]; then
+		printf 'the withdrawal names no moment: %s\n' "$API_BODY" >&2
+		return 1
+	fi
+	# And none of the row itself: the artifact stopped being the artifact, so
+	# the title and the body do not come back through the door that says so.
+	want_eq "the title leaked" "$(printf '%s' "$API_BODY" | grep -c 'cannot parse a handoff' || true)" 0 || return 1
+	want_status 410 GET "$TOKEN_B" "/api/artifact/$BUG" || return 1
+	want_eq "what B is told" "$(jqv .withdrawn.actor)" "$USER_A" || return 1
+	printf 'withdrawn by %s at %s, and B is told the same\n' "$(jqv .withdrawn.actor)" "$(jqv .withdrawn.at)"
+}
+
+# THE ORDER OF THE TWO CHECKS, over the wire.
+#
+# 410 goes only to a principal the row would otherwise have been readable by.
+# Everybody else gets 404, and exists-but-not-for-you has to be word for word
+# never-existed: an id is guessable, so a door that distinguished them would let
+# anyone enumerate what a project holds by asking for ids and reading the code
+# that comes back.
+#
+# So A withdraws a personal row here - the visibility that cost twenty minutes -
+# and B, who can read the whole of pa through the grant, gets the same 404 for it
+# as for an id nobody ever wrote.
+withdrawn_out_of_reach_is_indistinguishable_from_absent() {
+	recall
+	api POST "$TOKEN_A" /api/artifacts '{
+		"type": "note",
+		"title": "withdrawn and not for you",
+		"body": "a flimbustor of my own",
+		"visibility": "personal"
+	}' || return 1
+	want_eq "create status" "$API_STATUS" 200 || return 1
+	local id
+	id="$(jqv .id)"
+
+	want_status 404 GET "$TOKEN_B" "/api/artifact/$id" || return 1
+	local before="$API_BODY"
+	want_status 200 POST "$TOKEN_A" "/api/artifact/$id/delete" || return 1
+
+	want_status 410 GET "$TOKEN_A" "/api/artifact/$id" || return 1
+	want_eq "who withdrew it" "$(jqv .withdrawn.actor)" "$USER_A" || return 1
+	want_status 404 GET "$TOKEN_B" "/api/artifact/$id" || return 1
+	want_eq "B's answer after the withdrawal" "$API_BODY" "$before" || return 1
+	# And an id nobody ever wrote answers in exactly the same words.
+	want_status 404 GET "$TOKEN_B" "/api/artifact/01M0000000000000000000000Z" || return 1
+	want_eq "an id nobody wrote" "$API_BODY" "$before" || return 1
+	printf 'A is told who and when; B cannot tell the row from one that never existed\n'
+}
+
 # ?scope=all is the operator's view of their own node and nobody else's.
 scope_all_ignored_for_others() {
 	recall
@@ -9476,6 +9538,9 @@ check "since= pages the log by seq_hlc" since_pages_the_log
 say "tombstones"
 check "A deletes the bug and the clock moves past the write" a_deletes_bug
 check "the tombstoned artifact is gone from the list and from search" tombstone_leaves_list_and_search
+check "the withdrawal names who took it back, to everyone who could have read it" tombstone_says_who_took_it_back
+check "a withdrawn row out of reach is a 404 like any id that was never written" \
+	withdrawn_out_of_reach_is_indistinguishable_from_absent
 
 say "scope=all"
 check "scope=all does nothing for a principal who is not the operator" scope_all_ignored_for_others
@@ -13471,11 +13536,18 @@ fuse_unlink_tombstones_the_item() {
 		printf 'the file is still in the mount after the unlink\n' >&2
 		return 1
 	fi
-	# Gone through every other door, and told in the words an id that never
-	# existed gets.
-	want_tool_fails mem_read "$TOKEN_A" "{\"id\": \"$FUSE_ITEM\"}" "no such memory item" || return 1
-	# Its owner is told it was withdrawn; the mount and the search still say gone.
+	# Gone through every other door - and its owner, who could have read it, is
+	# told it was WITHDRAWN rather than told it never was. Both doors say that,
+	# and saying it in both is the point: one reader getting "410, withdrawn"
+	# over HTTP and "no such memory item" over MCP is the ambiguity this is
+	# supposed to end rather than a second place to have it.
+	want_tool_fails mem_read "$TOKEN_A" "{\"id\": \"$FUSE_ITEM\"}" \
+		"was withdrawn by $USER_A" || return 1
 	want_status 410 GET "$TOKEN_A" "/api/artifact/$FUSE_ITEM" || return 1
+	# And B, who never could read a personal row of A's, gets the words an id
+	# nobody ever wrote gets - at both doors, for the same reason.
+	want_tool_fails mem_read "$TOKEN_B" "{\"id\": \"$FUSE_ITEM\"}" "no such memory item" || return 1
+	want_status 404 GET "$TOKEN_B" "/api/artifact/$FUSE_ITEM" || return 1
 	want_tool mem_search "$TOKEN_A" "{\"q\": \"$FUSE_WORD\"}" || return 1
 	want_eq "and it is out of the index" "$(tv .count)" 0 || return 1
 	printf '%s is gone from the mount, the store and the search\n' "$FUSE_ITEM"
