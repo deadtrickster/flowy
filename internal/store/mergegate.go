@@ -5,12 +5,59 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/deadtrickster/flowy/internal/otel"
 )
 
 // EventMergeGate is what a gate declaration leaves in the log.
 const EventMergeGate = "merge.gate"
+
+// GateAtField is WHEN the declaration was made, stamped by the node.
+//
+// It exists because the first version of this had no off switch. "Gating" was
+// derived from having a run and no verdict yet, which is indistinguishable from
+// two other things: the run died, and nobody bothered to record what it found.
+// Mine sat on for twenty minutes after a green run had already landed, and
+// board-nag read it and told everybody not to land.
+//
+// A release verb does not fix that. It fails exactly when it matters - when the
+// run dies and there is nobody left to call it.
+//
+// So a declaration is BELIEVED FOR A BOUNDED TIME. The clock is the node's, not
+// the caller's, for the reason every deadline here is: a caller who sets its own
+// expiry can set it to never.
+const GateAtField = "gate_at"
+
+// GateBelievedFor is how long a declaration is taken seriously.
+//
+// A gate on this project runs four to six minutes. Fifteen is long enough that a
+// slow one is never called dead, and short enough that a dead one stops blocking
+// the queue within one coffee. The failure mode is "believed slightly too long"
+// rather than "blocks everybody until a human notices", which is the trade this
+// is choosing on purpose.
+const GateBelievedFor = 15 * time.Minute
+
+// GatingAt reports whether a declaration should still be believed, given the
+// row's fields and the time now.
+//
+// Absent stamp reads as NOT gating rather than as gating forever: every row
+// written before this field exists has no stamp, and the safe reading of "I do
+// not know when this started" is not "block the queue indefinitely".
+func GatingAt(a *Artifact, now time.Time) bool {
+	if GateRunOf(a) == "" || GatedTipOf(a) != "" {
+		return false
+	}
+	at := artifactString(a, GateAtField)
+	if at == "" {
+		return false
+	}
+	started, err := time.Parse(time.RFC3339Nano, at)
+	if err != nil {
+		return false
+	}
+	return now.Sub(started) < GateBelievedFor
+}
 
 // SetMergeGate declares that a run is measuring a merge request, or records the
 // tip it measured, and records WHO said so.
@@ -65,8 +112,15 @@ func (d *DB) SetMergeGate(
 	status := art.Status
 	if tip = strings.TrimSpace(tip); tip != "" {
 		fields[GatedTipField] = normalizeTip(tip)
+		// The verdict is in, so the declaration has nothing left to say. Clearing
+		// the stamp rather than leaving it is what makes "gating" a fact about
+		// now instead of a fact about the past that nobody swept up.
+		delete(fields, GateAtField)
 	} else {
 		status = ActiveStatus
+		// Stamped HERE, by the node. A caller that sets its own expiry can set
+		// it to never, which is the whole failure this replaces.
+		fields[GateAtField] = time.Now().UTC().Format(time.RFC3339Nano)
 	}
 	column, err := json.Marshal(fields)
 	if err != nil {

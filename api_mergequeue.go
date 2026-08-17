@@ -16,6 +16,7 @@ package main
 import (
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/deadtrickster/flowy/internal/store"
 )
@@ -117,7 +118,11 @@ func (s *server) handleMergeQueue(w http.ResponseWriter, r *http.Request) {
 		if a.Project != nil {
 			it.Project = *a.Project
 		}
-		it.Gating = it.GateRun != "" && it.GatedTip == ""
+		// Believed for a bounded time, not forever - see store.GatingAt. A run
+		// that died leaves a declaration nobody will ever clear, and the first
+		// version of this told the whole room not to land for twenty minutes
+		// after a green run had already landed.
+		it.Gating = store.GatingAt(a, time.Now())
 		if tip != "" {
 			err := store.MergeAdmissible(a, tip)
 			ok := err == nil
