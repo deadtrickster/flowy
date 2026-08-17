@@ -1273,6 +1273,8 @@ a_vote_cannot_be_written_by_hand() {
 	want_status 403 POST "$TOKEN_A" /api/events \
 		"$(jq -nc --arg a "$PROPOSAL" '{type: "proposal.close", artifact: $a, body: "closed"}')" || return 1
 	printf 'a hand-written vote: %s\n' "$(jqv .error)"
+}
+
 # ----------------------------------------------------------------- attachments
 #
 # An attachment is an artifact with bytes, and every one of these checks is
