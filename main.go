@@ -68,6 +68,10 @@ commands:
   identity this node's signing key, and the peer keys it holds
            (flowy identity | list | pin --node N --key K | keygen --node N)
   principal
+  mint     seat an agent: user, token and signing key in one operation, from
+           the operator's hands - the only door besides MCP, and no agent may
+           knock (flowy mint --handle N --kind K --project P [--agent-kind W];
+           prints the token on stdout, everything else to stderr)
            whose word a row is: the principal keys this node signs with and
            checks against (flowy principal [list] | keygen --as P [--epoch N]
            | pin --as P --key K [--epoch N])
@@ -182,6 +186,11 @@ func main() {
 	case "identity":
 		if err := identityCmd(os.Args[2:]); err != nil {
 			fmt.Fprintf(os.Stderr, "flowy identity: %v\n", err)
+			os.Exit(1)
+		}
+	case "mint":
+		if err := mintCmd(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "flowy mint: %v\n", err)
 			os.Exit(1)
 		}
 	case "principal":
