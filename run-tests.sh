@@ -15354,6 +15354,145 @@ check "the page lists both projects for the reader who reaches both, one for the
 check "signed out, the queue says so instead of reading as no work" \
 	console_todos_signed_out
 
+# ------------------------------------------------------- the deploy scripts
+#
+# THE GUARDS WERE NEVER TESTED. scripts/deploy.sh and scripts/migrate.sh exist
+# because the same deploy mistakes kept landing - a console 35 minutes stale
+# because go:embed took whatever was in web/dist, and a node serving 500s for
+# four minutes because schema.sql was applied after the binary rather than
+# before. Both scripts are guards written after an outage, and neither was run
+# by anything: a guard nobody exercises is a guard that rots quietly and fails
+# on the night it is needed, which is precisely the shape it was written for.
+#
+# What is checked here is what CAN be checked without a live node: that the
+# scripts parse, that they meet the bar every persistent script here meets, and
+# that their REFUSALS still refuse. The refusals are the load-bearing half -
+# "not on master", "tree is dirty", "no database named" are what stop a deploy
+# from shipping somebody else's work in progress or migrating a database
+# nobody asked about.
+
+repo_shell_scripts() {
+	# The repo's own scripts. vendor/ is other people's code and its style is
+	# not ours to enforce; run-tests.sh itself is included, because it is the
+	# most load-bearing script here.
+	printf '%s\n' ./run-tests.sh ./scripts/deploy.sh ./scripts/migrate.sh \
+		./scripts/waiter-spin-test.sh
+}
+
+shell_scripts_parse() {
+	local script
+	while read -r script; do
+		bash -n "$script" || return 1
+	done < <(repo_shell_scripts)
+}
+
+shell_scripts_lint() {
+	# MISSING TOOLING IS SAID OUT LOUD AND NOT PASSED OVER. A check that exits
+	# 0 because the thing it checks with is absent reads as a pass, which is
+	# how "the suite is green" and "the suite ran" came apart here before.
+	if ! command -v shellcheck >/dev/null 2>&1; then
+		printf 'shellcheck is not installed in this image - NOT CHECKED\n'
+		return 0
+	fi
+	# --severity=warning, not the default. The default reports info-level
+	# style notes too, and this suite is not the place to hold anybody's
+	# hand about single quotes in a jq program - what it must refuse is the
+	# class that actually breaks a script at 3am: unquoted expansions, an
+	# unchecked cd, a masked pipeline status. All four scripts are clean at
+	# this level today, so a new warning means somebody added one.
+	local script
+	while read -r script; do
+		shellcheck --severity=warning "$script" || return 1
+	done < <(repo_shell_scripts)
+}
+
+shell_scripts_formatted() {
+	if ! command -v shfmt >/dev/null 2>&1; then
+		printf 'shfmt is not installed in this image - NOT CHECKED\n'
+		return 0
+	fi
+	# -d prints the diff and exits non-zero, so a script somebody hand-edited
+	# out of shape fails with the change it needs attached rather than with a
+	# bare "reformat it".
+	local script
+	while read -r script; do
+		shfmt -d "$script" || return 1
+	done < <(repo_shell_scripts)
+}
+
+deploy_refuses_misuse() {
+	local out status
+	out=$(./scripts/deploy.sh --wat 2>&1)
+	status=$?
+	[ "$status" -eq 2 ] || {
+		printf 'an unknown argument exited %d, want 2:\n%s\n' "$status" "$out"
+		return 1
+	}
+	printf '%s\n' "$out" | grep -q 'usage' || {
+		printf 'the refusal does not say how to call it:\n%s\n' "$out"
+		return 1
+	}
+}
+
+deploy_refuses_off_master() {
+	# THE ONE THAT MATTERS HERE. The gate runs on a branch, never on master, so
+	# this is the refusal every gate run is in a position to exercise: a deploy
+	# from a branch would ship whatever that branch happens to be, and four
+	# agents share the checkout it reads. If this ever passes silently, a
+	# spawned agent can deploy its own unlanded work to the node everyone uses.
+	# On master there is nothing to refuse, and a dry run there would go on to
+	# npm ci and a full build - minutes, for a check about a guard that does
+	# not apply. Said out loud rather than passed over, so a run that skipped
+	# it does not read the same as a run that exercised it.
+	if [ "$(git rev-parse --abbrev-ref HEAD)" = "master" ]; then
+		printf 'HEAD is master, so there is no off-master refusal to make - NOT CHECKED\n'
+		return 0
+	fi
+	local out status
+	out=$(FLOWY_REPO="$PWD" ./scripts/deploy.sh --dry-run 2>&1)
+	status=$?
+	[ "$status" -eq 1 ] || {
+		printf 'a dry run on branch %s exited %d, want a refusal (1):\n%s\n' \
+			"$(git rev-parse --abbrev-ref HEAD)" "$status" "$out"
+		return 1
+	}
+	printf '%s\n' "$out" | grep -qE 'master is the only deploy source|uncommitted changes' || {
+		printf 'it refused for some other reason than the branch or the tree:\n%s\n' "$out"
+		return 1
+	}
+}
+
+migrate_refuses_without_a_database() {
+	# It has to name a database or refuse. Guessing one is how a migration
+	# lands somewhere the node never looks and the deploy reports success.
+	#
+	# DATABASE_URL IS CLEARED, and that is the whole point of the invocation
+	# rather than a detail of it. migrate.sh takes its DSN from $DATABASE_URL,
+	# and this suite runs with $DATABASE_URL pointing at its own live test
+	# database - so an earlier cut of this check, which cleared
+	# FLOWY_DATABASE_URL (deploy.sh's variable, not this one), handed
+	# migrate.sh the suite's own database and it applied the schema to it
+	# mid-run. A check that mutates what the suite is measuring is worse than
+	# no check.
+	local out status
+	out=$(env -u DATABASE_URL FLOWY_LIVE_DIR="$(mktemp -d)" ./scripts/migrate.sh 2>&1)
+	status=$?
+	[ "$status" -ne 0 ] || {
+		printf 'it migrated something with no DSN in sight:\n%s\n' "$out"
+		return 1
+	}
+}
+
+check "the repo's shell scripts parse" shell_scripts_parse
+check "the repo's shell scripts are shellcheck clean" shell_scripts_lint
+check "the repo's shell scripts are shfmt clean" shell_scripts_formatted
+check "deploy.sh refuses an argument it does not know, and says how to call it" \
+	deploy_refuses_misuse
+check "deploy.sh refuses to deploy anything that is not master" \
+	deploy_refuses_off_master
+check "migrate.sh refuses rather than guessing which database to migrate" \
+	migrate_refuses_without_a_database
+
 # ------------------------------------------------------------------- verdict
 
 say "result"
