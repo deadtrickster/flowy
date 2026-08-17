@@ -335,9 +335,24 @@ func (s *server) handleListArtifacts(w http.ResponseWriter, r *http.Request) {
 		serverError(w, r, err)
 		return
 	}
+	// And what it refused for good, which is a different statement about a
+	// different set. withheld is what is missing right now; this is what this
+	// node has decided it will not take however the rule changes afterwards -
+	// see store.RefusedAuthorship. Both or neither would be wrong: a claim can
+	// be terminally refused while the row itself has since arrived under the
+	// author's own signature, and then there is nothing withheld and something
+	// refused. Absent, not zero, for the same reason.
+	refused, err := s.db.RefusedAuthorship(r.Context(), p, scopeAll(r, p))
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
 	body := map[string]any{"artifacts": list}
 	if withheld != nil {
 		body["withheld"] = withheld
+	}
+	if refused != nil {
+		body["refused"] = refused
 	}
 	writeJSON(w, http.StatusOK, body)
 }

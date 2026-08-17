@@ -476,6 +476,68 @@ CREATE TABLE IF NOT EXISTS withheld_authorship (
     PRIMARY KEY (row_kind, row_id)
 );
 
+-- The authorship claims this node has REFUSED, and it does not judge them twice.
+--
+-- withheld_authorship above says what is missing right now. This says what was
+-- decided, and it is a different table because it survives the decision changing
+-- its mind. Without it a refusal was a delay: the row was dropped, nothing here
+-- remembered that it had been, the peer went on offering it, and on any later
+-- pull - after an operator moved a principal's epoch, after a key was removed by
+-- hand, after any change that widened what this node takes - the same bytes were
+-- judged again, against the wider rule, and applied. The window does not have to
+-- overlap the attack. It only has to exist.
+--
+-- So the refusal is terminal for the CLAIM it refused. A claim that is in here is
+-- refused again on sight, without asking what the rule says now: see
+-- refusedClaim, which runs before the key lookup and before the epoch comparison
+-- for exactly that reason.
+--
+-- WHAT IT IS KEYED ON is the whole of why this is not a blacklist. claim is a
+-- digest over the three things that made the refusal: the principal the row named
+-- as its author, the canonical authorship bytes their signature would have been
+-- over, and the signature actually offered - none, or one that did not verify.
+-- Change any of them and it is a different claim, judged on its own merits. So
+-- the SAME content, offered later with the author's real signature, is a
+-- different claim and lands: what is terminal is somebody's unbacked assertion
+-- that alice wrote this, not the words, not the row id and not alice. Keying on
+-- the id alone would be a permanent denial of service on the author, delivered by
+-- whoever forged one row in their name first.
+--
+-- An operator who genuinely needs a refusal undone deletes the row, on the
+-- machine, the way a principal key is rotated here - which is the deliberate act
+-- it should be, and not a thing a peer can bring about by waiting.
+--
+-- LOCAL, like withheld_authorship: no hlc of its own, no signature, and nothing
+-- replicates it. A refusal is this node's own decision, and one node's decision
+-- arriving as a row on another node's page would be exactly the second-hand
+-- judgement this whole file exists to stop.
+CREATE TABLE IF NOT EXISTS refused_authorship (
+    -- 'artifact' or 'event', and the id the row carried. They are columns rather
+    -- than digest input so a reader can be told WHERE the refusal was - the
+    -- claim digest covers them both already, by way of the authorship bytes.
+    row_kind   text NOT NULL,
+    row_id     text NOT NULL,
+    -- sha256 over (principal, authorship message, offered signature), hex. See
+    -- claimOf: framed, so no two different triples share a digest.
+    claim      text NOT NULL,
+    -- The same three columns the withheld ledger keeps, and for the same reason:
+    -- the count is scoped by the artifact read rule over them, so a refusal in a
+    -- project you cannot read is not a second way to learn what is in it.
+    principal  text NOT NULL,
+    project    text,
+    visibility text NOT NULL DEFAULT 'shared',
+    -- What the row claimed to be, who relayed it, its reading, and the refusal in
+    -- words. Never the title and never the body: that is the unverified content,
+    -- and this table is one a reader can reach.
+    kind       text,
+    node       text,
+    hlc        bigint NOT NULL DEFAULT 0,
+    reason     text NOT NULL,
+    first_seen timestamptz DEFAULT now(),
+    last_seen  timestamptz DEFAULT now(),
+    PRIMARY KEY (row_kind, row_id, claim)
+);
+
 -- Replication bookmarks, one row per peer node.
 CREATE TABLE IF NOT EXISTS peers (
     peer           text PRIMARY KEY,

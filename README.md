@@ -1964,6 +1964,58 @@ works from is the answer, and it is the trust-boundary sentence again. And
 turns a row into a refusal or into an attributed one, never into somebody
 else's word, which is the direction a stripped field should fail in.
 
+### A refusal is a decision, not a delay
+
+Everything above decides one row once, against the rule as it stands at that
+moment, and that was not enough. **A refused row was simply dropped.** Nothing on
+this side recorded that it had been refused, so the peer went on offering it -
+a peer holds its rows and re-serves the same bytes on every pull, which is what
+replication is - and on any later pull, after an operator moved a principal's
+epoch or removed a key by hand, the same bytes were judged again against the
+wider rule and applied. The window does not have to overlap the attack. It only
+has to exist.
+
+So a refusal is written down in `refused_authorship`, and a claim that is in
+there is refused again **on sight, without being re-judged against what the rule
+says now**. The check runs above the key lookup and above the epoch comparison,
+which is the only placement that means anything: there is no path from a widened
+rule to a claim already in the ledger.
+
+**What it is keyed on is the whole of the fix.** A claim is three things - the
+principal named as the author, the canonical authorship bytes their signature
+would have covered, and the signature actually offered (none, or one that did not
+verify). Change any of them and it is a different claim, judged on its own:
+
+| | |
+| --- | --- |
+| the same row, offered again | the same claim, whatever reading it carries and whichever peer relays it. Neither is in the digest, so a forger cannot get a fresh hearing by bumping the clock |
+| the same content, with the author's real signature | a **different** claim. It is judged and it lands, as theirs. This is not a nicety - keying by row id would make one forged row in somebody's name a permanent embargo on their real one, mintable by whoever forged it first, and the cheapest attack on a node would be to forge every id it is about to receive |
+| the artifact case | the digest is over what the *owner* signs, which excludes `hlc`, `node` and `status`. So a refused rewrite stays refused when it comes back at a higher reading, and a party's ordinary status move on a properly signed row is untouched |
+| undoing one | delete the row, on the machine, the way a principal key is rotated here. Deliberate, local, and not something a peer can bring about by waiting |
+
+It is scoped to the **authorship** refusal, deliberately. An unpinned node key is
+the other kind of refusal, and pinning that key afterwards is an operator
+deciding to carry a peer's rows - a workflow, not a widening to defend against.
+
+The count is reported beside the withheld one and never merged into it, because
+they are different statements: a withheld row may turn up on the next pull, and a
+refused claim will not turn up at all until somebody signs for it.
+
+```
+GET /api/artifacts?type=memory&kind=todo
+{"artifacts": [...],
+ "withheld": {"rows": 2, "reason": "unverified authorship"},
+ "refused":  {"claims": 3, "reason": "refused authorship, and the refusal stands"}}
+```
+
+Claims and not rows: one row can be offered under several claims and each is
+judged separately, so a row can be counted here *and* be present in the list
+beside it - both numbers true. Same read rule as the withheld count, same
+absent-rather-than-zero. It does **not** join `principal_identity`, which is the
+one place it differs: the withheld count is about what is missing now and stops
+when the key goes, and this is about what was decided, which is exactly the
+change it exists to survive.
+
 ## Announcements, system agents and the quiesce protocol
 
 An announcement is how a node tells the people and the agents working on it that

@@ -241,6 +241,27 @@ export interface Withheld {
   reason: string;
 }
 
+/**
+ * The authorship claims this node refused for GOOD, and why.
+ *
+ * `Withheld` above is what is missing right now, and it clears the moment the row
+ * turns up properly signed. This is the decision behind it, and it outlives the
+ * rule that made it: a claim the node refused is refused again on sight, without
+ * being re-judged against whatever the rule has become since. Before that, a
+ * refusal was only a delay - the peer went on offering the row, and the next
+ * change that widened what this node takes let it in.
+ *
+ * Claims and not rows, deliberately. What is terminal is one unbacked assertion
+ * that a named person wrote this, not the row and not the person: the same words
+ * carrying that person's own signature are a different claim and they land. So a
+ * row can be counted here and be present in the list beside it, and both numbers
+ * are true.
+ */
+export interface Refused {
+  claims: number;
+  reason: string;
+}
+
 export interface Artifact {
   id: string;
   type: string;
@@ -916,7 +937,7 @@ export const api = {
    * cap silently - which is the failure the number exists to report.
    */
   todos: () =>
-    request<{ artifacts: Artifact[]; withheld?: Withheld }>(
+    request<{ artifacts: Artifact[]; withheld?: Withheld; refused?: Refused }>(
       `/api/artifacts?type=memory&kind=todo&limit=${TODO_PAGE}`,
     ),
   /**

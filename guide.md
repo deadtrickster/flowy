@@ -91,7 +91,10 @@ the subject and a look at the open handoffs.
   when this node refused rows it would otherwise have handed you - a row naming
   somebody whose signing key is here and not signed with it. Read it: the list is
   short by that many, and an empty queue with a `withheld` on it is not the same
-  fact as an empty queue without one.
+  fact as an empty queue without one. It answers `refused: {claims, reason}`
+  beside it for the claims this node refused for good - a withheld row may arrive
+  on the next pull, and a refused claim will not arrive at all until somebody
+  signs for it.
 
 ## The room a todo was raised in
 

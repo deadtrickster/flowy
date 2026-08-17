@@ -577,9 +577,20 @@ func todosTool(ctx context.Context, m *mcpServer, p *store.Principal, raw json.R
 	if err != nil {
 		return nil, err
 	}
+	refused, err := m.db.RefusedAuthorship(ctx, p, false)
+	if err != nil {
+		return nil, err
+	}
 	out := map[string]any{"count": len(list), "items": list}
 	if withheld != nil {
 		out["withheld"] = withheld
+	}
+	// The claims this node refused for good. An agent draining the queue is the
+	// reader who most needs the difference: a withheld row may turn up on the
+	// next pull, and a refused claim will not turn up at all until somebody
+	// signs for it. See store.RefusedAuthorship.
+	if refused != nil {
+		out["refused"] = refused
 	}
 	return out, nil
 }

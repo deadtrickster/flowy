@@ -4,7 +4,10 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -371,6 +374,25 @@ func authorshipOf(
 	ctx context.Context, tx *sql.Tx, row withheldRow, msg, sig []byte,
 ) (mark, why string, err error) {
 	author := row.principal
+	claim := claimOf(author, msg, sig)
+
+	// The refusals this node has already made, asked FIRST: before the key is
+	// read and before the epoch is compared, because a rule that has widened
+	// since is exactly what must not get to look at this claim a second time.
+	// See refused_authorship in schema.sql. A row that never named an author has
+	// nothing here - a refusal is only ever recorded against a principal this
+	// node holds a key for - so the lookup is skipped rather than asked of every
+	// row on a fabric that has provisioned nothing.
+	if author != "" {
+		stood, refused, err := refusedClaim(ctx, tx, row, claim)
+		if err != nil {
+			return "", "", err
+		}
+		if refused {
+			return "", stood, nil
+		}
+	}
+
 	public, epoch, ok, err := principalKeyOf(ctx, tx, author)
 	if err != nil {
 		return "", "", err
@@ -404,6 +426,11 @@ func authorshipOf(
 		"their rows are their own to sign. A node relaying a row is not the author of it - " +
 		"pinning the node it came from does not make this one theirs"
 	if err := recordWithheld(ctx, tx, row, why); err != nil {
+		return "", "", err
+	}
+	// And the decision itself, which outlives the rule that made it. This is the
+	// row the check at the top of this function reads.
+	if err := recordRefused(ctx, tx, row, claim, why); err != nil {
 		return "", "", err
 	}
 	return "", why, nil
@@ -533,6 +560,190 @@ func (d *DB) WithheldAuthorship(ctx context.Context, p *Principal, scopeAll bool
 		return nil, nil
 	}
 	return &Withheld{Rows: rows, Reason: WithheldUnverifiedAuthorship}, nil
+}
+
+// ------------------------------------------------- a refusal is not a delay
+//
+// Everything above decides one row, once, against the rule as it stands at that
+// moment. That is not enough, and the gap is not subtle: a refused row was
+// simply dropped. Nothing here remembered that it had been refused, so the peer
+// went on offering it, and on any later pull - after an operator moved a
+// principal's epoch, after a key was removed by hand, after any change at all
+// that widened what this node takes - the same bytes were judged again, against
+// the wider rule, and applied.
+//
+// The window does not have to overlap the attack. It only has to exist. So a
+// refusal today was a delay rather than a decision, and the forgery sat in the
+// peer's delta waiting for the operator to do something perfectly ordinary.
+//
+// What closes it is one sentence: a claim this node refused is refused again on
+// sight, WITHOUT asking what the rule says now. refusedClaim runs at the top of
+// authorshipOf, above the key lookup and above the epoch comparison, and there is
+// no path from a widened rule to a claim that is already in the ledger.
+//
+// THE PRECISION IS THE WHOLE FIX, and getting it wrong turns this into a denial
+// of service on the people it protects. What is made terminal is a CLAIM - the
+// principal named as the author, the bytes their signature would have been over,
+// and the signature that was actually offered. It is not the row id, not the
+// content and not the author:
+//
+//   - the same words, offered later carrying that principal's own valid
+//     signature, are a DIFFERENT claim. They are judged on their own and they
+//     land. That has to be true, or one forged row in somebody's name is a
+//     permanent embargo on their real one, mintable by anybody who gets there
+//     first.
+//   - a second unsigned offer of the same row is the SAME claim, whatever
+//     reading it carries and whichever peer relays it, because none of that is
+//     in the digest. That is what makes it terminal rather than merely slow.
+//
+// An operator who needs a refusal undone deletes the row on the machine, the way
+// a principal key is rotated here. Deliberate, local, and not something a peer
+// can bring about by waiting for the epoch to move.
+
+// claimOf is the digest a refusal is keyed on: the author, the canonical
+// authorship bytes, and the signature offered over them.
+//
+// Framed the way the signing package frames a message and for the same reason -
+// a length before every field, so that no two different triples can be re-cut
+// into one digest. An empty signature is a field of length zero and hashes to
+// something, which is deliberate: "nobody signed for this" is a claim like any
+// other and it is the commonest one refused.
+func claimOf(principal string, msg, sig []byte) string {
+	h := sha256.New()
+	for _, field := range [][]byte{[]byte(claimDomain), []byte(principal), msg, sig} {
+		var n [8]byte
+		binary.BigEndian.PutUint64(n[:], uint64(len(field)))
+		h.Write(n[:])
+		h.Write(field)
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// claimDomain opens the digest, so a claim key is a claim key and cannot be some
+// other hash of the same fields that happened to be computed elsewhere.
+const claimDomain = "flowy.refused-authorship.v1"
+
+// RefusedAuthorshipClaim is the reason a read reports for the terminal ledger,
+// in the words a person reads. It is deliberately not the withheld ledger's
+// reason: "unverified authorship" is a statement about a row that is missing
+// now, and this is a statement about a decision that is not going to be revisited.
+const RefusedAuthorshipClaim = "refused authorship, and the refusal stands"
+
+// Refused is what a read says about the authorship claims this node has refused
+// for good: how many, and why.
+//
+// Claims rather than rows, and the noun is load-bearing. One row can be offered
+// under several claims - unsigned, then signed by the wrong key, then signed
+// properly - and each is judged separately, so counting rows here would report
+// a number that does not match what is keyed. See claimOf.
+type Refused struct {
+	Claims int    `json:"claims"`
+	Reason string `json:"reason"`
+}
+
+// refusedClaim reports the refusal this node has already made of this exact
+// claim, and whether there is one.
+//
+// It is an UPDATE rather than a SELECT so that the last time a claim was offered
+// is on the row: a peer that keeps re-offering a forgery is a thing an operator
+// should be able to see the shape of, and a first_seen with no last_seen beside
+// it cannot say it. The merge walks its unsettled rows more than once per page -
+// see syncPasses - so what this records is when, not how often.
+func refusedClaim(
+	ctx context.Context, tx *sql.Tx, row withheldRow, claim string,
+) (why string, refused bool, err error) {
+	var reason string
+	err = tx.QueryRowContext(ctx,
+		`UPDATE refused_authorship SET last_seen = now()
+		  WHERE row_kind = $1 AND row_id = $2 AND claim = $3
+		  RETURNING reason`, row.kind, row.id, claim).Scan(&reason)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("store: read what was refused of %s: %w", row.label(), err)
+	}
+	return standsRefused(row, reason), true, nil
+}
+
+// standsRefused is what the peer offering a refused claim again is told: what it
+// was refused for, that the refusal is a decision rather than a delay, and the
+// one thing that would actually change the answer.
+//
+// The last sentence is not politeness. A peer relaying somebody else's rows can
+// be perfectly honest and simply lack the author's signature, and "go and get
+// one" is the difference between a message it can act on and a wall.
+func standsRefused(row withheldRow, reason string) string {
+	return row.label() + " carries an authorship claim this node has already refused, and " +
+		"a refusal here is a decision rather than a delay: it is not judged again against " +
+		"whatever the rule has become since. It was refused because " + reason +
+		". The same content carrying " + named(row.principal) +
+		"'s own signature is a different claim and is judged on its own"
+}
+
+// recordRefused writes the decision down, keyed by the claim rather than by the
+// row: see the note above for why that distinction is the whole of the fix.
+//
+// It is an upsert on the same reasoning recordWithheld is - the merge asks the
+// question again on every pass over the rows it has not settled, and a peer
+// retries a delta it was refused - and the reason is refreshed rather than
+// left, so a claim refused under one wording and re-offered after the wording
+// changed reads as the refusal this node makes today.
+func recordRefused(ctx context.Context, tx *sql.Tx, row withheldRow, claim, why string) error {
+	visibility := row.visibility
+	if visibility == "" {
+		visibility = VisibilityShared
+	}
+	_, err := tx.ExecContext(ctx,
+		`INSERT INTO refused_authorship (row_kind, row_id, claim, principal, project, visibility,
+		                                 kind, node, hlc, reason)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		 ON CONFLICT (row_kind, row_id, claim) DO UPDATE SET
+		     principal = excluded.principal, project = excluded.project,
+		     visibility = excluded.visibility, kind = excluded.kind, node = excluded.node,
+		     hlc = excluded.hlc, reason = excluded.reason, last_seen = now()`,
+		row.kind, row.id, claim, row.principal, row.project, visibility,
+		row.claimed, row.node, row.hlc, why)
+	if err != nil {
+		return fmt.Errorf("store: record what was refused of %s: %w", row.label(), err)
+	}
+	return nil
+}
+
+// RefusedAuthorship is how many authorship claims this node has refused for good
+// among the rows this reader asked for, and nil when the answer is none.
+//
+// The reach is the ARTIFACT READ RULE over the ledger's own three columns, which
+// is exactly what WithheldAuthorship does and for exactly the same reason: a
+// refusal in a project you cannot read is not a second way to learn what is in
+// it. Nil rather than a zero, so that a surface with nothing to report renders
+// nothing.
+//
+// It does NOT join principal_identity, and that is the one place it deliberately
+// differs from the count beside it. The withheld ledger speaks only while the
+// rule that made it is live, because it is a statement about what is missing
+// right now - remove the key and this node withholds nothing of that
+// principal's. A refusal is a statement about what was decided, and it stands
+// whether or not the key that prompted it is still here. That is the property
+// being reported: it would be an odd count that vanished on precisely the change
+// this ledger exists to survive.
+func (d *DB) RefusedAuthorship(ctx context.Context, p *Principal, scopeAll bool) (*Refused, error) {
+	a := &args{}
+	where := ArtifactFilterSQL(p, "ar", a, scopeAll)
+	var claims int
+	err := d.sql.QueryRowContext(ctx,
+		`SELECT count(*)
+		   FROM (SELECT r.row_id AS id, r.principal AS owner_user, r.project AS project,
+		                r.visibility AS visibility
+		           FROM refused_authorship r) ar
+		  WHERE `+where, a.vals...).Scan(&claims)
+	if err != nil {
+		return nil, fmt.Errorf("store: count what was refused: %w", err)
+	}
+	if claims == 0 {
+		return nil, nil
+	}
+	return &Refused{Claims: claims, Reason: RefusedAuthorshipClaim}, nil
 }
 
 // PrincipalKeyFromSeed is a principal's private key from its 32 byte seed, for

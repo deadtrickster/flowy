@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { Badge } from "@/components/ui/badge";
-import type { Artifact, Withheld } from "@/lib/api";
+import type { Artifact, Refused, Withheld } from "@/lib/api";
 import { TODO_PAGE, api } from "@/lib/api";
 import { useSession } from "@/lib/session";
 import { speakerStyle } from "@/lib/speakercolour";
@@ -46,6 +46,10 @@ export function Todos() {
   /** What the node refused to hand over, and why. Null when it refused nothing:
    * see Withheld, and emptyReads for why a shorter list has to say it is one. */
   const [withheld, setWithheld] = useState<Withheld | null>(null);
+  /** And what it refused for good: a claim it will not judge again, however the
+   * rule changes afterwards. A different statement from the one above and shown
+   * beside it rather than instead of it - see Refused. */
+  const [refused, setRefused] = useState<Refused | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
 
@@ -54,6 +58,7 @@ export function Todos() {
       setTodos([]);
       setReach([]);
       setWithheld(null);
+      setRefused(null);
       setLoaded(false);
       return;
     }
@@ -66,6 +71,7 @@ export function Todos() {
         setTodos(queue.artifacts);
         setReach(registry.reads ?? []);
         setWithheld(queue.withheld ?? null);
+        setRefused(queue.refused ?? null);
         setError(null);
       })
       .catch((err: Error) => {
@@ -153,6 +159,21 @@ this says so rather than letting the list read as all the work there is."
                 - {withheld.rows} row{withheld.rows === 1 ? "" : "s"} withheld: {withheld.reason}
               </span>
             ) : null}
+            {/* And the decisions behind them, which are not the same set. A
+                withheld row may arrive on the next pull; a refused claim never
+                will, unless somebody signs for it. Shown separately so a reader
+                can tell "not here yet" from "not coming". */}
+            {refused ? (
+              <span
+                data-todo-refused={refused.claims}
+                title="Authorship claims this node refused and will not reconsider. A refusal
+here is a decision, not a delay: it is not re-judged when a key is pinned or an
+epoch moves. The same content signed by the person it names is a different claim
+and lands."
+              >
+                - {refused.claims} claim{refused.claims === 1 ? "" : "s"} refused: {refused.reason}
+              </span>
+            ) : null}
           </p>
         ) : null}
       </header>
@@ -172,6 +193,7 @@ this says so rather than letting the list read as all the work there is."
               failed: Boolean(error),
               projects: projects.length,
               withheld,
+              refused,
             })}
           </li>
         ) : null}
@@ -246,12 +268,14 @@ function emptyReads({
   failed,
   projects,
   withheld,
+  refused,
 }: {
   token: boolean;
   loaded: boolean;
   failed: boolean;
   projects: number;
   withheld: Withheld | null;
+  refused: Refused | null;
 }) {
   if (!token) {
     return "paste a token to read the queue - signed out, there is no reader to scope it to";
@@ -265,13 +289,19 @@ function emptyReads({
   // Appended rather than substituted: the reach is still true and still worth
   // saying, and a reader deciding whether their work is missing needs both
   // sentences. Nothing that already read this page loses a word of it.
-  const refused = withheld
+  const short = withheld
     ? ` - and ${withheld.rows} row${withheld.rows === 1 ? "" : "s"} withheld: ${withheld.reason}`
     : "";
+  // The second sentence, appended for the same reason the first one is: a reader
+  // who is being told the queue is empty needs to know the node has also decided
+  // some of it is never arriving.
+  const stood = refused
+    ? ` - and ${refused.claims} claim${refused.claims === 1 ? "" : "s"} refused: ${refused.reason}`
+    : "";
   if (projects === 0) {
-    return `this token reaches no project, so there is no queue to draw - not an empty one${refused}`;
+    return `this token reaches no project, so there is no queue to draw - not an empty one${short}${stood}`;
   }
-  return `no todos in the ${projects} project${projects === 1 ? "" : "s"} you can read - other projects may hold work this token cannot see${refused}`;
+  return `no todos in the ${projects} project${projects === 1 ? "" : "s"} you can read - other projects may hold work this token cannot see${short}${stood}`;
 }
 
 /**

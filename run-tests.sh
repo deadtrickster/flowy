@@ -7635,6 +7635,193 @@ a_rewrite_of_what_somebody_wrote_is_refused() {
 	printf 'the unsigned rewrite of %s was refused and the signed one landed\n' "$id"
 }
 
+# ------------------------------------------------- and the refusal STANDS
+#
+# Everything above decides one row once, against the rule as it stands at that
+# moment. That is not enough, and the gap is not subtle: a refused row was
+# simply dropped. Nothing on this side remembered that it had been refused, so
+# the peer went on offering it - a peer holds its rows and re-serves the same
+# bytes on every pull, which is what replication IS - and on any later pull,
+# after an operator moved a principal's epoch or removed a key by hand, the same
+# bytes were judged again against the wider rule and applied.
+#
+# The window does not have to overlap the attack. It only has to exist. So a
+# refusal was a delay rather than a decision, and the forgery sat in the peer's
+# delta waiting for somebody to do something perfectly ordinary.
+#
+# What closes it is a ledger of refused CLAIMS, and the keying is the whole fix:
+# a claim is the principal named as the author, the bytes their signature would
+# have covered, and the signature actually offered. A claim in the ledger is
+# refused on sight, without being judged against what the rule says now. The same
+# CONTENT carrying that principal's real signature is a different claim and it
+# lands - which it must, or one forged row in somebody's name would be a
+# permanent embargo on their real one, mintable by whoever forged it first.
+#
+# The two halves are checked separately below, and the second one is not
+# decoration. A fix that made this terminal by row id would pass the first check
+# and be a denial of service on every author it protects.
+
+# The row the two checks below share, offered byte for byte each time.
+#
+# created is pinned rather than left to `flowy sign` to stamp, and that is what
+# makes this a re-offer rather than a new row: the date is inside both signatures
+# and inside the claim, so a second signing run would produce different bytes and
+# the ledger would rightly treat them as a different claim. A real peer serves the
+# row it holds, date and all.
+N5_TERMINAL_CREATED="2026-02-03T04:05:06.000007Z"
+readonly N5_TERMINAL_CREATED
+
+# terminal_row ID BODY HLC - the delta both checks offer, as JSON on stdout,
+# unsigned. The caller decides which signatures go on it.
+terminal_row() {
+	jq -nc --arg i "$1" --arg b "$2" --arg a "$N5_USER_A" --arg c "$N5_TERMINAL_CREATED" \
+		--argjson h "$3" '
+		{artifacts: [], tasks: [], grants: [], hwm: 0, events: [
+		  {id: $i, type: "chat", project: "pb", room: "pb/bugs", thread: $i, parents: [],
+		   actor: $a, artifact: "", seq_hlc: $h, node: "nodeA", body: $b, created: $c}]}'
+}
+
+# THE FINDING, driven end to end over the wire.
+#
+# The same delta is offered three times: once against the rule that refuses it,
+# once again to show the refusal is remembered, and once after the operator has
+# moved alice's epoch past the row - which is the one thing about a pinned key
+# that legitimately changes, and which under the rule alone makes the row predate
+# the key and land.
+#
+# The control in the middle is what makes the last assertion mean anything. A row
+# of alice's that was NEVER offered before, at the same reading, does land under
+# the widened epoch. So the rule really did widen, and the refusal that follows is
+# the ledger holding rather than the pin failing to take.
+a_refusal_is_terminal_for_the_claim_it_refused() {
+	recall5
+	local id control hlc widened forged fresh
+	id="terminal-as-alice-$$-$(date +%s)"
+	control="never-offered-$$-$(date +%s)"
+	hlc="$((N5_ALICE_EPOCH + 262144))"
+	forged="$(terminal_row "$id" "approved, merge it" "$hlc" | sign5 "$N5_DSN_A" nodeA)" || return 1
+
+	# Refused on the rule, and written down.
+	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_B" /api/sync/push "$forged" || return 1
+	want_eq "the first offer" "$(jqv '.refused.events')" 1 || return 1
+	want_eq "the claim node B wrote down" \
+		"$(scalar5 "$N5_DSN_B" "SELECT count(*) FROM refused_authorship
+		    WHERE row_kind = 'event' AND row_id = '$id'")" 1 || return 1
+
+	# The same bytes again: refused, and the peer is told it is a decision.
+	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_B" /api/sync/push "$forged" || return 1
+	want_eq "the same bytes offered again" "$(jqv '.refused.events')" 1 || return 1
+	case "$(jqv '.reasons[0]')" in
+	*"already refused"*) ;;
+	*)
+		printf 'the second refusal does not say the refusal stands: %s\n' "$(jqv '.reasons[0]')" >&2
+		return 1
+		;;
+	esac
+	want_eq "one claim, not one per offer" \
+		"$(scalar5 "$N5_DSN_B" "SELECT count(*) FROM refused_authorship
+		    WHERE row_kind = 'event' AND row_id = '$id'")" 1 || return 1
+
+	# The operator moves the epoch past the row. Ordinary, local, and exactly
+	# what used to let the forgery in.
+	widened="$((hlc + 65536))"
+	DATABASE_URL="$N5_DSN_B" "$ROOT/flowy" principal pin --node nodeB \
+		--as "$N5_USER_A" --key "$N5_ALICE_KEY" --epoch "$widened" >/dev/null || return 1
+
+	# The control: never offered before, same reading, below the new epoch.
+	fresh="$(terminal_row "$control" "approved, merge it" "$hlc" | sign5 "$N5_DSN_A" nodeA)" || return 1
+	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_B" /api/sync/push "$fresh" || return 1
+	want_eq "an unrefused row under the widened rule" "$(jqv '.applied.events')" 1 || return 1
+	want_eq "and what node B says about it" \
+		"$(scalar5 "$N5_DSN_B" "SELECT authorship FROM events WHERE id = '$control'")" \
+		attributed || return 1
+
+	# And the one that was refused, under that same widened rule.
+	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_B" /api/sync/push "$forged" || return 1
+	want_eq "the refused row after the pin that would have allowed it" \
+		"$(jqv '.refused.events')" 1 || return 1
+	want_eq "and applied" "$(jqv '.applied.events')" 0 || return 1
+	want_eq "rows in B's log for it" \
+		"$(scalar5 "$N5_DSN_B" "SELECT count(*) FROM events WHERE id = '$id'")" 0 || return 1
+
+	# The epoch goes back where the operator had it, so this check's widening
+	# does not leak into anything after it.
+	DATABASE_URL="$N5_DSN_B" "$ROOT/flowy" principal pin --node nodeB \
+		--as "$N5_USER_A" --key "$N5_ALICE_KEY" --epoch "$N5_ALICE_EPOCH" >/dev/null || return 1
+	want_eq "the epoch node B is back on" \
+		"$(scalar5 "$N5_DSN_B" "SELECT epoch_hlc FROM principal_identity
+		    WHERE principal = '$N5_USER_A'")" "$N5_ALICE_EPOCH" || return 1
+
+	remember5 N5_TERMINAL_ID "$id"
+	remember5 N5_TERMINAL_HLC "$hlc"
+	printf 'the pin that would have let %s in did not: %s\n' "$id" "$(jqv '.reasons[0]')"
+}
+
+# The other half, and the half that keeps this from being a permanent blacklist.
+#
+# The SAME row - same id, same words, same reading, same date, so the same bytes
+# the ledger holds a refusal about - carrying alice's own signature this time. It
+# is a different CLAIM, it is judged on its own, and it lands as hers.
+#
+# Without this the fix would be an attack of its own: forge one row in somebody's
+# name and their real one can never arrive.
+the_same_content_with_the_authors_signature_still_lands() {
+	recall5
+	local signed
+	signed="$(terminal_row "$N5_TERMINAL_ID" "approved, merge it" "$N5_TERMINAL_HLC" |
+		sign5_as "$N5_DSN_A" nodeA "$N5_USER_A" "$(principal_seed "$N5_USER_A")")" || return 1
+
+	want_napi 200 "$N5_PORT_B" POST "$N5_TOKEN_B" /api/sync/push "$signed" || return 1
+	want_eq "the same content, signed by its author" "$(jqv '.applied.events')" 1 || return 1
+	want_eq "rows in B's log for it now" \
+		"$(scalar5 "$N5_DSN_B" "SELECT count(*) FROM events WHERE id = '$N5_TERMINAL_ID'")" \
+		1 || return 1
+	want_eq "and whose word node B says it is" \
+		"$(scalar5 "$N5_DSN_B" "SELECT authorship FROM events WHERE id = '$N5_TERMINAL_ID'")" \
+		authored || return 1
+
+	# The refusal of the OTHER claim is still on the ledger. It has not been
+	# withdrawn by the row arriving properly - a different claim landing says
+	# nothing about the one that was refused.
+	want_eq "the refused claim, after the signed one landed" \
+		"$(scalar5 "$N5_DSN_B" "SELECT count(*) FROM refused_authorship
+		    WHERE row_kind = 'event' AND row_id = '$N5_TERMINAL_ID'")" 1 || return 1
+	printf '%s was refused unsigned and landed as hers: not a blacklist\n' "$N5_TERMINAL_ID"
+}
+
+# And it is VISIBLE, which is the rule this codebase follows everywhere: a
+# refusal nobody can see is indistinguishable from success.
+#
+# The count rides on the same answer the withheld count does, through the same
+# read filter, and it is a SEPARATE number because it is a separate statement. A
+# withheld row may turn up on the next pull; a refused claim will not turn up at
+# all until somebody signs for it. The check above left node B in exactly the
+# state that tells them apart - the row is here, so nothing about it is withheld,
+# and the claim is refused, so something about it is.
+the_refused_claims_are_counted_where_a_reader_would_have_seen_them() {
+	recall5
+	local claims
+	want_napi 200 "$N5_PORT_B" GET "$N5_TOKEN_B" /api/artifacts || return 1
+	claims="$(jqv '.refused.claims')"
+	if [ -z "$claims" ] || [ "$claims" = "null" ] || [ "$claims" -lt 1 ]; then
+		printf 'node B refused claims and its artifacts read says %s\n' "${claims:-<absent>}" >&2
+		return 1
+	fi
+	want_eq "the reason it carries" "$(jqv '.refused.reason')" \
+		"refused authorship, and the refusal stands" || return 1
+	want_eq "and it matches what node B actually holds" "$claims" \
+		"$(scalar5 "$N5_DSN_B" "SELECT count(*) FROM refused_authorship
+		    WHERE project = 'pb' AND visibility = 'shared'")" || return 1
+
+	# Who is told is the artifact read rule over the ledger's own columns, so a
+	# refusal in a project a reader cannot reach is not a second way to learn
+	# what is in it. That is asked row by row in the store, where a personal row
+	# and the one reader who owns it can be set up exactly - see
+	# TestWhatWasRefusedIsCountedWhereTheRowWouldHaveBeenRead.
+	printf 'node B reports %s refused claim(s) to the reader who would have had the rows\n' \
+		"$claims"
+}
+
 # -------------------------------------------------------------- phase 10 tui
 #
 # `flowy tui` is another client of this same API - the console's endpoints, the
@@ -13760,6 +13947,17 @@ check "a well-formed signature by the wrong key is refused, and hers is not" \
 	a_signature_that_is_not_the_principals_is_not_authorship
 check "a rewrite of what somebody wrote is refused, and an edit they signed is not" \
 	a_rewrite_of_what_somebody_wrote_is_refused
+
+say "and the refusal stands"
+check "a refused row stays refused when it is re-offered, and after a pin that would have allowed it" \
+	a_refusal_is_terminal_for_the_claim_it_refused
+check "the same content carrying the author's own signature is a different claim, and lands" \
+	the_same_content_with_the_authors_signature_still_lands
+check "the refused claims are reported, count and reason, where the rows would have been read" \
+	the_refused_claims_are_counted_where_a_reader_would_have_seen_them
+check "a refusal survives a moved epoch, a removed key and a re-offer, in the store" \
+	go test -count=1 -run 'TestARefusedClaimIsRefusedAgain|TestAMovedEpochDoesNotResurrectARefusedRow|TestARemovedKeyDoesNotResurrectARefusedRow|TestTheSameContentSignedByItsAuthorIsADifferentClaim|TestARewrittenArtifactStaysRefusedAfterTheEpochMoves|TestWhatWasRefusedIsCountedWhereTheRowWouldHaveBeenRead|TestAClaimIsThePrincipalTheBytesAndTheSignature' \
+	./internal/store
 check "the same rules in the store, row by row" \
 	go test -count=1 -run 'TestAPinnedNodeCannotSpeakForAPrincipalWithAKey|TestARowBelowTheEpochIsStillTaken|TestAPrincipalSignedEventIsAuthored|TestTheEpochHoldsWhoeverIsCarryingTheRow|TestALocalWriteCarriesThePrincipalsSignature|TestAPartysWriteKeepsTheOwnersSignature|TestARewrittenArtifactIsRefusedAfterTheEpoch|TestAPrincipalKeyIsNotReplacedInPlace' \
 	./internal/store
