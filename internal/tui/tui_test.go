@@ -953,6 +953,309 @@ func TestALongOwnerDoesNotPushTheTitleOffTheRow(t *testing.T) {
 	}
 }
 
+// --------------------------------------------------- the room's plan, in the room
+//
+// The console grew a todo panel beside the transcript and then dropped its
+// global /todos page, so in a browser the room's panel is the only queue view
+// there is. This is the same thing for the terminal: what the room has agreed
+// to do and who is carrying it, beside the conversation it was agreed in.
+
+// roomWithAPlan is a room with something said in it and a plan of three todos
+// beside it, one in each state and one of them assigned through the field
+// rather than through the body's OWNER line.
+//
+// Every title is inside minTodosWidth on purpose. The pane clips, and a check
+// that seeded a 40-character title would be asserting about the clip rather
+// than about the panel.
+func roomWithAPlan(m *Model) {
+	m.view = viewRooms
+	m.msgs = []*Event{saidBy("ada", "said something here")}
+	m.msgSel = 0
+	m.thread = m.msgs
+	m.roomTodos = sortTodos([]*Artifact{
+		{ID: "01HRTDONE", Type: "memory", Kind: "todo", Status: "done",
+			Title: "the panel itself", Body: "OWNER: ada"},
+		{ID: "01HRTTODO", Type: "memory", Kind: "todo", Status: "todo",
+			Title: "the eighty column fit", Body: "OWNER: bob"},
+		{ID: "01HRTACTIVE", Type: "memory", Kind: "todo", Status: "active",
+			Title: "the three states", Body: "OWNER: ignore-me",
+			Fields: json.RawMessage(`{"room":"general","assignee":"cass"}`)},
+	})
+}
+
+// panelColumn is what was drawn to the right of the rightmost column rule,
+// which in this view is the todos panel: roomsView writes it last of the panes
+// that are open, and the thread pane is closed in every caller below.
+//
+// It exists because "the title is on the screen" is not the claim being made.
+// Raising a todo from a room posts "raised a todo: <title>" into that room, so
+// the words are in the stream whether or not the panel drew anything at all,
+// and a check that looked for them anywhere would pass against a client with no
+// panel in it.
+func panelColumn(screen string) []string {
+	var out []string
+	for _, line := range strings.Split(screen, "\n") {
+		if i := strings.LastIndex(line, "|"); i >= 0 {
+			out = append(out, strings.TrimSpace(line[i+1:]))
+		}
+	}
+	return out
+}
+
+// panelSays reports whether some line of the panel column is exactly this, and
+// panelHead whether the panel drew its counted header at all.
+func panelSays(panel []string, want string) bool {
+	for _, line := range panel {
+		if line == want {
+			return true
+		}
+	}
+	return false
+}
+
+func panelHead(panel []string) string {
+	for _, line := range panel {
+		if strings.HasPrefix(line, "todos ") && strings.Contains(line, "/") {
+			return line
+		}
+	}
+	return ""
+}
+
+// The width the failure lives at. 80 columns is what this client targets - it
+// is why the tab bar has a compact fallback - and the plan pane was drawn at a
+// quarter of the terminal, which at 80 columns left the conversation under
+// minStreamWidth and took the whole pane away. So somebody on the commonest
+// terminal there is saw no plan at all and no reason why, which is the same
+// outcome as not having built it.
+func TestTheRoomsPlanIsThereAtEightyColumns(t *testing.T) {
+	m := testModel(t, NewClient("http://127.0.0.1:1", "t"))
+	roomWithAPlan(m)
+
+	screen := m.View()
+	panel := panelColumn(screen)
+	if got := panelHead(panel); got != "todos 1/1/1" {
+		t.Fatalf("the plan pane has no counted header at 80 columns, got %q:\n%s", got, screen)
+	}
+	for _, a := range m.roomTodos {
+		if !panelSays(panel, a.Title) {
+			t.Fatalf("%q is not in the plan pane at 80 columns:\n%s", a.Title, screen)
+		}
+	}
+	// Who is carrying each one, which is the other half of the row - and cass is
+	// read off the assignee field while ada and bob are read off their bodies,
+	// so a panel that only knew one of the two orders fails here.
+	// The spacing is part of it: the status column is fixed, so the names line
+	// up under each other instead of starting wherever the status word ended.
+	for _, row := range []string{"active cass", "todo   bob", "done   ada"} {
+		if !panelSays(panel, row) {
+			t.Fatalf("the plan pane has no row %q:\n%s", row, screen)
+		}
+	}
+	// And the conversation is still a conversation: the pane is beside the room
+	// and not instead of it, so what somebody said is drawn whole.
+	if !strings.Contains(screen, "said something here") {
+		t.Fatalf("the plan pane squeezed the stream out at 80 columns:\n%s", screen)
+	}
+	for i, line := range strings.Split(screen, "\n") {
+		if width := lipgloss.Width(line); width > 80 {
+			t.Fatalf("line %d is %d wide at 80 columns: %q", i, width, line)
+		}
+	}
+
+	// What paid for it, since something had to: at 80 the room list gives up its
+	// column, which is the documented order and the reason the pane fits. The
+	// list is back the moment the plan is closed, and T is how that is done.
+	if listWidth, _, todosWidth, _ := m.roomPaneWidths(); listWidth != 0 || todosWidth == 0 {
+		t.Fatalf("at 80 columns the list is %d wide and the plan is %d", listWidth, todosWidth)
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("T")})
+	if listWidth, _, todosWidth, _ := m.roomPaneWidths(); listWidth == 0 || todosWidth != 0 {
+		t.Fatalf("closing the plan did not give the room list its column back: "+
+			"list %d, plan %d", listWidth, todosWidth)
+	}
+}
+
+// Three states, told apart, and told apart in a word as well as in a colour.
+//
+// The colours are the console's three meanings: amber for what is in flight,
+// grey for what is waiting, green for what is finished. Two of the three used
+// to share a style here, which is a queue with two states in it - a finished
+// todo and an untouched one looked the same.
+//
+// The second half is the one that matters more. This client runs over ssh onto
+// whatever terminal is at the other end, and lipgloss renders every one of
+// these as plain text on a TERM=dumb, a NO_COLOR, or a pipe. So the status WORD
+// is on the row, and it is on the row in mono too.
+func TestTheThreeTodoStatesAreToldApartAndSaidInWords(t *testing.T) {
+	coloured := New(NewClient("http://127.0.0.1:1", "t"), NewTheme(termenv.ANSI256, false))
+	coloured.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	roomWithAPlan(coloured)
+
+	// The panel is a header and then two lines per item, in reading order, so
+	// the status rows are the odd ones and they are active, todo, done.
+	lines := coloured.roomTodoLines(30, 20)
+	if len(lines) < 7 {
+		t.Fatalf("the plan pane drew %d lines for three todos: %q", len(lines), lines)
+	}
+	rows := []struct{ status, line string }{
+		{"active", lines[1]}, {"todo", lines[3]}, {"done", lines[5]},
+	}
+	drawn := map[string]string{}
+	for _, row := range rows {
+		if !strings.Contains(row.line, row.status) {
+			t.Fatalf("the %s row does not say which state it is in: %q", row.status, row.line)
+		}
+		colour := ansiPrefix(row.line)
+		if colour == "" {
+			t.Fatalf("the %s row is drawn in no colour at all on a 256-colour terminal: %q",
+				row.status, row.line)
+		}
+		if other, taken := drawn[colour]; taken {
+			t.Fatalf("%s and %s are drawn in the same colour, so the panel has "+
+				"two states in it and not three: %q", other, row.status, row.line)
+		}
+		drawn[colour] = row.status
+	}
+
+	// And the terminal that has none of that: no escape sequence anywhere, and
+	// all three states still readable.
+	mono := testModel(t, NewClient("http://127.0.0.1:1", "t"))
+	roomWithAPlan(mono)
+	monoLines := mono.roomTodoLines(30, 20)
+	for _, want := range []string{"active", "todo", "done"} {
+		found := false
+		for i, line := range monoLines {
+			if i%2 == 1 && strings.Contains(line, want) {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("%q is not a word on any row of a monochrome plan pane: %q", want, monoLines)
+		}
+	}
+	for _, line := range monoLines {
+		if strings.Contains(line, "\x1b") {
+			t.Fatalf("a monochrome terminal was sent an escape sequence: %q", line)
+		}
+	}
+}
+
+// ansiPrefix is the escape sequence a line opens with, or "" for a line drawn
+// in nothing.
+func ansiPrefix(line string) string {
+	if !strings.HasPrefix(line, "\x1b[") {
+		return ""
+	}
+	if i := strings.Index(line, "m"); i >= 0 {
+		return line[:i+1]
+	}
+	return ""
+}
+
+// The regression this change is most likely to have caused: the thread pane was
+// here first, the gate drives it by keyboard, and the plan pane is beside it
+// rather than instead of it.
+//
+// At 80 columns they do not both fit - see roomPaneWidths - so the plan yields
+// and the key that opens the thread says which of the two it is, because
+// "wider terminal" and "close the other pane" are different things to do. At
+// 120 they are both on screen at once.
+func TestTheThreadPaneStillWorksBesideThePlan(t *testing.T) {
+	m := testModel(t, NewClient("http://127.0.0.1:1", "t"))
+	roomWithAPlan(m)
+	if panelHead(panelColumn(m.View())) == "" {
+		t.Fatalf("the plan is not drawn at 80 columns to begin with:\n%s", m.View())
+	}
+
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
+	if !m.threadOpen {
+		t.Fatal("t did not open the thread pane")
+	}
+	screen := m.View()
+	if !strings.Contains(screen, "thread") {
+		t.Fatalf("the thread pane is not on screen after t:\n%s", screen)
+	}
+	if !strings.Contains(screen, "said something here") {
+		t.Fatalf("the thread pane drew no thread:\n%s", screen)
+	}
+
+	// t again, and the plan is back where it was.
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
+	if m.threadOpen {
+		t.Fatal("t did not close the thread pane again")
+	}
+	if panelHead(panelColumn(m.View())) == "" {
+		t.Fatalf("the plan did not come back when the thread closed:\n%s", m.View())
+	}
+
+	// T with the thread open at 80 says which pane is in the way rather than
+	// leaving the key looking broken.
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("T")})
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("T")})
+	if !strings.Contains(m.flash, "t closes the thread") {
+		t.Fatalf("T on a terminal where the thread is what is in the way said %q", m.flash)
+	}
+
+	// And at 120 there is room for both, which is the pane count this view was
+	// built to hold.
+	m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	screen = m.View()
+	if !strings.Contains(screen, "thread") || panelHead(panelColumn(screen)) != "" {
+		t.Fatalf("the thread pane and the plan are not both drawn at 120 columns:\n%s", screen)
+	}
+	_, _, todosWidth, threadWidth := m.roomPaneWidths()
+	if todosWidth == 0 || threadWidth == 0 {
+		t.Fatalf("at 120 columns the plan is %d wide and the thread %d", todosWidth, threadWidth)
+	}
+}
+
+// One word for one state, which is a todo the panel raised about itself: 'todo
+// list has "unowned" and "unassigned" - looks identical. triage and fix'. Two
+// words for one state read as two states and send a reader looking for a
+// distinction that is not there.
+//
+// The node normalises what it is handed and the console collapses the same set
+// on the way out; the bodies written before either existed still say whatever
+// somebody typed, and this is the terminal's copy of that read.
+func TestTheQueueSaysOneWordForNobody(t *testing.T) {
+	for _, said := range []string{"unassigned", "unowned", "none", "nobody", "TBD", "?", "-", "n/a"} {
+		if got := todoOwner(&Artifact{Body: "OWNER: " + said}); got != "" {
+			t.Fatalf("OWNER: %s came back as %q, which is a second word for nobody", said, got)
+		}
+		if got := todoOwner(&Artifact{
+			Fields: json.RawMessage(`{"assignee":"` + said + `"}`)}); got != "" {
+			t.Fatalf("an assignee of %q came back as %q", said, got)
+		}
+	}
+	// And a name that merely starts with one of them is a name.
+	if got := todoOwner(&Artifact{Body: "OWNER: nobody-in-particular"}); got != "nobody-in-particular" {
+		t.Fatalf("a real handle was collapsed to %q", got)
+	}
+
+	// On the row, where it is seen: two items written with two different words
+	// draw the same one column.
+	m := testModel(t, NewClient("http://127.0.0.1:1", "t"))
+	m.view = viewTodos
+	m.todos = []*Artifact{
+		{ID: "01HTW1", Type: "memory", Kind: "todo", Status: "todo",
+			Title: "the first one", Body: "OWNER: unowned"},
+		{ID: "01HTW2", Type: "memory", Kind: "todo", Status: "todo",
+			Title: "the second one", Body: "OWNER: unassigned"},
+	}
+	screen := m.View()
+	for _, title := range []string{"the first one", "the second one"} {
+		row := rowWith(t, screen, title)
+		if strings.Contains(row, "unowned") || strings.Contains(row, "unassigned") {
+			t.Fatalf("the row for %q spells nobody out: %q", title, row)
+		}
+		if !strings.Contains(row, "-") {
+			t.Fatalf("the row for %q draws no owner column at all: %q", title, row)
+		}
+	}
+}
+
 // ------------------------------------------------------------ the live gate
 //
 // These run against the gate's own `flowy serve`, driven headless through
@@ -1262,6 +1565,41 @@ func TestLiveTUIDrivenByTheKeyboard(t *testing.T) {
 			if todoRoomOf(a) != env.room {
 				t.Fatalf("%q is in the panel for %s and was raised in %q",
 					a.Title, env.room, todoRoomOf(a))
+			}
+		}
+		// And at eighty columns, which is the width the failure lived at: the
+		// last thing the drive did was resize to 80x24 and go back to the room,
+		// so this is the screen somebody on the commonest terminal there is would
+		// be looking at. The panel was drawn at a quarter of the terminal, which
+		// left the conversation too narrow at 80 and took the whole pane away -
+		// so there was a plan, and nobody in a terminal could see it.
+		//
+		// It is read out of the panel's own column and not off the screen. Raising
+		// a todo from a room posts "raised a todo: <title>" into that room, so the
+		// title is in the stream whether or not the panel drew anything, and a
+		// check that looked for the words anywhere would pass against a client
+		// with no panel in it at all.
+		screen := final.View()
+		panel := panelColumn(screen)
+		if panelHead(panel) == "" {
+			t.Fatalf("the room's plan pane is not on an 80-column screen:\n%s", screen)
+		}
+		if !panelSays(panel, env.roomTodo) {
+			t.Fatalf("the plan pane at 80 columns does not carry %q, it carries %q:\n%s",
+				env.roomTodo, panel, screen)
+		}
+		if env.todoOwner != "" {
+			// Who is carrying it, on the item's own row: the status word and then
+			// the name, which for this one is read off the body's OWNER line.
+			carried := false
+			for _, line := range panel {
+				if strings.HasSuffix(line, " "+env.todoOwner) {
+					carried = true
+				}
+			}
+			if !carried {
+				t.Fatalf("no row of the plan pane says %s is carrying anything: %q",
+					env.todoOwner, panel)
 			}
 		}
 	}

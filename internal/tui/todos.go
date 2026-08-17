@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 // The todos view: the shared queue, who owns each item, and what it is waiting
@@ -55,6 +56,28 @@ func todoRank(status string) int {
 	}
 }
 
+// todoStyle is how a status is drawn, which is the same three meanings the
+// console draws them with - see statusStyle in web/src/lib/todos.ts.
+//
+// The colour is the second half of the row and never the whole of it. A
+// terminal may be monochrome, piped into less, or read by somebody who cannot
+// separate amber from green, and lipgloss quietly renders all three of these as
+// plain text on a TERM=dumb - so the status WORD goes on the row as well, every
+// time. A queue whose states are only a colour has no states at all for the
+// reader who cannot see them.
+func (t Theme) todoStyle(status string) lipgloss.Style {
+	switch todoRank(status) {
+	case 0:
+		return t.TodoActive
+	case 3:
+		return t.TodoDone
+	default:
+		// Including the statuses this client has never heard of, which sort with
+		// the open ones and are drawn as them: unrecognised is not finished.
+		return t.TodoOpen
+	}
+}
+
 // sortTodos puts the queue in reading order: active, open, done.
 //
 // It is a stable sort, so within a status the node's own order survives - which
@@ -83,12 +106,12 @@ func todoOwner(a *Artifact) string {
 		return ""
 	}
 	if named := todoProvenance(a).Assignee; named != nil {
-		return strings.TrimSpace(*named)
+		return somebody(*named)
 	}
 	for _, line := range splitLines(a.Body) {
 		line = strings.TrimSpace(line)
 		if rest, ok := strings.CutPrefix(line, "OWNER:"); ok {
-			return strings.TrimSpace(rest)
+			return somebody(rest)
 		}
 		if line != "" {
 			// The convention is the first line of the body. Scanning the whole
@@ -97,6 +120,30 @@ func todoOwner(a *Artifact) string {
 		}
 	}
 	return ""
+}
+
+// nobodyWords are the ways this queue has said that nobody is carrying an item.
+// They all collapse to the empty owner, so every surface says ONE word for one
+// state.
+//
+// It was raised as a todo through the panel itself: 'todo list has "unowned"
+// and "unassigned" - looks identical. triage and fix'. Two words for one state
+// read as two states and send a reader looking for a distinction that is not
+// there. The node normalises what it is handed (nobodyWords in todos.go) and
+// the console collapses the same set on the way out (web/src/lib/todos.ts);
+// this is the third copy, for the bodies written before either existed.
+var nobodyWords = map[string]bool{
+	"?": true, "-": true, "none": true, "nobody": true,
+	"tbd": true, "unassigned": true, "unowned": true, "n/a": true,
+}
+
+// somebody is a name that means somebody, or "" for one of the words above.
+func somebody(name string) string {
+	name = strings.TrimSpace(name)
+	if nobodyWords[strings.ToLower(name)] {
+		return ""
+	}
+	return name
 }
 
 // todoFields is what a todo carries in fields: where it was raised, the message
@@ -218,7 +265,10 @@ func (m *Model) todosView(height int) []string {
 			lines = append(lines, m.theme.Selected.Render(pad(text, m.width)))
 			continue
 		}
-		lines = append(lines, text)
+		// The same three states the room's panel draws, because it is the same
+		// queue: a reader who learned the colours in one of the two views has
+		// learned them in the other.
+		lines = append(lines, m.theme.todoStyle(status).Render(text))
 	}
 
 	if selected := m.selectedTodo(); selected != nil && len(lines) < height {
