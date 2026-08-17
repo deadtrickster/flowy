@@ -1010,6 +1010,23 @@ export const api = {
    */
   notes: () =>
     request<{ artifacts: Artifact[] }>(`/api/artifacts?type=memory&kind=note&limit=${TODO_PAGE}`),
+  /**
+   * The merge queue of ONE ROOM: the merges that came out of this conversation.
+   *
+   * Same endpoint, same verdicts, narrowed by the room the request was raised
+   * in - a narrowing, not a second kind of visibility, exactly as roomTodos is
+   * to todos. What a room's pane shows is the work that belongs to the
+   * conversation happening in it.
+   */
+  roomMergeQueue: (room: string) =>
+    request<{
+      target: string;
+      target_tip: string;
+      tip_from: "stated" | "deployed" | "none";
+      decided: boolean;
+      gating: number;
+      items: MergeRequest[];
+    }>(`/api/merge-queue?room=${encodeURIComponent(room)}`),
   mergeQueue: () =>
     request<{
       target: string;

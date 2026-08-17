@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 
 import { AnnouncementBanner } from "@/components/AnnouncementBanner";
+import { MergeQueue } from "@/components/MergeQueue";
 import { MessageBox } from "@/components/MessageBox";
 import { MessageList } from "@/components/MessageList";
 import { PinnedStrip } from "@/components/PinnedStrip";
@@ -11,7 +12,7 @@ import { RoomTodos } from "@/components/RoomTodos";
 import { ThreadDag } from "@/components/ThreadDag";
 import { ThreadList } from "@/components/ThreadList";
 import { Badge } from "@/components/ui/badge";
-import { type Artifact, type FlowyEvent, type Presence, api } from "@/lib/api";
+import { type Artifact, type FlowyEvent, type MergeRequest, type Presence, api } from "@/lib/api";
 import { useCitation } from "@/lib/cite";
 import { useSession } from "@/lib/session";
 import { useUnread } from "@/lib/unread";
@@ -55,6 +56,10 @@ export function ChatRoom() {
   const [error, setError] = useState<string | null>(null);
   const [presence, setPresence] = useState<Presence | null>(null);
   const [todos, setTodos] = useState<Artifact[]>([]);
+  /** The merges raised out of this room, with the node's own verdicts. */
+  const [merges, setMerges] = useState<MergeRequest[]>([]);
+  const [mergesDecided, setMergesDecided] = useState(false);
+  const [mergeTip, setMergeTip] = useState("");
   const [todoError, setTodoError] = useState<string | null>(null);
   // Which thread view. The list is the default because almost every thread here
   // is a straight line and a straight line drawn as a graph makes the reader do
@@ -122,6 +127,14 @@ export function ChatRoom() {
   const loadTodos = useCallback(async () => {
     const mine = ++todoRead.current;
     try {
+      api
+        .roomMergeQueue(room)
+        .then((q) => {
+          setMerges(q.items ?? []);
+          setMergesDecided(Boolean(q.decided));
+          setMergeTip(q.target_tip ?? "");
+        })
+        .catch(() => setMerges([]));
       const page = await api.roomTodos(room);
       if (mine !== todoRead.current) return;
       setTodos(page.artifacts);
@@ -157,6 +170,7 @@ export function ChatRoom() {
     setLive(false);
     setError(null);
     setTodos([]);
+    setMerges([]);
     // A room's decisions are its own. Carrying the last room's strip across
     // would draw pins pointing at messages this room does not have, which the
     // strip then hides - so it would look like the new room had unpinned
@@ -387,6 +401,31 @@ export function ChatRoom() {
           onRaise={raise}
           onAssign={assign}
         />
+
+        {/*
+          The room's merges, beside the room's todos. The operator asked for it
+          in those words: work and merges related to the todos from this chat.
+          A conversation that produced a branch should show the branch, and
+          whether it may land, without leaving the room.
+        */}
+        {merges.length > 0 ? (
+          <section className="flex flex-col border-border border-t">
+            <header className="flex items-center gap-2 px-4 py-2">
+              <h2 className="font-semibold text-sm">merges</h2>
+              <span className="text-muted-foreground text-xs">
+                {merges.filter((m) => m.admissible === true).length} may land,{" "}
+                {merges.filter((m) => m.gating).length} gating
+              </span>
+            </header>
+            <MergeQueue
+              items={merges}
+              tip={mergeTip}
+              tipFrom="deployed"
+              decided={mergesDecided}
+              loaded={true}
+            />
+          </section>
+        ) : null}
 
         <section className="flex min-h-0 flex-1 flex-col">
           <header className="flex items-center gap-2 border-border border-b px-4 py-3">

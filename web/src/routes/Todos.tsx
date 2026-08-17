@@ -90,9 +90,7 @@ export function Todos() {
    * a way of reading this page, and a shared link that opens somebody else on a
    * tab they did not choose is a small lie about what they are looking at.
    */
-  const [tab, setTab] = useState<"todos" | "merge" | "notes">("todos");
-  const [notes, setNotes] = useState<Artifact[]>([]);
-  const [notesLoaded, setNotesLoaded] = useState(false);
+  const [tab, setTab] = useState<"todos" | "merge">("todos");
   const [merges, setMerges] = useState<MergeRequest[]>([]);
   const [mergeTip, setMergeTip] = useState("");
   const [mergeTipFrom, setMergeTipFrom] = useState<"stated" | "deployed" | "none">("none");
@@ -111,17 +109,6 @@ export function Todos() {
     let stopped = false;
     // Both reads together: a count with no scope beside it is the sentence this
     // page exists to avoid, so neither half is rendered until both have landed.
-    api
-      .notes()
-      .then((n) => {
-        if (!stopped) setNotes(n.artifacts ?? []);
-      })
-      .catch(() => {
-        if (!stopped) setNotes([]);
-      })
-      .finally(() => {
-        if (!stopped) setNotesLoaded(true);
-      });
     api
       .mergeQueue()
       .then((q) => {
@@ -217,16 +204,8 @@ export function Todos() {
             ) : null
           }
         />
-        <TabButton
-          selected={tab === "notes"}
-          onClick={() => setTab("notes")}
-          label="notes"
-          stats={notesLoaded ? <Stat colour="#8b93a7" n={notes.length} what="notes" /> : null}
-        />
       </div>
-      {tab === "notes" ? (
-        <Notes items={notes} loaded={notesLoaded} />
-      ) : tab === "merge" ? (
+      {tab === "merge" ? (
         <MergeQueue
           items={merges}
           tip={mergeTip}
@@ -687,52 +666,4 @@ function describe(kind: string, tag: string): string {
   else if (kind !== "") parts.push(kind);
   if (tag !== "") parts.push(`tagged ${tag}`);
   return parts.join(" and ");
-}
-
-/**
- * The notes: everything in shared memory that is not work.
- *
- * It exists because the operator had to ask the room where a note had been
- * filed. Agents could search it, the FUSE mount could list it, and the console
- * showed reports, worklog, todos and merges - but nothing showed a note. A
- * memory nobody can browse is a memory only its writers know about.
- *
- * Read only, deliberately: writing here would be a second door onto rows whose
- * scope rules live in the store, and the point of this pane is to SEE what is
- * there.
- */
-function Notes({ items, loaded }: { items: Artifact[]; loaded: boolean }) {
-  if (!loaded) {
-    return <p className="px-4 py-6 text-muted-foreground text-sm">reading memory…</p>;
-  }
-  if (items.length === 0) {
-    return (
-      <p className="px-4 py-6 text-muted-foreground text-sm">
-        no notes you can read. Scope decides that, not this page - a personal note is its author's
-        alone, and this list is the same permission filter as everything else.
-      </p>
-    );
-  }
-  return (
-    <ul className="min-h-0 flex-1 overflow-y-auto">
-      {items.map((n) => (
-        <li key={n.id} className="flex flex-col gap-1 border-border border-b px-4 py-3">
-          <Link
-            className="font-medium text-sm hover:underline"
-            to={`/p/${n.project ?? "_"}/memory/${n.id}`}
-          >
-            {n.title || n.id}
-          </Link>
-          <div className="flex flex-wrap items-center gap-2 text-muted-foreground text-xs">
-            {/* Scope first, because "who else can see this" is the question a
-                person has about a note, and it is the one the console has never
-                answered on a list. */}
-            <Badge variant="outline">{n.visibility ?? "personal"}</Badge>
-            <span>{n.project ?? "no project"}</span>
-            {n.body ? <span className="truncate">{n.body.slice(0, 120)}</span> : null}
-          </div>
-        </li>
-      ))}
-    </ul>
-  );
 }

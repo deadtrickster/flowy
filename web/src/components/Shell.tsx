@@ -1,5 +1,6 @@
 import {
   Activity as ActivityIcon,
+  Brain,
   FileText,
   GitBranch,
   Hash,
@@ -84,6 +85,10 @@ export function Shell({ children }: { children: ReactNode }) {
           <NavLink to="/todos" className={navClass}>
             <ListChecks className="h-4 w-4" />
             todos
+          </NavLink>
+          <NavLink to="/memory" className={navClass}>
+            <Brain className="h-4 w-4" />
+            memory
           </NavLink>
           <NavLink to="/reports" className={navClass}>
             <FileText className="h-4 w-4" />

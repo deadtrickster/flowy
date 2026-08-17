@@ -8,6 +8,7 @@ import { ChatRoom } from "@/routes/ChatRoom";
 import { Direct } from "@/routes/Direct";
 import { Home } from "@/routes/Home";
 import { Inbox } from "@/routes/Inbox";
+import { Memory } from "@/routes/Memory";
 import { Metrics } from "@/routes/Metrics";
 import { NotFound } from "@/routes/NotFound";
 import { Reports } from "@/routes/Reports";
@@ -46,6 +47,7 @@ export default function App() {
           project-scoped list here would be the old mistake with a new route.
         */}
           <Route path="/todos" element={<Todos />} />
+          <Route path="/memory" element={<Memory />} />
           <Route path="/reports" element={<Reports />} />
           <Route path="/worklog" element={<Worklog />} />
           <Route path="/task/:id" element={<TaskView />} />
