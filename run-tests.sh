@@ -4006,6 +4006,45 @@ browser_colours_the_speakers() {
 	node scripts/colour-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A"
 }
 
+# A person can select and copy what was said, which is not a styling question.
+#
+# Every message row was a <button>, and a browser refuses to select a button's
+# text - it reads a drag inside one as a click on a control. So the transcript
+# could not be copied while the markup, the CSS and the poll repaint were all
+# innocent, and nothing short of a real drag in a real browser would have shown
+# it. The fix is on master; this is the guard it landed without, and it has
+# already survived one full rewrite of that file by luck rather than by a check.
+#
+# It drags the way a person does rather than calling selectText(), because that
+# API succeeds on a button too - it does not go through the browser's own
+# decision about what a drag inside that element means.
+browser_lets_a_person_copy_a_message() {
+	recall
+	cd "$ROOT/web" || return 1
+	node scripts/copy-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A"
+}
+
+# Reading the history wins over following the room.
+#
+# The view scrolled to the bottom on every change in message count, whatever
+# the reader was doing, so scrolling back through a busy room yanked you to the
+# end the moment anybody spoke. The user reported it twice, while trying to read.
+#
+# The assertion is THE SCROLL POSITION and not the pill: a version that renders
+# the pill and still jumps would pass a check that only asked whether the pill
+# existed, and jumping is the whole complaint. The pill is checked second,
+# because staying put and never saying anything arrived is a different bug.
+#
+# A's AGENT posts it, not B. Somebody else has to say it - a message the reader
+# sent arrives by a different path - but ROOMS ARE PER PROJECT, so a say on B's
+# token lands in B's `general` and this waits out the clock on a room that never
+# heard it. That cost four gate runs, each accusing a different innocent part.
+browser_does_not_scroll_a_reader_away() {
+	recall
+	cd "$ROOT/web" || return 1
+	node scripts/scroll-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" "$TOKEN_A_AGENT"
+}
+
 # And the @names inside a body, on the screen, as elements.
 #
 # Its own room, with its own three messages, because what it asserts is about
@@ -7916,6 +7955,10 @@ check "the roster draws what each listener can do, distinctly, in a browser" \
 	browser_shows_what_a_listener_can_do
 check "an @name is drawn as a mention, in their colour, in a browser" \
 	browser_draws_the_mentions
+check "a person can select and copy a message, in a browser, by dragging" \
+	browser_lets_a_person_copy_a_message
+check "a message arriving does not scroll a reader out of the history" \
+	browser_does_not_scroll_a_reader_away
 
 # ------------------------------------------------------------------- phase 4
 #
