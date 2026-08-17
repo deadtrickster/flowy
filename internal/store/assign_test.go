@@ -330,3 +330,69 @@ func TestAReadSaysWhoIsCarryingItWithoutDiggingIntoFields(t *testing.T) {
 		t.Errorf("reading one artifact says assignee %q, want %q", one.Assignee, "a-welder")
 	}
 }
+
+// TestAClaimSaysWhoItTookTheWorkFrom is the answer telling a caller that a
+// handover was contested.
+//
+// Assignment is deliberately open - read permission is the whole bar, so the
+// operator can hand work out and an agent can pick up what somebody abandoned.
+// What was missing is that taking one said NOTHING: three rows moved off two
+// agents in a minute this afternoon and the node answered 200 three times with
+// no hint anything had been taken. The claimant found out from the room.
+//
+// So the entry and the fold carry HELD - who had it immediately before. The
+// store still does not refuse; a verb that wants an uncontested claim, like a
+// work queue's take where the second taker must lose, compares Held against
+// what it expected and decides for itself. Reporting is the store's job and
+// ruling is the verb's.
+func TestAClaimSaysWhoItTookTheWorkFrom(t *testing.T) {
+	ctx, db := open(t)
+
+	project := declaredProject(t, ctx, db, "pay")
+	author := &Principal{UserID: "u-" + ulid.NewString(), Project: project}
+	todo := todoIn(t, ctx, db, author, "drain the queue", VisibilityShared, "")
+
+	// Nobody has it: the first claim takes it from no one, and says so by
+	// saying nothing rather than by inventing a name.
+	_, first, err := db.AssignTodo(ctx, author, todo.ID, "a-welder", nil)
+	if err != nil {
+		t.Fatalf("first claim: %v", err)
+	}
+	if first == nil {
+		t.Fatal("the first claim wrote no entry")
+	}
+
+	// And now somebody takes it off them.
+	if _, _, err := db.AssignTodo(ctx, author, todo.ID, "a-gardener", nil); err != nil {
+		t.Fatalf("handover: %v", err)
+	}
+
+	log, err := db.AssignLog(ctx, author, todo.ID)
+	if err != nil {
+		t.Fatalf("assign log: %v", err)
+	}
+	if len(log) < 2 {
+		t.Fatalf("expected two entries, got %d", len(log))
+	}
+	if got := log[0].Held; got != "" {
+		t.Errorf("the first claim says it took the work from %q; nobody had it", got)
+	}
+	if got := log[1].Held; got != "a-welder" {
+		t.Errorf("the handover says it took the work from %q, want %q - a claim that "+
+			"cannot say who it displaced is a silent overwrite", got, "a-welder")
+	}
+
+	// The fold a client actually reads has to carry it too, or the answer to
+	// "did I take this from somebody" lives only in a log nobody fetches.
+	stands := LatestAssignment(log)
+	if stands == nil {
+		t.Fatal("no assignment stands after two claims")
+	}
+	if stands.Assignee != "a-gardener" {
+		t.Errorf("assignee is %q, want a-gardener", stands.Assignee)
+	}
+	if stands.Held != "a-welder" {
+		t.Errorf("the standing assignment says it took the work from %q, want a-welder",
+			stands.Held)
+	}
+}

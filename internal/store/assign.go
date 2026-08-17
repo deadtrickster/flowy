@@ -99,7 +99,13 @@ type AssignEntry struct {
 	// and an absent key would leave a client to decide whether it means nobody
 	// or means the node did not say - the two-words-for-one-state problem
 	// nobodyWords exists to stop.
-	Assignee  string `json:"assignee"`
+	Assignee string `json:"assignee"`
+	// Held is who was carrying it immediately BEFORE this entry, empty when
+	// nobody was. It is on the entry rather than computed by a reader because
+	// the log is the only place the previous holder still exists after the
+	// field has moved on, and because a caller deciding whether a handover was
+	// contested should not have to reconstruct it from two reads.
+	Held      string `json:"held,omitempty"`
 	Actor     string `json:"actor"`
 	ActorKind string `json:"actor_kind,omitempty"`
 	ActorUser string `json:"actor_user,omitempty"`
@@ -122,8 +128,12 @@ type Assignment struct {
 	By     string `json:"by"`
 	ByKind string `json:"by_kind,omitempty"`
 	ByUser string `json:"by_user,omitempty"`
-	At     string `json:"at"`
-	Entry  string `json:"entry"`
+	// Held is who this claim took it FROM - empty when it was unowned. A client
+	// that wanted an uncontested claim compares this against what it expected
+	// and can say "you took this from X" instead of reporting a bare success.
+	Held  string `json:"held,omitempty"`
+	At    string `json:"at"`
+	Entry string `json:"entry"`
 }
 
 // AssignRefusal is what every refusal this verb makes ABOUT THE ASSIGNMENT IT
@@ -217,6 +227,18 @@ func (d *DB) AssignTodo(
 	if err != nil {
 		return nil, nil, err
 	}
+	// WHO HAD IT BEFORE, so the answer can say. A handover is legal - read
+	// permission is the whole bar and that does not change here - but taking one
+	// silently is how three rows moved off two agents in a minute this afternoon
+	// and answered 200 three times with no hint anything had been taken.
+	//
+	// It is on the ANSWER rather than a refusal because refusing would break the
+	// thing assignment is for: the operator handing work out, and an agent
+	// picking up what somebody abandoned. A caller that wants to refuse a
+	// contested claim - a work queue's take, where the second taker must lose -
+	// compares Held against what it expected and decides for itself. The store
+	// reports; the verb above it rules.
+	held := strings.TrimSpace(AssigneeOf(art))
 	// Written whenever it was asked for, including empty: the key being there at
 	// all is what says somebody decided, and what outranks a stale OWNER line in
 	// the body. See AssigneeOf.
@@ -226,7 +248,7 @@ func (d *DB) AssignTodo(
 		return nil, nil, fmt.Errorf("store: assign %s: %w", art.ID, err)
 	}
 
-	entry, err := assignEvent(art, p, actor, actorKind, name)
+	entry, err := assignEvent(art, p, actor, actorKind, name, held)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -267,16 +289,28 @@ func AssignEntryEvent(art *Artifact, p *Principal, name string) (*Event, error) 
 		return nil, refuseAssign("this token resolves to nobody, so it cannot say " +
 			"who is carrying a todo")
 	}
-	return assignEvent(art, p, actor, actorKind, name)
+	// The previous holder, read off the row this write is about to replace. On a
+	// CREATE there is no previous holder and AssigneeOf answers empty, which is
+	// the right answer rather than a special case: nothing was taken from anybody.
+	return assignEvent(art, p, actor, actorKind, name, strings.TrimSpace(AssigneeOf(art)))
 }
 
 // assignEvent builds the entry an assignment is.
-func assignEvent(art *Artifact, p *Principal, actor, actorKind, name string) (*Event, error) {
-	meta, err := json.Marshal(map[string]string{
+func assignEvent(art *Artifact, p *Principal, actor, actorKind, name, held string) (*Event, error) {
+	// held rides the meta so the entry records what the claim TOOK IT FROM. It is
+	// omitted when nobody held it, because a key that is present and empty means
+	// "somebody said nobody" everywhere else in this file, and here it would mean
+	// "there was no previous holder" - two different facts one encoding cannot
+	// carry, which is the nobodyWords problem one field along.
+	fields := map[string]string{
 		AssigneeField: name,
 		"actor_kind":  actorKind,
 		"actor_user":  p.UserID,
-	})
+	}
+	if held != "" {
+		fields["held"] = held
+	}
+	meta, err := json.Marshal(fields)
 	if err != nil {
 		return nil, fmt.Errorf("store: assign %s: %w", art.ID, err)
 	}
@@ -305,6 +339,10 @@ func AssignEntryOf(e *Event) AssignEntry {
 	if len(e.Meta) > 0 && json.Unmarshal(e.Meta, &meta) == nil {
 		entry.Assignee = meta[AssigneeField]
 		entry.ActorKind, entry.ActorUser = meta["actor_kind"], meta["actor_user"]
+		// Absent on entries written before this field existed, and absent when
+		// nobody held it - both read as empty, which is the same answer and the
+		// true one: this entry took the work from nobody it can name.
+		entry.Held = meta["held"]
 	}
 	return entry
 }
@@ -322,7 +360,7 @@ func LatestAssignment(entries []AssignEntry) *Assignment {
 	last := entries[len(entries)-1]
 	return &Assignment{
 		Assignee: last.Assignee, By: last.Actor, ByKind: last.ActorKind,
-		ByUser: last.ActorUser, At: last.Created, Entry: last.ID,
+		ByUser: last.ActorUser, Held: last.Held, At: last.Created, Entry: last.ID,
 	}
 }
 
