@@ -774,6 +774,16 @@ CREATE INDEX IF NOT EXISTS projects_hlc_idx     ON projects (hlc);
 CREATE INDEX IF NOT EXISTS projects_fixture_idx ON projects (fixture);
 CREATE INDEX IF NOT EXISTS projects_origin_idx  ON projects (origin);
 
+-- A report names the report it replaces in fields->>'supersedes', pointing
+-- backwards. Every filtered read asks the question the other way round - given
+-- these rows, which of them has something newer standing over it - so the
+-- lookup is by that key, and it needs an index or it is a sequential scan on
+-- every list. Partial, because the rows that carry the key are a small
+-- minority: only a report that replaced something has one.
+CREATE INDEX IF NOT EXISTS artifacts_supersedes_idx
+    ON artifacts ((fields ->> 'supersedes'))
+ WHERE fields ? 'supersedes';
+
 -- ------------------------------------------------------------------- SEARCH
 -- Everything below this line is Postgres full text and is expected to be
 -- deleted when the store moves to SereneDB and search becomes vector search.

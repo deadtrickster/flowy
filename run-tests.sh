@@ -157,6 +157,17 @@ find_pg_bin() {
 }
 
 # free_port prints the first port at or above $1 that nothing is listening on.
+#
+# Ask it for a base BELOW the kernel's ephemeral range - 32768-60999 on Linux by
+# default, `cat /proc/sys/net/ipv4/ip_local_port_range`. It cannot see a port
+# that some outbound connection is using as its source: the probe below asks
+# whether anything is LISTENING, and an established socket answers no while
+# still making bind() fail with "Address already in use". This run makes
+# thousands of outbound connections - curl, psql, playwright - so a listener
+# started late on a port inside that range is a coin toss, and phase 5's
+# postgres was exactly that. It came up on 54400 for months and then failed to
+# bind it twice in three runs, taking 40 federation checks down with it and
+# reading, from the failure text, like a leftover cluster from the last run.
 free_port() {
 	local port
 	for ((port = $1; port < $1 + 300; port++)); do
@@ -5760,7 +5771,7 @@ if ! "$PG_BIN/initdb" -D "$PGDATA" -U "$PGUSER" -A trust -E UTF8 --locale=C --no
 	exit 1
 fi
 
-PGPORT="$(free_port 54320)"
+PGPORT="$(free_port 15432)"
 export PGPORT
 export PGHOST=127.0.0.1
 if ! "$PG_BIN/pg_ctl" -D "$PGDATA" -l "$PGLOG" -w -t 60 \
@@ -6215,7 +6226,7 @@ check "node survived the run" kill -0 "$SERVE_PID"
 # two real `flowy serve` processes, over the wire.
 
 say "federation: a second node"
-PG5A_PORT="$(free_port 54400)"
+PG5A_PORT="$(free_port 15440)"
 PG5B_PORT="$(free_port "$((PG5A_PORT + 1))")"
 DSN5A="postgres://$PGUSER@127.0.0.1:$PG5A_PORT/$DBNAME?sslmode=disable"
 DSN5B="postgres://$PGUSER@127.0.0.1:$PG5B_PORT/$DBNAME?sslmode=disable"
@@ -10756,6 +10767,222 @@ browser_renders_the_worklog() {
 	node scripts/worklog-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" \
 		"$WORKLOG_PAGE_NEWEST" "$WORKLOG_PAGE_BRANCH" "$WORKLOG_PAGE_OTHER" "$AGENT_A"
 }
+
+# ------------------------------------------------- reports: what replaced what
+#
+# A report names the report it replaces. supersedes rides fields on the NEWER
+# document and points backwards, because backwards is the only direction the
+# writer can name: the thing being replaced already exists and the replacement
+# is the row being written.
+#
+# The reader has the other question, and it is the one that costs something to
+# get wrong. They have found an old document - through a link, through a
+# search, through the list - and nothing on it says a newer one exists, so they
+# act on a measurement that has been superseded. Answering it means looking for
+# the report whose supersedes names this one, which is a read, and the whole of
+# what these checks are about is that it is the SAME read: the answer is
+# another artifact's id, and a reader who may not see the replacement must not
+# learn that it exists from a row they are allowed to see.
+#
+# So there are two pairs. Both old halves are shared and B reaches them. One
+# replacement is shared too and B is told about it; the other is personal to A,
+# which is the floor, and B has to come away from the old one knowing nothing.
+
+REPORT_OLD_TITLE="the mill race bearing survey"
+REPORT_NEW_TITLE="the mill race bearing survey, remeasured"
+# In the body of the old report and nowhere else - not in a title, not in a
+# tag, not on any card the list draws. A search that finds it searched the
+# document, which is the difference between the node's search and a filter over
+# whatever is already on the page.
+REPORT_BODY_WORD="brambleshaft"
+REPORT_KEPT_TITLE="the tailrace silt survey"
+REPORT_PRIVATE_TITLE="the tailrace silt survey, remeasured"
+readonly REPORT_OLD_TITLE REPORT_NEW_TITLE REPORT_BODY_WORD
+readonly REPORT_KEPT_TITLE REPORT_PRIVATE_TITLE
+
+# rep_replaced ID - what the last tool output says replaced the report with this
+# id, and "" when it says nothing. Empty rather than null, because "you were
+# told nothing" is the assertion half these checks make.
+rep_replaced() {
+	printf '%s' "$TOOL_JSON" |
+		jq -r --arg id "$1" '[.items[] | select(.id == $id)][0].replaced_by // ""'
+}
+
+# rep_listed ID - how many times the last tool output holds that report.
+#
+# It is always asserted beside rep_replaced when the expected mark is "". A
+# report that is absent from the answer entirely also reports no mark, so
+# without this the leak assertions would pass on a list that had dropped the row
+# for some other reason - which is a green run and no evidence.
+rep_listed() {
+	printf '%s' "$TOOL_JSON" | jq --arg id "$1" '[.items[] | select(.id == $id)] | length'
+}
+
+seeds_the_reports_and_what_replaced_them() {
+	recall
+	want_tool report_write "$TOKEN_A" \
+		"$(jq -nc --arg t "$REPORT_OLD_TITLE" --arg w "$REPORT_BODY_WORD" \
+			'{title: $t, scope: "shared", as_of: "mill-2026-05",
+			  body: ("the " + $w + " runs 0.4mm out of true at the downstream end")}')" || return 1
+	local old new silted withheld
+	old="$(tv .item.id)"
+	want_eq "the old one is shared" "$(tv .item.visibility)" shared || return 1
+
+	want_tool report_write "$TOKEN_A" \
+		"$(jq -nc --arg t "$REPORT_NEW_TITLE" --arg s "$old" \
+			'{title: $t, scope: "shared", as_of: "mill-2026-08", supersedes: $s,
+			  body: "shimmed and remeasured: 0.05mm, inside tolerance"}')" || return 1
+	new="$(tv .item.id)"
+	want_eq "the replacement points back at what it replaces" \
+		"$(tv .item.fields.supersedes)" "$old" || return 1
+
+	# The second pair, whose replacement never leaves A.
+	want_tool report_write "$TOKEN_A" \
+		"$(jq -nc --arg t "$REPORT_KEPT_TITLE" \
+			'{title: $t, scope: "shared", as_of: "mill-2026-05",
+			  body: "silt at the tailrace mouth, measured off the sill"}')" || return 1
+	silted="$(tv .item.id)"
+
+	want_tool report_write "$TOKEN_A" \
+		"$(jq -nc --arg t "$REPORT_PRIVATE_TITLE" --arg s "$silted" \
+			'{title: $t, scope: "personal", supersedes: $s,
+			  body: "remeasured, and not published yet"}')" || return 1
+	withheld="$(tv .item.id)"
+	want_eq "the withheld replacement is personal" "$(tv .item.visibility)" personal || return 1
+
+	remember REPORT_OLD "$old"
+	remember REPORT_NEW "$new"
+	remember REPORT_KEPT "$silted"
+	remember REPORT_WITHHELD "$withheld"
+	printf '%s replaced by %s, both shared; %s replaced by %s, which is A alone\n' \
+		"$old" "$new" "$silted" "$withheld"
+}
+
+# The search reaches the body, and what it hands back says whether it still
+# stands. A search is where a superseded report is most likely to be found:
+# the words somebody remembers are in the old document as readily as in the one
+# that replaced it, and the old one usually ranks first because it is the one
+# that used the phrase.
+the_search_finds_a_report_by_a_word_in_its_body() {
+	recall
+	want_tool report_search "$TOKEN_A" "$(jq -nc --arg q "$REPORT_BODY_WORD" '{q: $q}')" || return 1
+	want_eq "hits for a word only in a body" "$(tv .count)" 1 || return 1
+	want_eq "the hit" "$(tv '.items[0].id')" "$REPORT_OLD" || return 1
+	want_eq "the hit says it has been replaced" \
+		"$(tv '.items[0].replaced_by // ""')" "$REPORT_NEW" || return 1
+
+	# The same read over the endpoint the console's box calls, because that is
+	# the one the page has to be using: narrowed to reports, ranked by the node,
+	# and carrying the same mark.
+	api GET "$TOKEN_A" "/api/search?type=report&q=$REPORT_BODY_WORD" || return 1
+	want_eq "the http search hits" "$(hits)" 1 || return 1
+	want_eq "and the mark is on the hit over http" \
+		"$(printf '%s' "$API_BODY" | jq -r '.artifacts[0].replaced_by // ""')" "$REPORT_NEW" || return 1
+	printf '%s is in one body, and the hit says %s replaced it\n' \
+		"$REPORT_BODY_WORD" "$REPORT_NEW"
+}
+
+# The mark is a read like any other read, and it stops where the reader stops.
+#
+# B holds the pb -> pa grant, so both shared documents are B's to read and the
+# mark on the first pair is B's to follow. The second pair is the floor: B may
+# read the old report and may not read what replaced it, so B must be told
+# nothing - not the id, and not that there is one. A, who owns the replacement,
+# is told.
+the_mark_stops_where_the_reader_does() {
+	recall
+	want_tool report_read "$TOKEN_B" "{\"id\": \"$REPORT_OLD\"}" || return 1
+	want_eq "B is told what replaced it" \
+		"$(tv '.item.replaced_by // ""')" "$REPORT_NEW" || return 1
+
+	want_tool report_read "$TOKEN_B" "{\"id\": \"$REPORT_KEPT\"}" || return 1
+	want_eq "B is told nothing about a replacement B cannot read" \
+		"$(tv '.item.replaced_by // ""')" "" || return 1
+	want_tool_fails report_read "$TOKEN_B" "{\"id\": \"$REPORT_WITHHELD\"}" "no such" || return 1
+
+	want_tool report_read "$TOKEN_A" "{\"id\": \"$REPORT_KEPT\"}" || return 1
+	want_eq "A, who owns the replacement, is told" \
+		"$(tv '.item.replaced_by // ""')" "$REPORT_WITHHELD" || return 1
+
+	# Every door, not one: a mark that is filtered on the read by id and handed
+	# out by the list is a leak with a check standing next to it.
+	want_tool report_list "$TOKEN_B" '{}' || return 1
+	want_eq "B's list marks the shared pair" "$(rep_replaced "$REPORT_OLD")" "$REPORT_NEW" || return 1
+	want_eq "B's list holds the other old report" "$(rep_listed "$REPORT_KEPT")" 1 || return 1
+	want_eq "and says nothing about what replaced it" "$(rep_replaced "$REPORT_KEPT")" "" || return 1
+	want_eq "and does not list the personal replacement at all" \
+		"$(rep_listed "$REPORT_WITHHELD")" 0 || return 1
+
+	want_tool report_search "$TOKEN_B" '{"q": "tailrace silt"}' || return 1
+	want_eq "B's search finds the old report" "$(rep_listed "$REPORT_KEPT")" 1 || return 1
+	want_eq "and says nothing there either" "$(rep_replaced "$REPORT_KEPT")" "" || return 1
+	want_eq "and the personal replacement is not a hit" "$(rep_listed "$REPORT_WITHHELD")" 0 || return 1
+	printf "B follows the mark it may follow and never learns the id of A's personal replacement\n"
+}
+
+# The list, which is what somebody scanning the reports actually reads: which of
+# these have been replaced, and by what.
+the_list_says_which_reports_have_been_replaced() {
+	recall
+	want_tool report_list "$TOKEN_A" '{}' || return 1
+	want_eq "what replaced the old one" "$(rep_replaced "$REPORT_OLD")" "$REPORT_NEW" || return 1
+	want_eq "and the second pair" "$(rep_replaced "$REPORT_KEPT")" "$REPORT_WITHHELD" || return 1
+	# Both halves of a pair are listed. Marking the old one while dropping the
+	# new one leaves the mark pointing somewhere the reader cannot get to from
+	# the page they are on.
+	want_eq "the replacement is listed too" "$(rep_listed "$REPORT_NEW")" 1 || return 1
+	want_eq "and so is the personal one, for its owner" "$(rep_listed "$REPORT_WITHHELD")" 1 || return 1
+	# The replacements are not themselves marked. Without this a list that
+	# stamped every row with the same id passes everything above.
+	want_eq "the replacement is not itself replaced" "$(rep_replaced "$REPORT_NEW")" "" || return 1
+	want_eq "nor is the withheld one" "$(rep_replaced "$REPORT_WITHHELD")" "" || return 1
+
+	api GET "$TOKEN_A" '/api/artifacts?type=report' || return 1
+	want_eq "and the same over the list the console reads" \
+		"$(printf '%s' "$API_BODY" |
+			jq -r "[.artifacts[] | select(.id == \"$REPORT_OLD\")][0].replaced_by // \"\"")" \
+		"$REPORT_NEW" || return 1
+	printf 'the list marks %s replaced by %s, and lists both\n' "$REPORT_OLD" "$REPORT_NEW"
+}
+
+# The same claims one layer out, in a browser, on the ROWS - and the search box
+# on the page driven against the live node. See scripts/reports-check.mjs for
+# why each half is asserted the way it is.
+browser_marks_a_superseded_report() {
+	recall
+	cd "$ROOT/web" || return 1
+	node scripts/reports-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" \
+		"$REPORT_OLD" "$REPORT_NEW" "$REPORT_OLD_TITLE" "$REPORT_NEW_TITLE" "$REPORT_BODY_WORD"
+}
+
+# Signed out, the page says what to do about it. It said "no token", which is
+# true and which reads, under a heading that says reports, as "there are none" -
+# and a reader who has been told nothing must not come away thinking they have
+# been told there is nothing. No node and no token here on purpose: this is the
+# state a browser is in when somebody opens the link for the first time.
+the_reports_page_says_it_is_signed_out() {
+	cd "$ROOT/web" || return 1
+	node scripts/render-check.mjs "" "" "paste a token to see the reports" /reports
+}
+
+say "reports: the search, and what replaced what"
+# The floor in the query that implements it, ahead of the live checks. Those go
+# through the tools and prove the answer; this one goes at the SQL, which is
+# where a second read path gets added and where the filter gets forgotten.
+check "the reverse of supersedes is filtered like the row it is on, in the store" \
+	go test -count=1 -run 'TestWhatReplacedAReportIsFilteredLikeTheReportItself|TestAReportReplacedTwiceNamesTheNewestReplacement' ./internal/store
+check "two pairs of reports, one replacement shared and one personal" \
+	seeds_the_reports_and_what_replaced_them
+check "the search finds a report by a word in its body, and narrows to it" \
+	the_search_finds_a_report_by_a_word_in_its_body
+check "and it is the same permission filter, mark included: B stops at the personal floor" \
+	the_mark_stops_where_the_reader_does
+check "the list says which of the reports have been replaced, and by what" \
+	the_list_says_which_reports_have_been_replaced
+check "a superseded report is marked where somebody reads it, and the console's search is the node's" \
+	browser_marks_a_superseded_report
+check "signed out, the reports page says so rather than looking empty" \
+	the_reports_page_says_it_is_signed_out
 
 say "metrics: what was measured, and for whom"
 check "every group is in the answer, and says whether it was measured" \

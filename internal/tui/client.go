@@ -254,11 +254,16 @@ type Artifact struct {
 	Visibility string          `json:"visibility"`
 	FilePath   string          `json:"file_path"`
 	Fields     json.RawMessage `json:"fields,omitempty"`
-	HLC        int64           `json:"hlc"`
-	Node       string          `json:"node"`
-	Tombstone  bool            `json:"tombstone"`
-	Created    time.Time       `json:"created"`
-	Updated    time.Time       `json:"updated"`
+	// ReplacedBy is the newer artifact that supersedes this one. The node
+	// derives it through the same permission filter as the row, so it is
+	// present exactly when there is a replacement this token may read - see
+	// store.SupersedesField.
+	ReplacedBy string    `json:"replaced_by,omitempty"`
+	HLC        int64     `json:"hlc"`
+	Node       string    `json:"node"`
+	Tombstone  bool      `json:"tombstone"`
+	Created    time.Time `json:"created"`
+	Updated    time.Time `json:"updated"`
 }
 
 // Scope is where an artifact lives, said the way a badge says it.

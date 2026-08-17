@@ -16,6 +16,12 @@ package main
 //     or run a report was measured against, and supersedes names the report it
 //     replaces - without those a report is a claim with no expiry, and every
 //     reader has to guess whether it is current, silently.
+//
+//     supersedes points backwards, which is the only direction the writer can
+//     name. The reader's question is the other one, and it is the one that
+//     matters: they have the old document open and nothing on it says a newer
+//     one exists. So every read here answers it - replaced_by, derived through
+//     the same permission filter as the row it is on, see store.replacedBy.
 //   - it has no work lifecycle. Bugs resolve and assign; reports are published
 //     and later superseded. That behavior, not the document's genre, is what
 //     earns the type - genre rides tags, which are free-form and searched.
@@ -62,8 +68,9 @@ var reportTools = []tool{
 			"tags":  strArray("Free-form labels, including the genre - research, design, review. Searched with the title and the body."),
 			"as_of": str("What the report is true of: a commit, version or run id. " +
 				"Stated on the report so no reader has to guess whether it is current."),
-			"supersedes": str("Id of the report this one replaces; the old one stays " +
-				"readable, this one points forward from it."),
+			"supersedes": str("Id of the report this one replaces. The old one stays " +
+				"readable and every read of it now says replaced_by, so nobody who " +
+				"finds it later reads it as current."),
 			"status": str("Optional status, e.g. draft|final, for filtering in lists."),
 			"id":     str("Update the report with this id instead of creating one."),
 		}, nil),
@@ -72,7 +79,8 @@ var reportTools = []tool{
 	{
 		Name: "report_read",
 		Description: "Read one report by id. A report you may not read is reported " +
-			"exactly as one that does not exist.",
+			"exactly as one that does not exist. replaced_by on the answer is the " +
+			"newer report that supersedes this one, when there is one you may read.",
 		InputSchema: object(props{"id": str("The report's id.")}, []string{"id"}),
 		call:        reportRead,
 	},
@@ -202,7 +210,7 @@ func reportWrite(ctx context.Context, m *mcpServer, p *store.Principal, raw json
 		fields["as_of"] = a.AsOf
 	}
 	if a.Supersedes != "" {
-		fields["supersedes"] = a.Supersedes
+		fields[store.SupersedesField] = a.Supersedes
 	}
 	if len(fields) > 0 {
 		raw, err := json.Marshal(fields)

@@ -64,6 +64,30 @@ export function ArtifactView() {
         {error ? <div className="text-destructive text-sm">{error}</div> : null}
         {!token ? <div className="text-muted-foreground text-sm">no token</div> : null}
 
+        {/*
+         * A report that has been superseded says so where somebody reads it,
+         * above the document rather than in a badge beside the title: whoever
+         * opened this is about to act on what it says, and the one thing they
+         * need before that is that a newer one exists. The node derives
+         * replaced_by through the same filter as the row, so the link is only
+         * ever offered when it goes somewhere this token can follow.
+         */}
+        {artifact?.replaced_by ? (
+          <div
+            data-replaced-by={artifact.replaced_by}
+            className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-destructive text-sm"
+          >
+            this report has been replaced -{" "}
+            <Link
+              className="font-mono underline"
+              to={`/p/${artifact.project ?? "_"}/${artifact.type}/${artifact.replaced_by}`}
+            >
+              {artifact.replaced_by}
+            </Link>{" "}
+            supersedes it
+          </div>
+        ) : null}
+
         {artifact ? (
           <Card>
             <CardHeader>
