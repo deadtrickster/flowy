@@ -5045,6 +5045,37 @@ browser_does_not_scroll_a_reader_away() {
 	node scripts/scroll-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" "$TOKEN_A_AGENT"
 }
 
+# The other half of the same complaint, and the half the check above passes.
+#
+# Reported as "when I reload a page chat automatically scrolls to a random
+# place". It was not random and it was not the load: the transcript arrived at
+# the end correctly and was displaced SECONDS LATER, and where a reader is
+# looking during that window is an arbitrary point in the history.
+#
+# A room's history does not arrive in one answer - the first GET carries a page
+# of 200 and the long poll delivers the rest - so the view scrolled itself once
+# per batch, and a smooth scroll latches its destination when it is CALLED.
+# Several animations ran at once, each aimed at the bottom of a shorter
+# transcript, and whichever the browser finished last is where the reader was
+# left. Measured over eight loads of a 718 message room: four landed 201,633px
+# short, at the end of the room as it stood at 399 messages.
+#
+# SO THE CHECK WATCHES RATHER THAN SAMPLES. An assertion taken once when the
+# page looks settled passes this outright - the losing animation had already
+# fired scrollend, so nothing retried and nothing was visibly wrong for another
+# five seconds. It waits for the room to stop arriving, asserts the end, and
+# then keeps asking for twelve seconds while nothing at all happens.
+#
+# A's AGENT seeds it, for the reason the check above learned twice: it has to be
+# somebody else, and it has to be somebody in A's project, because rooms are per
+# project. It needs MORE THAN ONE PAGE of history or the room arrives in a
+# single answer, scrolls once, and has no race to lose.
+browser_leaves_a_room_load_at_the_end() {
+	recall
+	cd "$ROOT/web" || return 1
+	node scripts/stay-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" "$TOKEN_A_AGENT"
+}
+
 # The unread badge clears, and the mark it is drawn from moves with it.
 #
 # Reported as "unread counter is stuck": the sidebar badge never cleared for the
@@ -9430,6 +9461,8 @@ check "clicking a message answers nothing; its reply control does, by pointer an
 	browser_replies_only_when_asked
 check "a message arriving does not scroll a reader out of the history" \
 	browser_does_not_scroll_a_reader_away
+check "opening a room lands at the end and is still there twelve seconds later" \
+	browser_leaves_a_room_load_at_the_end
 check "the unread badge counts, clears when the room is read, and ignores your own" \
 	browser_clears_the_unread_badge
 check "the console's own reader row is past what it read, and only moves forward" \
