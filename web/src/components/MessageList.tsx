@@ -27,7 +27,7 @@ interface Props {
   /**
    * onSeen is the message this view has actually reached: the id of the newest
    * one on screen, said only while the transcript is at the bottom. It is the
-   * same `atBottom` the scrolling rule below is built on, and it is
+   * same "at the end" the scrolling rule below is built on, and it is
    * deliberately not "the room was opened" - somebody who scrolled back is
    * reading, not caught up, and the unread mark must not step over what they
    * have not got to yet. The id and not the reading beside it, because a
@@ -73,14 +73,13 @@ export function MessageList({ events, selected, onSelect, onCite, me, onSeen }: 
   // So: follow only when you are ALREADY at the bottom. Being scrolled up is
   // the reader saying they are reading, and nothing arriving should overrule
   // that. What arrives instead is a count and a way back down.
-
-  // FOLLOWING IS A REF, NOT STATE.
   //
-  // Whether the reader is at the end has to be true the instant they get there
-  // and the instant they leave, because the thing that reads it is an effect
-  // that runs when messages land - and messages land between a scroll and the
-  // render that state would have carried it in. `atBottom` is still kept, but
-  // only as a render input for the pill; nothing decides anything from it.
+  // AND IT IS A REF, NOT STATE. Whether the reader is at the end has to be true
+  // the instant they get there and the instant they leave, because the thing
+  // that reads it is an effect that runs when messages land - and messages land
+  // between a scroll and the render that state would have carried its reading
+  // in. `atBottom` is still kept, but only as a render input for the pill;
+  // nothing decides anything from it.
   //
   // It starts true, which is what places somebody in a room they have just
   // opened: there is nothing on screen to be at the end of yet, and the first
@@ -162,8 +161,8 @@ export function MessageList({ events, selected, onSelect, onCite, me, onSeen }: 
 
   // The other way to reach the newest message: scrolling back down to it. It is
   // its own effect rather than a dependency of the one above, because that one
-  // now asks the element and never reads this state - and an effect carrying a
-  // dependency it does not use is a dependency nobody can check.
+  // reads the ref and never this state - and an effect carrying a dependency it
+  // does not use is a dependency nobody can check.
   useEffect(() => {
     if (atBottom && newest) onSeen?.(newest);
   }, [atBottom, newest, onSeen]);
