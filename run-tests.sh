@@ -10895,7 +10895,18 @@ a_deleted_artifact_is_gone_and_stays_gone() {
 	api POST "$TOKEN_A" "/api/artifact/$id/delete" || return 1
 	want_eq "delete status" "$API_STATUS" 200 || return 1
 
-	want_status 404 GET "$TOKEN_A" "/api/artifact/$id" || return 1
+	# 410, not 404, TO SOMEBODY WHO COULD HAVE READ IT. 404 says "never existed",
+	# which is the one claim a tombstone exists to deny - and tonight twenty
+	# minutes went into ids answering 404 that were neither absent nor deleted.
+	want_status 410 GET "$TOKEN_A" "/api/artifact/$id" || return 1
+	want_eq "and it says the row was withdrawn" \
+		"$(printf '%s' "$API_BODY" | jq -r '.withdrawn.id')" "$id" || return 1
+	# AND THE LEAK CHECK, which is the whole reason this is not three answers:
+	# a principal who could NOT have read the row must get 404, identical to one
+	# that never existed. Otherwise a guessable id becomes an existence oracle.
+	want_status 404 GET "$TOKEN_B" "/api/artifact/$id" || return 1
+	# Everything else stays absent: withdrawn is a sentence about a read, not a
+	# door back into the artifact.
 	want_status 404 GET "$TOKEN_A" "/api/artifact/$id/history" || return 1
 	want_status 404 POST "$TOKEN_A" "/api/artifact/$id/status" '{"status":"triaged"}' || return 1
 

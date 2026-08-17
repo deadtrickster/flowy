@@ -379,6 +379,22 @@ func (s *server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 	p := principalOf(r)
 	art, err := s.db.ReadArtifact(r.Context(), p, r.PathValue("id"), scopeAll(r, p))
 	if errors.Is(err, store.ErrNotFound) {
+		// Absent, or withdrawn? 404 answers three different truths - never
+		// existed, taken back, and out of your reach - and twenty minutes went
+		// into that ambiguity tonight over rows that turned out to be personal.
+		//
+		// So a row this reader COULD have read, and which was withdrawn, gets
+		// 410 and says who took it back and when. Everything else stays 404,
+		// INCLUDING a row that exists and is not for this reader: saying "it
+		// exists but not for you" is an existence oracle, and ids are guessable.
+		// ReadWithdrawn runs the same permission filter for that reason.
+		if wd, wErr := s.db.ReadWithdrawn(r.Context(), p, r.PathValue("id"), scopeAll(r, p)); wErr == nil {
+			writeJSON(w, http.StatusGone, map[string]any{
+				"error":     "artifact withdrawn",
+				"withdrawn": wd,
+			})
+			return
+		}
 		writeJSON(w, http.StatusNotFound, errorBody("no such artifact"))
 		return
 	}
