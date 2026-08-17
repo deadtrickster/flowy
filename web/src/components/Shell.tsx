@@ -10,17 +10,13 @@ import {
   ListTree,
   Lock,
 } from "lucide-react";
-import { type ReactNode, useEffect, useState } from "react";
+import type { ReactNode } from "react";
 import { NavLink } from "react-router-dom";
 
 import { FreshBanner } from "@/components/FreshBanner";
 import { TokenBar } from "@/components/TokenBar";
-import { api } from "@/lib/api";
-import { useSession } from "@/lib/session";
+import { ROOMS, useUnread } from "@/lib/unread";
 import { cn } from "@/lib/utils";
-
-/** rooms the sidebar offers by name. Any other room is reachable by URL. */
-const ROOMS = ["general", "handoffs", "incidents"];
 
 function navClass({ isActive }: { isActive: boolean }) {
   return cn(
@@ -30,47 +26,19 @@ function navClass({ isActive }: { isActive: boolean }) {
 }
 
 /**
- * Unread is what the inbox holds per room: messages this token may read and did
- * not write, said since the node's reader mark moved for it. It is the same
- * permission filter every read carries, and it is not a per-tab latch - opening
- * a room does not clear the badge, the inbox does, because the waiter's mark is
- * the one position the log keeps for this principal.
+ * UnreadDot is the badge itself: there when something waits, absent when not.
+ *
+ * Absent rather than a zero, which is what makes the element the assertion: a
+ * badge that clears is a badge that is gone from the document. The room is on
+ * it so a check can find the one it means - see scripts/unread-check.mjs.
  */
-function useUnreadByRoom(): Record<string, number> {
-  const { token } = useSession();
-  const [counts, setCounts] = useState<Record<string, number>>({});
-  useEffect(() => {
-    if (!token) {
-      setCounts({});
-      return;
-    }
-    let stopped = false;
-    const load = () => {
-      api
-        .inbox()
-        .then((page) => {
-          if (stopped) return;
-          const next: Record<string, number> = {};
-          for (const e of page.events) next[e.room] = (next[e.room] ?? 0) + 1;
-          setCounts(next);
-        })
-        .catch(() => {});
-    };
-    load();
-    const every = setInterval(load, 20_000);
-    return () => {
-      stopped = true;
-      clearInterval(every);
-    };
-  }, [token]);
-  return counts;
-}
-
-/** UnreadDot is the badge itself: there when something waits, absent when not. */
-function UnreadDot({ n }: { n: number }) {
+function UnreadDot({ room, n }: { room: string; n: number }) {
   if (n <= 0) return null;
   return (
-    <span className="ml-auto inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 font-mono text-[10px] text-primary-foreground">
+    <span
+      data-unread={room}
+      className="ml-auto inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 font-mono text-[10px] text-primary-foreground"
+    >
       {n > 99 ? "99+" : n}
     </span>
   );
@@ -78,7 +46,10 @@ function UnreadDot({ n }: { n: number }) {
 
 /** Shell is the frame every route renders inside: navigation, and the token. */
 export function Shell({ children }: { children: ReactNode }) {
-  const unread = useUnreadByRoom();
+  // What the node's reader marks say is unread, per room. The counting and the
+  // clearing both live in lib/unread - the sidebar draws it and does not own
+  // it, because the room view is what knows when something has been read.
+  const { counts } = useUnread();
   return (
     <div className="flex h-full">
       <aside className="flex w-60 shrink-0 flex-col gap-4 border-border border-r bg-card/40 p-3">
@@ -144,7 +115,7 @@ export function Shell({ children }: { children: ReactNode }) {
             <NavLink key={room} to={`/chat/${room}`} className={navClass}>
               <Hash className="h-4 w-4" />
               {room}
-              <UnreadDot n={unread[room] ?? 0} />
+              <UnreadDot room={room} n={counts[room] ?? 0} />
             </NavLink>
           ))}
         </div>

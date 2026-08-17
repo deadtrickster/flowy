@@ -141,6 +141,22 @@ export interface ChatPage {
 }
 
 /**
+ * InboxReader is one reader's place in the log, as the node holds it: the
+ * label, and the last reading it has acknowledged. `acked_delivery` and
+ * `acked_quiet` say why the mark last moved and the console does not draw
+ * them, but they are on the row and dropping them here would make this type
+ * disagree with the endpoint.
+ */
+export interface InboxReader {
+  reader: string;
+  cursor: number;
+  acked_delivery: number;
+  acked_quiet: number;
+  created: string;
+  updated: string;
+}
+
+/**
  * Presence is the two rosters a room view wants. Members is who has spoken;
  * listeners is who holds a reader place. The node sees polling, not processes,
  * so a listener line says when a poll last started and whether one is in
@@ -807,6 +823,60 @@ export const api = {
     }),
 
   inbox: (since = 0) => request<ChatPage>(`/api/inbox?since=${since}`),
+
+  /**
+   * Where this token's readers have got to. The console holds one per room and
+   * reads them back on every refresh rather than remembering them in the tab:
+   * the mark is the node's, and another tab - or the same person's other
+   * browser - moves it.
+   */
+  inboxReaders: () => request<{ readers: InboxReader[] }>("/api/inbox/readers"),
+
+  /**
+   * How much one reader has not read in one room. THE NODE COUNTS IT, and that
+   * is the point of the call: counting here would mean handing the reader's
+   * mark back as a cursor, and a mark is a `seq_hlc` - 57 bits, held here as a
+   * double, and therefore up to eight readings out. Measured: a console that
+   * asked with the mark it had just been handed was answered with five
+   * messages it had already read.
+   */
+  unreadIn: (as: string, room: string) =>
+    request<{ reader: string; room: string; unread: number }>(
+      `/api/inbox/unread?as=${encodeURIComponent(as)}&room=${encodeURIComponent(room)}`,
+    ),
+
+  /**
+   * Declare a reader, at the head of what this token can already read. It is
+   * idempotent - an existing label comes back where it stands - so the console
+   * can call it for a room it has not read before without checking first.
+   */
+  declareInboxReader: (as: string) =>
+    request<InboxReader>("/api/inbox/reader", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ as }),
+    }),
+
+  /**
+   * Move a reader's mark to the message it has read through. The node only
+   * ever moves a mark forward, so two tabs acking different positions cannot
+   * fight.
+   *
+   * THE MESSAGE AND NOT ITS READING, and that is not a preference. `seq_hlc`
+   * is a 57-bit number and every number here is a double, so a reading this
+   * console was handed comes back off `JSON.parse` up to eight readings away
+   * from the one the node holds - measured, as a mark that landed two readings
+   * short of the message the reader had just read and left it unread for good.
+   * The id is a string and survives the trip; the node resolves it, through the
+   * same read filter as any other id that arrives from outside.
+   */
+  ackInbox: (as: string, event: string) =>
+    request<InboxReader>("/api/inbox/ack", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ as, event, delivered: true }),
+    }),
+
   reports: () => request<{ artifacts: Artifact[] }>("/api/artifacts?type=report"),
   attachment: (id: string) =>
     request<{ item: Artifact; content: string | null; bytes?: string }>(

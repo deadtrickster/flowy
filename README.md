@@ -1058,8 +1058,10 @@ and deletes are tombstones.
 | `GET /api/inbox?since=&room=` | chat you may see and did not write, across rooms - direct messages included, because that is what an inbox is |
 | `GET /api/inbox/wait?as=&window=&room=&addressed=&kind=` | long poll the inbox for one named waiter, from the place the node holds for it. Returns `{reader, events, skipped, since, cursor}` and moves nothing. `kind` is `tracked` or `forked` - what this listener can do when it hears something - and anything else, including saying nothing, is recorded as `unknown`. `404` names the waiters that do exist |
 | `GET /api/presence` | the two rosters a room view wants: `members`, who has spoken in what you may read, and `listeners`, who holds a reader in your project with `attached`, `last_poll_at` and `waiter_kind`. The node sees polling, not processes, and the fields say only that |
-| `POST /api/inbox/ack` | `{as, cursor, delivered}` - the waiter has finished with everything up to `cursor`. Forwards only |
+| `POST /api/inbox/ack` | `{as, cursor, delivered}` - the waiter has finished with everything up to `cursor`. Forwards only. `{as, event, delivered}` says the same thing by naming the last message read, for a client that cannot hold a `seq_hlc`: it is a 57-bit reading and a browser's numbers are doubles, so a cursor handed back by one is up to eight readings out. The id is checked through the read filter like any other |
 | `POST /api/inbox/reader` | `{as}` - declare a waiter, at the head of what this principal can already read |
+| `GET /api/inbox/readers` | `{"readers":[...]}` - where every reader this principal holds has got to. A waiter is told its position by the poll it is already making; a reader that is a browser has no poll to be told by, and the console reads this rather than keeping a copy of the mark in the tab |
+| `GET /api/inbox/unread?as=&room=` | `{reader, room, cursor, unread}` - how much that reader has not read, counted by the node. Same filter as the inbox, so what you wrote yourself is not in it. The node counts because the mark is a 57-bit reading: a console that handed it back as a cursor was answered with five messages it had already read |
 | `POST /api/assign` | hand work over. Body: `artifact`, `to_user`, `note?`. Returns the task, plus the `grant` and the `opening` message it wrote |
 | `GET /api/inbox/tasks?state=` | `{"tasks":[...]}` assigned to you or your agent, newest first, with the artifact's title and type joined in |
 | `GET /api/task/{id}` | the task, to a party to it. `404` to anybody else, including the operator |
@@ -1460,6 +1462,61 @@ It is built on the long poll that was already there: `GET /api/inbox/wait`
 blocks in the same loop `GET /api/chat/{room}/wait` blocks in, with the same
 tick, the same finite window and the same meaning for a cancelled request. A
 second polling path would be two ideas of how long "blocks" is.
+
+### The console is a reader too, because a person is not a process
+
+The sidebar's unread badge is the inbox counted per room, and it was **stuck**:
+it never cleared for the operator, whatever they read. Everything above worked
+as designed and the design had a hole in it. The mark that decides what is
+unread moves when a **waiter acks**, and `inbox_readers` held a row for every
+agent on the node and **no row at all for the person in the browser**. A human
+runs no waiter, so nothing ever moved their mark, so the count only grew.
+
+So the console declares readers of its own - `console:<room>`, one per room in
+the sidebar - and acknowledges what it has actually reached. A person gets the
+same mechanism an agent gets rather than a second one beside it that can
+disagree with it. Four things about it, and each is the alternative that was
+rejected:
+
+- **A label of its own, never the principal's own waiter.** Acking that one
+  would mark messages consumed for this principal *everywhere* - it is the
+  position `flowy inbox` resumes from - so reading a room in a browser would
+  eat the digest an agent under the same identity is waiting to be handed.
+- **The node holds it, not `localStorage`.** A last-seen in the tab drifts from
+  the mark the rest of the system believes, and it is per device: the same room
+  would be read on the laptop and bold on the desktop. That is the "two readers
+  of one name see two lists" failure this project already fixed for todos.
+- **What was seen, not "the room was opened".** The transcript already knows
+  whether the reader is at the bottom - that is what stops an arriving message
+  scrolling somebody out of the history - and the acknowledgement rides on
+  exactly that. Somebody scrolled back into the history is reading, not caught
+  up, and the mark does not step over what they have not got to.
+- **One reader per room.** `seq_hlc` is one sequence over the whole log, so a
+  single console mark would be dragged to the newest message of whichever room
+  was read last, clearing the badge of every room whose unread messages happen
+  to sit underneath it - the same trap `--room` has in the waiter above.
+- **No reading ever reaches the browser's arithmetic.** A waiter hands back the
+  cursor it was given and that is exact, because the number never leaves Go. A
+  browser cannot: `seq_hlc` is a 57-bit reading and every number in a browser is
+  a double, so a reading survives the round trip only to within eight of itself.
+  Both halves of that were measured while building this. The ack, sent as the
+  reading it had just been given, landed two readings short of the message the
+  person had just read and left it unread for good - the stuck badge again, two
+  orders of magnitude smaller. The count, asked for with that same mark, came
+  back as five unread in a room where nothing had been said. So the console
+  names messages by id (`POST /api/inbox/ack {event}`) and asks the node for a
+  number (`GET /api/inbox/unread`); nothing in the console does arithmetic on
+  the log. The same trap is under every other cursor a browser holds, including
+  the room poll's - that one costs a repeated page rather than a wrong number,
+  and it is still there.
+
+A principal with no reader row starts **at the head**, exactly as `--new`
+starts a waiter: everything said before somebody first opened the console is
+history rather than unread, and a first load that reported the whole log at
+them would be a number nobody can act on. Two tabs cannot fight, because the
+node only ever moves a mark forward. And your own messages never raise your own
+count, because the badge is the inbox and the inbox has always been what you
+did **not** write.
 
 ## Assignment, delegation and the lifecycle
 

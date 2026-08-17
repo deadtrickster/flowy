@@ -13,6 +13,7 @@ import { Badge } from "@/components/ui/badge";
 import { type Artifact, type FlowyEvent, type Presence, api } from "@/lib/api";
 import { useCitation } from "@/lib/cite";
 import { useSession } from "@/lib/session";
+import { useUnread } from "@/lib/unread";
 import { shortId } from "@/lib/utils";
 
 /** merge folds a page of new events into the ones on screen, by id, in log order. */
@@ -38,6 +39,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 export function ChatRoom() {
   const { room = "general" } = useParams();
   const { token, whoami } = useSession();
+  const { markRead } = useUnread();
   const [events, setEvents] = useState<FlowyEvent[]>([]);
   // What a reply attaches to and what it cites: the selected message, whole, or
   // the span of it somebody selected with the mouse. Selecting a message has
@@ -242,6 +244,14 @@ export function ChatRoom() {
     [room, loadTodos],
   );
 
+  /**
+   * What this room has been read to. The transcript decides when - it is the
+   * one thing that knows whether the reader is at the bottom - and the mark it
+   * moves is the node's, so the badge clears on every device rather than in
+   * the tab that happened to be open. See lib/unread.
+   */
+  const seen = useCallback((through: string) => markRead(room, through), [room, markRead]);
+
   const thread = selected?.thread ?? events.at(-1)?.thread;
   const threadEvents = thread ? events.filter((event) => event.thread === thread) : [];
 
@@ -278,6 +288,7 @@ export function ChatRoom() {
           onSelect={select}
           onCite={citeSpan}
           me={{ user: whoami?.user, agent: whoami?.agent }}
+          onSeen={seen}
         />
 
         <MessageBox citation={citation} clearReply={clear} disabled={!token} onSend={send} />

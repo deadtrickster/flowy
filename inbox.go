@@ -69,9 +69,20 @@ type inboxWaitResponse struct {
 // and written out, or because a poll expired having read nothing but this
 // principal's own. Both move the same mark, so without it a lost
 // acknowledgement and a quiet night are the same row.
+//
+// Event is the same instruction said the other way: the id of the last message
+// the caller has read. A waiter hands back the cursor it was given and that is
+// exact, because the number never leaves Go. A CONSOLE CANNOT. seq_hlc is a
+// 57-bit reading and a browser holds every number as a double, so the cursor a
+// browser hands back is up to eight readings away from the one it was given -
+// measured: a mark handed back as it was read landed two readings short of the
+// message the person had just read, which left that message unread in their
+// inbox for good. An id is a string and survives the trip, so a client that
+// cannot hold a reading names the message instead of measuring it.
 type inboxReaderRequest struct {
 	As        string `json:"as"`
 	Cursor    int64  `json:"cursor"`
+	Event     string `json:"event"`
 	Delivered bool   `json:"delivered"`
 }
 
@@ -280,6 +291,24 @@ func (s *server) handleInboxAck(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorBody("as is required"))
 		return
 	}
+	// The message the caller has read stands in for the reading it is at - see
+	// inboxReaderRequest. Checked through the read filter like every other id
+	// that arrives here from outside: an id is a guess anybody can make, and a
+	// mark moved to a message this principal cannot read would consume an inbox
+	// on the strength of a number they were never shown.
+	if req.Event != "" {
+		read, err := s.db.ReadEvent(r.Context(), p, req.Event)
+		if errors.Is(err, store.ErrNotFound) {
+			writeJSON(w, http.StatusNotFound, errorBody("message "+req.Event+
+				" is not one you can read, so it is not one you can have read"))
+			return
+		}
+		if err != nil {
+			serverError(w, r, err)
+			return
+		}
+		req.Cursor = read.SeqHLC
+	}
 	if req.Cursor < 0 {
 		writeJSON(w, http.StatusBadRequest, errorBody(errNotACursor.Error()))
 		return
@@ -325,6 +354,78 @@ func (s *server) handleInboxReader(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, reader)
+}
+
+// handleInboxReaders is where every waiter this principal holds has got to.
+//
+// It is the read beside the two writes, and it exists because a reader that is
+// not a process still has to find its place. The console keeps a reader label
+// per room and refreshes its badges on a timer, so on every tick it has to ask
+// where those marks stand - a second tab, or the same person's other browser,
+// moves them. A copy kept in the tab would be the per-client cursor the top of
+// this file exists to argue against, one process further out.
+//
+// GET /api/inbox/readers
+func (s *server) handleInboxReaders(w http.ResponseWriter, r *http.Request) {
+	held, err := s.db.InboxReaders(r.Context(), principalOf(r))
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"readers": held})
+}
+
+// handleInboxUnread is how much one reader has not read, in one room.
+//
+// THE NODE COUNTS, and that is the whole reason this exists rather than the
+// console asking for the page and measuring it. Counting means handing the
+// reader's mark back as a cursor, and a mark is a `seq_hlc`: a 57-bit reading,
+// which a browser holds as a double and rounds. Measured, on the way to this:
+// a console handed back the mark it had just been given, eight readings low,
+// and was answered with five messages it had already read - a badge that
+// counted five unread in a room where nothing had been said. The reading never
+// has to leave the node, so it does not.
+//
+// It is the inbox's count and not the room's: what this principal may read and
+// did NOT write, which is why a person's own messages cannot raise their own
+// badge. Same filter, same NotActors, same everything as GET /api/inbox.
+//
+// GET /api/inbox/unread?as=NAME&room=R
+func (s *server) handleInboxUnread(w http.ResponseWriter, r *http.Request) {
+	p := principalOf(r)
+	q := r.URL.Query()
+	name := strings.TrimSpace(q.Get("as"))
+	if name == "" {
+		writeJSON(w, http.StatusBadRequest,
+			errorBody("as is required: a count is against a reader, and the reader is what holds its place"))
+		return
+	}
+	reader, err := s.db.InboxReaderAt(r.Context(), p, name)
+	if errors.Is(err, store.ErrNoReader) {
+		s.noSuchReader(w, r, name)
+		return
+	}
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	room := q.Get("room")
+	unread, err := s.db.CountEvents(r.Context(), p, store.EventQuery{
+		Type:      chatEventType,
+		Room:      room,
+		Since:     reader.Cursor,
+		NotActors: []string{p.UserID, p.AgentID},
+	})
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"reader": reader.Reader,
+		"room":   room,
+		"cursor": reader.Cursor,
+		"unread": unread,
+	})
 }
 
 // noSuchReader is the refusal, and it carries the labels that do exist. A

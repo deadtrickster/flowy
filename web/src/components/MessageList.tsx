@@ -24,6 +24,17 @@ interface Props {
   onCite?: (event: FlowyEvent, start: number, end: number) => void;
   /** me is the principal reading, so a message for them can say so. */
   me?: { user?: string; agent?: string };
+  /**
+   * onSeen is the message this view has actually reached: the id of the newest
+   * one on screen, said only while the transcript is at the bottom. It is the
+   * same `atBottom` the scrolling rule below is built on, and it is
+   * deliberately not "the room was opened" - somebody who scrolled back is
+   * reading, not caught up, and the unread mark must not step over what they
+   * have not got to yet. The id and not the reading beside it, because a
+   * reading does not survive a browser's arithmetic - see lib/unread, which is
+   * what does something with this.
+   */
+  onSeen?: (through: string) => void;
 }
 
 /**
@@ -44,7 +55,7 @@ interface Props {
  * over a mouse gesture; biome.json turns off useSemanticElements for this file
  * alone, which is the rule that would otherwise ask for the button back.
  */
-export function MessageList({ events, selected, onSelect, onCite, me }: Props) {
+export function MessageList({ events, selected, onSelect, onCite, me, onSeen }: Props) {
   // Whether an id is the person reading or the agent working for them, which
   // is the pair the node treats as one reader everywhere else.
   const isMe = (id?: string) => !!id && (id === me?.user || id === me?.agent);
@@ -88,6 +99,10 @@ export function MessageList({ events, selected, onSelect, onCite, me }: Props) {
     setPending(0);
   };
 
+  // The newest message on screen, which is the one a reader at the bottom has
+  // got to.
+  const newest = events.at(-1)?.id;
+
   const seen = useRef(count);
   useEffect(() => {
     if (count === 0) return;
@@ -95,10 +110,15 @@ export function MessageList({ events, selected, onSelect, onCite, me }: Props) {
     seen.current = count;
     if (atBottom) {
       bottom.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+      // Read, as opposed to delivered. This fires on arrival while the reader
+      // is at the bottom AND when a reader scrolls back down to it - atBottom
+      // is a dependency, so reaching the end is a run of this effect - which
+      // is the whole of what "what was seen" means here.
+      if (newest) onSeen?.(newest);
     } else if (added > 0) {
       setPending((n) => n + added);
     }
-  }, [count, atBottom]);
+  }, [count, atBottom, newest, onSeen]);
 
   // Enter and space are what a button answers to, and this row is not one any
   // more. Keeping them is not politeness: selecting a message is how a reply

@@ -1,6 +1,7 @@
 import { Route, Routes } from "react-router-dom";
 
 import { Shell } from "@/components/Shell";
+import { UnreadProvider } from "@/lib/unread";
 import { Activity } from "@/routes/Activity";
 import { ArtifactView } from "@/routes/ArtifactView";
 import { ChatRoom } from "@/routes/ChatRoom";
@@ -23,33 +24,38 @@ import { Worklog } from "@/routes/Worklog";
  */
 export default function App() {
   return (
-    <Shell>
-      <Routes>
-        <Route path="/" element={<Home />} />
-        <Route path="/chat/:room" element={<ChatRoom />} />
-        {/*
+    // Outside the shell because both sides of it need the same numbers: the
+    // sidebar draws the badges and the room clears them, and a count owned by
+    // either one alone is the per-tab latch this console does not keep.
+    <UnreadProvider>
+      <Shell>
+        <Routes>
+          <Route path="/" element={<Home />} />
+          <Route path="/chat/:room" element={<ChatRoom />} />
+          {/*
           Not /chat/dm. A direct message is not in a room, so there is no room
           name to put in the path - and a path that looked like a room's would
           be the first place somebody assumed a room could be private.
         */}
-        <Route path="/direct" element={<Direct />} />
-        <Route path="/inbox" element={<Inbox />} />
-        {/*
+          <Route path="/direct" element={<Direct />} />
+          <Route path="/inbox" element={<Inbox />} />
+          {/*
           /todos was a per-project page and was deleted for being a second list
           that disagreed with the room's panel. This is not that page: it is the
           queue ACROSS projects, and it says which reader's union it is. A
           project-scoped list here would be the old mistake with a new route.
         */}
-        <Route path="/todos" element={<Todos />} />
-        <Route path="/reports" element={<Reports />} />
-        <Route path="/worklog" element={<Worklog />} />
-        <Route path="/task/:id" element={<TaskView />} />
-        <Route path="/p/:project/:type/:id" element={<ArtifactView />} />
-        <Route path="/metrics" element={<Metrics />} />
-        <Route path="/traces" element={<Traces />} />
-        <Route path="/activity" element={<Activity />} />
-        <Route path="*" element={<NotFound />} />
-      </Routes>
-    </Shell>
+          <Route path="/todos" element={<Todos />} />
+          <Route path="/reports" element={<Reports />} />
+          <Route path="/worklog" element={<Worklog />} />
+          <Route path="/task/:id" element={<TaskView />} />
+          <Route path="/p/:project/:type/:id" element={<ArtifactView />} />
+          <Route path="/metrics" element={<Metrics />} />
+          <Route path="/traces" element={<Traces />} />
+          <Route path="/activity" element={<Activity />} />
+          <Route path="*" element={<NotFound />} />
+        </Routes>
+      </Shell>
+    </UnreadProvider>
   );
 }

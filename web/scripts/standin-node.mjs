@@ -112,7 +112,12 @@ createServer(async (req, res) => {
   // throws on a missing field unmounts, and an unmounted page makes no requests
   // at all - which reads as a bounded loop and is the reason the check below
   // demands a witness that the room actually rendered.
-  if (path.startsWith("/api/")) return json(res, { artifacts: [], events: [], tasks: [] });
+  //
+  // `readers` and `unread` are the unread badges' two: /api/inbox/readers is a
+  // list to iterate and /api/inbox/unread is a number to draw.
+  if (path.startsWith("/api/")) {
+    return json(res, { artifacts: [], events: [], tasks: [], readers: [], cursor: 0, unread: 0 });
+  }
 
   const rel = normalize(path).replace(/^(\.\.[/\\])+/, "");
   let file = join(DIST, rel);

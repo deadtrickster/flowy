@@ -275,6 +275,8 @@ var apiRoutes = []string{
 	"GET /api/inbox/wait",
 	"POST /api/inbox/ack",
 	"POST /api/inbox/reader",
+	"GET /api/inbox/readers",
+	"GET /api/inbox/unread",
 	"DELETE /api/inbox/reader/{name}",
 	"GET /api/presence",
 	"POST /api/assign",
@@ -404,6 +406,15 @@ func (s *server) routes() http.Handler {
 	api.HandleFunc("GET /api/inbox/wait", s.handleInboxWait)
 	api.HandleFunc("POST /api/inbox/ack", s.handleInboxAck)
 	api.HandleFunc("POST /api/inbox/reader", s.handleInboxReader)
+	// Where this principal's own marks stand. A waiter never needed it - it is
+	// handed its position by the poll it is already making - but a reader that
+	// is a browser has no poll to be told by, and the console reads this on
+	// every refresh rather than keeping a copy of the mark in the tab.
+	api.HandleFunc("GET /api/inbox/readers", s.handleInboxReaders)
+	// And how much one of them has not read. The node counts because the mark
+	// is a 57-bit reading and the client asking is a browser, whose numbers are
+	// doubles - see handleInboxUnread.
+	api.HandleFunc("GET /api/inbox/unread", s.handleInboxUnread)
 	api.HandleFunc("DELETE /api/inbox/reader/{name}", s.handleInboxReaderDelete)
 	api.HandleFunc("GET /api/presence", s.handlePresence)
 	// Assignment and the handoff it opens. /api/inbox/tasks is a longer pattern

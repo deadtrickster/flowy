@@ -4318,6 +4318,70 @@ browser_does_not_scroll_a_reader_away() {
 	node scripts/scroll-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" "$TOKEN_A_AGENT"
 }
 
+# The unread badge clears, and the mark it is drawn from moves with it.
+#
+# Reported as "unread counter is stuck": the sidebar badge never cleared for the
+# operator. The count is the inbox - what this principal may read and did not
+# write, since the reader mark the node keeps for it - and that mark is moved by
+# a WAITER acking. inbox_readers held a row for every agent on the node and NO
+# ROW AT ALL for the person in the browser, so nothing ever moved theirs. The
+# rule was not wrong; it had no answer for a reader that is not a process.
+#
+# So the console declares a reader of its own, per room, and acks what it has
+# actually reached. The check drives all of that in a browser and asserts BOTH
+# HALVES: the badge on the element, and the node's own mark over the API. A
+# badge that clears while the mark stays put is the same bug in a new costume -
+# the next reload, and the next device, count the same messages again.
+#
+# A's AGENT says the messages, for the reason the scroll check learned: it has
+# to be somebody else, because the inbox excludes what you wrote yourself, and
+# it has to be in A's project, because rooms are per project.
+browser_clears_the_unread_badge() {
+	recall
+	cd "$ROOT/web" || return 1
+	node scripts/unread-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" "$TOKEN_A_AGENT"
+}
+
+# The other half of it, in the table rather than on the screen, and afterwards:
+# the row the CONSOLE wrote is a reader row like any waiter's, it is past what
+# the console read, and an older acknowledgement does not drag it back.
+#
+# It reads the row the check above left behind rather than declaring one of its
+# own, which is what makes it a statement about the console: under the code this
+# replaces there is no such row for anybody who reads in a browser.
+the_consoles_mark_is_a_reader_row_that_only_moves_forward() {
+	recall
+	local reader="console:general" mark read_to back
+	mark="$(scalar "SELECT read_cursor FROM inbox_readers
+	                 WHERE reader = '$reader'
+	                   AND split_part(principal, chr(31), 1) = '$USER_A'")" || return 1
+	if [ -z "$mark" ]; then
+		printf 'inbox_readers holds no row called %s for user A.\n' "$reader" >&2
+		printf 'A person in a browser runs no waiter, so nothing moves their mark and\n' >&2
+		printf 'the inbox they are counting never shrinks. That is the stuck counter.\n' >&2
+		return 1
+	fi
+	read_to="$(scalar "SELECT max(seq_hlc) FROM events
+	                    WHERE type = 'chat' AND room = 'general'
+	                      AND body LIKE 'unread-check arrival%'")" || return 1
+	if [ -z "$read_to" ] || [ "$mark" -lt "$read_to" ]; then
+		printf 'the console read the room to %s and its mark is at %s\n' "${read_to:-<nothing>}" "$mark" >&2
+		return 1
+	fi
+	# An older position, which is what a second tab or a slow one hands back.
+	# Refused quietly and forwards-only, or two tabs take turns reopening the
+	# messages the other has already read.
+	api POST "$TOKEN_A" /api/inbox/ack \
+		"{\"as\": \"$reader\", \"cursor\": $((mark - 5)), \"delivered\": true}" || return 1
+	want_eq "the status of an ack of an older position" "$API_STATUS" 200 || return 1
+	back="$(scalar "SELECT read_cursor FROM inbox_readers
+	                 WHERE reader = '$reader'
+	                   AND split_part(principal, chr(31), 1) = '$USER_A'")" || return 1
+	want_eq "the mark after an older ack" "$back" "$mark" || return 1
+	printf '%s is at %s in inbox_readers, past the %s it read, and an older ack moved nothing\n' \
+		"$reader" "$mark" "$read_to"
+}
+
 # And the @names inside a body, on the screen, as elements.
 #
 # Its own room, with its own three messages, because what it asserts is about
@@ -8288,6 +8352,10 @@ check "a person can select and copy a message, in a browser, by dragging" \
 	browser_lets_a_person_copy_a_message
 check "a message arriving does not scroll a reader out of the history" \
 	browser_does_not_scroll_a_reader_away
+check "the unread badge counts, clears when the room is read, and ignores your own" \
+	browser_clears_the_unread_badge
+check "the console's own reader row is past what it read, and only moves forward" \
+	the_consoles_mark_is_a_reader_row_that_only_moves_forward
 
 # ------------------------------------------------------------------- phase 4
 #

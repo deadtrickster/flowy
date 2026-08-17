@@ -263,6 +263,30 @@ func (d *DB) ListEvents(ctx context.Context, p *Principal, q EventQuery) ([]*Eve
 		func(e *Event) (int64, string) { return e.SeqHLC, e.ID })
 }
 
+// CountEvents is how many events matching q this principal may read.
+//
+// The same filter and the same narrowing as ListEvents, without the page. A
+// badge wants a number and a page is not one: above the limit it would report
+// the page size, which is a lie that gets more convincing the more there is to
+// read - and the count it is wrong about is the count of what somebody has not
+// seen yet.
+func (d *DB) CountEvents(ctx context.Context, p *Principal, q EventQuery) (int, error) {
+	ctx, span := otel.Start(ctx, otel.KindQuery, "events.count")
+	defer span.End()
+	a := &args{}
+	filter := EventFilterSQL(p, "e", a, q.ScopeAll)
+	where := q.narrow(a, "e")
+	if q.Since > 0 {
+		where += " AND " + above("e.seq_hlc", "e.id", q.Since, nil, a)
+	}
+	var n int
+	if err := d.sql.QueryRowContext(ctx,
+		`SELECT count(*) FROM events e WHERE `+filter+where, a.vals...).Scan(&n); err != nil {
+		return 0, fmt.Errorf("store: count events: %w", err)
+	}
+	return n, nil
+}
+
 // RecentEvents is the newest events p may read, newest first.
 //
 // It is the read a fresh seat does: what happened lately, not everything that
