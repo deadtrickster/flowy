@@ -271,6 +271,21 @@ func (s *server) handleInboxWait(w http.ResponseWriter, r *http.Request) {
 	// counted the handover as delivery, and nothing anywhere would record it.
 	// The client acknowledges what it has actually written - see POST
 	// /api/inbox/ack - so a crash costs a duplicate rather than a silence.
+	// THE QUOTE COMES WITH THE REPLY. The room read resolves citations - see
+	// chat.go, which calls this twice - and the waiter never asked, so an agent
+	// woken by "well you can literally dedup by name" was handed four words and
+	// no sign of what they answer. Every agent on this fabric reads through
+	// here; the console was the only surface that could see what was being
+	// pointed at, and it is not the one doing the work.
+	//
+	// The same call, so the same filter: a reader who cannot see the source is
+	// told that it exists and handed none of it, rather than being handed words
+	// from a message they were never allowed to read.
+	if err := s.db.Citations(r.Context(), principalOf(r), deliver, false); err != nil {
+		serverError(w, r, err)
+		return
+	}
+
 	writeJSON(w, http.StatusOK, inboxWaitResponse{
 		Reader: name, Events: deliver, Skipped: skipped, Since: reader.Cursor, Cursor: at,
 	})
@@ -799,7 +814,7 @@ func writeInbox(page inboxWaitResponse) error {
 	out := bufio.NewWriter(os.Stdout)
 	enc := json.NewEncoder(out)
 	for _, e := range page.Events {
-		if err := enc.Encode(map[string]any{
+		line := map[string]any{
 			"room":      e.Room,
 			"actor":     e.Actor,
 			"addressee": e.Addressee,
@@ -808,7 +823,40 @@ func writeInbox(page inboxWaitResponse) error {
 			"id":        e.ID,
 			"created":   e.Created,
 			"cursor":    page.Cursor,
-		}); err != nil {
+		}
+		// THE QUOTE, INLINE, IN THE FIELD THE READER ALREADY READS.
+		//
+		// A sidecar field is one more thing every consumer has to remember to
+		// look at, and the evidence that they will not is this whole feature:
+		// the room read has resolved citations all along, three of us answered
+		// "yes I see the quote" from the design, and all three were wrong about
+		// our own deliveries.
+		//
+		// THE SIGNED BODY IS NOT TOUCHED. The tag is added to the DELIVERY,
+		// which is a rendering; `body_signed` carries the exact bytes that were
+		// signed, so anything verifying a signature or quoting somebody
+		// verbatim has them. Putting the tag in the stored body would break the
+		// signature, and putting it there without saying so would break it
+		// silently.
+		if c := e.Citation; c != nil {
+			line["body_signed"] = e.Body
+			switch {
+			case c.Text != "":
+				// The speaker's name rides with the quote: "answering X" and
+				// "answering the operator" are different facts, and the id
+				// alone makes every reader look the second one up.
+				line["body"] = fmt.Sprintf("<citation %s from=%q>%s</citation>\n%s",
+					c.Message, c.Name, c.Text, e.Body)
+			default:
+				// A REFUSAL THAT NOBODY SEES IS INDISTINGUISHABLE FROM SUCCESS,
+				// and here the refusal is the store's: this reader may not read
+				// what is being answered. Saying nothing would look exactly
+				// like a reply that cites nothing, so the tag stays and the
+				// words do not.
+				line["body"] = fmt.Sprintf("<citation %s unreadable/>\n%s", c.Message, e.Body)
+			}
+		}
+		if err := enc.Encode(line); err != nil {
 			return err
 		}
 	}
