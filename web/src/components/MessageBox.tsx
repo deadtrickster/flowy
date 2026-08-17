@@ -23,6 +23,18 @@ interface Props {
   clearReply: () => void;
   disabled: boolean;
   onSend: (body: string, to: string) => Promise<void>;
+  /**
+   * quote is words from OUTSIDE the transcript to drop into the draft as a
+   * blockquote - a passage of the document this box sits beside. It is not a
+   * citation and must not be one: a citation is a pointer into a message the
+   * node can slice and check, and a document is not a message, so the words
+   * travel as words in the body where the reader can see they are a quotation.
+   *
+   * It is an object rather than a string because quoting the same sentence
+   * twice is two actions, and a string would be the same value both times - the
+   * identity of the object is what says somebody asked again.
+   */
+  quote?: { text: string } | null;
 }
 
 /**
@@ -33,7 +45,7 @@ interface Props {
  * Enter sends, shift-enter is a newline: the thing being written is usually one
  * line to an agent that is waiting.
  */
-export function MessageBox({ citation, clearReply, disabled, onSend }: Props) {
+export function MessageBox({ citation, clearReply, disabled, onSend, quote }: Props) {
   const [draft, setDraft] = useState("");
   // to is who the message is for, and it is a field of its own rather than a
   // convention inside the body: an @name in prose is a name somebody typed,
@@ -56,6 +68,22 @@ export function MessageBox({ citation, clearReply, disabled, onSend }: Props) {
     if (wasSending.current && !sending && !disabled) box.current?.focus();
     wasSending.current = sending;
   }, [sending, disabled]);
+
+  // A passage of the document, appended rather than substituted: somebody who
+  // has typed half a sentence and then reaches for the words they are answering
+  // has not asked for that sentence to be thrown away. The caret goes back into
+  // the box afterwards, because the next thing to happen is always typing.
+  useEffect(() => {
+    if (!quote) return;
+    const quoted = quote.text
+      .split("\n")
+      .map((line) => `> ${line}`)
+      .join("\n");
+    setDraft((current) =>
+      current.trim() ? `${current.trimEnd()}\n\n${quoted}\n\n` : `${quoted}\n\n`,
+    );
+    box.current?.focus();
+  }, [quote]);
 
   const send = async () => {
     const body = draft.trim();
