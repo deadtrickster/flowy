@@ -23,6 +23,16 @@
           }
         }
       }
+    },
+    {
+      "include": ["src/components/MessageList.tsx"],
+      "linter": {
+        "rules": {
+          "a11y": {
+            "useSemanticElements": "off"
+          }
+        }
+      }
     }
   ],
   "javascript": {

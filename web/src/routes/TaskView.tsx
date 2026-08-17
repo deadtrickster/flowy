@@ -7,6 +7,7 @@ import { ThreadDag } from "@/components/ThreadDag";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ASSIGN_ROOM, type FlowyEvent, type Task, type TaskState, api } from "@/lib/api";
+import { useCitation } from "@/lib/cite";
 import { useSession } from "@/lib/session";
 import { shortId } from "@/lib/utils";
 
@@ -34,7 +35,10 @@ export function TaskView() {
   const { token, whoami } = useSession();
   const [task, setTask] = useState<Task | null>(null);
   const [events, setEvents] = useState<FlowyEvent[]>([]);
-  const [selected, setSelected] = useState<FlowyEvent | null>(null);
+  // The same citation state the room has, from the same place: this view is a
+  // transcript too, and the corrections a handoff needs are exactly the ones
+  // that have to say which half of a message they answer.
+  const { selected, citation, cite, select, citeSpan, clear } = useCitation();
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -50,7 +54,7 @@ export function TaskView() {
   useEffect(() => {
     setTask(null);
     setEvents([]);
-    setSelected(null);
+    clear();
     if (!token || !id) return;
 
     let stopped = false;
@@ -88,15 +92,22 @@ export function TaskView() {
       stopped = true;
       controller.abort();
     };
-  }, [token, id, load]);
+  }, [token, id, load, clear]);
 
   const send = useCallback(
     async (body: string) => {
       if (!task) return;
-      const said = await api.say(ASSIGN_ROOM, body, selected ? [selected.id] : [], task.thread);
+      const said = await api.say(
+        ASSIGN_ROOM,
+        body,
+        selected ? [selected.id] : [],
+        task.thread,
+        undefined,
+        cite,
+      );
       setEvents((current) => merge(current, [said]));
     },
-    [task, selected],
+    [task, selected, cite],
   );
 
   const act = async (what: "delegate" | TaskState) => {
@@ -160,11 +171,11 @@ export function TaskView() {
           </div>
         ) : null}
 
-        <MessageList events={events} selected={selected} onSelect={setSelected} />
+        <MessageList events={events} selected={selected} onSelect={select} onCite={citeSpan} />
 
         <MessageBox
-          replyTo={selected}
-          clearReply={() => setSelected(null)}
+          citation={citation}
+          clearReply={clear}
           disabled={!token || !task}
           onSend={send}
         />

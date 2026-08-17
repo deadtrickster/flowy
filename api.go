@@ -565,6 +565,15 @@ const actorMetaPrefix = store.ActorMetaPrefix
 // trace, or scatter a trace across events that had nothing to do with it. The
 // node stamps it, on the writes it makes, and nowhere else - see withTrace.
 //
+// The cite key is the sharpest version of the first rule rather than a new one.
+// It says which message - or which words of which message - this one is
+// answering, and the console draws that as a quotation, under the quoted
+// principal's name and in their colour. A client that could write its own would
+// be putting words in somebody else's mouth on a row that is correctly signed
+// and correctly actored, which is the same forgery the actor keys are stripped
+// to prevent. The node stamps it where it has checked that the source is
+// readable and the span is inside it - see mayCite in chat.go.
+//
 // Anything that is not a JSON object is dropped whole: there is nothing to
 // strip out of it and nothing that needs it through.
 func speakerStripped(meta json.RawMessage) json.RawMessage {
@@ -577,7 +586,8 @@ func speakerStripped(meta json.RawMessage) json.RawMessage {
 	}
 	for k := range fields {
 		if strings.HasPrefix(k, actorMetaPrefix) ||
-			k == store.TraceMetaKey || k == store.MentionsMetaKey {
+			k == store.TraceMetaKey || k == store.MentionsMetaKey ||
+			k == store.CiteMetaKey {
 			delete(fields, k)
 		}
 	}

@@ -1,8 +1,10 @@
 import { AnimatePresence, motion } from "framer-motion";
-import { useEffect, useRef } from "react";
+import { type KeyboardEvent, useEffect, useRef } from "react";
 
+import { CitedMessage } from "@/components/CitedMessage";
 import { Badge } from "@/components/ui/badge";
 import { type FlowyEvent, isAgent } from "@/lib/api";
+import { selectedSpan } from "@/lib/cite";
 import { splitBody } from "@/lib/mentions";
 import { speakerStyle } from "@/lib/speakercolour";
 import { clock, cn, shortId, speaker } from "@/lib/utils";
@@ -11,6 +13,12 @@ interface Props {
   events: FlowyEvent[];
   selected: FlowyEvent | null;
   onSelect: (event: FlowyEvent) => void;
+  /**
+   * onCite is a span of one message somebody selected with the mouse, in BYTES
+   * into that message's body. The reply then quotes exactly those bytes,
+   * because the node cuts the quote out of the source with the same offsets.
+   */
+  onCite: (event: FlowyEvent, start: number, end: number) => void;
   /** me is the principal reading, so a message for them can say so. */
   me?: { user?: string; agent?: string };
 }
@@ -18,9 +26,22 @@ interface Props {
 /**
  * The room, oldest first. Selecting a message is what a reply attaches to: the
  * next thing said names it as a parent, which is the branch the thread view
- * draws.
+ * draws, and cites it, which is what the reply shows above itself.
+ *
+ * Selecting TEXT inside a message narrows that citation to what was selected,
+ * and it is the same one action - there is no button and no form, because the
+ * thing this replaces is somebody retyping the sentence they are answering.
+ *
+ * A row is a div with a button's role and a button's keyboard handling rather
+ * than a <button>, which it was. Text inside a button cannot be selected by
+ * dragging over it - the browser treats the control as one thing - so the
+ * element that made clicking work is the element that made citing a span
+ * impossible. The role and the tab stop stay, and so does enter/space, because
+ * what a screen reader is told and what a keyboard can reach must not change
+ * over a mouse gesture; biome.json turns off useSemanticElements for this file
+ * alone, which is the rule that would otherwise ask for the button back.
  */
-export function MessageList({ events, selected, onSelect, me }: Props) {
+export function MessageList({ events, selected, onSelect, onCite, me }: Props) {
   // Whether an id is the person reading or the agent working for them, which
   // is the pair the node treats as one reader everywhere else.
   const isMe = (id?: string) => !!id && (id === me?.user || id === me?.agent);
@@ -35,6 +56,17 @@ export function MessageList({ events, selected, onSelect, me }: Props) {
     bottom.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [count]);
 
+  // Enter and space are what a button answers to, and this row is not one any
+  // more. Keeping them is not politeness: selecting a message is how a reply
+  // attaches to it, so a keyboard reader who could not select one could not
+  // answer anybody.
+  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>, message: FlowyEvent) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      onSelect(message);
+    }
+  };
+
   return (
     <div className="flex flex-1 flex-col gap-2 overflow-y-auto p-4">
       <AnimatePresence initial={false}>
@@ -45,15 +77,32 @@ export function MessageList({ events, selected, onSelect, me }: Props) {
           // the same place - so this is a ring around it and never a filter.
           const forMe = isMe(event.addressee) && !isMe(event.actor);
           return (
-            <motion.button
-              type="button"
+            <motion.div
               key={event.id}
+              role="button"
+              tabIndex={0}
               layout
               initial={{ opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0 }}
               transition={{ duration: 0.18, ease: "easeOut" }}
-              onClick={() => onSelect(event)}
+              onClick={(clicked) => {
+                // A click that ended a text selection has already cited that
+                // span - onMouseUp on the body fires before this - so selecting
+                // the message here would widen the citation straight back to
+                // the whole message.
+                const selection = window.getSelection();
+                if (
+                  selection &&
+                  !selection.isCollapsed &&
+                  selection.anchorNode &&
+                  clicked.currentTarget.contains(selection.anchorNode)
+                ) {
+                  return;
+                }
+                onSelect(event);
+              }}
+              onKeyDown={(keyed) => onKeyDown(keyed, event)}
               className={cn(
                 "rounded-lg border border-border bg-card p-3 text-left transition-colors hover:border-primary/40",
                 forMe && "border-primary/50 bg-primary/5",
@@ -89,6 +138,13 @@ export function MessageList({ events, selected, onSelect, me }: Props) {
                 </span>
               </div>
               {/*
+                What this message is answering, above what it says. The words
+                are the node's, cut out of the message being quoted for
+                whoever is reading - see CitedMessage - so this is a quotation
+                and not the citing speaker's account of one.
+              */}
+              {event.citation ? <CitedMessage citation={event.citation} /> : null}
+              {/*
                 The body, with the @names the node resolved drawn in the
                 colour of whoever they name - the same colour that person
                 speaks in above, because both come from the name. A mention of
@@ -97,8 +153,20 @@ export function MessageList({ events, selected, onSelect, me }: Props) {
                 yours" whether it is around the message or around your name
                 inside it. An @word the node resolved to nobody is left as the
                 text it is.
+
+                It is its own element, holding the body and nothing else,
+                because a span is measured against this element's text: the
+                citation above and the ids below would each shift every offset
+                by their own length.
               */}
-              <div className="whitespace-pre-wrap break-words text-sm">
+              <div
+                data-body={event.id}
+                className="select-text whitespace-pre-wrap break-words text-sm"
+                onMouseUp={(released) => {
+                  const span = selectedSpan(released.currentTarget, event.body);
+                  if (span) onCite(event, span.start, span.end);
+                }}
+              >
                 {splitBody(event.body, event.meta?.mentions).map((run) =>
                   run.name ? (
                     <span
@@ -126,7 +194,7 @@ export function MessageList({ events, selected, onSelect, me }: Props) {
                   <span>opens a thread</span>
                 )}
               </div>
-            </motion.button>
+            </motion.div>
           );
         })}
       </AnimatePresence>

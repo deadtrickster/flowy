@@ -925,7 +925,7 @@ and deletes are tombstones.
 | `GET /api/search?q=&type=&kind=&project=` | `{"query":..., "artifacts":[{..., "rank":...}]}`, ranked and permission-filtered |
 | `POST /api/events` | append. Body: `type` (required), `room`, `thread`, `parents`, `actor`, `artifact`, `body`, `meta`. `id` is a ULID, `seq_hlc` comes from the clock, the project is the principal's |
 | `GET /api/events?thread=&since=&room=&type=` | `{"events":[...]}` with `seq_hlc > since`, in log order, permission-filtered |
-| `POST /api/chat/{room}/say` | say something. Body: `body` (required), `thread?`, `parents?`, `to?` - the principal it is directed at, a user or an agent this node knows. Returns the event |
+| `POST /api/chat/{room}/say` | say something. Body: `body` (required), `thread?`, `parents?`, `to?` - the principal it is directed at, a user or an agent this node knows - and `cite?` `{message, start?, end?}`, the message this one is about and the byte span of it being quoted. Returns the event |
 | `GET /api/chat/{room}?since=&thread=` | `{"room","events":[...],"since","cursor"}` with `seq_hlc > since`, in log order |
 | `GET /api/chat/{room}/wait?cursor=&window=` | long poll: blocks up to 25s for events after `cursor`, returns them or an empty list |
 | `POST /api/chat/{room}/todo` | raise a todo out of this room. Body: `title` (required), `body?`, `status?`, `message?` - the message it came out of. Writes the item and one chat message naming it, under one clock reading. Returns `{item, event}`. `404` on a `message` you cannot read |
@@ -1070,6 +1070,74 @@ the sender believes somebody was told, the person they meant is never told, and
 nothing anywhere says the name was wrong. The merge does not ask this, for the
 reason it does not check `parents` either - an event from a peer is legitimately
 addressed to a principal that only exists over there.
+
+### A citation is a span into the message it quotes, never a copy of it
+
+A reply has always recorded its parent, so "this is about that" was expressible
+and "this is about THAT SENTENCE" was not - and people quoted by retyping, which
+is a quotation nobody can check. `cite` on a say fixes both halves:
+
+```sh
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"body":"only that part","cite":{"message":"01J…","start":23,"end":46}}' \
+  127.0.0.1:8787/api/chat/general/say
+```
+
+Leave `start`/`end` out and the citation is of the whole message. The row stamps
+`meta.cite` - `<id>` or `<id>:<start>:<end>` - and every chat read answers with a
+resolved `citation` object beside the event.
+
+**What is stored is the span, and the quoted words never are.** Storing the text
+would have been simpler and it is wrong twice. It is a copy the citing author
+controls, so a citation could say somebody said something they did not and
+render as a quotation of them - a forgery surface in a log whose whole value is
+that its rows are signed, and through the one door this fabric closes
+everywhere else: no principal speaks as another. And it cannot be kept from a
+reader who may not read the source, because a copy on the citing row is readable
+by everyone who can read that row and replicates with it. It would have to be
+stripped on the way out by the same permission check the read makes anyway - at
+which point the stored copy is only a second version of the truth that can
+disagree with the first. The quote is **derived**, on the read, from the signed
+row it points at, so the console draws it as the quoted person's own words
+rather than as the citing author's account of them.
+
+Offsets into text are fragile in general and are not fragile here: `events` is
+append-only and a body is inside the signature, so the bytes a span points into
+cannot change without the row ceasing to verify. Offsets are BYTES, which is
+what a body is - a console counting UTF-16 units converts, and is told at the
+door when it does not.
+
+**A citation is checked the way an edge in the DAG is.** The message must be one
+the writer can read - out of reach and not there get the same answer, which is
+the answer a read of it would give - and the span must be inside its body, on
+character boundaries. Both are checked on the way in, because nothing stores the
+quote: a span that cannot derive one is a citation that renders as broken on
+every read of a row that cannot be edited, and this is the last moment anybody
+can fix it. The merge does not ask either, for the reason it does not check
+`parents`, so a span that never fitted derives nothing rather than being clamped
+to what does fit - clamping answers by misquoting.
+
+**A citation of a message the reader cannot see hands over nothing.** Rooms are
+scoped by project and the log is not, so this is ordinary rather than exotic: a
+reply reaches somebody through the tasks clause or a share while the message it
+quotes does not. They get `{"message":…,"whole":true,"readable":false}` - no
+text, no actor, no name - and the console says the reply quotes a message they
+cannot read instead of drawing an empty quotation. The filter is on the CITED
+event, in the same `WHERE` clause as the match, exactly as `replaced_by` puts it
+on the replacement.
+
+**It is the node's to write.** `meta.cite` is stripped off anything a client
+hands to `POST /api/events`, beside the speaker keys, the trace id and the
+resolved mentions - a client that could write its own would be putting words in
+another principal's mouth on a row that is correctly signed and correctly
+actored. It is inside the signature because `meta` is, so a relay cannot rewrite
+which message a reply quotes or which half of it.
+
+In the console, selecting text inside a message cites that span and selecting
+the message cites the whole of it - one action either way, no form - and the
+citation is drawn above the reply and above the box, attributed, in the cited
+speaker's colour. The row is a div with a button's role and keyboard handling
+rather than a `<button>`, because text inside a button cannot be selected.
 
 ### `flowy inbox` is the waiter, and the cursor is the node's
 
@@ -2647,6 +2715,25 @@ actually served:
   project, reads both halves back in order
 - a personal artifact cannot be assigned, and neither can one the caller cannot
   read
+- **a citation of a message the reader cannot read hands over nothing.** A says
+  something in `pc` and cites it from a message in the handoff thread B is a
+  party to, so B reads the citing message and not the one it quotes: B is
+  answered `readable:false` with no text, no actor and no name, and the invented
+  word in the cited body appears nowhere in what B was handed - through the room
+  read and through the inbox. A, who can read both, is quoted it in full
+- a whole message and a span of one both round-trip: the row records `<id>` and
+  `<id>:<start>:<end>`, and the read derives the whole body for the first and
+  exactly the span for the second, attributed to the person who said it
+- a message the writer cannot read cannot be cited - `404`, in the words a read
+  of it would use, and no row written - and a span past the end, a span that
+  ends where it starts and a span cutting a character in half are each `400`,
+  while the span stopping on the boundary quotes the whole word
+- `meta.cite` handed to `POST /api/events` by a client is stripped, and what
+  `meta` is actually for rides through
+- the console **draws the citation**, in a browser, on the element: the block
+  carries `data-citation`, names the quoted speaker and is drawn in the colour
+  that speaker speaks in on the same page, and the span citation's quote is the
+  span and does not carry the half of the sentence outside it
 - B's `auto_delegate` defaults on, so that first task arrived already
   `delegated` to B's agent. `PUT /api/me/auto_delegate {"on":false}` flips it,
   the next assignment stops at `open`, `POST /api/task/{id}/delegate` hands it

@@ -9,6 +9,7 @@ import { RoomTodos } from "@/components/RoomTodos";
 import { ThreadDag } from "@/components/ThreadDag";
 import { Badge } from "@/components/ui/badge";
 import { type Artifact, type FlowyEvent, type Presence, api } from "@/lib/api";
+import { useCitation } from "@/lib/cite";
 import { useSession } from "@/lib/session";
 import { shortId } from "@/lib/utils";
 
@@ -36,7 +37,10 @@ export function ChatRoom() {
   const { room = "general" } = useParams();
   const { token, whoami } = useSession();
   const [events, setEvents] = useState<FlowyEvent[]>([]);
-  const [selected, setSelected] = useState<FlowyEvent | null>(null);
+  // What a reply attaches to and what it cites: the selected message, whole, or
+  // the span of it somebody selected with the mouse. Selecting a message has
+  // always named it as the parent here; now the reply says so on its face.
+  const { selected, citation, cite, select, citeSpan, clear } = useCitation();
   const [live, setLive] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [presence, setPresence] = useState<Presence | null>(null);
@@ -97,7 +101,7 @@ export function ChatRoom() {
 
   useEffect(() => {
     setEvents([]);
-    setSelected(null);
+    clear();
     setLive(false);
     setError(null);
     setTodos([]);
@@ -167,16 +171,23 @@ export function ChatRoom() {
       stopped = true;
       controller.abort();
     };
-  }, [room, token, loadTodos]);
+  }, [room, token, loadTodos, clear]);
 
   const send = useCallback(
     async (body: string, to: string) => {
-      const said = await api.say(room, body, selected ? [selected.id] : [], selected?.thread, to);
+      const said = await api.say(
+        room,
+        body,
+        selected ? [selected.id] : [],
+        selected?.thread,
+        to,
+        cite,
+      );
       // The poll will bring it back anyway; showing it now is what makes the
       // box feel like it did something.
       setEvents((current) => merge(current, [said]));
     },
-    [room, selected],
+    [room, selected, cite],
   );
 
   /**
@@ -238,16 +249,12 @@ export function ChatRoom() {
         <MessageList
           events={events}
           selected={selected}
-          onSelect={setSelected}
+          onSelect={select}
+          onCite={citeSpan}
           me={{ user: whoami?.user, agent: whoami?.agent }}
         />
 
-        <MessageBox
-          replyTo={selected}
-          clearReply={() => setSelected(null)}
-          disabled={!token}
-          onSend={send}
-        />
+        <MessageBox citation={citation} clearReply={clear} disabled={!token} onSend={send} />
       </section>
 
       {/*

@@ -9,6 +9,36 @@
 
 const TOKEN_KEY = "flowy.token";
 
+/**
+ * Citation is what a message says it is about, resolved by the node for the
+ * token that read it: the message it cites, and - only when this reader may
+ * read that message - who was quoted and the words themselves.
+ *
+ * The words are DERIVED, not stored. The row carries a pointer and a byte span
+ * into the cited body, and the node cuts the quote out of the signed source on
+ * the way out - so a citation cannot misquote, and the console may draw it as
+ * the quoted person's own words rather than as the citing author's account of
+ * them. See citations.go.
+ *
+ * `readable` is never absent, and it is the field the console has to draw
+ * rather than assume: rooms are scoped by project and the log is not, so a
+ * reply is often in front of somebody whose source message is not. Then there
+ * is no text, no actor and no name - the node hands over none of it - and the
+ * honest thing on screen is that this quotes something out of reach.
+ */
+export interface Citation {
+  message: string;
+  whole: boolean;
+  start?: number;
+  end?: number;
+  readable: boolean;
+  actor?: string;
+  name?: string;
+  text?: string;
+  /** The quote was cut at the node's cap, so it ends in an ellipsis. */
+  truncated?: boolean;
+}
+
 /** FlowyEvent is one row of the append-only log. A chat message is one of these. */
 export interface FlowyEvent {
   id: string;
@@ -41,13 +71,22 @@ export interface FlowyEvent {
    * see mentions.go. Optional in the same strong sense: absent on every
    * message that named nobody, which is every message written before mentions
    * existed.
+   *
+   * cite is the citation as the row records it - "<id>" for a whole message,
+   * "<id>:<start>:<end>" for a span of one. The console does not read it: the
+   * resolved `citation` below is the same fact with the permission filter
+   * already applied, and a client deriving a quote from the raw pointer would
+   * be deriving it from a message it may not be able to read.
    */
   meta?: {
     actor_kind?: "user" | "agent";
     actor_user?: string;
     actor_name?: string;
     mentions?: string;
+    cite?: string;
   };
+  /** What this message is answering, as the node resolved it for this reader. */
+  citation?: Citation;
   created: string;
 }
 
@@ -607,11 +646,31 @@ export const api = {
       { signal },
     ),
 
-  say: (room: string, body: string, parents: string[] = [], thread?: string, to?: string) =>
+  /**
+   * cite is what the message is about: a message id, and the byte span into
+   * its body when it quotes one part of it. The node checks both - that the
+   * source is readable and that the span is inside it - and stamps the pointer
+   * on the row. It never takes the quoted words from here, which is why there
+   * is nowhere to put them.
+   */
+  say: (
+    room: string,
+    body: string,
+    parents: string[] = [],
+    thread?: string,
+    to?: string,
+    cite?: { message: string; start?: number; end?: number },
+  ) =>
     request<FlowyEvent>(`/api/chat/${encodeURIComponent(room)}/say`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ body, parents, ...(thread ? { thread } : {}), ...(to ? { to } : {}) }),
+      body: JSON.stringify({
+        body,
+        parents,
+        ...(thread ? { thread } : {}),
+        ...(to ? { to } : {}),
+        ...(cite ? { cite } : {}),
+      }),
     }),
 
   inbox: (since = 0) => request<ChatPage>(`/api/inbox?since=${since}`),

@@ -44,11 +44,26 @@ const waitTick = 250 * time.Millisecond
 // for. Leave it out and the message is for the room, which is what a message
 // has always been here - unless the body names somebody with an @, which is the
 // same field said in prose and fills it in. See mentions.go.
+//
+// Cite is what this message is about, and it is orthogonal to all four in the
+// same way again: a parent says what came before, a citation says which message
+// - or which words of which message - is being answered. See citations.go for
+// why the span is what travels and the quoted text never is.
 type chatSayRequest struct {
-	Body    string   `json:"body"`
-	Thread  string   `json:"thread"`
-	Parents []string `json:"parents"`
-	To      string   `json:"to"`
+	Body    string    `json:"body"`
+	Thread  string    `json:"thread"`
+	Parents []string  `json:"parents"`
+	To      string    `json:"to"`
+	Cite    *chatCite `json:"cite"`
+}
+
+// chatCite is a citation as a client asks for one: the message, and the byte
+// span into its body when the citation is of a part of it. Leave the offsets
+// out and the citation is of the whole message.
+type chatCite struct {
+	Message string `json:"message"`
+	Start   int    `json:"start"`
+	End     int    `json:"end"`
 }
 
 // chatActor decides who is speaking. An agent posts as itself, a human as
@@ -261,9 +276,57 @@ func (s *server) mayAddress(w http.ResponseWriter, r *http.Request, to string) b
 	return false
 }
 
+// mayCite reads the citation a client asked for, and answers the request
+// itself when it is not one this writer may make.
+//
+// The message is checked through the read filter, exactly as a parent is and
+// for the same reason: an id is a guess anybody can make, and a citation is a
+// claim about somebody else's words - the console draws it under their name, in
+// their colour. So citing something out of reach and citing something that is
+// not there get the same answer, which is the answer a read of it would give.
+//
+// The span is checked against the body it is a span of, here rather than on the
+// way out. The node never stores the quoted text, so a span that cannot derive
+// one is a citation that will render as broken on every read forever, on a row
+// that cannot be edited - and the only moment anybody can still fix it is this
+// one.
+func (s *server) mayCite(w http.ResponseWriter, r *http.Request, req *chatCite) (store.CiteRef, bool) {
+	if req == nil {
+		return store.CiteRef{}, true
+	}
+	ref := store.CiteRef{
+		Message: strings.TrimSpace(req.Message),
+		Start:   req.Start,
+		End:     req.End,
+	}
+	if ref.Message == "" {
+		writeJSON(w, http.StatusBadRequest,
+			errorBody("a citation names the message it is of; leave cite out and this message cites none"))
+		return ref, false
+	}
+	source, err := s.db.ReadEvent(r.Context(), principalOf(r), ref.Message)
+	if errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound,
+			errorBody("message "+ref.Message+" is not one you can read; "+
+				"a citation quotes a message in front of you, or nothing"))
+		return ref, false
+	}
+	if err != nil {
+		serverError(w, r, err)
+		return ref, false
+	}
+	if !ref.Whole() {
+		if fault := store.CiteSpanFault(source.Body, ref.Start, ref.End); fault != "" {
+			writeJSON(w, http.StatusBadRequest, errorBody(fault))
+			return ref, false
+		}
+	}
+	return ref, true
+}
+
 // handleChatSay appends a message to a room.
 //
-// POST /api/chat/{room}/say  {body, thread?, parents?, to?}
+// POST /api/chat/{room}/say  {body, thread?, parents?, to?, cite?}
 func (s *server) handleChatSay(w http.ResponseWriter, r *http.Request) {
 	p := principalOf(r)
 	room, ok := roomOf(r)
@@ -289,6 +352,10 @@ func (s *server) handleChatSay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.mayNameParents(w, r, req.Parents) {
+		return
+	}
+	cite, ok := s.mayCite(w, r, req.Cite)
+	if !ok {
 		return
 	}
 	if req.Thread == "" {
@@ -368,6 +435,13 @@ func (s *server) handleChatSay(w http.ResponseWriter, r *http.Request) {
 	fields := speakerMeta(p, kind, s.speakerName(r.Context(), p))
 	if len(found) > 0 {
 		fields[store.MentionsMetaKey] = mentionMeta(found)
+	}
+	// The citation rides in meta beside them, and it is inside the signature
+	// because meta is: a relay that could rewrite which message a reply quotes,
+	// or which half of it, would be a relay choosing what somebody is recorded
+	// as having answered.
+	if cite.Message != "" {
+		fields[store.CiteMetaKey] = store.EncodeCiteRef(cite)
 	}
 	meta, err := json.Marshal(fields)
 	if err != nil {
@@ -512,15 +586,22 @@ func (s *server) handleInbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	all := scopeAll(r, p)
 	list, err := s.db.ListEvents(r.Context(), p, store.EventQuery{
 		Type:      chatEventType,
 		Room:      q.Get("room"),
 		Since:     since,
 		NotActors: []string{p.UserID, p.AgentID},
-		ScopeAll:  scopeAll(r, p),
+		ScopeAll:  all,
 		Limit:     intParam(q.Get("limit")),
 	})
 	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	// The same resolution the room read does, because a second door onto the
+	// same messages is where a filter gets forgotten.
+	if err := s.db.Citations(r.Context(), p, list, all); err != nil {
 		serverError(w, r, err)
 		return
 	}
@@ -535,14 +616,26 @@ func (s *server) handleInbox(w http.ResponseWriter, r *http.Request) {
 // the long poll and a reload all narrow the log the same way.
 func (s *server) readRoom(r *http.Request, room, thread string, since int64, limit int) ([]*store.Event, error) {
 	p := principalOf(r)
-	return s.db.ListEvents(r.Context(), p, store.EventQuery{
+	all := scopeAll(r, p)
+	list, err := s.db.ListEvents(r.Context(), p, store.EventQuery{
 		Type:     chatEventType,
 		Room:     room,
 		Thread:   thread,
 		Since:    since,
-		ScopeAll: scopeAll(r, p),
+		ScopeAll: all,
 		Limit:    limit,
 	})
+	if err != nil {
+		return nil, err
+	}
+	// What each reply is answering, resolved for THIS reader: the row records a
+	// pointer and a span, and the words come off the message it points at
+	// through the same filter this read used. A reader who cannot reach that
+	// message is told so and handed none of it - see store.Citations.
+	if err := s.db.Citations(r.Context(), p, list, all); err != nil {
+		return nil, err
+	}
+	return list, nil
 }
 
 // writeChatEvents answers with the events and the cursor to ask for next, so a
