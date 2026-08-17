@@ -5,7 +5,15 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import type { Artifact, FlowyEvent } from "@/lib/api";
 import { speakerStyle } from "@/lib/speakercolour";
-import { countTodos, sortTodos, statusStyle, todoAssignee } from "@/lib/todos";
+import {
+  countTodos,
+  hideDonePreference,
+  isTodoDone,
+  setHideDonePreference,
+  sortTodos,
+  statusStyle,
+  todoAssignee,
+} from "@/lib/todos";
 import { shortId } from "@/lib/utils";
 
 interface Props {
@@ -53,6 +61,20 @@ export function RoomTodos({ room, todos, raiseFrom, disabled, error, onRaise, on
   const [editing, setEditing] = useState<string | null>(null);
   const [named, setNamed] = useState("");
   const [assigning, setAssigning] = useState(false);
+  /**
+   * Whether the finished ones are drawn. Read from storage ONCE, at mount, and
+   * owned by this component from then on.
+   *
+   * Deliberately not derived from `todos`, which is the whole of why the room's
+   * poll cannot wipe it. The panel is refilled from the node every time the poll
+   * comes back - that is what silently reverted the assignee an hour ago, where
+   * an older read landed after a newer one and repainted the cell - but this is
+   * not the node's fact about the queue, it is this tab's fact about how the
+   * queue is being read. No answer from the node can be a stale copy of
+   * something the node was never asked. The list arriving again just gets
+   * filtered through it again.
+   */
+  const [hideDone, setHideDone] = useState(hideDonePreference);
 
   const raise = async (event: FormEvent) => {
     event.preventDefault();
@@ -101,16 +123,57 @@ export function RoomTodos({ room, todos, raiseFrom, disabled, error, onRaise, on
     }
   };
 
+  /** Ticking it is both the render and the preference: the next reload agrees. */
+  const setHiding = (hide: boolean) => {
+    setHideDone(hide);
+    setHideDonePreference(hide);
+  };
+
   const counts = countTodos(todos);
+  const drawn = hideDone ? todos.filter((todo) => !isTodoDone(todo)) : todos;
+  const withheld = todos.length - drawn.length;
 
   return (
     <section className="flex min-h-0 flex-col border-border border-b">
-      <header className="flex items-center gap-2 border-border border-b px-4 py-3">
-        <h2 className="font-semibold text-sm">todos</h2>
-        <span className="font-mono text-muted-foreground text-xs">#{room}</span>
-        <span className="ml-auto text-muted-foreground text-xs">
-          {counts.active} active, {counts.open} open, {counts.done} done
-        </span>
+      {/* Two lines rather than one: the panel is 26rem wide, and the counts plus
+          the control plus what is being withheld do not fit beside the heading
+          at a readable size. The line the numbers are already on is where the
+          control belongs, so it goes directly under them. */}
+      <header className="flex flex-col gap-1 border-border border-b px-4 py-3">
+        <div className="flex items-center gap-2">
+          <h2 className="font-semibold text-sm">todos</h2>
+          <span className="font-mono text-muted-foreground text-xs">#{room}</span>
+          {/* The counts are of the WHOLE queue, hiding or not. They are the one
+              line that never moves when the box is ticked, which is what makes
+              the filter a view rather than a deletion. */}
+          <span className="ml-auto text-muted-foreground text-xs">
+            {counts.active} active, {counts.open} open, {counts.done} done
+          </span>
+        </div>
+        <div className="flex items-center gap-2">
+          {/* A checkbox and two words, not a form: this sits beside a
+              conversation, and the moment it needs a heading or a menu it is
+              competing with the room for the space. */}
+          <label className="flex cursor-pointer items-center gap-1.5 text-muted-foreground text-xs">
+            <input
+              type="checkbox"
+              data-hide-done=""
+              className="size-3.5 cursor-pointer accent-current"
+              checked={hideDone}
+              onChange={(event) => setHiding(event.target.checked)}
+            />
+            hide done
+          </label>
+          {/* Said whenever anything is being withheld, and never rounded or
+              dropped. A panel showing four rows with no sign that sixteen are
+              behind it lies about the size of the queue, and somebody reading it
+              concludes a todo does not exist. */}
+          {withheld > 0 ? (
+            <span data-hidden-count="" className="ml-auto text-muted-foreground text-xs">
+              {withheld} done hidden
+            </span>
+          ) : null}
+        </div>
       </header>
 
       <div className="min-h-0 flex-1 overflow-auto">
@@ -122,8 +185,17 @@ export function RoomTodos({ room, todos, raiseFrom, disabled, error, onRaise, on
             nothing raised in #{room} yet
           </div>
         ) : null}
+        {!error && todos.length > 0 && drawn.length === 0 ? (
+          // The other empty panel, and a different fact: this room has written
+          // things down and finished all of them. Without this line the filter
+          // produces a view indistinguishable from a room that raised nothing,
+          // which is the reading the count beside the box exists to prevent.
+          <div className="px-4 py-2 text-muted-foreground text-xs">
+            everything raised in #{room} is done
+          </div>
+        ) : null}
         <ul className="flex flex-col">
-          {sortTodos(todos).map((todo) => {
+          {sortTodos(drawn).map((todo) => {
             const owner = todoAssignee(todo);
             return (
               <li

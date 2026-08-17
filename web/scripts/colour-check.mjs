@@ -27,6 +27,12 @@ const browser = await chromium.launch();
 try {
   const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
   await page.addInitScript((t) => localStorage.setItem("flowy.token", t), token);
+  // Ask the panel for the finished ones. It hides them by default now, and the
+  // done badge is one of the three states this check is here to tell apart - so
+  // without this the check quietly drops to two states and reports success on a
+  // colour it never looked at. Set the way the console sets it, not by reaching
+  // into the component: it is the same preference a person ticks.
+  await page.addInitScript(() => localStorage.setItem("flowy.todos.hideDone", "false"));
   await page.goto(`${base}/chat/general`, { timeout: 20_000 }).catch(() => {});
 
   // The speaker names in the transcript, with the colour actually computed for
