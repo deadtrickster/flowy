@@ -604,7 +604,19 @@ func (s *server) handleChatSay(w http.ResponseWriter, r *http.Request) {
 // exclusive, so handing back the cursor from the previous read never repeats a
 // message and never skips one.
 //
+// order=recent reads the OTHER END of the same log: the newest `limit` messages
+// rather than the oldest above a cursor, still in log order, and `before` pages
+// backwards from there. That is how a room opens on a bounded window and fetches
+// its history as somebody scrolls up, instead of loading everything ever said in
+// it - reported by the operator as "on reload the whole chat history loads".
+//
+// It is the same endpoint and the same filter rather than a second door onto the
+// messages, because a second door is where a permission filter gets forgotten:
+// both orders go through readRoom, which resolves citations for THIS reader, so
+// a page fetched an hour after the room opened still renders its quotes.
+//
 // GET /api/chat/{room}?since=&thread=&limit=
+// GET /api/chat/{room}?order=recent&before=&thread=&limit=
 func (s *server) handleChatRead(w http.ResponseWriter, r *http.Request) {
 	room, ok := roomOf(r)
 	if !ok {
@@ -617,13 +629,35 @@ func (s *server) handleChatRead(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorBody(err.Error()))
 		return
 	}
-
-	list, err := s.readRoom(r, room, q.Get("thread"), since, intParam(q.Get("limit")))
+	before, err := cursorParam(q.Get("before"))
 	if err != nil {
-		serverError(w, r, err)
+		writeJSON(w, http.StatusBadRequest, errorBody(err.Error()))
 		return
 	}
-	writeChatEvents(w, room, since, list)
+
+	switch q.Get("order") {
+	case "", "log":
+		if before > 0 {
+			writeJSON(w, http.StatusBadRequest,
+				errorBody("before pages backwards and only order=recent reads that way"))
+			return
+		}
+		list, err := s.readRoom(r, room, q.Get("thread"), since, intParam(q.Get("limit")))
+		if err != nil {
+			serverError(w, r, err)
+			return
+		}
+		writeChatEvents(w, room, since, list)
+	case "recent":
+		list, err := s.readRoomBefore(r, room, q.Get("thread"), before, intParam(q.Get("limit")))
+		if err != nil {
+			serverError(w, r, err)
+			return
+		}
+		writeChatWindow(w, room, before, list)
+	default:
+		writeJSON(w, http.StatusBadRequest, errorBody("order must be log or recent"))
+	}
 }
 
 // handleChatWait is the watcher: it blocks until something is said in the room
@@ -759,6 +793,65 @@ func (s *server) readRoom(r *http.Request, room, thread string, since int64, lim
 		return nil, err
 	}
 	return list, nil
+}
+
+// readRoomBefore is readRoom off the other end of the log: the newest messages
+// below `before`, or simply the newest ones when it is zero. Same narrowing,
+// same permission filter, same citation resolution - see store.EventsBefore for
+// why its old end is a complete reading and `before` is therefore exact.
+func (s *server) readRoomBefore(r *http.Request, room, thread string, before int64, limit int) ([]*store.Event, error) {
+	p := principalOf(r)
+	all := scopeAll(r, p)
+	list, err := s.db.EventsBefore(r.Context(), p, store.EventQuery{
+		Type:     chatEventType,
+		Room:     room,
+		Thread:   thread,
+		Before:   before,
+		ScopeAll: all,
+		Limit:    limit,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := s.db.Citations(r.Context(), p, list, all); err != nil {
+		return nil, err
+	}
+	return list, nil
+}
+
+// writeChatWindow answers a backwards read with BOTH cursors, because a window
+// taken out of the middle of a log has two ends and a client walks them in
+// opposite directions:
+//
+//   - `cursor` is forwards, for /wait. It is only the end of the log when the
+//     caller asked for the newest window - `before` unset - which is what a room
+//     opening does, and it is exactly the reading /wait must continue from so
+//     the first poll neither replays the window nor steps over a message said
+//     between the two requests. On a page taken from further back it echoes the
+//     `before` it came in with, the way the activity timeline does with a
+//     descending read: that page says nothing new about the front of the log.
+//   - `before` is backwards, for the next older page: the reading of the OLDEST
+//     message here, strictly exclusive. Zero when nothing came back, which is
+//     the beginning of the room.
+//
+// A client can tell whether anything older exists without another request: the
+// window filled its limit or it did not.
+func writeChatWindow(w http.ResponseWriter, room string, before int64, list []*store.Event) {
+	cursor := before
+	older := int64(0)
+	if n := len(list); n > 0 {
+		if before == 0 {
+			cursor = list[n-1].SeqHLC
+		}
+		older = list[0].SeqHLC
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"room":   room,
+		"events": list,
+		"since":  int64(0),
+		"cursor": cursor,
+		"before": older,
+	})
 }
 
 // writeChatEvents answers with the events and the cursor to ask for next, so a

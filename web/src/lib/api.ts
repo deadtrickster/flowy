@@ -159,6 +159,13 @@ export interface ChatPage {
   events: FlowyEvent[];
   since: number;
   cursor: number;
+  /**
+   * before is the other end of a window, and only a backwards read carries it -
+   * see api.roomWindow. It is the reading of the OLDEST message in the page,
+   * strictly exclusive, so handing it back asks for the page before this one.
+   * Absent on a forward read, which has nothing older to offer.
+   */
+  before?: number;
 }
 
 /**
@@ -858,6 +865,30 @@ export const api = {
   /** room reads a room from a cursor, exclusive. */
   room: (room: string, since = 0) =>
     request<ChatPage>(`/api/chat/${encodeURIComponent(room)}?since=${since}`),
+
+  /**
+   * roomWindow is the room read from its NEW end: the newest `limit` messages,
+   * or the `limit` before a reading somebody has already got.
+   *
+   * It is what a room opens on. `room` above pages FORWARDS from a cursor, so
+   * opening on it means taking the oldest page and dragging everything ever
+   * said in the room in behind the long poll - reported by the operator as "on
+   * reload the whole chat history loads". This takes the last screenful
+   * instead, and `before` walks back from there as the reader scrolls up.
+   *
+   * The page comes back in log order, oldest first, like every other read - so
+   * a view prepends it and never sorts. `before` in the answer is the reading
+   * to ask for next, strictly exclusive and safe to hand back whole: the node
+   * completes the reading its window cut at, so paging back neither repeats a
+   * message nor skips one. Nothing older is left when a page comes back short
+   * of its limit.
+   */
+  roomWindow: (room: string, limit: number, before = 0) =>
+    request<ChatPage>(
+      `/api/chat/${encodeURIComponent(room)}?order=recent&limit=${limit}${
+        before > 0 ? `&before=${before}` : ""
+      }`,
+    ),
 
   /**
    * wait is the watcher: it blocks on the server for up to ~25s and returns

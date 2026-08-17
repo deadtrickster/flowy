@@ -340,6 +340,22 @@ func above(reading, id string, since int64, tie *tieAt, a *args) string {
 	return reading + " = " + a.next(tie.hlc) + " AND " + id + " > " + a.next(tie.id)
 }
 
+// below is above read the other way, for the one read that walks backwards -
+// see EventsBefore. Without a tie it is everything before the cursor; with one
+// it is the rest of the reading a DESCENDING page stopped in, which is the rows
+// at that reading sorting below the last id it took.
+//
+// It is a second function rather than a sign on above's comparison because the
+// tie clause is not symmetric in a way a flag would express: which side of the
+// id a tie completion wants depends on which direction the page was read in,
+// and a caller passing the wrong one gets a page that silently drops rows.
+func below(reading, id string, before int64, tie *tieAt, a *args) string {
+	if tie == nil {
+		return reading + " < " + a.next(before)
+	}
+	return reading + " = " + a.next(tie.hlc) + " AND " + id + " < " + a.next(tie.id)
+}
+
 // limitSQL is a LIMIT clause, or nothing at all: the tie read is bounded by the
 // one reading it asks for rather than by a count, because half a tie is the bug
 // it is there to close.

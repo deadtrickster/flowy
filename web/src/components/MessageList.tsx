@@ -1,7 +1,7 @@
 import DOMPurify from "dompurify";
 import { AnimatePresence, motion } from "framer-motion";
 import { marked } from "marked";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { AttachmentCards } from "@/components/AttachmentCards";
 import { CitedMessage } from "@/components/CitedMessage";
@@ -35,6 +35,18 @@ interface Props {
    * what does something with this.
    */
   onSeen?: (through: string) => void;
+  /**
+   * onOlder asks for the page before the one on screen. The room opens on a
+   * bounded window, so scrolling up is a request for history that is not here
+   * yet - see ChatRoom.loadOlder, which is safe to call on every scroll.
+   */
+  onOlder?: () => void;
+  /** Whether there is anything older than the oldest message on screen. */
+  moreOlder?: boolean;
+  /** Whether a page of older messages is in flight. */
+  loadingOlder?: boolean;
+  /** The room, named at the top of the transcript when its beginning is on it. */
+  room?: string;
 }
 
 /**
@@ -69,7 +81,18 @@ interface Props {
  * that starts in the body and ends over the button clicks the ROW, and the row
  * listens to nothing.
  */
-export function MessageList({ events, selected, onSelect, onCite, me, onSeen }: Props) {
+export function MessageList({
+  events,
+  selected,
+  onSelect,
+  onCite,
+  me,
+  onSeen,
+  onOlder,
+  moreOlder,
+  loadingOlder,
+  room,
+}: Props) {
   // Whether an id is the person reading or the agent working for them, which
   // is the pair the node treats as one reader everywhere else.
   const isMe = (id?: string) => !!id && (id === me?.user || id === me?.agent);
@@ -101,6 +124,21 @@ export function MessageList({ events, selected, onSelect, onCite, me, onSeen }: 
   const following = useRef(true);
   const [pending, setPending] = useState(0);
   const [atBottom, setAtBottom] = useState(true);
+
+  // WHERE THE READER IS, AS A DISTANCE FROM THE BOTTOM. It is the one measure
+  // that survives content being added ABOVE, which is what a page of history
+  // is - see the layout effect below, which restores it.
+  //
+  // Kept up to date from two places, and it needs both. The effect covers
+  // messages arriving; the scroll handler covers the reader moving, because a
+  // scroll only re-renders this component the FIRST time it leaves the bottom -
+  // `setAtBottom(false)` over an `atBottom` that is already false is a no-op
+  // React bails out of, so scrolling from halfway up to the top runs no effect
+  // at all and a reading taken only there would be a screen and a half stale.
+  const fromBottom = useRef(0);
+  // The oldest message this view has drawn, which is how a prepend is told from
+  // an arrival: history changes the START of the transcript and nothing else.
+  const heldOldest = useRef<string | undefined>(undefined);
 
   // Within a few pixels counts as the bottom: a row's fractional height leaves
   // the end a pixel or so short of an exact comparison, which would decide the
@@ -136,28 +174,83 @@ export function MessageList({ events, selected, onSelect, onCite, me, onSeen }: 
   }, []);
 
   const onScroll = useCallback(() => {
+    const el = scroller.current;
     const bottomNow = atEnd();
     following.current = bottomNow;
+    if (el) fromBottom.current = el.scrollHeight - el.scrollTop;
     setAtBottom(bottomNow);
     // Arriving under your own steam clears the badge - it is a way back, not
     // a receipt, so it should not need dismissing once you are there.
     if (bottomNow) setPending(0);
-  }, [atEnd]);
+    // NEAR THE TOP IS A REQUEST FOR HISTORY. The room opens on a window, so the
+    // reader running out of transcript is them asking for the page before it.
+    //
+    // Only from a real scroll, and that is the guard rather than an accident: a
+    // freshly opened room renders at scrollTop 0 for one frame before it pins
+    // itself to the end, and a check on the reading alone would fire there and
+    // fetch a page nobody asked for. Setting scrollTop programmatically does
+    // fire this, but by then the reading is the bottom of the transcript.
+    //
+    // It cannot run away with itself either. A page that arrives leaves the
+    // reader a window's worth of messages below the top, because the effect
+    // below puts them back where they were looking, so the next fetch needs
+    // another scroll. ChatRoom holds one read at a time and stops asking at the
+    // beginning of the room.
+    if (onOlder && (scroller.current?.scrollTop ?? Number.POSITIVE_INFINITY) < 240) onOlder();
+  }, [atEnd, onOlder]);
 
   const jumpToBottom = () => {
     toEnd();
     setPending(0);
   };
 
-  // The newest message on screen, which is the one a reader at the bottom has
-  // got to.
+  // The two ends of what is on screen. Which of them moved says what happened:
+  // a new end is somebody speaking, a new start is history arriving because the
+  // reader asked for it, and the two want opposite treatment.
   const newest = events.at(-1)?.id;
+  const oldest = events[0]?.id;
 
-  const seen = useRef(count);
+  // HOLD THE READER ON THE MESSAGE THEY WERE LOOKING AT.
+  //
+  // Prepending a page pushes everything on screen down by the height of what
+  // arrived, so a reader who was mid-sentence at the top of the viewport is
+  // suddenly a window further down the room. The fix is the invariant that
+  // survives content being added ABOVE: the distance from the top of the
+  // viewport to the BOTTOM of the transcript does not change.
+  //
+  // A layout effect, not an effect: it runs before the browser paints, so the
+  // reader never sees the displaced frame. The distance it restores is the one
+  // taken before this page landed - the last thing this effect does on every
+  // render, and again on every scroll - so the reading is always of the DOM as
+  // the reader last saw it.
+  //
+  // IT DOES NOT FIGHT THE PIN, it applies it first. Following the room wins
+  // outright - a reader at the end stays at the end, and the effect below
+  // re-pins them there on every arrival - so a prepend that lands while they
+  // are at the bottom is pinned here rather than left to that effect, which
+  // runs AFTER the browser paints and would show one frame of the transcript
+  // shoved down by the height of what arrived.
+  useLayoutEffect(() => {
+    const el = scroller.current;
+    if (!el) return;
+    if (heldOldest.current && oldest !== heldOldest.current) {
+      if (following.current) toEnd();
+      else el.scrollTop = el.scrollHeight - fromBottom.current;
+    }
+    heldOldest.current = oldest;
+    fromBottom.current = el.scrollHeight - el.scrollTop;
+  });
+
+  const seen = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (count === 0) return;
-    const added = count - seen.current;
-    seen.current = count;
+    const was = seen.current;
+    seen.current = newest;
+    // RE-PIN ON EVERY ARRIVAL, NOT ONCE. A room does not land in one answer -
+    // the poll brings the next batch a moment later - and a view that scrolled
+    // itself only on the first one is left short by the height of everything
+    // after it. Measured at 5,151px short on a room seeded past one page.
+    //
     // The ref, not the state: a batch of history landing one frame after a
     // scroll was measured against a reading React had not committed yet, and
     // the room decided the reader had wandered off. That is how a plain reload
@@ -168,10 +261,18 @@ export function MessageList({ events, selected, onSelect, onCite, me, onSeen }: 
       // Read, as opposed to delivered: this is a reader sitting at the end
       // while something arrives, which is the whole of what "seen" means.
       if (newest) onSeen?.(newest);
-    } else if (added > 0) {
-      setPending((n) => n + added);
+      return;
     }
-  }, [count, newest, onSeen, toEnd]);
+    // NOTHING NEW IS AT THE NEW END, so nothing arrived. This is a page of
+    // history the reader asked for, and counting it as unread is the "319 new
+    // messages" bug wearing the other hat: the badge would offer to jump you to
+    // the latest message over messages that are older than everything on
+    // screen. The layout effect above has already held their place.
+    if (!was || was === newest) return;
+    const at = events.findIndex((event) => event.id === was);
+    const added = at >= 0 ? count - at - 1 : count;
+    if (added > 0) setPending((n) => n + added);
+  }, [count, newest, events, onSeen, toEnd]);
 
   // The other way to reach the newest message: scrolling back down to it. It is
   // its own effect rather than a dependency of the one above, because that one
@@ -196,6 +297,37 @@ export function MessageList({ events, selected, onSelect, onCite, me, onSeen }: 
         onScroll={onScroll}
         className="flex flex-1 flex-col gap-2 overflow-y-auto p-4"
       >
+        {/*
+          The top of the window, and it is ALWAYS DRAWN once this transcript can
+          page - either "there is more" or "this is where the room starts".
+          Both, and never neither, because the row has a height: one that
+          appeared when history ran out would shrink the transcript by its own
+          height at the exact moment the reader is sitting at the top of it, and
+          moving somebody who is reading is the complaint this whole view has
+          been fixed for twice - see the pill below, which lives outside the
+          scroller for the same reason.
+
+          It is also the way back for a transcript that does not scroll. The
+          scroll handler is what normally asks for the page before this one, and
+          a room whose window fits inside the viewport fires no scroll events at
+          all - so without a control here its history would be unreachable.
+        */}
+        {onOlder ? (
+          <div className="pb-1 text-center text-muted-foreground text-xs">
+            {moreOlder ? (
+              <button
+                type="button"
+                onClick={onOlder}
+                disabled={loadingOlder}
+                className="rounded border border-border px-2 py-0.5 hover:border-primary/50 hover:text-foreground disabled:opacity-60"
+              >
+                {loadingOlder ? "loading older messages" : "older messages"}
+              </button>
+            ) : (
+              <span>{room ? `the beginning of #${room}` : "the beginning of the room"}</span>
+            )}
+          </div>
+        ) : null}
         <AnimatePresence initial={false}>
           {events.map((event) => {
             const agent = isAgent(event);
