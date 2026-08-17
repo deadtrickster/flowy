@@ -394,6 +394,50 @@ export function refPath(ref: string | undefined): string | undefined {
 }
 
 /**
+ * A repro run's status, as cmd/handoff-runner reports it.
+ *
+ * CONFIRMED, NOT-CONFIRMED AND ERROR ARE THREE DIFFERENT THINGS and ReproPanel
+ * must never fold one into another. confirmed/not-confirmed are both verdicts
+ * about the FINDING - the bug did or did not reproduce. error is a verdict
+ * about the SANDBOX - the docker run broke before it could ask the question -
+ * and drawing it the same way as not-confirmed is a finding silently declared
+ * fixed because its own reproduction environment fell over.
+ */
+export type ReproStatus = "queued" | "running" | "confirmed" | "not-confirmed" | "error";
+
+/**
+ * ReproRun is one row of a finding's repro history: GET /runs?finding=. The
+ * runner keeps every attempt rather than the latest verdict, which is what
+ * lets the per-version table in ReproPanel show a version going red after it
+ * was once green - see internal/store/findingruns.go's own head comment for
+ * why that history is the point.
+ */
+export interface ReproRun {
+  id: string;
+  version: string;
+  sha?: string;
+  status: ReproStatus;
+  confirmed?: boolean;
+  at: string;
+}
+
+/**
+ * ReproVersion is what the runner can say about a version label - "latest", a
+ * release tag, a branch, a bare sha - without running anything: GET /version.
+ * buildable/source_build say whether asking for a run would need a build
+ * first, so the panel can show that rather than let the reader find out from
+ * a run that sits in "queued" for minutes.
+ */
+export interface ReproVersion {
+  sha: string;
+  image: string;
+  binary: string | null;
+  buildable: boolean;
+  source_build: boolean;
+  note: string;
+}
+
+/**
  * Task is one handoff: an artifact, the two people it is between, the thread
  * they talk in and where it got to. artifact_title is joined in by the node
  * through the same permission filter a direct read would use, so it is present
@@ -460,8 +504,14 @@ export const ASSIGN_ROOM = "handoffs";
  */
 export const TODO_PAGE = 1000;
 
-/** The artifact types that have a lifecycle to move through. */
-export const LIFECYCLE_TYPES = ["bug", "feature", "note", "task"];
+/**
+ * The artifact types that have a lifecycle to move through. finding is on
+ * this list because lifecycle.go's lifecycleTypes puts it there - "a finding
+ * behaves exactly like bug" - and a second, out-of-step copy of that set here
+ * is exactly how StatusControl silently stops being offered on a type the
+ * node still moves through open -> triaged -> ... -> done.
+ */
+export const LIFECYCLE_TYPES = ["bug", "feature", "note", "task", "finding"];
 
 export interface NodeCounts {
   ok: boolean;
@@ -847,6 +897,92 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
   return body as T;
 }
 
+const REPRO_BASE_KEY = "flowy.reproBase";
+
+/**
+ * The repro runner is not flowy. cmd/handoff-runner is a separate binary on a
+ * separate trusted host with its own Docker access, so its base URL cannot be
+ * "" (relative to this origin) the way every other call above is - a relative
+ * /run would land on the flowy node, which does not serve it, and a 404 read
+ * as "not confirmed" is exactly the confirmed/not-confirmed/error mixup this
+ * panel exists to prevent.
+ *
+ * Kept as a RUNTIME setting in localStorage, the same way the token above is,
+ * rather than a Vite build-time env var. web/dist is embedded into the flowy
+ * binary with go:embed, so a build-time value would mean one flowy binary per
+ * runner host - every deployment that wants repro runs baking its own
+ * console. A runtime setting lets one build of the console be pointed at
+ * whichever runner a given flowy deployment trusts, changed without a
+ * rebuild, and left unset (see ReproPanel) on every deployment that has none.
+ */
+export function getReproBase(): string {
+  try {
+    return (localStorage.getItem(REPRO_BASE_KEY) ?? "").trim();
+  } catch {
+    return "";
+  }
+}
+
+export function setReproBase(base: string) {
+  const trimmed = base.trim().replace(/\/+$/, "");
+  try {
+    if (trimmed) {
+      localStorage.setItem(REPRO_BASE_KEY, trimmed);
+    } else {
+      localStorage.removeItem(REPRO_BASE_KEY);
+    }
+  } catch {
+    // As with the token: a browser with storage switched off still runs for
+    // the length of the tab, just without the setting surviving a reload.
+  }
+  memoryReproBase = trimmed;
+}
+
+let memoryReproBase = "";
+
+/**
+ * Thrown by every repro call when no runner base is configured, so ReproPanel
+ * can say so plainly rather than let a call fall through to a relative fetch
+ * against flowy itself - see getReproBase above for why that would be worse
+ * than doing nothing.
+ */
+export class ReproUnconfigured extends Error {
+  constructor() {
+    super("no repro runner configured");
+    this.name = "ReproUnconfigured";
+  }
+}
+
+function reproBase(): string {
+  const base = getReproBase() || memoryReproBase;
+  if (!base) throw new ReproUnconfigured();
+  return base;
+}
+
+/** reproRequest is `request` for the runner's door: no flowy auth header (the
+ * runner is a different service with a different audience for any token),
+ * and a base that must be configured or nothing is sent. */
+async function reproRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const response = await fetch(`${reproBase()}${path}`, init);
+  const text = await response.text();
+  const body = parseBody(text, response);
+  if (!response.ok) {
+    throw new ApiError(response.status, body?.error ?? statusText(response));
+  }
+  return body as T;
+}
+
+/** reproText is reproRequest for the one endpoint that answers in plain text
+ * rather than JSON - the run log. */
+async function reproText(path: string): Promise<string> {
+  const response = await fetch(`${reproBase()}${path}`);
+  const text = await response.text();
+  if (!response.ok) {
+    throw new ApiError(response.status, text.trim().slice(0, 200) || statusText(response));
+  }
+  return text;
+}
+
 export const api = {
   whoami: () => request<Whoami>("/api/whoami"),
 
@@ -1029,6 +1165,20 @@ export const api = {
     request<{ query: string; artifacts: Artifact[] }>(
       `/api/search?type=report&q=${encodeURIComponent(q)}`,
     ),
+
+  /** findings/searchFindings are reports()/searchReports() over a different
+   * type - the same permission-filtered door, so a findings list is
+   * permission-filtered by construction rather than by anything this page
+   * does. See Findings.tsx for the status/kind/severity/project/tag filters,
+   * which narrow the artifacts these two already returned rather than
+   * widening what either endpoint is asked for - ArtifactQuery has no
+   * severity or tag column to ask it with. */
+  findings: () => request<{ artifacts: Artifact[] }>("/api/artifacts?type=finding"),
+  searchFindings: (q: string) =>
+    request<{ query: string; artifacts: Artifact[] }>(
+      `/api/search?type=finding&q=${encodeURIComponent(q)}`,
+    ),
+
   presence: () => request<Presence>("/api/presence"),
   /** Todos are memory artifacts of kind todo - the same store, filtered by
    * kind rather than by a type of their own, because a todo is a memory
@@ -1306,6 +1456,59 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(post),
     }),
+
+  /**
+   * The repro runner's door - cmd/handoff-runner, not this node. Every one of
+   * these throws ReproUnconfigured when no base is set; see reproBase above
+   * and ReproPanel, which is the only caller and the only place that
+   * decides what to show for it.
+   */
+
+  /** Enqueue a repro run of `finding` against `version`. */
+  reproRun: (finding: string, version: string) =>
+    reproRequest<{ id: string }>("/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ finding, version }),
+    }),
+
+  /** A finding's repro history, newest call first as the runner orders it. */
+  reproRuns: (finding: string) =>
+    reproRequest<ReproRun[]>(`/runs?finding=${encodeURIComponent(finding)}`),
+
+  /** One run's log, plain text. Polled, not streamed - see ReproPanel. */
+  reproLog: (id: string) => reproText(`/run/${encodeURIComponent(id)}/log`),
+
+  /**
+   * A self-contained docker-compose repro package for one finding at one
+   * version, as a downloadable blob. Not JSON on success, so this bypasses
+   * reproRequest and reads the response itself - the filename comes off
+   * Content-Disposition when the runner sends one, and a fallback name
+   * otherwise so the download always has one.
+   */
+  reproPackage: async (finding: string, version: string) => {
+    const response = await fetch(
+      `${reproBase()}/package?finding=${encodeURIComponent(finding)}&version=${encodeURIComponent(version)}`,
+      { cache: "no-store" },
+    );
+    if (!response.ok) {
+      const text = await response.text();
+      let message = text.trim().slice(0, 200) || statusText(response);
+      try {
+        message = JSON.parse(text)?.error ?? message;
+      } catch {
+        // text wasn't JSON either - the slice above is what there is to say.
+      }
+      throw new ApiError(response.status, message);
+    }
+    const blob = await response.blob();
+    const disposition = response.headers.get("content-disposition") ?? "";
+    const named = /filename="?([^";]+)"?/.exec(disposition)?.[1];
+    return { blob, filename: named ?? `repro-${finding}-${version}.tgz` };
+  },
+
+  /** What the runner can say about a version label without running anything. */
+  reproVersion: (v: string) => reproRequest<ReproVersion>(`/version?v=${encodeURIComponent(v)}`),
 };
 
 /** isAgent reads the speaker's kind off the message the node stamped it with. */

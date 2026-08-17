@@ -8,6 +8,7 @@ import { ChatRoom } from "@/routes/ChatRoom";
 import { DiagramView } from "@/routes/DiagramView";
 import { Diagrams } from "@/routes/Diagrams";
 import { Direct } from "@/routes/Direct";
+import { Findings } from "@/routes/Findings";
 import { Home } from "@/routes/Home";
 import { Inbox } from "@/routes/Inbox";
 import { Memory } from "@/routes/Memory";
@@ -59,6 +60,7 @@ export default function App() {
           <Route path="/todos/merge" element={<Todos />} />
           <Route path="/memory" element={<Memory />} />
           <Route path="/reports" element={<Reports />} />
+          <Route path="/findings" element={<Findings />} />
           {/*
             A diagram is a document with an id, so it is a path and not a
             modal: a drawing somebody wants a second opinion on is a link they

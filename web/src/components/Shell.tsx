@@ -1,6 +1,7 @@
 import {
   Activity as ActivityIcon,
   Brain,
+  Bug,
   FileText,
   GitBranch,
   Hash,
@@ -94,6 +95,10 @@ export function Shell({ children }: { children: ReactNode }) {
           <NavLink to="/reports" className={navClass}>
             <FileText className="h-4 w-4" />
             reports
+          </NavLink>
+          <NavLink to="/findings" className={navClass}>
+            <Bug className="h-4 w-4" />
+            findings
           </NavLink>
           <NavLink to="/diagrams" className={navClass}>
             <Shapes className="h-4 w-4" />
