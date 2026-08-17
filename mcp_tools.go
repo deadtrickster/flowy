@@ -93,6 +93,18 @@ var tools = []tool{
 				"Empty means unclassified, which is legal and is what most items are. "+
 				"Leaving it out on an update keeps what the item is filed as.",
 				store.TodoCategories),
+			"branch": str("MERGE REQUESTS ONLY. The branch this would land. A merge " +
+				"request that does not say one is refused, and these four are refused " +
+				"on any other kind - nothing would read them there."),
+			"target": str("MERGE REQUESTS ONLY. What it lands on. Default master."),
+			"gated_tip": str("MERGE REQUESTS ONLY. The commit THE GATE ACTUALLY " +
+				"MEASURED - not what the branch was cut from, not what it hopes to " +
+				"land on. It is the one thing that decides whether this may land: if " +
+				"the target has moved since, the merge is refused and the branch is " +
+				"re-gated. Filing it without one is normal; landing without one is not."),
+			"gate_run": str("MERGE REQUESTS ONLY. The run that produced the verdict, so " +
+				"a claim of green points at the log that says so rather than at " +
+				"somebody's memory of it."),
 			"id": str("Update the item with this id instead of creating one. An item " +
 				"somebody else wrote takes status, assignee and category - the queue " +
 				"metadata anybody who can read it may move - and refuses everything else."),
@@ -249,6 +261,18 @@ type memWriteArgs struct {
 	// an update that leaves the argument out has to keep the item filed as
 	// whatever it is filed as.
 	Category *string `json:"category"`
+	// What a MERGE request is about: the branch, and the verdict that measured
+	// it. Plain strings rather than pointers, because unlike assignee and
+	// category there is no meaningful "set it back to empty" here - a merge
+	// request with no branch is not a merge request, and a gate verdict is
+	// something that happened rather than something anybody clears.
+	//
+	// GatedTip is the tip THE GATE MEASURED, and it is the only one of these
+	// that decides anything: see store.MergeAdmissible.
+	Branch   string `json:"branch"`
+	Target   string `json:"target"`
+	GatedTip string `json:"gated_tip"`
+	GateRun  string `json:"gate_run"`
 }
 
 // memWrite creates a memory item, or replaces one the principal owns.
@@ -425,6 +449,14 @@ func memWrite(ctx context.Context, m *mcpServer, p *store.Principal, raw json.Ra
 			fields = map[string]any{}
 		}
 		fields[store.CategoryField] = category
+	}
+	// What a merge request is about. These four go through the same door as
+	// everything else and are refused on anything that is not a merge item,
+	// rather than stored quietly on a todo where nothing will ever read them: a
+	// field that lands somewhere it is never consulted is indistinguishable from
+	// a field that was ignored, and today has enough of those.
+	if err := mergeFields(art, &fields, a); err != nil {
+		return nil, err
 	}
 	if len(fields) > 0 {
 		raw, err := json.Marshal(fields)
