@@ -489,6 +489,7 @@ const inboxUsage = `flowy inbox - block until somebody says something to you
 
 usage:
   flowy inbox --as NAME [--deadline S] [--new] [--to-me] [--room R]
+  flowy inbox replay --as NAME [--last N] [--since TIME] [--room R]
 
   --as NAME     the waiter's name. Its place in the log is kept on the node
                 under this name, so a restart resumes rather than replays
@@ -509,6 +510,11 @@ exit codes:
 
 Only messages go to stdout. The count of what went past, the reminder and every
 error go to stderr, so a hook can read stdout as a stream of whole messages.
+
+The cursor moves on delivery, not on reading, so an agent that could not read -
+rate limited, killed, asleep - comes back to a room that looks empty. Everything
+delivered is spooled locally first: "flowy inbox replay --as NAME" reads it back
+without touching the node or moving any cursor.
 `
 
 // Two clocks, and they are not the same kind of thing - which is the mistake
@@ -548,6 +554,11 @@ const (
 // to a node rather than to a DSN. That is also what makes it runnable on the
 // machine the agent is actually on.
 func inboxCmd(args []string) error {
+	// `replay` before the flag set, because it takes different flags and reads
+	// a local file rather than the node - see inboxreplay.go for why it exists.
+	if len(args) > 0 && args[0] == "replay" {
+		return inboxReplayCmd(args[1:])
+	}
 	fs := flag.NewFlagSet("inbox", flag.ContinueOnError)
 	as := fs.String("as", "", "the waiter's name, which is what holds its place in the log")
 	deadline := fs.Int("deadline", defaultInboxDeadline, "seconds to wait before giving up")
