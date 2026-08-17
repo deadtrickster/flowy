@@ -201,11 +201,14 @@ else's session transcript.
 - `worklog_read {limit?}` - the most recent entries, newest first, default 20.
   **Read this when you start.** It tells you what the last few sessions did,
   where they stopped, and the ids of the work they were about.
-- `worklog_append {what, next?, as_of?, refs?}` - **append before you stop**, and
-  after anything a later seat would need to know. `what` is what changed, in the
-  past tense. `next` is what to pick up and what is in the way of it. `as_of` is
-  the commit, version or run id the entry is true of. `refs` is a list of
-  artifact ids - the bug, the report, the memory item this shift was about.
+- `worklog_append {what, next?, as_of?, branch?, refs?}` - **append before you
+  stop**, and after anything a later seat would need to know. `what` is what
+  changed, in the past tense. `next` is what to pick up and what is in the way of
+  it. `as_of` is the commit, version or run id the entry is true of. `branch` is
+  the branch or worktree you worked in, when you worked in one - several seats
+  run at once, and it is what lets a reader narrow to one of them. `refs` is a
+  list of artifact ids - the bug, the report, the memory item this shift was
+  about.
 
 Two rules the surface enforces rather than suggests. Every entry carries its
 actor, taken from your token, so an entry cannot be put in another seat's mouth.
@@ -225,7 +228,9 @@ against "what happened lately".
 
 Entries also show up on the timeline (`activity {kind: "worklog"}`), in the
 console and in the terminal client, because an entry is an event like everything
-else here.
+else here. The console has a page of its own for them at `/worklog` - newest
+first, narrowable by branch, defaulting to every branch - so a person can read
+the chronology without asking an agent to read it out.
 
 Everything is permission-filtered on the way out of the database. A result you
 did not get is a result you may not see, and nothing tells you it was there.

@@ -407,6 +407,25 @@ export interface TraceSummary {
 }
 
 /**
+ * WorklogMeta is what a worklog entry says, as the node stamped it onto the
+ * event. The timeline hands meta back verbatim, so the worklog view reads the
+ * entry's own fields from there rather than parsing them back out of the body
+ * the way a surface that knows nothing about the kind has to.
+ *
+ * Every field but what is optional in the strong sense: an entry that arrived
+ * from a peer running a build older than the field has none, and a reader
+ * drawing a gap for it would be inventing one.
+ */
+export interface WorklogMeta {
+  what?: string;
+  next?: string;
+  as_of?: string;
+  /** The branch or worktree the shift worked in, on the entries that name one. */
+  branch?: string;
+  refs?: string[];
+}
+
+/**
  * ActivityItem is one line of the timeline: a turn, a log line, a message, a
  * steer, or a worklog entry. The worklog kind is read-only here - entries are
  * written with the worklog_append tool, which checks the artifact ids they
@@ -431,6 +450,8 @@ export interface ActivityItem {
   seq_hlc: number;
   node: string;
   created: string;
+  /** What the node stamped on the event. A worklog entry keeps its fields here. */
+  meta?: WorklogMeta & { actor_kind?: string; actor_user?: string; actor_name?: string };
 }
 
 export interface ActivityPage {
@@ -695,7 +716,9 @@ export const api = {
     ),
 
   /** activity reads the timeline: turns, logs, chat and steers, oldest first. */
-  activity: (params: { q?: string; kind?: string; room?: string; thread?: string } = {}) => {
+  activity: (
+    params: { q?: string; kind?: string; room?: string; thread?: string; order?: string } = {},
+  ) => {
     const search = new URLSearchParams();
     for (const [key, value] of Object.entries(params)) {
       if (value) search.set(key, value);
@@ -703,6 +726,17 @@ export const api = {
     const query = search.toString();
     return request<ActivityPage>(`/api/activity${query ? `?${query}` : ""}`);
   },
+
+  /**
+   * The worklog: the chronology, newest first.
+   *
+   * It is the timeline read narrowed to the one kind, and deliberately not an
+   * endpoint of its own - the permission filter that decides which entries a
+   * token may see is on /api/activity, and a second door onto the same rows is
+   * a second place for that filter to be forgotten. order=recent is what makes
+   * it the NEWEST entries rather than the first page of the oldest ones.
+   */
+  worklog: (q = "") => api.activity({ kind: "worklog", order: "recent", q }),
 
   /**
    * announcements is what the banner reads: the ones that are still active and

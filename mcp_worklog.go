@@ -69,6 +69,11 @@ const maxWorklogField = 4_000
 // contents for the project.
 const maxWorklogRefs = 50
 
+// maxWorklogBranch is the ceiling on the branch or worktree an entry names. It
+// is a git ref or a directory, not a sentence: something longer than this is a
+// description of where the work was, and a description belongs in what.
+const maxWorklogBranch = 200
+
 // defaultWorklogRead is how many entries a read hands back when the caller asks
 // for no particular number - enough for a fresh seat to see the last few shifts
 // and short enough to be read rather than skimmed.
@@ -92,6 +97,9 @@ var worklogTools = []tool{
 			"next": str("What the next seat should pick up, and anything in the way of it."),
 			"as_of": str("What the entry is true of: a commit, a version or a run id. " +
 				"Stated on the entry so no reader has to date it by guesswork."),
+			"branch": str("The branch or worktree this shift worked in, if it worked in " +
+				"one. Several seats run at once on separate branches, so a reader " +
+				"narrowing to one has to be able to tell them apart."),
 			"refs": strArray("Artifact ids this entry is about - the bug, the report, " +
 				"the memory item. Ids you cannot read are refused."),
 		}, []string{"what"}),
@@ -111,10 +119,11 @@ var worklogTools = []tool{
 
 // worklogAppendArgs is what worklog_append takes.
 type worklogAppendArgs struct {
-	What string   `json:"what"`
-	Next string   `json:"next"`
-	AsOf string   `json:"as_of"`
-	Refs []string `json:"refs"`
+	What   string   `json:"what"`
+	Next   string   `json:"next"`
+	AsOf   string   `json:"as_of"`
+	Branch string   `json:"branch"`
+	Refs   []string `json:"refs"`
 }
 
 // worklogEntry is one entry as a reader gets it back: the stream's own fields,
@@ -126,6 +135,7 @@ type worklogEntry struct {
 	What    string   `json:"what"`
 	Next    string   `json:"next,omitempty"`
 	AsOf    string   `json:"as_of,omitempty"`
+	Branch  string   `json:"branch,omitempty"`
 	Refs    []string `json:"refs"`
 	SeqHLC  int64    `json:"seq_hlc"`
 	Node    string   `json:"node"`
@@ -164,6 +174,15 @@ func worklogAppend(ctx context.Context, m *mcpServer, p *store.Principal, raw js
 		}
 	}
 
+	// Where the shift worked, when it worked somewhere in particular. It is
+	// optional and stays optional: an entry written off a branch is still an
+	// entry, and a reader narrowing by branch is narrowing rather than filing.
+	branch := strings.TrimSpace(a.Branch)
+	if len(branch) > maxWorklogBranch {
+		return nil, fmt.Errorf("branch is %d bytes, over the %d ceiling - name the ref "+
+			"or the worktree, and put the story in what", len(branch), maxWorklogBranch)
+	}
+
 	refs, err := worklogRefs(ctx, m, p, a.Refs)
 	if err != nil {
 		return nil, err
@@ -179,6 +198,7 @@ func worklogAppend(ctx context.Context, m *mcpServer, p *store.Principal, raw js
 		"what":       what,
 		"next":       next,
 		"as_of":      strings.TrimSpace(a.AsOf),
+		"branch":     branch,
 		"refs":       refs,
 	})
 	if err != nil {
@@ -297,6 +317,7 @@ func entryOf(e *store.Event) worklogEntry {
 		entry.What = what
 	}
 	entry.Next, entry.AsOf = metaString(fields, "next"), metaString(fields, "as_of")
+	entry.Branch = metaString(fields, "branch")
 	if raw, ok := fields["refs"]; ok {
 		var refs []string
 		if err := json.Unmarshal(raw, &refs); err == nil && refs != nil {

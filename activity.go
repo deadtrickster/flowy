@@ -131,9 +131,10 @@ type activityItem struct {
 // the last reading the caller saw, and the filter is EventFilterSQL - so a run
 // in another project is not on this timeline, a personal item is on nobody's
 // but its owner's, and the thread of a handoff is on the timeline of the two
-// people it is between.
+// people it is between. order= chooses which end of that read the limit cuts
+// at, and nothing else - see below.
 //
-// GET /api/activity?q=&kind=&room=&thread=&since=&limit=
+// GET /api/activity?q=&kind=&room=&thread=&since=&limit=&order=
 func (s *server) handleActivity(w http.ResponseWriter, r *http.Request) {
 	p := principalOf(r)
 	q := r.URL.Query()
@@ -161,7 +162,25 @@ func (s *server) handleActivity(w http.ResponseWriter, r *http.Request) {
 		types = append(types, eventType)
 	}
 
-	list, err := s.db.ListEvents(r.Context(), p, store.EventQuery{
+	// Which end of the log the limit cuts at. Forward from a cursor is what a
+	// timeline is paged with and stays the default; recent is the other end of
+	// the same read, for a reader whose question is "what just happened" - the
+	// worklog view's, and worklog_read's already. The permission filter is
+	// EventFilterSQL in both, so this chooses an end and neither narrows nor
+	// widens what is on the page. Without it a view that says newest first has
+	// to ask for everything and sort, and on a log longer than one page it gets
+	// the OLDEST entries under that heading.
+	recent := false
+	switch q.Get("order") {
+	case "", "log":
+	case "recent":
+		recent = true
+	default:
+		writeJSON(w, http.StatusBadRequest, errorBody("order must be log or recent"))
+		return
+	}
+
+	query := store.EventQuery{
 		Thread:   q.Get("thread"),
 		Room:     q.Get("room"),
 		Types:    types,
@@ -169,7 +188,12 @@ func (s *server) handleActivity(w http.ResponseWriter, r *http.Request) {
 		Since:    since,
 		ScopeAll: scopeAll(r, p),
 		Limit:    intParam(q.Get("limit")),
-	})
+	}
+	read := s.db.ListEvents
+	if recent {
+		read = s.db.RecentEvents
+	}
+	list, err := read(r.Context(), p, query)
 	if err != nil {
 		serverError(w, r, err)
 		return
@@ -179,10 +203,17 @@ func (s *server) handleActivity(w http.ResponseWriter, r *http.Request) {
 	for _, e := range list {
 		items = append(items, itemOf(e))
 	}
+	// A descending page carries no cursor forward - it cuts at its old end, so
+	// its last row is where the look-back stopped and not where the log did.
+	// See store.RecentEvents, which hands one back for the same reason.
+	cursor := cursorOf(since, list)
+	if recent {
+		cursor = since
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"items":  items,
 		"since":  since,
-		"cursor": cursorOf(since, list),
+		"cursor": cursor,
 		"query":  q.Get("q"),
 	})
 }

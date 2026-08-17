@@ -969,10 +969,12 @@ todos_open_and_done() {
 # wl_args - the arguments of one entry, built with jq so ids interpolate
 # without hand-quoting JSON inside a shell string.
 wl_args() {
-	local what=$1 next=${2-} as_of=${3-} ref=${4-}
+	local what=$1 next=${2-} as_of=${3-} ref=${4-} branch=${5-}
 	jq -nc --arg w "$what" --arg n "$next" --arg a "$as_of" --arg r "$ref" \
+		--arg b "$branch" \
 		'{what: $w} + (if $n == "" then {} else {next: $n} end)
 		           + (if $a == "" then {} else {as_of: $a} end)
+		           + (if $b == "" then {} else {branch: $b} end)
 		           + (if $r == "" then {} else {refs: [$r]} end)'
 }
 
@@ -1477,6 +1479,66 @@ the_content_type_is_not_the_clients_to_decide() {
 	want_eq "and still reports what was claimed" \
 		"$(tv '.item.fields.claimed_type')" image/png || return 1
 	printf 'claimed %s, is %s\n' "$(tv '.item.fields.claimed_type')" "$(tv .content_type)"
+}
+
+# An entry carries the branch or worktree the shift worked in, when it worked in
+# one. Several seats run at once on separate branches here, so "which branch was
+# this" is the second thing the next seat asks after "which seat wrote it" - and
+# a reader who cannot tell two branches apart cannot narrow to either.
+#
+# It is optional and stays optional: an entry written off a branch is still an
+# entry and names none rather than a made-up default, which is what lets a
+# reader tell "nowhere in particular" from "a branch called something".
+an_entry_carries_the_branch_it_was_written_on() {
+	recall
+	local args
+	args="$(wl_args "sharpened the quillon on the escapement" "" "" "" wl/escapement)" || return 1
+	want_tool worklog_append "$TOKEN_A" "$args" || return 1
+	want_eq "the branch rode the write" "$(tv .entry.branch)" wl/escapement || return 1
+
+	args="$(wl_args "read the handoff off no branch at all")" || return 1
+	want_tool worklog_append "$TOKEN_A" "$args" || return 1
+	want_eq "an entry with no branch names none" "$(tv .entry.branch)" null || return 1
+
+	# A branch is a ref or a worktree, not a paragraph. The refusal says which,
+	# the way the ceiling on what does.
+	local long
+	long="$(printf 'b%.0s' $(seq 1 201))"
+	args="$(wl_args "worked somewhere with a very long name" "" "" "" "$long")" || return 1
+	want_tool_fails worklog_append "$TOKEN_A" "$args" "over the 200 ceiling" || return 1
+	printf 'the branch rides the entry, and an entry without one says so\n'
+}
+
+# The read a worklog view does: the newest entries, newest first, through the
+# timeline's own endpoint and therefore through the timeline's own permission
+# filter. There is deliberately no worklog endpoint beside it - a second door
+# onto the same rows is a second place for that filter to be missing - so what
+# the view asks for is an ORDER on the read it already had.
+#
+# Without it a page that says "newest first" has to take the first page of the
+# log and sort it, which on a log longer than one page hands back the OLDEST
+# entries under that heading.
+the_timeline_answers_the_worklog_newest_first() {
+	recall
+	api GET "$TOKEN_A" '/api/activity?kind=worklog&order=recent&limit=2' || return 1
+	want_eq "status" "$API_STATUS" 200 || return 1
+	want_eq "the newest entry is first" \
+		"$(jqv '.items[0].meta.what')" "read the handoff off no branch at all" || return 1
+	want_eq "then the one before it" \
+		"$(jqv '.items[1].meta.what')" "sharpened the quillon on the escapement" || return 1
+	want_eq "and the branch is on it, where the write put it" \
+		"$(jqv '.items[1].meta.branch')" wl/escapement || return 1
+
+	# The default is unchanged: the timeline still pages forward from a cursor,
+	# which is the read every other client of it does.
+	api GET "$TOKEN_A" '/api/activity?kind=worklog&limit=2' || return 1
+	want_eq "log order starts at the oldest end" \
+		"$(jqv '.items[0].meta.what')" "wired the quibblewrench into the lexer" || return 1
+
+	# An order nobody implements is refused rather than silently ignored: a read
+	# that quietly answers in the other order is a page that lies about itself.
+	want_status 400 GET "$TOKEN_A" '/api/activity?kind=worklog&order=sideways' || return 1
+	printf 'order=recent is the newest end of the same filtered read: %s\n' "$(jqv .error)"
 }
 
 # ------------------------------------------------------- the project entity
@@ -2977,6 +3039,18 @@ npm_build() {
 console_mounts() {
 	cd "$ROOT/web" || return 1
 	node scripts/render-check.mjs
+}
+
+# Signed out, the worklog says so rather than rendering an empty page.
+#
+# An empty list that means "you are not signed in" and an empty list that means
+# "nothing happened" look identical, and the second is a false statement about a
+# chronology. So the page has to say which, and this check runs with no node and
+# no token at all - which is the state a browser is in when somebody opens the
+# link for the first time.
+console_says_the_worklog_needs_a_token() {
+	cd "$ROOT/web" || return 1
+	node scripts/render-check.mjs "" "" "paste a token to read the worklog" /worklog
 }
 
 # A real browser for the two checks below, downloaded once per machine and
@@ -5667,6 +5741,8 @@ check "biome check web/" biome_check
 check "vite build" npm_build
 check "the build is an index that loads a hashed bundle" console_build_is_hashed
 check "the console mounts in a dom and renders the room view" console_mounts
+check "signed out, the worklog says so instead of rendering an empty page" \
+	console_says_the_worklog_needs_a_token
 check "a browser to run the browser checks in" browser_is_installed
 check "the room poll does not flood a node whose cursor never moves" poll_does_not_spin
 check "a tab open across a deploy reloads itself once, and only once" \
@@ -5870,6 +5946,10 @@ check "an entry says what changed, or it is not one" an_entry_says_what_changed
 check "the read is the recent entries, newest first" the_worklog_reads_recent_first
 check "entries are on the timeline, and cannot be posted onto it" \
 	entries_are_on_the_timeline_and_not_postable_onto_it
+check "an entry carries the branch it was written on" \
+	an_entry_carries_the_branch_it_was_written_on
+check "the timeline answers the worklog newest first" \
+	the_timeline_answers_the_worklog_newest_first
 
 say "proposals, and voting on them"
 check "a proposal is raised in a room, and the room narrows the list" \
@@ -10625,6 +10705,58 @@ console_renders_the_timeline() {
 		"vm_say: try the other approach" /activity
 }
 
+# The worklog, on a page a person can open.
+#
+# It is the fleet's memory across sessions - a fresh seat is meant to read it
+# rather than somebody's session transcript - and it had no human surface at
+# all: written and read over MCP, so the person the fleet works for could not
+# see it without asking an agent to read it out.
+#
+# The three entries the two checks below assert on, on two branches, newest
+# last. Seeded from the gate on purpose: a check with nothing to find reports
+# "nothing present, nothing tested", which is honest and useless.
+WORKLOG_PAGE_NEWEST="rehung the escapement and it keeps time"
+WORKLOG_PAGE_OLDER="stripped the old escapement out"
+WORKLOG_PAGE_OTHER="quenched the mainspring on its own branch"
+WORKLOG_PAGE_BRANCH="wl/escapement"
+WORKLOG_PAGE_OTHER_BRANCH="wl/mainspring"
+readonly WORKLOG_PAGE_NEWEST WORKLOG_PAGE_OLDER WORKLOG_PAGE_OTHER
+readonly WORKLOG_PAGE_BRANCH WORKLOG_PAGE_OTHER_BRANCH
+
+seeds_the_worklog_the_page_has_to_show() {
+	recall
+	local args
+	args="$(wl_args "$WORKLOG_PAGE_OTHER" "" "" "" "$WORKLOG_PAGE_OTHER_BRANCH")" || return 1
+	want_tool worklog_append "$TOKEN_A" "$args" || return 1
+	args="$(wl_args "$WORKLOG_PAGE_OLDER" "" "" "" "$WORKLOG_PAGE_BRANCH")" || return 1
+	want_tool worklog_append "$TOKEN_A" "$args" || return 1
+	# The newest is the agent's, so the page has a seat to name that is not the
+	# person reading it.
+	args="$(wl_args "$WORKLOG_PAGE_NEWEST" "hand the mainspring back" b41c0de \
+		"$MEM_SHARED" "$WORKLOG_PAGE_BRANCH")" || return 1
+	want_tool worklog_append "$TOKEN_A_AGENT" "$args" || return 1
+	want_eq "the newest entry is on its branch" "$(tv .entry.branch)" "$WORKLOG_PAGE_BRANCH" || return 1
+	printf 'three entries on two branches, newest by %s\n' "$AGENT_A"
+}
+
+console_renders_the_worklog() {
+	recall
+	cd "$ROOT/web" || return 1
+	node scripts/render-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" \
+		"$WORKLOG_PAGE_NEWEST" /worklog
+}
+
+# The same claim one layer out, in a browser, asserted on the LIST and its ROWS
+# rather than on the page's text - "worklog" is in the global navigation, so a
+# page-text search for it passes with the list entirely absent, which is the
+# mistake the room's todo panel check was written around.
+browser_renders_the_worklog() {
+	recall
+	cd "$ROOT/web" || return 1
+	node scripts/worklog-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" \
+		"$WORKLOG_PAGE_NEWEST" "$WORKLOG_PAGE_BRANCH" "$WORKLOG_PAGE_OTHER" "$AGENT_A"
+}
+
 say "metrics: what was measured, and for whom"
 check "every group is in the answer, and says whether it was measured" \
 	metrics_answers_every_group
@@ -10685,6 +10817,11 @@ check "the metrics tab mounts and renders what the node measured" \
 	console_renders_the_metrics_tab
 check "the traces tab mounts" console_renders_the_traces_tab
 check "the activity timeline mounts and renders what was said" console_renders_the_timeline
+check "the worklog the page has to show is there to find" \
+	seeds_the_worklog_the_page_has_to_show
+check "the worklog tab mounts and renders a seeded entry" console_renders_the_worklog
+check "and a browser shows it newest first, narrowable by branch" \
+	browser_renders_the_worklog
 
 # ---------------------------------------------------------------- phase 9
 #
