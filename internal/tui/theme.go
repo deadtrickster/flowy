@@ -42,6 +42,14 @@ type Theme struct {
 	Badge     lipgloss.Style
 	Bar       lipgloss.Style
 
+	// The three states a todo is in. They are their own styles rather than
+	// Dim/OK/Badge for the reason the console gives them their own colours: a
+	// status is a fact about the work, not a role in the interface, and OK
+	// already means "this went well" on half a dozen other rows.
+	TodoActive lipgloss.Style
+	TodoOpen   lipgloss.Style
+	TodoDone   lipgloss.Style
+
 	Severity map[string]lipgloss.Style
 }
 
@@ -120,6 +128,20 @@ func NewTheme(profile termenv.Profile, unicode bool) Theme {
 	t.OK = style().Foreground(lipgloss.Color("114"))
 	t.Badge = style().Foreground(lipgloss.Color("179"))
 	t.Bar = style().Foreground(lipgloss.Color("39"))
+	// The queue's three states, in the console's three meanings and as close to
+	// its three colours as a 256-colour cube gets: amber #e0a03f, grey #8b93a7,
+	// green #4fae7a. Amber for what is in flight, because that is where a reader
+	// opening the panel should land first; green for done, which is the one
+	// convention here strong enough to be worth obeying; grey for waiting,
+	// deliberately quiet, because a queue is mostly waiting and if waiting shouts
+	// then nothing does.
+	//
+	// Three distinct colours and not two: done and waiting sharing Dim was the
+	// gap this closes, and a finished item that looks exactly like an untouched
+	// one is a queue with two states in it rather than three.
+	t.TodoActive = style().Foreground(lipgloss.Color("179"))
+	t.TodoOpen = style().Foreground(lipgloss.Color("245"))
+	t.TodoDone = style().Foreground(lipgloss.Color("114"))
 	t.Severity = map[string]lipgloss.Style{
 		"info":        style().Bold(true).Foreground(lipgloss.Color("15")).Background(lipgloss.Color("24")),
 		"warning":     style().Bold(true).Foreground(lipgloss.Color("0")).Background(lipgloss.Color("214")),

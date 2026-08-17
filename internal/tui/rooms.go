@@ -44,8 +44,14 @@ func (m *Model) roomsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if !m.roomTodosOpen {
 			return m, nil
 		}
-		if _, _, todosWidth, _ := m.roomPaneWidths(); todosWidth == 0 {
-			m.say("the todos pane needs a wider terminal than this one")
+		if _, _, todosWidth, threadWidth := m.roomPaneWidths(); todosWidth == 0 {
+			// Which of the two it is, because they are different things to do
+			// about it: one is a key away and the other is not.
+			if threadWidth > 0 {
+				m.say("the plan and the thread do not both fit here - t closes the thread")
+			} else {
+				m.say("the todos pane needs a wider terminal than this one")
+			}
 		}
 		return m, m.roomTodosCmd(m.gen, m.Room())
 	case "n":
@@ -111,11 +117,28 @@ func (m *Model) selectedMessage() *Event {
 
 // roomPaneWidths divides the terminal between the four columns of this view.
 //
-// The side ones give way to the stream in order: the room list appears at 60
-// columns, the thread and the todos panes at 80, and when the conversation
-// would be squeezed under minStreamWidth the todos pane goes first - the thread
-// is the pane somebody opened on purpose to answer one message, and the plan is
-// the one T brings back. Below all of that the stream takes everything.
+// The side panes appear at a width each: the room list at 60 columns, the
+// thread and the todos panes at 80. Past that the terminal is a budget, and
+// when the conversation would be squeezed under minStreamWidth the panes give
+// their columns back in a fixed order - THE ROOM LIST FIRST, then the todos
+// pane, and the thread last. Below all of it the stream takes everything.
+//
+// The room list goes first because it is the one pane whose content is already
+// somewhere else on the screen: the stream header names the room being read,
+// and n, p and o move between rooms without it. Losing it costs a reader a
+// glance and nothing else. The todos pane goes before the thread because the
+// thread is a pane somebody opened on purpose to read one message's answers,
+// while the plan is open by default - and T closes it, which is also how
+// somebody on a narrow terminal gets the room list back.
+//
+// That order is the whole reason the plan is on an 80-column terminal at all,
+// which is the width this client is written for and the width the pane used to
+// vanish at. Three panes and a readable conversation do not fit in 80 columns:
+// 14 for the list plus minStreamWidth for the stream plus the rules between
+// them leaves 16 for a todo, which is a status word and half a name. A pane
+// that draws and is clipped to nothing is not a pane - present-but-clipped and
+// absent look identical to the person in front of it - so the columns go where
+// something can be read rather than to whatever fits.
 //
 // It is one function rather than arithmetic inside the render because the key
 // that opens the pane has to know whether opening it will show anything: a key
@@ -123,13 +146,13 @@ func (m *Model) selectedMessage() *Event {
 // says why.
 func (m *Model) roomPaneWidths() (listWidth, streamWidth, todosWidth, threadWidth int) {
 	if m.width >= 60 {
-		listWidth = 14
+		listWidth = roomListWidth
 	}
 	if m.threadOpen && m.width >= 80 {
 		threadWidth = m.width / 3
 	}
 	if m.roomTodosOpen && m.width >= 80 {
-		todosWidth = m.width / 4
+		todosWidth = max(m.width/4, minTodosWidth)
 	}
 	rule := func(width int) int {
 		if width > 0 {
@@ -142,6 +165,14 @@ func (m *Model) roomPaneWidths() (listWidth, streamWidth, todosWidth, threadWidt
 			rule(listWidth) - rule(threadWidth) - rule(todosWidth)
 	}
 	streamWidth = streamOf()
+	// The list gives way to another pane and never to the stream on its own: at
+	// 60 columns with nothing else open it is exactly what the 60-column
+	// threshold above put there, and taking it away again to widen a stream
+	// nobody asked to widen would leave the threshold meaning nothing.
+	if streamWidth < minStreamWidth && listWidth > 0 && (todosWidth > 0 || threadWidth > 0) {
+		listWidth = 0
+		streamWidth = streamOf()
+	}
 	if streamWidth < minStreamWidth && todosWidth > 0 {
 		todosWidth = 0
 		streamWidth = streamOf()
@@ -181,22 +212,46 @@ func (m *Model) roomsView(height int) []string {
 	return lines
 }
 
-// minStreamWidth is how narrow the conversation may get before the todos pane
-// gives its column back: a timestamp, the whole of the name column, and two
-// dozen columns of what somebody said. The room is what this view is, and a
-// plan beside messages clipped to three words is two panes and no
-// conversation - so at 80 columns the pane is not there unless the thread pane
-// is not either, and it never is at 40.
-const minStreamWidth = 48
+// The widths the panes are worth, and the floor under the conversation.
+//
+// minStreamWidth is how narrow the conversation may get before a pane gives its
+// column back: a timestamp, the whole of the name column, and two dozen columns
+// of what somebody said. The room is what this view is, and a plan beside
+// messages clipped to three words is two panes and no conversation.
+//
+// minTodosWidth is the floor under the plan, and it is the width of a row that
+// says something: the status word (todoStatusWidth), a space, and the same
+// 14-column budget the todos view gives a handle - 21 columns for "active" and
+// a name, with a little over so a title line is more than two words. A quarter
+// of the terminal is more than that from 96 columns up and less than it below,
+// so the floor is what puts a readable pane on an 80-column terminal.
+const (
+	minStreamWidth = 48
+	minTodosWidth  = 24
+	roomListWidth  = 14
+)
+
+// todoStatusWidth is the status column in the plan pane: "active" is the
+// longest of the three words, and fixing the column is what makes the names
+// under each other line up instead of starting wherever the status ended.
+const todoStatusWidth = 6
 
 // roomTodoLines is the plan pane: the todos raised in this room, in the same
 // reading order the todos view puts a queue in - active, then open, then done -
-// and with the owner on the row, because "who has this" is the question asked
-// of a plan beside a conversation.
+// and with whoever is carrying each one on the row, because "who has this" is
+// the question asked of a plan beside a conversation. The name is the assignee
+// the panel set if there is one and the body's OWNER line if there is not - see
+// todoOwner, which is the order the node and the console read it in too.
 //
 // It is narrow, so it is two lines per item rather than a truncated one: the
-// status and the owner on the first, the title on the second. A title cut at
+// status and the name on the first, the title on the second. A title cut at
 // twenty columns is a row that says nothing.
+//
+// The status is a WORD in a colour and never a colour alone. That is the half
+// of this that survives a monochrome terminal, a NO_COLOR environment, a pipe,
+// and a reader who cannot separate amber from green - and all four of those are
+// ordinary here, since the client is written for whatever terminal is at the
+// other end of an ssh session.
 func (m *Model) roomTodoLines(width, height int) []string {
 	if width <= 0 {
 		return nil
@@ -221,15 +276,15 @@ func (m *Model) roomTodoLines(width, height int) []string {
 		}
 		owner := todoOwner(a)
 		if owner == "" {
+			// One dash for every way the queue says nobody - see nobodyWords.
 			owner = "-"
 		}
-		row := m.theme.clip(status+" "+owner, width)
-		if todoRank(a.Status) == 0 {
-			row = m.theme.OK.Render(row)
-		} else {
-			row = m.theme.Dim.Render(row)
-		}
-		lines = append(lines, row)
+		// pad rather than %-6s, for the reason the stream's name column is
+		// padded: a clipped word ends in an ellipsis that is one column and
+		// three bytes, and a column padded by byte count stops lining up the
+		// moment something is too long for it.
+		row := pad(m.theme.clip(status, todoStatusWidth), todoStatusWidth) + " " + owner
+		lines = append(lines, m.theme.todoStyle(status).Render(m.theme.clip(row, width)))
 		if len(lines) >= height {
 			break
 		}
