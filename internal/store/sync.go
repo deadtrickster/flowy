@@ -1415,6 +1415,15 @@ var mintedEventTypes = map[string]bool{
 	// decision was recorded, counted, with those refusals walked past.
 	EventProposalVote:  true,
 	EventProposalClose: true,
+	// An edge in the queue, and the entry that takes one back. Both are minted
+	// for the first reason and for a second one that is sharper: the refusals
+	// that make the graph safe to automate against - both ends readable, both
+	// ends queue items, no self-edge, no cycle, and a dependent with a project so
+	// the edge reaches the todo's readers - are ALL on the verb. An event a
+	// client could hand over would be an edge with none of them asked, and the
+	// thing reading that edge is a machine deciding whether to start work.
+	EventDepAdd:    true,
+	EventDepRemove: true,
 }
 
 // MintedEventType reports whether an event type is one this node's own handlers

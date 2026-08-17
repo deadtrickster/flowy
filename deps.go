@@ -1,0 +1,200 @@
+package main
+
+// DEPENDS-ON over HTTP: the two writes that make an edge, the log behind one
+// todo's edges, and the ready query.
+//
+// The rules are all in the store - see internal/store/deps.go, which is where
+// they are and why they are those rules - so this file is argument checking and
+// status codes. That is deliberate and it is the same shape the proposal surface
+// has: an agent going through MCP and a drainer going through HTTP must not be
+// able to reach two ideas of what blocks what, and the way to guarantee that is
+// that neither of them holds one.
+//
+// No console view in this pass. Another run is on the cross-project read and a
+// third is on the write path, and a fourth hand in the console is how a bad merge
+// happens - so the data and the API land here and the view does not.
+
+import (
+	"context"
+	"errors"
+	"net/http"
+	"strconv"
+	"strings"
+
+	"github.com/deadtrickster/flowy/internal/store"
+)
+
+// depsView is one todo's dependencies as every surface hands them back: the
+// item, whether it can be started, what is in the way, and the log the graph was
+// folded out of.
+//
+// The log is in it rather than behind a second call for proposalView's reason.
+// The adjacency is the derived thing and the entries are the record: a reader
+// given only "these two block it" cannot answer who said so or when, and that
+// question - WHO said A blocks B - is the whole reason an edge is an event.
+type depsView struct {
+	Item     *store.Artifact  `json:"item"`
+	Ready    bool             `json:"ready"`
+	Assignee string           `json:"assignee"`
+	Blockers []store.Blocker  `json:"blockers"`
+	Log      []store.DepEntry `json:"log"`
+}
+
+// viewDeps assembles it. Both surfaces call this, so a console and an agent are
+// looking at one answer rather than at two that agree today.
+func viewDeps(ctx context.Context, db *store.DB, p *store.Principal, id string) (*depsView, error) {
+	ready, err := db.Readiness(ctx, p, id)
+	if err != nil {
+		return nil, err
+	}
+	log, err := db.DepLog(ctx, p, id)
+	if err != nil {
+		return nil, err
+	}
+	return &depsView{
+		Item: ready.Item, Ready: ready.Ready, Assignee: ready.Assignee,
+		Blockers: ready.Blockers, Log: log,
+	}, nil
+}
+
+// depRequest is what naming an edge takes: the other end.
+type depRequest struct {
+	Blocker string `json:"blocker"`
+}
+
+// handleAddDep records that a todo depends on another one.
+//
+// POST /api/todo/{id}/deps  {blocker}
+func (s *server) handleAddDep(w http.ResponseWriter, r *http.Request) {
+	p := principalOf(r)
+	var req depRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody("bad request body: "+err.Error()))
+		return
+	}
+	e, err := s.db.AddDep(r.Context(), p, r.PathValue("id"), strings.TrimSpace(req.Blocker))
+	if err != nil {
+		writeDepError(w, r, err)
+		return
+	}
+	// The state the edge leaves the todo in, so a caller sees what it did without
+	// a second call - including that adding one blocker did not make the todo
+	// ready, which is the answer that most often surprises.
+	view, err := viewDeps(r.Context(), s.db, p, e.Artifact)
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"event": e, "deps": view})
+}
+
+// handleRemoveDep records that it no longer does. The edge is not deleted -
+// there is nothing to delete, it was an entry - and both entries are in the log
+// afterwards.
+//
+// DELETE /api/todo/{id}/deps/{blocker}
+func (s *server) handleRemoveDep(w http.ResponseWriter, r *http.Request) {
+	p := principalOf(r)
+	e, err := s.db.RemoveDep(r.Context(), p, r.PathValue("id"), r.PathValue("blocker"))
+	if err != nil {
+		writeDepError(w, r, err)
+		return
+	}
+	view, err := viewDeps(r.Context(), s.db, p, e.Artifact)
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"event": e, "deps": view})
+}
+
+// handleGetDeps reads one todo's edges and the log behind them.
+//
+// GET /api/todo/{id}/deps
+func (s *server) handleGetDeps(w http.ResponseWriter, r *http.Request) {
+	view, err := viewDeps(r.Context(), s.db, principalOf(r), r.PathValue("id"))
+	if err != nil {
+		writeDepError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, view)
+}
+
+// handleReady is the queue: the outstanding work this principal may read, each
+// item saying whether it can be started and what is in the way.
+//
+// GET /api/ready?room=build&scope=project&ready=true&limit=50
+//
+// Everything comes back by default, ready or not, because a drainer told only
+// "here are three ready todos" cannot tell a queue with nothing to do from a
+// queue that has stopped. ?ready=true narrows it for the caller that has already
+// decided it does not care why.
+//
+// The answer is this reader's and nobody else's: two principals looking at the
+// same queue at the same moment correctly disagree, because a blocker one of
+// them cannot see holds its todo for that one and not for the other.
+func (s *server) handleReady(w http.ResponseWriter, r *http.Request) {
+	p := principalOf(r)
+	q := store.ArtifactQuery{ScopeAll: scopeAll(r, p)}
+
+	room, err := roomArg(r.URL.Query().Get("room"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody(err.Error()))
+		return
+	}
+	q.Room = room
+	if scope := r.URL.Query().Get("scope"); scope != "" && scope != "all" {
+		v, err := oneOf("scope", scope, memScopes, "")
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, errorBody(err.Error()))
+			return
+		}
+		q.Visibility = visibilityOf(v)
+	}
+	if limit := r.URL.Query().Get("limit"); limit != "" {
+		n, err := strconv.Atoi(limit)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, errorBody("limit is a number"))
+			return
+		}
+		q.Limit = n
+	}
+
+	rows, err := s.db.Ready(r.Context(), p, q)
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	ready := len(store.ReadyOnly(rows))
+	if r.URL.Query().Get("ready") == "true" {
+		rows = store.ReadyOnly(rows)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"count": len(rows), "ready": ready, "items": rows,
+	})
+}
+
+// writeDepError turns a store refusal into a status code and a sentence.
+//
+// An id that names nothing this principal may read is a 404 and says nothing
+// more, which is the answer a read of it would give: naming an id in an edge is
+// not a way to find out what else that id might be. The rest are the caller's
+// mistake and say what it was, because each of them is something the caller can
+// fix - the two ends are the same todo, the loop already goes the other way, the
+// edge is already there.
+func writeDepError(w http.ResponseWriter, r *http.Request, err error) {
+	var (
+		notATodo store.NotATodoError
+		refusal  store.DepRefusal
+	)
+	switch {
+	case errors.As(err, &notATodo):
+		writeJSON(w, http.StatusNotFound, errorBody(notATodo.Error()))
+	case errors.Is(err, store.ErrNotFound):
+		writeJSON(w, http.StatusNotFound, errorBody("no such todo"))
+	case errors.As(err, &refusal):
+		writeJSON(w, http.StatusBadRequest, errorBody(refusal.Error()))
+	default:
+		serverError(w, r, err)
+	}
+}

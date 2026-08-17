@@ -446,6 +446,12 @@ var mintedTypes = map[string]bool{
 	// reading live there - see store.CastVote.
 	store.EventProposalVote:  true,
 	store.EventProposalClose: true,
+	// An edge in the queue and the entry that takes one back. Every refusal that
+	// makes the graph safe to drain is on the verb - see store.writeDep - so an
+	// edge written by hand is an edge with none of them asked, read by a machine
+	// deciding whether to start work.
+	store.EventDepAdd:    true,
+	store.EventDepRemove: true,
 }
 
 // handleAppendEvent appends to the log. The log is append-only: there is no

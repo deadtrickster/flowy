@@ -1288,6 +1288,299 @@ a_vote_cannot_be_written_by_hand() {
 	printf 'a hand-written vote: %s\n' "$(jqv .error)"
 }
 
+# ------------------------------------------------ DEPENDS-ON, and the ready query
+#
+# The queue is drained by machines - something reads it and starts a VM per item
+# that can be started - so what these checks assert is not storage. It is the one
+# property that decides whether that is safe:
+#
+#   A BLOCKER THE READER CANNOT SEE HOLDS ITS TODO, DONE OR NOT.
+#
+# It is driven with two principals over the wire, because it is only true if it
+# is true for a second token: B reads a todo B is carrying, cannot read what
+# blocks it, and must not be told it can start. The wrong version - skip the ids
+# you cannot resolve - reads as ready, passes every same-project test, and is a
+# machine starting work whose dependency is not done.
+#
+# The rest is what makes the record worth keeping: the edge is an EVENT, so
+# taking it back appends and the old edge is still in the log with the seat that
+# wrote it; a cycle is refused where the writer can see it and never becomes
+# ready where they cannot; and neither verb can be written by hand.
+
+# ready_row ID TOKEN - the readiness row for one todo out of the ready tool's
+# answer, empty when this principal's queue does not hold it at all.
+ready_row() {
+	want_tool ready "$2" '{}' || return 1
+	READY_ROW="$(printf '%s' "$TOOL_JSON" | jq -c "first(.items[] | select(.item.id == \"$1\")) // empty")"
+	if [ -z "$READY_ROW" ]; then
+		printf 'the queue does not hold %s at all\n' "$1" >&2
+		return 1
+	fi
+}
+
+# readyv EXPR - a value out of the last ready_row. Not rv, which is the MCP
+# checks' reader of MCP_BODY: two functions of one name is one function.
+readyv() { printf '%s' "$READY_ROW" | jq -r "$1"; }
+
+# Two todos in pa: one B can read and is carrying, one B cannot. A can read both,
+# which is what lets A say that one blocks the other - a cross-project edge is
+# written by somebody who sees both ends, and read later by somebody who does not.
+the_queue_gets_a_todo_and_a_blocker_b_cannot_see() {
+	recall
+	local args
+	args="$(jq -nc --arg b "$USER_B" '{
+		title: "drain the queue by dependency order",
+		body: "one VM per ready todo",
+		scope: "shared", kind: "todo", room: "queue", assignee: $b}')" || return 1
+	want_tool mem_write "$TOKEN_A" "$args" || return 1
+	local blocked
+	blocked="$(tv .item.id)"
+	remember DEP_BLOCKED "$blocked"
+
+	want_tool mem_write "$TOKEN_A" '{
+		"title": "agree the shape of the edge",
+		"body": "an edge is an event, not a field",
+		"scope": "project", "kind": "todo", "room": "queue", "assignee": "a-orchestrator"
+	}' || return 1
+	local blocker
+	blocker="$(tv .item.id)"
+	remember DEP_BLOCKER "$blocker"
+
+	# The fixture is only a fixture if B really cannot see the second one.
+	want_tool_fails mem_read "$TOKEN_B" "{\"id\": \"$blocker\"}" "no such memory item" || return 1
+	want_tool mem_read "$TOKEN_B" "{\"id\": \"$blocked\"}" || return 1
+
+	# Carried and unblocked, so B can start it. This is the "before" the next
+	# check is a comparison against.
+	ready_row "$blocked" "$TOKEN_B" || return 1
+	want_eq "B can start it before anything blocks it" "$(readyv .ready)" true || return 1
+	printf 'blocked=%s (shared, B carries it), blocker=%s (pa only)\n' "$blocked" "$blocker"
+}
+
+# An edge is an event naming both todos, with the seat that wrote it and the
+# moment it was written. A field would have recorded THAT something changed and
+# not WHAT, which is the whole reason this is not a column.
+an_edge_is_an_event_naming_both_todos() {
+	recall
+	local args
+	args="$(jq -nc --arg t "$DEP_BLOCKED" --arg b "$DEP_BLOCKER" '{todo: $t, blocker: $b}')" || return 1
+	want_tool dep_add "$TOKEN_A" "$args" || return 1
+	want_eq "the entry is an add" "$(tv .entry.type)" dep.add || return 1
+	want_eq "naming the blocked todo" "$(tv .entry.todo)" "$DEP_BLOCKED" || return 1
+	want_eq "and the one it waits on" "$(tv .entry.blocker)" "$DEP_BLOCKER" || return 1
+	want_eq "written by the person" "$(tv .entry.actor)" "$USER_A" || return 1
+	remember DEP_ADDED "$(tv .entry.id)"
+
+	# A sees both ends, so A is told what it is waiting on and that it is not done.
+	want_eq "A resolves the blocker" "$(tv '.deps.blockers[0].known')" true || return 1
+	want_eq "and it is not finished" "$(tv '.deps.blockers[0].done')" false || return 1
+	want_eq "so A cannot start it either" "$(tv .deps.ready)" false || return 1
+	printf 'edge %s: %s depends on %s\n' "$(tv .entry.id)" "$DEP_BLOCKED" "$DEP_BLOCKER"
+}
+
+# THE CHECK THIS WHOLE SURFACE EXISTS FOR.
+#
+# B reads the todo and the edge - the edge hangs off the BLOCKED todo, so it
+# reaches exactly that todo's readers - and cannot resolve the other end. Not
+# ready. Then the blocker is finished, B still cannot see that it was, and it is
+# STILL not ready: a reader who cannot read a blocker cannot confirm it is
+# finished, whether or not it is.
+#
+# The last third is the other half of "per reader": A gets the opposite answer at
+# the same moment, off the same rows, and both are right.
+a_blocker_b_cannot_see_holds_the_todo_done_or_not() {
+	recall
+	ready_row "$DEP_BLOCKED" "$TOKEN_B" || return 1
+	want_eq "B sees one thing in the way" "$(readyv '.blockers | length')" 1 || return 1
+	want_eq "and it is the blocker" "$(readyv '.blockers[0].id')" "$DEP_BLOCKER" || return 1
+	want_eq "which B cannot read" "$(readyv '.blockers[0].known')" false || return 1
+	want_eq "so B cannot confirm it is done" "$(readyv '.blockers[0].done')" false || return 1
+	want_eq "and B must not start it" "$(readyv .ready)" false || return 1
+
+	# Finished, by the only principal who can read it.
+	want_tool mem_write "$TOKEN_A" "{\"id\": \"$DEP_BLOCKER\", \"status\": \"done\"}" || return 1
+	want_eq "the blocker is done" "$(tv .item.status)" "done" || return 1
+	want_tool_fails mem_read "$TOKEN_B" "{\"id\": \"$DEP_BLOCKER\"}" "no such memory item" || return 1
+
+	ready_row "$DEP_BLOCKED" "$TOKEN_B" || return 1
+	want_eq "B still cannot read it" "$(readyv '.blockers[0].known')" false || return 1
+	want_eq "and is not told it is finished" "$(readyv '.blockers[0].done')" false || return 1
+	want_eq "so it is STILL not ready for B" "$(readyv .ready)" false || return 1
+
+	# And for A, who can see it finish, it is.
+	ready_row "$DEP_BLOCKED" "$TOKEN_A" || return 1
+	want_eq "A resolves the blocker" "$(readyv '.blockers[0].known')" true || return 1
+	want_eq "as done" "$(readyv '.blockers[0].done')" true || return 1
+	want_eq "so A can start it" "$(readyv .ready)" true || return 1
+	printf 'same todo, same moment: ready for A, held for B by %s\n' "$DEP_BLOCKER"
+}
+
+# Ready is two conditions and neither is enough alone. Dropping the second looks
+# like a queue property rather than a dependency one, and it is how a drainer
+# picks up work nobody has claimed - which is the collision this was built after.
+deps_done_and_assigned_is_ready_and_either_alone_is_not() {
+	recall
+	want_tool mem_write "$TOKEN_A" '{
+		"title": "unblocked, and nobody is carrying it",
+		"scope": "project", "kind": "todo", "room": "queue", "assignee": ""
+	}' || return 1
+	local unowned
+	unowned="$(tv .item.id)"
+
+	ready_row "$unowned" "$TOKEN_A" || return 1
+	want_eq "nothing is in the way" "$(readyv '.blockers | length')" 0 || return 1
+	want_eq "but nobody is carrying it" "$(readyv .assignee)" "" || return 1
+	want_eq "so it is not ready" "$(readyv .ready)" false || return 1
+
+	want_tool mem_write "$TOKEN_A" "$(jq -nc --arg i "$unowned" '{id: $i, assignee: "a-bench"}')" || return 1
+	ready_row "$unowned" "$TOKEN_A" || return 1
+	want_eq "somebody picked it up, so now it is" "$(readyv .ready)" true || return 1
+
+	# ready=true narrows to what a drainer would start, and the full answer says
+	# how many of them there were - a queue that has stopped is not a queue with
+	# nothing to do.
+	want_tool ready "$TOKEN_A" '{"ready": true}' || return 1
+	want_eq "the narrowed answer holds it" \
+		"$(printf '%s' "$TOOL_JSON" | jq "[.items[] | select(.item.id == \"$unowned\")] | length")" 1 || return 1
+	if [ "$(printf '%s' "$TOOL_JSON" | jq '[.items[] | select(.ready == false)] | length')" != 0 ]; then
+		printf 'ready=true returned an item that is not ready\n' >&2
+		return 1
+	fi
+	printf 'unowned and unblocked is not ready; carried and unblocked is\n'
+}
+
+# The removal appends. The old edge is still in the log afterwards, with the seat
+# that wrote it and the seat that took it back - which is the question a field
+# destroys: not "what blocks this now" but "who said it did, and when".
+removing_a_dep_unblocks_and_the_old_edge_is_still_in_the_log() {
+	recall
+	local args
+	args="$(jq -nc --arg t "$DEP_BLOCKED" --arg b "$DEP_BLOCKER" '{todo: $t, blocker: $b}')" || return 1
+	# The agent takes it back, so the two entries are two different seats.
+	want_tool dep_remove "$TOKEN_A_AGENT" "$args" || return 1
+	want_eq "the entry is a removal" "$(tv .entry.type)" dep.remove || return 1
+	want_eq "written by the agent" "$(tv .entry.actor)" "$AGENT_A" || return 1
+	want_eq "nothing is in the way now" "$(tv '.deps.blockers | length')" 0 || return 1
+	want_eq "so it is ready again" "$(tv .deps.ready)" true || return 1
+
+	want_tool dep_list "$TOKEN_A" "$(jq -nc --arg t "$DEP_BLOCKED" '{todo: $t}')" || return 1
+	want_eq "both entries are in the log" "$(tv '.log | length')" 2 || return 1
+	want_eq "the edge that was taken back is still there" "$(tv '.log[0].id')" "$DEP_ADDED" || return 1
+	want_eq "as it was written" "$(tv '.log[0].type')" dep.add || return 1
+	want_eq "with both of its ends" "$(tv '.log[0].blocker')" "$DEP_BLOCKER" || return 1
+	want_eq "and the seat that wrote it" "$(tv '.log[0].actor')" "$USER_A" || return 1
+	want_eq "the removal is the later one" "$(tv '.log[1].type')" dep.remove || return 1
+
+	# Said once: an add of a live edge and a removal of one that is not are both
+	# refused, so every entry in the log is a real transition.
+	want_tool_fails dep_remove "$TOKEN_A" "$args" "does not depend on" || return 1
+	want_tool dep_add "$TOKEN_A" "$args" || return 1
+	want_tool_fails dep_add "$TOKEN_A" "$args" "already depends on" || return 1
+	printf 'add, remove, add: 3 entries, and the first is still readable\n'
+}
+
+# A cycle is refused where the writer can see it, and the refusal names the way
+# round the loop already goes. A queue that deadlocks silently is worse than one
+# that says so. A todo depending on itself is refused for the same reason: it is
+# an edge that can never be satisfied.
+a_cycle_and_a_self_edge_are_refused() {
+	recall
+	want_tool mem_write "$TOKEN_A" '{"title": "cycle: one", "scope": "project", "kind": "todo"}' || return 1
+	local one
+	one="$(tv .item.id)"
+	want_tool mem_write "$TOKEN_A" '{"title": "cycle: two", "scope": "project", "kind": "todo"}' || return 1
+	local two
+	two="$(tv .item.id)"
+	want_tool mem_write "$TOKEN_A" '{"title": "cycle: three", "scope": "project", "kind": "todo"}' || return 1
+	local three
+	three="$(tv .item.id)"
+
+	local args
+	args="$(jq -nc --arg t "$three" --arg b "$two" '{todo: $t, blocker: $b}')" || return 1
+	want_tool dep_add "$TOKEN_A" "$args" || return 1
+	args="$(jq -nc --arg t "$two" --arg b "$one" '{todo: $t, blocker: $b}')" || return 1
+	want_tool dep_add "$TOKEN_A" "$args" || return 1
+
+	# Two hops away, so a check that only looked at the direct edge lets it through.
+	args="$(jq -nc --arg t "$one" --arg b "$three" '{todo: $t, blocker: $b}')" || return 1
+	want_tool_fails dep_add "$TOKEN_A" "$args" "would close a cycle" || return 1
+	case "$TOOL_ERR" in
+	*"$two"*) ;;
+	*)
+		printf 'the refusal does not say where the loop goes: %s\n' "$TOOL_ERR" >&2
+		return 1
+		;;
+	esac
+
+	# And it was a refusal: nothing landed.
+	want_tool dep_list "$TOKEN_A" "$(jq -nc --arg t "$one" '{todo: $t}')" || return 1
+	want_eq "the refused edge is not in the log" "$(tv '.log | length')" 0 || return 1
+
+	args="$(jq -nc --arg t "$one" '{todo: $t, blocker: $t}')" || return 1
+	want_tool_fails dep_add "$TOKEN_A" "$args" "cannot depend on itself" || return 1
+
+	# An id out of reach is the answer a read of it would give, and nothing more:
+	# naming an id in an edge is not a way to find out what else it might be.
+	args="$(jq -nc --arg t "$one" --arg b "$DEP_BLOCKED" '{todo: $t, blocker: $b}')" || return 1
+	want_tool_fails dep_add "$TOKEN_B" "$args" "no such todo" || return 1
+	printf 'the cycle, the self-edge and the id B cannot read are all refused\n'
+}
+
+# The read and write paths a drainer uses, over HTTP, under the same filter the
+# tools keep. No console view in this change - the room panel is somebody else's
+# edit - so what is checked is the data.
+the_queue_reads_and_writes_over_http() {
+	recall
+	api GET "$TOKEN_A" "/api/todo/$DEP_BLOCKED/deps" || return 1
+	want_eq "status" "$API_STATUS" 200 || return 1
+	want_eq "the todo" "$(jqv .item.id)" "$DEP_BLOCKED" || return 1
+	want_eq "its live edges" "$(jqv '.blockers | length')" 1 || return 1
+	want_eq "and the whole log behind them" "$(jqv '.log | length')" 3 || return 1
+
+	# The same rows, and the opposite answer, for the other reader.
+	api GET "$TOKEN_B" "/api/todo/$DEP_BLOCKED/deps" || return 1
+	want_eq "B reads the edge" "$(jqv '.blockers | length')" 1 || return 1
+	want_eq "and cannot resolve it" "$(jqv '.blockers[0].known')" false || return 1
+	want_eq "so B is not told to start it" "$(jqv .ready)" false || return 1
+	want_status 404 GET "$TOKEN_B" "/api/todo/$DEP_BLOCKER/deps" || return 1
+
+	api GET "$TOKEN_A" '/api/ready?room=queue' || return 1
+	want_eq "the room's queue holds it" \
+		"$(printf '%s' "$API_BODY" | jq "[.items[] | select(.item.id == \"$DEP_BLOCKED\")] | length")" 1 || return 1
+	api GET "$TOKEN_A" '/api/ready?room=nothing-was-raised-here' || return 1
+	want_eq "another room's does not" "$(jqv .count)" 0 || return 1
+
+	# The write half: an edge removed over HTTP, and the log longer for it.
+	api DELETE "$TOKEN_A" "/api/todo/$DEP_BLOCKED/deps/$DEP_BLOCKER" || return 1
+	want_eq "status" "$API_STATUS" 200 || return 1
+	want_eq "nothing in the way" "$(jqv '.deps.blockers | length')" 0 || return 1
+	want_eq "and four entries behind it" "$(jqv '.deps.log | length')" 4 || return 1
+	api POST "$TOKEN_A" "/api/todo/$DEP_BLOCKED/deps" \
+		"$(jq -nc --arg b "$DEP_BLOCKER" '{blocker: $b}')" || return 1
+	want_eq "status" "$API_STATUS" 200 || return 1
+	want_eq "back in the way" "$(jqv '.deps.blockers | length')" 1 || return 1
+
+	# A refusal about the edge is the caller's mistake and says what it was.
+	want_status 400 POST "$TOKEN_A" "/api/todo/$DEP_BLOCKED/deps" \
+		"$(jq -nc --arg b "$DEP_BLOCKED" '{blocker: $b}')" || return 1
+	printf 'the self-edge over HTTP: %s\n' "$(jqv .error)"
+}
+
+# Both verbs are minted. Every refusal that makes the graph safe to drain is on
+# them - both ends readable, both ends queue items, no self-edge, no cycle - so
+# an edge written by hand is an edge with none of them asked, read by a machine
+# deciding whether to start work.
+an_edge_cannot_be_written_by_hand() {
+	recall
+	want_status 403 POST "$TOKEN_A" /api/events \
+		"$(jq -nc --arg a "$DEP_BLOCKED" --arg b "$DEP_BLOCKER" \
+			'{type: "dep.add", artifact: $a, room: "queue", body: "depends on it",
+			  meta: {blocker: $b}}')" || return 1
+	want_status 403 POST "$TOKEN_A" /api/events \
+		"$(jq -nc --arg a "$DEP_BLOCKED" '{type: "dep.remove", artifact: $a, body: "no longer"}')" || return 1
+	printf 'a hand-written edge: %s\n' "$(jqv .error)"
+}
+
 # ----------------------------------------------------------------- attachments
 #
 # An attachment is an artifact with bytes, and every one of these checks is
@@ -6901,6 +7194,27 @@ check "the proposal, its votes and its tally read back over HTTP" \
 	the_proposal_reads_back_over_http
 check "a vote is written by the verb that casts it, not by hand" \
 	a_vote_cannot_be_written_by_hand
+
+say "DEPENDS-ON, and the ready query"
+check "a todo B carries, and a blocker B cannot see" \
+	the_queue_gets_a_todo_and_a_blocker_b_cannot_see
+check "an edge is an event naming both todos, with the seat that wrote it" \
+	an_edge_is_an_event_naming_both_todos
+check "a blocker B cannot see holds the todo for B, finished or not" \
+	a_blocker_b_cannot_see_holds_the_todo_done_or_not
+check "the invisible blocker, the fold and the cycle, in the store" \
+	go test -count=1 -run 'TestABlockerTheReaderCannotSeeHoldsTheTodoDoneOrNot|TestReadyIsDepsDoneAndAssignedAndNeitherAlone|TestRemovingADepUnblocksAndBothEntriesStayInTheLog|TestACycleIsRefusedAndNothingInOneIsEverReady|TestATodoCannotDependOnItselfAndAnEdgeIsSaidOnce|TestAnEdgeNamesTwoReadableTodosAndMayCrossAProject|TestLiveDepsFoldsTheLatestEntryPerBlocker' ./internal/store
+check "deps done and assigned is ready, and either one alone is not" \
+	deps_done_and_assigned_is_ready_and_either_alone_is_not
+check "removing an edge unblocks, and the old edge is still in the log" \
+	removing_a_dep_unblocks_and_the_old_edge_is_still_in_the_log
+check "a cycle and a self-edge are refused, and the cycle says where it goes" \
+	a_cycle_and_a_self_edge_are_refused
+check "the queue reads and writes over HTTP, and B gets the other answer" \
+	the_queue_reads_and_writes_over_http
+check "an edge is written by the verb that makes it, not by hand" \
+	an_edge_cannot_be_written_by_hand
+
 say "attachments"
 check "the bytes come back byte for byte, NUL and newline included" \
 	an_attachment_round_trips_byte_for_byte

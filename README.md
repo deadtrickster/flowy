@@ -2785,6 +2785,47 @@ Then Phase 2, against `flowy mcp --http` on a free port and against
 - **and both are on the screen, not in an endpoint**: the built console is
   mounted against the live node at `/chat/general` and the room's todo has to be
   in the text it painted, and at `/todos` the roomless one has to be in that
+- **a blocker the reader cannot see holds its todo, finished or not.** This is
+  the one the whole DEPENDS-ON surface exists for, and it is driven with two
+  principals over the wire because it is only true if it is true for a second
+  token. A writes a todo at scope=shared with B's handle on it and a second todo
+  at scope=project that B cannot read, then says the first depends on the second.
+  B reads the todo and reads the EDGE - an edge is an event on the BLOCKED todo,
+  so it reaches exactly that todo's readers - and cannot resolve the other end:
+  `known: false`, and not ready. Then A finishes the blocker, B still `404`s on
+  it, and it is STILL not ready, because a reader who cannot read a blocker
+  cannot confirm it is finished whether or not it is. At the same moment, off the
+  same rows, it IS ready for A. Two readers disagreeing here is the design: ready
+  is computed per reader over that reader's permission-filtered graph and is
+  never stored, and a stored flag would be one answer that is wrong for one of
+  them. The version that fails this is the one that falls out of not thinking
+  about it - skip the ids you cannot resolve - which passes every same-project
+  check above and is a machine starting work whose dependency is not done
+- an edge is an **event and not a field**: `dep.add`/`dep.remove` name both todos
+  and carry the seat that wrote them, so `dep_remove` APPENDS and the old edge is
+  still in the log afterwards, as it was written, with the person who added it
+  and the agent that took it back. A column would have answered "what blocks this
+  now" and destroyed "who said it did, and when" - the question that gets asked
+  by somebody working out why two agents built the same thing. An add of a live
+  edge and a removal of one that is not are both refused, so every entry in the
+  log is a real transition
+- ready is **deps-done AND assigned**, and neither alone: an unblocked todo
+  nobody is carrying is not ready, and becomes ready the moment somebody picks it
+  up. `ready {"ready": true}` narrows to what a drainer would start, and the
+  unnarrowed answer carries every item with its blockers - a queue that has
+  stopped is not a queue with nothing to do
+- **a cycle is refused**, over the graph the writer can see, and the refusal
+  names the way round the loop already goes. The check is a walk and not a look
+  at the direct edge: the closing edge in the gate is two hops away. The store
+  test asserts the honest limit beside it - a loop assembled across a permission
+  boundary, where the principal closing it cannot see the hop that makes it one,
+  is NOT refused, and there nothing in it is ever ready for either reader, with
+  the id that is holding it said out loud. A todo cannot depend on itself, and an
+  end that is out of reach or is not a queue item is refused as an id that is not
+  there. What is not refused is the two ends being in different projects, which
+  is the point of the surface
+- both verbs are **minted**: `POST /api/events {"type": "dep.add"}` is a `403`,
+  because every refusal that makes the graph safe to drain is on the verb
 - a worklog entry carries **the seat that wrote it**: A's agent token appends and
   the entry's actor is the agent, A's own token appends and it is A. There is no
   actor argument to get it wrong with
