@@ -3878,6 +3878,21 @@ HIDE_TODO_DONE="rebush the crank pin"
 HIDE_TODO_OPEN="reseat the intake valve"
 readonly ROOM_HIDE HIDE_TODO_DONE HIDE_TODO_OPEN
 
+# And a room of its own for the reply check, for a reason of its own: it asserts
+# on the LAST two messages in the room and tabs from one to the next, so a room
+# the rest of the run is still writing into would move the rows out from under
+# it between the read and the gesture.
+#
+# Two messages, because the keyboard half of the check tabs from the control on
+# one to the control on the next - a single row cannot show that the controls
+# are in the tab order at all. The second is long: the span half drags a fixed
+# distance across it and a body shorter than the drag would be cited whole,
+# which is the failure that check exists to name.
+ROOM_REPLY="replies"
+REPLY_FIRST="the tension arm is rubbing on the sleeve"
+REPLY_LAST="the coupling nut backed off overnight and the guard plate is scored right through"
+readonly ROOM_REPLY REPLY_FIRST REPLY_LAST
+
 # has_todo TITLE - whether the last /api/artifacts response listed that title.
 has_todo() {
 	printf '%s' "$API_BODY" | jq --arg t "$1" -e \
@@ -4919,6 +4934,35 @@ browser_lets_a_person_copy_a_message() {
 	recall
 	cd "$ROOT/web" || return 1
 	node scripts/copy-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A"
+}
+
+# Reading a message is not answering it.
+#
+# Every row was a div wearing role="button", and a click on it selected the
+# message - which is what the next thing you say attaches to AND what it quotes.
+# So clicking a line to read it, or to put the caret somewhere, silently armed a
+# reply at whatever was under the pointer. Raised by the operator: "dont cite
+# automatically when message clicked. add reply to button, as other messages
+# have".
+#
+# The check drives a browser because every part of this is a browser's own
+# decision - what a click does, what a drag does, where tab goes - and asserts
+# on the COMPOSER'S QUOTED BLOCK rather than on a class: a row that stops
+# looking selected while the next message still attaches to it is the same bug
+# wearing less. Dragging is checked in the same run because it is the thing this
+# change is most likely to break: the drag and the click share an element, and
+# the operator objected to clicking, not to quoting exactly what you selected.
+browser_replies_only_when_asked() {
+	recall
+	api POST "$TOKEN_A" "/api/chat/$ROOM_REPLY/say" \
+		"$(jq -nc --arg b "$REPLY_FIRST" '{body: $b}')" || return 1
+	want_eq "the first message" "$API_STATUS" 200 || return 1
+	api POST "$TOKEN_A" "/api/chat/$ROOM_REPLY/say" \
+		"$(jq -nc --arg b "$REPLY_LAST" '{body: $b}')" || return 1
+	want_eq "the second" "$API_STATUS" 200 || return 1
+	cd "$ROOT/web" || return 1
+	node scripts/reply-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" \
+		"$ROOM_REPLY" "$REPLY_LAST"
 }
 
 # Reading the history wins over following the room.
@@ -9281,6 +9325,8 @@ check "an @name is drawn as a mention, in their colour, in a browser" \
 	browser_draws_the_mentions
 check "a person can select and copy a message, in a browser, by dragging" \
 	browser_lets_a_person_copy_a_message
+check "clicking a message answers nothing; its reply control does, by pointer and by keyboard" \
+	browser_replies_only_when_asked
 check "a message arriving does not scroll a reader out of the history" \
 	browser_does_not_scroll_a_reader_away
 check "the unread badge counts, clears when the room is read, and ignores your own" \

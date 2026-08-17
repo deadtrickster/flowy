@@ -1,7 +1,7 @@
 import DOMPurify from "dompurify";
 import { AnimatePresence, motion } from "framer-motion";
 import { marked } from "marked";
-import { type KeyboardEvent, useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { AttachmentCards } from "@/components/AttachmentCards";
 import { CitedMessage } from "@/components/CitedMessage";
@@ -43,17 +43,31 @@ interface Props {
  * draws, and cites it, which is what the reply shows above itself.
  *
  * Selecting TEXT inside a message narrows that citation to what was selected,
- * and it is the same one action - there is no button and no form, because the
- * thing this replaces is somebody retyping the sentence they are answering.
+ * and it is the same one action - dragging over the words is how you quote
+ * exactly those words, because the thing this replaces is somebody retyping the
+ * sentence they are answering.
  *
- * A row is a div with a button's role and a button's keyboard handling rather
- * than a <button>, which it was. Text inside a button cannot be selected by
- * dragging over it - the browser treats the control as one thing - so the
- * element that made clicking work is the element that made citing a span
- * impossible. The role and the tab stop stay, and so does enter/space, because
- * what a screen reader is told and what a keyboard can reach must not change
- * over a mouse gesture; biome.json turns off useSemanticElements for this file
- * alone, which is the rule that would otherwise ask for the button back.
+ * A ROW IS NOT A CONTROL. It was: a div with a button's role, a tab stop and a
+ * click that selected the message. So merely clicking a line - to read it, to
+ * put the caret somewhere, to dismiss something - silently made it the message
+ * you were about to answer. Reported by the operator: "dont cite automatically
+ * when message clicked. add reply to button, as other messages have". Selecting
+ * is a real button on the row now, and the row announces nothing to a screen
+ * reader that it no longer does.
+ *
+ * Text inside a button cannot be selected by dragging over it - the browser
+ * treats the control as one thing - which is why the row could not be a
+ * <button> and had to borrow one's role. The reply control can be a real one
+ * because it holds no body text, so the role, the tab stop and the enter/space
+ * handling all go back to the browser.
+ *
+ * The old row click carried a guard: a click that ended a text selection had
+ * already cited that span - onMouseUp on the body fires before onClick - so
+ * selecting the message would have widened the citation straight back to the
+ * whole message. That cannot happen through the button. A click event fires on
+ * the common ancestor of where the pointer went down and came up, so a drag
+ * that starts in the body and ends over the button clicks the ROW, and the row
+ * listens to nothing.
  */
 export function MessageList({ events, selected, onSelect, onCite, me, onSeen }: Props) {
   // Whether an id is the person reading or the agent working for them, which
@@ -120,17 +134,6 @@ export function MessageList({ events, selected, onSelect, onCite, me, onSeen }: 
     }
   }, [count, atBottom, newest, onSeen]);
 
-  // Enter and space are what a button answers to, and this row is not one any
-  // more. Keeping them is not politeness: selecting a message is how a reply
-  // attaches to it, so a keyboard reader who could not select one could not
-  // answer anybody.
-  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>, message: FlowyEvent) => {
-    if (event.key === "Enter" || event.key === " ") {
-      event.preventDefault();
-      onSelect(message);
-    }
-  };
-
   return (
     // The pill lives OUTSIDE the scroller, absolutely positioned over it.
     // Inside, it was a flex child - `sticky` still occupies its slot in flow -
@@ -156,32 +159,13 @@ export function MessageList({ events, selected, onSelect, onCite, me, onSeen }: 
             return (
               <motion.div
                 key={event.id}
-                role="button"
-                tabIndex={0}
                 layout
                 initial={{ opacity: 0, y: 8 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0 }}
                 transition={{ duration: 0.18, ease: "easeOut" }}
-                onClick={(clicked) => {
-                  // A click that ended a text selection has already cited that
-                  // span - onMouseUp on the body fires before this - so selecting
-                  // the message here would widen the citation straight back to
-                  // the whole message.
-                  const selection = window.getSelection();
-                  if (
-                    selection &&
-                    !selection.isCollapsed &&
-                    selection.anchorNode &&
-                    clicked.currentTarget.contains(selection.anchorNode)
-                  ) {
-                    return;
-                  }
-                  onSelect(event);
-                }}
-                onKeyDown={(keyed) => onKeyDown(keyed, event)}
                 className={cn(
-                  "rounded-lg border border-border bg-card p-3 text-left transition-colors hover:border-primary/40",
+                  "group rounded-lg border border-border bg-card p-3 text-left transition-colors hover:border-primary/40",
                   forMe && "border-primary/50 bg-primary/5",
                   // A private message is drawn as a different thing, not as a
                   // room message with a note on it. The dashed edge is what a
@@ -260,6 +244,28 @@ export function MessageList({ events, selected, onSelect, onCite, me, onSeen }: 
                   <span className="ml-auto text-muted-foreground text-xs">
                     {clock(event.created)}
                   </span>
+                  {/*
+                    How a message becomes the one you are answering, now that
+                    touching the row does not. It is quiet until the pointer is
+                    on the row or a keyboard has reached it, which is the
+                    density a chat line can carry - but it is ALWAYS in the
+                    document and always focusable, because a control that only
+                    exists on hover is a control a keyboard user does not have.
+                    A real <button>, so enter and space are the browser's job.
+
+                    The name says which message it answers: a screen reader
+                    moving down the room hears "reply" against every line
+                    otherwise, which names none of them.
+                  */}
+                  <button
+                    type="button"
+                    data-reply={event.id}
+                    onClick={() => onSelect(event)}
+                    aria-label={`reply to ${speaker(event)}, message ${shortId(event.id)}`}
+                    className="rounded border border-border px-1.5 py-0.5 text-[11px] text-muted-foreground opacity-60 transition hover:border-primary/50 hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
+                  >
+                    reply
+                  </button>
                 </div>
                 {/*
                 What this message is answering, above what it says. The words
