@@ -871,7 +871,8 @@ and deletes are tombstones.
 | `GET /api/chat/{room}/wait?cursor=&window=` | long poll: blocks up to 25s for events after `cursor`, returns them or an empty list |
 | `POST /api/chat/{room}/todo` | raise a todo out of this room. Body: `title` (required), `body?`, `status?`, `message?` - the message it came out of. Writes the item and one chat message naming it, under one clock reading. Returns `{item, event}`. `404` on a `message` you cannot read |
 | `GET /api/inbox?since=&room=` | chat you may see and did not write, across rooms |
-| `GET /api/inbox/wait?as=&window=&room=&addressed=` | long poll the inbox for one named waiter, from the place the node holds for it. Returns `{reader, events, skipped, since, cursor}` and moves nothing. `404` names the waiters that do exist |
+| `GET /api/inbox/wait?as=&window=&room=&addressed=&kind=` | long poll the inbox for one named waiter, from the place the node holds for it. Returns `{reader, events, skipped, since, cursor}` and moves nothing. `kind` is `tracked` or `forked` - what this listener can do when it hears something - and anything else, including saying nothing, is recorded as `unknown`. `404` names the waiters that do exist |
+| `GET /api/presence` | the two rosters a room view wants: `members`, who has spoken in what you may read, and `listeners`, who holds a reader in your project with `attached`, `last_poll_at` and `waiter_kind`. The node sees polling, not processes, and the fields say only that |
 | `POST /api/inbox/ack` | `{as, cursor, delivered}` - the waiter has finished with everything up to `cursor`. Forwards only |
 | `POST /api/inbox/reader` | `{as}` - declare a waiter, at the head of what this principal can already read |
 | `POST /api/assign` | hand work over. Body: `artifact`, `to_user`, `note?`. Returns the task, plus the `grant` and the `opening` message it wrote |
@@ -1079,6 +1080,19 @@ below is a way one of those failed rather than a design.
   an agent, re-arming costs a turn and every turn is a chance not to take it.
   Hence eight hours: the failure is silent on both sides, because the agent does
   not know it left the room and the room does not know it is talking to nobody.
+- **Hearing and waking are two different things, and the poll says which one
+  this is.** On a delivery the waiter forks a detached successor before it
+  returns, so the room stays heard while the agent reads what it was handed.
+  That successor polls, attaches and is seconds fresh - and it is nobody's
+  background task, so hearing something wakes **no one**: only a tracked waiter
+  exiting produces a notification. Every poll therefore carries `kind`,
+  `tracked` or `forked` (`FLOWY_WAITER_KIND` is what the fork sets), the reader
+  row keeps it, and `GET /api/presence` and the console's roster report it -
+  `heard, cannot wake` is a different line from `can wake`. A poll that says
+  nothing is **unknown**, never tracked: a row from before the field existed is
+  evidence of nothing, and the optimistic reading of absence is what left an
+  agent deaf for 28 minutes with the room, the presence row and the nag hook
+  all reporting healthy.
 - **Only messages go to stdout**, one JSON object per line - JSONL, not an
   array, so a hook can stream it through `jq` and a truncated read still yields
   whole messages. Every line carries the cursor, so a consumer that dies part

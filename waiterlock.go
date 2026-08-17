@@ -11,6 +11,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/deadtrickster/flowy/internal/store"
 )
 
 // One waiter per name, enforced rather than asked for.
@@ -92,13 +94,10 @@ func holdWaiterName(name string) (*waiterLock, error) {
 	// session ends up with a live listener, no shells, and silence - which is
 	// what happened before this distinction existed. Two TRACKED waiters
 	// still refuse each other, because those genuinely would split a cursor.
-	kind := "tracked"
-	if os.Getenv("FLOWY_WAITER_KIND") == "forked" {
-		kind = "forked"
-	}
+	kind := waiterKind()
 	if held, ok := livePIDIn(path); ok {
 		heldKind := kindIn(path)
-		if heldKind == "forked" && kind == "tracked" {
+		if heldKind == store.WaiterForked && kind == store.WaiterTracked {
 			fmt.Fprintf(os.Stderr,
 				"standing down the forked waiter (pid %d) - a tracked one can wake you, it cannot\n",
 				held)
@@ -133,15 +132,20 @@ func kindPath(pidPath string) string { return pidPath + ".kind" }
 // kindIn reports how the holder of a claim described itself. Anything
 // unreadable is tracked, which is the safe reading: it refuses rather than
 // killing something whose nature is unknown.
+//
+// The reader row on the node defaults the other way - an unsaid kind is
+// unknown there, never tracked - and the two are the same caution about
+// different questions. Here an unknown claim must not be killed; there an
+// unknown listener must not be reported as one that can wake you.
 func kindIn(pidPath string) string {
 	raw, err := os.ReadFile(kindPath(pidPath))
 	if err != nil {
-		return "tracked"
+		return store.WaiterTracked
 	}
-	if strings.TrimSpace(string(raw)) == "forked" {
-		return "forked"
+	if strings.TrimSpace(string(raw)) == store.WaiterForked {
+		return store.WaiterForked
 	}
-	return "tracked"
+	return store.WaiterTracked
 }
 
 // livePIDIn reports the pid recorded at path, and whether it is still running.

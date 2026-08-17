@@ -1931,6 +1931,123 @@ a_broken_waiter_is_exit_2_and_not_exit_1() {
 	printf 'a bad token, no token and a dead node are all 2, never 1\n'
 }
 
+# --------------------------------------------------- what a listener CAN DO
+#
+# Hearing and waking are two things, and every surface on this node reported the
+# first while somebody was asking about the second.
+#
+# A waiter forks a detached successor before it returns so the room stays heard
+# while its agent reads. That successor polls, is attached, and CAN WAKE NOBODY
+# - only a harness-tracked waiter exiting produces a notification. One night an
+# agent sat deaf for 28 minutes behind a listener that was polling normally, a
+# presence row seconds fresh, and a nag hook reporting healthy. The kind was
+# written to a pid sidecar and nothing anybody looked at carried it.
+#
+# So: the waiter says which it is on every poll, the row keeps it, and the
+# roster draws it. These check all three, and the browser one is registered with
+# the other console checks.
+
+# ROSTER_READERS are declared and polled by the presence check below and read
+# again by the browser check, which is two processes and a phase apart - so the
+# names are fixed here rather than generated.
+ROSTER_TRACKED=roster-tracked
+ROSTER_FORKED=roster-forked
+ROSTER_QUIET=roster-quiet
+readonly ROSTER_TRACKED ROSTER_FORKED ROSTER_QUIET
+
+# presence_kind NAME - what /api/presence says that listener can do. Not listed
+# at all and listed with no kind are two different failures, and a jq default
+# that turned the first into the second would send somebody looking in the
+# wrong place.
+presence_kind() {
+	api GET "$TOKEN_A" /api/presence || return 1
+	printf '%s' "$API_BODY" | jq -r --arg r "$1" \
+		'[.listeners[] | select(.reader == $r)]
+		 | if length == 0 then "<not listed>" else (.[0].waiter_kind // "<no kind on the row>") end'
+}
+
+# poll_as NAME [KIND] - one short poll of that reader's inbox, from a client
+# that says what it is, or - with no KIND - from one that says nothing, which
+# is every client written before this existed.
+poll_as() {
+	local path="/api/inbox/wait?as=$1&window=1"
+	if [ -n "${2-}" ]; then
+		path="$path&kind=$2"
+	fi
+	api GET "$TOKEN_A" "$path" || return 1
+	want_eq "poll status for $1" "$API_STATUS" 200 || return 1
+}
+
+# The waiter itself says which kind it is, over the wire, on every poll. Checked
+# through the binary rather than through curl because the marking is read from
+# the environment by the process that polls, and a node that can record a kind
+# nothing sends it is half a feature.
+#
+# A quiet deadline in a room nothing says anything in, on purpose: a delivery
+# forks a successor, and the successor's own polls would then be the last word
+# on the row - so the check would be reading a race instead of the run it made.
+the_waiter_says_which_kind_it_is() {
+	recall
+	local quiet=nothing-is-said-in-this-room
+	inbox_run --token "$TOKEN_A" --as kind-waiter --new --deadline 3 --room "$quiet"
+	want_eq "a quiet deadline is still exit 1" "$INBOX_STATUS" 1 || return 1
+	want_eq "what the node recorded for a harness-tracked waiter" \
+		"$(scalar "SELECT waiter_kind FROM inbox_readers WHERE reader = 'kind-waiter'")" \
+		tracked || return 1
+
+	# And the successor, which is the one that costs something: same binary,
+	# same name, same polling, nothing to wake.
+	export FLOWY_WAITER_KIND=forked
+	inbox_run --token "$TOKEN_A" --as kind-waiter --deadline 3 --room "$quiet"
+	unset FLOWY_WAITER_KIND
+	want_eq "the successor's quiet deadline" "$INBOX_STATUS" 1 || return 1
+	want_eq "what the node recorded for the forked successor" \
+		"$(scalar "SELECT waiter_kind FROM inbox_readers WHERE reader = 'kind-waiter'")" \
+		forked || return 1
+	printf 'the same waiter reported tracked, then forked, and the row followed it\n'
+}
+
+# /api/presence answers what each listener can do, and answers UNKNOWN rather
+# than guessing. A row written before this field existed, or by a client that
+# does not send one, is evidence of nothing - and tracked is the reading that
+# cost 28 minutes.
+presence_says_what_each_listener_can_do() {
+	recall
+	local reader
+	for reader in "$ROSTER_TRACKED" "$ROSTER_FORKED" "$ROSTER_QUIET"; do
+		api POST "$TOKEN_A" /api/inbox/reader "{\"as\": \"$reader\"}" || return 1
+		want_eq "declaring $reader" "$API_STATUS" 200 || return 1
+	done
+
+	# Declared and never polled: nobody has claimed anything about it.
+	want_eq "a reader that has never polled" "$(presence_kind "$ROSTER_TRACKED")" \
+		unknown || return 1
+
+	poll_as "$ROSTER_TRACKED" tracked || return 1
+	poll_as "$ROSTER_FORKED" forked || return 1
+	poll_as "$ROSTER_QUIET" || return 1
+	want_eq "a listener that polled as tracked" "$(presence_kind "$ROSTER_TRACKED")" \
+		tracked || return 1
+	want_eq "a listener that polled as forked" "$(presence_kind "$ROSTER_FORKED")" \
+		forked || return 1
+	want_eq "a listener that said nothing" "$(presence_kind "$ROSTER_QUIET")" \
+		unknown || return 1
+
+	# It outlives the poll that set it. Both of those polls have already ended,
+	# so this has been true once above; the second poll is the other half - the
+	# next poll must not reset what the row says, or the roster would flicker
+	# through "nobody knows" on every cycle of a perfectly good listener.
+	poll_as "$ROSTER_FORKED" forked || return 1
+	want_eq "after a second poll cycle" "$(presence_kind "$ROSTER_FORKED")" forked || return 1
+
+	# And a client that invents one claims nothing: the value arrives on a query
+	# parameter, so this is what stands between the roster and a state it has no
+	# case for.
+	poll_as "$ROSTER_QUIET" wide-awake-honest || return 1
+	want_eq "a kind nobody can draw" "$(presence_kind "$ROSTER_QUIET")" unknown || return 1
+	printf 'presence: tracked, forked, and unknown for everything that has not said\n'
+}
+
 # ------------------------------------------------------------ per-room todos
 #
 # A todo panel inside the room, where the work is actually being agreed.
@@ -2201,6 +2318,20 @@ browser_renders_the_rooms_todos() {
 	cd "$ROOT/web" || return 1
 	node scripts/browser-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" \
 		"$ROOM_TODO_GENERAL" unassigned
+}
+
+# The roster, in a browser, on the ELEMENT: each listener's line says what that
+# listener can do about what it hears, and the three states read as three
+# states. "polling 4s ago" is true of all three and answers none of them, which
+# is what the panel said on the night a session went deaf behind it.
+#
+# It reads the readers the presence check declared and polled, a phase earlier -
+# their kinds are on the row, and the row is what the roster draws.
+browser_shows_what_a_listener_can_do() {
+	recall
+	cd "$ROOT/web" || return 1
+	node scripts/roster-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" \
+		"$ROSTER_TRACKED=tracked" "$ROSTER_FORKED=forked" "$ROSTER_QUIET=unknown"
 }
 
 # Speakers are drawn in their own colour, and it is really applied. A palette
@@ -5276,6 +5407,17 @@ check "--to-me wakes for what names it and counts what it skipped" \
 check "a bad token, no token and a dead node are exit 2, never exit 1" \
 	a_broken_waiter_is_exit_2_and_not_exit_1
 
+# Hearing is not waking. A forked successor polls exactly like a tracked waiter
+# and can wake nobody, so every check here is about telling them apart - and
+# about what the node says when nothing has told it either way.
+say "what a listener can do about what it hears"
+check "the waiter says which kind it is, and the row follows it" \
+	the_waiter_says_which_kind_it_is
+check "presence answers tracked, forked, and unknown for anything unsaid" \
+	presence_says_what_each_listener_can_do
+check "the kind is per reader and survives the poll that set it" \
+	go test -count=1 -run TestPresenceCarriesTheWaiterKind ./internal/store
+
 # A todo panel inside the room, and the field it needs. The room rides fields
 # the way as_of rides a report, and it is a filter and not a permission axis -
 # so half of what is asserted below is what a room's panel does NOT hold, and
@@ -5301,6 +5443,8 @@ check "the room's todo panel is on the screen in a browser, as an element" \
 	browser_renders_the_rooms_todos
 check "each speaker is drawn in their own colour, in a browser" \
 	browser_colours_the_speakers
+check "the roster draws what each listener can do, distinctly, in a browser" \
+	browser_shows_what_a_listener_can_do
 
 # ------------------------------------------------------------------- phase 4
 #

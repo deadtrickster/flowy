@@ -198,11 +198,50 @@ func (d *DB) inboxHead(ctx context.Context, p *Principal) (int64, error) {
 	return head.Int64, nil
 }
 
+// The three things a listener can be. They are about what happens when the
+// room says something, not about how attached the listener looks.
+//
+// WaiterTracked is a waiter some harness is watching: it exits on a delivery
+// and that exit wakes somebody. WaiterForked is the detached successor a waiter
+// leaves behind so the room stays heard while the agent reads - it hears
+// everything and CAN WAKE NOBODY, because there is no task to finish.
+// WaiterUnknown is a row nothing has claimed: written before this field
+// existed, or polled by a client that does not send one.
+//
+// Unknown is emphatically not tracked. The whole cost of this distinction was
+// paid by reading absence as the good case: presence answered "is somebody
+// polling" for 28 minutes while the question was "can anybody be woken".
+const (
+	WaiterTracked = "tracked"
+	WaiterForked  = "forked"
+	WaiterUnknown = "unknown"
+)
+
+// WaiterKindOf is the only way a kind gets into a row. It exists because the
+// value arrives on a query parameter, so without it the roster would render
+// whatever a client typed - and a fourth word is a state nothing knows how to
+// draw. Anything that is not one of the two claims is unknown.
+func WaiterKindOf(s string) string {
+	switch strings.TrimSpace(s) {
+	case WaiterTracked:
+		return WaiterTracked
+	case WaiterForked:
+		return WaiterForked
+	}
+	return WaiterUnknown
+}
+
 // PresenceRow is one reader as the room sees it: who holds the label, and what
 // the node can honestly say about their attachment. Attached is a poll in
 // flight; LastPoll is when a poll last started. Neither is a claim about a
 // process on somebody's machine - the node sees the polling, not the listener,
 // and the views render exactly this and no more.
+//
+// Kind is the half those two cannot carry: WHAT the thing that polled can do
+// about what it hears. A forked listener is attached, polling, seconds fresh
+// and unable to wake anybody, so a roster drawn from Attached and LastPoll
+// alone reports it healthy - which it did for 28 minutes, while the person who
+// had written into the room got silence.
 //
 // The name is the user's handle - an agent has no handle of its own and speaks
 // under that person's, which is the rule the chat already renders by - and the
@@ -214,20 +253,29 @@ type PresenceRow struct {
 	Reader    string     `json:"reader"`
 	UserName  string     `json:"user_name"`
 	Attached  bool       `json:"attached"`
+	Kind      string     `json:"waiter_kind"`
 	LastPoll  *time.Time `json:"last_poll_at"`
 	Updated   time.Time  `json:"updated"`
 }
 
 // PollStart marks a waiter attaching: the poll is the one signal the server
-// has that does not depend on the room being busy.
-func (d *DB) PollStart(ctx context.Context, p *Principal, name string) {
+// has that does not depend on the room being busy. kind is what the poller says
+// it is, and the last poll decides - a listener that stops saying is not still
+// the listener that used to say so.
+//
+// PollEnd deliberately leaves the kind alone, so the row keeps answering "what
+// was listening here" between polls rather than lapsing to unknown in every
+// gap - which would make the roster flicker through a state that means "nobody
+// knows" while somebody was perfectly well armed.
+func (d *DB) PollStart(ctx context.Context, p *Principal, name, kind string) {
 	// Swallowed on purpose: presence is observational, and a failed mark must
 	// not refuse a waiter its messages. A stale row reads as less attached,
 	// which is the safe direction.
 	_, _ = d.sql.ExecContext(ctx,
 		`UPDATE inbox_readers
-		    SET last_poll_at = now(), polls_in_flight = polls_in_flight + 1
-		  WHERE principal = $1 AND reader = $2`, readerKey(p), name)
+		    SET last_poll_at = now(), polls_in_flight = polls_in_flight + 1,
+		        waiter_kind = $3
+		  WHERE principal = $1 AND reader = $2`, readerKey(p), name, WaiterKindOf(kind))
 }
 
 // PollEnd marks the poll leaving, however it left.
@@ -271,7 +319,7 @@ func (d *DB) Presence(ctx context.Context) ([]*PresenceRow, error) {
 		`SELECT r.principal,
 		        split_part(r.principal, chr(31), 3) AS project,
 		        r.reader, coalesce(u.handle, ''),
-		        r.polls_in_flight > 0, r.last_poll_at, r.updated
+		        r.polls_in_flight > 0, r.waiter_kind, r.last_poll_at, r.updated
 		   FROM inbox_readers r
 		   LEFT JOIN users u ON u.id = split_part(r.principal, chr(31), 1)
 		  ORDER BY r.updated DESC, r.reader`)
@@ -284,9 +332,14 @@ func (d *DB) Presence(ctx context.Context) ([]*PresenceRow, error) {
 	for rows.Next() {
 		p := &PresenceRow{}
 		if err := rows.Scan(&p.Principal, &p.Project, &p.Reader, &p.UserName,
-			&p.Attached, &p.LastPoll, &p.Updated); err != nil {
+			&p.Attached, &p.Kind, &p.LastPoll, &p.Updated); err != nil {
 			return nil, fmt.Errorf("store: presence: %w", err)
 		}
+		// Read through the same funnel it was written through, so a row from
+		// a database that predates the column - or one somebody edited by hand
+		// - reaches the roster as unknown rather than as an empty string the
+		// view has no case for.
+		p.Kind = WaiterKindOf(p.Kind)
 		out = append(out, p)
 	}
 	if err := rows.Err(); err != nil {

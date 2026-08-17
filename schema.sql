@@ -134,6 +134,24 @@ CREATE TABLE IF NOT EXISTS inbox_readers (
 ALTER TABLE inbox_readers ADD COLUMN IF NOT EXISTS last_poll_at timestamptz;
 ALTER TABLE inbox_readers ADD COLUMN IF NOT EXISTS polls_in_flight int NOT NULL DEFAULT 0;
 
+-- And WHAT KIND of listener that poll came from, which is a different question
+-- from whether anybody is polling - they came apart on the night this column
+-- was added, for 28 minutes, with every surface reporting healthy.
+--
+-- A waiter forks a successor before it returns so the room stays heard while
+-- the agent reads (see inboxhandover.go). That successor is detached, so it is
+-- nobody's harness task: it HEARS EVERYTHING AND CAN WAKE NOBODY, because only
+-- a tracked waiter exiting produces a notification. last_poll_at was seconds
+-- old and polls_in_flight was 1 the whole time, both of them true, and the
+-- answer to the question anybody was actually asking was no.
+--
+-- 'unknown' is the default rather than 'tracked' because a row written before
+-- this column existed, or by a client that does not send its kind, is evidence
+-- of nothing - and the reading that costs 28 minutes is the optimistic one.
+-- Only the three words ever land here; store.WaiterKindOf is what makes that
+-- true, so a client cannot invent a fourth state for the roster to render.
+ALTER TABLE inbox_readers ADD COLUMN IF NOT EXISTS waiter_kind text NOT NULL DEFAULT 'unknown';
+
 -- Phase 10. The project registry: the row every project column points at.
 --
 -- A project used to be a free string. Nothing declared one and nothing checked

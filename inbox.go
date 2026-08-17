@@ -152,7 +152,7 @@ func saidByAPerson(e *store.Event) bool {
 
 // handleInboxWait blocks until something this waiter should hear is said.
 //
-// GET /api/inbox/wait?as=NAME&window=&addressed=&limit=
+// GET /api/inbox/wait?as=NAME&window=&addressed=&limit=&kind=
 func (s *server) handleInboxWait(w http.ResponseWriter, r *http.Request) {
 	p := principalOf(r)
 	q := r.URL.Query()
@@ -182,7 +182,18 @@ func (s *server) handleInboxWait(w http.ResponseWriter, r *http.Request) {
 	// not depend on the room being busy. Marked on the way in and out however
 	// the wait ends, so a waiter that is merely blocked on a quiet room still
 	// reads as attached.
-	s.db.PollStart(r.Context(), p, name)
+	//
+	// And it carries WHAT KIND of listener is polling, because attachment is
+	// not the question anybody asks of this. A forked successor polls exactly
+	// like a tracked waiter and can wake nobody when it hears something, so
+	// without the kind the roster reports a deaf session as healthy - which it
+	// did, for 28 minutes, while somebody waited for an answer. It is a
+	// parameter and not a header for the same reason `as` is: this endpoint's
+	// whole shape is the query string.
+	//
+	// A client that sends nothing is unknown, never tracked. WaiterKindOf is
+	// what makes that true whatever arrives here.
+	s.db.PollStart(r.Context(), p, name, q.Get("kind"))
 	defer s.db.PollEnd(r.Context(), p, name)
 
 	// The scan does NOT narrow to what will be handed over, and that is the
@@ -508,6 +519,13 @@ func waitOnInbox(ctx context.Context, client *http.Client, base, bearer, as, roo
 ) error {
 	query := url.Values{}
 	query.Set("as", as)
+	// Said on every poll rather than once at declaration, because it is a fact
+	// about the PROCESS holding the label and the label outlives the process:
+	// a tracked waiter stands down a forked one and takes its name over, and a
+	// kind recorded at declaration would still be describing whoever declared
+	// it first. It is constant for this process, so it is set here and not in
+	// the loop.
+	query.Set("kind", waiterKind())
 	if room != "" {
 		query.Set("room", room)
 	}
@@ -729,9 +747,15 @@ var errQuietDeadline = errors.New("the deadline passed and nothing was said")
 // reader - filtered to the caller's own project, because a reader row names a
 // principal and their project, and who-listens-where is not the whole node's
 // business - with what the node can actually see of their attachment: an
-// in-flight poll, and when a poll last started. "Last polled 4s ago" is a
-// checkable fact; "online" would be a claim about a process on somebody
-// else's machine, and the node does not have it.
+// in-flight poll, when a poll last started, and what kind of listener that
+// poll came from. "Last polled 4s ago" is a checkable fact; "online" would be
+// a claim about a process on somebody else's machine, and the node does not
+// have it.
+//
+// The kind is here because the first three answered the wrong question. A
+// forked successor polls and is attached and is seconds fresh and can wake
+// nobody, so a roster without it says healthy about a session that has gone
+// deaf - and the only thing that ever noticed was the human, 28 minutes later.
 func (s *server) handlePresence(w http.ResponseWriter, r *http.Request) {
 	p := principalOf(r)
 	members, err := s.db.RoomMembers(r.Context(), p)

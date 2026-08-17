@@ -64,6 +64,11 @@ export interface ChatPage {
  * listeners is who holds a reader place. The node sees polling, not processes,
  * so a listener line says when a poll last started and whether one is in
  * flight - "polled 4s ago" is checkable, "online" would be a claim.
+ *
+ * waiter_kind is what the listener said it is: "tracked" wakes somebody when
+ * it hears, "forked" hears and wakes nobody, "unknown" has not said. It is the
+ * only field here that answers the question a roster is actually read for, and
+ * the node reports "unknown" rather than assuming, so it is never absent.
  */
 export interface Presence {
   members: { actor: string; name: string; kind: string }[];
@@ -73,6 +78,7 @@ export interface Presence {
     reader: string;
     user_name: string;
     attached: boolean;
+    waiter_kind: string;
     last_poll_at?: string | null;
     updated: string;
   }[];
