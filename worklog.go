@@ -551,6 +551,10 @@ usage:
   common flags:
   --url URL      node to tell (default $FLOWY_ADDR, then http://127.0.0.1:8787)
   --token T      bearer token (default $FLOWY_TOKEN, then ~/.config/flowy/token)
+  --agent NAME   the seat speaking, whose token is ~/.config/flowy/agents/NAME
+                 (default $FLOWY_AGENT). ~/.config/flowy/token is the OPERATOR'S
+                 own, so falling through to it warns; --agent me is the operator
+                 saying it was meant, and stops the warning
 
   The text of an entry is one argument, or stdin when there is none.
 
@@ -589,6 +593,7 @@ func worklogCmd(args []string) error {
 	verify := fs.String("verify", "", "what the gate said about it")
 	urlFlag := fs.String("url", "", "node to talk to (default $FLOWY_ADDR or "+defaultTUIAddr+")")
 	token := fs.String("token", "", "bearer token (default $FLOWY_TOKEN, then ~/.config/flowy/token)")
+	agent := fs.String("agent", "", agentFlagHelp)
 	var refs stringList
 	fs.Var(&refs, "ref", "an artifact this entry is about, repeatable")
 	if err := fs.Parse(rest); err != nil {
@@ -596,13 +601,12 @@ func worklogCmd(args []string) error {
 	}
 
 	base := resolveURL(*urlFlag, os.Getenv("FLOWY_ADDR"))
-	bearer, err := resolveToken(*token, os.Getenv("FLOWY_TOKEN"))
+	bearer, err := resolveToken(*token, os.Getenv("FLOWY_TOKEN"), *agent, os.Getenv("FLOWY_AGENT"))
 	if err != nil {
 		return err
 	}
 	if bearer == "" {
-		return errors.New("no token: pass --token, set FLOWY_TOKEN, or write one to " +
-			"~/.config/" + tokenFile)
+		return errNoToken()
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

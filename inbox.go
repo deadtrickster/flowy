@@ -501,6 +501,11 @@ usage:
   --room R      wake only for messages in one room, default every room
   --url URL     node to ask (default $FLOWY_ADDR, then http://127.0.0.1:8787)
   --token T     bearer token (default $FLOWY_TOKEN, then ~/.config/flowy/token)
+  --agent NAME  the seat speaking, whose token is ~/.config/flowy/agents/NAME
+                (default $FLOWY_AGENT). Separate from --as: that names the
+                waiter, this names the principal. ~/.config/flowy/token is the
+                OPERATOR'S own, so falling through to it warns; --agent me is
+                the operator saying it was meant, and stops the warning
 
 exit codes:
   0  somebody said something; the messages are on stdout, one JSON object per
@@ -567,6 +572,11 @@ func inboxCmd(args []string) error {
 	room := fs.String("room", "", "wake only for messages in this room")
 	urlFlag := fs.String("url", "", "node to talk to (default $FLOWY_ADDR or "+defaultTUIAddr+")")
 	token := fs.String("token", "", "bearer token (default $FLOWY_TOKEN, then ~/.config/flowy/token)")
+	// Deliberately not defaulted from --as. The waiter's name and the seat's
+	// name are usually the same word, and joining them here would turn a
+	// misspelt or brand-new waiter into a refusal for every script that has
+	// been passing --as since before seats had tokens of their own.
+	agent := fs.String("agent", "", agentFlagHelp)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -594,13 +604,12 @@ func inboxCmd(args []string) error {
 	lock.releaseOnSignal()
 
 	base := resolveURL(*urlFlag, os.Getenv("FLOWY_ADDR"))
-	bearer, err := resolveToken(*token, os.Getenv("FLOWY_TOKEN"))
+	bearer, err := resolveToken(*token, os.Getenv("FLOWY_TOKEN"), *agent, os.Getenv("FLOWY_AGENT"))
 	if err != nil {
 		return err
 	}
 	if bearer == "" {
-		return errors.New("no token: pass --token, set FLOWY_TOKEN, or write one to " +
-			"~/.config/" + tokenFile)
+		return errNoToken()
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(),

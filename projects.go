@@ -222,6 +222,10 @@ usage:
 
   --url URL     node to ask (default $FLOWY_ADDR, then http://127.0.0.1:8787)
   --token T     bearer token (default $FLOWY_TOKEN, then ~/.config/flowy/token)
+  --agent NAME  the seat speaking, whose token is ~/.config/flowy/agents/NAME
+                (default $FLOWY_AGENT). ~/.config/flowy/token is the OPERATOR'S
+                own, so falling through to it warns; --agent me is the operator
+                saying it was meant, and stops the warning
 
 An origin is a git remote and is canonicalised before it is stored, so
 git@github.com:x/y.git and https://github.com/x/y are one project. Left out on a
@@ -248,6 +252,7 @@ func projectsCmd(args []string) error {
 	fs := flag.NewFlagSet("projects", flag.ContinueOnError)
 	url := fs.String("url", "", "node to talk to (default $FLOWY_ADDR or "+defaultTUIAddr+")")
 	token := fs.String("token", "", "bearer token (default $FLOWY_TOKEN, then ~/.config/flowy/token)")
+	agent := fs.String("agent", "", agentFlagHelp)
 	name := fs.String("project", "", "the project's name")
 	origin := fs.String("origin", "", "the project's git remote")
 	fixture := fs.Bool("fixture", false, "mark it as demo seed data rather than real work")
@@ -255,13 +260,12 @@ func projectsCmd(args []string) error {
 		return err
 	}
 	base := resolveURL(*url, os.Getenv("FLOWY_ADDR"))
-	bearer, err := resolveToken(*token, os.Getenv("FLOWY_TOKEN"))
+	bearer, err := resolveToken(*token, os.Getenv("FLOWY_TOKEN"), *agent, os.Getenv("FLOWY_AGENT"))
 	if err != nil {
 		return err
 	}
 	if bearer == "" {
-		return errors.New("no token: pass --token, set FLOWY_TOKEN, or write one to " +
-			"~/.config/" + tokenFile)
+		return errNoToken()
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

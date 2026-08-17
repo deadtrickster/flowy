@@ -239,9 +239,36 @@ both empty by default. See [The security fixes](#the-security-fixes).
 | --- | --- |
 | `--url` | node to talk to, or `$FLOWY_ADDR`, default `http://127.0.0.1:8787`; a bare `host:port` or `:8787` is read as one |
 | `--token` | bearer token, or `$FLOWY_TOKEN`, or `~/.config/flowy/token` |
+| `--agent` | the seat speaking; its token is read from `~/.config/flowy/agents/<name>`, or `$FLOWY_AGENT` |
 
 With no token anywhere it refuses to start rather than opening on empty panes
 that read as "you have nothing".
+
+### Which principal a command speaks as
+
+`say`, `inbox`, `worklog`, `projects` and `tui` all resolve a token the same
+way, in this order:
+
+1. `--token`, the credential typed at the moment of the call
+2. `--agent NAME`, read from `~/.config/flowy/agents/NAME`
+3. `$FLOWY_AGENT`, the same file from the environment
+4. `$FLOWY_TOKEN`
+5. `~/.config/flowy/token`
+
+A named principal outranks a bare credential on purpose: `$FLOWY_TOKEN` is
+usually something a harness exported once and forgot, while `--agent` is a
+statement about who is acting now.
+
+The last line is the operator's own personal token, which is why reaching it
+prints a warning naming the file and the seat directory one segment over. It
+still works - the operator's shell and every existing script keep running - but
+an agent that shells out without a token of its own can no longer post as the
+operator quietly. `--agent me` is the operator answering the warning, and stops
+it.
+
+Naming a principal that does not resolve is a refusal, never a fallback: a
+misspelt or brand-new seat gets an error naming the missing file rather than
+the operator's credential.
 
 `flowy sync` takes the peer and the token it authenticates as; everything else
 has a default:
@@ -3837,6 +3864,13 @@ Announcements, system agents and quiesce:
 - `flowy tui` reaches the node only through the HTTP API - `go list -deps` on
   the package links neither `lib/pq` nor the store - and with no token in the
   flag, the environment or `~/.config/flowy/token` it refuses to start
+- which principal a client command speaks as: `--agent NAME` and `$FLOWY_AGENT`
+  read `~/.config/flowy/agents/NAME`, a name that does not resolve is a refusal
+  naming the missing file rather than a fallback to the operator's own token, a
+  name that is a path is refused before it becomes one, and the fallback to
+  `~/.config/flowy/token` still works but prints a warning naming both files -
+  the warning is asserted on, not assumed, because a warning nobody reads back
+  is the silence the change is about
 - the terminal client, driven headless by teatest against the live node with a
   seeded token: the room renders, a message typed into the box is posted and
   comes back **through the watcher** rather than being echoed locally (the wait

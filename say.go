@@ -29,6 +29,10 @@ usage:
   --thread ID   continue a thread rather than starting one
   --url URL     node to tell (default $FLOWY_ADDR, then http://127.0.0.1:8787)
   --token T     bearer token (default $FLOWY_TOKEN, then ~/.config/flowy/token)
+  --agent NAME  the seat speaking, whose token is ~/.config/flowy/agents/NAME
+                (default $FLOWY_AGENT). ~/.config/flowy/token is the OPERATOR'S
+                own, so falling through to it warns; --agent me is the operator
+                saying it was meant, and stops the warning
 
   The text is one argument, or stdin when there is none - so a long message
   comes from a heredoc instead of being fought with through shell quoting.
@@ -56,6 +60,7 @@ func sayCmd(args []string) error {
 	thread := fs.String("thread", "", "continue this thread rather than starting one")
 	urlFlag := fs.String("url", "", "node to talk to (default $FLOWY_ADDR or "+defaultTUIAddr+")")
 	token := fs.String("token", "", "bearer token (default $FLOWY_TOKEN, then ~/.config/flowy/token)")
+	agent := fs.String("agent", "", agentFlagHelp)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -77,13 +82,12 @@ func sayCmd(args []string) error {
 	}
 
 	base := resolveURL(*urlFlag, os.Getenv("FLOWY_ADDR"))
-	bearer, err := resolveToken(*token, os.Getenv("FLOWY_TOKEN"))
+	bearer, err := resolveToken(*token, os.Getenv("FLOWY_TOKEN"), *agent, os.Getenv("FLOWY_AGENT"))
 	if err != nil {
 		return err
 	}
 	if bearer == "" {
-		return errors.New("no token: pass --token, set FLOWY_TOKEN, or write one to " +
-			"~/.config/" + tokenFile)
+		return errNoToken()
 	}
 
 	payload, err := json.Marshal(chatSayRequest{Body: body, Thread: *thread, To: *to})

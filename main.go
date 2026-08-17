@@ -49,8 +49,9 @@ commands:
            [--verify S]; env: FLOWY_ADDR, FLOWY_TOKEN)
   tui      the terminal client: rooms, inbox, memory, timeline, metrics and
            announcements over the HTTP API, keyboard-driven and tmux-friendly
-           (flowy tui [--url URL] [--token T]; env: FLOWY_ADDR, FLOWY_TOKEN,
-           then ~/.config/flowy/token)
+           (flowy tui [--url URL] [--token T] [--agent NAME]; env: FLOWY_ADDR,
+           FLOWY_TOKEN, FLOWY_AGENT, then ~/.config/flowy/token - which is the
+           operator's own, so falling through to it warns)
   fuse     mount this principal's memory as files, so an agent writes memory
            where it already writes files
            (flowy fuse --mount <dir> [--token <t>]; --reconcile applies what an
