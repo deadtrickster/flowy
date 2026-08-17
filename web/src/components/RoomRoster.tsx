@@ -71,14 +71,24 @@ export function RoomRoster({ presence }: { presence: Presence | null }) {
   // both look healthy while messages go to whichever answered first. That is
   // what silenced a watcher here earlier today. A pane that tidied them into
   // one line would hide the failure it exists to show.
+  //
+  // AND THE KIND IS PART OF THE KEY, which grouping on the principal alone got
+  // wrong and turned master red: one principal can hold a TRACKED reader and a
+  // FORKED one at the same time, and those are not one listener seen twice -
+  // they are the difference between something that can wake you and something
+  // that hears the room with nothing to wake. Telling those apart is the whole
+  // point of this pane, so collapsing them destroyed the feature to tidy the
+  // display. Two rows of the same kind under one identity is the doubled waiter;
+  // two rows of different kinds is two answers to what this seat can do.
   const byPrincipal = new Map<
     string,
     { row: (typeof polling)[number]; count: number; names: string[] }
   >();
   for (const l of polling) {
-    const seen = byPrincipal.get(l.principal);
+    const key = `${l.principal}\u001f${l.waiter_kind ?? ""}`;
+    const seen = byPrincipal.get(key);
     if (!seen) {
-      byPrincipal.set(l.principal, { row: l, count: 1, names: [l.reader] });
+      byPrincipal.set(key, { row: l, count: 1, names: [l.reader] });
       continue;
     }
     seen.count++;
