@@ -1522,6 +1522,13 @@ var mintedEventTypes = map[string]bool{
 	// behind it saying somebody chose it, which is precisely the row that makes a
 	// count wrong and unauditable at the same time.
 	EventTodoCategory: true,
+	// A repro run's verdict. Minted for the first reason - the record is only
+	// worth reading if the claim was made by actually running the tree - and
+	// because the refusal that keeps a run readable by the finding's own
+	// readers is on the verb: see findingruns.go on why a projectless finding
+	// refuses one rather than silently writing a verdict only its reporter
+	// could read back.
+	EventFindingRun: true,
 }
 
 // MintedEventType reports whether an event type is one this node's own handlers

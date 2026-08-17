@@ -536,6 +536,11 @@ var mintedTypes = map[string]bool{
 	// store.SetTodoCategory.
 	store.EventTodoCategory: true,
 	store.EventTodoSteal:    true,
+	// A repro run's verdict. The refusal that makes the log worth reading -
+	// the finding has a project, so the run stays readable by whoever can
+	// read the finding rather than only by whoever reported it - is on the
+	// verb. See store.RecordFindingRun.
+	store.EventFindingRun: true,
 }
 
 // handleAppendEvent appends to the log. The log is append-only: there is no
