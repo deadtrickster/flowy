@@ -7,6 +7,7 @@ import { MessageList } from "@/components/MessageList";
 import { RoomRoster } from "@/components/RoomRoster";
 import { RoomTodos } from "@/components/RoomTodos";
 import { ThreadDag } from "@/components/ThreadDag";
+import { ThreadList } from "@/components/ThreadList";
 import { Badge } from "@/components/ui/badge";
 import { type Artifact, type FlowyEvent, type Presence, api } from "@/lib/api";
 import { useCitation } from "@/lib/cite";
@@ -46,6 +47,29 @@ export function ChatRoom() {
   const [presence, setPresence] = useState<Presence | null>(null);
   const [todos, setTodos] = useState<Artifact[]>([]);
   const [todoError, setTodoError] = useState<string | null>(null);
+  // Which thread view. The list is the default because almost every thread here
+  // is a straight line and a straight line drawn as a graph makes the reader do
+  // layout in their head; the DAG is the honest structure and stays one key
+  // away. Not persisted: it is a way of looking at THIS thread, not a setting.
+  const [threadGraph, setThreadGraph] = useState(false);
+
+  // `d` toggles the graph, because the ThreadList tells the reader it does -
+  // "press d for the graph" on a message with several parents. A promise in one
+  // component and no binding anywhere is the affordance lying about itself.
+  //
+  // It is ignored while somebody is typing: the message box is a textarea and a
+  // room where the letter d switches panes mid-sentence is unusable.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "d" || e.metaKey || e.ctrlKey || e.altKey) return;
+      const el = e.target as HTMLElement | null;
+      const tag = el?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || el?.isContentEditable) return;
+      setThreadGraph((on) => !on);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   // Presence refreshes on its own clock. The long poll owns the messages; the
   // roster is a slower fact, and polling it on every message would make a busy
@@ -283,12 +307,30 @@ export function ChatRoom() {
             {thread ? (
               <span className="font-mono text-muted-foreground text-xs">{shortId(thread, 10)}</span>
             ) : null}
+            {/*
+              Reading is the default and the graph is a keystroke away. The
+              button says which view you would get rather than which you are in,
+              because a toggle that names the current state reads as a label and
+              gets ignored.
+            */}
+            <button
+              type="button"
+              onClick={() => setThreadGraph((on) => !on)}
+              className="rounded border border-border px-1.5 py-0.5 text-muted-foreground text-xs hover:bg-accent/60"
+              title="d"
+            >
+              {threadGraph ? "list" : "graph"}
+            </button>
             <span className="ml-auto text-muted-foreground text-xs">
               {threadEvents.length} event{threadEvents.length === 1 ? "" : "s"}
             </span>
           </header>
           <div className="min-h-0 flex-1">
-            <ThreadDag events={threadEvents} />
+            {threadGraph ? (
+              <ThreadDag events={threadEvents} />
+            ) : (
+              <ThreadList events={threadEvents} selected={selected} onSelect={select} />
+            )}
           </div>
         </section>
       </aside>
