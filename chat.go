@@ -50,11 +50,18 @@ const waitTick = 250 * time.Millisecond
 // - or which words of which message - is being answered. See citations.go for
 // why the span is what travels and the quoted text never is.
 type chatSayRequest struct {
-	Body    string    `json:"body"`
-	Thread  string    `json:"thread"`
-	Parents []string  `json:"parents"`
-	To      string    `json:"to"`
-	Cite    *chatCite `json:"cite"`
+	Body string `json:"body"`
+	// Attachments are ids of attachments the speaker has already written -
+	// the file-token shape: bytes land once through attachment_write, and a
+	// message carries the reference rather than the payload. Validated like
+	// parents: through the read filter, because a card drawn for every reader
+	// names rows every reader can reach, and an id that is not there and one
+	// that is out of reach get the same answer.
+	Attachments []string  `json:"attachments"`
+	Thread      string    `json:"thread"`
+	Parents     []string  `json:"parents"`
+	To          string    `json:"to"`
+	Cite        *chatCite `json:"cite"`
 }
 
 // chatCite is a citation as a client asks for one: the message, and the byte
@@ -208,6 +215,34 @@ func (s *server) mayNameParents(w http.ResponseWriter, r *http.Request, parents 
 			errorBody("parent "+unreadable[0]+" is not an event you can read; "+
 				"an event descends from what is in front of you or from nothing"))
 		return false
+	}
+	return true
+}
+
+// mayCarryAttachments reports whether every attachment id the writer named is
+// an attachment this principal may read, and answers 400 when one is not.
+//
+// The same rule as parents, for the same reason: a card is drawn beside the
+// message for every reader, so the ids it names must be rows the speaker could
+// reach - and a card for bytes the speaker cannot read would be a message
+// laundering a reference into a room that could not have made it.
+func (s *server) mayCarryAttachments(w http.ResponseWriter, r *http.Request, ids []string) bool {
+	for _, id := range ids {
+		art, err := s.db.ReadArtifact(r.Context(), principalOf(r), id, false)
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+			writeJSON(w, http.StatusBadRequest,
+				errorBody("attachment "+id+" is not an attachment you can read; "+
+					"a message carries what is in front of you or nothing"))
+			return false
+		case err != nil:
+			serverError(w, r, err)
+			return false
+		case art.Type != attachmentType:
+			writeJSON(w, http.StatusBadRequest,
+				errorBody(id+" is not an attachment; a message carries attachments, not other rows"))
+			return false
+		}
 	}
 	return true
 }
@@ -406,6 +441,9 @@ func (s *server) handleChatSay(w http.ResponseWriter, r *http.Request) {
 	if !s.mayNameParents(w, r, req.Parents) {
 		return
 	}
+	if !s.mayCarryAttachments(w, r, req.Attachments) {
+		return
+	}
 	cite, ok := s.mayCite(w, r, req.Cite)
 	if !ok {
 		return
@@ -494,6 +532,9 @@ func (s *server) handleChatSay(w http.ResponseWriter, r *http.Request) {
 	// as having answered.
 	if cite.Message != "" {
 		fields[store.CiteMetaKey] = store.EncodeCiteRef(cite)
+	}
+	if len(req.Attachments) > 0 {
+		fields[store.AttachmentsMetaKey] = strings.Join(req.Attachments, " ")
 	}
 	meta, err := json.Marshal(fields)
 	if err != nil {

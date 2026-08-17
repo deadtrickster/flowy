@@ -144,3 +144,10 @@ func (d *DB) ReadAttachment(ctx context.Context, p *Principal, id string) (*Arti
 	}
 	return art, content, nil
 }
+
+// AttachmentsMetaKey is the meta key a message's carried attachments ride in:
+// the artifact ids, space separated, in the order they were named. Like
+// mentions and citations it is inside the signature, because a relay that
+// could rewrite which files a message carried would be a relay choosing what
+// somebody was recorded as having handed over.
+const AttachmentsMetaKey = "attachments"

@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { marked } from "marked";
 import { type KeyboardEvent, useCallback, useEffect, useRef, useState } from "react";
 
+import { AttachmentCards } from "@/components/AttachmentCards";
 import { CitedMessage } from "@/components/CitedMessage";
 import { Badge } from "@/components/ui/badge";
 import { type FlowyEvent, isAgent } from "@/lib/api";
@@ -308,6 +309,9 @@ export function MessageList({ events, selected, onSelect, onCite, me }: Props) {
                   )
                 )}
               </div>
+              {event.meta?.attachments ? (
+                <AttachmentCards ids={event.meta.attachments.split(" ").filter(Boolean)} />
+              ) : null}
               <div className="flex gap-2 pt-1 font-mono text-[11px] text-muted-foreground">
                 <span>#{shortId(event.id)}</span>
                 <span>thread {shortId(event.thread)}</span>

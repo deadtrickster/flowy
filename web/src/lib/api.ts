@@ -95,6 +95,8 @@ export interface FlowyEvent {
     actor_name?: string;
     mentions?: string;
     cite?: string;
+    /** attachment ids a message carries, space separated, in the order named. */
+    attachments?: string;
   };
   /** What this message is answering, as the node resolved it for this reader. */
   citation?: Citation;
@@ -806,6 +808,10 @@ export const api = {
 
   inbox: (since = 0) => request<ChatPage>(`/api/inbox?since=${since}`),
   reports: () => request<{ artifacts: Artifact[] }>("/api/artifacts?type=report"),
+  attachment: (id: string) =>
+    request<{ item: Artifact; content: string | null; bytes?: string }>(
+      `/api/attachment/${encodeURIComponent(id)}`,
+    ),
   /**
    * The node's ranked search, narrowed to reports.
    *

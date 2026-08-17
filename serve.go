@@ -266,6 +266,7 @@ var apiRoutes = []string{
 	"GET /api/todo/{id}/assignee",
 	"GET /api/proposals",
 	"GET /api/proposal/{id}",
+	"GET /api/attachment/{id}",
 	"POST /api/dm/{to}",
 	"GET /api/dm",
 	"GET /api/dm/wait",
@@ -384,6 +385,11 @@ func (s *server) routes() http.Handler {
 	// internal/store/assign.go, and assign.go for the room's door beside this one.
 	api.HandleFunc("POST /api/todo/{id}/assignee", s.handleTodoAssign)
 	api.HandleFunc("GET /api/todo/{id}/assignee", s.handleTodoAssignee)
+	// An attachment's bytes, permission-filtered exactly as the row is - the
+	// card a reader sees names this, and "the card is there but the bytes are
+	// not" is a real state the filter produces, answered as metadata without
+	// content rather than as an error.
+	api.HandleFunc("GET /api/attachment/{id}", s.handleAttachmentRead)
 	// Direct messages. They are chat events and they are read back through the
 	// same filter every other event is, so these are three narrowings of reads
 	// that already existed rather than a private surface of their own - the
