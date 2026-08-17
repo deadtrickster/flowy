@@ -132,6 +132,27 @@ export interface NodeInfo {
   bundle: string;
 }
 
+/** PinEntry is one line of the log behind a room's strip. */
+export interface PinEntry {
+  message: string;
+  verb: string;
+  actor: string;
+  actor_kind?: string;
+  at: string;
+  event: string;
+}
+
+/**
+ * PinsView is a room's strip: the ids that are up, and the log they were folded
+ * out of. `pinned` is in the order each message was FIRST pinned, so re-pinning
+ * an old decision does not reshuffle the strip under a reader.
+ */
+export interface PinsView {
+  room: string;
+  pinned: string[];
+  log: PinEntry[];
+}
+
 /** ChatPage is what a room read or a long poll answers with. */
 export interface ChatPage {
   room?: string;
@@ -957,6 +978,34 @@ export const api = {
    * message says what was being talked about when somebody decided it had to
    * happen. The node writes the item and one message in the room together.
    */
+  /**
+   * A room's pinned strip: what is up, and the log it was folded out of.
+   *
+   * The log comes back with it because "who decided this was the decision" is
+   * most of why a room pins anything, and a list of ids cannot answer it.
+   */
+  pins: (room: string) => request<PinsView>(`/api/chat/${encodeURIComponent(room)}/pins`),
+
+  /**
+   * Put a message up in the room it was said in. The room is in the path as
+   * well as the id for assignTodo's reason: the node refuses a message that is
+   * not in this room, so a stale id cannot put a line in a strip whose readers
+   * cannot open it.
+   */
+  pin: (room: string, message: string) =>
+    request<FlowyEvent>(`/api/chat/${encodeURIComponent(room)}/pin`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message }),
+    }),
+
+  /** Take it down. The log still gains an entry - see the DELETE handler. */
+  unpin: (room: string, message: string) =>
+    request<FlowyEvent>(
+      `/api/chat/${encodeURIComponent(room)}/pin/${encodeURIComponent(message)}`,
+      { method: "DELETE" },
+    ),
+
   raiseTodo: (room: string, title: string, body = "", message?: string) =>
     request<{ item: Artifact; event: FlowyEvent }>(`/api/chat/${encodeURIComponent(room)}/todo`, {
       method: "POST",

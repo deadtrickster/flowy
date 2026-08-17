@@ -1474,6 +1474,13 @@ var mintedEventTypes = map[string]bool{
 	// thing reading that edge is a machine deciding whether to start work.
 	EventDepAdd:    true,
 	EventDepRemove: true,
+	// A pin and the entry that takes one down, for the first reason: the
+	// refusals that make a strip trustworthy - the message exists, this reader
+	// can see it, and it was said IN THIS ROOM - are all on the verb. A pin
+	// written by hand is a line in a room's strip pointing at a message that
+	// room's readers may not be able to open.
+	EventPinAdd:    true,
+	EventPinRemove: true,
 	// An assignment. It is minted for the first reason - the claim is made by
 	// going through the verb - and because the refusal that makes it safe is on
 	// the verb: the writer has to be able to READ the todo. An entry a client
