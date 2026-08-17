@@ -1,0 +1,43 @@
+# Every file the draw.io embed editor asks for, and nothing else.
+#
+# Measured by web/scripts/drawio-probe.mjs against the unpacked v31.1.8
+# release: 23 paths, 24.7 MB, with the shape palettes and format panels
+# exercised. The release itself unpacks to 152 MB.
+#
+# Re-run the probe after a version bump. A path drawio starts asking for that
+# is missing here is a 404 in front of a user.
+
+# The app. app.min.js is the whole editor; the other three are loaded eagerly
+# by drawio's own loader, so they are not optional however much they weigh.
+/js/app.min.js
+/js/stencils.min.js
+/js/extensions.min.js
+/js/shapes-14-6-5.min.js
+/js/bootstrap.js
+/js/main.js
+/js/PreConfig.js
+/js/PostConfig.js
+
+# Styles.
+/styles/grapheditor.css
+/styles/high-contrast.css
+/mxgraph/css/common.css
+
+# English strings. The other 60 locales are not vendored.
+/resources/dia.txt
+
+# MathJax, for shapes with typeset maths in them. Loaded eagerly.
+/math4/es5/core.js
+/math4/es5/startup.js
+/math4/es5/input/tex.js
+/math4/es5/input/asciimath.js
+/math4/es5/output/svg.js
+/math4/es5/ui/safe.js
+/math4/es5/fonts/mathjax-tex-font/svg.js
+
+# The handful of images the chrome actually references.
+/images/spin.gif
+/images/github-logo.svg
+/img/clipart/Gear_128x128.png
+
+/index.html

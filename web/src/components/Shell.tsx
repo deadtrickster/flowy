@@ -10,6 +10,7 @@ import {
   ListChecks,
   ListTree,
   Lock,
+  Shapes,
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { NavLink } from "react-router-dom";
@@ -93,6 +94,10 @@ export function Shell({ children }: { children: ReactNode }) {
           <NavLink to="/reports" className={navClass}>
             <FileText className="h-4 w-4" />
             reports
+          </NavLink>
+          <NavLink to="/diagrams" className={navClass}>
+            <Shapes className="h-4 w-4" />
+            diagrams
           </NavLink>
           <NavLink to="/worklog" className={navClass}>
             <History className="h-4 w-4" />

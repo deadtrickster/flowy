@@ -830,7 +830,11 @@ function parseBody(text: string, response: Response) {
   }
 }
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+// Exported so a module that owns its own corner of the API (see lib/diagrams)
+// can reuse this door rather than build a second one. Everything that makes a
+// request safe lives here - the token header, the body parse, the ApiError -
+// and a second fetch wrapper is a second place for any of it to be missing.
+export async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(path, {
     ...init,
     headers: { ...authHeader(), ...(init.headers ?? {}) },

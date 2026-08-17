@@ -5,6 +5,8 @@ import { UnreadProvider } from "@/lib/unread";
 import { Activity } from "@/routes/Activity";
 import { ArtifactView } from "@/routes/ArtifactView";
 import { ChatRoom } from "@/routes/ChatRoom";
+import { DiagramView } from "@/routes/DiagramView";
+import { Diagrams } from "@/routes/Diagrams";
 import { Direct } from "@/routes/Direct";
 import { Home } from "@/routes/Home";
 import { Inbox } from "@/routes/Inbox";
@@ -57,6 +59,13 @@ export default function App() {
           <Route path="/todos/merge" element={<Todos />} />
           <Route path="/memory" element={<Memory />} />
           <Route path="/reports" element={<Reports />} />
+          {/*
+            A diagram is a document with an id, so it is a path and not a
+            modal: a drawing somebody wants a second opinion on is a link they
+            can paste into the room.
+          */}
+          <Route path="/diagrams" element={<Diagrams />} />
+          <Route path="/diagrams/:id" element={<DiagramView />} />
           <Route path="/worklog" element={<Worklog />} />
           <Route path="/task/:id" element={<TaskView />} />
           <Route path="/p/:project/:type/:id" element={<ArtifactView />} />
