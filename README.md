@@ -1263,11 +1263,22 @@ another principal's mouth on a row that is correctly signed and correctly
 actored. It is inside the signature because `meta` is, so a relay cannot rewrite
 which message a reply quotes or which half of it.
 
-In the console, selecting text inside a message cites that span and selecting
-the message cites the whole of it - one action either way, no form - and the
-citation is drawn above the reply and above the box, attributed, in the cited
-speaker's colour. The row is a div with a button's role and keyboard handling
-rather than a `<button>`, because text inside a button cannot be selected.
+In the console, selecting text inside a message cites that span and a reply
+control on the message cites the whole of it, and the citation is drawn above
+the reply and above the box, attributed, in the cited speaker's colour.
+
+**The row itself is not a control.** It was: a div wearing `role="button"` with
+a click that selected the message, so clicking a line to read it, or to put the
+caret somewhere, silently armed a reply at whatever was under the pointer.
+Raised by the operator - "dont cite automatically when message clicked. add
+reply to button, as other messages have". The row now carries no role, no tab
+stop and no click, because a row that announces itself as a control it is not is
+the same lie to a screen reader that the click was to a mouse; a real `<button>`
+beside the clock does the selecting, always in the document and always
+focusable, since a control that only exists on hover is a control a keyboard
+user does not have. The row stays a div rather than becoming a button: text
+inside a button cannot be selected by dragging over it, and dragging over it is
+what citing a span is.
 
 ### Direct messages, and where the privacy lives
 
@@ -2316,9 +2327,10 @@ stays quiet, and the room below it reports the same failure already.
 The chat view posts as the person holding the token and keeps up by looping the
 long poll: `GET /api/chat/{room}` once, then `GET .../wait?cursor=` until the
 view goes away, which aborts the request in flight. A failed poll backs off two
-seconds rather than spinning. Selecting a message makes the next thing you say
-a reply to it - the new message names it in `parents`, and the DAG on the right
-grows a lane.
+seconds rather than spinning. The reply control on a message makes the next
+thing you say a reply to it - the new message names it in `parents`, and the
+DAG on the right grows a lane. Clicking the message does not: reading the room
+is not answering it.
 
 **Beside the messages is what this room has decided to do.** The queue had been
 readable from everywhere except the place it is agreed: two agents and a person
