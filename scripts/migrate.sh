@@ -145,8 +145,15 @@ after="$(fingerprint)" || die "cannot read the schema catalogue back"
 # "psql exited 0" is true of applying the schema to a database that already had
 # it, and true of applying it to one that was missing a table - the delta is the
 # only thing that tells the two apart, and it is what a deploy log should carry.
-added="$(comm -13 <(printf '%s\n' "$before" | sort) <(printf '%s\n' "$after" | sort))"
-removed="$(comm -23 <(printf '%s\n' "$before" | sort) <(printf '%s\n' "$after" | sort))"
+#
+# LC_ALL=C on BOTH the sort and the comm, and it is not cosmetic. `sort` uses
+# the locale's collation, `comm` assumes byte order, and when they disagree comm
+# prints "file 1 is not in sorted order" ON STDERR and then produces a WRONG
+# delta - it can miss a real change or invent one. The first deploy through this
+# path printed that warning three times and still reported the right index, which
+# is the worst way for a guard to be broken: right by luck, on the run you watch.
+added="$(LC_ALL=C comm -13 <(printf '%s\n' "$before" | LC_ALL=C sort) <(printf '%s\n' "$after" | LC_ALL=C sort))"
+removed="$(LC_ALL=C comm -23 <(printf '%s\n' "$before" | LC_ALL=C sort) <(printf '%s\n' "$after" | LC_ALL=C sort))"
 
 if [ -z "$added" ] && [ -z "$removed" ]; then
 	say "    schema already up to date - nothing changed"
