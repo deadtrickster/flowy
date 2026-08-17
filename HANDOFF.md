@@ -83,13 +83,28 @@ gap-probe, not the backend).
   **from the repo root** (a `cd web && … && go build .` builds the `web` directory and fails
   with "no Go files"), then restart the unit - `go:embed` bakes in whatever `web/dist` holds
   at build time, and a build from a bare tree serves "console not built".
-- **a schema change needs `schema.sql` applied to the live database BEFORE the restart.**
-  Nothing applies it for you: the gate builds its database from `schema.sql` every run, so
-  the gate has never seen a database older than the binary and cannot catch this.
-  `docker exec -i flowy-dogfood-pg psql -U flowy -d flowy < schema.sql` - it is written to be
-  re-appliable. Skipping it crash-loops the unit (`Restart=on-failure` retries forever) on
-  whatever the new code reads first. Dump before you do it:
-  `docker exec flowy-dogfood-pg pg_dump -U flowy -d flowy > dump-<what>.sql`.
+- **a schema change needs `schema.sql` applied to the live database BEFORE the restart, and
+  `scripts/deploy.sh` now does that for you.** It runs `scripts/migrate.sh` against the DSN
+  it reads out of `serve.env` (or `PG_DSN`, or `$FLOWY_DATABASE_URL`), after the binary is
+  built and verified and before the unit is restarted, and prints which objects that added.
+  A deploy that cannot find a DSN refuses rather than restarting onto whatever the database
+  happens to hold. To migrate without deploying: `scripts/migrate.sh <dsn>`, or the long way,
+  `docker exec -i flowy-dogfood-pg psql -U flowy -d flowy < schema.sql`. Dump first if it is
+  not routine: `docker exec flowy-dogfood-pg pg_dump -U flowy -d flowy > dump-<what>.sql`.
+  Skipping it used to crash-loop the unit (`Restart=on-failure` retries forever) on whatever
+  the new code read first.
+- **the gate can now see schema drift, which it could not before.** It used to build its
+  database from `schema.sql` on every run and nothing else, so it had never seen a database
+  older than the binary - which is why the `refused_authorship` outage passed 547 checks
+  twice and then took the node down. The `an older database meets this binary` section builds
+  a database from `schema.sql` as of an earlier commit, applies `scripts/migrate.sh` to it,
+  and asserts the result is structurally identical to a fresh database and serves a real
+  read. Point it at what the node is actually running with
+  `FLOWY_BASELINE_REV=$(cat ~/Projects/flowy-dogfood/.deployed-commit) ./run-tests.sh`.
+  The thing it is really guarding is `CREATE TABLE IF NOT EXISTS`: a column added inside a
+  table body and nowhere else is a no-op on every database that already has the table, so it
+  works on a fresh database, passes every other check in the gate, and 500s on the node.
+  Add the matching `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` and the check goes green.
 
 ## Backend: SereneDB is the target, but not ready yet
 
