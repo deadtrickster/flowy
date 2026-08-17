@@ -1118,9 +1118,14 @@ func (d *DB) syncApply(ctx context.Context, p *Principal, in *SyncSet) (*SyncRes
 				}
 				// And then the other signature, which answers the other
 				// question: the node said it wrote the bytes, and this says
-				// whether the owner said they are theirs.
-				mark, why, err := authorshipOf(ctx, tx, art.OwnerUser, "artifact "+art.ID,
-					art.HLC, canonicalArtifactAuthorship(art.OwnerUser, art), art.AuthorSig)
+				// whether the owner said they are theirs. A refusal here is
+				// written into the withheld ledger by the same call, so that a
+				// read on this side can say the list is short and why.
+				mark, why, err := authorshipOf(ctx, tx, withheldRow{
+					kind: withheldArtifact, id: art.ID, principal: art.OwnerUser,
+					project: art.Project, visibility: art.Visibility, claimed: art.Kind,
+					node: art.Node, hlc: art.HLC,
+				}, canonicalArtifactAuthorship(art.OwnerUser, art), art.AuthorSig)
 				if why != "" || err != nil {
 					return why, err
 				}
@@ -1170,9 +1175,13 @@ func (d *DB) syncApply(ctx context.Context, p *Principal, in *SyncSet) (*SyncRes
 				// The node's word that it relayed this, then the actor's own
 				// word that they wrote it. The second is the one the log needs:
 				// a signature from a pinned relay says nothing whatever about
-				// whose name is in the actor column.
-				mark, why, err := authorshipOf(ctx, tx, e.Actor, "event "+e.ID,
-					e.SeqHLC, canonicalEventAuthorship(e.Actor, e), e.AuthorSig)
+				// whose name is in the actor column. An event carries no
+				// visibility of its own, so the ledger's reach for it is its
+				// project - see withheldRow.
+				mark, why, err := authorshipOf(ctx, tx, withheldRow{
+					kind: withheldEvent, id: e.ID, principal: e.Actor,
+					project: e.Project, claimed: e.Type, node: e.Node, hlc: e.SeqHLC,
+				}, canonicalEventAuthorship(e.Actor, e), e.AuthorSig)
 				if why != "" || err != nil {
 					return why, err
 				}

@@ -1870,6 +1870,34 @@ principal was before: their rows rest on the word of whichever node relayed
 them, and the store now says so on every row instead of leaving the reader to
 assume otherwise.
 
+**A REFUSAL NOBODY SEES IS INDISTINGUISHABLE FROM SUCCESS**, so the refusal is
+counted on this side too. The merge answers the peer that pushed a forgery with
+a count and a reason; on this side the row simply was not there, and a queue read
+handed back a shorter list and said nothing - which reads as *that is all the
+work there is*, a false statement about the fleet made by a node that knew
+better. So a refused row lands in `withheld_authorship`, and every read of the
+queue carries the count and the reason with it:
+
+```
+GET /api/artifacts?type=memory&kind=todo
+{"artifacts": [...], "withheld": {"rows": 2, "reason": "unverified authorship"}}
+```
+
+| | |
+| --- | --- |
+| the ledger | one row per refused row of the log - who it claimed to be from, where it claimed to land, which node relayed it, and the refusal in words. Never the title or the body: that is the unverified content, and keeping it would be keeping the forgery somewhere a reader can reach |
+| who is told | whoever would have been handed the row. The count runs the artifact read rule over the ledger's own columns, so a refusal in a project you cannot read is not a second way to learn what is in it |
+| when it stops | the moment the row is no longer withheld. A peer that comes back with the author's signature over the same id has answered the refusal, and *1 row withheld* about a row that has since arrived is the same lie the other way up. A key removed by hand takes its refusals with it |
+| absent, not zero | the field is missing when nothing was withheld. A page that says `0 withheld` every day is a page nobody reads the day it says 3 |
+
+The console's queue puts it in the scope line above the rows and in the sentence
+an empty list draws instead of nothing - beside *how far this list looked*, which
+is the same kind of statement about the same answer. `todos` over MCP reports it
+in the same shape, because an agent draining the queue starts a run per ready
+item: a row dropped silently there is work that never happens and nobody knows
+it was dropped. `flowy tui` does not draw it yet - named here rather than left to
+be discovered, since the count is on the answer it already reads.
+
 Two gaps, named rather than implied. A **pre-epoch** artifact modified after the
 epoch by a party on a node that does not hold the owner's private key gets a
 reading above the epoch with no signature anywhere that covers it, and the

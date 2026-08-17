@@ -429,6 +429,53 @@ CREATE TABLE IF NOT EXISTS principal_identity (
     created     timestamptz DEFAULT now()
 );
 
+-- The rows this node REFUSED for authorship, so that a read can say it is short
+-- and why.
+--
+-- A refusal nobody sees is indistinguishable from success. The merge refuses a
+-- row naming a principal it holds a key for, at or after that key's epoch, with
+-- no signature that verifies - see principal_identity - and the pushing peer is
+-- told in the sync answer. Nobody on THIS side is: the row simply is not there,
+-- and a queue read hands back a shorter list that reads as "that is all the work
+-- there is". That is a false statement about the fleet made by a node that knows
+-- better, and it is the same failure the todos page already refuses to make
+-- about its own reach.
+--
+-- So the refusal is a row. One per refused row of the log, keyed the way the row
+-- itself is keyed, and it holds only what a COUNT needs: who the row claimed to
+-- be from, where it claimed to land, and what this node said about it. Never the
+-- title or the body - those are the unverified content, and storing them here
+-- would be keeping the forgery in a table a reader can reach.
+--
+-- It is cleared when the row lands. A peer that comes back with the author's
+-- signature over the same id has answered the refusal, and "1 row withheld"
+-- about a row that has since arrived is the same lie the other way up.
+--
+-- LOCAL, like tokens and principal_identity: no hlc, no node column of its own
+-- beyond the relay's name, no signature, and nothing replicates it. What this
+-- node refused is this node's own finding.
+CREATE TABLE IF NOT EXISTS withheld_authorship (
+    -- 'artifact' or 'event': the table the row would have landed in.
+    row_kind   text NOT NULL,
+    row_id     text NOT NULL,
+    -- The principal the row named as its author, and the reach of the count -
+    -- see store.WithheldAuthorship, which asks the artifact read rule of these
+    -- three columns so that a reader is told about a refusal exactly where they
+    -- would have been handed the row.
+    principal  text NOT NULL,
+    project    text,
+    visibility text NOT NULL DEFAULT 'shared',
+    -- What the row claimed to be (an artifact's kind, an event's type), the node
+    -- that relayed it, its reading, and the refusal in words.
+    kind       text,
+    node       text,
+    hlc        bigint NOT NULL DEFAULT 0,
+    reason     text NOT NULL,
+    first_seen timestamptz DEFAULT now(),
+    last_seen  timestamptz DEFAULT now(),
+    PRIMARY KEY (row_kind, row_id)
+);
+
 -- Replication bookmarks, one row per peer node.
 CREATE TABLE IF NOT EXISTS peers (
     peer           text PRIMARY KEY,

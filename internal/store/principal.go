@@ -359,30 +359,180 @@ func principalKeyOf(
 //   - it does not, and then the epoch decides. At or after it, the row is
 //     REFUSED with a reason. Below it, the row predates the key and is taken,
 //     attributed.
+//
+// A refusal is WRITTEN DOWN, in the same transaction, into withheld_authorship,
+// and the two acceptances clear whatever this node recorded about that row
+// before. The merge already answers the peer that pushed a forgery with a count
+// and a reason; nobody on this side was answered at all - the row was refused, so
+// it was not in the log, so a queue read handed back a shorter list and said
+// nothing. A refusal nobody sees is indistinguishable from success. See
+// WithheldAuthorship, which is how a read says so.
 func authorshipOf(
-	ctx context.Context, tx *sql.Tx, author, what string, packed int64, msg, sig []byte,
+	ctx context.Context, tx *sql.Tx, row withheldRow, msg, sig []byte,
 ) (mark, why string, err error) {
+	author := row.principal
 	public, epoch, ok, err := principalKeyOf(ctx, tx, author)
 	if err != nil {
 		return "", "", err
 	}
 	if !ok {
+		// No key here, so there is no rule by which this node refuses this
+		// author's rows and nothing it could be withholding of them. The merge
+		// path stays exactly as short as it was for a fabric that has
+		// provisioned nothing, which is most of them.
 		return AuthorshipAttributed, "", nil
 	}
-	if verifyBytes(public, msg, sig) {
-		return AuthorshipAuthored, "", nil
-	}
-	if packed < epoch {
+	if mine := verifyBytes(public, msg, sig); mine || row.hlc < epoch {
+		// Taken - as this person's own word, or on the relaying node's, which
+		// the mark beside it says. Either way this node is no longer withholding
+		// it, so it stops saying that it is: "1 row withheld" about a row that
+		// has since arrived is the same false statement the other way up.
+		if err := clearWithheld(ctx, tx, row); err != nil {
+			return "", "", err
+		}
+		if mine {
+			return AuthorshipAuthored, "", nil
+		}
 		return AuthorshipAttributed, "", nil
 	}
 	carried := "carries no signature of theirs"
 	if len(sig) > 0 {
 		carried = "carries a signature that is not theirs"
 	}
-	return "", what + " says " + named(author) + " wrote it and " + carried +
+	why = row.label() + " says " + named(author) + " wrote it and " + carried +
 		": this node holds " + named(author) + "'s signing key, and from that key's epoch " +
 		"their rows are their own to sign. A node relaying a row is not the author of it - " +
-		"pinning the node it came from does not make this one theirs", nil
+		"pinning the node it came from does not make this one theirs"
+	if err := recordWithheld(ctx, tx, row, why); err != nil {
+		return "", "", err
+	}
+	return "", why, nil
+}
+
+// The two tables a withheld row would have landed in. They are the ledger's own
+// names for them rather than the table names, because what is keyed here is a
+// row of the log and not a row of that table - the whole point is that it is not
+// in that table.
+const (
+	withheldArtifact = "artifact"
+	withheldEvent    = "event"
+)
+
+// WithheldUnverifiedAuthorship is the reason a read reports, in the words a
+// person reads. The prose refusal the pushing peer is handed is per row and names
+// the principal and the key; this is the one line a COUNT is labelled with, and
+// there is exactly one of them because there is exactly one rule.
+const WithheldUnverifiedAuthorship = "unverified authorship"
+
+// withheldRow is one refused row as the ledger keeps it: enough to count it and
+// to decide who is told about it, and nothing more. See withheld_authorship in
+// schema.sql for why the title and the body are deliberately not here.
+type withheldRow struct {
+	kind      string // withheldArtifact or withheldEvent
+	id        string
+	principal string
+	project   *string
+	// visibility is the artifact's own. An event has none, so it is left empty
+	// and lands as shared, which makes the reach of the count that event's
+	// project - which is what an event's own read rule is.
+	visibility string
+	// claimed is what the row said it was: an artifact's kind, an event's type.
+	claimed string
+	node    string
+	hlc     int64
+}
+
+// label is the row as the refusal names it - "artifact 01M...", "event 01M..." -
+// which is the prose both merge doors have always reported.
+func (w withheldRow) label() string { return w.kind + " " + w.id }
+
+// recordWithheld writes the refusal down. It is an upsert because a peer retries
+// a delta it was refused, and because the merge asks the question again on every
+// pass over the rows it has not settled: what is counted is refused ROWS, not
+// deliveries and not passes, so a second look at the same row is the same one
+// row.
+func recordWithheld(ctx context.Context, tx *sql.Tx, row withheldRow, why string) error {
+	visibility := row.visibility
+	if visibility == "" {
+		visibility = VisibilityShared
+	}
+	_, err := tx.ExecContext(ctx,
+		`INSERT INTO withheld_authorship (row_kind, row_id, principal, project, visibility,
+		                                  kind, node, hlc, reason)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		 ON CONFLICT (row_kind, row_id) DO UPDATE SET
+		     principal = excluded.principal, project = excluded.project,
+		     visibility = excluded.visibility, kind = excluded.kind, node = excluded.node,
+		     hlc = excluded.hlc, reason = excluded.reason, last_seen = now()`,
+		row.kind, row.id, row.principal, row.project, visibility,
+		row.claimed, row.node, row.hlc, why)
+	if err != nil {
+		return fmt.Errorf("store: record what was withheld of %s: %w", row.label(), err)
+	}
+	return nil
+}
+
+// clearWithheld forgets a refusal this node has stopped making. A peer that comes
+// back with the author's signature over the same row has answered it.
+func clearWithheld(ctx context.Context, tx *sql.Tx, row withheldRow) error {
+	_, err := tx.ExecContext(ctx,
+		`DELETE FROM withheld_authorship WHERE row_kind = $1 AND row_id = $2`, row.kind, row.id)
+	if err != nil {
+		return fmt.Errorf("store: forget what was withheld of %s: %w", row.label(), err)
+	}
+	return nil
+}
+
+// Withheld is what a read says about the rows it could not hand over: how many,
+// and why.
+//
+// It is the count and the reason together and never one without the other. A
+// count with no reason is a number nobody can act on; a reason with no count
+// reads as a warning about the fabric rather than a statement about THIS answer.
+type Withheld struct {
+	Rows   int    `json:"rows"`
+	Reason string `json:"reason"`
+}
+
+// WithheldAuthorship is how much of what this reader asked for this node refused
+// on authorship, and nil when the answer is none.
+//
+// Nil rather than a zero, so a surface with nothing to report renders nothing
+// rather than a reassuring "0 withheld" on every page - a page that says 0 every
+// day is a page nobody reads the day it says 3 - and so that adding this changed
+// no answer that had nothing to say.
+//
+// The reach is the ARTIFACT READ RULE, asked of the three columns the ledger
+// keeps for exactly that: a reader is told about a refusal in the places they
+// would have been handed the row, and told nothing about one in a project they
+// cannot read. It is the same clause ListArtifacts runs, spliced over the ledger
+// instead of over the table, rather than a second idea of who may see what - see
+// ReadableProjects, which reads the registry through the same filter for the same
+// reason.
+//
+// The join onto principal_identity is what keeps the count honest rather than
+// merely growing: the ledger speaks only while the rule that made it is live. A
+// key removed by hand - which is how rotation is done here, deliberately - takes
+// its refusals out of every count with it, because from that moment this node
+// refuses nothing of that principal's and has no business saying it does.
+func (d *DB) WithheldAuthorship(ctx context.Context, p *Principal, scopeAll bool) (*Withheld, error) {
+	a := &args{}
+	where := ArtifactFilterSQL(p, "ar", a, scopeAll)
+	var rows int
+	err := d.sql.QueryRowContext(ctx,
+		`SELECT count(*)
+		   FROM (SELECT w.row_id AS id, w.principal AS owner_user, w.project AS project,
+		                w.visibility AS visibility
+		           FROM withheld_authorship w
+		           JOIN principal_identity pi ON pi.principal = w.principal) ar
+		  WHERE `+where, a.vals...).Scan(&rows)
+	if err != nil {
+		return nil, fmt.Errorf("store: count what was withheld: %w", err)
+	}
+	if rows == 0 {
+		return nil, nil
+	}
+	return &Withheld{Rows: rows, Reason: WithheldUnverifiedAuthorship}, nil
 }
 
 // PrincipalKeyFromSeed is a principal's private key from its 32 byte seed, for

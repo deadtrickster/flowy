@@ -529,7 +529,20 @@ func todosTool(ctx context.Context, m *mcpServer, p *store.Principal, raw json.R
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"count": len(list), "items": list}, nil
+	// The same statement the console's queue makes, to the reader who acts on
+	// this one. An agent draining the queue is exactly who must not be handed a
+	// shorter list silently: it starts a run per ready item, so a row this node
+	// refused for authorship and said nothing about is work that never happens
+	// and nobody knows it was dropped. See store.WithheldAuthorship.
+	withheld, err := m.db.WithheldAuthorship(ctx, p, false)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]any{"count": len(list), "items": list}
+	if withheld != nil {
+		out["withheld"] = withheld
+	}
+	return out, nil
 }
 
 // memQuery builds the store query every memory read shares: type 'memory',

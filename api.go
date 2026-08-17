@@ -323,7 +323,23 @@ func (s *server) handleListArtifacts(w http.ResponseWriter, r *http.Request) {
 		serverError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"artifacts": list})
+	// What this node refused to hand over, and why. A queue read that drops the
+	// rows this node would not take and returns a shorter list is lying by
+	// omission: the reader cannot tell "there is no more work" from "there is
+	// work I would not carry". So the count travels with the answer, in the same
+	// shape the console already distinguishes its other kinds of empty in - see
+	// store.WithheldAuthorship. It is absent, not zero, when there is nothing to
+	// say.
+	withheld, err := s.db.WithheldAuthorship(r.Context(), p, scopeAll(r, p))
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	body := map[string]any{"artifacts": list}
+	if withheld != nil {
+		body["withheld"] = withheld
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
 // handleGetArtifact returns one artifact, or 404 when it is missing or out of

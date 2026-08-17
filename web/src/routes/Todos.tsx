@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { Badge } from "@/components/ui/badge";
-import type { Artifact } from "@/lib/api";
+import type { Artifact, Withheld } from "@/lib/api";
 import { TODO_PAGE, api } from "@/lib/api";
 import { useSession } from "@/lib/session";
 import { speakerStyle } from "@/lib/speakercolour";
@@ -43,6 +43,9 @@ export function Todos() {
   /** The projects this token can read a row in, whether or not any todo is in
    * them. It is what makes an empty answer a statement rather than a blank. */
   const [reach, setReach] = useState<string[]>([]);
+  /** What the node refused to hand over, and why. Null when it refused nothing:
+   * see Withheld, and emptyReads for why a shorter list has to say it is one. */
+  const [withheld, setWithheld] = useState<Withheld | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
 
@@ -50,6 +53,7 @@ export function Todos() {
     if (!token) {
       setTodos([]);
       setReach([]);
+      setWithheld(null);
       setLoaded(false);
       return;
     }
@@ -61,6 +65,7 @@ export function Todos() {
         if (stopped) return;
         setTodos(queue.artifacts);
         setReach(registry.reads ?? []);
+        setWithheld(queue.withheld ?? null);
         setError(null);
       })
       .catch((err: Error) => {
@@ -132,6 +137,22 @@ export function Todos() {
                 - the node stopped at {TODO_PAGE} rows, so there may be more
               </span>
             ) : null}
+            {/* And what the node would not hand over, which is the other way a
+                list is short. The cap is "there may be more"; this is "there IS
+                more, and here is why you are not being shown it" - a stronger
+                statement and the one that must never be silent. It carries no
+                data-scope-project: those name the projects the list is drawn
+                from, and this is not one of them. */}
+            {withheld ? (
+              <span
+                data-todo-withheld={withheld.rows}
+                title="Rows this node refused because the principal named on them did not
+sign them and it holds that principal's key. They are refused, not hidden - and
+this says so rather than letting the list read as all the work there is."
+              >
+                - {withheld.rows} row{withheld.rows === 1 ? "" : "s"} withheld: {withheld.reason}
+              </span>
+            ) : null}
           </p>
         ) : null}
       </header>
@@ -150,6 +171,7 @@ export function Todos() {
               loaded,
               failed: Boolean(error),
               projects: projects.length,
+              withheld,
             })}
           </li>
         ) : null}
@@ -205,21 +227,31 @@ function scopeLine({
 /**
  * What an empty list says, which is never nothing.
  *
- * Four different facts look identical as a blank page, and the two that matter
- * are the last two. "no todos" reads as "there is no work", and for a reader
+ * FIVE different facts look identical as a blank page, and the ones that matter
+ * are the last three. "no todos" reads as "there is no work", and for a reader
  * whose token reaches one project out of five that is a false statement about
  * the fleet rather than a true one about their reach.
+ *
+ * The fifth is a refusal, and it is the one that cannot be inferred from
+ * anything else on the page: the node holds rows it will not carry, because they
+ * name a principal whose signing key it holds and they are not signed with it.
+ * Those rows are missing from this answer for a reason no count of projects can
+ * express, so the reason is said outright and the count with it. A refusal
+ * nobody sees is indistinguishable from success, which is what an empty queue
+ * that had one looks like.
  */
 function emptyReads({
   token,
   loaded,
   failed,
   projects,
+  withheld,
 }: {
   token: boolean;
   loaded: boolean;
   failed: boolean;
   projects: number;
+  withheld: Withheld | null;
 }) {
   if (!token) {
     return "paste a token to read the queue - signed out, there is no reader to scope it to";
@@ -230,10 +262,16 @@ function emptyReads({
   if (!loaded) {
     return "reading the queue…";
   }
+  // Appended rather than substituted: the reach is still true and still worth
+  // saying, and a reader deciding whether their work is missing needs both
+  // sentences. Nothing that already read this page loses a word of it.
+  const refused = withheld
+    ? ` - and ${withheld.rows} row${withheld.rows === 1 ? "" : "s"} withheld: ${withheld.reason}`
+    : "";
   if (projects === 0) {
-    return "this token reaches no project, so there is no queue to draw - not an empty one";
+    return `this token reaches no project, so there is no queue to draw - not an empty one${refused}`;
   }
-  return `no todos in the ${projects} project${projects === 1 ? "" : "s"} you can read - other projects may hold work this token cannot see`;
+  return `no todos in the ${projects} project${projects === 1 ? "" : "s"} you can read - other projects may hold work this token cannot see${refused}`;
 }
 
 /**

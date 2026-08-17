@@ -204,6 +204,25 @@ export interface ProjectsPage {
   reads?: string[];
 }
 
+/**
+ * What a read could NOT hand over, and why.
+ *
+ * A refusal nobody sees is indistinguishable from success. The node refuses a row
+ * that names a principal it holds a signing key for, at or after that key's
+ * epoch, with no signature of theirs that verifies - see FlowyEvent.authorship -
+ * and until this existed the only party told was the peer that pushed it. On this
+ * side the row simply was not there, and a queue read handed back a shorter list
+ * that reads as "that is all the work there is".
+ *
+ * So it is the count AND the reason, together, and it is absent rather than zero
+ * when there is nothing to say. A page with a `withheld` of 0 on it every day is
+ * a page nobody reads the day it says 3.
+ */
+export interface Withheld {
+  rows: number;
+  reason: string;
+}
+
 export interface Artifact {
   id: string;
   type: string;
@@ -821,7 +840,9 @@ export const api = {
    * cap silently - which is the failure the number exists to report.
    */
   todos: () =>
-    request<{ artifacts: Artifact[] }>(`/api/artifacts?type=memory&kind=todo&limit=${TODO_PAGE}`),
+    request<{ artifacts: Artifact[]; withheld?: Withheld }>(
+      `/api/artifacts?type=memory&kind=todo&limit=${TODO_PAGE}`,
+    ),
   /**
    * The todos of one room: the same list, narrowed by the room the item was
    * raised in. It is the same endpoint and the same permission filter - room is

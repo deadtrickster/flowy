@@ -400,3 +400,115 @@ func TestAPrincipalKeyIsNotReplacedInPlace(t *testing.T) {
 		t.Fatalf("the epoch is %d, want 99", held.Epoch)
 	}
 }
+
+// TestARefusedRowSaysHowMuchItWithheld is the other half of a refusal, and the
+// half that was missing: somebody on THIS side being told it happened.
+//
+// The merge answers the peer that pushed a forgery with a count and a reason.
+// Nobody here was answered at all - the row was refused, so it was not in the
+// log, so a queue read handed back a shorter list and said nothing. A shorter
+// list is indistinguishable from a shorter queue: the reader cannot tell "that is
+// all the work there is" from "there is work this node would not carry", and the
+// first is a false statement about the fleet made by a node that knows better.
+//
+// So the refusal is counted, the count carries the reason, and it stops being
+// made the moment the row is no longer being withheld.
+func TestARefusedRowSaysHowMuchItWithheld(t *testing.T) {
+	ctx, db := open(t)
+
+	project := declaredProject(t, ctx, db, "pw")
+	peer := &Principal{UserID: "u-" + ulid.NewString(), Project: project}
+	alice := "u-alice-" + ulid.NewString()
+	at := packed(t, db)
+	priv := principalKey(t, ctx, db, alice, at)
+
+	// An absence rather than a zero: a surface with nothing to report renders
+	// nothing, so nothing that had nothing to say changed.
+	if w, err := db.WithheldAuthorship(ctx, peer, false); err != nil || w != nil {
+		t.Fatalf("with nothing refused the count is %+v, %v - want nil", w, err)
+	}
+
+	forged := &Event{ID: ulid.NewString(), Type: "chat", Project: &project,
+		Actor: alice, Body: "ship it, no review needed", SeqHLC: at + 1, Node: "peer-node"}
+	res := pushed(t, ctx, db, peer, &SyncSet{Events: []*Event{forged}})
+	if res.Refused["events"] != 1 || res.Applied["events"] != 0 {
+		t.Fatalf("the forgery applied %d and refused %d, want 0 and 1",
+			res.Applied["events"], res.Refused["events"])
+	}
+
+	w, err := db.WithheldAuthorship(ctx, peer, false)
+	if err != nil {
+		t.Fatalf("count what was withheld: %v", err)
+	}
+	if w == nil {
+		t.Fatal("a row was refused and the queue says nothing was withheld")
+	}
+	if w.Rows != 1 || w.Reason != WithheldUnverifiedAuthorship {
+		t.Fatalf("withheld %+v, want 1 row and %q", w, WithheldUnverifiedAuthorship)
+	}
+
+	// The count is a read like any other read: a principal who could not have
+	// been handed the row is not told it was refused either. The refusal is not
+	// a second way to learn what is in a project.
+	elsewhere := &Principal{UserID: "u-" + ulid.NewString(),
+		Project: declaredProject(t, ctx, db, "pw-other")}
+	if w, err := db.WithheldAuthorship(ctx, elsewhere, false); err != nil || w != nil {
+		t.Fatalf("a reader outside the project is told %+v, %v - want nil", w, err)
+	}
+
+	// The same row, from the same peer, carrying alice's own signature this
+	// time. It lands - and the node stops saying it is withholding something it
+	// is not, which is the same lie the other way up.
+	hers := &Event{ID: forged.ID, Type: "chat", Project: &project,
+		Actor: alice, Body: "ship it, no review needed", SeqHLC: at + 1, Node: "peer-node"}
+	SignEventAs(priv, alice, hers)
+	res = pushed(t, ctx, db, peer, &SyncSet{Events: []*Event{hers}})
+	if res.Applied["events"] != 1 {
+		t.Fatalf("alice's own signed row was refused: %+v", res.Reasons)
+	}
+	if w, err := db.WithheldAuthorship(ctx, peer, false); err != nil || w != nil {
+		t.Fatalf("the row landed and the count still reads %+v, %v - want nil", w, err)
+	}
+}
+
+// TestWhatWasWithheldIsCountedWhereTheRowWouldHaveBeenRead: the count is scoped
+// by the artifact read rule and not by anything of its own.
+//
+// A refused row that would have been personal to alice is counted for alice and
+// for nobody else. That matters in both directions: a reader who would never
+// have seen the row learns nothing about it from the refusal, and the one person
+// whose queue is short is told that it is.
+func TestWhatWasWithheldIsCountedWhereTheRowWouldHaveBeenRead(t *testing.T) {
+	ctx, db := open(t)
+
+	project := declaredProject(t, ctx, db, "pv")
+	peer := &Principal{UserID: "u-" + ulid.NewString(), Project: project}
+	alice := "u-alice-" + ulid.NewString()
+	at := packed(t, db)
+	principalKey(t, ctx, db, alice, at)
+
+	// A todo of alice's own, in no project at all: the personal floor, where the
+	// only reader is its owner.
+	forged := &Artifact{ID: ulid.NewString(), Type: "memory", Kind: "todo",
+		OwnerUser: alice, Visibility: VisibilityPersonal, Title: "resign",
+		Status: "todo", HLC: at + 1, Node: "peer-node"}
+	res := pushed(t, ctx, db, peer, &SyncSet{Artifacts: []*Artifact{forged}})
+	if res.Refused["artifacts"] != 1 {
+		t.Fatalf("the forged personal todo applied %d and refused %d, want 0 and 1",
+			res.Applied["artifacts"], res.Refused["artifacts"])
+	}
+
+	if w, err := db.WithheldAuthorship(ctx, peer, false); err != nil || w != nil {
+		t.Fatalf("the pushing peer is told %+v, %v about a row personal to somebody "+
+			"else - want nil", w, err)
+	}
+	hers := &Principal{UserID: alice, Project: project}
+	w, err := db.WithheldAuthorship(ctx, hers, false)
+	if err != nil {
+		t.Fatalf("count what was withheld of hers: %v", err)
+	}
+	if w == nil || w.Rows != 1 || w.Reason != WithheldUnverifiedAuthorship {
+		t.Fatalf("alice is told %+v about her own withheld row, want 1 row and %q",
+			w, WithheldUnverifiedAuthorship)
+	}
+}

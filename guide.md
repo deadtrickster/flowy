@@ -87,7 +87,11 @@ the subject and a look at the open handoffs.
   body and tags, filtered to what you may read.
 - `mem_list {scope?, kind?, limit?}` - newest first.
 - `todos {scope?, room?}` - todo, feature and handoff items that are not done,
-  optionally narrowed to one chat room.
+  optionally narrowed to one chat room. It answers `withheld: {rows, reason}`
+  when this node refused rows it would otherwise have handed you - a row naming
+  somebody whose signing key is here and not signed with it. Read it: the list is
+  short by that many, and an empty queue with a `withheld` on it is not the same
+  fact as an empty queue without one.
 
 ## The room a todo was raised in
 
