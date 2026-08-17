@@ -178,6 +178,13 @@ export interface ProjectsPage {
   current?: string;
   current_is_fixture: boolean;
   projects: Project[];
+  /**
+   * The subset of `projects` whose rows this token can reach. It is shorter than
+   * `projects` whenever a grant points the other way: the registry shows a name
+   * on an edge in either direction, and reading only travels along one of them.
+   * Anything that states how far a list reaches has to use this one.
+   */
+  reads?: string[];
 }
 
 export interface Artifact {
@@ -274,6 +281,14 @@ export interface User {
 
 /** The room assignment threads are opened in, on both sides of the wire. */
 export const ASSIGN_ROOM = "handoffs";
+
+/**
+ * The page size the cross-project queue asks for, which is also the node's own
+ * ceiling (store.maxLimit). Asking for it and knowing the number are the same
+ * fact: a page that hit the cap has to say so, and it can only say so by
+ * comparing what came back against what it asked for.
+ */
+export const TODO_PAGE = 1000;
 
 /** The artifact types that have a lifecycle to move through. */
 export const LIFECYCLE_TYPES = ["bug", "feature", "note", "task"];
@@ -640,7 +655,13 @@ export const api = {
    */
   node: () => request<NodeInfo>("/api/node"),
 
-  /** projects is the registry, narrowed to what this token may be shown. */
+  /**
+   * projects is the registry, narrowed to what this token may be shown - and
+   * `reads` beside it is the narrower thing: the ones whose rows this token can
+   * actually reach. See store.ReadableProjects for why they are not the same
+   * list, and the todos page for what goes wrong if a scope line uses the wider
+   * one.
+   */
   projects: () => request<ProjectsPage>("/api/projects"),
 
   /** room reads a room from a cursor, exclusive. */
@@ -728,6 +749,25 @@ export const api = {
   /** Todos are memory artifacts of kind todo - the same store, filtered by
    * kind rather than by a type of their own, because a todo is a memory
    * item with work still in it. */
+  /**
+   * Every todo this token can read, in every project it can read one in.
+   *
+   * It is the SAME endpoint the room panel uses with one narrowing dropped -
+   * there is no project on the query, so the answer is whatever the permission
+   * filter reaches. That filter is the only reason this is safe to widen: a
+   * cross-project read through a door of its own would be a second place for it
+   * to be missing, which is the shape of the finding this project already has
+   * open. Widening what one query returns adds no door.
+   *
+   * The limit is the node's cap rather than the default 200, because a queue
+   * across every project a fleet works in is exactly the list that quietly
+   * stopped at 200 and read as "that was all of them". TODO_PAGE is exported
+   * because the page has to know the number it asked for in order to say it
+   * stopped there, and two copies of it would drift into a list that hits the
+   * cap silently - which is the failure the number exists to report.
+   */
+  todos: () =>
+    request<{ artifacts: Artifact[] }>(`/api/artifacts?type=memory&kind=todo&limit=${TODO_PAGE}`),
   /**
    * The todos of one room: the same list, narrowed by the room the item was
    * raised in. It is the same endpoint and the same permission filter - room is

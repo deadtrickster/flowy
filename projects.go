@@ -66,6 +66,16 @@ type projectsResponse struct {
 	Current  string           `json:"current,omitempty"`
 	Fixture  bool             `json:"current_is_fixture"`
 	Projects []*store.Project `json:"projects"`
+	// Reads is the subset of those names whose rows this principal can actually
+	// reach - see store.ReadableProjects. It is a second list rather than a flag
+	// on the row because a Project is a signed registry row and this is a fact
+	// about the reader, not about the project: two principals asking get the same
+	// rows back and different Reads.
+	//
+	// The distinction is load-bearing for anything that says how far a list
+	// reaches. Projects is names, and is deliberately wider - a grant edge either
+	// way puts a name here. Reads is one-directional, because reading is.
+	Reads []string `json:"reads"`
 }
 
 // handleListProjects enumerates the projects the principal may be shown.
@@ -74,12 +84,18 @@ type projectsResponse struct {
 func (s *server) handleListProjects(w http.ResponseWriter, r *http.Request) {
 	p := principalOf(r)
 
-	list, err := s.db.ListProjects(r.Context(), p, r.URL.Query().Get("scope") == "all")
+	all := r.URL.Query().Get("scope") == "all"
+	list, err := s.db.ListProjects(r.Context(), p, all)
 	if err != nil {
 		serverError(w, r, err)
 		return
 	}
-	out := projectsResponse{Count: len(list), Current: p.Project, Projects: list}
+	reads, err := s.db.ReadableProjects(r.Context(), p, all)
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	out := projectsResponse{Count: len(list), Current: p.Project, Projects: list, Reads: reads}
 	for _, project := range list {
 		if project.ID == p.Project {
 			out.Fixture = project.Fixture

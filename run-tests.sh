@@ -3533,6 +3533,139 @@ a_second_waiter_for_one_name_is_refused() {
 	printf '%s\n' "$out" | head -1
 }
 
+# ------------------------------------------------- the queue across projects
+#
+# The fleet drains this queue by starting a run per ready todo, and the queue was
+# per project: a todo is a project-scoped artifact, so "the list" meant "the list
+# in whichever project you were pointed at". One collaborative queue is the ask.
+#
+# THE UNION IS NOT THE RISK. Saying whose union it is, is. Todos are permission
+# filtered, so "every project" is "every project THIS READER may read" - the
+# operator sees the fleet and an agent sees its own work, and both call it "the
+# list". Two readers of one name seeing two lists do not find out by talking;
+# they find out hours later by disagreeing about whether a piece of work exists.
+#
+# So the pair below is the point of these checks, and it is chosen for its reach
+# rather than for being two people. The operator's token is in pa, and pc has
+# opened itself to pa, so it reads pa AND pc. Alice's second token is in pc and
+# nothing has opened pa to pc, so it reads pc alone. Same page, same words, two
+# different lists - and the page has to say which one it is showing.
+#
+# The narrow one is also SHOWN pa, on the same grant read backwards, which is
+# what makes this pair discriminating rather than merely unequal: a scope line
+# built on the project enumeration would have said "2 projects" to both of them.
+CROSS_TODO_PA="the tailrace gate wants regrinding"
+CROSS_TODO_PC="the feed pump wants a new impeller"
+readonly CROSS_TODO_PA CROSS_TODO_PC
+
+# Shared rather than the API's default, so what crosses the boundary is the
+# grant and not the default. project-only is what the room panel's todos are
+# written at, and none of those cross - see a_room_is_not_a_permission_axis.
+two_projects_hold_a_todo_each() {
+	recall
+	# The edge this pair stands on, stated here rather than depended on. Phase
+	# 6.5 issues the same grant for its own reasons, and pb_holds_a_grant_on_pa
+	# restates phase 1's for exactly this reason: a section that reads a grant
+	# some other check happened to leave behind fails somewhere else when that
+	# check moves.
+	api POST "$TOKEN_A_PC" /api/grants '{"from_project": "pa", "to_project": "pc"}' || return 1
+	want_eq "grant status" "$API_STATUS" 200 || return 1
+
+	api POST "$TOKEN_OP" /api/artifacts \
+		"$(jq -nc --arg t "$CROSS_TODO_PA" \
+			'{type: "memory", kind: "todo", status: "todo", visibility: "shared",
+			  title: $t, body: "OWNER: a-millwright"}')" || return 1
+	want_eq "the pa todo" "$API_STATUS" 200 || return 1
+	want_eq "written into pa" "$(jqv .project)" pa || return 1
+	api POST "$TOKEN_A_PC" /api/artifacts \
+		"$(jq -nc --arg t "$CROSS_TODO_PC" \
+			'{type: "memory", kind: "todo", status: "active", visibility: "shared",
+			  title: $t, body: "OWNER: c-fitter"}')" || return 1
+	want_eq "the pc todo" "$API_STATUS" 200 || return 1
+	want_eq "written into pc" "$(jqv .project)" pc || return 1
+	printf 'a todo in pa and a todo in pc, with pa reading pc\n'
+}
+
+# The cross-project read is the artifacts query with the project narrowing left
+# OFF. Same door, same permission filter, no second path: a read that spanned
+# projects through an endpoint of its own would be a second place for that filter
+# to be missing, which is the shape of the finding this project has open.
+the_queue_spans_projects_through_the_one_filter() {
+	recall
+	api GET "$TOKEN_OP" "/api/artifacts?type=memory&kind=todo&limit=1000" || return 1
+	want_eq "the wide queue" "$API_STATUS" 200 || return 1
+	want_todos "the wide queue" "$CROSS_TODO_PA" "$CROSS_TODO_PC" || return 1
+	# Both projects are in one answer, which is the whole claim.
+	want_eq "and it spans both projects" \
+		"$(printf '%s' "$API_BODY" | jq '[.artifacts[]
+			| select(.title == "'"$CROSS_TODO_PA"'" or .title == "'"$CROSS_TODO_PC"'")
+			| .project] | unique | length')" 2 || return 1
+
+	# And the same read, by the principal who reaches one project, hands back one
+	# project's rows. The widening is the filter's to decide and not the query's.
+	api GET "$TOKEN_A_PC" "/api/artifacts?type=memory&kind=todo&limit=1000" || return 1
+	want_todos "the narrow queue" "$CROSS_TODO_PC" -- "$CROSS_TODO_PA" || return 1
+	printf 'one read spans pa and pc; the same read from pc stops at pc\n'
+}
+
+# What the page is allowed to say it reaches, and the trap under it.
+#
+# The registry shows a project on a grant edge in EITHER direction, deliberately.
+# Reading travels along one of them. The pc token is SHOWN pa - pa reads pc, and
+# the enumeration reads that edge backwards too - and can read nothing in it, so
+# a scope line built on the enumeration would have told it it reads two projects
+# while handing it one project's rows. That is the exact lie the cross-project
+# list exists to not tell, so `reads` is a separate, narrower list computed from
+# the artifact filter itself.
+the_reach_is_narrower_than_the_enumeration() {
+	recall
+	local shown reads
+	api GET "$TOKEN_A_PC" /api/projects || return 1
+	want_eq "status" "$API_STATUS" 200 || return 1
+	shown="$(printf '%s' "$API_BODY" | jq '[.projects[] | select(.id == "pa")] | length')"
+	reads="$(printf '%s' "$API_BODY" | jq '[.reads[] | select(. == "pa")] | length')"
+	want_eq "the pc token is shown pa" "$shown" 1 || return 1
+	want_eq "and reads nothing in it" "$reads" 0 || return 1
+	want_eq "it reads its own project" \
+		"$(printf '%s' "$API_BODY" | jq '[.reads[] | select(. == "pc")] | length')" 1 || return 1
+	want_eq "and one project in all" \
+		"$(printf '%s' "$API_BODY" | jq '.reads | length')" 1 || return 1
+
+	api GET "$TOKEN_OP" /api/projects || return 1
+	want_eq "the operator's token reads pa" \
+		"$(printf '%s' "$API_BODY" | jq '[.reads[] | select(. == "pa")] | length')" 1 || return 1
+	want_eq "and pc, along the grant pa holds" \
+		"$(printf '%s' "$API_BODY" | jq '[.reads[] | select(. == "pc")] | length')" 1 || return 1
+	# The same trap, the other way up: pb opened itself to pa, so pa is shown pb
+	# and reads nothing in it either.
+	want_eq "and nothing in the project that opened itself to it" \
+		"$(printf '%s' "$API_BODY" | jq '[.reads[] | select(. == "pb")] | length')" 0 || return 1
+	want_eq "which is shown all the same" \
+		"$(printf '%s' "$API_BODY" | jq '[.projects[] | select(.id == "pb")] | length')" 1 || return 1
+	printf 'pc is shown pa and reads only pc; pa reads pa and pc and not pb\n'
+}
+
+# The page itself, in a browser, for both principals - the check that discovers a
+# list which filters correctly and claims to be everything.
+console_lists_the_queue_across_projects() {
+	recall
+	cd "$ROOT/web" || return 1
+	node scripts/crossproject-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_OP" "$TOKEN_A_PC" \
+		pa pc "$CROSS_TODO_PA" "$CROSS_TODO_PC"
+}
+
+# The empty answer, which is a statement and not a blank. Alice's token in pc
+# reaches one project and no todo has been written into it YET - this runs before
+# the seed above, which is the only moment in the run when a real principal's
+# queue is legitimately empty. "no todos in the 1 project you can read" is a
+# different sentence from "no todos", and both differ from being signed out.
+console_says_which_empty_the_queue_is() {
+	recall
+	cd "$ROOT/web" || return 1
+	node scripts/render-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A_PC" \
+		"no todos in the 1 project you can read" /todos
+}
+
 # ---------------------------------------------------- phase 3 console helpers
 
 # The three steps of the frontend build, each its own check so a failure names
@@ -3572,6 +3705,15 @@ console_mounts() {
 console_says_the_worklog_needs_a_token() {
 	cd "$ROOT/web" || return 1
 	node scripts/render-check.mjs "" "" "paste a token to read the worklog" /worklog
+}
+
+# The same, for the queue across projects, and it is the third of three empties
+# there: signed out, read-and-empty, and reaching no project at all. A queue that
+# renders blank when nobody is signed in reads as "there is no work", which is a
+# statement about the fleet made by a page that asked nobody.
+console_todos_signed_out() {
+	cd "$ROOT/web" || return 1
+	node scripts/render-check.mjs "" "" "paste a token to read the queue" /todos
 }
 
 # A real browser for the two checks below, downloaded once per machine and
@@ -12330,6 +12472,26 @@ check "a token the node refuses is a status line, not a panic" \
 check "flowy tui on a real pty: two resizes, q quits, the terminal is restored" \
 	"$WORK/smoke" tui-pty "$ROOT/flowy" "http://127.0.0.1:$HTTP_PORT" "${TOKEN_A:-}"
 check "the node survived the terminal client" kill -0 "$SERVE_PID"
+
+# --------------------------------------------- the queue across projects
+#
+# Last, because it writes todos that every earlier count would have to know
+# about. See the section of the same name above for what the pair of principals
+# is for.
+# First, while the pc token's queue is still legitimately empty: the seed below
+# is what fills it.
+check "an empty queue says which empty it is, and how far it looked" \
+	console_says_which_empty_the_queue_is
+check "two projects hold a todo each, one of them shared across the grant" \
+	two_projects_hold_a_todo_each
+check "the queue spans projects through the one query and the one filter" \
+	the_queue_spans_projects_through_the_one_filter
+check "what a token READS is narrower than what the registry SHOWS it" \
+	the_reach_is_narrower_than_the_enumeration
+check "the page lists both projects for the reader who reaches both, one for the other, and says which" \
+	console_lists_the_queue_across_projects
+check "signed out, the queue says so instead of reading as no work" \
+	console_todos_signed_out
 
 # ------------------------------------------------------------------- verdict
 
