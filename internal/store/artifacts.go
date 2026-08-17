@@ -345,6 +345,17 @@ func (d *DB) fillAt(a *Artifact, at int64) {
 // conversation: which of the project's todos came out of this room.
 const RoomField = "room"
 
+// SupersedesField is where a report names the report it replaces: a key in
+// fields, beside as_of, for the reason RoomField is one.
+//
+// It points backwards, from the new document at the old one, because that is
+// the only direction the writer can name - the replacement exists and the
+// thing it replaces already did. The question a reader has is the other one:
+// they are looking at a report and want to know whether it still stands. No
+// column on the old row answers that, and nothing writes one, so it is derived
+// on the way out - see replacedBy.
+const SupersedesField = "supersedes"
+
 // MessageField is the chat message an artifact was raised out of, kept beside
 // the room. It is the link a ticket in another system loses: the item says what
 // is to be done and the message says what was being talked about when somebody
@@ -466,7 +477,73 @@ func (d *DB) ListArtifacts(ctx context.Context, p *Principal, q ArtifactQuery) (
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("store: list artifacts: %w", err)
 	}
+	if err := d.replacedBy(ctx, p, out, q.ScopeAll); err != nil {
+		return nil, err
+	}
 	return out, nil
+}
+
+// replacedBy fills ReplacedBy on every artifact in arts that a readable
+// artifact supersedes, and leaves the rest empty.
+//
+// The pointer is written on the newer row under SupersedesField, so the
+// backward question is a lookup by that key, and it is asked here rather than
+// through a door of its own for one reason: ArtifactFilterSQL. The answer is
+// another artifact's id, and handing it to a reader who may not read the
+// replacement would leak both that it exists and what it is called, out of a
+// row they are entitled to see. So the filter is on the REPLACEMENT, in the
+// same WHERE clause as the match. A reader who cannot reach the newer report
+// is told nothing about it, which is the answer they already get everywhere
+// else.
+//
+// One query for the whole page rather than one per row, and none at all when
+// the page is empty.
+func (d *DB) replacedBy(ctx context.Context, p *Principal, arts []*Artifact, scopeAll bool) error {
+	ids := make([]string, 0, len(arts))
+	for _, art := range arts {
+		if art != nil && art.ID != "" {
+			ids = append(ids, art.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	a := &args{}
+	idsArg := a.next(pq.Array(ids))
+	filter := ArtifactFilterSQL(p, "ar", a, scopeAll)
+	rows, err := d.sql.QueryContext(ctx,
+		`SELECT ar.fields->>'`+SupersedesField+`', ar.id
+		   FROM artifacts ar
+		  WHERE ar.fields->>'`+SupersedesField+`' = ANY(`+idsArg+`)
+		    AND coalesce(ar.tombstone, false) = false
+		    AND `+filter+`
+		  ORDER BY ar.updated ASC, ar.id ASC`,
+		a.vals...)
+	if err != nil {
+		return fmt.Errorf("store: read what replaced these artifacts: %w", err)
+	}
+	defer rows.Close()
+
+	// Oldest first and overwritten as they come, so a report that was replaced
+	// twice names the newest replacement - which is the one worth reading, and
+	// the one that is itself unreplaced.
+	newer := map[string]string{}
+	for rows.Next() {
+		var old, replacement string
+		if err := rows.Scan(&old, &replacement); err != nil {
+			return fmt.Errorf("store: read what replaced these artifacts: %w", err)
+		}
+		newer[old] = replacement
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("store: read what replaced these artifacts: %w", err)
+	}
+	for _, art := range arts {
+		if art != nil {
+			art.ReplacedBy = newer[art.ID]
+		}
+	}
+	return nil
 }
 
 // Ranked is an artifact with the search score that found it.
@@ -514,6 +591,16 @@ func (d *DB) SearchArtifacts(ctx context.Context, p *Principal, q ArtifactQuery)
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("store: search artifacts: %w", err)
 	}
+	// A hit says whether it still stands, because a search is where a stale
+	// report is most likely to be found: the words that matched are in the old
+	// document as readily as in the one that replaced it.
+	found := make([]*Artifact, 0, len(out))
+	for _, hit := range out {
+		found = append(found, hit.Artifact)
+	}
+	if err := d.replacedBy(ctx, p, found, q.ScopeAll); err != nil {
+		return nil, err
+	}
 	return out, nil
 }
 
@@ -551,6 +638,12 @@ func (d *DB) ReadArtifact(ctx context.Context, p *Principal, id string, scopeAll
 	}
 	if err != nil {
 		return nil, fmt.Errorf("store: read artifact %s: %w", id, err)
+	}
+	// Whoever opened this is the reader the mark is for: a superseded report
+	// read on its own page is the case where "it has been replaced" changes
+	// what somebody does next.
+	if err := d.replacedBy(ctx, p, []*Artifact{art}, scopeAll); err != nil {
+		return nil, err
 	}
 	return art, nil
 }

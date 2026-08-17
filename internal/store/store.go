@@ -317,6 +317,13 @@ type Artifact struct {
 	Visibility string          `json:"visibility"`
 	FilePath   string          `json:"file_path"`
 	Fields     json.RawMessage `json:"fields,omitempty"`
+	// ReplacedBy is the id of the artifact that supersedes this one, and it is
+	// derived at read time rather than stored: see SupersedesField and
+	// (*DB).replacedBy. There is no column for it, it is not in the signature
+	// and it does not replicate - the read paths that carry the permission
+	// filter fill it, and every other way of getting an Artifact leaves it
+	// empty, because the answer depends on who is asking.
+	ReplacedBy string `json:"replaced_by,omitempty"`
 	// Reported and External are the forge link: whether this artifact has been
 	// filed as an issue somewhere, and where. Both are written only by the
 	// forge endpoints - see SetArtifactExternal - so an ordinary update of the

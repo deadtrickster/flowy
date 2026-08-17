@@ -1750,6 +1750,7 @@ can bookmark or send:
 | `/inbox` | the work assigned to this token: state, delegate and done, and the auto-delegate switch |
 | `/task/:id` | one handoff: the task, and its thread rendered as chat with its DAG |
 | `/p/:project/:type/:id` | one artifact, with the lifecycle control and its history |
+| `/reports` | the published documents, searched through the node, each saying what it was true of and whether something has replaced it |
 | `/worklog` | the chronology: what the last few seats did and where they stopped, newest first, narrowable by branch and defaulting to every branch |
 | `/activity` | the timeline: every turn, run log line, message and steer this token may read, searchable, with the message box on it |
 | `/metrics` | the six metric groups, as this token may see them; a group that could not be measured renders its reason, never a zero |
@@ -1817,6 +1818,41 @@ permission filter, which is the same clause it always was. An item with no room
 is global - in no room's panel, and in every list that did not ask for a room,
 which is where the todos written before the field existed are and where they
 stay. `/todos` is that list.
+
+**The reports page searches through the node, and says which reports have been
+replaced.** Both halves are about the same failure: a reader acting on a
+document that no longer holds.
+
+The search box is `GET /api/search?type=report&q=...`, which is the ranked
+full-text read `report_search` rides, narrowed to the type. It is deliberately
+not a filter over the titles already on the page. What somebody remembers about
+a report is a phrase from inside it, the list draws titles, and a page-side
+filter would therefore never find a report by its own contents - the gate's
+check turns on exactly that: the word it searches for is in one body and on no
+card, so a filter over what is painted comes back empty and the node comes back
+with the document.
+
+**`supersedes` points backwards, and the question a reader has points
+forwards.** A report names the report it replaces, written on the newer
+document, because that is the only direction the writer can name. Nothing on
+the older row says it has been overtaken, so it is derived on the way out:
+given the rows a read is about to return, which of them has a report standing
+over it. The console draws that as a link on the card and as a banner above the
+body, and the terminal client draws it in the provenance line beside `as of`.
+
+It is derived **inside the read that already carries the permission filter**
+(`store.replacedBy`, one query per page, `ArtifactFilterSQL` on the
+*replacement*), and that placement is the whole of it. The answer is another
+artifact's id. A reader who may not see the newer report must not learn from an
+older one they are entitled to read that it exists or what it is called, so the
+filter is in the same `WHERE` clause as the match and an out-of-reach
+replacement is indistinguishable from no replacement at all. The gate asserts
+both directions on the same pair of documents: B, holding the `pb -> pa` grant,
+is told what replaced the shared report and is told nothing about the one whose
+replacement is personal to A - while A, who owns it, is told. Nothing is
+stored: there is no column, it is not in the signature, it does not replicate,
+and every path that does not go through a filtered read leaves it empty,
+because the answer depends on who is asking.
 
 The inbox is tasks rather than messages - `/api/inbox` is the chat you have not
 read, `/api/inbox/tasks` is the work you have not done - and each row carries

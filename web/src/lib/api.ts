@@ -155,6 +155,15 @@ export interface Artifact {
    * supersedes there, announcements their scope. unknown because each type
    * owns its own shape - narrow at the use site. */
   fields?: unknown;
+  /**
+   * replaced_by is the newer artifact that supersedes this one. It is not
+   * stored anywhere: supersedes points backwards from the replacement, and the
+   * node turns that round on the way out, through the same permission filter
+   * as the row itself. So it is here exactly when there is a replacement this
+   * token may read - absent means either nothing replaced it or the thing that
+   * did is out of reach, and the console cannot tell those apart on purpose.
+   */
+  replaced_by?: string;
 }
 
 /**
@@ -607,6 +616,18 @@ export const api = {
 
   inbox: (since = 0) => request<ChatPage>(`/api/inbox?since=${since}`),
   reports: () => request<{ artifacts: Artifact[] }>("/api/artifacts?type=report"),
+  /**
+   * The node's ranked search, narrowed to reports.
+   *
+   * It is the node's and not the page's: the match covers the title, the body,
+   * the discovery and the tags, and the list only ever renders titles. A filter
+   * over what is already on screen would answer a different question and would
+   * miss every report whose subject is in its text, which is most of them.
+   */
+  searchReports: (q: string) =>
+    request<{ query: string; artifacts: Artifact[] }>(
+      `/api/search?type=report&q=${encodeURIComponent(q)}`,
+    ),
   presence: () => request<Presence>("/api/presence"),
   /** Todos are memory artifacts of kind todo - the same store, filtered by
    * kind rather than by a type of their own, because a todo is a memory

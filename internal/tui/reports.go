@@ -136,7 +136,13 @@ func reportProvenance(a *Artifact) reportFields {
 }
 
 // provenanceLine is the as_of/supersedes row under the badges, and empty when a
-// report carries neither.
+// report carries none of it.
+//
+// "replaced by" is the half that is not on the row: supersedes points at what
+// this document replaced, which is history, and replaced_by says this document
+// has been overtaken, which is the reader's problem right now. The node derives
+// it through the read filter, so it is here exactly when there is a newer
+// report this token may go and read.
 func provenanceLine(a *Artifact) string {
 	fields := reportProvenance(a)
 	var parts []string
@@ -145,6 +151,9 @@ func provenanceLine(a *Artifact) string {
 	}
 	if fields.Supersedes != "" {
 		parts = append(parts, "supersedes "+shortID(fields.Supersedes))
+	}
+	if a != nil && a.ReplacedBy != "" {
+		parts = append(parts, "REPLACED BY "+shortID(a.ReplacedBy))
 	}
 	return strings.Join(parts, "  ")
 }
