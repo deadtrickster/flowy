@@ -2604,6 +2604,45 @@ a_message_can_be_addressed() {
 	printf 'addressed at %s, said in a room, read back with the addressee on it\n' "$USER_B"
 }
 
+# A NAME IS AN ADDRESS, because the name is what every surface shows you.
+#
+# The transcript, the roster and a todo's owner all draw people by handle, and
+# --to took only the id underneath - so the console told you "flowy-claude" and
+# the door answered "no principal called flowy-claude here". Reported by
+# somebody who could see the name and could not use it.
+#
+# It resolves through the same table @-mentions use, so @alice and --to alice
+# cannot come to disagree about who alice is, and it STORES THE ID: a handle
+# can be changed later, and a message addressed to a spelling would retarget
+# with it.
+a_handle_is_an_address() {
+	recall
+	local id
+	# HANDLE_B is the seeded name the room draws user B by - the same string
+	# @-mentions resolve, which is the point of routing both through one table.
+	[ -n "$HANDLE_B" ] || {
+		printf 'no seeded handle for user B, so nothing about naming was tested\n' >&2
+		return 1
+	}
+	say_to "$TOKEN_A" addressing "$HANDLE_B" "addressed by the name on the screen" || return 1
+	want_eq "say status" "$API_STATUS" 200 || return 1
+	# The ID, not the handle: what is stored is the principal, not the spelling.
+	want_eq "the handle resolved to the principal" "$(jqv .addressee)" "$USER_B" || return 1
+	id="$(jqv .id)"
+	printf 'addressed as %s, stored as %s (%s)\n' "$HANDLE_B" "$USER_B" "$id"
+}
+
+# And a name nothing answers to is still refused at the door, loudly, before
+# the row is written. A refusal nobody sees is indistinguishable from success:
+# a message addressed to a typo that posts unaddressed is one the sender
+# believes was delivered and the recipient never hears about.
+a_name_nothing_answers_to_is_refused() {
+	recall
+	say_to "$TOKEN_A" addressing "nobody-called-this" "into the void"
+	want_eq "a typo is refused rather than posted unaddressed" "$API_STATUS" 400 || return 1
+	printf 'refused: %s\n' "$(jqv .error)"
+}
+
 # An actor is a user or an agent, so an addressee is too: an agent is a thing
 # you can say something to.
 an_agent_can_be_addressed() {
@@ -7510,6 +7549,9 @@ check "a project that holds a grant does" a_granted_project_does_see_the_room
 say "chat addressing"
 check "a message carries who it is for, there and back" a_message_can_be_addressed
 check "an agent is an addressee too" an_agent_can_be_addressed
+check "a handle is an address, and it stores the principal" a_handle_is_an_address
+check "a name nothing answers to is refused at the door" \
+	a_name_nothing_answers_to_is_refused
 check "a message to the room carries none" an_unaddressed_message_is_still_a_message
 check "a name nothing answers to is refused, and writes no row" an_unknown_addressee_is_refused
 check "being named on a message is not a capability" addressing_changes_nothing_about_who_reads

@@ -265,30 +265,65 @@ func (s *server) mayNameArtifact(w http.ResponseWriter, r *http.Request, artifac
 // UnreadableParents either - an event replicated from a peer is legitimately
 // addressed to a principal that only exists over there, and refusing it here
 // would be refusing federation rather than forgery.
-func (s *server) mayAddress(w http.ResponseWriter, r *http.Request, to string) bool {
+// It also accepts A NAME rather than only an id, which is the difference
+// between a roster you can read and one you can use. Every surface draws
+// people by handle - the transcript, the roster, a todo's owner - and --to
+// took only the ULID underneath it, so the name the console showed you was
+// refused by the door: "no principal called claude-host here", about a
+// principal called claude-host. Reported by flowy-claude, who could see the
+// name and could not address it.
+//
+// The name goes through PrincipalsNamed, the SAME resolver @-mentions use,
+// rather than a second lookup written beside it. One resolver means @alice
+// and --to alice can never disagree about who alice is, which is exactly the
+// disagreement a second implementation eventually produces.
+func (s *server) resolveAddressee(w http.ResponseWriter, r *http.Request, to string) (string, bool) {
 	if to == "" {
-		return true
+		return "", true
 	}
 	ctx := r.Context()
 	_, err := s.db.GetUser(ctx, to)
 	if err == nil {
-		return true
+		return to, true
 	}
 	if !errors.Is(err, store.ErrNotFound) {
 		serverError(w, r, err)
-		return false
+		return "", false
 	}
 	if _, err = s.db.GetAgent(ctx, to); err == nil {
-		return true
+		return to, true
 	}
 	if !errors.Is(err, store.ErrNotFound) {
 		serverError(w, r, err)
-		return false
+		return "", false
 	}
+
+	// Not an id this node holds. Try it as a name.
+	named, err := s.db.PrincipalsNamed(ctx, []string{to})
+	if err != nil {
+		serverError(w, r, err)
+		return "", false
+	}
+	if id, found := named[strings.ToLower(to)]; found {
+		if id == "" {
+			// Two principals answer to it. Refusing is the only honest
+			// answer: picking one delivers to somebody the sender did not
+			// mean, and posting unaddressed tells them it was delivered.
+			writeJSON(w, http.StatusBadRequest,
+				errorBody("more than one principal is called "+to+" here, so it is "+
+					"not an address: name the id you mean"))
+			return "", false
+		}
+		// Stored as the id, always. A handle can be changed later and a
+		// message addressed to a string would silently retarget with it -
+		// the addressee is a principal, not a spelling.
+		return id, true
+	}
+
 	writeJSON(w, http.StatusBadRequest,
 		errorBody("no principal called "+to+" here: an addressee is a user or an agent, "+
-			"and a message with none is addressed to the room"))
-	return false
+			"by id or by handle, and a message with none is addressed to the room"))
+	return "", false
 }
 
 // mayCite reads the citation a client asked for, and answers the request
@@ -363,9 +398,11 @@ func (s *server) handleChatSay(w http.ResponseWriter, r *http.Request) {
 		req.Parents = []string{}
 	}
 	req.To = strings.TrimSpace(req.To)
-	if !s.mayAddress(w, r, req.To) {
+	to, ok := s.resolveAddressee(w, r, req.To)
+	if !ok {
 		return
 	}
+	req.To = to
 	if !s.mayNameParents(w, r, req.Parents) {
 		return
 	}

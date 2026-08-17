@@ -83,7 +83,8 @@ func (s *server) handleDMSay(w http.ResponseWriter, r *http.Request) {
 	// message refuses one - except that here it is worse. A room message to a
 	// typo is still said in the room and somebody reads it; a DM to a typo is
 	// read by nobody at all, for ever, and the sender is told it was sent.
-	if !s.mayAddress(w, r, to) {
+	to, ok = s.resolveAddressee(w, r, to)
+	if !ok {
 		return
 	}
 	if !s.mayNameParents(w, r, req.Parents) {
