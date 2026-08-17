@@ -20,7 +20,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"strings"
 
 	"github.com/deadtrickster/flowy/internal/store"
@@ -169,27 +168,15 @@ func mergeGate(ctx context.Context, m *mcpServer, p *store.Principal, raw json.R
 	if err := decodeParams(raw, &a); err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(a.ID) == "" || strings.TrimSpace(a.Run) == "" {
-		return nil, errors.New("merge_gate needs the request id and the run measuring it")
+	if strings.TrimSpace(a.ID) == "" {
+		return nil, errors.New("merge_gate needs the request id")
 	}
-	old, err := m.db.ReadArtifact(ctx, p, a.ID, false)
+	// The same store verb the HTTP door calls. Two implementations of "declare a
+	// gate" would drift, and what they would drift about is whether a run was
+	// ever declared - which is the one thing this is for.
+	art, entry, err := m.db.SetMergeGate(ctx, p, a.ID, a.Run, a.GatedTip)
 	if err != nil {
 		return nil, err
 	}
-	if old.Kind != store.MergeKind {
-		return nil, fmt.Errorf("%s is a %q, not a merge request", a.ID, old.Kind)
-	}
-	// A declaration moves the row to active: something is happening to it, and a
-	// board that still offers it as free work is how two people gate one branch.
-	args := map[string]any{"id": a.ID, "gate_run": strings.TrimSpace(a.Run)}
-	if tip := strings.TrimSpace(a.GatedTip); tip != "" {
-		args["gated_tip"] = tip
-	} else {
-		args["status"] = store.ActiveStatus
-	}
-	out, err := json.Marshal(args)
-	if err != nil {
-		return nil, err
-	}
-	return memWrite(ctx, m, p, out)
+	return map[string]any{"item": art, "event": entry}, nil
 }
