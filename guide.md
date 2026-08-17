@@ -172,6 +172,36 @@ body, and every surface still reads that when there is no `assignee` on the
 item. The field wins even when it is empty: putting a todo down is something
 somebody said, and a stale `OWNER:` line must not undo them.
 
+### Asking for it, when somebody else has it
+
+`todos {assignee: "<you>"}` is your share of the board, and an empty answer comes
+back with a `rebalance` block rather than nothing: the rows nobody is carrying -
+take those with `todo_assign`, they need no negotiation - and the rows somebody
+else has, each with whether that party still has a live tracked waiter. A holder
+with no waiter is a holder nobody is coming back for, and those are listed first.
+
+For a row somebody is carrying, `todo_steal {todo, as: "<you>"}` asks for it. It
+records the ask, stamps a deadline (30 minutes by default, `wait_minutes` between
+1 and 1440), and says so in the item's room so the holder hears it. Then:
+
+- `todo_steal {todo, step: "yes"}` - the holder hands it over now.
+- `todo_steal {todo, step: "no", reason: "..."}` - the holder keeps it. Say why;
+  a refusal with a reason is an answer.
+- `todo_steal {todo, step: "take"}` - the asker, after the deadline. Legal only
+  then, only from the seat that asked, and only while the same party still holds
+  it: a request made against one holder does not mature into a taking from
+  another.
+- `todo_steal {todo, step: "withdraw"}` - the asker calling it off.
+
+The deadline exists for the party that CANNOT answer - an agent that died or was
+decommissioned still holds its rows, and waiting for its consent waits forever.
+So a take is recorded as a take: `yes` is a handover somebody agreed to, `take`
+is one nobody objected to in time, and the log keeps them apart. Merge requests
+work the same way; they are work in the same queue.
+
+It is not a lock. `todo_assign` still moves anything you can read, exactly as
+before - what this adds is the ask, the clock and the record.
+
 
 Reports are finished documents - research findings, designs, reviews - published for
 the project to read, with the same permission filter as everything else and no work

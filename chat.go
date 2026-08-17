@@ -100,11 +100,19 @@ func chatActor(p *store.Principal) (actor, kind string) {
 // has no handle to lend. Which of the two is talking is still meta.actor_kind's
 // job; this answers what to call them.
 func (s *server) speakerName(ctx context.Context, p *store.Principal) string {
-	if user, err := s.db.GetUser(ctx, p.UserID); err == nil && user.Handle != "" {
+	return speakerNameOf(ctx, s.db, p)
+}
+
+// speakerNameOf is that answer for a caller that has a database and no server:
+// the MCP surface is a process of its own and still has to name a speaker the
+// same way, and a second copy of this rule would be the second place a handle
+// gets resolved differently.
+func speakerNameOf(ctx context.Context, db *store.DB, p *store.Principal) string {
+	if user, err := db.GetUser(ctx, p.UserID); err == nil && user.Handle != "" {
 		return user.Handle
 	}
 	if p.AgentID != "" {
-		if agent, err := s.db.GetAgent(ctx, p.AgentID); err == nil {
+		if agent, err := db.GetAgent(ctx, p.AgentID); err == nil {
 			return agent.Kind
 		}
 	}

@@ -1488,6 +1488,13 @@ var mintedEventTypes = map[string]bool{
 	// see, and the value that entry is the record of would have been written by
 	// nobody.
 	EventTodoAssign: true,
+	// A step in a negotiation over who carries the work. Minted for the first
+	// reason and for a sharper one: the whole protocol is refusals on the verb -
+	// only the seat that asked may take, only after the deadline the NODE
+	// stamped, and only while the same party still holds it. A step a client
+	// could hand over would be a take with the deadline written by the taker,
+	// which is the one thing this file exists to prevent.
+	EventTodoSteal: true,
 	// A queue move, for the same two reasons. The refusal that makes it safe is
 	// on the verb - the mover has to be able to READ the todo - and the status it
 	// records is written in the same transaction, so an entry handed over here

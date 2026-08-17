@@ -144,10 +144,19 @@ var tools = []tool{
 		Name: "todos",
 		Description: "Outstanding work you may see: todo, feature, handoff and merge " +
 			"items whose status is not done. Narrow to one room to get that room's " +
-			"plan, or to one kind to get the merge queue.",
+			"plan, or to one kind to get the merge queue. Narrow to `assignee` to get " +
+			"what one party is carrying - and when that comes back empty, the answer " +
+			"carries a `rebalance` block: what the rest of the board is carrying, who " +
+			"has it, and whether that party is still listening. An agent with nothing " +
+			"to do beside an agent with nine rows is a queue that has stopped " +
+			"balancing itself, so this endpoint offers rather than waiting to be asked.",
 		InputSchema: object(props{
 			"scope": enum("Narrow to one scope.", memScopes),
 			"room":  str("Only the items raised in this chat room."),
+			"assignee": str("Only the items this party is carrying - a handle. The " +
+				"empty string means the items NOBODY is carrying, which is a different " +
+				"question from leaving this out and is worth asking first: unowned work " +
+				"needs no negotiation. Leave it out for the whole board."),
 			"category": enum("Only the items filed as this kind of work. This is what "+
 				"the closed set is for: ask for the bugs and get the bugs.",
 				store.TodoCategories),
@@ -180,7 +189,7 @@ func toolSpecs() []tool { return allTools() }
 // allTools is every tool this server serves.
 func allTools() []tool {
 	out := make([]tool, 0, len(tools)+len(reportTools)+len(proposalTools)+len(depTools)+
-		len(mergeTools)+len(assignTools)+len(categoryTools)+len(attachmentTools)+len(worklogTools)+
+		len(mergeTools)+len(assignTools)+len(stealTools)+len(categoryTools)+len(attachmentTools)+len(worklogTools)+
 		len(projectTools)+len(observabilityTools))
 	out = append(out, tools...)
 	out = append(out, reportTools...)
@@ -188,6 +197,7 @@ func allTools() []tool {
 	out = append(out, depTools...)
 	out = append(out, mergeTools...)
 	out = append(out, assignTools...)
+	out = append(out, stealTools...)
 	out = append(out, categoryTools...)
 	out = append(out, attachmentTools...)
 	out = append(out, worklogTools...)
@@ -813,6 +823,10 @@ func todosTool(ctx context.Context, m *mcpServer, p *store.Principal, raw json.R
 		Category string `json:"category"`
 		Kind     string `json:"kind"`
 		Limit    int    `json:"limit"`
+		// A POINTER, because "" is a question: the items nobody is carrying.
+		// Absent and empty are two different asks and a plain string could only
+		// carry one of them - the nobodyWords problem in argument form.
+		Assignee *string `json:"assignee"`
 	}
 	if err := decodeParams(raw, &a); err != nil {
 		return nil, err
@@ -869,7 +883,51 @@ func todosTool(ctx context.Context, m *mcpServer, p *store.Principal, raw json.R
 	if err != nil {
 		return nil, err
 	}
+	// WHOSE WORK, filtered here rather than in the WHERE clause.
+	//
+	// The assignee a reader sees is AssigneeOf's answer, and AssigneeOf falls back
+	// to an `OWNER:` line in the body for every row written before the field
+	// existed. A SQL narrow over fields->>'assignee' would silently miss those,
+	// which is the failure this codebase keeps meeting from the other side: a true
+	// number about the wrong population. So the board is read as it always was and
+	// narrowed by the one function that knows what carrying something means.
+	//
+	// The cost is that the page limit applies BEFORE the narrowing, so a narrowed
+	// answer can be short because the page was full rather than because that is
+	// all of them. It is reported rather than hidden - `truncated` - because a
+	// short list means "that was all of them" everywhere else here.
+	board := list
+	truncated := false
+	if a.Assignee != nil {
+		want, err := store.NormalizeAssignee(*a.Assignee)
+		if err != nil {
+			return nil, err
+		}
+		truncated = len(board) >= q.PageLimit()
+		mine := make([]*store.Artifact, 0, len(board))
+		for _, art := range board {
+			if store.AssigneeOf(art) == want {
+				mine = append(mine, art)
+			}
+		}
+		list = mine
+	}
 	out := map[string]any{"count": len(list), "items": list}
+	if truncated {
+		out["truncated"] = true
+		out["truncated_note"] = "the page filled before this was narrowed, so there may " +
+			"be more of this party's items past it - ask again with a larger limit"
+	}
+	// NOTHING TO DO IS A QUESTION, NOT AN ANSWER. An agent that asks for its work
+	// and is handed an empty list has no next move, so the empty list is where the
+	// offer belongs: here is what everybody else is carrying, here is who has not
+	// been heard from, and here is the verb that asks them for it. See
+	// internal/store/steal.go - the offer is made here and every rule is there.
+	if a.Assignee != nil && len(list) == 0 {
+		if offer := rebalanceOffer(ctx, m, p, board, *a.Assignee); offer != nil {
+			out["rebalance"] = offer
+		}
+	}
 	if withheld != nil {
 		out["withheld"] = withheld
 	}

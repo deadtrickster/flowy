@@ -658,6 +658,14 @@ func clampLimit(asked int) int {
 
 func (q ArtifactQuery) limit() int { return clampLimit(q.Limit) }
 
+// PageLimit is that same number, for a caller that has to know whether a full
+// page means "that is all of them". Limit as asked is not it: zero means the
+// default and over the cap means the cap, so a caller comparing against the
+// asked-for number would call every default-sized answer truncated. Exported
+// rather than duplicated, because a second copy of clampLimit's rule is a second
+// thing to keep in step.
+func (q ArtifactQuery) PageLimit() int { return q.limit() }
+
 // narrow appends the caller's filters - the ones that are about what they asked
 // for rather than what they may see.
 func (q ArtifactQuery) narrow(a *args, alias string) string {

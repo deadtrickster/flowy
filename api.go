@@ -535,6 +535,7 @@ var mintedTypes = map[string]bool{
 	// category on the row and nothing able to count either. See
 	// store.SetTodoCategory.
 	store.EventTodoCategory: true,
+	store.EventTodoSteal:    true,
 }
 
 // handleAppendEvent appends to the log. The log is append-only: there is no
