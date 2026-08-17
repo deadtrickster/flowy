@@ -421,6 +421,15 @@ type Event struct {
 	// Sig is the writing node's signature over the event - see Artifact.Sig.
 	Sig     []byte    `json:"sig,omitempty"`
 	Created time.Time `json:"created"`
+	// Citation is the message this one says it is about, resolved for whoever
+	// is reading - see citations.go. It is derived at read time rather than
+	// stored, exactly as Artifact.ReplacedBy is: what the row holds is a
+	// pointer and a span in meta, there is no column for this, it is not in the
+	// signature and it does not replicate. The read paths that carry the
+	// permission filter fill it, and every other way of getting an Event leaves
+	// it nil, because both the words and whether there are any depend on who is
+	// asking.
+	Citation *Citation `json:"citation,omitempty"`
 }
 
 // AppendEvent writes an event, stamping id/seq_hlc/node when unset.

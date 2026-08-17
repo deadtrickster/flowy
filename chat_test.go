@@ -48,3 +48,26 @@ func TestClientMetaCannotCarryASpeakersName(t *testing.T) {
 		t.Fatalf("stripping took what meta is for with it: %s", stripped)
 	}
 }
+
+// A citation is the node's to stamp for the same reason, and it is the sharper
+// case of it. The citation is what the console draws as a quotation of somebody
+// else, in that person's colour, under their name - so a client that could
+// write its own would be putting words in another principal's mouth on a row
+// that is correctly signed and correctly actored. The node writes it where it
+// has checked the source is readable and the span is inside it, and nowhere
+// else.
+func TestClientMetaCannotCarryACitation(t *testing.T) {
+	stripped := speakerStripped(json.RawMessage(
+		`{"cite":"01HSOMEBODYELSESMESSAGE:0:12","topic":"kept"}`))
+
+	var fields map[string]any
+	if err := json.Unmarshal(stripped, &fields); err != nil {
+		t.Fatalf("the stripped meta does not parse: %v", err)
+	}
+	if _, found := fields["cite"]; found {
+		t.Fatalf("a client's hand-written citation survived: %s", stripped)
+	}
+	if fields["topic"] != "kept" {
+		t.Fatalf("stripping took what meta is for with it: %s", stripped)
+	}
+}

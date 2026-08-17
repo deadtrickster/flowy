@@ -3842,6 +3842,237 @@ only_the_types_with_a_lifecycle_have_one() {
 	printf 'a transcript has no status to move\n'
 }
 
+# ---------------------------------------------------------- message citations
+#
+# A reply can point at a message, and now at one SPAN of a message. What is
+# stored is the span and never the quoted text, so every check below is really
+# about the same claim: the quote a reader sees is DERIVED from the signed row
+# it quotes, by the node, for that reader - so it cannot misquote, and it cannot
+# be shown to somebody who could not read the source.
+#
+# It sits after phase 4 because the first check needs the one thing that makes a
+# message readable across a project boundary without a project-wide grant: the
+# task thread the assignment above opened. That is the only way to build the
+# case that matters - a citing message the reader CAN read, of a cited message
+# they CANNOT.
+
+# say_citing TOKEN ROOM BODY CITE - a message that cites another. CITE is the
+# JSON object as the API takes it, so a check can hand over a whole message or
+# a span with the same helper.
+say_citing() {
+	api POST "$1" "/api/chat/$2/say" \
+		"$(jq -nc --arg b "$3" --argjson c "$4" '{body: $b, cite: $c}')"
+}
+
+# The one that matters, and it is first for that reason.
+#
+# A citation crosses a boundary the message it cites does not: rooms are scoped
+# by project and the log is not, so a reader will meet a citation of something
+# they may not read - here through the tasks clause, which shows B one thread of
+# a project B is not in and none of the rest of it.
+#
+# What B must get is the citation and NOT ONE WORD of what it quotes. The last
+# clause is the assertion this whole feature turns on, and it is deliberately
+# not about a field: the invented word is in the cited body and nowhere else in
+# the run, so grepping the whole of what B was handed answers "did the text
+# leave the node" without trusting the shape of the answer.
+a_citation_of_a_message_you_cannot_read_hands_over_nothing() {
+	recall
+	local hidden citing
+	# Said in pc, in a thread of its own. Nobody outside pc reads it, and the
+	# artifact share and the task thread - the two doors out of pc - are not on
+	# it.
+	api POST "$TOKEN_A_PC" /api/chat/citations/say \
+		'{"body": "the quillhammer bearing is scored right through"}' || return 1
+	want_eq "the unreachable message" "$API_STATUS" 200 || return 1
+	hidden="$(jqv .id)"
+	api GET "$TOKEN_B" /api/chat/citations || return 1
+	want_eq "what B reads of it" "$(chat_len ".id == \"$hidden\"")" 0 || return 1
+
+	# And the citing message, in the thread the handoff opened, which B is a
+	# party to. One message of pc reaches B; the one it quotes does not.
+	api POST "$TOKEN_A_PC" /api/chat/citations/say \
+		"$(jq -nc --arg t "$THREAD1" --arg m "$hidden" \
+			'{body: "this is the half I meant", thread: $t, cite: {message: $m}}')" || return 1
+	want_eq "say status" "$API_STATUS" 200 || return 1
+	citing="$(jqv .id)"
+
+	# A, who can read both, gets the quote - derived from the row, not stored.
+	api GET "$TOKEN_A_PC" /api/chat/citations || return 1
+	want_eq "A is quoted the message it cites" \
+		"$(chat_len ".id == \"$citing\" and .citation.readable == true and
+			.citation.text == \"the quillhammer bearing is scored right through\"")" 1 || return 1
+
+	# B, who cannot, gets the citation and nothing out of the message.
+	api GET "$TOKEN_B" /api/chat/citations || return 1
+	want_eq "B reads the citing message" "$(chat_len ".id == \"$citing\"")" 1 || return 1
+	want_eq "and is told plainly that the source is out of reach" \
+		"$(chat_len ".id == \"$citing\" and .citation.readable == false")" 1 || return 1
+	want_eq "with no quoted text on it" \
+		"$(chat_len ".id == \"$citing\" and (.citation | has(\"text\") | not)")" 1 || return 1
+	want_eq "and no speaker for it either" \
+		"$(chat_len ".id == \"$citing\" and (.citation | (has(\"actor\") or has(\"name\")) | not)")" \
+		1 || return 1
+	case "$API_BODY" in
+	*quillhammer*)
+		printf 'the cited body reached B through the citation:\n%s\n' "$API_BODY" >&2
+		return 1
+		;;
+	esac
+
+	# The same claim through the other chat read, because a second door is where
+	# a filter gets forgotten.
+	api GET "$TOKEN_B" '/api/inbox?since=0' || return 1
+	case "$API_BODY" in
+	*quillhammer*)
+		printf 'the cited body reached B through the inbox:\n%s\n' "$API_BODY" >&2
+		return 1
+		;;
+	esac
+	printf 'B reads the citation of %s and not a word of it\n' "$hidden"
+}
+
+# Both grains, there and back. The span is BYTES into the cited body, counted
+# here the way the node counts them, so the check is asserting the same
+# arithmetic the console does rather than a number somebody wrote down.
+a_whole_message_and_a_part_of_one_both_round_trip() {
+	recall
+	local src whole part body prefix quote start end
+	body="the flange is fine but the impeller is cracked"
+	prefix="the flange is fine but "
+	quote="the impeller is cracked"
+	# Said by the operator and cited by A, so the citation is of somebody other
+	# than the speaker carrying it - which is what the console has to draw, and
+	# what a check on one person's messages could not tell apart.
+	api POST "$TOKEN_OP" /api/chat/quotes/say "$(jq -nc --arg b "$body" '{body: $b}')" || return 1
+	want_eq "the message being cited" "$API_STATUS" 200 || return 1
+	src="$(jqv .id)"
+	remember CITE_SOURCE "$src"
+
+	say_citing "$TOKEN_A" quotes "agreed, and it is the second half" \
+		"$(jq -nc --arg m "$src" '{message: $m}')" || return 1
+	want_eq "citing the whole of it" "$API_STATUS" 200 || return 1
+	want_eq "the row records the message and no span" "$(jqv .meta.cite)" "$src" || return 1
+	whole="$(jqv .id)"
+
+	start="$(printf '%s' "$prefix" | wc -c)"
+	end="$((start + $(printf '%s' "$quote" | wc -c)))"
+	say_citing "$TOKEN_A" quotes "no, only that part of it" \
+		"$(jq -nc --arg m "$src" --argjson s "$start" --argjson e "$end" \
+			'{message: $m, start: $s, end: $e}')" || return 1
+	want_eq "citing one span of it" "$API_STATUS" 200 || return 1
+	want_eq "the row records the span" "$(jqv .meta.cite)" "$src:$start:$end" || return 1
+	part="$(jqv .id)"
+
+	api GET "$TOKEN_A" /api/chat/quotes || return 1
+	want_eq "the whole-message citation quotes the whole message" \
+		"$(chat_len ".id == \"$whole\" and .citation.whole == true and
+			.citation.text == \"$body\"")" 1 || return 1
+	want_eq "and says who is being quoted" \
+		"$(chat_len ".id == \"$whole\" and .citation.name == \"$HANDLE_OP\"")" 1 || return 1
+	want_eq "the part citation quotes exactly the span" \
+		"$(chat_len ".id == \"$part\" and .citation.whole == false and
+			.citation.start == $start and .citation.end == $end and
+			.citation.text == \"$quote\"")" 1 || return 1
+	printf 'whole: %s, part: %s..%s of %s\n' "$body" "$start" "$end" "$src"
+}
+
+# A citation is a claim about somebody else's message, so it is checked the way
+# an edge in the DAG and a raising message are: an id is a guess anybody can
+# make, and one that is not here and one that is out of reach get the answer a
+# read of it would give.
+a_message_you_cannot_read_cannot_be_cited() {
+	recall
+	local hidden before after
+	api POST "$TOKEN_A_PC" /api/chat/citations/say \
+		'{"body": "another one nobody outside pc reads"}' || return 1
+	want_eq "the unreachable message" "$API_STATUS" 200 || return 1
+	hidden="$(jqv .id)"
+
+	before="$(scalar "SELECT count(*) FROM events WHERE room = 'quotes'")" || return 1
+	say_citing "$TOKEN_B" quotes "quoting what I cannot see" \
+		"$(jq -nc --arg m "$hidden" '{message: $m}')" || return 1
+	want_eq "status" "$API_STATUS" 404 || return 1
+	case "$(jqv .error)" in
+	*"not one you can read"*) ;;
+	*)
+		printf 'refused, but not as an unreadable message: %s\n' "$(jqv .error)" >&2
+		return 1
+		;;
+	esac
+	after="$(scalar "SELECT count(*) FROM events WHERE room = 'quotes'")" || return 1
+	want_eq "messages the refusal wrote" "$((after - before))" 0 || return 1
+	printf 'refused, and nothing written: %s\n' "$(jqv .error)"
+}
+
+# The span is checked against the body it is a span of, at the door. An offset
+# that runs past the end, one that names no text, and one that cuts a character
+# in half are all the same failure - a citation that could not derive a quote -
+# and a node that stored them anyway would be a row that renders as a broken
+# quote forever.
+a_span_that_is_not_in_the_message_is_refused() {
+	recall
+	local src accented
+	src="$CITE_SOURCE"
+	want_status 400 POST "$TOKEN_A" /api/chat/quotes/say \
+		"$(jq -nc --arg m "$src" '{body: "past the end", cite: {message: $m, start: 0, end: 9999}}')" ||
+		return 1
+	case "$(jqv .error)" in
+	*"past the end"*) ;;
+	*)
+		printf 'an offset past the end was refused, but not as one: %s\n' "$(jqv .error)" >&2
+		return 1
+		;;
+	esac
+	want_status 400 POST "$TOKEN_A" /api/chat/quotes/say \
+		"$(jq -nc --arg m "$src" '{body: "backwards", cite: {message: $m, start: 9, end: 4}}')" ||
+		return 1
+
+	# And the one a byte count gets wrong on real prose. The body holds a
+	# two-byte character; a span that ends inside it would derive bytes that are
+	# not text, which is a quote nobody can read rather than a quote of nobody.
+	api POST "$TOKEN_A" /api/chat/quotes/say \
+		'{"body": "the café is closed"}' || return 1
+	want_eq "the accented message" "$API_STATUS" 200 || return 1
+	accented="$(jqv .id)"
+	want_status 400 POST "$TOKEN_A" /api/chat/quotes/say \
+		"$(jq -nc --arg m "$accented" '{body: "half a letter", cite: {message: $m, start: 4, end: 8}}')" ||
+		return 1
+	case "$(jqv .error)" in
+	*"in half"*) ;;
+	*)
+		printf 'a span cutting a character in half was refused, but not as one: %s\n' \
+			"$(jqv .error)" >&2
+		return 1
+		;;
+	esac
+	# The span that stops on the boundary instead is fine, and quotes the word.
+	say_citing "$TOKEN_A" quotes "that is the word" \
+		"$(jq -nc --arg m "$accented" '{message: $m, start: 4, end: 9}')" || return 1
+	want_eq "say status" "$API_STATUS" 200 || return 1
+	api GET "$TOKEN_A" /api/chat/quotes || return 1
+	want_eq "the quote is the whole word" \
+		"$(chat_len ".citation.text == \"café\"")" 1 || return 1
+	printf 'past the end, backwards and mid-character all refused; the boundary span quotes cafe\n'
+}
+
+# A citation is the node's to write, exactly as the speaker keys and the
+# resolved mentions beside it are. A client that could write its own would be
+# putting a quotation of somebody else on a row that is correctly signed and
+# correctly actored - which is the forgery this fabric already refuses through
+# the front door.
+a_client_cannot_write_its_own_citation() {
+	recall
+	api POST "$TOKEN_A" /api/events \
+		"$(jq -nc --arg m "$CITE_SOURCE" \
+			'{type: "note", room: "quotes", body: "a citation nobody checked",
+			  meta: {cite: ($m + ":0:3"), topic: "kept"}}')" || return 1
+	want_eq "status" "$API_STATUS" 200 || return 1
+	want_eq "the client's citation" "$(jqv '.meta.cite // ""')" "" || return 1
+	want_eq "and what meta is actually for is kept" "$(jqv .meta.topic)" kept || return 1
+	printf 'a hand-written citation is stripped, and the rest of meta rides\n'
+}
+
 # ---------------------------------------------------- phase 4 console checks
 
 # The inbox, mounted against the live node as B: the task the assignment wrote
@@ -3851,6 +4082,21 @@ console_renders_the_inbox() {
 	cd "$ROOT/web" || return 1
 	node scripts/render-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_B" \
 		"the gearbox whines under load" /inbox
+}
+
+# The citation on the screen, in a browser, on the ELEMENT.
+#
+# It reads the room the round-trip check filled: the operator's message, A's
+# reply citing the whole of it, and A's reply citing one span. What it asserts
+# is the pair of things a half-built version gets wrong - a citation drawn as
+# plain text under the citing speaker's name, and a "span" citation that quietly
+# renders the whole body - so the span's quote has to be the span AND must not
+# carry the half of the sentence that is outside it.
+browser_draws_a_citation() {
+	recall
+	cd "$ROOT/web" || return 1
+	node scripts/cite-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" quotes \
+		"$HANDLE_OP" "the impeller is cracked" "the flange is fine"
 }
 
 serves_the_inbox_route() {
@@ -6419,6 +6665,26 @@ check "a state that is not one of the three is refused" an_unknown_state_is_refu
 
 say "a handoff is between two people"
 check "a third party gets 404 on the task and cannot move it" a_third_party_sees_no_task
+
+# What a reply is about, at a finer grain than the edge beside it. The span is
+# stored and the quoted text never is, so the first check is the whole of it:
+# a citation reaching a reader who cannot read what it quotes hands them
+# nothing.
+say "message citations"
+check "a citation of a message you cannot read hands over nothing" \
+	a_citation_of_a_message_you_cannot_read_hands_over_nothing
+check "a whole message and a span of one both round-trip" \
+	a_whole_message_and_a_part_of_one_both_round_trip
+check "a message you cannot read cannot be cited" a_message_you_cannot_read_cannot_be_cited
+check "a span that is not in the message it cites is refused" \
+	a_span_that_is_not_in_the_message_is_refused
+check "a citation is the node's to write, not a client's" a_client_cannot_write_its_own_citation
+check "what a citation encodes, and what it derives" \
+	go test -count=1 -run 'TestACitationRecordsTheSpanAndNeverTheText|TestASpanThatIsNotInTheBodyIsNotACitation|TestAQuoteIsDerivedFromTheBodyItCites' ./internal/store
+check "a client cannot hand the node a citation, in the unit" \
+	go test -count=1 -run TestClientMetaCannotCarryACitation .
+check "the citation is drawn on the message, in the cited speaker's colour, in a browser" \
+	browser_draws_a_citation
 
 say "the issue lifecycle"
 check "open -> triaged -> in-progress -> in-review -> done, each one an event" gearbox_walks_the_workflow

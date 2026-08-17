@@ -1,16 +1,25 @@
 import { CornerDownLeft, X } from "lucide-react";
 import { type KeyboardEvent, useState } from "react";
 
-import { Badge } from "@/components/ui/badge";
+import { CitedMessage } from "@/components/CitedMessage";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import type { FlowyEvent } from "@/lib/api";
-import { shortId } from "@/lib/utils";
+import type { Citation } from "@/lib/api";
 
 interface Props {
-  /** replyTo is the message this one will name as its parent, if any. */
-  replyTo: FlowyEvent | null;
+  /**
+   * citation is what this message will be about: the selected message, whole,
+   * or the span of it somebody selected with the mouse. It is drawn here before
+   * it is sent for the reason it is drawn on the message afterwards - "replying
+   * to #3f9a1c" tells the writer nothing about which half of a long message
+   * they are about to answer.
+   *
+   * It is built from a message already on screen, so the words are as good as
+   * the node's; what is stored is still the pointer and the span, and what is
+   * rendered after the send is the node's own derivation.
+   */
+  citation: Citation | null;
   clearReply: () => void;
   disabled: boolean;
   onSend: (body: string, to: string) => Promise<void>;
@@ -24,7 +33,7 @@ interface Props {
  * Enter sends, shift-enter is a newline: the thing being written is usually one
  * line to an agent that is waiting.
  */
-export function MessageBox({ replyTo, clearReply, disabled, onSend }: Props) {
+export function MessageBox({ citation, clearReply, disabled, onSend }: Props) {
   const [draft, setDraft] = useState("");
   // to is who the message is for, and it is a field of its own rather than a
   // convention inside the body: an @name in prose is a name somebody typed,
@@ -64,15 +73,16 @@ export function MessageBox({ replyTo, clearReply, disabled, onSend }: Props) {
         void send();
       }}
     >
-      {replyTo ? (
-        <div className="flex items-center gap-2 text-xs">
-          <Badge variant="outline">replying to #{shortId(replyTo.id)}</Badge>
-          <span className="truncate text-muted-foreground">{replyTo.body}</span>
+      {citation ? (
+        <div className="flex items-start gap-2">
+          <div className="min-w-0 flex-1">
+            <CitedMessage citation={citation} />
+          </div>
           <Button
             type="button"
             size="icon"
             variant="ghost"
-            className="ml-auto h-6 w-6"
+            className="h-6 w-6 shrink-0"
             onClick={clearReply}
             aria-label="stop replying"
           >
