@@ -2543,6 +2543,24 @@ Then Phase 2, against `flowy mcp --http` on a free port and against
   re-reads both cells and the node. That last clause is the one the feature
   could plausibly have failed: an assignee held in the tab looks perfect until
   the poll refills the panel from the node and reverts it
+- **the panel puts the finished work away, and says how much of it there is.**
+  `#general` holds 26 todos and 16 of them are done, so the finished half was
+  pushing the live half off the bottom of a panel with about fifteen visible
+  rows: a surface that exists to answer "what is this room doing" was answering
+  "what has this room finished". A checkbox on the counts line hides them, and
+  it defaults to hidden - a default nobody finds is a feature nobody has. What
+  keeps that honest is that the number withheld is on screen the whole time
+  anything is withheld, beside the box, and the header's `N active, N open, N
+  done` never moves: the filter is a view, not a deletion. The setting is one
+  `flowy.todos.hideDone` in localStorage for every room, because it is a habit
+  about reading a panel rather than a fact about a room. In a browser, at
+  `/chat/hidedone`: the done todo is GONE FROM THE PANEL's rows and the open one
+  is still in them, the count on screen is the real number rather than merely a
+  number, unticking brings the work back, both values survive a reload, and a
+  poll provoked from outside the browser - waited for, so that it landed is
+  asserted - leaves the box alone. The setting is the tab's own and is never
+  derived from the node's answer, which is why the poll cannot revert it the way
+  it would have reverted an assignee held in the tab
 - **and both are on the screen, not in an endpoint**: the built console is
   mounted against the live node at `/chat/general` and the room's todo has to be
   in the text it painted, and at `/todos` the roomless one has to be in that

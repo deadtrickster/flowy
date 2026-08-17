@@ -28,6 +28,56 @@ export function sortTodos(list: Artifact[]): Artifact[] {
   return [...list].sort((a, b) => todoRank(a.status) - todoRank(b.status));
 }
 
+/** isTodoDone says a piece of work is finished, by the same ranking the list sorts by. */
+export function isTodoDone(todo: Artifact): boolean {
+  return todoRank(todo.status) === RANK.done;
+}
+
+/**
+ * Whether the panel draws the finished ones, remembered across reloads.
+ *
+ * #general holds 26 todos and 16 of them are done, in a panel beside a
+ * conversation with about fifteen visible rows - so the finished work pushes the
+ * live work off the bottom, and a panel that exists to answer "what is this room
+ * doing" mostly answers "what has this room finished".
+ *
+ * DEFAULT HIDDEN. The other choice keeps today's behaviour and fixes nothing for
+ * anybody who never finds the checkbox, which is most people; a default nobody
+ * discovers is a feature nobody has. What keeps hiding honest rather than lossy
+ * is that the number hidden is on screen the whole time it is hiding anything,
+ * beside the box that did it - a panel showing four rows and no hint that
+ * sixteen are behind it is how somebody concludes a todo does not exist.
+ *
+ * ONE setting for every room rather than one key per room. This is a habit about
+ * reading a panel, not a fact about a room: somebody who wants finished work out
+ * of the way in #general wants it out of the way in #build too, and a per-room
+ * key means ticking the same box once per room and finding the next one buried
+ * again. It also keeps the panel honest across a room switch - the component
+ * stays mounted when the room changes, so a per-room value would have to be
+ * re-read on that change or the new room would be drawn under the old room's
+ * setting.
+ */
+const HIDE_DONE_KEY = "flowy.todos.hideDone";
+
+export function hideDonePreference(): boolean {
+  try {
+    // Anything that is not an explicit "false" is hidden, so a browser with
+    // nothing stored yet gets the default.
+    return localStorage.getItem(HIDE_DONE_KEY) !== "false";
+  } catch {
+    return true;
+  }
+}
+
+export function setHideDonePreference(hide: boolean) {
+  try {
+    localStorage.setItem(HIDE_DONE_KEY, hide ? "true" : "false");
+  } catch {
+    // Storage switched off. The setting still holds for the length of the page,
+    // the same way the token does.
+  }
+}
+
 /** countTodos is the header line: how many are in flight, waiting, and finished. */
 export function countTodos(list: Artifact[]): { active: number; open: number; done: number } {
   const counts = { active: 0, open: 0, done: 0 };

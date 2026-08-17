@@ -2683,6 +2683,17 @@ PLAN_TAKER="a-writer"
 PLAN_SECOND="a-second"
 readonly ROOM_PLAN PLAN_TODO_FREE PLAN_TODO_OWNED PLAN_OWNER PLAN_TAKER PLAN_SECOND
 
+# And a room of its own for the hide-done check, for the same reason: it counts
+# what the panel is withholding, and a count read off a room the rest of the run
+# is still writing into is a number that moves while it is being asserted.
+#
+# One finished and one not. Both are needed - hiding everything and hiding
+# nothing both pass a check that only looks at the finished one.
+ROOM_HIDE="hidedone"
+HIDE_TODO_DONE="rebush the crank pin"
+HIDE_TODO_OPEN="reseat the intake valve"
+readonly ROOM_HIDE HIDE_TODO_DONE HIDE_TODO_OPEN
+
 # has_todo TITLE - whether the last /api/artifacts response listed that title.
 has_todo() {
 	printf '%s' "$API_BODY" | jq --arg t "$1" -e \
@@ -3131,6 +3142,30 @@ browser_renders_the_rooms_todos() {
 	cd "$ROOT/web" || return 1
 	node scripts/browser-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" \
 		"$ROOM_TODO_GENERAL" unassigned
+}
+
+# The panel puts the finished work away, says how much of it there is, and
+# remembers the answer - in a browser, driving the checkbox a person drives.
+#
+# #general holds 26 todos and 16 are done, which pushes the live work off the
+# bottom of a panel with about fifteen visible rows: the surface that exists to
+# answer "what is this room doing" was answering "what has this room finished".
+#
+# The count is the half that keeps it honest, and it is asserted as a NUMBER
+# rather than as the presence of some text. A panel showing four rows with no
+# sign that sixteen are behind it lies about the size of the queue, and a filter
+# that silently removes rows is how somebody concludes a todo does not exist.
+browser_hides_the_finished_todos() {
+	recall
+	api POST "$TOKEN_A" "/api/chat/$ROOM_HIDE/todo" \
+		"$(jq -nc --arg t "$HIDE_TODO_DONE" '{title: $t, status: "done"}')" || return 1
+	want_eq "the finished one" "$API_STATUS" 200 || return 1
+	api POST "$TOKEN_A" "/api/chat/$ROOM_HIDE/todo" \
+		"$(jq -nc --arg t "$HIDE_TODO_OPEN" '{title: $t}')" || return 1
+	want_eq "the live one" "$API_STATUS" 200 || return 1
+	cd "$ROOT/web" || return 1
+	node scripts/hidedone-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" \
+		"$ROOM_HIDE" "$HIDE_TODO_DONE" "$HIDE_TODO_OPEN"
 }
 
 # The roster, in a browser, on the ELEMENT: each listener's line says what that
@@ -6347,6 +6382,8 @@ check "the room's todo panel is on the screen in a browser, as an element" \
 	browser_renders_the_rooms_todos
 check "the panel sets and overrides one, in a browser, and a poll does not wipe it" \
 	browser_sets_and_overrides_an_assignee
+check "the panel hides the finished ones, counts them, and remembers it, in a browser" \
+	browser_hides_the_finished_todos
 check "each speaker is drawn in their own colour, in a browser" \
 	browser_colours_the_speakers
 check "the roster draws what each listener can do, distinctly, in a browser" \
