@@ -60,6 +60,7 @@ export function ChatRoom() {
   const [merges, setMerges] = useState<MergeRequest[]>([]);
   const [mergesDecided, setMergesDecided] = useState(false);
   const [mergeTip, setMergeTip] = useState("");
+  const [pane, setPane] = useState<"todos" | "merges">("todos");
   const [todoError, setTodoError] = useState<string | null>(null);
   // Which thread view. The list is the default because almost every thread here
   // is a straight line and a straight line drawn as a graph makes the reader do
@@ -392,40 +393,74 @@ export function ChatRoom() {
       <aside className="flex w-[26rem] shrink-0 flex-col border-border border-l">
         <RoomRoster presence={presence} />
 
-        <RoomTodos
-          room={room}
-          todos={todos}
-          raiseFrom={selected}
-          disabled={!token}
-          error={todoError}
-          onRaise={raise}
-          onAssign={assign}
-        />
-
         {/*
-          The room's merges, beside the room's todos. The operator asked for it
-          in those words: work and merges related to the todos from this chat.
-          A conversation that produced a branch should show the branch, and
-          whether it may land, without leaving the room.
+          Tabs, not a stack. The operator asked three times: the counts belong in
+          the tab title so a person can see whether a pane needs them without
+          opening it. A merge list below the todos answers the same question only
+          after you scroll to it.
         */}
-        {merges.length > 0 ? (
-          <section className="flex flex-col border-border border-t">
-            <header className="flex items-center gap-2 px-4 py-2">
-              <h2 className="font-semibold text-sm">merges</h2>
-              <span className="text-muted-foreground text-xs">
-                {merges.filter((m) => m.admissible === true).length} may land,{" "}
-                {merges.filter((m) => m.gating).length} gating
-              </span>
-            </header>
-            <MergeQueue
-              items={merges}
-              tip={mergeTip}
-              tipFrom="deployed"
-              decided={mergesDecided}
-              loaded={true}
-            />
-          </section>
-        ) : null}
+        <div className="flex items-center gap-1 border-border border-b px-2 pt-2" role="tablist">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={pane === "todos"}
+            data-room-pane="todos"
+            onClick={() => setPane("todos")}
+            className={`flex items-center gap-2 rounded-t px-3 py-1.5 text-sm ${
+              pane === "todos"
+                ? "border-border border-x border-t bg-background font-medium"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            todos
+            <span className="text-xs" style={{ color: "#e0a03f" }}>
+              {todos.filter((t) => (t.status || "todo") === "active").length} active
+            </span>
+            <span className="text-xs" style={{ color: "#8b93a7" }}>
+              {todos.filter((t) => (t.status || "todo") !== "done").length} open
+            </span>
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={pane === "merges"}
+            data-room-pane="merges"
+            onClick={() => setPane("merges")}
+            className={`flex items-center gap-2 rounded-t px-3 py-1.5 text-sm ${
+              pane === "merges"
+                ? "border-border border-x border-t bg-background font-medium"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            merges
+            <span className="text-xs" style={{ color: "#4fae7a" }}>
+              {merges.filter((m) => m.admissible === true).length} may land
+            </span>
+            <span className="text-xs" style={{ color: "#d1585f" }}>
+              {merges.filter((m) => m.admissible === false).length} refused
+            </span>
+          </button>
+        </div>
+
+        {pane === "todos" ? (
+          <RoomTodos
+            room={room}
+            todos={todos}
+            raiseFrom={selected}
+            disabled={!token}
+            error={todoError}
+            onRaise={raise}
+            onAssign={assign}
+          />
+        ) : (
+          <MergeQueue
+            items={merges}
+            tip={mergeTip}
+            tipFrom="deployed"
+            decided={mergesDecided}
+            loaded={true}
+          />
+        )}
 
         <section className="flex min-h-0 flex-1 flex-col">
           <header className="flex items-center gap-2 border-border border-b px-4 py-3">

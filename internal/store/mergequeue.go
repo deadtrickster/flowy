@@ -68,6 +68,35 @@ func normalizeTip(tip string) string {
 	return strings.ToLower(strings.TrimSpace(tip))
 }
 
+// minTipLen is how much of a sha has to be present to be worth comparing.
+//
+// Seven is git's own abbreviation floor and the length every tool here prints.
+// Shorter than that is not a commit anybody typed on purpose, and treating it as
+// a prefix would make one branch match half the repository.
+const minTipLen = 7
+
+// sameCommit reports whether two readings name the same commit.
+//
+// A PREFIX MATCH, NOT A STRING EQUALITY, and it cost two refused landings to
+// learn: claude-host recorded 9e31abb from `git log --oneline` and the node read
+// master as 9e31abb4ecd5..., so the queue refused two green branches for
+// "measured a different tip" when they had measured exactly the right one.
+//
+// Both forms are correct readings of one commit - git prints whichever length
+// the caller asked for - so a comparison that demands identical strings is not
+// checking what it claims to check. Requiring minTipLen on both sides is what
+// keeps this from degenerating into "matches anything".
+func sameCommit(a, b string) bool {
+	a, b = normalizeTip(a), normalizeTip(b)
+	if len(a) < minTipLen || len(b) < minTipLen {
+		return false
+	}
+	if len(a) > len(b) {
+		a, b = b, a
+	}
+	return strings.HasPrefix(b, a)
+}
+
 // BranchOf, TargetOf, GatedTipOf and GateRunOf read what an item was filed with.
 // A missing target reads as the default rather than as empty, because every
 // merge lands somewhere and a reader that has to remember the default is a
@@ -160,7 +189,7 @@ func MergeAdmissible(a *Artifact, targetTip string) error {
 			Reason: "no gate has measured it - there is no verdict to be stale",
 		}
 	}
-	if gated != tip {
+	if !sameCommit(gated, tip) {
 		return &ErrMergeNotAdmissible{
 			Item: a.ID, Branch: BranchOf(a), Target: TargetOf(a),
 			GatedTip: gated, TargetTip: tip,

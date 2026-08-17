@@ -140,3 +140,40 @@ func TestAMalformedFieldRefusesRatherThanProceeds(t *testing.T) {
 		t.Fatal("a gated tip that is not a string must refuse")
 	}
 }
+
+// Short sha against full sha. Two green branches were refused for "measured a
+// different tip" because the run recorded 9e31abb from git log --oneline and the
+// node read master as 9e31abb4ecd5. Both are correct readings of one commit.
+func TestAShortShaAndAFullShaAreTheSameCommit(t *testing.T) {
+	a := mergeItem(t, "01MERGE", map[string]any{
+		BranchField:   "feat-citation-grants",
+		GatedTipField: "9e31abb",
+	})
+	if err := MergeAdmissible(a, "9e31abb4ecd5f0a1b2c3d4e5f60718293a4b5c6d"); err != nil {
+		t.Fatalf("a short sha is the same commit as the full one it prefixes: %v", err)
+	}
+	// And the other way round, because which side is abbreviated depends on
+	// which tool printed it.
+	b := mergeItem(t, "01MERGE", map[string]any{
+		BranchField:   "feat-citation-grants",
+		GatedTipField: "9e31abb4ecd5f0a1b2c3d4e5f60718293a4b5c6d",
+	})
+	if err := MergeAdmissible(b, "9e31abb"); err != nil {
+		t.Fatalf("the abbreviation can be on either side: %v", err)
+	}
+}
+
+// A prefix match must not become "matches anything". A different commit that
+// happens to share a few characters is still a different commit.
+func TestAPrefixMatchStillRefusesADifferentCommit(t *testing.T) {
+	a := mergeItem(t, "01MERGE", map[string]any{BranchField: "b", GatedTipField: "9e31abb"})
+	if err := MergeAdmissible(a, "9e31abc"); err == nil {
+		t.Fatal("one character different is a different commit")
+	}
+	// Too short to be a commit anybody typed on purpose: refused rather than
+	// matched against half the repository.
+	short := mergeItem(t, "01MERGE", map[string]any{BranchField: "b", GatedTipField: "9e3"})
+	if err := MergeAdmissible(short, "9e31abb4ecd5"); err == nil {
+		t.Fatal("an abbreviation below git's own floor must not be treated as a prefix")
+	}
+}
