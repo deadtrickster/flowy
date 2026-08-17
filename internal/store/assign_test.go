@@ -2,11 +2,33 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
 	"github.com/deadtrickster/flowy/internal/ulid"
 )
+
+// fieldsWithout is a fields blob with one key taken back out, which is how a row
+// from before that key existed is written here. Removing it is not the same as
+// setting it empty - see AssigneeOf, where a key that is present wins whatever
+// it holds.
+func fieldsWithout(t *testing.T, fields json.RawMessage, key string) json.RawMessage {
+	t.Helper()
+
+	var m map[string]any
+	if len(fields) > 0 {
+		if err := json.Unmarshal(fields, &m); err != nil {
+			t.Fatalf("fields: %v", err)
+		}
+	}
+	delete(m, key)
+	raw, err := json.Marshal(m)
+	if err != nil {
+		t.Fatalf("fields: %v", err)
+	}
+	return raw
+}
 
 // assigneeIn is what a reader's queue says is carrying one todo, and who put them
 // there - both through that reader's own filter, which is the point of asking it
@@ -257,9 +279,15 @@ func TestAReadSaysWhoIsCarryingItWithoutDiggingIntoFields(t *testing.T) {
 		t.Fatalf("assign: %v", err)
 	}
 
-	// Written the way the whole queue was before the field existed.
+	// Written the way the whole queue was before the field existed: the OWNER
+	// line in the body and NO assignee key, because there was no field to put
+	// one in. The key has to go rather than be left empty - todoIn writes it
+	// either way, and a key that is there wins even when it is empty, so a row
+	// that kept it would be somebody saying nobody is carrying this instead of
+	// the pre-field row it stands in for. See AssigneeOf.
 	legacy := todoIn(t, ctx, db, author, "rewrite the pruning notes", VisibilityShared, "")
 	legacy.Body = "OWNER: a-gardener\n\nthe notes are stale"
+	legacy.Fields = fieldsWithout(t, legacy.Fields, AssigneeField)
 	if err := db.UpsertArtifact(ctx, legacy); err != nil {
 		t.Fatalf("legacy todo: %v", err)
 	}
