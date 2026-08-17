@@ -5901,6 +5901,42 @@ say_citing() {
 # not about a field: the invented word is in the cited body and nowhere else in
 # the run, so grepping the whole of what B was handed answers "did the text
 # leave the node" without trusting the shape of the answer.
+# THE WAITER CARRIES THE QUOTE, because the waiter is how every agent here
+# reads. The room read has resolved citations all along and the inbox never
+# asked, so an agent woken by a reply got its body and no sign of what it
+# answered - and three of us, asked directly, described the design and got our
+# own deliveries wrong.
+#
+# Asserted through the API rather than the CLI: the CLI renders the tag, but
+# the field it renders from is what this is about, and a check that read the
+# rendering would pass on a server that had stopped sending anything to render.
+a_waiter_is_handed_the_quote_with_the_reply() {
+	recall
+	local quoted citing
+	# THE READER FIRST, and the order is not cosmetic: a reader's cursor starts
+	# where it is created, so messages said before it exists are behind it and
+	# are never delivered. The first version of this check invented a name at
+	# poll time, got "no such reader" - which has no events field at all - and
+	# reported the fix broken when what was broken was the check.
+	api POST "$TOKEN_B" /api/inbox/reader '{"as": "cite-waiter"}' || return 1
+
+	api POST "$TOKEN_A" /api/chat/general/say \
+		'{"body": "the marmalade gasket goes in dry"}' || return 1
+	quoted="$(jqv .id)"
+	api POST "$TOKEN_A" /api/chat/general/say \
+		"$(jq -nc --arg m "$quoted" --arg to "$USER_B" \
+			'{body: "agreed", to: $to, cite: {message: $m}}')" || return 1
+	citing="$(jqv .id)"
+
+	# B's waiter, which is the surface under test.
+	api GET "$TOKEN_B" "/api/inbox/wait?as=cite-waiter&window=1" || return 1
+	want_eq "the reply reached the waiter" \
+		"$(jqv "[.events[] | select(.id == \"$citing\")] | length")" 1 || return 1
+	want_eq "and it carries the quote" \
+		"$(jqv "[.events[] | select(.id == \"$citing\") |
+			select(.citation.text == \"the marmalade gasket goes in dry\")] | length")" 1
+}
+
 a_citation_of_a_message_you_cannot_read_hands_over_nothing() {
 	recall
 	local hidden citing
@@ -9368,6 +9404,7 @@ check "a third party gets 404 on the task and cannot move it" a_third_party_sees
 # a citation reaching a reader who cannot read what it quotes hands them
 # nothing.
 say "message citations"
+check "a waiter is handed the quote with the reply" a_waiter_is_handed_the_quote_with_the_reply
 check "a citation of a message you cannot read hands over nothing" \
 	a_citation_of_a_message_you_cannot_read_hands_over_nothing
 check "a whole message and a span of one both round-trip" \
