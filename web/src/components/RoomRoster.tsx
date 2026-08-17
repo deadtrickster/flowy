@@ -29,6 +29,66 @@ export function RoomRoster({ presence }: { presence: Presence | null }) {
 
   const named = (m: { name: string; actor: string }) => m.name || m.actor.slice(-8);
 
+  // A READER ROW THAT HAS NEVER POLLED IS A BOOKMARK, NOT AN EAR.
+  //
+  // This pane answers one question - is anybody hearing me - and it had stopped
+  // answering it. The console became a reader in its own right so a human's
+  // unread badge could clear, which declares console:general, console:handoffs
+  // and console:incidents to hold a place in each room. Those keep a position
+  // and never call the inbox, so they arrived here as three detached listeners
+  // of unknown kind, alongside retired names that outlive whatever declared
+  // them. Six rows saying "kind unknown", none of which can hear anything.
+  //
+  // last_poll_at is the honest test and the NAME IS NOT: filtering a "console:"
+  // prefix would answer "what is this called" when the question is "has it ever
+  // listened", and would break for the next reader named anything else. The
+  // column moves on every /api/inbox/wait and on nothing else.
+  //
+  // The store still reports every reader, deliberately - a declared-but-silent
+  // reader is a real thing and TestPresenceTracksPollsNotAcks asserts it is
+  // listed. The filtering belongs here, in the view that asks the narrower
+  // question.
+  const polling = presence.listeners.filter((l) => !!l.last_poll_at);
+
+  // ONE LINE PER PRINCIPAL, NOT PER NAME. The name is a label somebody chose
+  // and the principal is who they are, and on this node the two disagree in
+  // BOTH directions at once:
+  //
+  //   claude-glm and flowy-glm   DIFFERENT names, SAME principal - one seat
+  //                              listening twice, which by name reads as two
+  //                              healthy agents
+  //   claude-host and claude-host  SAME name, DIFFERENT users - one is the
+  //                              agent, one is the operator carrying that agent
+  //                              id, which by name reads as one
+  //
+  // So deduping by name would merge the two that are genuinely different and
+  // keep the two that are genuinely one - exactly inverted. The principal is
+  // user + agent + project and it is already on every row.
+  //
+  // THE COUNT STAYS VISIBLE because a principal polling twice is a DOUBLED
+  // WAITER, and that is a bug rather than clutter: two waiters under one
+  // identity share one server-side cursor, so wake-ups split between them and
+  // both look healthy while messages go to whichever answered first. That is
+  // what silenced a watcher here earlier today. A pane that tidied them into
+  // one line would hide the failure it exists to show.
+  const byPrincipal = new Map<
+    string,
+    { row: (typeof polling)[number]; count: number; names: string[] }
+  >();
+  for (const l of polling) {
+    const seen = byPrincipal.get(l.principal);
+    if (!seen) {
+      byPrincipal.set(l.principal, { row: l, count: 1, names: [l.reader] });
+      continue;
+    }
+    seen.count++;
+    if (!seen.names.includes(l.reader)) seen.names.push(l.reader);
+    // Freshest wins: the live process is the one still polling, and the stale
+    // row is the one somebody restarted away from.
+    if ((l.last_poll_at ?? "") > (seen.row.last_poll_at ?? "")) seen.row = l;
+  }
+  const ears = [...byPrincipal.values()];
+
   return (
     <div className="border-border border-b px-4 py-3">
       <div className="pb-1 font-medium text-muted-foreground text-xs uppercase tracking-wide">
@@ -49,22 +109,37 @@ export function RoomRoster({ presence }: { presence: Presence | null }) {
       <div className="pb-1 font-medium text-muted-foreground text-xs uppercase tracking-wide">
         listening
       </div>
-      {presence.listeners.length === 0 ? (
+      {ears.length === 0 ? (
         <div className="text-muted-foreground text-xs">no reader is polling</div>
       ) : (
         <ul className="flex flex-col gap-0.5">
-          {presence.listeners.map((l) => {
+          {ears.map(({ row: l, count, names }) => {
             const kind = listenerKind(l.waiter_kind);
             return (
               <li
-                key={l.principal + l.reader}
+                key={l.principal}
                 data-listener={l.reader}
+                data-listener-rows={count}
                 className="flex items-center gap-2 text-xs"
               >
                 <span className="min-w-0 truncate" style={{ color: speakerStyle(l.reader).color }}>
-                  {l.reader}
+                  {names.join(" + ")}
                   {l.reader !== l.user_name ? (
                     <span className="text-muted-foreground"> · {l.user_name}</span>
+                  ) : null}
+                  {/*
+                    One identity, more than one row polling. Said out loud
+                    rather than tidied away: they share one cursor, so wake-ups
+                    split between them and each looks healthy while messages
+                    reach only whichever answered first.
+                  */}
+                  {count > 1 ? (
+                    <span
+                      className="ml-1 text-amber-600 dark:text-amber-500"
+                      title={`${count} rows are polling as this one principal - they share a cursor, so each hears only part of the room`}
+                    >
+                      ×{count} doubled
+                    </span>
                   ) : null}
                 </span>
                 {/*

@@ -114,10 +114,58 @@ Either the roster is not drawing its listeners or it does not mark them.${errors
     process.exit(1);
   }
 
+  // A BOOKMARK IS NOT AN EAR. The console declares a reader per room to keep a
+  // human's unread place - console:general and friends - and those hold a
+  // position without ever polling. They arrived in this pane as detached
+  // listeners of unknown kind, six of them, until the operator said it was a
+  // mess. The pane answers "is anybody hearing me", so a row that has never
+  // called the inbox does not belong in it.
+  const bookmarks = await lines.evaluateAll((nodes) =>
+    nodes
+      .map((n) => n.getAttribute("data-listener") || "")
+      .filter((name) => name.startsWith("console:")),
+  );
+  if (bookmarks.length > 0) {
+    console.error(
+      `the listening pane lists readers that have never polled: ${bookmarks.join(", ")}.
+  Those are the console's own unread bookmarks. They keep a place in a room and
+  never call the inbox, so they cannot hear anything and must not be drawn as
+  listeners - the pane's whole question is whether anybody is hearing you.`,
+    );
+    process.exit(1);
+  }
+
+  // ONE LINE PER PRINCIPAL. Two rows for one identity is a DOUBLED WAITER -
+  // they share a server-side cursor, so each hears only part of the room while
+  // both look healthy - and it must be visible rather than tidied into one
+  // clean line. Deduping by NAME gets this inverted in both directions: two
+  // names can be one principal, and one name can be two different users.
+  const doubled = await lines.evaluateAll((nodes) =>
+    nodes
+      .map((n) => ({
+        name: n.getAttribute("data-listener") || "",
+        rows: Number(n.getAttribute("data-listener-rows") || "1"),
+        says: n.textContent || "",
+      }))
+      .filter((l) => l.rows > 1),
+  );
+  for (const d of doubled) {
+    if (!d.says.includes("doubled")) {
+      console.error(
+        `${d.name} is drawn from ${d.rows} polling rows and the line does not say so.
+  One identity polling twice splits its wake-ups between two processes and both
+  look healthy. Collapsing them silently hides the failure this pane is for.`,
+      );
+      process.exit(1);
+    }
+  }
+
   console.log(
     `the roster draws each listener's kind, distinctly, in a browser: ${seen
       .map((s) => `${s.kind} -> ${JSON.stringify(s.label)}`)
-      .join(", ")}`,
+      .join(", ")}; no never-polled bookmarks drawn as listeners${
+      doubled.length ? `; ${doubled.length} doubled identity named as doubled` : ""
+    }`,
   );
 } finally {
   await browser.close();
