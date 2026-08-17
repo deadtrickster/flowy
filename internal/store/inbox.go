@@ -310,6 +310,25 @@ func (d *DB) DeleteInboxReader(ctx context.Context, p *Principal, name string) (
 // what the node last saw of their polling - "who is in the room" is who
 // participates, and this table answers "who has an ear on", which is the half
 // of that a reader row can carry.
+// PresenceWindow is how long after its last poll a reader is still a LISTENER.
+//
+// Every row in inbox_readers is a CURSOR - the console keeps one per room, a
+// probe keeps one, a one-off test keeps one - and only some of them are somebody
+// listening. Presence used to return all of them, so the roster filled with
+// console panes, dead probes and duplicate names, and the operator called it an
+// infestation twice. Thirteen rows for five agents.
+//
+// The rows are not the problem and MUST NOT BE DELETED: a console cursor is what
+// makes the unread badge clear, and dropping it would recount every message the
+// next time somebody opened the room. So this narrows the READ, and the table
+// keeps everything.
+//
+// Ten minutes because a waiter polls on a 3600s deadline but re-polls promptly
+// when it returns, and anything that has not been seen for ten minutes is not
+// somebody you can expect an answer from - which is the question a roster is
+// asked.
+const PresenceWindow = 10 * time.Minute
+
 func (d *DB) Presence(ctx context.Context) ([]*PresenceRow, error) {
 	// The principal column is user \x1f agent \x1f project. Splitting it in
 	// SQL keeps the join in one round trip; unit separators cannot appear in
@@ -322,7 +341,9 @@ func (d *DB) Presence(ctx context.Context) ([]*PresenceRow, error) {
 		        r.polls_in_flight > 0, r.waiter_kind, r.last_poll_at, r.updated
 		   FROM inbox_readers r
 		   LEFT JOIN users u ON u.id = split_part(r.principal, chr(31), 1)
-		  ORDER BY r.updated DESC, r.reader`)
+		  WHERE r.polls_in_flight > 0
+		     OR r.last_poll_at > now() - $1::interval
+		  ORDER BY r.updated DESC, r.reader`, PresenceWindow.String())
 	if err != nil {
 		return nil, fmt.Errorf("store: presence: %w", err)
 	}
