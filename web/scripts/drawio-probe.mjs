@@ -144,9 +144,12 @@ await browser.close();
 server.close();
 
 const problems = [];
-if (misses.length) problems.push(`${misses.length} file(s) 404: ${[...new Set(misses)].join(", ")}`);
+if (misses.length)
+  problems.push(`${misses.length} file(s) 404: ${[...new Set(misses)].join(", ")}`);
 if (external.length) {
-  problems.push(`${external.length} request(s) left the machine: ${[...new Set(external)].join(", ")}`);
+  problems.push(
+    `${external.length} request(s) left the machine: ${[...new Set(external)].join(", ")}`,
+  );
 }
 
 const back = seen.get("autosave") ?? seen.get("load") ?? "";
