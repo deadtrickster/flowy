@@ -343,6 +343,17 @@ func (d *DB) Presence(ctx context.Context) ([]*PresenceRow, error) {
 		   LEFT JOIN users u ON u.id = split_part(r.principal, chr(31), 1)
 		  WHERE r.polls_in_flight > 0
 		     OR r.last_poll_at > now() - $1::interval
+		     -- A reader that EXISTS AND HAS NEVER POLLED is a waiter starting
+		     -- up, and the roster is how somebody watches it start - it reads
+		     -- as kind unknown, which is a real answer and not a ghost. The
+		     -- first version of this dropped it with the console cursors and
+		     -- broke four checks that encode exactly that contract.
+		     --
+		     -- The difference between the two is AGE, not the missing poll:
+		     -- never-polled-and-seconds-old is starting, never-polled-and-hours-
+		     -- old is a cursor somebody's page left behind. Same empty field,
+		     -- two different facts, and the first cut used the field.
+		     OR r.updated > now() - $1::interval
 		  ORDER BY r.updated DESC, r.reader`, PresenceWindow.String())
 	if err != nil {
 		return nil, fmt.Errorf("store: presence: %w", err)
