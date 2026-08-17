@@ -135,9 +135,33 @@ export function MessageList({ events, selected, onSelect, onCite, me, onSeen }: 
     if (el) el.scrollTop = el.scrollHeight;
   }, []);
 
+  // ONLY THE READER MAY GIVE UP FOLLOWING, and "not at the end" is not the
+  // reader.
+  //
+  // toEnd() writes scrollTop, and that write fires a scroll event. If a batch
+  // grew scrollHeight between the write and the event - which is the ordinary
+  // case while a room is arriving - atEnd() reads false in that handler and
+  // following.current latched false. Nothing sets it back: every later page
+  // then counted as new messages instead of pinning, and the view sat exactly
+  // one late batch short of the end. Stable, so it survives a settle loop that
+  // waits for the height to stop changing, which is how the gate read it:
+  // 5151px short of 45474 with everything quiet.
+  //
+  // Direction is the signal that cannot be faked by growth. Content arriving
+  // never DECREASES scrollTop; a reader going back up always does. So an
+  // upward move is the only thing that stops the follow, and reaching the end
+  // by any means resumes it.
+  const lastTop = useRef(0);
   const onScroll = useCallback(() => {
+    const el = scroller.current;
+    const top = el ? el.scrollTop : 0;
+    // A few pixels of slack for fractional row heights and for a browser that
+    // settles a scroll a pixel below where it was asked to.
+    const wentUp = top < lastTop.current - 8;
+    lastTop.current = top;
     const bottomNow = atEnd();
-    following.current = bottomNow;
+    if (bottomNow) following.current = true;
+    else if (wentUp) following.current = false;
     setAtBottom(bottomNow);
     // Arriving under your own steam clears the badge - it is a way back, not
     // a receipt, so it should not need dismissing once you are there.
