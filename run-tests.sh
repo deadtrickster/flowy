@@ -3977,14 +3977,54 @@ assigning_a_todo_you_cannot_read_is_refused() {
 	# no would be this round's own failure, from the other end.
 	api GET "$TOKEN_A" "/api/todo/$id/assignee" || return 1
 	want_eq "whoever had it still has it" "$(jqv .assignee)" "$HANDOUT_SECOND" || return 1
-	want_eq "and nobody added an entry" "$(jqv '[.log[] | select(.actor == $b)] | length' --arg b "$USER_B")" 0 || return 1
+	# jqv reads one expression and takes no jq arguments, so the seat being
+	# counted is bound here rather than passed through it.
+	want_eq "and nobody added an entry" \
+		"$(printf '%s' "$API_BODY" | jq --arg b "$USER_B" \
+			'[.log[] | select(.actor == $b)] | length')" 0 || return 1
 
 	want_status 404 POST "$TOKEN_A" "/api/todo/01HNOSUCHTODO000000000000/assignee" \
 		'{"assignee": "a-bench"}' || return 1
 	# A bug is readable and is not a queue item: same answer, because naming an id
-	# here is not a way to find out what else it might be.
-	want_status 404 POST "$TOKEN_A" "/api/todo/$BUG/assignee" '{"assignee": "a-bench"}' || return 1
+	# here is not a way to find out what else it might be. It is filed here rather
+	# than phase 1's, which has been deleted by now and would answer 404 for being
+	# gone - which says nothing about what this refuses on a live row.
+	api POST "$TOKEN_A" /api/artifacts \
+		'{"type": "bug", "title": "readable, and not a queue item", "status": "open"}' || return 1
+	want_eq "the bug this refuses on" "$API_STATUS" 200 || return 1
+	local bug
+	bug="$(jqv .id)"
+	want_status 200 GET "$TOKEN_A" "/api/artifact/$bug" || return 1
+	want_status 404 POST "$TOKEN_A" "/api/todo/$bug/assignee" '{"assignee": "a-bench"}' || return 1
 	printf 'B was refused at both doors and the todo did not move\n'
+}
+
+# claim_of ACTOR - the entry one seat left in the last /api/todo/{id}/assignee
+# answer, and empty when that seat left none.
+#
+# The log is read by WHO made each claim rather than by position, because the two
+# doors this todo was handed round by are two PROCESSES - `flowy serve` and
+# `flowy mcp`, each holding a clock of its own - and which of two claims a
+# millisecond apart sorts first is those two clocks' business rather than this
+# surface's. That the latest claim wins and the ones before it stay is asked where
+# it is one clock's question and has one answer: see the store check beside this
+# one, TestTheLatestClaimWinsAndTheLogKeepsTheRest.
+claim_of() {
+	printf '%s' "$API_BODY" | jq -c --arg a "$1" 'first(.log[] | select(.actor == $a)) // empty'
+}
+
+# claimv ENTRY EXPR - a value out of one such entry.
+claimv() { printf '%s' "$1" | jq -r "$2"; }
+
+# said_when ENTRY - an entry has to say when it was made. A record of a handover
+# that cannot answer "when" is half a record.
+said_when() {
+	case "$2" in
+	"" | null)
+		printf 'a claim does not say when it was made: %s\n' "$1" >&2
+		return 1
+		;;
+	esac
 }
 
 # An assignment says WHO made it and WHEN, which is the whole reason it is an event
@@ -3996,23 +4036,33 @@ assigning_a_todo_you_cannot_read_is_refused() {
 # the work down is a claim too - the empty name is a value somebody chose.
 an_assignment_records_who_made_it() {
 	recall
-	local id="$HANDOUT_ID"
+	local id="$HANDOUT_ID" op agent
 
 	api GET "$TOKEN_A" "/api/todo/$id/assignee" || return 1
-	want_eq "both claims are in the log, oldest first" "$(jqv '.log | length')" 2 || return 1
-	want_eq "the operator made the first" "$(jqv '.log[0].actor')" "$USER_OP" || return 1
-	want_eq "as a person" "$(jqv '.log[0].actor_kind')" user || return 1
-	want_eq "handing it to" "$(jqv '.log[0].assignee')" "$HANDOUT_TAKER" || return 1
-	want_eq "and the agent made the second" "$(jqv '.log[1].actor')" "$AGENT_A" || return 1
-	want_eq "as an agent" "$(jqv '.log[1].actor_kind')" agent || return 1
-	# The person behind the seat is on the row beside the seat, so "an agent claimed
-	# this" and "somebody claimed this" are not the same answer.
-	want_eq "acting for its person" "$(jqv '.log[1].actor_user')" "$USER_A" || return 1
-	want_eq "the standing claim is the last one" "$(jqv .assignment.entry)" "$(jqv '.log[1].id')" || return 1
-	if [ -z "$(jqv .assignment.at)" ] || [ "$(jqv .assignment.at)" = null ]; then
-		printf 'the standing claim does not say when it was made\n' >&2
+	want_eq "both claims are in the log" "$(jqv '.log | length')" 2 || return 1
+	op="$(claim_of "$USER_OP")"
+	agent="$(claim_of "$AGENT_A")"
+	if [ -z "$op" ] || [ -z "$agent" ]; then
+		printf 'the log does not name both seats: %s\n' \
+			"$(printf '%s' "$API_BODY" | jq -c .log)" >&2
 		return 1
 	fi
+	want_eq "the operator handed it to" "$(claimv "$op" .assignee)" "$HANDOUT_TAKER" || return 1
+	want_eq "as a person" "$(claimv "$op" .actor_kind)" user || return 1
+	want_eq "and the agent took it" "$(claimv "$agent" .assignee)" "$HANDOUT_SECOND" || return 1
+	want_eq "as an agent" "$(claimv "$agent" .actor_kind)" agent || return 1
+	# The person behind the seat is on the row beside the seat, so "an agent claimed
+	# this" and "somebody claimed this" are not the same answer.
+	want_eq "acting for its person" "$(claimv "$agent" .actor_user)" "$USER_A" || return 1
+	said_when "the operator's" "$(claimv "$op" .created)" || return 1
+	said_when "the agent's" "$(claimv "$agent" .created)" || return 1
+	# The standing claim is one of the ones that were actually made, and it says
+	# when - a fold that named an entry nobody can find would be a claim with no
+	# provenance behind it, which is the thing this log exists to prevent.
+	want_eq "the standing claim is one of the ones in the log" \
+		"$(printf '%s' "$API_BODY" | jq --arg e "$(jqv .assignment.entry)" \
+			'[.log[] | select(.id == $e)] | length')" 1 || return 1
+	said_when "the standing claim" "$(jqv .assignment.at)" || return 1
 
 	# Putting it down, by a third seat again.
 	api POST "$TOKEN_OP" "/api/todo/$id/assignee" '{"assignee": "unassigned"}' || return 1
@@ -4028,7 +4078,12 @@ an_assignment_records_who_made_it() {
 		"$(jq -nc --arg i "$id" --arg a "$HANDOUT_TAKER" '{id: $i, assignee: $a}')" || return 1
 	api GET "$TOKEN_A" "/api/todo/$id/assignee" || return 1
 	want_eq "four claims now" "$(jqv '.log | length')" 4 || return 1
-	want_eq "the last one is the author's" "$(jqv '.log[3].actor')" "$USER_A" || return 1
+	# An override APPENDS: each of the four names is still in the log with the seat
+	# that put it there, and the author's own write is one of them.
+	want_eq "the author left one too" "$(claimv "$(claim_of "$USER_A")" .assignee)" \
+		"$HANDOUT_TAKER" || return 1
+	want_eq "and putting it down is still in the log" \
+		"$(printf '%s' "$API_BODY" | jq '[.log[] | select(.assignee == "")] | length')" 1 || return 1
 	want_eq "naming who they gave it to" "$(jqv .assignee)" "$HANDOUT_TAKER" || return 1
 
 	# And an entry is minted: the refusals that make it worth reading are on the
@@ -13109,6 +13164,36 @@ check "and a browser shows it newest first, narrowable by branch" \
 	browser_renders_the_worklog
 check "an entry written about another seat's work is drawn as vouched, and an authored one is not" \
 	browser_draws_a_vouched_entry_as_vouched
+
+# A todo belongs to the queue and not to whoever typed it. The per-room checks
+# back in Phase 3 are the AUTHOR's own surface; these are the ones that were
+# missing, and each drives a principal who did NOT write the item - which is the
+# case a live node could not do at all, and the case a refusal that reports
+# success made invisible.
+#
+# They run here rather than beside the per-room ones, which is where they read as
+# belonging, because they write into the log and the timeline check just above
+# renders the OLDEST 200 events this token can see: on a run already at that
+# ceiling, eight more events earlier in the run push the message that check looks
+# for off the end of the page, and an unrelated check fails for having been
+# crowded out. Anything added to this file that writes events belongs after that
+# render for the same reason. Nothing here depends on running in Phase 3 - the
+# todo is raised in a room of its own and handed round inside this section.
+say "a todo changes hands"
+check "somebody who did not write a todo can assign it, at both doors" \
+	a_todo_is_assigned_by_somebody_who_did_not_write_it
+check "a todo you cannot read is a todo you cannot assign" \
+	assigning_a_todo_you_cannot_read_is_refused
+check "an assignment says who made it and when, and an override appends" \
+	an_assignment_records_who_made_it
+check "mem_write on an item that is not yours is an error, not an empty success" \
+	mem_write_refuses_an_update_it_will_not_make
+check "read permission is the whole bar for assigning, in the store" \
+	go test -count=1 \
+	-run 'TestAnybodyWhoCanReadATodoCanAssignIt|TestAPrincipalWhoCannotReadATodoCannotAssignIt' \
+	./internal/store
+check "the latest claim wins and the log keeps the ones before it, in the store" \
+	go test -count=1 -run TestTheLatestClaimWinsAndTheLogKeepsTheRest ./internal/store
 
 # ---------------------------------------------------------------- phase 9
 #
