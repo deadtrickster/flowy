@@ -29,26 +29,21 @@ export function RoomRoster({ presence }: { presence: Presence | null }) {
 
   const named = (m: { name: string; actor: string }) => m.name || m.actor.slice(-8);
 
-  // A READER ROW THAT HAS NEVER POLLED IS A BOOKMARK, NOT AN EAR.
+  // THE STORE DECIDES WHAT IS A GHOST, AND THIS RENDERS ITS ANSWER.
   //
-  // This pane answers one question - is anybody hearing me - and it had stopped
-  // answering it. The console became a reader in its own right so a human's
-  // unread badge could clear, which declares console:general, console:handoffs
-  // and console:incidents to hold a place in each room. Those keep a position
-  // and never call the inbox, so they arrived here as three detached listeners
-  // of unknown kind, alongside retired names that outlive whatever declared
-  // them. Six rows saying "kind unknown", none of which can hear anything.
+  // This pane once filtered its own ghosts - every row that had never polled
+  // was dropped - which fixed a roster of dead console cursors and broke the
+  // other thing the same field carries: a waiter that EXISTS and has not
+  // polled yet is STARTING, seconds old, kind unknown, and the roster is where
+  // somebody watches it start. Same empty last_poll_at as a cursor a closed
+  // page left behind; two different facts.
   //
-  // last_poll_at is the honest test and the NAME IS NOT: filtering a "console:"
-  // prefix would answer "what is this called" when the question is "has it ever
-  // listened", and would break for the next reader named anything else. The
-  // column moves on every /api/inbox/wait and on nothing else.
-  //
-  // The store still reports every reader, deliberately - a declared-but-silent
-  // reader is a real thing and TestPresenceTracksPollsNotAcks asserts it is
-  // listed. The filtering belongs here, in the view that asks the narrower
-  // question.
-  const polling = presence.listeners.filter((l) => !!l.last_poll_at);
+  // Presence now windows rows at the store - attached, polled, or updated
+  // within ten minutes - so what arrives here is already the answer, and this
+  // second-guessing filter would hide exactly the rows that change made a
+  // point of keeping. The view asks the narrower question; it no longer
+  // re-answers the one the store already did.
+  const live = presence.listeners;
 
   // ONE LINE PER PRINCIPAL, NOT PER NAME. The name is a label somebody chose
   // and the principal is who they are, and on this node the two disagree in
@@ -82,9 +77,9 @@ export function RoomRoster({ presence }: { presence: Presence | null }) {
   // two rows of different kinds is two answers to what this seat can do.
   const byPrincipal = new Map<
     string,
-    { row: (typeof polling)[number]; count: number; names: string[] }
+    { row: (typeof live)[number]; count: number; names: string[] }
   >();
-  for (const l of polling) {
+  for (const l of live) {
     const key = `${l.principal}\u001f${l.waiter_kind ?? ""}`;
     const seen = byPrincipal.get(key);
     if (!seen) {
