@@ -422,6 +422,55 @@ a create with a caller-chosen id: an agent that guessed an id would otherwise
 overwrite a memory it was never allowed to see. Ids for new items are minted by
 the node.
 
+### Attachments
+
+**An artifact with bytes.** Agents hand each other logs, diffs, captures and
+screenshots, and until this landed the only place to put one was a message body -
+unreadable, unbounded, and in the append-only log every reader pages through.
+`report_write` had been refusing bodies over 100KB and naming an attachment as
+the alternative for months, which was a promise nothing kept.
+
+An attachment is an artifact of `type='attachment'` with a `kind` of `text` or
+`binary`, so the scopes, the permission filter, the project rule and the write
+event are the ones every other artifact already has.
+
+| tool | arguments | what it does |
+| --- | --- | --- |
+| `attachment_write` | `content_base64, title?, content_type?, filename?, body?, scope?, tags?, room?, message?` | store the bytes, at `scope=project` by default; returns the id, the size and the sha256 |
+| `attachment_read` | `id` | the bytes, base64, exactly as they went in - or the answer a missing id gets |
+| `attachment_list` | `scope?, kind?, limit?` | newest first, without the bytes |
+
+Four things about it are deliberate:
+
+- **the bytes are not in `events` and not in `artifacts.body`.** A megabyte in
+  the log is a megabyte through every sync page, every timeline read and every
+  peer's merge, forever; `body` is what search reaches and is `text`, which
+  cannot hold a NUL byte at all. They live in `attachment_bytes` - one `bytea`
+  per artifact - and the read is a single statement that joins the two with
+  `ArtifactFilterSQL` in the same `WHERE` clause as the payload, so the new read
+  path cannot grow a second, hand-written idea of who may read.
+- **there is a ceiling and the refusal names it.** 4,194,304 bytes, which is what
+  fits through the 8 MiB JSON-RPC message that carries it once base64 has taken
+  its four bytes for every three. Over it is refused whole, with the size, the
+  ceiling and the word truncation: half a log that does not say it is half costs
+  more than a failed upload. Empty is refused as well - an attachment that
+  carries nothing is the same lie told earlier.
+- **the content type is a claim, and is not what anything renders from.** What
+  the client said rides `fields.claimed_type`; what the bytes are is sniffed here
+  and rides `fields.content_type`, which is the name a render path reaches for
+  without thinking. `kind` follows the sniff too. `filename` is recorded for a
+  person and refused if it is a path.
+- **it is written once.** No `id` argument and no update path: an id and a digest
+  somebody was handed still mean the same bytes tomorrow. The digest is inside
+  the row signature - `fields` is signed - so a read that finds bytes which do
+  not hash to it refuses rather than serving them with a note.
+
+The bytes do not replicate yet. The artifact row travels as it always did, and a
+peer that pulled it is told the content is not on this node rather than handed an
+empty file; carrying the payload across is a sync change, not a schema one. There
+is **no console view** in this pass either - the room panel and the message list
+were being edited by other runs at the time.
+
 ### The worklog
 
 **What the last few seats did, and where they stopped.** An agent picking up
@@ -2136,6 +2185,20 @@ file on this machine was called or when it was closed. The artifact the drainer
 writes out of it is the fabric row, and that one is stamped and signed like
 every other.
 
+Attachments add one table, and only for the payload:
+
+| table | holds |
+| --- | --- |
+| `attachment_bytes` | the bytes of one attachment: `artifact` (the primary key), `content bytea`, `created`. Nothing else - the size, the sha256, the sniffed content type and the claimed one ride the artifact's `fields`, which is inside the row signature |
+
+It is `bytea` and not `text` because `text` cannot hold a NUL byte, and it is a
+table and not a column because `events` is paged by every reader and
+`artifacts.body` is what search reaches. No foreign key onto `artifacts`, for the
+same reason `tasks.artifact` and `events.artifact` have none: rows arrive from
+peers in reading order rather than in dependency order. The artifact is what
+decides whether the bytes may be read, so an orphan here is unreachable rather
+than exposed.
+
 An artifact with `project` NULL is personal to `owner_user`; `visibility` is
 `personal`, `project` or `shared`. `kind` narrows `type` without multiplying it -
 a memory item is `type='memory'` with a kind of `note`, `todo`, `feature` or
@@ -2374,6 +2437,24 @@ Then Phase 2, against `flowy mcp --http` on a free port and against
 - the entry is **on the activity timeline** as kind `worklog`, with the actor and
   the speaker the node stamped - and `POST /api/activity {"kind": "worklog"}` is
   a `400`, because that door does not check the refs the other one does
+- an attachment's bytes come back **byte for byte**: the fixture carries a NUL, a
+  newline and two bytes that are not valid UTF-8, it goes out through
+  `attachment_write` and comes back through `attachment_read`, and the two files
+  are compared with `cmp` rather than by length. A payload typed as a shell string
+  would be a shorter payload, so it is written to a file - which is the same class
+  of bug, one layer down, as a text-only path that mangles binary
+- an attachment of `maxAttachment + 1` bytes is **refused with both numbers** and
+  the word truncation, and nothing is stored: over the ceiling is a failed upload,
+  never a shorter attachment with nothing said. Empty is refused too, and so is
+  content that is not base64
+- B is told A's attachment **does not exist** - by id, as B and as B's agent, and
+  it is absent from B's list - while A's *agent* reads the same bytes back with
+  the same digest, so the refusal is about the principal and not a surface that
+  refuses everybody. A memory item's id through `attachment_read` gets the same
+  answer an id that is not there gets: one namespace, no way to enumerate another
+- markup uploaded as `content_type: image/png` is recorded as **claimed** and is
+  `text/*` in the field a reader renders from, with `kind` following the bytes -
+  a console that drew what a client asserted would be an injection surface
 - a grant naming a project nobody declared is a `400` that says so, rather than a
   capability into a name that came into existence by being typed
 - `GET /api/whoami` says where this token's writes land - `pa`, declared, a

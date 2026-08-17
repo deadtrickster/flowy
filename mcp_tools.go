@@ -130,11 +130,12 @@ func toolSpecs() []tool { return allTools() }
 
 // allTools is every tool this server serves.
 func allTools() []tool {
-	out := make([]tool, 0, len(tools)+len(reportTools)+len(proposalTools)+len(worklogTools)+
-		len(projectTools)+len(observabilityTools))
+	out := make([]tool, 0, len(tools)+len(reportTools)+len(proposalTools)+
+		len(attachmentTools)+len(worklogTools)+len(projectTools)+len(observabilityTools))
 	out = append(out, tools...)
 	out = append(out, reportTools...)
 	out = append(out, proposalTools...)
+	out = append(out, attachmentTools...)
 	out = append(out, worklogTools...)
 	out = append(out, projectTools...)
 	out = append(out, observabilityTools...)
