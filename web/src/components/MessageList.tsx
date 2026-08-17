@@ -1,7 +1,7 @@
 import DOMPurify from "dompurify";
 import { AnimatePresence, motion } from "framer-motion";
 import { marked } from "marked";
-import { type KeyboardEvent, useEffect, useRef } from "react";
+import { type KeyboardEvent, useCallback, useEffect, useRef, useState } from "react";
 
 import { CitedMessage } from "@/components/CitedMessage";
 import { Badge } from "@/components/ui/badge";
@@ -49,14 +49,55 @@ export function MessageList({ events, selected, onSelect, onCite, me }: Props) {
   const isMe = (id?: string) => !!id && (id === me?.user || id === me?.agent);
 
   const bottom = useRef<HTMLDivElement>(null);
+  const scroller = useRef<HTMLDivElement>(null);
   const count = events.length;
 
-  // Follow the room as it grows, which is what a message arriving mid-poll
-  // should do to the view.
+  // READING WINS OVER FOLLOWING.
+  //
+  // This scrolled to the bottom on every change in count, whatever the reader
+  // was doing - so scrolling back through the room yanked you to the end the
+  // moment anybody spoke, which in a room this busy makes the history
+  // unreadable. Reported by the user, twice, while trying to read it.
+  //
+  // So: follow only when you are ALREADY at the bottom. Being scrolled up is
+  // the reader saying they are reading, and nothing arriving should overrule
+  // that. What arrives instead is a count and a way back down.
+  const [pending, setPending] = useState(0);
+  const [atBottom, setAtBottom] = useState(true);
+
+  // Within a few pixels counts as the bottom: a smooth scroll lands
+  // fractionally short, and an exact comparison would decide the reader had
+  // scrolled away from a view they never moved.
+  //
+  // Inline rather than a helper because it reads only refs: as a function
+  // defined in the body it would be a new value every render, which the
+  // exhaustive-deps rule is right to object to.
+  const onScroll = useCallback(() => {
+    const el = scroller.current;
+    if (!el) return;
+    const bottomNow = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+    setAtBottom(bottomNow);
+    // Arriving under your own steam clears the badge - it is a way back, not
+    // a receipt, so it should not need dismissing once you are there.
+    if (bottomNow) setPending(0);
+  }, []);
+
+  const jumpToBottom = () => {
+    bottom.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    setPending(0);
+  };
+
+  const seen = useRef(count);
   useEffect(() => {
     if (count === 0) return;
-    bottom.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [count]);
+    const added = count - seen.current;
+    seen.current = count;
+    if (atBottom) {
+      bottom.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    } else if (added > 0) {
+      setPending((n) => n + added);
+    }
+  }, [count, atBottom]);
 
   // Enter and space are what a button answers to, and this row is not one any
   // more. Keeping them is not politeness: selecting a message is how a reply
@@ -70,7 +111,20 @@ export function MessageList({ events, selected, onSelect, onCite, me }: Props) {
   };
 
   return (
-    <div className="flex flex-1 flex-col gap-2 overflow-y-auto p-4">
+    <div
+      ref={scroller}
+      onScroll={onScroll}
+      className="relative flex flex-1 flex-col gap-2 overflow-y-auto p-4"
+    >
+      {pending > 0 ? (
+        <button
+          type="button"
+          onClick={jumpToBottom}
+          className="sticky bottom-2 z-10 mx-auto rounded-full border border-border bg-card px-3 py-1 text-xs shadow-sm hover:border-primary/50"
+        >
+          {pending} new message{pending === 1 ? "" : "s"} - jump to latest
+        </button>
+      ) : null}
       <AnimatePresence initial={false}>
         {events.map((event) => {
           const agent = isAgent(event);
