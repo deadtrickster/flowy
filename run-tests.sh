@@ -157,6 +157,17 @@ find_pg_bin() {
 }
 
 # free_port prints the first port at or above $1 that nothing is listening on.
+#
+# Ask it for a base BELOW the kernel's ephemeral range - 32768-60999 on Linux by
+# default, `cat /proc/sys/net/ipv4/ip_local_port_range`. It cannot see a port
+# that some outbound connection is using as its source: the probe below asks
+# whether anything is LISTENING, and an established socket answers no while
+# still making bind() fail with "Address already in use". This run makes
+# thousands of outbound connections - curl, psql, playwright - so a listener
+# started late on a port inside that range is a coin toss, and phase 5's
+# postgres was exactly that. It came up on 54400 for months and then failed to
+# bind it twice in three runs, taking 40 federation checks down with it and
+# reading, from the failure text, like a leftover cluster from the last run.
 free_port() {
 	local port
 	for ((port = $1; port < $1 + 300; port++)); do
@@ -5760,7 +5771,7 @@ if ! "$PG_BIN/initdb" -D "$PGDATA" -U "$PGUSER" -A trust -E UTF8 --locale=C --no
 	exit 1
 fi
 
-PGPORT="$(free_port 54320)"
+PGPORT="$(free_port 15432)"
 export PGPORT
 export PGHOST=127.0.0.1
 if ! "$PG_BIN/pg_ctl" -D "$PGDATA" -l "$PGLOG" -w -t 60 \
@@ -6215,7 +6226,7 @@ check "node survived the run" kill -0 "$SERVE_PID"
 # two real `flowy serve` processes, over the wire.
 
 say "federation: a second node"
-PG5A_PORT="$(free_port 54400)"
+PG5A_PORT="$(free_port 15440)"
 PG5B_PORT="$(free_port "$((PG5A_PORT + 1))")"
 DSN5A="postgres://$PGUSER@127.0.0.1:$PG5A_PORT/$DBNAME?sslmode=disable"
 DSN5B="postgres://$PGUSER@127.0.0.1:$PG5B_PORT/$DBNAME?sslmode=disable"
