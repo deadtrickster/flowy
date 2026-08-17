@@ -6,7 +6,7 @@
 # the console's build output and its dependencies. web/dist is embedded into the
 # binary, so the directory itself has to exist for go:embed to have a pattern to
 # match - .gitkeep is tracked and everything vite writes next to it is not.
-/web/node_modules/
+/web/node_modules
 /web/dist/*
 !/web/dist/.gitkeep
 
