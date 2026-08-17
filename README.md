@@ -946,7 +946,7 @@ and deletes are tombstones.
 | `POST /api/task/{id}/state` | move it: `open`\|`delegated`\|`done`. Either party may. Returns `{task, event}` |
 | `PUT /api/me/auto_delegate` | `{on: bool}` - your standing answer to inbound work |
 | `POST /api/grants` | issue a capability: `{from_project,to_project}` for a project-wide one, `{artifact,subject}` for a share |
-| `GET /api/projects` | `{"count","current","current_is_fixture","projects":[...]}` - the registry, narrowed to the projects you are in or hold a grant with. `?scope=all` is the operator's whole-node view |
+| `GET /api/projects` | `{"count","current","current_is_fixture","projects":[...],"reads":[...]}` - the registry, narrowed to the projects you are in or hold a grant with. `reads` is the narrower list: the ones whose rows you can actually reach, since a grant edge shows a name in either direction and reading travels along one. `?scope=all` is the operator's whole-node view |
 | `POST /api/projects` | declare one. Body: `id` (the name every row points at), `name?`, `origin?` (a git remote, canonicalised). `fixture?` and `pin?` are the operator's. Declaring one that is already here answers with the row as it stands |
 | `GET /api/sync/pull?since=&limit=` | the delta a peer may read: `{artifacts, events, tasks, grants, projects, hwm}`, ordered by the clock, tombstones included |
 | `POST /api/sync/push` | merge a peer's delta: upsert by id, append-only events, last-writer-wins by `hlc` and `node`. Rows the pushing principal could not have written are refused and counted |
@@ -1925,6 +1925,7 @@ can bookmark or send:
 | `/inbox` | the work assigned to this token: state, delegate and done, and the auto-delegate switch |
 | `/task/:id` | one handoff: the task, and its thread rendered as chat with its DAG |
 | `/p/:project/:type/:id` | one artifact, with the lifecycle control and its history |
+| `/todos` | the queue across every project this token can read, saying how many todos in how many projects and naming them, with the project on every row |
 | `/reports` | the published documents, searched through the node, each saying what it was true of and whether something has replaced it |
 | `/worklog` | the chronology: what the last few seats did and where they stopped, newest first, narrowable by branch and defaulting to every branch |
 | `/activity` | the timeline: every turn, run log line, message and steer this token may read, searchable, with the message box on it |
@@ -2025,7 +2026,53 @@ by exactly the principals who could read it before; `room` never appears in the
 permission filter, which is the same clause it always was. An item with no room
 is global - in no room's panel, and in every list that did not ask for a room,
 which is where the todos written before the field existed are and where they
-stay. `/todos` is that list.
+stay. `/todos` is that list, and it is the one below.
+
+**The queue across projects, and it says whose queue it is.** The fleet drains
+this list by starting a run per ready todo, and the list was per project: a todo
+is a project-scoped artifact, so "the queue" meant "the queue in whichever
+project you happen to be pointed at", while the work runs across flowy, firecode
+and pgfuse at once. `/todos` is one queue over all of them.
+
+The union is the easy half. **A GLOBAL LIST IS A VIEW AND IT DIFFERS PER
+VIEWER** - todos are permission-filtered, so "every project" means "every
+project THIS READER may read". The operator sees the fleet, an agent sees its
+own work, and both of them call it "the list". Two readers of one name looking
+at two lists do not discover it by talking; they discover it hours later by
+disagreeing about whether a piece of work exists, with one of them certain. So
+the scope is on the page above the rows, in words and with the projects named -
+"14 todos across 3 projects you can read: flowy, firecode, pgfuse" - and every
+row carries the project it is in, because two projects filing "fix the flaky
+sync test" put two identical rows side by side and a list that cannot tell them
+apart is worse than no list.
+
+The read is `GET /api/artifacts?type=memory&kind=todo` with the project
+narrowing left OFF. Same door, same permission filter, no second path: a
+cross-project read through an endpoint of its own would be a second place for
+that filter to be missing, so widening what one query returns is the change and
+a parallel query is not. The empty answer is a statement rather than a blank -
+"no todos in the 3 projects you can read" is not "no todos", and neither is "you
+are signed out" - the same three-way the worklog page draws.
+
+**What a token READS is narrower than what the registry SHOWS it, and the scope
+line has to use the narrow one.** `ProjectFilterSQL` reads a grant edge in both
+directions on purpose, because a project that opened itself to you is one you
+are working across and its name is worth showing. Reading only travels along one
+of them: a reader in `pa`, with `pb` holding a grant on `pa`, is shown `pb` and
+can read nothing in it. So `GET /api/projects` answers with `reads` beside
+`projects` - the subset whose rows this principal can actually reach, computed
+by applying the artifact filter itself to a hypothetical shared row in each
+project, so there is no second wording of the floor to drift. A scope line built
+on the enumeration would have told that reader it reads two projects while
+handing it one project's rows, which is exactly the lie the page exists not to
+tell. The gate asserts the pair in a browser: two principals with different
+reach, both lists, the project on each row, and the smaller list saying the
+smaller number.
+
+The room panel is untouched and stays room-scoped. A room's panel showing
+another project's work is the confusion this ends rather than spreads; what the
+two surfaces share is `web/src/lib/todos.ts`, so the reading order, the statuses
+and the owner line cannot drift into two ideas of what a todo is.
 
 **The reports page searches through the node, and says which reports have been
 replaced.** Both halves are about the same failure: a reader acting on a

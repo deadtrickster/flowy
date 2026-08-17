@@ -6,6 +6,7 @@ import {
   History,
   Home as HomeIcon,
   Inbox as InboxIcon,
+  ListChecks,
   ListTree,
   Lock,
 } from "lucide-react";
@@ -54,6 +55,14 @@ export function Shell({ children }: { children: ReactNode }) {
           <NavLink to="/direct" className={navClass}>
             <Lock className="h-4 w-4" />
             direct
+          </NavLink>
+          {/*
+            One row, not one per project: the page is the queue across every
+            project this token reads, and it says so on itself.
+          */}
+          <NavLink to="/todos" className={navClass}>
+            <ListChecks className="h-4 w-4" />
+            todos
           </NavLink>
           <NavLink to="/reports" className={navClass}>
             <FileText className="h-4 w-4" />

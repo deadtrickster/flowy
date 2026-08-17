@@ -11,6 +11,7 @@ import { Metrics } from "@/routes/Metrics";
 import { NotFound } from "@/routes/NotFound";
 import { Reports } from "@/routes/Reports";
 import { TaskView } from "@/routes/TaskView";
+import { Todos } from "@/routes/Todos";
 import { Traces } from "@/routes/Traces";
 import { Worklog } from "@/routes/Worklog";
 
@@ -33,6 +34,13 @@ export default function App() {
         */}
         <Route path="/direct" element={<Direct />} />
         <Route path="/inbox" element={<Inbox />} />
+        {/*
+          /todos was a per-project page and was deleted for being a second list
+          that disagreed with the room's panel. This is not that page: it is the
+          queue ACROSS projects, and it says which reader's union it is. A
+          project-scoped list here would be the old mistake with a new route.
+        */}
+        <Route path="/todos" element={<Todos />} />
         <Route path="/reports" element={<Reports />} />
         <Route path="/worklog" element={<Worklog />} />
         <Route path="/task/:id" element={<TaskView />} />

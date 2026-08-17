@@ -526,6 +526,59 @@ func (d *DB) ListProjects(ctx context.Context, p *Principal, scopeAll bool) ([]*
 	return out, nil
 }
 
+// ReadableProjects is the other question about the registry, and ListProjects
+// does not answer it: which of the projects a principal is SHOWN can they read
+// anything IN.
+//
+// The two differ, and not in a corner. ProjectFilterSQL reads a grant edge in
+// both directions on purpose - a project that opened itself to you is one you
+// are working across, and its name is worth showing. Reading is one-directional:
+// artifactReachSQL leaves the principal's own project along `from_project =
+// mine` and never comes back the other way. So a reader in pa, with pb holding a
+// grant on pa, is shown pb and can read nothing in it.
+//
+// A list that spans projects has to say whose union it is, and a scope line
+// built on the enumeration would tell that reader they read two projects while
+// handing them one project's rows - which is the failure the cross-project list
+// exists to prevent rather than one to ship. So this asks the READ rule, and it
+// asks the one copy of it: ArtifactFilterSQL, over a hypothetical artifact in
+// each project. There is no second wording of the floor here to drift from the
+// first.
+//
+// The probe is a shared artifact because that is the widest visibility: the
+// question is whether ANY row in that project could be reachable, and a narrower
+// probe would answer about what the project happens to hold instead. The empty
+// id is deliberate in the same way - an artifact-level grant reaches one row and
+// does not make its project readable, so it must not show up here.
+func (d *DB) ReadableProjects(ctx context.Context, p *Principal, scopeAll bool) ([]string, error) {
+	a := &args{}
+	where := ArtifactFilterSQL(p, "ar", a, scopeAll)
+	rows, err := d.sql.QueryContext(ctx,
+		`SELECT ar.project
+		   FROM (SELECT p.id AS project, '`+VisibilityShared+`'::text AS visibility,
+		                ''::text AS owner_user, ''::text AS id
+		           FROM projects p) ar
+		  WHERE `+where+`
+		  ORDER BY ar.project`, a.vals...)
+	if err != nil {
+		return nil, fmt.Errorf("store: readable projects: %w", err)
+	}
+	defer rows.Close()
+
+	out := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("store: readable projects: %w", err)
+		}
+		out = append(out, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: readable projects: %w", err)
+	}
+	return out, nil
+}
+
 // requireProject refuses a local write into a project that was never declared.
 //
 // It is asked of every local write that carries a project - an artifact, an
