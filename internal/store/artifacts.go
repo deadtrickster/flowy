@@ -515,6 +515,18 @@ func artifactField(a *Artifact, key string) any {
 // they are looking at a report and want to know whether it still stands. No
 // column on the old row answers that, and nothing writes one, so it is derived
 // on the way out - see replacedBy.
+//
+// The value is a bare id, and under the (project, type, id) ruling
+// (01M08FK999F2JWY9RQV5VC821N) it stays one HERE: this key rides inside
+// fields on a signed, replicated artifact row, and every node and every row
+// already written agrees on that shape - widening it breaks federation.
+// What must NOT stay a bare id is what NEW code does with the answer once
+// replacedBy has resolved it: replacedBy already has the replacement row in
+// hand, permission-checked, and a caller assuming the replacement shares the
+// original's project and type - rather than reading them off that row with
+// RefOf - is exactly the guess this ruling exists to rule out. (A supersedes
+// chain is not guaranteed to stay inside one project or one artifact type;
+// nothing here enforces either.)
 const SupersedesField = "supersedes"
 
 // MessageField is the chat message an artifact was raised out of, kept beside

@@ -77,6 +77,16 @@ const (
 // copied in here from the blocker's row is a leak across the boundary this
 // surface exists to hold. The id is not: telling a reader "something you cannot
 // see is in the way" is the point, and it is what makes the node hold.
+//
+// This is the one field the (project, type, id) ruling (01M08FK999F2JWY9RQV5VC821N)
+// does NOT apply to, and on purpose: a Ref's whole point is carrying the
+// project alongside the id, and the project is exactly what this key must
+// never carry. Widening it to a Ref - here, in the meta, in the replicated
+// event - would be the leak this comment already describes, just spelled a
+// different way. It stays a bare id. A caller that already has permission to
+// read the blocker (readWorkItem's return, for instance) can build a Ref from
+// it with RefOf for its own use; that Ref must never be written back into this
+// field or handed to a reader who has not independently earned the read.
 const BlockerField = "blocker"
 
 // DepRoom is where an edge's entry lands when the todo it is about names no room

@@ -72,6 +72,20 @@ const maxCiteQuote = 4096
 // Offsets are BYTES into the body, which is what the body is - the node slices
 // it and the signature is over those bytes. A console counting UTF-16 units has
 // to convert, and gets told at the door when it does not.
+//
+// Message is a bare id, stored in a signed event's meta and replicated with
+// the row - see CiteMetaKey - so under the (project, type, id) ruling
+// (01M08FK999F2JWY9RQV5VC821N) it stays one: widening the stored shape here
+// would need every peer and every row already written to agree on a new
+// format, for a resolution step that was never a guess to begin with. The
+// (*DB).Citations method resolves Message through EventFilterSQL, the same
+// permission-filtered query every other read of the log uses, and that query
+// already reads the source event's own project off its row - see
+// Event.Project - so nothing has to be carried alongside the id to find it.
+// A caller that wants an addressable triple for a RESOLVED citation has the
+// source event's project and type in hand at that point and can build one
+// the way RefOf builds one from an artifact; it does not belong on the
+// stored ref, which names an id in another node's log and nothing else.
 type CiteRef struct {
 	Message string
 	Start   int

@@ -334,6 +334,14 @@ type Artifact struct {
 	// and it does not replicate - the read paths that carry the permission
 	// filter fill it, and every other way of getting an Artifact leaves it
 	// empty, because the answer depends on who is asking.
+	//
+	// Unlike SupersedesField, THIS value is not stored or replicated, so
+	// nothing federation-shaped forces it to stay a bare id - it is only a
+	// bare id today for wire compatibility with clients already reading it as
+	// one. New Go code holding an *Artifact whose ReplacedBy is set should not
+	// assume the replacement shares this row's project or type: read the
+	// replacement row (replacedBy already has it, permission-checked, before
+	// it narrows to just the id) and get its address with RefOf.
 	ReplacedBy string `json:"replaced_by,omitempty"`
 	// ReplacedByRef is WHERE that replacement lives: project/type/id, the same
 	// three segments in the same order as the console's route, filled beside
