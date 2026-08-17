@@ -29,8 +29,41 @@ if (!base || !token) {
   process.exit(2);
 }
 
+// The app calls a reader "at the bottom" when they are within 24px of it, and
+// auto-scrolls those readers on purpose - following the room is right when you
+// are already at the end. So this check is only meaningful with enough history
+// to put the reader UNAMBIGUOUSLY above that line. It used to just ask for
+// 1500px of scrollback and take whatever it got: in a freshly seeded room that
+// was ~252px, `scrollTop` clamped to 0, and the reader sat a couple of hundred
+// pixels from the bottom - close enough that the outcome depended on the height
+// of the arriving row. The check then failed a correct implementation and
+// passed it on the next run, which is worse than not having it: one flaky check
+// in a 543-check gate makes every red ambiguous.
+const NEED_SCROLLBACK = 900;
+
+/** seedHistory posts until the transcript is tall enough to read back into. */
+async function seedHistory(base, poster, howMany) {
+  for (let i = 0; i < howMany; i++) {
+    const r = await fetch(`${base}/api/chat/general/say`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${poster}` },
+      body: JSON.stringify({
+        body: `scroll-check history ${i} - padding so a reader has somewhere to scroll back to`,
+      }),
+    }).catch((err) => ({ ok: false, status: 0, text: async () => String(err) }));
+    // Checked, not fired and forgotten: a refused post that looks like a
+    // successful one is how this file's other bug spent twenty seconds blaming
+    // the view for a message the node never took.
+    if (!r.ok) {
+      console.error(`could not seed history: POST say -> ${r.status} ${await r.text()}`);
+      process.exit(1);
+    }
+  }
+}
+
 const browser = await chromium.launch();
 try {
+  await seedHistory(base, postToken || token, 25);
   const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
   await page.addInitScript((t) => localStorage.setItem("flowy.token", t), token);
   await page.goto(`${base}/chat/general`, { timeout: 20_000 }).catch(() => {});
@@ -56,6 +89,22 @@ try {
   });
   await page.waitForTimeout(300);
   const before = await scroller.evaluate((el) => el.scrollTop);
+
+  // The reader must be FAR ENOUGH from the bottom that following-the-room and
+  // holding-position are distinguishable outcomes. Below this the app is
+  // entitled to scroll and a "jump" proves nothing, so say the check could not
+  // run rather than reporting a failure it cannot support.
+  const fromBottom = await scroller.evaluate(
+    (el) => el.scrollHeight - el.scrollTop - el.clientHeight,
+  );
+  if (fromBottom < NEED_SCROLLBACK) {
+    console.error(
+      `not enough history to test: the reader is only ${Math.round(fromBottom)}px from the bottom, and the app treats anything under 24px as "at the end".
+  A reader this close cannot tell "held position" apart from "followed the room", so a jump here would not be evidence of the bug.
+  Seed more messages into #general before this check.`,
+    );
+    process.exit(1);
+  }
 
   // Something arrives, from somebody else.
   const rows = () => page.locator("main div.whitespace-pre-wrap").count();
