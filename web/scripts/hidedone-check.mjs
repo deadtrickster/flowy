@@ -31,11 +31,16 @@
 
 import { chromium } from "playwright";
 
+import { refuseRemote } from "./localonly.mjs";
+
 const [base, token, room, doneTitle, openTitle] = process.argv.slice(2);
 if (!base || !token || !room || !doneTitle || !openTitle) {
   console.error("usage: node scripts/hidedone-check.mjs BASE_URL TOKEN ROOM DONE_TITLE OPEN_TITLE");
   process.exit(2);
 }
+
+// This check seeds fixtures, so it must not be aimed at a live node by accident.
+refuseRemote(base, "hidedone-check");
 
 const bearer = { Authorization: `Bearer ${token}` };
 

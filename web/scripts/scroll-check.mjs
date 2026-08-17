@@ -23,11 +23,16 @@
 
 import { chromium } from "playwright";
 
+import { refuseRemote } from "./localonly.mjs";
+
 const [base, token, postToken, roomArg] = process.argv.slice(2);
 if (!base || !token) {
   console.error("usage: node scripts/scroll-check.mjs BASE_URL TOKEN [POST_TOKEN] [ROOM]");
   process.exit(2);
 }
+
+// This check seeds fixtures, so it must not be aimed at a live node by accident.
+refuseRemote(base, "scroll-check");
 
 // ITS OWN ROOM BY DEFAULT, because this check WRITES - it seeds padding to have
 // something to scroll back through. Against the gate's throwaway node that is

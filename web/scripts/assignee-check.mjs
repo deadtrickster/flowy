@@ -30,6 +30,8 @@
 
 import { chromium } from "playwright";
 
+import { refuseRemote } from "./localonly.mjs";
+
 const [base, token, room, unowned, owned, stale, first, second] = process.argv.slice(2);
 if (!base || !token || !room || !unowned || !owned || !stale || !first || !second) {
   console.error(
@@ -37,6 +39,9 @@ if (!base || !token || !room || !unowned || !owned || !stale || !first || !secon
   );
   process.exit(2);
 }
+
+// This check seeds fixtures, so it must not be aimed at a live node by accident.
+refuseRemote(base, "assignee-check");
 
 const bearer = { Authorization: `Bearer ${token}` };
 

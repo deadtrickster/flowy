@@ -26,11 +26,16 @@
 
 import { chromium } from "playwright";
 
+import { refuseRemote } from "./localonly.mjs";
+
 const [base, token, otherToken] = process.argv.slice(2);
 if (!base || !token || !otherToken) {
   console.error("usage: node scripts/unread-check.mjs BASE_URL READER_TOKEN OTHER_TOKEN");
   process.exit(2);
 }
+
+// This check seeds fixtures, so it must not be aimed at a live node by accident.
+refuseRemote(base, "unread-check");
 
 const ROOM = "general";
 const READER = `console:${ROOM}`;
