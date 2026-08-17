@@ -1148,6 +1148,20 @@ export const api = {
       body: JSON.stringify({ as, event, delivered: true }),
     }),
 
+  /**
+   * Drop this token's own reader row. A console reader is a bookmark a tab
+   * keeps, not a place in the log a process holds, and a tab that closed used
+   * to leave its rows behind forever - polling never, kind unknown, the ghost
+   * half of a roster that only ever grew. keepalive is for the one call that
+   * matters on pagehide: the tab is going away as it is made, and the request
+   * has to outlive it by a moment.
+   */
+  deleteInboxReader: (as: string, keepalive = false) =>
+    request<{ deleted: string }>(`/api/inbox/reader/${encodeURIComponent(as)}`, {
+      method: "DELETE",
+      keepalive,
+    }),
+
   reports: () => request<{ artifacts: Artifact[] }>("/api/artifacts?type=report"),
   attachment: (id: string) =>
     request<{ item: Artifact; content: string | null; bytes?: string }>(

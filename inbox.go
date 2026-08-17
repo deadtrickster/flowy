@@ -497,6 +497,10 @@ usage:
                 It is a budget, not a health check: a node that stops answering
                 is caught within one poll window whatever this is set to
   --new         declare NAME, starting at the head of the log, and wait
+  --drop-reader a probe's flag: delete this reader's row when this run ends,
+                on a delivery or a quiet deadline alike, and fork no successor.
+                A probe tests the inbox; it does not hold a place in the log,
+                and a row it leaves behind polls never again
   --to-me       wake only for messages addressed to this principal
   --room R      wake only for messages in one room, default every room
   --url URL     node to ask (default $FLOWY_ADDR, then http://127.0.0.1:8787)
@@ -568,6 +572,8 @@ func inboxCmd(args []string) error {
 	as := fs.String("as", "", "the waiter's name, which is what holds its place in the log")
 	deadline := fs.Int("deadline", defaultInboxDeadline, "seconds to wait before giving up")
 	fresh := fs.Bool("new", false, "declare --as at the head of the log before waiting")
+	drop := fs.Bool("drop-reader", false,
+		"delete this reader's row on exit: a probe's label is not a place in the log")
 	toMe := fs.Bool("to-me", false, "wake only for messages addressed to this principal")
 	room := fs.String("room", "", "wake only for messages in this room")
 	urlFlag := fs.String("url", "", "node to talk to (default $FLOWY_ADDR or "+defaultTUIAddr+")")
@@ -636,6 +642,38 @@ func inboxCmd(args []string) error {
 	}
 
 	err = waitOnInbox(ctx, client, base, bearer, *as, *room, *toMe, *deadline)
+
+	// A PROBE LEAVES NOTHING BEHIND, however it ends.
+	//
+	// DeleteInboxReader sat on the node with no caller, so every probe armed
+	// against the inbox left a reader row that polls never again - a roster of
+	// five live agents had sixteen rows, the extras all ghosts. --drop-reader
+	// is the probe's half of that contract: the row this run declared goes when
+	// the run does, on delivery and on a quiet deadline alike, because an exit
+	// either way is the probe being finished with the log.
+	//
+	// A FRESH CONTEXT, not the one above: it dies with the deadline, and a
+	// probe that ran out of clock must still take its row with it.
+	//
+	// AND NO SUCCESSOR. The handover below exists so the room stays heard
+	// while an agent reads; a probe is nobody's task, it wakes nobody on
+	// exiting, and a forked waiter under a dropped name would re-create the
+	// row this just deleted - which is the ghost, manufactured by the fix.
+	if *drop {
+		dctx, dcancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer dcancel()
+		var gone struct {
+			Deleted string `json:"deleted"`
+		}
+		if derr := peerRequest(dctx, client, http.MethodDelete,
+			base+"/api/inbox/reader/"+url.PathEscape(*as), bearer, nil, &gone); derr != nil {
+			// Stderr and not the exit code: the delivery or the quiet already
+			// happened, and a row that outlived its probe is the status quo
+			// this flag narrows, not a new failure to signal.
+			fmt.Fprintf(os.Stderr, "could not drop reader %s: %v\n", *as, derr)
+		}
+		return err
+	}
 
 	// HAND OVER ON A DELIVERY, and only on a delivery.
 	//

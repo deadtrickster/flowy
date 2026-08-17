@@ -144,9 +144,33 @@ export function UnreadProvider({ children }: { children: ReactNode }) {
     const tick = () => void load().catch(() => {});
     tick();
     const every = setInterval(tick, REFRESH_MS);
+
+    // A CLOSED TAB TAKES ITS BOOKMARKS WITH IT.
+    //
+    // The console readers never poll - they hold a mark and ack what the room
+    // shows - so a roster reads them as ghosts the moment their tab is gone,
+    // and before this they stayed forever: nothing but a person could delete
+    // them. pagehide with persisted false is the tab actually finishing, as
+    // against being stashed for a return (a back-forward restore, an app
+    // switch on a phone), and only that half deletes: a stashed tab that comes
+    // back would find its rows gone and re-declare them at the head, and
+    // everything said while it was away would arrive as read.
+    //
+    // TWO TABS still race, and deliberately: the closing one takes rows the
+    // open one keeps using, whose next refresh re-declares them at the head.
+    // The cost is one room's badge resetting in the seconds a second tab
+    // closed in, against rows that never die otherwise.
+    const bye = (leaving: PageTransitionEvent) => {
+      if (leaving.persisted) return;
+      for (const room of ROOMS) {
+        void api.deleteInboxReader(consoleReader(room), true).catch(() => {});
+      }
+    };
+    addEventListener("pagehide", bye);
     return () => {
       stopped = true;
       clearInterval(every);
+      removeEventListener("pagehide", bye);
     };
   }, [token]);
 

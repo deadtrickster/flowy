@@ -37,7 +37,7 @@ commands:
   mcp      MCP server for agents: stdio by default, --http :PORT for a remote
            client (env: DATABASE_URL, FLOWY_TOKEN, FLOWY_NODE)
   inbox    block until somebody says something to you, then print it and exit
-           (flowy inbox --as NAME [--deadline S] [--new] [--to-me];
+           (flowy inbox --as NAME [--deadline S] [--new] [--to-me] [--drop-reader];
            exit 0 something was said, 1 the deadline passed quietly, 2 broken)
   say      put one message in a room, the other half of inbox
            (flowy say [--room R] [--to NAME] [--thread ID] "text", or stdin;
