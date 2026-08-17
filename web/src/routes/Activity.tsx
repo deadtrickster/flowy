@@ -24,6 +24,15 @@ import { clock, shortId } from "@/lib/utils";
  *
  * Where the message goes is what the box asks: a room, or the thread of the
  * item you picked - which is a run, or a subagent's branch of one.
+ *
+ * IT IS THE LATEST PAGE OF THE LOG, READ IN LOG ORDER. There is one read and no
+ * cursor, so which END of the log the node's limit cuts at decides what this page
+ * is: asking in log order got the OLDEST 200 events the token can read and
+ * nothing else, ever, so a node past its two hundredth event showed a timeline
+ * frozen on its first day and a tab called "activity" was the last place to find
+ * out what just happened. order=recent cuts at the other end - the same read,
+ * the same permission filter, see handleActivity - and the page is reversed back
+ * into log order so it still reads top to bottom the way a log does.
  */
 export function Activity() {
   const { token } = useSession();
@@ -40,8 +49,9 @@ export function Activity() {
   const load = useCallback(async () => {
     if (!token) return;
     try {
-      const page = await api.activity({ q, kind, thread });
-      setItems(page.items);
+      const page = await api.activity({ q, kind, thread, order: "recent" });
+      // The node hands recent back newest first; the page reads oldest first.
+      setItems([...page.items].reverse());
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));

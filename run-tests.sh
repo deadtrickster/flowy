@@ -8175,6 +8175,27 @@ check "the assignee is not a permission axis, in the store" \
 	go test -count=1 -run TestAnAssigneeHandsTheNamedPartyNothing ./internal/store
 check "mem_write carries the assignee, and an empty one means nobody" \
 	mem_write_takes_an_assignee
+
+# A todo belongs to the queue and not to whoever typed it. The checks above are
+# the AUTHOR's own surface; these are the ones that were missing, and each drives
+# a principal who did NOT write the item - which is the case a live node could
+# not do at all, and the case a refusal that reports success made invisible.
+say "a todo changes hands"
+check "somebody who did not write a todo can assign it, at both doors" \
+	a_todo_is_assigned_by_somebody_who_did_not_write_it
+check "a todo you cannot read is a todo you cannot assign" \
+	assigning_a_todo_you_cannot_read_is_refused
+check "an assignment says who made it and when, and an override appends" \
+	an_assignment_records_who_made_it
+check "mem_write on an item that is not yours is an error, not an empty success" \
+	mem_write_refuses_an_update_it_will_not_make
+check "read permission is the whole bar for assigning, in the store" \
+	go test -count=1 \
+	-run 'TestAnybodyWhoCanReadATodoCanAssignIt|TestAPrincipalWhoCannotReadATodoCannotAssignIt' \
+	./internal/store
+check "the latest claim wins and the log keeps the ones before it, in the store" \
+	go test -count=1 -run TestTheLatestClaimWinsAndTheLogKeepsTheRest ./internal/store
+
 check "the console paints the room's todos on the room page" \
 	console_renders_the_rooms_todos
 check "the room's todo panel is on the screen in a browser, as an element" \
@@ -13164,36 +13185,6 @@ check "and a browser shows it newest first, narrowable by branch" \
 	browser_renders_the_worklog
 check "an entry written about another seat's work is drawn as vouched, and an authored one is not" \
 	browser_draws_a_vouched_entry_as_vouched
-
-# A todo belongs to the queue and not to whoever typed it. The per-room checks
-# back in Phase 3 are the AUTHOR's own surface; these are the ones that were
-# missing, and each drives a principal who did NOT write the item - which is the
-# case a live node could not do at all, and the case a refusal that reports
-# success made invisible.
-#
-# They run here rather than beside the per-room ones, which is where they read as
-# belonging, because they write into the log and the timeline check just above
-# renders the OLDEST 200 events this token can see: on a run already at that
-# ceiling, eight more events earlier in the run push the message that check looks
-# for off the end of the page, and an unrelated check fails for having been
-# crowded out. Anything added to this file that writes events belongs after that
-# render for the same reason. Nothing here depends on running in Phase 3 - the
-# todo is raised in a room of its own and handed round inside this section.
-say "a todo changes hands"
-check "somebody who did not write a todo can assign it, at both doors" \
-	a_todo_is_assigned_by_somebody_who_did_not_write_it
-check "a todo you cannot read is a todo you cannot assign" \
-	assigning_a_todo_you_cannot_read_is_refused
-check "an assignment says who made it and when, and an override appends" \
-	an_assignment_records_who_made_it
-check "mem_write on an item that is not yours is an error, not an empty success" \
-	mem_write_refuses_an_update_it_will_not_make
-check "read permission is the whole bar for assigning, in the store" \
-	go test -count=1 \
-	-run 'TestAnybodyWhoCanReadATodoCanAssignIt|TestAPrincipalWhoCannotReadATodoCannotAssignIt' \
-	./internal/store
-check "the latest claim wins and the log keeps the ones before it, in the store" \
-	go test -count=1 -run TestTheLatestClaimWinsAndTheLogKeepsTheRest ./internal/store
 
 # ---------------------------------------------------------------- phase 9
 #
