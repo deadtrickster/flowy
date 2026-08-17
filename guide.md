@@ -115,8 +115,8 @@ lifecycle:
 
 - `report_write {title, body, scope?, tags?, as_of?, supersedes?, status?, id?}` -
   write to the project (that is the default scope, unlike a memory item's personal),
-  or update one by `id`. Body is markdown, up to 100KB; larger documents are a
-  summary in the body plus a reference to the full thing. Say `as_of` - the commit,
+  or update one by `id`. Body is markdown, up to 100KB; a larger document is a
+  summary in the body plus the id of an attachment. Say `as_of` - the commit,
   version or run the report is true of - and `supersedes` when it replaces an
   earlier report. Genre (research, design, review) rides `tags`.
 - `report_read {id}`, `report_search {q, scope?, limit?}`,
@@ -126,6 +126,70 @@ lifecycle:
 A report and a memory item are different things: a memory item is a fact somebody
 will need later, a report is a document somebody will read on purpose, true of a
 stated point in time. Publish the findings, remember the decision.
+
+## Proposals, and voting on them
+
+A proposal is a decision waiting to be made, filed in the room where it is being
+made. It exists because agreement was being reconstructed by reading the room
+back: somebody proposes, others reply, and whether a thing was settled is
+inferred from prose hours later.
+
+- `proposal_write {title, body, room?, scope?, tags?, outcome?, id?}` - propose
+  something, or update one by `id`. Born open and at `scope: "project"`, like a
+  report. Naming an `outcome` closes it, and only the owner can.
+- `vote {proposal, choice, reason?}` - `choice` is `for`, `against` or
+  `abstain`. `abstain` is an answer: it says you have read this and are not
+  standing in the way, which silence does not.
+- `proposal_read {id}` - the proposal, every vote in the order it was cast, and
+  the tally.
+- `proposal_list {room?, status?, scope?, limit?}` - newest first;
+  `status: "open"` is what is still waiting on somebody.
+
+Three things to know before you vote:
+
+- **Changing your mind appends.** Vote again and the new vote counts and the old
+  one stays in the log, with the reason you gave for it. `tally.voters` is how
+  many principals answered and `tally.votes` is how many entries are behind
+  that, so the two disagreeing is a decision somebody reconsidered rather than a
+  bug. This is the whole point: "who agreed to this, and when" is a question
+  about the votes that are no longer current.
+- **Nothing closes a proposal for you.** There is no quorum rule and no timer -
+  either would be a governance system nobody agreed to. Somebody reads the
+  tally and records what it meant.
+- **A closed proposal takes no more votes**, and the refusal says when it closed
+  and what was decided.
+
+A proposal you may not read is reported exactly as one that does not exist, and
+voting is not a way round that: a vote from somebody who cannot read what they
+are voting on is refused the same way. A room is a filter here too - it puts the
+proposal in that room and changes nothing about who may see it.
+## Attaching bytes
+
+An attachment is an artifact with bytes: a log, a diff, a capture, a screenshot -
+anything that does not belong in a message body or a report body. Same scopes,
+same permission filter, same project.
+
+- `attachment_write {content_base64, title?, content_type?, filename?, body?, scope?, tags?, room?, message?}` -
+  the bytes go in base64, which is what makes a binary come back out identical.
+  Up to 4194304 bytes; over that is refused with the number and nothing is stored -
+  attach the part that matters or split it, but do not expect a truncated one.
+  Empty is refused too. Scope defaults to `project`. It hands back the id, the
+  size and the sha256.
+- `attachment_read {id}` - the bytes, base64, exactly as they went in, with the
+  size and the digest. One you may not read is reported as one that does not exist.
+- `attachment_list {scope?, kind?, limit?}` - newest first, without the bytes.
+
+There is no update: an attachment is written once, so an id and a digest somebody
+was handed still mean the same bytes tomorrow. Write another one and say which it
+replaces.
+
+`content_type` is what you claim the bytes are and is recorded as your claim; what
+the bytes actually are is decided here, from the bytes, and that is what a reader
+renders from. `kind` follows the same decision - `text` or `binary`. `filename` is
+a name for a person to read, not a path.
+
+Reference an attachment by its id from the report, the memory item or the message
+it belongs to - `message` puts it beside the conversation it came out of.
 
 ## The worklog
 
@@ -137,11 +201,14 @@ else's session transcript.
 - `worklog_read {limit?}` - the most recent entries, newest first, default 20.
   **Read this when you start.** It tells you what the last few sessions did,
   where they stopped, and the ids of the work they were about.
-- `worklog_append {what, next?, as_of?, refs?}` - **append before you stop**, and
-  after anything a later seat would need to know. `what` is what changed, in the
-  past tense. `next` is what to pick up and what is in the way of it. `as_of` is
-  the commit, version or run id the entry is true of. `refs` is a list of
-  artifact ids - the bug, the report, the memory item this shift was about.
+- `worklog_append {what, next?, as_of?, branch?, refs?}` - **append before you
+  stop**, and after anything a later seat would need to know. `what` is what
+  changed, in the past tense. `next` is what to pick up and what is in the way of
+  it. `as_of` is the commit, version or run id the entry is true of. `branch` is
+  the branch or worktree you worked in, when you worked in one - several seats
+  run at once, and it is what lets a reader narrow to one of them. `refs` is a
+  list of artifact ids - the bug, the report, the memory item this shift was
+  about.
 
 Two rules the surface enforces rather than suggests. Every entry carries its
 actor, taken from your token, so an entry cannot be put in another seat's mouth.
@@ -161,7 +228,9 @@ against "what happened lately".
 
 Entries also show up on the timeline (`activity {kind: "worklog"}`), in the
 console and in the terminal client, because an entry is an event like everything
-else here.
+else here. The console has a page of its own for them at `/worklog` - newest
+first, narrowable by branch, defaulting to every branch - so a person can read
+the chronology without asking an agent to read it out.
 
 Everything is permission-filtered on the way out of the database. A result you
 did not get is a result you may not see, and nothing tells you it was there.

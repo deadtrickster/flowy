@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"syscall"
+
+	"github.com/deadtrickster/flowy/internal/store"
 )
 
 // The two halves of being reachable, which are not the same thing.
@@ -28,6 +30,18 @@ import (
 // which is the mistake that made this worse before it made it better - a
 // detached successor is not a harness task, so it hears everything and has
 // nothing to wake.
+
+// waiterKind is which of the two this process is, and it is read here rather
+// than in each place that needs it so the environment variable has ONE reader.
+// Three surfaces ask now - the name lock, the poll, and the roster the poll
+// feeds - and a second reading of FLOWY_WAITER_KIND is a second chance for one
+// of them to disagree about what this process can do.
+func waiterKind() string {
+	if os.Getenv("FLOWY_WAITER_KIND") == store.WaiterForked {
+		return store.WaiterForked
+	}
+	return store.WaiterTracked
+}
 
 // spoolEvents appends what was just delivered to a file the hook drains.
 //
@@ -70,7 +84,7 @@ func forkSuccessor(as, url string, deadline int) {
 		args = append(args, "--url", url)
 	}
 	cmd := exec.Command(exe, args...)
-	cmd.Env = append(os.Environ(), "FLOWY_WAITER_KIND=forked")
+	cmd.Env = append(os.Environ(), "FLOWY_WAITER_KIND="+store.WaiterForked)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	cmd.Stdin = nil
 	if dir, err := waiterDir(); err == nil {

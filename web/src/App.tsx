@@ -11,6 +11,7 @@ import { NotFound } from "@/routes/NotFound";
 import { Reports } from "@/routes/Reports";
 import { TaskView } from "@/routes/TaskView";
 import { Traces } from "@/routes/Traces";
+import { Worklog } from "@/routes/Worklog";
 
 /**
  * Every view is a path, and every path is a bookmark. The node serves
@@ -26,6 +27,7 @@ export default function App() {
         <Route path="/chat/:room" element={<ChatRoom />} />
         <Route path="/inbox" element={<Inbox />} />
         <Route path="/reports" element={<Reports />} />
+        <Route path="/worklog" element={<Worklog />} />
         <Route path="/task/:id" element={<TaskView />} />
         <Route path="/p/:project/:type/:id" element={<ArtifactView />} />
         <Route path="/metrics" element={<Metrics />} />

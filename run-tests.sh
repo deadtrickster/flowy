@@ -969,10 +969,12 @@ todos_open_and_done() {
 # wl_args - the arguments of one entry, built with jq so ids interpolate
 # without hand-quoting JSON inside a shell string.
 wl_args() {
-	local what=$1 next=${2-} as_of=${3-} ref=${4-}
+	local what=$1 next=${2-} as_of=${3-} ref=${4-} branch=${5-}
 	jq -nc --arg w "$what" --arg n "$next" --arg a "$as_of" --arg r "$ref" \
+		--arg b "$branch" \
 		'{what: $w} + (if $n == "" then {} else {next: $n} end)
 		           + (if $a == "" then {} else {as_of: $a} end)
+		           + (if $b == "" then {} else {branch: $b} end)
 		           + (if $r == "" then {} else {refs: [$r]} end)'
 }
 
@@ -1080,6 +1082,463 @@ entries_are_on_the_timeline_and_not_postable_onto_it() {
 		'{"kind": "worklog", "room": "general", "body": "an entry by the back door"}' || return 1
 	printf 'the entry is on the timeline, and /api/activity will not post one: %s\n' \
 		"$(jqv .error)"
+}
+
+# ------------------------------------------------------------- proposals
+#
+# A proposal is an artifact and a vote is an event, so what these checks assert
+# is not storage. It is the four claims the surface exists to make, over the
+# wire, with two principals:
+#
+#   - a vote from somebody who cannot read the proposal is refused, in the same
+#     words a read of it would be. Voting is not a way to find out that
+#     something exists, and consent from somebody who cannot see what they are
+#     agreeing to is not consent.
+#   - changing your mind APPENDS. The old vote is still in the log afterwards
+#     with the reason it was cast for, which is the whole point: an
+#     implementation that overwrote would pass every tally check ever written
+#     and destroy the record.
+#   - the tally is one vote per principal, not one per event, and it says how
+#     many entries are behind it so the two can be seen to be different numbers.
+#   - a closed proposal takes no more votes, and the refusal says when.
+
+# A proposal is raised in a room, and the room is a filter on it exactly as it
+# is on a todo: it narrows the panel and nothing else.
+a_proposal_is_raised_in_a_room() {
+	recall
+	want_tool proposal_write "$TOKEN_A" \
+		'{"title": "move the gate to the wired interface",
+		  "body": "loopback 8787 is no longer served",
+		  "room": "general"}' || return 1
+	want_eq "it is a proposal" "$(tv .item.type)" proposal || return 1
+	want_eq "born open" "$(tv .item.status)" open || return 1
+	want_eq "raised in general" "$(tv .item.fields.room)" general || return 1
+	want_eq "in the project" "$(tv .item.project)" pa || return 1
+
+	local raised
+	raised="$(tv .item.id)"
+	remember PROPOSAL "$raised"
+
+	want_tool proposal_list "$TOKEN_A" '{"room": "general", "status": "open"}' || return 1
+	want_eq "the room's open proposals hold it" \
+		"$(printf '%s' "$TOOL_JSON" | jq "[.items[] | select(.id == \"$raised\")] | length")" 1 || return 1
+	want_tool proposal_list "$TOKEN_A" '{"room": "build"}' || return 1
+	want_eq "another room's do not" \
+		"$(printf '%s' "$TOOL_JSON" | jq "[.items[] | select(.id == \"$raised\")] | length")" 0 || return 1
+	printf 'proposal %s, open, in general\n' "$raised"
+}
+
+# The floor. A proposal written at scope=project is the project's and nobody
+# else's - pb holds a read grant on pa and it does not reach this - so B is
+# refused, and refused as an id that is not there rather than as one they may
+# not have.
+a_vote_from_somebody_who_cannot_read_the_proposal_is_refused() {
+	recall
+	local args
+	args="$(jq -nc --arg p "$PROPOSAL" '{proposal: $p, choice: "for", reason: "sounds fine"}')" || return 1
+	want_tool_fails vote "$TOKEN_B" "$args" "no such proposal" || return 1
+	args="$(jq -nc --arg p "$PROPOSAL" '{id: $p}')" || return 1
+	want_tool_fails proposal_read "$TOKEN_B" "$args" "no such proposal" || return 1
+
+	# And nothing landed: the owner sees every vote on their own proposal, so
+	# an empty log here is the whole log.
+	args="$(jq -nc --arg p "$PROPOSAL" '{id: $p}')" || return 1
+	want_tool proposal_read "$TOKEN_A" "$args" || return 1
+	want_eq "the refused vote is not in the log" "$(tv '.votes | length')" 0 || return 1
+	want_eq "and not in the tally" "$(tv .tally.voters)" 0 || return 1
+}
+
+# The discriminating check. Two principals vote, one of them twice, and what is
+# asserted afterwards is the LOG: both of A's votes are in it, in the order they
+# were cast, with the first one's reason intact. Only then the tally.
+changing_a_vote_appends_and_the_tally_follows_the_latest() {
+	recall
+	local args
+	args="$(jq -nc --arg p "$PROPOSAL" \
+		'{proposal: $p, choice: "for", reason: "the LAN bind is the point"}')" || return 1
+	want_tool vote "$TOKEN_A" "$args" || return 1
+	want_eq "the vote is the person's" "$(tv .vote.actor)" "$USER_A" || return 1
+	local first
+	first="$(tv .vote.id)"
+
+	args="$(jq -nc --arg p "$PROPOSAL" '{proposal: $p, choice: "abstain"}')" || return 1
+	want_tool vote "$TOKEN_A_AGENT" "$args" || return 1
+	want_eq "an agent votes as itself, not as the person behind it" \
+		"$(tv .vote.actor)" "$AGENT_A" || return 1
+
+	# A changes their mind.
+	args="$(jq -nc --arg p "$PROPOSAL" \
+		'{proposal: $p, choice: "against", reason: "the unit owns the port"}')" || return 1
+	want_tool vote "$TOKEN_A" "$args" || return 1
+	local second
+	second="$(tv .vote.id)"
+	if [ "$first" = "$second" ]; then
+		printf 'the second vote reused the first row (%s), so the first is gone\n' "$first" >&2
+		return 1
+	fi
+
+	args="$(jq -nc --arg p "$PROPOSAL" '{id: $p}')" || return 1
+	want_tool proposal_read "$TOKEN_A" "$args" || return 1
+	want_eq "all three entries are in the log" "$(tv '.votes | length')" 3 || return 1
+	want_eq "the changed vote is still there, as it was cast" \
+		"$(tv '.votes[0].choice')" for || return 1
+	want_eq "with the reason it was cast for" \
+		"$(tv '.votes[0].reason')" "the LAN bind is the point" || return 1
+	want_eq "and its own id" "$(tv '.votes[0].id')" "$first" || return 1
+	want_eq "the latest is last" "$(tv '.votes[2].id')" "$second" || return 1
+
+	# The tally: one vote per principal, and the number of entries behind it.
+	want_eq "the latest vote counts" "$(tv .tally.against)" 1 || return 1
+	want_eq "and the one it replaced does not" "$(tv .tally.for)" 0 || return 1
+	want_eq "the agent's abstention" "$(tv .tally.abstain)" 1 || return 1
+	want_eq "two principals answered" "$(tv .tally.voters)" 2 || return 1
+	want_eq "behind three entries" "$(tv .tally.votes)" 3 || return 1
+	printf 'votes %s then %s by %s, and one by %s: 2 voters, 3 entries\n' \
+		"$first" "$second" "$USER_A" "$AGENT_A"
+}
+
+# Closing is manual, it records an outcome, and it is a line under the decision:
+# what comes after it is refused, and the refusal says when it closed. Nothing
+# in here counts the votes and decides - a rule that did would be a governance
+# system nobody agreed to.
+a_closed_proposal_refuses_further_votes_and_says_when() {
+	recall
+	local args
+	args="$(jq -nc --arg p "$PROPOSAL" \
+		'{id: $p, outcome: "agreed: serve takes one listen address, and it is the LAN one"}')" || return 1
+	want_tool proposal_write "$TOKEN_A" "$args" || return 1
+	want_eq "it is closed" "$(tv .item.status)" closed || return 1
+	local at
+	at="$(tv .item.fields.closed_at)"
+	if [ -z "$at" ] || [ "$at" = null ]; then
+		printf 'the closure recorded no moment, so no refusal can name one\n' >&2
+		return 1
+	fi
+	remember PROPOSAL_CLOSED_AT "$at"
+
+	args="$(jq -nc --arg p "$PROPOSAL" '{proposal: $p, choice: "against", reason: "I have thoughts"}')" || return 1
+	want_tool_fails vote "$TOKEN_A_AGENT" "$args" "$at" || return 1
+	case "$TOOL_ERR" in
+	*"serve takes one listen address"*) ;;
+	*)
+		printf 'the refusal does not say what was decided: %s\n' "$TOOL_ERR" >&2
+		return 1
+		;;
+	esac
+
+	# It closed once. A second outcome over the first would rewrite the record
+	# rather than add to it, and so would editing what people voted on.
+	args="$(jq -nc --arg p "$PROPOSAL" '{id: $p, outcome: "actually, no"}')" || return 1
+	want_tool_fails proposal_write "$TOKEN_A" "$args" "$at" || return 1
+	args="$(jq -nc --arg p "$PROPOSAL" '{id: $p, title: "something else entirely"}')" || return 1
+	want_tool_fails proposal_write "$TOKEN_A" "$args" "is a record now" || return 1
+
+	# And the votes cast before the close are untouched.
+	args="$(jq -nc --arg p "$PROPOSAL" '{id: $p}')" || return 1
+	want_tool proposal_read "$TOKEN_A" "$args" || return 1
+	want_eq "the log still holds three entries" "$(tv '.votes | length')" 3 || return 1
+	want_eq "and the tally two voters" "$(tv .tally.voters)" 2 || return 1
+}
+
+# The read path the console will use. No view is drawn in this change - the room
+# panel is somebody else's edit - so what is checked is the data: the proposal,
+# its votes and its tally over HTTP, under the same filter the tools keep.
+the_proposal_reads_back_over_http() {
+	recall
+	api GET "$TOKEN_A" "/api/proposal/$PROPOSAL" || return 1
+	want_eq "status" "$API_STATUS" 200 || return 1
+	want_eq "the proposal" "$(jqv .item.id)" "$PROPOSAL" || return 1
+	want_eq "closed" "$(jqv .closed)" true || return 1
+	want_eq "when" "$(jqv .closed_at)" "$PROPOSAL_CLOSED_AT" || return 1
+	want_eq "every vote, in order" "$(jqv '.votes | length')" 3 || return 1
+	want_eq "the first one as it was cast" "$(jqv '.votes[0].choice')" for || return 1
+	want_eq "two voters" "$(jqv .tally.voters)" 2 || return 1
+
+	api GET "$TOKEN_A" '/api/proposals?room=general&status=closed' || return 1
+	want_eq "the room's closed proposals hold it" \
+		"$(printf '%s' "$API_BODY" | jq "[.items[] | select(.id == \"$PROPOSAL\")] | length")" 1 || return 1
+
+	# The filter is the same one, so B gets the answer B gets everywhere else.
+	want_status 404 GET "$TOKEN_B" "/api/proposal/$PROPOSAL" || return 1
+	printf 'the console reads the proposal, its three votes and its tally; B gets a 404\n'
+}
+
+# A vote is minted by the verb that does it. Both refusals that make the record
+# worth reading are on that verb, so an event a client could write by hand would
+# be a vote cast an hour after the decision was recorded, counted.
+a_vote_cannot_be_written_by_hand() {
+	recall
+	want_status 403 POST "$TOKEN_A" /api/events \
+		"$(jq -nc --arg a "$PROPOSAL" \
+			'{type: "proposal.vote", artifact: $a, room: "general",
+			  body: "voted for", meta: {choice: "for"}}')" || return 1
+	want_status 403 POST "$TOKEN_A" /api/events \
+		"$(jq -nc --arg a "$PROPOSAL" '{type: "proposal.close", artifact: $a, body: "closed"}')" || return 1
+	printf 'a hand-written vote: %s\n' "$(jqv .error)"
+}
+
+# ----------------------------------------------------------------- attachments
+#
+# An attachment is an artifact with bytes, and every one of these checks is
+# about the bytes: the artifact half rides the same store, the same filter and
+# the same write as a memory item, and is already asserted above.
+#
+# They are driven over the wire like the rest of the MCP checks, and for a
+# sharper reason here than elsewhere. What is being claimed is that a payload
+# survives a JSON-RPC envelope, a base64 hop, a bytea column and the trip back -
+# so a check that called the handler in-process would be asserting the one part
+# of that path nobody doubted.
+
+# att_fixture FILE - the payload, written to a file because a bash variable
+# cannot hold it: a NUL byte terminates a C string, so a fixture typed as a
+# shell string is silently a shorter fixture. That is the same class of bug
+# these checks exist to catch, one layer down.
+#
+# A newline, a NUL, and two bytes that are not valid UTF-8. Anything ASCII would
+# round-trip through a text-only path that mangles binary.
+att_fixture() {
+	printf 'BUILD log\n\000panic: nil\n\377\376\000\r\nend' >"$1"
+}
+
+# att_args FILE TITLE [CLAIM] - the arguments of one attachment_write, built as
+# a file. The content is megabytes at its ceiling and execve caps a single
+# argument at 128 KiB, so nothing here passes a payload as an argument to
+# anything: jq reads it with --rawfile and curl posts the request from disk.
+att_args() {
+	local payload=$1 title=$2 claim=${3-} b64="$WORK/att-b64"
+	base64 -w0 "$payload" >"$b64" || return 1
+	jq -n --arg t "$title" --arg c "$claim" --rawfile b "$b64" \
+		'{title: $t, content_base64: ($b | rtrimstr("\n"))}
+		 + (if $c == "" then {} else {content_type: $c} end)' >"$WORK/att-args.json"
+}
+
+# tool_file NAME TOKEN ARGS_FILE - one tools/call whose arguments are on disk.
+# Same three outputs as `tool`, so the assertions read the same.
+tool_file() {
+	local name=$1 token=$2 file=$3
+	jq -n --arg n "$name" --slurpfile a "$file" \
+		'{jsonrpc: "2.0", id: 1, method: "tools/call",
+		  params: {name: $n, arguments: $a[0]}}' >"$WORK/att-req.json" || return 1
+	MCP_BODY="$(curl --silent --show-error -X POST -H 'Content-Type: application/json' \
+		-H "Authorization: Bearer $token" --data-binary "@$WORK/att-req.json" \
+		"http://127.0.0.1:$MCP_PORT/mcp")" || return 1
+	TOOL_ERR="$(printf '%s' "$MCP_BODY" |
+		jq -r '.error.message // (if .result.isError then .result.content[0].text else "" end)')"
+	TOOL_JSON="$(printf '%s' "$MCP_BODY" |
+		jq -r 'if .error or .result.isError then "null" else .result.content[0].text end')"
+}
+
+# The claim the surface rests on: what came out is what went in, compared byte
+# for byte with cmp rather than by eye or by length.
+an_attachment_round_trips_byte_for_byte() {
+	recall
+	local in="$WORK/att-in" out="$WORK/att-out"
+	att_fixture "$in"
+	att_args "$in" "the build log that panicked" || return 1
+
+	tool_file attachment_write "$TOKEN_A" "$WORK/att-args.json" || return 1
+	if [ -n "$TOOL_ERR" ]; then
+		printf 'attachment_write failed: %s\n' "$TOOL_ERR" >&2
+		return 1
+	fi
+	want_eq "type" "$(tv .item.type)" attachment || return 1
+	want_eq "scope defaults to project" "$(tv .item.visibility)" project-only || return 1
+	want_eq "project" "$(tv .item.project)" pa || return 1
+	want_eq "owner" "$(tv .item.owner_user)" "$USER_A" || return 1
+	want_eq "the size it recorded" "$(tv .size)" "$(wc -c <"$in")" || return 1
+	want_eq "the digest it recorded" "$(tv .sha256)" "$(sha256sum <"$in" | cut -d' ' -f1)" || return 1
+
+	local id
+	id="$(tv .item.id)"
+	remember ATTACHMENT "$id"
+
+	# The bytes are not in the artifact row: body is the prose, and a text
+	# column could not have held that NUL anyway.
+	want_eq "the row carries no payload in its body" "$(tv .item.body)" "" || return 1
+
+	want_tool attachment_read "$TOKEN_A" "{\"id\": \"$id\"}" || return 1
+	tv .content_base64 | base64 -d >"$out" || return 1
+	if ! cmp -s "$in" "$out"; then
+		printf 'the bytes did not survive the round trip:\n' >&2
+		cmp -l "$in" "$out" | head -5 >&2
+		return 1
+	fi
+	want_eq "the size it read back" "$(tv .size)" "$(wc -c <"$in")" || return 1
+	printf 'attachment %s: %s bytes back, identical (NUL and newline included)\n' \
+		"$id" "$(wc -c <"$out")"
+}
+
+# The ceiling, and the number in the refusal. Over it is refused whole: an
+# upload that came back as a shorter attachment with nothing said would be
+# somebody debugging against half a log without knowing it.
+an_attachment_over_the_ceiling_is_refused_with_the_number() {
+	recall
+	local big="$WORK/att-big"
+	head -c 4194305 /dev/urandom >"$big" || return 1
+	att_args "$big" "one byte over" || return 1
+
+	tool_file attachment_write "$TOKEN_A" "$WORK/att-args.json" || return 1
+	if [ -z "$TOOL_ERR" ]; then
+		printf 'an attachment of %s bytes was accepted\n' "$(wc -c <"$big")" >&2
+		return 1
+	fi
+	# Kept, because the list below is another call and TOOL_ERR is the last
+	# call's.
+	local refusal=$TOOL_ERR want
+	for want in 4194305 4194304 truncat; do
+		case "$refusal" in
+		*"$want"*) ;;
+		*)
+			printf 'the refusal is %q and never says %q\n' "$refusal" "$want" >&2
+			return 1
+			;;
+		esac
+	done
+
+	# And nothing landed: the refusal is not a half write with a message.
+	want_tool attachment_list "$TOKEN_A" '{"limit": 200}' || return 1
+	want_eq "nothing was stored under the refused title" \
+		"$(printf '%s' "$TOOL_JSON" | jq '[.items[] | select(.title == "one byte over")] | length')" 0 || return 1
+	printf 'over the ceiling: %s\n' "$refusal"
+}
+
+# Empty is not legal, and the refusal says which of the two things went wrong.
+an_empty_attachment_is_refused() {
+	recall
+	want_tool_fails attachment_write "$TOKEN_A" \
+		'{"title": "nothing at all", "content_base64": ""}' "no bytes" || return 1
+	want_tool_fails attachment_write "$TOKEN_A" \
+		'{"title": "not encoded", "content_base64": "panic: nil pointer !!!"}' "base64" || return 1
+}
+
+# The permission filter, on the new read path. B holds the pb -> pa grant the
+# memory checks issued and A's attachment is at scope=project, which is the
+# floor a grant does not reach - so this asserts what B GETS, by id and in the
+# list, rather than that some code called some filter.
+b_cannot_read_or_list_as_attachment() {
+	recall
+	want_tool_fails attachment_read "$TOKEN_B" "{\"id\": \"$ATTACHMENT\"}" \
+		"no such attachment" || return 1
+	want_tool_fails attachment_read "$TOKEN_B_AGENT" "{\"id\": \"$ATTACHMENT\"}" \
+		"no such attachment" || return 1
+
+	want_tool attachment_list "$TOKEN_B" '{"limit": 200}' || return 1
+	want_eq "B's list holds A's attachment" \
+		"$(printf '%s' "$TOOL_JSON" | jq "[.items[] | select(.id == \"$ATTACHMENT\")] | length")" 0 || return 1
+
+	# The positive control, so the refusal above is about the principal and not
+	# about a surface that refuses everybody: A's own agent reads the bytes.
+	want_tool attachment_read "$TOKEN_A_AGENT" "{\"id\": \"$ATTACHMENT\"}" || return 1
+	want_eq "A's agent gets the same digest" \
+		"$(tv .sha256)" "$(sha256sum <"$WORK/att-in" | cut -d' ' -f1)" || return 1
+
+	# One namespace: a memory item's id is not an attachment, and says so in
+	# the words an id that is not there gets.
+	want_tool_fails attachment_read "$TOKEN_A" "{\"id\": \"$MEM_SHARED\"}" \
+		"no such attachment" || return 1
+	printf "B is told A's attachment does not exist, and A's agent reads it\n"
+}
+
+# What a reader renders from is decided from the bytes. The claim is recorded
+# beside it, under a name that says it is a claim: a console that drew whatever
+# a client asserted would be an injection surface, and the way that happens is a
+# field called content_type holding somebody else's word for it.
+the_content_type_is_not_the_clients_to_decide() {
+	recall
+	local lie="$WORK/att-lie"
+	printf '<html><body><script>alert(1)</script></body></html>' >"$lie"
+	att_args "$lie" "a screenshot, allegedly" "image/png" || return 1
+
+	tool_file attachment_write "$TOKEN_A" "$WORK/att-args.json" || return 1
+	if [ -n "$TOOL_ERR" ]; then
+		printf 'attachment_write failed: %s\n' "$TOOL_ERR" >&2
+		return 1
+	fi
+	want_eq "the claim is recorded as a claim" \
+		"$(tv '.item.fields.claimed_type')" image/png || return 1
+	case "$(tv '.item.fields.content_type')" in
+	text/*) ;;
+	*)
+		printf 'the bytes are markup and the node calls them %q\n' \
+			"$(tv '.item.fields.content_type')" >&2
+		return 1
+		;;
+	esac
+	want_eq "the kind follows the bytes" "$(tv .item.kind)" text || return 1
+
+	local id
+	id="$(tv .item.id)"
+	want_tool attachment_read "$TOKEN_A" "{\"id\": \"$id\"}" || return 1
+	case "$(tv .content_type)" in
+	text/*) ;;
+	*)
+		printf 'the read says the payload is %q\n' "$(tv .content_type)" >&2
+		return 1
+		;;
+	esac
+	want_eq "and still reports what was claimed" \
+		"$(tv '.item.fields.claimed_type')" image/png || return 1
+	printf 'claimed %s, is %s\n' "$(tv '.item.fields.claimed_type')" "$(tv .content_type)"
+}
+
+# An entry carries the branch or worktree the shift worked in, when it worked in
+# one. Several seats run at once on separate branches here, so "which branch was
+# this" is the second thing the next seat asks after "which seat wrote it" - and
+# a reader who cannot tell two branches apart cannot narrow to either.
+#
+# It is optional and stays optional: an entry written off a branch is still an
+# entry and names none rather than a made-up default, which is what lets a
+# reader tell "nowhere in particular" from "a branch called something".
+an_entry_carries_the_branch_it_was_written_on() {
+	recall
+	local args
+	args="$(wl_args "sharpened the quillon on the escapement" "" "" "" wl/escapement)" || return 1
+	want_tool worklog_append "$TOKEN_A" "$args" || return 1
+	want_eq "the branch rode the write" "$(tv .entry.branch)" wl/escapement || return 1
+
+	args="$(wl_args "read the handoff off no branch at all")" || return 1
+	want_tool worklog_append "$TOKEN_A" "$args" || return 1
+	want_eq "an entry with no branch names none" "$(tv .entry.branch)" null || return 1
+
+	# A branch is a ref or a worktree, not a paragraph. The refusal says which,
+	# the way the ceiling on what does.
+	local long
+	long="$(printf 'b%.0s' $(seq 1 201))"
+	args="$(wl_args "worked somewhere with a very long name" "" "" "" "$long")" || return 1
+	want_tool_fails worklog_append "$TOKEN_A" "$args" "over the 200 ceiling" || return 1
+	printf 'the branch rides the entry, and an entry without one says so\n'
+}
+
+# The read a worklog view does: the newest entries, newest first, through the
+# timeline's own endpoint and therefore through the timeline's own permission
+# filter. There is deliberately no worklog endpoint beside it - a second door
+# onto the same rows is a second place for that filter to be missing - so what
+# the view asks for is an ORDER on the read it already had.
+#
+# Without it a page that says "newest first" has to take the first page of the
+# log and sort it, which on a log longer than one page hands back the OLDEST
+# entries under that heading.
+the_timeline_answers_the_worklog_newest_first() {
+	recall
+	api GET "$TOKEN_A" '/api/activity?kind=worklog&order=recent&limit=2' || return 1
+	want_eq "status" "$API_STATUS" 200 || return 1
+	want_eq "the newest entry is first" \
+		"$(jqv '.items[0].meta.what')" "read the handoff off no branch at all" || return 1
+	want_eq "then the one before it" \
+		"$(jqv '.items[1].meta.what')" "sharpened the quillon on the escapement" || return 1
+	want_eq "and the branch is on it, where the write put it" \
+		"$(jqv '.items[1].meta.branch')" wl/escapement || return 1
+
+	# The default is unchanged: the timeline still pages forward from a cursor,
+	# which is the read every other client of it does.
+	api GET "$TOKEN_A" '/api/activity?kind=worklog&limit=2' || return 1
+	want_eq "log order starts at the oldest end" \
+		"$(jqv '.items[0].meta.what')" "wired the quibblewrench into the lexer" || return 1
+
+	# An order nobody implements is refused rather than silently ignored: a read
+	# that quietly answers in the other order is a page that lies about itself.
+	want_status 400 GET "$TOKEN_A" '/api/activity?kind=worklog&order=sideways' || return 1
+	printf 'order=recent is the newest end of the same filtered read: %s\n' "$(jqv .error)"
 }
 
 # ------------------------------------------------------- the project entity
@@ -1658,6 +2117,93 @@ an_unknown_addressee_is_refused() {
 	printf 'refused, and nothing written: %s\n' "$(jqv .error)"
 }
 
+# ------------------------------------------------------------------ @mentions
+#
+# The same field, filled in by the words instead of by a flag. `to` works and
+# nobody types it mid-sentence, so agents addressed each other constantly and
+# the person in the room addressed nobody - see mentions.go. What these check is
+# that an @name lands in the addressee column and nowhere else, and that the
+# three things that are NOT mentions are not treated as ones.
+
+# say_body TOKEN ROOM BODY - a message with nothing but a body, so whatever
+# fills the addressee in can only be the words.
+say_body() {
+	api POST "$1" "/api/chat/$2/say" "$(jq -nc --arg b "$3" '{body: $b}')"
+}
+
+# mentions_meta - the "name:id" pairs the node stamped on the last message.
+mentions_meta() {
+	printf '%s' "$API_BODY" | jq -r '.meta.mentions // ""'
+}
+
+a_mention_addresses_the_message() {
+	recall
+	say_body "$TOKEN_A" addressing "@$HANDLE_B the deploy looks wrong to me" || return 1
+	want_eq "say status" "$API_STATUS" 200 || return 1
+	want_eq "who the words addressed it to" "$(jqv .addressee)" "$USER_B" || return 1
+	want_eq "and the body is what was written" \
+		"$(jqv .body)" "@$HANDLE_B the deploy looks wrong to me" || return 1
+	# Mid-sentence, which is the case the flag could never cover: the same
+	# message with --to is a message somebody remembered to flag.
+	say_body "$TOKEN_A" addressing "the gearbox again, @$HANDLE_B - can you look?" || return 1
+	want_eq "a name inside the sentence addresses too" "$(jqv .addressee)" "$USER_B" || return 1
+	# And the same name shouted at the start of a sentence is the same person.
+	local shouted
+	shouted="$(printf '%s' "$HANDLE_B" | tr '[:lower:]' '[:upper:]')"
+	say_body "$TOKEN_A" addressing "@$shouted please" || return 1
+	want_eq "the case it was written in does not matter" "$(jqv .addressee)" "$USER_B" || return 1
+	printf 'the name in the prose is the addressing: %s\n' "$USER_B"
+}
+
+# Several names in one message. The event carries ONE addressee, so the first
+# one takes it and the rest ride in meta - and that is a decision worth
+# asserting rather than leaving to whichever the map iterated first.
+the_first_mention_addresses_and_the_rest_are_recorded() {
+	recall
+	say_body "$TOKEN_A" addressing "@$HANDLE_B and @$HANDLE_OP, one of you please" || return 1
+	want_eq "say status" "$API_STATUS" 200 || return 1
+	want_eq "the first name addressed it" "$(jqv .addressee)" "$USER_B" || return 1
+	case "$(mentions_meta)" in
+	"$HANDLE_B:$USER_B $HANDLE_OP:$USER_OP") ;;
+	*)
+		printf 'the mentions on the message are %q, want both pairs in order\n' \
+			"$(mentions_meta)" >&2
+		return 1
+		;;
+	esac
+	# An explicit `to` is a field somebody filled in deliberately, so it wins.
+	say_to "$TOKEN_A" addressing "$USER_OP" "@$HANDLE_B ask the operator about this" || return 1
+	want_eq "to beats a mention" "$(jqv .addressee)" "$USER_OP" || return 1
+	printf 'first mention addresses, the rest are on the message, --to still wins\n'
+}
+
+# The three things that look like mentions and are not. The email address is the
+# one that would have broken the naive version - `@(\w+)` turns every address
+# anybody pastes into a room into a mention of whoever holds that handle, and it
+# is the case nobody writes the feature for.
+what_is_not_a_mention_addresses_nobody() {
+	recall
+	say_body "$TOKEN_A" addressing "write to $HANDLE_B@example.com about the gearbox" || return 1
+	want_eq "an email address addresses nobody" "$(jqv '.addressee // ""')" "" || return 1
+	want_eq "and stamps no mentions" "$(mentions_meta)" "" || return 1
+
+	# A name nothing answers to is NOT a refusal - people type names that do not
+	# exist, and losing what somebody wrote over a word in it is the worse
+	# failure by a distance. It stays as text.
+	local before after
+	before="$(scalar "SELECT count(*) FROM events WHERE room = 'addressing'")" || return 1
+	say_body "$TOKEN_A" addressing "@nobody-at-all-here is not here" || return 1
+	want_eq "a name nobody answers to is still a message" "$API_STATUS" 200 || return 1
+	want_eq "addressed at nobody" "$(jqv '.addressee // ""')" "" || return 1
+	want_eq "with the word left in it" "$(jqv .body)" "@nobody-at-all-here is not here" || return 1
+	after="$(scalar "SELECT count(*) FROM events WHERE room = 'addressing'")" || return 1
+	want_eq "and it was written" "$((after - before))" 1 || return 1
+
+	say_body "$TOKEN_A" addressing "the build is red@" || return 1
+	want_eq "a bare @ addresses nobody" "$(jqv '.addressee // ""')" "" || return 1
+	printf 'an address, a name nobody answers to and a stray @: none of them addressed anybody\n'
+}
+
 # The one that matters, in both directions.
 #
 # It does not widen: a message said in pc and addressed at B, who holds no grant
@@ -1900,6 +2446,42 @@ to_me_wakes_only_for_what_names_this_principal() {
 	printf 'woken by the addressed one, told about the rest, mark past both\n'
 }
 
+# The whole reason @mentions exist: a name written into the sentence has to wake
+# a waiter exactly as `to` does, or the parse is decoration.
+#
+# Both directions, because either half alone is a feature that looks like it
+# works. Woken by a mention of itself, and NOT woken by a mention of somebody
+# else - a version that woke on any message with an @ in it would pass the first
+# and make --to-me useless, which is the filter this whole thing rides on.
+#
+# The messages come from A's AGENT rather than from a person, deliberately: a
+# person's message wakes a --to-me waiter whatever it says, so only an agent's
+# can show that the mention did it.
+a_mention_wakes_a_to_me_waiter() {
+	recall
+	local poster
+	api POST "$TOKEN_A_AGENT" "/api/chat/$INBOX_ROOM/say" \
+		"{\"body\": \"@$HANDLE_B could you take a look at this one\"}" || return 1
+	want_eq "say status" "$API_STATUS" 200 || return 1
+	want_eq "it was addressed at B by the words" "$(jqv .addressee)" "$USER_B" || return 1
+
+	inbox_run --token "$TOKEN_A" --as gate-waiter --to-me --deadline 6
+	want_eq "exit code for a room where somebody else was named" "$INBOX_STATUS" 1 || return 1
+	want_eq "and it handed nothing over" "$INBOX_OUT" "" || return 1
+
+	poster="$(say_in_background "$INBOX_ROOM" "$TOKEN_A_AGENT" \
+		"@$HANDLE_A the build is red, can you look")"
+	inbox_run --token "$TOKEN_A" --as gate-waiter --to-me --deadline 40
+	wait "$poster" 2>/dev/null || true
+
+	want_eq "exit code when its own name was written" "$INBOX_STATUS" 0 || return 1
+	want_eq "what it woke for" \
+		"$(printf '%s' "$INBOX_OUT" | jq -r .body)" "@$HANDLE_A the build is red, can you look" ||
+		return 1
+	want_eq "addressed at" "$(printf '%s' "$INBOX_OUT" | jq -r .addressee)" "$USER_A" || return 1
+	printf 'slept through @%s and woke on @%s, with no --to anywhere\n' "$HANDLE_B" "$HANDLE_A"
+}
+
 # A waiter that cannot tell a broken configuration from a quiet room cannot be
 # restarted in a loop: the loop would spin forever on the broken one and say
 # nothing. So everything that is not "somebody spoke" and not "the deadline
@@ -1929,6 +2511,123 @@ a_broken_waiter_is_exit_2_and_not_exit_1() {
 		--as gate-waiter --deadline 3 2>&1)" || INBOX_STATUS=$?
 	want_eq "exit code when the node is not answering" "$INBOX_STATUS" 2 || return 1
 	printf 'a bad token, no token and a dead node are all 2, never 1\n'
+}
+
+# --------------------------------------------------- what a listener CAN DO
+#
+# Hearing and waking are two things, and every surface on this node reported the
+# first while somebody was asking about the second.
+#
+# A waiter forks a detached successor before it returns so the room stays heard
+# while its agent reads. That successor polls, is attached, and CAN WAKE NOBODY
+# - only a harness-tracked waiter exiting produces a notification. One night an
+# agent sat deaf for 28 minutes behind a listener that was polling normally, a
+# presence row seconds fresh, and a nag hook reporting healthy. The kind was
+# written to a pid sidecar and nothing anybody looked at carried it.
+#
+# So: the waiter says which it is on every poll, the row keeps it, and the
+# roster draws it. These check all three, and the browser one is registered with
+# the other console checks.
+
+# ROSTER_READERS are declared and polled by the presence check below and read
+# again by the browser check, which is two processes and a phase apart - so the
+# names are fixed here rather than generated.
+ROSTER_TRACKED=roster-tracked
+ROSTER_FORKED=roster-forked
+ROSTER_QUIET=roster-quiet
+readonly ROSTER_TRACKED ROSTER_FORKED ROSTER_QUIET
+
+# presence_kind NAME - what /api/presence says that listener can do. Not listed
+# at all and listed with no kind are two different failures, and a jq default
+# that turned the first into the second would send somebody looking in the
+# wrong place.
+presence_kind() {
+	api GET "$TOKEN_A" /api/presence || return 1
+	printf '%s' "$API_BODY" | jq -r --arg r "$1" \
+		'[.listeners[] | select(.reader == $r)]
+		 | if length == 0 then "<not listed>" else (.[0].waiter_kind // "<no kind on the row>") end'
+}
+
+# poll_as NAME [KIND] - one short poll of that reader's inbox, from a client
+# that says what it is, or - with no KIND - from one that says nothing, which
+# is every client written before this existed.
+poll_as() {
+	local path="/api/inbox/wait?as=$1&window=1"
+	if [ -n "${2-}" ]; then
+		path="$path&kind=$2"
+	fi
+	api GET "$TOKEN_A" "$path" || return 1
+	want_eq "poll status for $1" "$API_STATUS" 200 || return 1
+}
+
+# The waiter itself says which kind it is, over the wire, on every poll. Checked
+# through the binary rather than through curl because the marking is read from
+# the environment by the process that polls, and a node that can record a kind
+# nothing sends it is half a feature.
+#
+# A quiet deadline in a room nothing says anything in, on purpose: a delivery
+# forks a successor, and the successor's own polls would then be the last word
+# on the row - so the check would be reading a race instead of the run it made.
+the_waiter_says_which_kind_it_is() {
+	recall
+	local quiet=nothing-is-said-in-this-room
+	inbox_run --token "$TOKEN_A" --as kind-waiter --new --deadline 3 --room "$quiet"
+	want_eq "a quiet deadline is still exit 1" "$INBOX_STATUS" 1 || return 1
+	want_eq "what the node recorded for a harness-tracked waiter" \
+		"$(scalar "SELECT waiter_kind FROM inbox_readers WHERE reader = 'kind-waiter'")" \
+		tracked || return 1
+
+	# And the successor, which is the one that costs something: same binary,
+	# same name, same polling, nothing to wake.
+	export FLOWY_WAITER_KIND=forked
+	inbox_run --token "$TOKEN_A" --as kind-waiter --deadline 3 --room "$quiet"
+	unset FLOWY_WAITER_KIND
+	want_eq "the successor's quiet deadline" "$INBOX_STATUS" 1 || return 1
+	want_eq "what the node recorded for the forked successor" \
+		"$(scalar "SELECT waiter_kind FROM inbox_readers WHERE reader = 'kind-waiter'")" \
+		forked || return 1
+	printf 'the same waiter reported tracked, then forked, and the row followed it\n'
+}
+
+# /api/presence answers what each listener can do, and answers UNKNOWN rather
+# than guessing. A row written before this field existed, or by a client that
+# does not send one, is evidence of nothing - and tracked is the reading that
+# cost 28 minutes.
+presence_says_what_each_listener_can_do() {
+	recall
+	local reader
+	for reader in "$ROSTER_TRACKED" "$ROSTER_FORKED" "$ROSTER_QUIET"; do
+		api POST "$TOKEN_A" /api/inbox/reader "{\"as\": \"$reader\"}" || return 1
+		want_eq "declaring $reader" "$API_STATUS" 200 || return 1
+	done
+
+	# Declared and never polled: nobody has claimed anything about it.
+	want_eq "a reader that has never polled" "$(presence_kind "$ROSTER_TRACKED")" \
+		unknown || return 1
+
+	poll_as "$ROSTER_TRACKED" tracked || return 1
+	poll_as "$ROSTER_FORKED" forked || return 1
+	poll_as "$ROSTER_QUIET" || return 1
+	want_eq "a listener that polled as tracked" "$(presence_kind "$ROSTER_TRACKED")" \
+		tracked || return 1
+	want_eq "a listener that polled as forked" "$(presence_kind "$ROSTER_FORKED")" \
+		forked || return 1
+	want_eq "a listener that said nothing" "$(presence_kind "$ROSTER_QUIET")" \
+		unknown || return 1
+
+	# It outlives the poll that set it. Both of those polls have already ended,
+	# so this has been true once above; the second poll is the other half - the
+	# next poll must not reset what the row says, or the roster would flicker
+	# through "nobody knows" on every cycle of a perfectly good listener.
+	poll_as "$ROSTER_FORKED" forked || return 1
+	want_eq "after a second poll cycle" "$(presence_kind "$ROSTER_FORKED")" forked || return 1
+
+	# And a client that invents one claims nothing: the value arrives on a query
+	# parameter, so this is what stands between the roster and a state it has no
+	# case for.
+	poll_as "$ROSTER_QUIET" wide-awake-honest || return 1
+	want_eq "a kind nobody can draw" "$(presence_kind "$ROSTER_QUIET")" unknown || return 1
+	printf 'presence: tracked, forked, and unknown for everything that has not said\n'
 }
 
 # ------------------------------------------------------------ per-room todos
@@ -2203,6 +2902,20 @@ browser_renders_the_rooms_todos() {
 		"$ROOM_TODO_GENERAL" unassigned
 }
 
+# The roster, in a browser, on the ELEMENT: each listener's line says what that
+# listener can do about what it hears, and the three states read as three
+# states. "polling 4s ago" is true of all three and answers none of them, which
+# is what the panel said on the night a session went deaf behind it.
+#
+# It reads the readers the presence check declared and polled, a phase earlier -
+# their kinds are on the row, and the row is what the roster draws.
+browser_shows_what_a_listener_can_do() {
+	recall
+	cd "$ROOT/web" || return 1
+	node scripts/roster-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" \
+		"$ROSTER_TRACKED=tracked" "$ROSTER_FORKED=forked" "$ROSTER_QUIET=unknown"
+}
+
 # Speakers are drawn in their own colour, and it is really applied. A palette
 # that exists and a component that never uses it are indistinguishable from
 # everywhere except a rendered page, so this asks the browser what colour the
@@ -2221,6 +2934,30 @@ browser_colours_the_speakers() {
 		'{"title": "marrowbone the gasket", "status": "done"}' || return 1
 	cd "$ROOT/web" || return 1
 	node scripts/colour-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A"
+}
+
+# And the @names inside a body, on the screen, as elements.
+#
+# Its own room, with its own three messages, because what it asserts is about
+# the exact words in them - a check that read whatever the rest of the run had
+# left in general would be asserting about a room that changes underneath it.
+#
+# They are said by A's AGENT and read as A, so the mention of A is a mention of
+# whoever is reading, the mention of B is a mention of somebody else, and the
+# difference between the two is the thing worth drawing. The agent speaks under
+# A's handle - which is how the colour of a mention can be compared with the
+# colour that person speaks in on the same page.
+browser_draws_the_mentions() {
+	recall
+	api POST "$TOKEN_A_AGENT" /api/chat/mentions/say \
+		"{\"body\": \"@$HANDLE_A the gearbox is stripped again\"}" || return 1
+	want_eq "say status" "$API_STATUS" 200 || return 1
+	api POST "$TOKEN_A_AGENT" /api/chat/mentions/say \
+		"{\"body\": \"@$HANDLE_B please review, cc @nobody-at-all-here\"}" || return 1
+	want_eq "say status" "$API_STATUS" 200 || return 1
+	cd "$ROOT/web" || return 1
+	node scripts/mention-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" mentions \
+		"$HANDLE_A" "$HANDLE_B" nobody-at-all-here
 }
 
 # Two waiters under one name share one cursor, so the second takes deliveries
@@ -2302,6 +3039,18 @@ npm_build() {
 console_mounts() {
 	cd "$ROOT/web" || return 1
 	node scripts/render-check.mjs
+}
+
+# Signed out, the worklog says so rather than rendering an empty page.
+#
+# An empty list that means "you are not signed in" and an empty list that means
+# "nothing happened" look identical, and the second is a false statement about a
+# chronology. So the page has to say which, and this check runs with no node and
+# no token at all - which is the state a browser is in when somebody opens the
+# link for the first time.
+console_says_the_worklog_needs_a_token() {
+	cd "$ROOT/web" || return 1
+	node scripts/render-check.mjs "" "" "paste a token to read the worklog" /worklog
 }
 
 # A real browser for the two checks below, downloaded once per machine and
@@ -4992,6 +5741,8 @@ check "biome check web/" biome_check
 check "vite build" npm_build
 check "the build is an index that loads a hashed bundle" console_build_is_hashed
 check "the console mounts in a dom and renders the room view" console_mounts
+check "signed out, the worklog says so instead of rendering an empty page" \
+	console_says_the_worklog_needs_a_token
 check "a browser to run the browser checks in" browser_is_installed
 check "the room poll does not flood a node whose cursor never moves" poll_does_not_spin
 check "a tab open across a deploy reloads itself once, and only once" \
@@ -5195,6 +5946,36 @@ check "an entry says what changed, or it is not one" an_entry_says_what_changed
 check "the read is the recent entries, newest first" the_worklog_reads_recent_first
 check "entries are on the timeline, and cannot be posted onto it" \
 	entries_are_on_the_timeline_and_not_postable_onto_it
+check "an entry carries the branch it was written on" \
+	an_entry_carries_the_branch_it_was_written_on
+check "the timeline answers the worklog newest first" \
+	the_timeline_answers_the_worklog_newest_first
+
+say "proposals, and voting on them"
+check "a proposal is raised in a room, and the room narrows the list" \
+	a_proposal_is_raised_in_a_room
+check "a vote from a principal who cannot read the proposal is refused" \
+	a_vote_from_somebody_who_cannot_read_the_proposal_is_refused
+check "changing a vote appends, the old vote stays, and the tally follows the latest" \
+	changing_a_vote_appends_and_the_tally_follows_the_latest
+check "the tally, the log and the refusals, in the store" \
+	go test -count=1 -run 'TestAVoteFromSomebodyWhoCannotReadTheProposalIsRefused|TestChangingAVoteAppendsAndTheOldVoteIsStillThere|TestTheTallyCountsOneVotePerPrincipalNotOnePerEvent|TestAClosedProposalRefusesVotesAndSaysWhenItClosed' ./internal/store
+check "a closed proposal refuses further votes, and says when it closed" \
+	a_closed_proposal_refuses_further_votes_and_says_when
+check "the proposal, its votes and its tally read back over HTTP" \
+	the_proposal_reads_back_over_http
+check "a vote is written by the verb that casts it, not by hand" \
+	a_vote_cannot_be_written_by_hand
+say "attachments"
+check "the bytes come back byte for byte, NUL and newline included" \
+	an_attachment_round_trips_byte_for_byte
+check "over the ceiling is refused, and the refusal names it" \
+	an_attachment_over_the_ceiling_is_refused_with_the_number
+check "an attachment with no bytes is not an attachment" an_empty_attachment_is_refused
+check "an attachment B may not read is not readable and not listable" \
+	b_cannot_read_or_list_as_attachment
+check "the content type is decided from the bytes, and the claim is kept as a claim" \
+	the_content_type_is_not_the_clients_to_decide
 
 say "the project entity"
 check "a write into a project nobody declared is refused" \
@@ -5254,6 +6035,15 @@ check "an agent is an addressee too" an_agent_can_be_addressed
 check "a message to the room carries none" an_unaddressed_message_is_still_a_message
 check "a name nothing answers to is refused, and writes no row" an_unknown_addressee_is_refused
 check "being named on a message is not a capability" addressing_changes_nothing_about_who_reads
+check "an @name in the body fills the same field in" a_mention_addresses_the_message
+check "the first mention addresses, the rest are on the message" \
+	the_first_mention_addresses_and_the_rest_are_recorded
+check "an email address, an unknown name and a stray @ address nobody" \
+	what_is_not_a_mention_addresses_nobody
+check "what counts as a mention, and what only looks like one" \
+	go test -count=1 -run 'TestWhatCountsAsAMention|TestAnUnresolvedMentionIsPlainTextAndNotARefusal|TestTheFirstMentionAddressesAndTheRestAreOnTheMessage' .
+check "a name resolves to the one principal it names" \
+	go test -count=1 -run 'TestANameResolvesToTheOnePrincipalItNames|TestAnAmbiguousNameResolvesToNobody|TestAnAgentWhosePersonHasAHandleIsNamedByTheHandle' ./internal/store
 check "the addressee is inside what the node signs" \
 	go test -count=1 -run 'TestAnUnaddressedEventEncodesAsItAlwaysDid|TestAnAddresseeCannotBeAddedRemovedOrSwapped' ./internal/sign
 
@@ -5273,8 +6063,23 @@ check "its own messages do not wake it, and the mark passes them anyway" \
 	its_own_messages_do_not_wake_it_and_the_mark_still_passes_them
 check "--to-me wakes for what names it and counts what it skipped" \
 	to_me_wakes_only_for_what_names_this_principal
+check "--to-me wakes on an @name in the body, and not on somebody else's" \
+	a_mention_wakes_a_to_me_waiter
+check "the wake-up rule for a mention, in the unit" \
+	go test -count=1 -run TestAWaiterNarrowedToItsOwnMailWakesOnAMentionOfIt .
 check "a bad token, no token and a dead node are exit 2, never exit 1" \
 	a_broken_waiter_is_exit_2_and_not_exit_1
+
+# Hearing is not waking. A forked successor polls exactly like a tracked waiter
+# and can wake nobody, so every check here is about telling them apart - and
+# about what the node says when nothing has told it either way.
+say "what a listener can do about what it hears"
+check "the waiter says which kind it is, and the row follows it" \
+	the_waiter_says_which_kind_it_is
+check "presence answers tracked, forked, and unknown for anything unsaid" \
+	presence_says_what_each_listener_can_do
+check "the kind is per reader and survives the poll that set it" \
+	go test -count=1 -run TestPresenceCarriesTheWaiterKind ./internal/store
 
 # A todo panel inside the room, and the field it needs. The room rides fields
 # the way as_of rides a report, and it is a filter and not a permission axis -
@@ -5301,6 +6106,10 @@ check "the room's todo panel is on the screen in a browser, as an element" \
 	browser_renders_the_rooms_todos
 check "each speaker is drawn in their own colour, in a browser" \
 	browser_colours_the_speakers
+check "the roster draws what each listener can do, distinctly, in a browser" \
+	browser_shows_what_a_listener_can_do
+check "an @name is drawn as a mention, in their colour, in a browser" \
+	browser_draws_the_mentions
 
 # ------------------------------------------------------------------- phase 4
 #
@@ -9896,6 +10705,58 @@ console_renders_the_timeline() {
 		"vm_say: try the other approach" /activity
 }
 
+# The worklog, on a page a person can open.
+#
+# It is the fleet's memory across sessions - a fresh seat is meant to read it
+# rather than somebody's session transcript - and it had no human surface at
+# all: written and read over MCP, so the person the fleet works for could not
+# see it without asking an agent to read it out.
+#
+# The three entries the two checks below assert on, on two branches, newest
+# last. Seeded from the gate on purpose: a check with nothing to find reports
+# "nothing present, nothing tested", which is honest and useless.
+WORKLOG_PAGE_NEWEST="rehung the escapement and it keeps time"
+WORKLOG_PAGE_OLDER="stripped the old escapement out"
+WORKLOG_PAGE_OTHER="quenched the mainspring on its own branch"
+WORKLOG_PAGE_BRANCH="wl/escapement"
+WORKLOG_PAGE_OTHER_BRANCH="wl/mainspring"
+readonly WORKLOG_PAGE_NEWEST WORKLOG_PAGE_OLDER WORKLOG_PAGE_OTHER
+readonly WORKLOG_PAGE_BRANCH WORKLOG_PAGE_OTHER_BRANCH
+
+seeds_the_worklog_the_page_has_to_show() {
+	recall
+	local args
+	args="$(wl_args "$WORKLOG_PAGE_OTHER" "" "" "" "$WORKLOG_PAGE_OTHER_BRANCH")" || return 1
+	want_tool worklog_append "$TOKEN_A" "$args" || return 1
+	args="$(wl_args "$WORKLOG_PAGE_OLDER" "" "" "" "$WORKLOG_PAGE_BRANCH")" || return 1
+	want_tool worklog_append "$TOKEN_A" "$args" || return 1
+	# The newest is the agent's, so the page has a seat to name that is not the
+	# person reading it.
+	args="$(wl_args "$WORKLOG_PAGE_NEWEST" "hand the mainspring back" b41c0de \
+		"$MEM_SHARED" "$WORKLOG_PAGE_BRANCH")" || return 1
+	want_tool worklog_append "$TOKEN_A_AGENT" "$args" || return 1
+	want_eq "the newest entry is on its branch" "$(tv .entry.branch)" "$WORKLOG_PAGE_BRANCH" || return 1
+	printf 'three entries on two branches, newest by %s\n' "$AGENT_A"
+}
+
+console_renders_the_worklog() {
+	recall
+	cd "$ROOT/web" || return 1
+	node scripts/render-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" \
+		"$WORKLOG_PAGE_NEWEST" /worklog
+}
+
+# The same claim one layer out, in a browser, asserted on the LIST and its ROWS
+# rather than on the page's text - "worklog" is in the global navigation, so a
+# page-text search for it passes with the list entirely absent, which is the
+# mistake the room's todo panel check was written around.
+browser_renders_the_worklog() {
+	recall
+	cd "$ROOT/web" || return 1
+	node scripts/worklog-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" \
+		"$WORKLOG_PAGE_NEWEST" "$WORKLOG_PAGE_BRANCH" "$WORKLOG_PAGE_OTHER" "$AGENT_A"
+}
+
 say "metrics: what was measured, and for whom"
 check "every group is in the answer, and says whether it was measured" \
 	metrics_answers_every_group
@@ -9956,6 +10817,11 @@ check "the metrics tab mounts and renders what the node measured" \
 	console_renders_the_metrics_tab
 check "the traces tab mounts" console_renders_the_traces_tab
 check "the activity timeline mounts and renders what was said" console_renders_the_timeline
+check "the worklog the page has to show is there to find" \
+	seeds_the_worklog_the_page_has_to_show
+check "the worklog tab mounts and renders a seeded entry" console_renders_the_worklog
+check "and a browser shows it newest first, narrowable by branch" \
+	browser_renders_the_worklog
 
 # ---------------------------------------------------------------- phase 9
 #

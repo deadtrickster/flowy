@@ -7,6 +7,13 @@ import { speakerStyle } from "@/lib/speakercolour";
  * on. Members are who has spoken. Listener lines never claim "online" - the
  * node sees the polling, not the process, so the line says when a poll last
  * started and whether one is in flight, which is checkable.
+ *
+ * And what KIND of listener it is, which is the half the other two cannot
+ * carry. A forked successor - the one a waiter leaves behind so the room stays
+ * heard while its agent reads - polls, is attached, is seconds fresh, and can
+ * wake nobody, because only a harness-tracked waiter exiting produces a
+ * notification. Drawn from attachment alone this panel called such a listener
+ * healthy for 28 minutes while the person who wrote into the room got silence.
  */
 export function RoomRoster({ presence }: { presence: Presence | null }) {
   if (!presence) {
@@ -46,27 +53,89 @@ export function RoomRoster({ presence }: { presence: Presence | null }) {
         <div className="text-muted-foreground text-xs">no reader is polling</div>
       ) : (
         <ul className="flex flex-col gap-0.5">
-          {presence.listeners.map((l) => (
-            <li key={l.principal + l.reader} className="flex items-center gap-2 text-xs">
-              <span className="min-w-0 truncate" style={{ color: speakerStyle(l.reader).color }}>
-                {l.reader}
-                {l.reader !== l.user_name ? (
-                  <span className="text-muted-foreground"> · {l.reader}</span>
-                ) : null}
-              </span>
-              <span className="ml-auto shrink-0 text-muted-foreground">
-                {l.attached ? "polling" : ""} {ago(l.last_poll_at)}
-              </span>
-            </li>
-          ))}
+          {presence.listeners.map((l) => {
+            const kind = listenerKind(l.waiter_kind);
+            return (
+              <li
+                key={l.principal + l.reader}
+                data-listener={l.reader}
+                className="flex items-center gap-2 text-xs"
+              >
+                <span className="min-w-0 truncate" style={{ color: speakerStyle(l.reader).color }}>
+                  {l.reader}
+                  {l.reader !== l.user_name ? (
+                    <span className="text-muted-foreground"> · {l.user_name}</span>
+                  ) : null}
+                </span>
+                {/*
+                  The kind is its own element rather than a word inside the
+                  timing line, so that what a listener can DO is what the eye
+                  lands on and so a check can assert on it. "polling 4s ago" is
+                  true of all three of these and answers none of them.
+                */}
+                <span
+                  data-waiter-kind={kind.kind}
+                  title={kind.why}
+                  className={`ml-auto shrink-0 ${kind.className}`}
+                >
+                  {kind.label}
+                </span>
+                <span className="shrink-0 text-muted-foreground">
+                  {l.attached ? "polling · " : ""}
+                  {ago(l.last_poll_at)}
+                </span>
+              </li>
+            );
+          })}
         </ul>
       )}
       <div className="pt-1 text-muted-foreground text-[10px]">
         the node sees polling, not processes - a dead listener looks attached until its window
-        lapses
+        lapses, and a forked one hears the room with nothing to wake
       </div>
     </div>
   );
+}
+
+/**
+ * listenerKind is the word for each kind and the reason behind it.
+ *
+ * Three states get three renderings, and unknown is not quietly folded into
+ * tracked: a row written before the node reported kinds, or by a client that
+ * does not say, is evidence of nothing - and reading absence as the good case
+ * is exactly what made a deaf listener report healthy. The three labels are
+ * deliberately different words rather than one word and a colour, because a
+ * roster is read at a glance and a colour is not a sentence.
+ */
+function listenerKind(kind: string | undefined): {
+  kind: string;
+  label: string;
+  why: string;
+  className: string;
+} {
+  switch (kind) {
+    case "tracked":
+      return {
+        kind: "tracked",
+        label: "can wake",
+        why: "a harness-tracked waiter: when it hears something it exits, and that exit wakes its session",
+        className: "text-muted-foreground",
+      };
+    case "forked":
+      return {
+        kind: "forked",
+        label: "heard, cannot wake",
+        why: "a forked successor: it keeps the room heard while its agent reads, but it is nobody's task, so hearing something wakes no one",
+        className: "text-amber-400",
+      };
+    default:
+      return {
+        kind: "unknown",
+        label: "kind unknown",
+        why: "this reader has not said what it is - a poll from before the node reported kinds, or a client that does not send one. It may or may not be able to wake anybody",
+        className: "text-muted-foreground italic",
+      };
+  }
 }
 
 /** ago renders how long ago a poll last started, honestly and briefly. */

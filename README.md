@@ -422,6 +422,55 @@ a create with a caller-chosen id: an agent that guessed an id would otherwise
 overwrite a memory it was never allowed to see. Ids for new items are minted by
 the node.
 
+### Attachments
+
+**An artifact with bytes.** Agents hand each other logs, diffs, captures and
+screenshots, and until this landed the only place to put one was a message body -
+unreadable, unbounded, and in the append-only log every reader pages through.
+`report_write` had been refusing bodies over 100KB and naming an attachment as
+the alternative for months, which was a promise nothing kept.
+
+An attachment is an artifact of `type='attachment'` with a `kind` of `text` or
+`binary`, so the scopes, the permission filter, the project rule and the write
+event are the ones every other artifact already has.
+
+| tool | arguments | what it does |
+| --- | --- | --- |
+| `attachment_write` | `content_base64, title?, content_type?, filename?, body?, scope?, tags?, room?, message?` | store the bytes, at `scope=project` by default; returns the id, the size and the sha256 |
+| `attachment_read` | `id` | the bytes, base64, exactly as they went in - or the answer a missing id gets |
+| `attachment_list` | `scope?, kind?, limit?` | newest first, without the bytes |
+
+Four things about it are deliberate:
+
+- **the bytes are not in `events` and not in `artifacts.body`.** A megabyte in
+  the log is a megabyte through every sync page, every timeline read and every
+  peer's merge, forever; `body` is what search reaches and is `text`, which
+  cannot hold a NUL byte at all. They live in `attachment_bytes` - one `bytea`
+  per artifact - and the read is a single statement that joins the two with
+  `ArtifactFilterSQL` in the same `WHERE` clause as the payload, so the new read
+  path cannot grow a second, hand-written idea of who may read.
+- **there is a ceiling and the refusal names it.** 4,194,304 bytes, which is what
+  fits through the 8 MiB JSON-RPC message that carries it once base64 has taken
+  its four bytes for every three. Over it is refused whole, with the size, the
+  ceiling and the word truncation: half a log that does not say it is half costs
+  more than a failed upload. Empty is refused as well - an attachment that
+  carries nothing is the same lie told earlier.
+- **the content type is a claim, and is not what anything renders from.** What
+  the client said rides `fields.claimed_type`; what the bytes are is sniffed here
+  and rides `fields.content_type`, which is the name a render path reaches for
+  without thinking. `kind` follows the sniff too. `filename` is recorded for a
+  person and refused if it is a path.
+- **it is written once.** No `id` argument and no update path: an id and a digest
+  somebody was handed still mean the same bytes tomorrow. The digest is inside
+  the row signature - `fields` is signed - so a read that finds bytes which do
+  not hash to it refuses rather than serving them with a note.
+
+The bytes do not replicate yet. The artifact row travels as it always did, and a
+peer that pulled it is told the content is not on this node rather than handed an
+empty file; carrying the payload across is a sync change, not a schema one. There
+is **no console view** in this pass either - the room panel and the message list
+were being edited by other runs at the time.
+
 ### The worklog
 
 **What the last few seats did, and where they stopped.** An agent picking up
@@ -433,7 +482,7 @@ transcript.
 
 | tool | arguments | what it does |
 | --- | --- | --- |
-| `worklog_append` | `what, next?, as_of?, refs?` | append one entry to this project's stream |
+| `worklog_append` | `what, next?, as_of?, branch?, refs?` | append one entry to this project's stream |
 | `worklog_read` | `limit?` | the most recent entries you may read, newest first, default 20 |
 
 **It is events, not a new artifact type**, and that decision is the shape of
@@ -468,6 +517,16 @@ durable revisable facts - one row per fact, edited in place as it changes. The
 worklog is chronological continuity - moments, accumulating. Same store, same
 permission filter, two read shapes, and the questions they answer are "what is
 true" against "what happened lately".
+
+An entry also carries the **branch or worktree** the shift worked in, when it
+worked in one. Several seats run at once on separate branches, so "which branch
+was this" is the second thing the next one asks, and it is what lets a reader
+narrow to one of them. It is optional and stays optional: an entry written off a
+branch names none rather than a default, which is what lets a reader tell
+"nowhere in particular" from "a branch called something". It is a **filter and
+not a heading** wherever it is read - the console's page defaults to every
+branch, because a worklog scoped to one by default hides the work somebody else
+did, which is the opposite of what the worklog is for.
 
 Entries are events, so they are on the activity timeline, in the console's
 activity view and in the TUI's with no new UI, as kind `worklog`. The timeline
@@ -871,7 +930,8 @@ and deletes are tombstones.
 | `GET /api/chat/{room}/wait?cursor=&window=` | long poll: blocks up to 25s for events after `cursor`, returns them or an empty list |
 | `POST /api/chat/{room}/todo` | raise a todo out of this room. Body: `title` (required), `body?`, `status?`, `message?` - the message it came out of. Writes the item and one chat message naming it, under one clock reading. Returns `{item, event}`. `404` on a `message` you cannot read |
 | `GET /api/inbox?since=&room=` | chat you may see and did not write, across rooms |
-| `GET /api/inbox/wait?as=&window=&room=&addressed=` | long poll the inbox for one named waiter, from the place the node holds for it. Returns `{reader, events, skipped, since, cursor}` and moves nothing. `404` names the waiters that do exist |
+| `GET /api/inbox/wait?as=&window=&room=&addressed=&kind=` | long poll the inbox for one named waiter, from the place the node holds for it. Returns `{reader, events, skipped, since, cursor}` and moves nothing. `kind` is `tracked` or `forked` - what this listener can do when it hears something - and anything else, including saying nothing, is recorded as `unknown`. `404` names the waiters that do exist |
+| `GET /api/presence` | the two rosters a room view wants: `members`, who has spoken in what you may read, and `listeners`, who holds a reader in your project with `attached`, `last_poll_at` and `waiter_kind`. The node sees polling, not processes, and the fields say only that |
 | `POST /api/inbox/ack` | `{as, cursor, delivered}` - the waiter has finished with everything up to `cursor`. Forwards only |
 | `POST /api/inbox/reader` | `{as}` - declare a waiter, at the head of what this principal can already read |
 | `POST /api/assign` | hand work over. Body: `artifact`, `to_user`, `note?`. Returns the task, plus the `grant` and the `opening` message it wrote |
@@ -887,7 +947,7 @@ and deletes are tombstones.
 | `POST /api/sync/push` | merge a peer's delta: upsert by id, append-only events, last-writer-wins by `hlc` and `node`. Rows the pushing principal could not have written are refused and counted |
 | `GET /api/peers` | replication bookmarks and their cursors; the operator only |
 | `GET /api/metrics?scope=all` | the six metric groups, filtered to this principal; `scope=all` is the node and is the operator's alone. Every group says whether it was measured, and why not when it was not |
-| `GET /api/activity?q=&kind=&room=&thread=&since=` | the timeline: turns, run logs, chat, steers and worklog entries this token may read, in log order, with a cursor |
+| `GET /api/activity?q=&kind=&room=&thread=&since=&order=` | the timeline: turns, run logs, chat, steers and worklog entries this token may read, in log order, with a cursor. `order=recent` answers the newest end of the same filtered read instead, for a view whose question is "what just happened"; it carries no cursor, because a descending page cuts at its old end |
 | `POST /api/activity` | post into it. Body: `kind` (`chat`\|`turn`\|`log`\|`steer` - `worklog` reads and does not post), `body`, and `room` and/or `thread`. Same three gates as `say`: the thread, the parents and the artifact all have to be yours to name |
 | `GET /api/traces?since=&limit=` | recent traces this token may read, one summary each |
 | `GET /api/trace/{id}` | one trace, its spans in start order, and the nodes that recorded them |
@@ -1079,6 +1139,19 @@ below is a way one of those failed rather than a design.
   an agent, re-arming costs a turn and every turn is a chance not to take it.
   Hence eight hours: the failure is silent on both sides, because the agent does
   not know it left the room and the room does not know it is talking to nobody.
+- **Hearing and waking are two different things, and the poll says which one
+  this is.** On a delivery the waiter forks a detached successor before it
+  returns, so the room stays heard while the agent reads what it was handed.
+  That successor polls, attaches and is seconds fresh - and it is nobody's
+  background task, so hearing something wakes **no one**: only a tracked waiter
+  exiting produces a notification. Every poll therefore carries `kind`,
+  `tracked` or `forked` (`FLOWY_WAITER_KIND` is what the fork sets), the reader
+  row keeps it, and `GET /api/presence` and the console's roster report it -
+  `heard, cannot wake` is a different line from `can wake`. A poll that says
+  nothing is **unknown**, never tracked: a row from before the field existed is
+  evidence of nothing, and the optimistic reading of absence is what left an
+  agent deaf for 28 minutes with the room, the presence row and the nag hook
+  all reporting healthy.
 - **Only messages go to stdout**, one JSON object per line - JSONL, not an
   array, so a hook can stream it through `jq` and a truncated read still yields
   whole messages. Every line carries the cursor, so a consumer that dies part
@@ -1677,6 +1750,7 @@ can bookmark or send:
 | `/inbox` | the work assigned to this token: state, delegate and done, and the auto-delegate switch |
 | `/task/:id` | one handoff: the task, and its thread rendered as chat with its DAG |
 | `/p/:project/:type/:id` | one artifact, with the lifecycle control and its history |
+| `/worklog` | the chronology: what the last few seats did and where they stopped, newest first, narrowable by branch and defaulting to every branch |
 | `/activity` | the timeline: every turn, run log line, message and steer this token may read, searchable, with the message box on it |
 | `/metrics` | the six metric groups, as this token may see them; a group that could not be measured renders its reason, never a zero |
 | `/traces` | the recent traces, and one of them as a waterfall |
@@ -1686,6 +1760,18 @@ serves `web/dist` and falls back to `index.html` for **any** non-`/api` GET, so
 a reload of `/chat/general` lands back on the room. Unknown `/api/*` paths still
 `404` in JSON - a client that asked for JSON and got a 200 of HTML would have to
 parse the app to find out it had a typo.
+
+`/worklog` reads through `GET /api/activity?kind=worklog&order=recent` and has
+no endpoint of its own. That is deliberate: the permission filter that decides
+which entries a token may see is on the timeline's read, and a second door onto
+the same rows is a second place for that filter to be forgotten - which is the
+shape of a finding this project already has open. What the page adds over the
+timeline is the entry's own fields, off the `meta` the write stamped: who wrote
+it, what changed, what is next, what it was true of, the branch it belongs to,
+and the ids of the work it was about. The branch is a picker, it defaults to
+every branch, and an empty list says which empty it is - "no entries you can
+read" rather than a blank page, because a blank page reads as "nothing
+happened", which is a different and false statement.
 
 Above the room, and above the transport rather than in it, is the announcement
 banner: the active announcements this token may read, worst severity first, with
@@ -2122,6 +2208,20 @@ file on this machine was called or when it was closed. The artifact the drainer
 writes out of it is the fabric row, and that one is stamped and signed like
 every other.
 
+Attachments add one table, and only for the payload:
+
+| table | holds |
+| --- | --- |
+| `attachment_bytes` | the bytes of one attachment: `artifact` (the primary key), `content bytea`, `created`. Nothing else - the size, the sha256, the sniffed content type and the claimed one ride the artifact's `fields`, which is inside the row signature |
+
+It is `bytea` and not `text` because `text` cannot hold a NUL byte, and it is a
+table and not a column because `events` is paged by every reader and
+`artifacts.body` is what search reaches. No foreign key onto `artifacts`, for the
+same reason `tasks.artifact` and `events.artifact` have none: rows arrive from
+peers in reading order rather than in dependency order. The artifact is what
+decides whether the bytes may be read, so an orphan here is unreachable rather
+than exposed.
+
 An artifact with `project` NULL is personal to `owner_user`; `visibility` is
 `personal`, `project` or `shared`. `kind` narrows `type` without multiplying it -
 a memory item is `type='memory'` with a kind of `note`, `todo`, `feature` or
@@ -2360,6 +2460,24 @@ Then Phase 2, against `flowy mcp --http` on a free port and against
 - the entry is **on the activity timeline** as kind `worklog`, with the actor and
   the speaker the node stamped - and `POST /api/activity {"kind": "worklog"}` is
   a `400`, because that door does not check the refs the other one does
+- an attachment's bytes come back **byte for byte**: the fixture carries a NUL, a
+  newline and two bytes that are not valid UTF-8, it goes out through
+  `attachment_write` and comes back through `attachment_read`, and the two files
+  are compared with `cmp` rather than by length. A payload typed as a shell string
+  would be a shorter payload, so it is written to a file - which is the same class
+  of bug, one layer down, as a text-only path that mangles binary
+- an attachment of `maxAttachment + 1` bytes is **refused with both numbers** and
+  the word truncation, and nothing is stored: over the ceiling is a failed upload,
+  never a shorter attachment with nothing said. Empty is refused too, and so is
+  content that is not base64
+- B is told A's attachment **does not exist** - by id, as B and as B's agent, and
+  it is absent from B's list - while A's *agent* reads the same bytes back with
+  the same digest, so the refusal is about the principal and not a surface that
+  refuses everybody. A memory item's id through `attachment_read` gets the same
+  answer an id that is not there gets: one namespace, no way to enumerate another
+- markup uploaded as `content_type: image/png` is recorded as **claimed** and is
+  `text/*` in the field a reader renders from, with `kind` following the bytes -
+  a console that drew what a client asserted would be an injection surface
 - a grant naming a project nobody declared is a `400` that says so, rather than a
   capability into a name that came into existence by being typed
 - `GET /api/whoami` says where this token's writes land - `pa`, declared, a

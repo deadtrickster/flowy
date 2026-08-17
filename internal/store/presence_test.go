@@ -58,7 +58,7 @@ func TestPresenceTracksPollsNotAcks(t *testing.T) {
 	}
 
 	// In flight: attached, whatever the room has said.
-	db.PollStart(ctx, p, "waiter")
+	db.PollStart(ctx, p, "waiter", WaiterTracked)
 	rows, err = db.Presence(ctx)
 	if err != nil {
 		t.Fatalf("presence: %v", err)
@@ -84,6 +84,95 @@ func TestPresenceTracksPollsNotAcks(t *testing.T) {
 		if r.Reader == "waiter" && r.Attached {
 			t.Error("poll ended and the reader still reads attached")
 		}
+	}
+}
+
+// TestPresenceCarriesTheWaiterKind is the half attachment cannot answer: what
+// the thing that polled can DO about what it hears.
+//
+// A forked successor polls exactly like a tracked waiter - attached, fresh,
+// indistinguishable in every column this table had - and wakes nobody, because
+// only a harness-tracked waiter exiting produces a notification. That is not a
+// hypothetical either: an agent sat deaf for 28 minutes with the room, the
+// roster and the nag hook all reporting healthy.
+func TestPresenceCarriesTheWaiterKind(t *testing.T) {
+	ctx, db := open(t)
+	u := presenceUser(t, ctx, db, "kinds")
+	project := "presence-" + ulid.NewString()[:6]
+	if err := db.DeclareProject(ctx, &Project{ID: project, Name: project, CreatedBy: u.ID}); err != nil {
+		t.Fatalf("declare project: %v", err)
+	}
+	p := &Principal{UserID: u.ID, Project: project}
+
+	// kindOf is what the roster would draw for one of these readers, or "" for
+	// a reader the roster does not list at all - which is a different failure
+	// from the wrong kind and has to read as one.
+	kindOf := func(reader string) string {
+		t.Helper()
+		rows, err := db.Presence(ctx)
+		if err != nil {
+			t.Fatalf("presence: %v", err)
+		}
+		for _, r := range rows {
+			if r.Reader == reader && r.Principal == readerKey(p) {
+				return r.Kind
+			}
+		}
+		return ""
+	}
+
+	for _, reader := range []string{"tracked-one", "forked-one", "quiet-one", "never-polled"} {
+		if _, err := db.DeclareInboxReader(ctx, p, reader); err != nil {
+			t.Fatalf("declare reader %s: %v", reader, err)
+		}
+	}
+
+	// A row nothing has claimed. Not tracked: absence is not evidence, and the
+	// optimistic reading of absence is the whole bug.
+	if got := kindOf("never-polled"); got != WaiterUnknown {
+		t.Errorf("a reader that never polled reads as %q, want %q", got, WaiterUnknown)
+	}
+
+	// Each kind is reported as itself, and a poll that says nothing is unknown
+	// rather than either of the two claims.
+	db.PollStart(ctx, p, "tracked-one", WaiterTracked)
+	db.PollStart(ctx, p, "forked-one", WaiterForked)
+	db.PollStart(ctx, p, "quiet-one", "")
+	for reader, want := range map[string]string{
+		"tracked-one": WaiterTracked,
+		"forked-one":  WaiterForked,
+		"quiet-one":   WaiterUnknown,
+	} {
+		if got := kindOf(reader); got != want {
+			t.Errorf("%s polling as %q reads as %q", reader, want, got)
+		}
+	}
+
+	// It outlives the poll, and the next poll does not reset it. A kind that
+	// only held while a request was in flight would be blank in exactly the
+	// gap somebody is looking at the roster, and blank reads as unknown - so
+	// the forked listener would go back to looking like nothing in particular.
+	db.PollEnd(ctx, p, "forked-one")
+	if got := kindOf("forked-one"); got != WaiterForked {
+		t.Errorf("the poll ended and the kind became %q, want %q", got, WaiterForked)
+	}
+	db.PollStart(ctx, p, "forked-one", WaiterForked)
+	db.PollEnd(ctx, p, "forked-one")
+	if got := kindOf("forked-one"); got != WaiterForked {
+		t.Errorf("a second poll cycle left the kind %q, want %q", got, WaiterForked)
+	}
+	// And the other rows were not swept along with it: this is per reader, not
+	// a property of the node.
+	if got := kindOf("tracked-one"); got != WaiterTracked {
+		t.Errorf("polling one reader changed another's kind to %q", got)
+	}
+
+	// A client that claims something nobody can draw claims nothing. The value
+	// arrives on a query parameter, so this is the only thing standing between
+	// the roster and a state it has no case for.
+	db.PollStart(ctx, p, "tracked-one", "wide-awake-honest")
+	if got := kindOf("tracked-one"); got != WaiterUnknown {
+		t.Errorf("an invented kind was recorded as %q, want %q", got, WaiterUnknown)
 	}
 }
 

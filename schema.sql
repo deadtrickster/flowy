@@ -134,6 +134,24 @@ CREATE TABLE IF NOT EXISTS inbox_readers (
 ALTER TABLE inbox_readers ADD COLUMN IF NOT EXISTS last_poll_at timestamptz;
 ALTER TABLE inbox_readers ADD COLUMN IF NOT EXISTS polls_in_flight int NOT NULL DEFAULT 0;
 
+-- And WHAT KIND of listener that poll came from, which is a different question
+-- from whether anybody is polling - they came apart on the night this column
+-- was added, for 28 minutes, with every surface reporting healthy.
+--
+-- A waiter forks a successor before it returns so the room stays heard while
+-- the agent reads (see inboxhandover.go). That successor is detached, so it is
+-- nobody's harness task: it HEARS EVERYTHING AND CAN WAKE NOBODY, because only
+-- a tracked waiter exiting produces a notification. last_poll_at was seconds
+-- old and polls_in_flight was 1 the whole time, both of them true, and the
+-- answer to the question anybody was actually asking was no.
+--
+-- 'unknown' is the default rather than 'tracked' because a row written before
+-- this column existed, or by a client that does not send its kind, is evidence
+-- of nothing - and the reading that costs 28 minutes is the optimistic one.
+-- Only the three words ever land here; store.WaiterKindOf is what makes that
+-- true, so a client cannot invent a fourth state for the roster to render.
+ALTER TABLE inbox_readers ADD COLUMN IF NOT EXISTS waiter_kind text NOT NULL DEFAULT 'unknown';
+
 -- Phase 10. The project registry: the row every project column points at.
 --
 -- A project used to be a free string. Nothing declared one and nothing checked
@@ -529,6 +547,45 @@ CREATE TABLE IF NOT EXISTS sync_stats (
     refused   bigint DEFAULT 0,
     applied   bigint DEFAULT 0,
     at        timestamptz
+);
+
+-- The bytes of an attachment, and nothing else about it.
+--
+-- An attachment is an artifact of type 'attachment' - title, project, scope,
+-- owner, the same permission filter as everything else - and this table holds
+-- the one thing an artifact row has no column for. What the bytes are (size,
+-- sha256, the claimed content type and the sniffed one) rides the artifact's
+-- fields, so it is inside the row signature; only the payload is out here.
+--
+-- It is a table of its own for two reasons, and neither is about size alone:
+--
+--   - events is append-only and every reader of the log pays for every column
+--     of every row it pages. A megabyte in there is a megabyte through every
+--     sync page, every timeline read and every peer's merge, forever.
+--   - artifacts.body is text, feeds the search vector, and is returned by every
+--     list. Postgres text cannot hold a NUL byte at all, so a captured binary
+--     would not round-trip through it - it would be refused by the database or
+--     mangled on the way in, which is the failure this surface exists to avoid.
+--
+-- bytea, not text, for that last reason. One row per artifact, so the join in
+-- store.ReadAttachment is on the primary key.
+--
+-- No foreign key onto artifacts, like tasks.artifact and events.artifact: rows
+-- arrive from peers in reading order rather than in dependency order, and a
+-- constraint here would make that order load-bearing. The artifact is what
+-- decides whether these bytes may be read - the read joins the two and applies
+-- ArtifactFilterSQL to the artifact - so an orphan here is unreachable rather
+-- than exposed.
+--
+-- Not replicated yet. The artifact row travels as it always did, the bytes stay
+-- on the node they were written to, and a peer that pulled the row is told the
+-- content is not here rather than handed an empty file. The digest that would
+-- let a peer check bytes it fetched later is already inside the signature, so
+-- carrying them across is a sync change and not a schema one.
+CREATE TABLE IF NOT EXISTS attachment_bytes (
+    artifact text PRIMARY KEY,
+    content  bytea NOT NULL,
+    created  timestamptz DEFAULT now()
 );
 
 CREATE INDEX IF NOT EXISTS artifacts_project_type_idx ON artifacts (project, type);
