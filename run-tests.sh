@@ -1082,6 +1082,199 @@ entries_are_on_the_timeline_and_not_postable_onto_it() {
 		"$(jqv .error)"
 }
 
+# ------------------------------------------------------------- proposals
+#
+# A proposal is an artifact and a vote is an event, so what these checks assert
+# is not storage. It is the four claims the surface exists to make, over the
+# wire, with two principals:
+#
+#   - a vote from somebody who cannot read the proposal is refused, in the same
+#     words a read of it would be. Voting is not a way to find out that
+#     something exists, and consent from somebody who cannot see what they are
+#     agreeing to is not consent.
+#   - changing your mind APPENDS. The old vote is still in the log afterwards
+#     with the reason it was cast for, which is the whole point: an
+#     implementation that overwrote would pass every tally check ever written
+#     and destroy the record.
+#   - the tally is one vote per principal, not one per event, and it says how
+#     many entries are behind it so the two can be seen to be different numbers.
+#   - a closed proposal takes no more votes, and the refusal says when.
+
+# A proposal is raised in a room, and the room is a filter on it exactly as it
+# is on a todo: it narrows the panel and nothing else.
+a_proposal_is_raised_in_a_room() {
+	recall
+	want_tool proposal_write "$TOKEN_A" \
+		'{"title": "move the gate to the wired interface",
+		  "body": "loopback 8787 is no longer served",
+		  "room": "general"}' || return 1
+	want_eq "it is a proposal" "$(tv .item.type)" proposal || return 1
+	want_eq "born open" "$(tv .item.status)" open || return 1
+	want_eq "raised in general" "$(tv .item.fields.room)" general || return 1
+	want_eq "in the project" "$(tv .item.project)" pa || return 1
+
+	local raised
+	raised="$(tv .item.id)"
+	remember PROPOSAL "$raised"
+
+	want_tool proposal_list "$TOKEN_A" '{"room": "general", "status": "open"}' || return 1
+	want_eq "the room's open proposals hold it" \
+		"$(printf '%s' "$TOOL_JSON" | jq "[.items[] | select(.id == \"$raised\")] | length")" 1 || return 1
+	want_tool proposal_list "$TOKEN_A" '{"room": "build"}' || return 1
+	want_eq "another room's do not" \
+		"$(printf '%s' "$TOOL_JSON" | jq "[.items[] | select(.id == \"$raised\")] | length")" 0 || return 1
+	printf 'proposal %s, open, in general\n' "$raised"
+}
+
+# The floor. A proposal written at scope=project is the project's and nobody
+# else's - pb holds a read grant on pa and it does not reach this - so B is
+# refused, and refused as an id that is not there rather than as one they may
+# not have.
+a_vote_from_somebody_who_cannot_read_the_proposal_is_refused() {
+	recall
+	local args
+	args="$(jq -nc --arg p "$PROPOSAL" '{proposal: $p, choice: "for", reason: "sounds fine"}')" || return 1
+	want_tool_fails vote "$TOKEN_B" "$args" "no such proposal" || return 1
+	args="$(jq -nc --arg p "$PROPOSAL" '{id: $p}')" || return 1
+	want_tool_fails proposal_read "$TOKEN_B" "$args" "no such proposal" || return 1
+
+	# And nothing landed: the owner sees every vote on their own proposal, so
+	# an empty log here is the whole log.
+	args="$(jq -nc --arg p "$PROPOSAL" '{id: $p}')" || return 1
+	want_tool proposal_read "$TOKEN_A" "$args" || return 1
+	want_eq "the refused vote is not in the log" "$(tv '.votes | length')" 0 || return 1
+	want_eq "and not in the tally" "$(tv .tally.voters)" 0 || return 1
+}
+
+# The discriminating check. Two principals vote, one of them twice, and what is
+# asserted afterwards is the LOG: both of A's votes are in it, in the order they
+# were cast, with the first one's reason intact. Only then the tally.
+changing_a_vote_appends_and_the_tally_follows_the_latest() {
+	recall
+	local args
+	args="$(jq -nc --arg p "$PROPOSAL" \
+		'{proposal: $p, choice: "for", reason: "the LAN bind is the point"}')" || return 1
+	want_tool vote "$TOKEN_A" "$args" || return 1
+	want_eq "the vote is the person's" "$(tv .vote.actor)" "$USER_A" || return 1
+	local first
+	first="$(tv .vote.id)"
+
+	args="$(jq -nc --arg p "$PROPOSAL" '{proposal: $p, choice: "abstain"}')" || return 1
+	want_tool vote "$TOKEN_A_AGENT" "$args" || return 1
+	want_eq "an agent votes as itself, not as the person behind it" \
+		"$(tv .vote.actor)" "$AGENT_A" || return 1
+
+	# A changes their mind.
+	args="$(jq -nc --arg p "$PROPOSAL" \
+		'{proposal: $p, choice: "against", reason: "the unit owns the port"}')" || return 1
+	want_tool vote "$TOKEN_A" "$args" || return 1
+	local second
+	second="$(tv .vote.id)"
+	if [ "$first" = "$second" ]; then
+		printf 'the second vote reused the first row (%s), so the first is gone\n' "$first" >&2
+		return 1
+	fi
+
+	args="$(jq -nc --arg p "$PROPOSAL" '{id: $p}')" || return 1
+	want_tool proposal_read "$TOKEN_A" "$args" || return 1
+	want_eq "all three entries are in the log" "$(tv '.votes | length')" 3 || return 1
+	want_eq "the changed vote is still there, as it was cast" \
+		"$(tv '.votes[0].choice')" for || return 1
+	want_eq "with the reason it was cast for" \
+		"$(tv '.votes[0].reason')" "the LAN bind is the point" || return 1
+	want_eq "and its own id" "$(tv '.votes[0].id')" "$first" || return 1
+	want_eq "the latest is last" "$(tv '.votes[2].id')" "$second" || return 1
+
+	# The tally: one vote per principal, and the number of entries behind it.
+	want_eq "the latest vote counts" "$(tv .tally.against)" 1 || return 1
+	want_eq "and the one it replaced does not" "$(tv .tally.for)" 0 || return 1
+	want_eq "the agent's abstention" "$(tv .tally.abstain)" 1 || return 1
+	want_eq "two principals answered" "$(tv .tally.voters)" 2 || return 1
+	want_eq "behind three entries" "$(tv .tally.votes)" 3 || return 1
+	printf 'votes %s then %s by %s, and one by %s: 2 voters, 3 entries\n' \
+		"$first" "$second" "$USER_A" "$AGENT_A"
+}
+
+# Closing is manual, it records an outcome, and it is a line under the decision:
+# what comes after it is refused, and the refusal says when it closed. Nothing
+# in here counts the votes and decides - a rule that did would be a governance
+# system nobody agreed to.
+a_closed_proposal_refuses_further_votes_and_says_when() {
+	recall
+	local args
+	args="$(jq -nc --arg p "$PROPOSAL" \
+		'{id: $p, outcome: "agreed: serve takes one listen address, and it is the LAN one"}')" || return 1
+	want_tool proposal_write "$TOKEN_A" "$args" || return 1
+	want_eq "it is closed" "$(tv .item.status)" closed || return 1
+	local at
+	at="$(tv .item.fields.closed_at)"
+	if [ -z "$at" ] || [ "$at" = null ]; then
+		printf 'the closure recorded no moment, so no refusal can name one\n' >&2
+		return 1
+	fi
+	remember PROPOSAL_CLOSED_AT "$at"
+
+	args="$(jq -nc --arg p "$PROPOSAL" '{proposal: $p, choice: "against", reason: "I have thoughts"}')" || return 1
+	want_tool_fails vote "$TOKEN_A_AGENT" "$args" "$at" || return 1
+	case "$TOOL_ERR" in
+	*"serve takes one listen address"*) ;;
+	*)
+		printf 'the refusal does not say what was decided: %s\n' "$TOOL_ERR" >&2
+		return 1
+		;;
+	esac
+
+	# It closed once. A second outcome over the first would rewrite the record
+	# rather than add to it, and so would editing what people voted on.
+	args="$(jq -nc --arg p "$PROPOSAL" '{id: $p, outcome: "actually, no"}')" || return 1
+	want_tool_fails proposal_write "$TOKEN_A" "$args" "$at" || return 1
+	args="$(jq -nc --arg p "$PROPOSAL" '{id: $p, title: "something else entirely"}')" || return 1
+	want_tool_fails proposal_write "$TOKEN_A" "$args" "is a record now" || return 1
+
+	# And the votes cast before the close are untouched.
+	args="$(jq -nc --arg p "$PROPOSAL" '{id: $p}')" || return 1
+	want_tool proposal_read "$TOKEN_A" "$args" || return 1
+	want_eq "the log still holds three entries" "$(tv '.votes | length')" 3 || return 1
+	want_eq "and the tally two voters" "$(tv .tally.voters)" 2 || return 1
+}
+
+# The read path the console will use. No view is drawn in this change - the room
+# panel is somebody else's edit - so what is checked is the data: the proposal,
+# its votes and its tally over HTTP, under the same filter the tools keep.
+the_proposal_reads_back_over_http() {
+	recall
+	api GET "$TOKEN_A" "/api/proposal/$PROPOSAL" || return 1
+	want_eq "status" "$API_STATUS" 200 || return 1
+	want_eq "the proposal" "$(jqv .item.id)" "$PROPOSAL" || return 1
+	want_eq "closed" "$(jqv .closed)" true || return 1
+	want_eq "when" "$(jqv .closed_at)" "$PROPOSAL_CLOSED_AT" || return 1
+	want_eq "every vote, in order" "$(jqv '.votes | length')" 3 || return 1
+	want_eq "the first one as it was cast" "$(jqv '.votes[0].choice')" for || return 1
+	want_eq "two voters" "$(jqv .tally.voters)" 2 || return 1
+
+	api GET "$TOKEN_A" '/api/proposals?room=general&status=closed' || return 1
+	want_eq "the room's closed proposals hold it" \
+		"$(printf '%s' "$API_BODY" | jq "[.items[] | select(.id == \"$PROPOSAL\")] | length")" 1 || return 1
+
+	# The filter is the same one, so B gets the answer B gets everywhere else.
+	want_status 404 GET "$TOKEN_B" "/api/proposal/$PROPOSAL" || return 1
+	printf 'the console reads the proposal, its three votes and its tally; B gets a 404\n'
+}
+
+# A vote is minted by the verb that does it. Both refusals that make the record
+# worth reading are on that verb, so an event a client could write by hand would
+# be a vote cast an hour after the decision was recorded, counted.
+a_vote_cannot_be_written_by_hand() {
+	recall
+	want_status 403 POST "$TOKEN_A" /api/events \
+		"$(jq -nc --arg a "$PROPOSAL" \
+			'{type: "proposal.vote", artifact: $a, room: "general",
+			  body: "voted for", meta: {choice: "for"}}')" || return 1
+	want_status 403 POST "$TOKEN_A" /api/events \
+		"$(jq -nc --arg a "$PROPOSAL" '{type: "proposal.close", artifact: $a, body: "closed"}')" || return 1
+	printf 'a hand-written vote: %s\n' "$(jqv .error)"
+}
+
 # ------------------------------------------------------- the project entity
 #
 # A project used to be a free string on a token: nothing declared one, nothing
@@ -5195,6 +5388,22 @@ check "an entry says what changed, or it is not one" an_entry_says_what_changed
 check "the read is the recent entries, newest first" the_worklog_reads_recent_first
 check "entries are on the timeline, and cannot be posted onto it" \
 	entries_are_on_the_timeline_and_not_postable_onto_it
+
+say "proposals, and voting on them"
+check "a proposal is raised in a room, and the room narrows the list" \
+	a_proposal_is_raised_in_a_room
+check "a vote from a principal who cannot read the proposal is refused" \
+	a_vote_from_somebody_who_cannot_read_the_proposal_is_refused
+check "changing a vote appends, the old vote stays, and the tally follows the latest" \
+	changing_a_vote_appends_and_the_tally_follows_the_latest
+check "the tally, the log and the refusals, in the store" \
+	go test -count=1 -run 'TestAVoteFromSomebodyWhoCannotReadTheProposalIsRefused|TestChangingAVoteAppendsAndTheOldVoteIsStillThere|TestTheTallyCountsOneVotePerPrincipalNotOnePerEvent|TestAClosedProposalRefusesVotesAndSaysWhenItClosed' ./internal/store
+check "a closed proposal refuses further votes, and says when it closed" \
+	a_closed_proposal_refuses_further_votes_and_says_when
+check "the proposal, its votes and its tally read back over HTTP" \
+	the_proposal_reads_back_over_http
+check "a vote is written by the verb that casts it, not by hand" \
+	a_vote_cannot_be_written_by_hand
 
 say "the project entity"
 check "a write into a project nobody declared is refused" \
