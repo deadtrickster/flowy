@@ -67,7 +67,51 @@ dsn="${1:-${DATABASE_URL:-}}"
 [ -n "$dsn" ] || die "no database: pass a DSN or set DATABASE_URL"
 [ -f "$SCHEMA" ] || die "no schema.sql at $SCHEMA"
 [ -f "$FINGERPRINT" ] || die "no fingerprint query at $FINGERPRINT"
-command -v psql >/dev/null 2>&1 || die "psql is not on PATH"
+# PSQL, OR A CONTAINER THAT HAS ONE. The dogfood database runs as a docker
+# container (postgres:18 on 127.0.0.1:5433) and this host has no postgres client
+# installed at all, so a deploy from here refused at this line and could not
+# migrate anything. That refusal was CORRECT - it did not install a binary it
+# could not migrate for - but it made every deploy from this machine impossible,
+# which is a worse outcome than the one it was guarding against.
+#
+# So: use psql if it is here, otherwise run it inside the container that is
+# already serving this DSN's port. FLOWY_PSQL overrides both when somebody knows
+# better than this guess. The container form pipes files in on stdin because the
+# schema lives on the host and not in the container.
+psql_run() { psql "$@"; }
+if [ -n "${FLOWY_PSQL:-}" ]; then
+	# shellcheck disable=SC2086 # deliberately word-split: FLOWY_PSQL may name a
+	# command with arguments, e.g. "docker exec -i somepg psql".
+	psql_run() { $FLOWY_PSQL "$@"; }
+elif ! command -v psql >/dev/null 2>&1; then
+	port=$(printf '%s' "$dsn" | sed -nE 's#.*:([0-9]+)/.*#\1#p')
+	container=""
+	if command -v docker >/dev/null 2>&1 && [ -n "$port" ]; then
+		container=$(docker ps --format '{{.Names}} {{.Ports}}' 2>/dev/null |
+			awk -v p=":$port->" '$0 ~ p {print $1; exit}')
+	fi
+	[ -n "$container" ] || die "psql is not on PATH and no running container publishes port ${port:-?} - install a postgres client, or set FLOWY_PSQL to a command that reaches this database (for example: FLOWY_PSQL=\"docker exec -i somepg psql\")"
+	# INSIDE the container the host's published port does not exist - postgres
+	# listens on its own 5432 and the DSN we were handed says 5433, which is the
+	# mapping seen from out here. So the host/port are dropped and the user and
+	# database are taken from the DSN, reaching postgres over the container's own
+	# local socket. Passing the host DSN through unchanged connects to nothing.
+	dbuser=$(printf '%s' "$dsn" | sed -nE 's#^[a-z]+://([^:@/]+).*#\1#p')
+	dbname=$(printf '%s' "$dsn" | sed -nE 's#.*/([^/?]+)(\?.*)?$#\1#p')
+	[ -n "$dbname" ] || die "cannot read a database name out of the DSN, so the container fallback has nothing to connect to"
+	say "psql is not on PATH - using the container serving port $port: $container (db=$dbname user=${dbuser:-default})"
+	# Every call site says -d "${PSQL_DB:-$dsn}", so setting this here is what
+	# swaps the host DSN for the plain database name on the container path, and
+	# leaves the DSN untouched when a real psql is doing the work.
+	PSQL_DB=$dbname
+	psql_run() {
+		if [ -n "$dbuser" ]; then
+			docker exec -i "$container" psql -U "$dbuser" "$@"
+		else
+			docker exec -i "$container" psql "$@"
+		fi
+	}
+fi
 
 # CREATE ... IF NOT EXISTS is chatty on a re-apply - one NOTICE per object that
 # was already there, which is all of them on a routine deploy. The delta below
@@ -81,17 +125,17 @@ export PGOPTIONS="${PGOPTIONS:-} -c client_min_messages=warning"
 # the schema was never applied. That is the outage, exactly.
 errlog="$(mktemp -t flowy-migrate-XXXXXX)" || die "cannot make a temp file"
 trap 'rm -f "$errlog"' EXIT
-if ! psql -v ON_ERROR_STOP=1 -tAq -d "$dsn" -c 'SELECT 1' >/dev/null 2>"$errlog"; then
+if ! psql_run -v ON_ERROR_STOP=1 -tAq -d "${PSQL_DB:-$dsn}" -c 'SELECT 1' >/dev/null 2>"$errlog"; then
 	[ -s "$errlog" ] && sed 's/^/     /' "$errlog" >&2
 	die "cannot reach the database"
 fi
 
-fingerprint() { psql -v ON_ERROR_STOP=1 -tAq -F'|' -d "$dsn" -f "$FINGERPRINT"; }
+fingerprint() { psql_run -v ON_ERROR_STOP=1 -tAq -F'|' -d "${PSQL_DB:-$dsn}" <"$FINGERPRINT"; }
 
 before="$(fingerprint)" || die "cannot read the schema catalogue"
 
 say "==> applying schema.sql"
-if ! psql -v ON_ERROR_STOP=1 -q -d "$dsn" -f "$SCHEMA"; then
+if ! psql_run -v ON_ERROR_STOP=1 -q -d "${PSQL_DB:-$dsn}" <"$SCHEMA"; then
 	die "schema.sql did not apply - the database is unchanged (the file is one transaction)"
 fi
 
