@@ -1690,7 +1690,7 @@ a_mention_addresses_the_message() {
 	want_eq "a name inside the sentence addresses too" "$(jqv .addressee)" "$USER_B" || return 1
 	# And the same name shouted at the start of a sentence is the same person.
 	local shouted
-	shouted="$(printf '%s' "$HANDLE_B" | tr 'a-z' 'A-Z')"
+	shouted="$(printf '%s' "$HANDLE_B" | tr '[:lower:]' '[:upper:]')"
 	say_body "$TOKEN_A" addressing "@$shouted please" || return 1
 	want_eq "the case it was written in does not matter" "$(jqv .addressee)" "$USER_B" || return 1
 	printf 'the name in the prose is the addressing: %s\n' "$USER_B"
