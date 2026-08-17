@@ -257,6 +257,13 @@ var apiRoutes = []string{
 	"GET /api/chat/{room}",
 	"GET /api/chat/{room}/wait",
 	"POST /api/chat/{room}/todo",
+	// The assignment doors. They are on this list because an operator went
+	// looking for one and found nothing: /api/node is what a client asks when it
+	// wants to know what this node can do, and a door that is not on the answer is
+	// a door nobody finds.
+	"POST /api/chat/{room}/todo/{id}/assignee",
+	"POST /api/todo/{id}/assignee",
+	"GET /api/todo/{id}/assignee",
 	"GET /api/proposals",
 	"GET /api/proposal/{id}",
 	"POST /api/dm/{to}",
@@ -369,6 +376,14 @@ func (s *server) routes() http.Handler {
 	api.HandleFunc("DELETE /api/todo/{id}/deps/{blocker}", s.handleRemoveDep)
 	api.HandleFunc("GET /api/todo/{id}/deps", s.handleGetDeps)
 	api.HandleFunc("GET /api/ready", s.handleReady)
+	// Who is carrying a todo - any todo the caller can read, wherever it was
+	// raised, and whoever wrote it. Read permission is the whole bar: the assignee
+	// is a name in fields and grants nobody anything, so a queue one agent filed
+	// is a queue the room can drain. The claim lands as an entry on the todo, so
+	// it reaches exactly the todo's readers and says who made it. See
+	// internal/store/assign.go, and assign.go for the room's door beside this one.
+	api.HandleFunc("POST /api/todo/{id}/assignee", s.handleTodoAssign)
+	api.HandleFunc("GET /api/todo/{id}/assignee", s.handleTodoAssignee)
 	// Direct messages. They are chat events and they are read back through the
 	// same filter every other event is, so these are three narrowings of reads
 	// that already existed rather than a private surface of their own - the

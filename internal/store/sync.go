@@ -1474,6 +1474,13 @@ var mintedEventTypes = map[string]bool{
 	// thing reading that edge is a machine deciding whether to start work.
 	EventDepAdd:    true,
 	EventDepRemove: true,
+	// An assignment. It is minted for the first reason - the claim is made by
+	// going through the verb - and because the refusal that makes it safe is on
+	// the verb: the writer has to be able to READ the todo. An entry a client
+	// could hand over would be a handover asserted about work the writer cannot
+	// see, and the value that entry is the record of would have been written by
+	// nobody.
+	EventTodoAssign: true,
 }
 
 // MintedEventType reports whether an event type is one this node's own handlers

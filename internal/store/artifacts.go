@@ -210,7 +210,14 @@ func (d *DB) upsertArtifact(ctx context.Context, q execer, a *Artifact) error {
 // The event's artifact and project are taken from the item rather than from the
 // caller: the id may only exist once fillAt has minted it, and an entry that
 // named anything else would not be a record of this write.
-func (d *DB) WriteMemory(ctx context.Context, a *Artifact, e *Event) error {
+//
+// More than one event is allowed and means "these happened as one thing", the
+// way SetArtifactFields takes several: a write that also says who is carrying the
+// item leaves the assignment entry here, in the same transaction, so the log
+// behind an assignee can never be missing the write that moved it. The first
+// event shares the row's reading and the rest take their own - see
+// SetArtifactFields, where that rule and the cursor it protects are written down.
+func (d *DB) WriteMemory(ctx context.Context, a *Artifact, events ...*Event) error {
 	ctx, span := otel.Start(ctx, otel.KindIngest, "memory.write")
 	defer span.End()
 	at, err := d.clock.Pack()
@@ -218,19 +225,28 @@ func (d *DB) WriteMemory(ctx context.Context, a *Artifact, e *Event) error {
 		return fmt.Errorf("store: write memory: %w", err)
 	}
 	d.fillAt(a, at)
-	e.SeqHLC = at
-	e.Artifact, e.Project = a.ID, a.Project
+	for i, e := range events {
+		if i == 0 {
+			e.SeqHLC = at
+		}
+		e.Artifact, e.Project = a.ID, a.Project
+	}
 
 	return d.inTx(ctx, "write memory "+a.ID, func(tx *sql.Tx) error {
 		if err := d.upsertArtifact(ctx, tx, a); err != nil {
 			return err
 		}
-		return d.appendEvent(ctx, tx, e)
+		for _, e := range events {
+			if err := d.appendEvent(ctx, tx, e); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 }
 
-// SetArtifactFields replaces one artifact's fields column and writes the event
-// that records the change, in one transaction and under one clock reading.
+// SetArtifactFields replaces one artifact's fields column and writes the events
+// that record the change, in one transaction and under one clock reading.
 //
 // It is setArtifactStatus's shape rather than an upsert, and for the same
 // reason: this changes one column, and replacing the row would make "somebody
@@ -247,7 +263,15 @@ func (d *DB) WriteMemory(ctx context.Context, a *Artifact, e *Event) error {
 // read, and the read is not the write - between the two the owner's delete can
 // land - so the predicate says so and ErrNotFound is what the caller would have
 // got had the delete landed a moment earlier.
-func (d *DB) SetArtifactFields(ctx context.Context, a *Artifact, fields json.RawMessage, e *Event) error {
+//
+// More than one event is allowed and means "these happened as one thing": an
+// assignment is the entry that records it AND, when the room's panel is the door,
+// the message that tells the room - see AssignTodo. Written one statement at a
+// time they could disagree, and a node that stopped between them would leave a
+// handover the room was never told about, permanently.
+func (d *DB) SetArtifactFields(
+	ctx context.Context, a *Artifact, fields json.RawMessage, events ...*Event,
+) error {
 	ctx, span := otel.Start(ctx, otel.KindIngest, "artifact.fields")
 	defer func() {
 		span.SetArtifact(a.ID)
@@ -263,13 +287,25 @@ func (d *DB) SetArtifactFields(ctx context.Context, a *Artifact, fields json.Raw
 	if err := d.signArtifact(ctx, a); err != nil {
 		return err
 	}
-	// The event's artifact and project are taken from the item rather than from
+	// Each event's artifact and project are taken from the item rather than from
 	// the caller, as WriteMemory takes them: an entry naming anything else
 	// would not be a record of this write, and a projectless event is readable
 	// by its own actor and nobody else (see EventFilterSQL) - which for a
 	// message announcing a change to a room's plan is the room never hearing.
-	e.SeqHLC = at
-	e.Artifact, e.Project = a.ID, a.Project
+	//
+	// The FIRST event shares the row's reading, because it is the record OF this
+	// write and the two are one point in the order. Any event after it is left
+	// unstamped and takes the next reading in appendEvent, deliberately: a log
+	// cursor is a seq_hlc and it is exclusive, so two events sharing one reading
+	// are two events a page boundary can fall between - and the second of them
+	// would then be skipped by every reader paging forwards, silently and
+	// permanently.
+	for i, e := range events {
+		if i == 0 {
+			e.SeqHLC = at
+		}
+		e.Artifact, e.Project = a.ID, a.Project
+	}
 
 	return d.inTx(ctx, "set fields of "+a.ID, func(tx *sql.Tx) error {
 		var column any
@@ -290,7 +326,12 @@ func (d *DB) SetArtifactFields(ctx context.Context, a *Artifact, fields json.Raw
 		if n == 0 {
 			return fmt.Errorf("store: set fields: %w: artifact %s", ErrNotFound, a.ID)
 		}
-		return d.appendEvent(ctx, tx, e)
+		for _, e := range events {
+			if err := d.appendEvent(ctx, tx, e); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 }
 
@@ -428,6 +469,28 @@ func RoomOf(a *Artifact) string {
 	return room
 }
 
+// ArtifactFields reads an artifact's fields as a map a write can edit one key of,
+// and an empty one for a row that carries none. Unlike artifactField below it
+// REFUSES fields that do not parse rather than reading them as absent: a caller
+// about to write the column back would otherwise drop every key it did not know
+// about, which is a row silently losing its room and the message it was raised
+// from.
+func ArtifactFields(a *Artifact) (map[string]any, error) {
+	fields := map[string]any{}
+	if a == nil || len(a.Fields) == 0 {
+		return fields, nil
+	}
+	if err := json.Unmarshal(a.Fields, &fields); err != nil {
+		return nil, fmt.Errorf("store: artifact %s carries fields that do not parse: %w", a.ID, err)
+	}
+	if fields == nil {
+		// A fields column holding a literal `null` parses into a nil map, and a
+		// caller that wrote a key into that would panic.
+		fields = map[string]any{}
+	}
+	return fields, nil
+}
+
 // artifactField reads one key out of an artifact's fields, and nil for a row
 // that carries none or carries JSON that does not parse. A row whose fields are
 // unreadable is a row that says nothing about this key, which is what every
@@ -512,6 +575,10 @@ func NobodyName(name string) bool { return nobodyWords[strings.ToLower(strings.T
 // those still read the way they always did. But a key that is there wins even
 // when it is empty - somebody said out loud that nobody is carrying this, and a
 // read that fell through to a stale OWNER line would quietly undo them.
+//
+// This is the current value and nothing else. WHO put it there and WHEN is the
+// log's answer, not the row's - see AssignTodo, which writes the two together so
+// that this function and that log cannot disagree.
 func AssigneeOf(a *Artifact) string {
 	if named := artifactField(a, AssigneeField); named != nil {
 		name, _ := named.(string)

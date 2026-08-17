@@ -37,6 +37,18 @@ var memKinds = []string{"note", "todo", "feature", "handoff"}
 // what the queue orders have to be one answer.
 var workKinds = store.WorkKinds
 
+// isWorkKind reports whether a kind is one the queue holds - and therefore one
+// that can be carried by somebody. It reads the list above rather than spelling
+// the three words out again.
+func isWorkKind(kind string) bool {
+	for _, k := range workKinds {
+		if kind == k {
+			return true
+		}
+	}
+	return false
+}
+
 // tool is one MCP tool: what a client is told about it, and what runs.
 type tool struct {
 	Name        string         `json:"name"`
@@ -137,11 +149,13 @@ func toolSpecs() []tool { return allTools() }
 // allTools is every tool this server serves.
 func allTools() []tool {
 	out := make([]tool, 0, len(tools)+len(reportTools)+len(proposalTools)+len(depTools)+
-		len(attachmentTools)+len(worklogTools)+len(projectTools)+len(observabilityTools))
+		len(assignTools)+len(attachmentTools)+len(worklogTools)+len(projectTools)+
+		len(observabilityTools))
 	out = append(out, tools...)
 	out = append(out, reportTools...)
 	out = append(out, proposalTools...)
 	out = append(out, depTools...)
+	out = append(out, assignTools...)
 	out = append(out, attachmentTools...)
 	out = append(out, worklogTools...)
 	out = append(out, projectTools...)
@@ -264,7 +278,7 @@ func memWrite(ctx context.Context, m *mcpServer, p *store.Principal, raw json.Ra
 	}
 	assignee := ""
 	if a.Assignee != nil {
-		if assignee, err = assigneeArg(*a.Assignee); err != nil {
+		if assignee, err = store.NormalizeAssignee(*a.Assignee); err != nil {
 			return nil, err
 		}
 	}
@@ -288,7 +302,17 @@ func memWrite(ctx context.Context, m *mcpServer, p *store.Principal, raw json.Ra
 			return nil, notThere(a.ID)
 		}
 		if old.OwnerUser != p.UserID {
-			return nil, fmt.Errorf("memory item %s belongs to somebody else", a.ID)
+			// Readable, and not this principal's to change. It is a FORBIDDEN
+			// refusal rather than an ordinary tool error, which is what makes it
+			// arrive as an error rather than inside a success envelope - see
+			// forbidden in mcp.go for what that cost. The sentence names the door
+			// that does work, because "you may not edit this" is only half an
+			// answer when the thing the caller was trying to do is allowed: an
+			// item's words are its author's, and who is carrying it is not.
+			return nil, refuseForbidden("memory item %s belongs to somebody else, so its "+
+				"title, body, tags and status are not yours to change. Who is CARRYING it "+
+				"is: use todo_assign (or POST /api/todo/%s/assignee) - any principal who "+
+				"can read a todo may set or override its assignee", a.ID, a.ID)
 		}
 		// An update states what changes; the rest of the item stands.
 		if art.Title == "" {
@@ -400,12 +424,27 @@ func memWrite(ctx context.Context, m *mcpServer, p *store.Principal, raw json.Ra
 	if actor == "" {
 		actor = p.UserID
 	}
-	if err := m.db.WriteMemory(ctx, art, &store.Event{
+	events := []*store.Event{{
 		Type:  "memory.write",
 		Room:  "memory",
 		Actor: actor,
 		Body:  art.Title,
-	}); err != nil {
+	}}
+	// A write that says who is carrying a queue item leaves the assignment entry
+	// too, in the same transaction. The author setting an assignee here and
+	// somebody else setting one through todo_assign are the same claim, and a
+	// value that sometimes has an entry behind it and sometimes does not is a log
+	// that cannot answer the question it exists for - see store.AssignEntryEvent.
+	// Only for the kinds the queue holds: a note is not work, and the assignment
+	// log is the queue's.
+	if a.Assignee != nil && isWorkKind(art.Kind) {
+		entry, err := store.AssignEntryEvent(art, p, assignee)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, entry)
+	}
+	if err := m.db.WriteMemory(ctx, art, events...); err != nil {
 		return nil, err
 	}
 

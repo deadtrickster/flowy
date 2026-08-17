@@ -3889,6 +3889,224 @@ mem_write_takes_an_assignee() {
 		"{\"id\": \"$id\", \"assignee\": \"two\nlines\"}" "is not a name" || return 1
 }
 
+# ------------------------------------------------------------ assignment, shared
+#
+# A todo is not the property of whoever typed it. One agent files the queue and
+# the room drains it, so who is carrying an item is the one part of it that changes
+# hands without asking the author - and READ permission is the whole bar, because
+# the assignee is a name in fields that grants nobody anything.
+#
+# This is the surface a live node was missing, and the shape of the miss is why
+# these checks are written the way they are: the only door was the room panel's, a
+# queue filed by one agent read as carried by nobody from every other seat, and the
+# operator asked three times why. So each check below drives a principal who did
+# NOT write the todo.
+#
+# Its own room and its own titles: the item is handed between three seats here,
+# which is not a state to leave in a room another check reads.
+ROOM_HANDOUT="handout"
+HANDOUT_TODO="pack the countershaft bearings"
+HANDOUT_TAKER="a-drainer"
+HANDOUT_SECOND="a-second-shift"
+readonly ROOM_HANDOUT HANDOUT_TODO HANDOUT_TAKER HANDOUT_SECOND
+
+# THE ONE THAT MATTERS. A principal who did not create a todo can assign it, at
+# both doors, and the item stays its author's in every other respect.
+#
+# The operator goes first because that is the case that was impossible: another
+# person in the project, holding no share of the item, handing work out. Then A's
+# agent takes it over MCP, so the two doors are shown writing one answer that the
+# other one reads back - which is the property that makes them one implementation
+# rather than two that agree today.
+a_todo_is_assigned_by_somebody_who_did_not_write_it() {
+	recall
+	api POST "$TOKEN_A" "/api/chat/$ROOM_HANDOUT/todo" \
+		"$(jq -nc --arg t "$HANDOUT_TODO" '{title: $t}')" || return 1
+	want_eq "raise status" "$API_STATUS" 200 || return 1
+	local id
+	id="$(jqv .item.id)"
+	remember HANDOUT_ID "$id"
+	want_eq "nobody is carrying it to begin with" "$(jqv .item.fields.assignee)" null || return 1
+
+	# The operator: a second person in the project, who wrote none of this.
+	api POST "$TOKEN_OP" "/api/todo/$id/assignee" \
+		"$(jq -nc --arg a "$HANDOUT_TAKER" '{assignee: $a}')" || return 1
+	want_eq "assign status" "$API_STATUS" 200 || return 1
+	want_eq "who has it" "$(jqv .assignee)" "$HANDOUT_TAKER" || return 1
+	# On the row as well as in the answer, because that key is where every panel,
+	# the FUSE mount and the ready query all read it.
+	want_eq "and the item says so" "$(jqv .item.fields.assignee)" "$HANDOUT_TAKER" || return 1
+	# The rest of the item is still the author's. An assignment moves one key; a
+	# door that rewrote the row would be the takeover this fabric refuses.
+	want_eq "still its author's" "$(jqv .item.owner_user)" "$USER_A" || return 1
+	want_eq "with the title its author gave it" "$(jqv .item.title)" "$HANDOUT_TODO" || return 1
+	want_eq "still #handout's" "$(jqv .item.fields.room)" "$ROOM_HANDOUT" || return 1
+
+	# What the AUTHOR reads, which is the half that fails when the entry hangs off
+	# the wrong row: the value, and the queue answer a drainer acts on.
+	api GET "$TOKEN_A" "/api/todo/$id/assignee" || return 1
+	want_eq "the author's read of who has it" "$(jqv .assignee)" "$HANDOUT_TAKER" || return 1
+	ready_row "$id" "$TOKEN_A" || return 1
+	want_eq "and the queue says it too" "$(readyv .assignee)" "$HANDOUT_TAKER" || return 1
+
+	# The second door, and a third seat: A's agent takes the work over MCP.
+	want_tool todo_assign "$TOKEN_A_AGENT" \
+		"$(jq -nc --arg i "$id" --arg a "$HANDOUT_SECOND" '{todo: $i, assignee: $a}')" || return 1
+	want_eq "the claim over MCP" "$(tv .assignee)" "$HANDOUT_SECOND" || return 1
+	api GET "$TOKEN_OP" "/api/todo/$id/assignee" || return 1
+	want_eq "read back through the other door" "$(jqv .assignee)" "$HANDOUT_SECOND" || return 1
+	printf 'the operator and an agent both owned somebody else todo, over both doors\n'
+}
+
+# Read permission is the bar, and it is a real bar. A principal who cannot read the
+# todo is refused at both doors and told exactly what a read of the id would have
+# told them - nothing about the row - and nothing moves.
+#
+# The last two are the same rule about what an id is allowed to reveal: an id that
+# is not here and an id that is here and is not a queue item get one answer.
+assigning_a_todo_you_cannot_read_is_refused() {
+	recall
+	local id="$HANDOUT_ID"
+
+	want_status 404 POST "$TOKEN_B" "/api/todo/$id/assignee" \
+		"$(jq -nc --arg a "$HANDLE_B" '{assignee: $a}')" || return 1
+	want_tool_fails todo_assign "$TOKEN_B" \
+		"$(jq -nc --arg i "$id" '{todo: $i, assignee: "b-agent"}')" "no such todo" || return 1
+
+	# And whoever had it still has it. A refusal that wrote the value and then said
+	# no would be this round's own failure, from the other end.
+	api GET "$TOKEN_A" "/api/todo/$id/assignee" || return 1
+	want_eq "whoever had it still has it" "$(jqv .assignee)" "$HANDOUT_SECOND" || return 1
+	want_eq "and nobody added an entry" "$(jqv '[.log[] | select(.actor == $b)] | length' --arg b "$USER_B")" 0 || return 1
+
+	want_status 404 POST "$TOKEN_A" "/api/todo/01HNOSUCHTODO000000000000/assignee" \
+		'{"assignee": "a-bench"}' || return 1
+	# A bug is readable and is not a queue item: same answer, because naming an id
+	# here is not a way to find out what else it might be.
+	want_status 404 POST "$TOKEN_A" "/api/todo/$BUG/assignee" '{"assignee": "a-bench"}' || return 1
+	printf 'B was refused at both doors and the todo did not move\n'
+}
+
+# An assignment says WHO made it and WHEN, which is the whole reason it is an event
+# and not a field write. A column records THAT something changed; the log says the
+# operator handed this to a drainer at 09:12, and that an agent took it back after.
+#
+# The entries are the record and they append: an override does not erase the claim
+# before it, so a queue that changed hands three times says so three times. Putting
+# the work down is a claim too - the empty name is a value somebody chose.
+an_assignment_records_who_made_it() {
+	recall
+	local id="$HANDOUT_ID"
+
+	api GET "$TOKEN_A" "/api/todo/$id/assignee" || return 1
+	want_eq "both claims are in the log, oldest first" "$(jqv '.log | length')" 2 || return 1
+	want_eq "the operator made the first" "$(jqv '.log[0].actor')" "$USER_OP" || return 1
+	want_eq "as a person" "$(jqv '.log[0].actor_kind')" user || return 1
+	want_eq "handing it to" "$(jqv '.log[0].assignee')" "$HANDOUT_TAKER" || return 1
+	want_eq "and the agent made the second" "$(jqv '.log[1].actor')" "$AGENT_A" || return 1
+	want_eq "as an agent" "$(jqv '.log[1].actor_kind')" agent || return 1
+	# The person behind the seat is on the row beside the seat, so "an agent claimed
+	# this" and "somebody claimed this" are not the same answer.
+	want_eq "acting for its person" "$(jqv '.log[1].actor_user')" "$USER_A" || return 1
+	want_eq "the standing claim is the last one" "$(jqv .assignment.entry)" "$(jqv '.log[1].id')" || return 1
+	if [ -z "$(jqv .assignment.at)" ] || [ "$(jqv .assignment.at)" = null ]; then
+		printf 'the standing claim does not say when it was made\n' >&2
+		return 1
+	fi
+
+	# Putting it down, by a third seat again.
+	api POST "$TOKEN_OP" "/api/todo/$id/assignee" '{"assignee": "unassigned"}' || return 1
+	want_eq "nobody has it" "$(jqv .assignee)" "" || return 1
+	want_eq "and the claim says nobody, rather than saying nothing" \
+		"$(jqv .assignment.assignee)" "" || return 1
+	want_eq "made by the operator" "$(jqv .assignment.by)" "$USER_OP" || return 1
+
+	# The author's own write leaves an entry as well. A value that sometimes has a
+	# claim behind it and sometimes does not is a log that cannot answer the
+	# question it exists for, so mem_write appends one in the same transaction.
+	want_tool mem_write "$TOKEN_A" \
+		"$(jq -nc --arg i "$id" --arg a "$HANDOUT_TAKER" '{id: $i, assignee: $a}')" || return 1
+	api GET "$TOKEN_A" "/api/todo/$id/assignee" || return 1
+	want_eq "four claims now" "$(jqv '.log | length')" 4 || return 1
+	want_eq "the last one is the author's" "$(jqv '.log[3].actor')" "$USER_A" || return 1
+	want_eq "naming who they gave it to" "$(jqv .assignee)" "$HANDOUT_TAKER" || return 1
+
+	# And an entry is minted: the refusals that make it worth reading are on the
+	# verb, so one handed in through the generic event door would be a handover
+	# nobody made, about work the writer may not even be able to see.
+	want_status 403 POST "$TOKEN_A" /api/events \
+		"$(jq -nc --arg i "$id" '{type: "todo.assign", room: "handout", artifact: $i,
+		   body: "assigned to a-forger", meta: {assignee: "a-forger"}}')" || return 1
+	api GET "$TOKEN_A" "/api/todo/$id/assignee" || return 1
+	want_eq "so the forged claim is not in the log" "$(jqv '.log | length')" 4 || return 1
+	printf 'four claims by four seats, each saying who and when; a forged one refused\n'
+}
+
+# THE OTHER HALF OF THIS ROUND. An update this principal may not make FAILS, and
+# fails where a caller cannot miss it.
+#
+# mem_write on somebody else's item used to come back as a JSON-RPC RESULT with
+# isError set - which at the transport is a 200 with a normal-looking envelope - so
+# nine calls in a row "succeeded" and wrote nothing while the operator went looking
+# for what was wrong with the ids. A refusal that reports success is
+# indistinguishable from success, and this is the check that says so: the answer
+# has to be a protocol ERROR with a code, the way POST /api/artifact/{id}/delete
+# answers 403, and the row has to be untouched afterwards.
+#
+# It also has to name the door that DOES work, because half of what went wrong was
+# that the thing being attempted is allowed - an item's words are its author's, and
+# who is carrying it is not.
+mem_write_refuses_an_update_it_will_not_make() {
+	recall
+	local id="$HANDOUT_ID" was body
+	api GET "$TOKEN_A" "/api/artifact/$id" || return 1
+	was="$(jqv .fields.assignee)"
+	body="$(jqv .body)"
+
+	mcp tools/call "$TOKEN_OP" \
+		"$(jq -nc --arg i "$id" '{name: "mem_write",
+		   arguments: {id: $i, assignee: "operator", body: "rewritten by somebody else"}}')" || return 1
+	want_eq "no result envelope at all" "$(rv '.result // "none"')" none || return 1
+	want_eq "a protocol error with a code" "$(rv .error.code)" -32003 || return 1
+	case "$(rv .error.message)" in
+	*"belongs to somebody else"*) ;;
+	*)
+		printf 'the refusal does not say whose item it is: %s\n' "$(rv .error.message)" >&2
+		return 1
+		;;
+	esac
+	case "$(rv .error.message)" in
+	*todo_assign*) ;;
+	*)
+		printf 'the refusal does not name the door that works: %s\n' "$(rv .error.message)" >&2
+		return 1
+		;;
+	esac
+
+	# Nothing moved, which is the second half: a refusal that wrote half of it
+	# would be worse than the silence.
+	api GET "$TOKEN_A" "/api/artifact/$id" || return 1
+	want_eq "the assignee it had" "$(jqv .fields.assignee)" "$was" || return 1
+	want_eq "and the body its author wrote" "$(jqv .body)" "$body" || return 1
+
+	# The whole update path, not only the assignee field: a title-only edit of
+	# somebody else's item is refused the same way.
+	mcp tools/call "$TOKEN_OP" \
+		"$(jq -nc --arg i "$id" '{name: "mem_write",
+		   arguments: {id: $i, title: "retitled by a stranger"}}')" || return 1
+	want_eq "a title edit is refused the same way" "$(rv .error.code)" -32003 || return 1
+	api GET "$TOKEN_A" "/api/artifact/$id" || return 1
+	want_eq "with the title untouched" "$(jqv .title)" "$HANDOUT_TODO" || return 1
+
+	# And the same write over HTTP, where the code has always been the 403 delete
+	# answers with. The two doors onto one write path refuse together.
+	want_status 403 POST "$TOKEN_OP" /api/artifacts \
+		"$(jq -nc --arg i "$id" '{id: $i, type: "memory", kind: "todo",
+		   title: "retitled by a stranger"}')" || return 1
+	want_status 403 POST "$TOKEN_OP" "/api/artifact/$id/delete" || return 1
+	printf 'refused as an error with a code, twice, and the item is as its author left it\n'
+}
+
 # The panel SETS one, OVERRIDES one, and a poll of the room does not wipe it -
 # in a real browser, driving the control a person drives.
 #

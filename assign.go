@@ -1,0 +1,298 @@
+package main
+
+// WHO IS CARRYING A TODO, over HTTP.
+//
+// THE RULES ARE ALL IN THE STORE - see internal/store/assign.go, which is where
+// they are and why they are those rules - so this file is argument checking, a
+// sentence for the room, and status codes. That is deliberate and it is the shape
+// the worklog and the dependency surfaces already have: an operator clicking a
+// name in the console, an agent claiming a task over MCP and a drainer handing one
+// on over HTTP must not be able to reach three ideas of who is carrying what, and
+// the way to guarantee that is that none of them holds one. store.AssignTodo is
+// the only thing in this program that moves an assignee.
+//
+// THERE ARE THREE DOORS AND ONE WAY IN.
+//
+//   - POST /api/todo/{id}/assignee - any todo you can read, from anywhere. This
+//     is the one that was missing, and its absence is what this change is about:
+//     an operator with a queue full of one agent's todos had no way at all to
+//     hand any of them out, because the only door was the room panel's and it
+//     only opens for a todo raised in a room.
+//   - POST /api/chat/{room}/todo/{id}/assignee - the room panel's door, which
+//     also says the handover out loud in the room. It is the same write with a
+//     chat message beside it, in one transaction.
+//   - todo_assign over MCP - see mcp_assign.go, which is twelve lines because it
+//     is a caller of this and not a second implementation.
+//
+// A REFUSAL HERE IS ABOUT THE TODO AND NEVER ABOUT THE ASSIGNEE. Read permission
+// is the whole bar: an id you cannot read is answered as an id that is not there,
+// and there is nothing else to be refused for. In particular naming somebody who
+// does not exist here is NOT refused - an assignee is a claim about the work, not
+// a principal, and the node resolves it to nothing. See store.AssigneeField.
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+
+	"github.com/deadtrickster/flowy/internal/store"
+)
+
+// assigneeRequest is what saying who is carrying a todo takes. One field, and an
+// empty one means nobody.
+type assigneeRequest struct {
+	Assignee string `json:"assignee"`
+}
+
+// assignView is one todo's assignment as every surface hands it back: the item,
+// who has it, who said so, and the log the answer was folded out of.
+//
+// The log is in it rather than behind a second call for depsView's reason. The
+// name is the value and the entries are the record: a reader given only "b-agent
+// has it" cannot answer who handed it to them or when, and that question - WHO
+// gave this away - is the whole reason an assignment is an event.
+type assignView struct {
+	Item       *store.Artifact     `json:"item"`
+	Assignee   string              `json:"assignee"`
+	Assignment *store.Assignment   `json:"assignment"`
+	Log        []store.AssignEntry `json:"log"`
+}
+
+// viewAssignment assembles it. Every surface calls this, so a console and an
+// agent are looking at one answer rather than at two that agree today.
+func viewAssignment(
+	ctx context.Context, db *store.DB, p *store.Principal, art *store.Artifact,
+) (*assignView, error) {
+	log, err := db.AssignLog(ctx, p, art.ID)
+	if err != nil {
+		return nil, err
+	}
+	return &assignView{
+		Item: art, Assignee: assigneeOf(art),
+		Assignment: store.LatestAssignment(log), Log: log,
+	}, nil
+}
+
+// assigneeOf is who a todo says is carrying it. The rule is the store's - see
+// store.AssigneeOf - because the ready query asks the same question of the same
+// key, and being carried is half of whether a todo can be started. Two readers of
+// one key are two chances to disagree about whether somebody is on it.
+func assigneeOf(art *store.Artifact) string { return store.AssigneeOf(art) }
+
+// handleTodoAssign says who is carrying a todo - any todo the caller can read,
+// wherever it was raised.
+//
+// POST /api/todo/{id}/assignee  {assignee}
+//
+// Whoever can READ the todo may say who is carrying it, and may override what
+// somebody else said. That is the ruling this endpoint exists to implement: a
+// queue filed by one agent that nobody else can ever own is a queue with one
+// worker, and the operator asking three times why every row said nobody was the
+// symptom of not having this door.
+//
+// It hands the named party nothing - the assignee is a name in fields and the
+// permission filter has never looked there - so the widest this reaches is
+// "somebody who can see the work can say who is doing it", and a principal who
+// cannot see it gets the 404 a read would have given.
+//
+// The room hears nothing from this door. The room panel's door says it in the
+// room because a plan beside a conversation changes hands in front of that
+// conversation; this one is reached by a drainer and by the operator's console
+// from outside any room, and a message in a room from a door that does not know
+// which room it is in would be a message in the wrong place. The entry is in the
+// log either way, and every reader of the todo can read it.
+func (s *server) handleTodoAssign(w http.ResponseWriter, r *http.Request) {
+	p := principalOf(r)
+
+	var req assigneeRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody("bad request body: "+err.Error()))
+		return
+	}
+	art, _, err := s.db.AssignTodo(r.Context(), p, r.PathValue("id"), req.Assignee, nil)
+	if err != nil {
+		writeQueueError(w, r, err)
+		return
+	}
+	view, err := viewAssignment(r.Context(), s.db, p, art)
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, view)
+}
+
+// handleTodoAssignee reads it back: who has the todo, who gave it to them, and
+// every claim anybody has made on it that this reader may see.
+//
+// GET /api/todo/{id}/assignee
+func (s *server) handleTodoAssignee(w http.ResponseWriter, r *http.Request) {
+	p := principalOf(r)
+	art, err := s.db.ReadWorkItem(r.Context(), p, r.PathValue("id"))
+	if err != nil {
+		writeQueueError(w, r, err)
+		return
+	}
+	view, err := viewAssignment(r.Context(), s.db, p, art)
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, view)
+}
+
+// handleRoomTodoAssign says who is carrying one of the room's todos, and says it
+// in the room.
+//
+// POST /api/chat/{room}/todo/{id}/assignee  {assignee}
+//
+// It is the raise's shape one step on: the field moves, the entry lands in the
+// log, and the room hears about it in an ordinary chat message in the thread the
+// todo was raised out of - all in one transaction, so the conversation that
+// produced the plan is also the conversation that says who picked it up.
+//
+// The permission story is store.AssignTodo's and is not repeated here. What this
+// door adds is the two things that are about the ROOM rather than about the
+// assignment: the item has to be a todo of THIS room, and the room is told.
+func (s *server) handleRoomTodoAssign(w http.ResponseWriter, r *http.Request) {
+	p := principalOf(r)
+	room, ok := roomOf(r)
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, errorBody("room must be one non-empty path segment"))
+		return
+	}
+	room, err := roomArg(room)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody(err.Error()))
+		return
+	}
+	id := r.PathValue("id")
+
+	var req assigneeRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody("bad request body: "+err.Error()))
+		return
+	}
+	name, err := store.NormalizeAssignee(req.Assignee)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody(err.Error()))
+		return
+	}
+
+	// Read before writing, because this door has two things to say that the verb
+	// cannot: whether the item is the kind of thing that carries an assignee at
+	// all, and whether it is this room's. Both are answered from the item, so the
+	// item is read here - and the write reads it again through the same filter,
+	// which is what settles it.
+	art, err := s.db.ReadArtifact(r.Context(), p, id, false)
+	if errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, errorBody("no such todo"))
+		return
+	}
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	if art.Type != memoryType || art.Kind != todoKind {
+		what := art.Type
+		if art.Kind != "" {
+			what += "/" + art.Kind
+		}
+		writeJSON(w, http.StatusBadRequest, errorBody(
+			"a "+what+" carries no assignee; a todo does"))
+		return
+	}
+
+	// The room in the path has to be the room on the item. A panel edits its own
+	// room's plan, and an id is a guess anybody can make: without this,
+	// #general's panel could write into #build's queue and say so in #general,
+	// which is a change nobody in #build would ever see said out loud. A todo
+	// raised in no room at all is assigned through POST /api/todo/{id}/assignee,
+	// which is not a room's door and does not pretend to be.
+	fields, err := store.ArtifactFields(art)
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	if was, _ := fields[store.RoomField].(string); was != room {
+		writeJSON(w, http.StatusNotFound, errorBody("no todo "+id+" in #"+room))
+		return
+	}
+
+	said, err := s.assignmentMessage(r, art, room, fields, assigneeOf(art), name)
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	art, _, err = s.db.AssignTodo(r.Context(), p, id, name, said)
+	if err != nil {
+		writeQueueError(w, r, err)
+		return
+	}
+	view, err := viewAssignment(r.Context(), s.db, p, art)
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	// item and event are what this door has always answered with, and the
+	// assignment beside them is the record the write now leaves: a client reading
+	// either one is reading the same write.
+	writeJSON(w, http.StatusOK, map[string]any{
+		"item": view.Item, "event": said, "assignment": view.Assignment,
+	})
+}
+
+// assignmentMessage builds the chat message the room reads, in the thread the
+// todo was raised out of.
+//
+// The event has no clock reading and no project on it: store.SetArtifactFields
+// stamps both, from the item, which is what makes the message the project's
+// rather than the speaker's. An event with no project is readable by its own
+// actor and nobody else - see EventFilterSQL - so a message announcing that the
+// plan changed hands would otherwise be a message the room never got, which is
+// indistinguishable from the feature working from everywhere except somebody
+// else's screen.
+func (s *server) assignmentMessage(
+	r *http.Request, art *store.Artifact, room string, fields map[string]any, was, now string,
+) (*store.Event, error) {
+	p := principalOf(r)
+	actor, kind := chatActor(p)
+	meta, err := json.Marshal(speakerMeta(p, kind, s.speakerName(r.Context(), p)))
+	if err != nil {
+		return nil, err
+	}
+	// Under the message the todo was raised out of, so the assignment lands in
+	// the conversation that produced it rather than at the bottom of the room on
+	// its own. A todo raised out of nothing starts a thread here.
+	message, _ := fields[store.MessageField].(string)
+	thread, parents, err := s.raisedFrom(r, message)
+	if err != nil {
+		return nil, err
+	}
+	return &store.Event{
+		Type:    chatEventType,
+		Room:    room,
+		Thread:  thread,
+		Parents: parents,
+		Actor:   actor,
+		Body:    assignmentSaid(art.Title, was, now),
+		Meta:    withTrace(json.RawMessage(meta), traceIDOf(r)),
+	}, nil
+}
+
+// assignmentSaid is the sentence the room reads. It names the previous holder
+// when there was one, because "who has this now" and "who had it" are the two
+// halves of a handover and the log is where the second one lives.
+func assignmentSaid(title, was, now string) string {
+	switch {
+	case now == "" && was == "":
+		return "left " + title + " unassigned"
+	case now == "":
+		return "took " + title + " off " + was
+	case was == "":
+		return "gave " + title + " to " + now
+	default:
+		return "moved " + title + " from " + was + " to " + now
+	}
+}

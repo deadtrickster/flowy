@@ -74,7 +74,7 @@ func (s *server) handleAddDep(w http.ResponseWriter, r *http.Request) {
 	}
 	e, err := s.db.AddDep(r.Context(), p, r.PathValue("id"), strings.TrimSpace(req.Blocker))
 	if err != nil {
-		writeDepError(w, r, err)
+		writeQueueError(w, r, err)
 		return
 	}
 	// The state the edge leaves the todo in, so a caller sees what it did without
@@ -97,7 +97,7 @@ func (s *server) handleRemoveDep(w http.ResponseWriter, r *http.Request) {
 	p := principalOf(r)
 	e, err := s.db.RemoveDep(r.Context(), p, r.PathValue("id"), r.PathValue("blocker"))
 	if err != nil {
-		writeDepError(w, r, err)
+		writeQueueError(w, r, err)
 		return
 	}
 	view, err := viewDeps(r.Context(), s.db, p, e.Artifact)
@@ -114,7 +114,7 @@ func (s *server) handleRemoveDep(w http.ResponseWriter, r *http.Request) {
 func (s *server) handleGetDeps(w http.ResponseWriter, r *http.Request) {
 	view, err := viewDeps(r.Context(), s.db, principalOf(r), r.PathValue("id"))
 	if err != nil {
-		writeDepError(w, r, err)
+		writeQueueError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, view)
@@ -174,15 +174,18 @@ func (s *server) handleReady(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// writeDepError turns a store refusal into a status code and a sentence.
+// writeQueueError turns a store refusal by one of the queue verbs into a status
+// code and a sentence. Both surfaces use it - the edges here and the assignment in
+// assign.go - because a refusal added to either verb must not be one that this
+// door maps to 400 and the other maps to 500. See store.DepRefusal.
 //
 // An id that names nothing this principal may read is a 404 and says nothing
 // more, which is the answer a read of it would give: naming an id in an edge is
 // not a way to find out what else that id might be. The rest are the caller's
 // mistake and say what it was, because each of them is something the caller can
 // fix - the two ends are the same todo, the loop already goes the other way, the
-// edge is already there.
-func writeDepError(w http.ResponseWriter, r *http.Request, err error) {
+// edge is already there, the assignee is a paragraph.
+func writeQueueError(w http.ResponseWriter, r *http.Request, err error) {
 	var (
 		notATodo store.NotATodoError
 		refusal  store.DepRefusal

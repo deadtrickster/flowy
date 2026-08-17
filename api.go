@@ -468,6 +468,12 @@ var mintedTypes = map[string]bool{
 	// deciding whether to start work.
 	store.EventDepAdd:    true,
 	store.EventDepRemove: true,
+	// An assignment. The refusal that makes it worth reading is on the verb - the
+	// writer has to be able to read the todo - and the value it is the record of
+	// is written in the same transaction, so an entry handed in here would be a
+	// handover that never happened, claimed about work the writer may not be able
+	// to see. See store.AssignTodo.
+	store.EventTodoAssign: true,
 }
 
 // handleAppendEvent appends to the log. The log is append-only: there is no

@@ -163,15 +163,54 @@ type rpcError struct {
 	Data    any    `json:"data,omitempty"`
 }
 
-// The codes: the four standard ones, plus -32001 for a request that named a
-// method it may not use without a principal.
+// The codes: the four standard ones, -32001 for a request that named a method it
+// may not use without a principal, and -32003 for one this principal is not
+// allowed to make of this row. See forbidden below for why the second of those is
+// an error rather than a result.
 const (
 	codeParse          = -32700
 	codeInvalidRequest = -32600
 	codeMethodNotFound = -32601
 	codeInvalidParams  = -32602
 	codeUnauthorized   = -32001
+	codeForbidden      = -32003
 )
+
+// forbidden is what a refusal that is about PERMISSION satisfies: this principal
+// may not do this to this row, and no rewording of the arguments will change it.
+//
+// IT IS A PROTOCOL ERROR AND NOT A TOOL RESULT, and that distinction is the
+// second half of this round. A tool refusal comes back as a JSON-RPC RESULT with
+// isError set - which at the transport is a 200 with a normal-looking envelope -
+// so a client or a harness that checks the call rather than the flag reads it as
+// the call having happened. mem_write on somebody else's item answered exactly
+// that way: nine calls in a row "succeeded" and wrote nothing, and the operator
+// spent three hours looking for what was wrong with the ids because a refusal
+// that reports success is indistinguishable from success. A permission refusal is
+// now an error with a code - the nearest thing this protocol has to the 403 that
+// POST /api/artifact/{id}/delete already answers with - so nothing can mistake it
+// for a write that landed.
+//
+// It is deliberately NOT how "no such item" answers. An id out of reach is
+// reported exactly as an id that does not exist, here as everywhere else, and
+// that is a tool result: the model asked about something it cannot see, which is
+// an ordinary answer to an ordinary question.
+type forbidden interface {
+	error
+	forbidden()
+}
+
+// forbiddenError is the plain form, for the refusals that are a sentence and
+// nothing more.
+type forbiddenError struct{ reason string }
+
+func (e forbiddenError) Error() string { return e.reason }
+func (e forbiddenError) forbidden()    {}
+
+// refuseForbidden builds one.
+func refuseForbidden(format string, a ...any) error {
+	return forbiddenError{reason: fmt.Sprintf(format, a...)}
+}
 
 // isNotification reports whether a request wants no answer. A JSON-RPC
 // notification carries no id, and answering one is a protocol error.
@@ -255,10 +294,13 @@ func (m *mcpServer) handle(ctx context.Context, token string, req *rpcRequest) *
 
 // callTool resolves the principal, finds the tool and runs it.
 //
-// The two failures are kept apart on purpose. No principal is a protocol error:
-// the request could not be attempted at all. A tool that ran and failed - an
-// item that is not there, a scope that is not a scope - comes back as a result
-// with isError set, which is what an MCP client shows the model.
+// The three failures are kept apart on purpose. No principal is a protocol error:
+// the request could not be attempted at all. A row this principal may not write is
+// a protocol error as well, for the reason written down at forbidden above: a
+// refusal that arrives in a success envelope is a refusal nobody notices. A tool
+// that ran and failed - an item that is not there, a scope that is not a scope -
+// comes back as a result with isError set, which is what an MCP client shows the
+// model.
 func (m *mcpServer) callTool(ctx context.Context, token string, req *rpcRequest) *rpcResponse {
 	var call struct {
 		Name      string          `json:"name"`
@@ -288,6 +330,11 @@ func (m *mcpServer) callTool(ctx context.Context, token string, req *rpcRequest)
 
 	out, err := tool.call(ctx, m, p, call.Arguments)
 	if err != nil {
+		var denied forbidden
+		if errors.As(err, &denied) {
+			span.Fail("the tool refused: not this principal's row to write")
+			return rpcFail(req.ID, codeForbidden, denied.Error())
+		}
 		span.Fail("the tool returned an error to the agent")
 		return result(req.ID, toolError(err))
 	}

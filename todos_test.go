@@ -58,22 +58,26 @@ func TestAnUpdateKeepsTheRoomItWasRaisedIn(t *testing.T) {
 // What a name has to clear, and the words that mean nobody. They collapse to
 // the empty assignee so that every surface says one word for one state - the
 // panel showed "unowned" and "unassigned" side by side and they read as two.
+//
+// The rule moved into the store when the assignment verb landed - every door and
+// the verb itself normalise through one function now - so this asks the store's
+// name for it. The assertions are the ones it has always made.
 func TestAnAssigneeIsAHandleOrItIsNobody(t *testing.T) {
 	for _, nobody := range []string{"", "  ", "?", "-", "none", "Nobody", "TBD", "unassigned", "n/a"} {
-		got, err := assigneeArg(nobody)
+		got, err := store.NormalizeAssignee(nobody)
 		if err != nil {
-			t.Fatalf("assigneeArg(%q) was refused: %v", nobody, err)
+			t.Fatalf("NormalizeAssignee(%q) was refused: %v", nobody, err)
 		}
 		if got != "" {
-			t.Fatalf("assigneeArg(%q) came back as %q rather than nobody", nobody, got)
+			t.Fatalf("NormalizeAssignee(%q) came back as %q rather than nobody", nobody, got)
 		}
 	}
-	if got, err := assigneeArg("  a-bench  "); err != nil || got != "a-bench" {
+	if got, err := store.NormalizeAssignee("  a-bench  "); err != nil || got != "a-bench" {
 		t.Fatalf("a name came back as %q, %v", got, err)
 	}
-	for _, bad := range []string{"two\nlines", "a\tb", strings.Repeat("n", maxAssigneeName+1)} {
-		if _, err := assigneeArg(bad); err == nil {
-			t.Fatalf("assigneeArg(%q) was allowed", bad)
+	for _, bad := range []string{"two\nlines", "a\tb", strings.Repeat("n", store.MaxAssigneeName+1)} {
+		if _, err := store.NormalizeAssignee(bad); err == nil {
+			t.Fatalf("NormalizeAssignee(%q) was allowed", bad)
 		}
 	}
 }

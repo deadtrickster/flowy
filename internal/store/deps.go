@@ -130,11 +130,18 @@ type Blocker struct {
 // of ready false, so it is a value a reader asked for and got - an absent key
 // leaves a client to decide whether it means nobody or means the node did not
 // say, which is the two-words-for-one-state problem nobodyWords exists to stop.
+// Assignment is who put that name there and when, folded from the assignment log
+// for this reader - see assign.go. It is absent on an item whose assignee was
+// written before this surface existed, or whose entries came from another node,
+// which is why it is a pointer beside the name rather than the name's home: the
+// value is on the row and always readable, the provenance is a claim in the log
+// and a reader may not have it.
 type Readiness struct {
-	Item     *Artifact `json:"item"`
-	Ready    bool      `json:"ready"`
-	Assignee string    `json:"assignee"`
-	Blockers []Blocker `json:"blockers"`
+	Item       *Artifact   `json:"item"`
+	Ready      bool        `json:"ready"`
+	Assignee   string      `json:"assignee"`
+	Assignment *Assignment `json:"assignment,omitempty"`
+	Blockers   []Blocker   `json:"blockers"`
 }
 
 // DepEntry is one entry in the log behind the adjacency: the edge, who said it,
@@ -168,15 +175,18 @@ type NotATodoError struct{ ID string }
 func (e NotATodoError) Error() string { return "no such todo: " + e.ID }
 func (e NotATodoError) Unwrap() error { return ErrNotFound }
 
-// DepRefusal is what every refusal the dep verbs make ABOUT AN EDGE THEY WERE
-// ASKED FOR satisfies: the caller's mistake, and fixable by the caller, as
-// opposed to something that went wrong underneath.
+// DepRefusal is what every refusal THE QUEUE VERBS make about the edge or the
+// assignment they were asked for satisfies: the caller's mistake, and fixable by
+// the caller, as opposed to something that went wrong underneath.
 //
 // It is an interface rather than a list of types kept beside each surface, so
 // that a refusal added here cannot be one that HTTP maps to 400 and MCP reports
 // as a broken node - or the other way about. NotATodoError is deliberately NOT
 // one of these: an id out of reach is answered as an id that is not there, which
 // is a different code and a different sentence everywhere in this fabric.
+//
+// The assignment verb's refusals satisfy it too - see assign.go. One interface
+// rather than one per verb, so both doors keep mapping one list.
 type DepRefusal interface {
 	error
 	depRefusal()
@@ -368,6 +378,18 @@ func (d *DB) writeDep(ctx context.Context, p *Principal, verb, todo, blocker str
 	}
 	span.SetArtifact(dependent.ID)
 	return e, nil
+}
+
+// ReadWorkItem is a permission-filtered read of one queue item: a todo, a
+// feature or a handoff this principal may read, and the answer a read of an id
+// that is not here would give for anything else.
+//
+// It is exported for the surfaces that open one item and have to answer for an id
+// that is not a queue item the same way every other queue verb does - GET
+// /api/todo/{id}/assignee, which reads the assignment log of a todo and must not
+// become a way to find out what else an id might be.
+func (d *DB) ReadWorkItem(ctx context.Context, p *Principal, id string) (*Artifact, error) {
+	return d.readWorkItem(ctx, p, id)
 }
 
 // readWorkItem reads one end of an edge: a queue item this principal may read,
@@ -649,10 +671,22 @@ func (d *DB) readiness(
 	if err != nil {
 		return nil, err
 	}
+	// Who handed each item to whoever has it. It is a fourth query over the same
+	// events table and the same filter, and it is here rather than behind a
+	// second call because the queue's first question after "what can I start" is
+	// "and whose is this" - a drainer that has to ask again per row asks once per
+	// row.
+	claims, err := d.Assignments(ctx, p, ids, scopeAll)
+	if err != nil {
+		return nil, err
+	}
 
 	out := make([]*Readiness, 0, len(items))
 	for _, art := range items {
-		r := &Readiness{Item: art, Assignee: AssigneeOf(art), Blockers: []Blocker{}}
+		r := &Readiness{
+			Item: art, Assignee: AssigneeOf(art),
+			Assignment: claims[art.ID], Blockers: []Blocker{},
+		}
 		clear := true
 		for _, id := range adjacency[art.ID] {
 			at, known := status[id]
