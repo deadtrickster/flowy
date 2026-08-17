@@ -432,6 +432,24 @@ func memWrite(ctx context.Context, m *mcpServer, p *store.Principal, raw json.Ra
 			return nil, err
 		}
 	}
+	// And a work item raised here with NO status at all starts at the beginning
+	// of the lifecycle, exactly as one raised through POST /api/chat/{room}/todo
+	// does - see todos.go, which has defaulted it since the door was written.
+	//
+	// This one did not, so every todo filed through MCP landed with status "",
+	// which is not a state any reader can compare: it is not todo, so a board
+	// filtering for outstanding work skips it, and it is not done either. Five
+	// items sat on the operator's board that way tonight, and the complaint they
+	// produced - "why do I still see items that are not moving" - was read three
+	// times as agents forgetting to set a status. Nobody forgot. THE DOOR NEVER
+	// SET ONE.
+	//
+	// Create only. An update that restates nothing keeps what the row has,
+	// including empty, because healing a stale status silently on an unrelated
+	// edit moves other people's work behind their backs.
+	if art.Status == "" && a.ID == "" && isWorkKind(art.Kind) {
+		art.Status = store.TodoStatus
+	}
 
 	fields = withRoom(fields, room, strings.TrimSpace(a.Message))
 	// Written whenever it was stated, including empty: the key being there at

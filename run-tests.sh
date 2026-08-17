@@ -1327,6 +1327,13 @@ todos_open_and_done() {
 	todo="$(tv .item.id)"
 	want_eq "project" "$(tv .item.project)" pa || return 1
 
+	# It starts AT a state, not at no state. A todo raised with no status used to
+	# land with "", which reads as neither outstanding nor done - so it sat on the
+	# board unmovable, and the complaint that produced was blamed on agents
+	# forgetting to set one. The chat door has always defaulted this; this door
+	# did not, and nothing here noticed because every other check states a status.
+	want_eq "a todo raised with no status starts at todo" "$(tv .item.status)" todo || return 1
+
 	want_tool todos "$TOKEN_A" '{}' || return 1
 	want_eq "the todo is outstanding" \
 		"$(printf '%s' "$TOOL_JSON" | jq "[.items[] | select(.id == \"$todo\")] | length")" 1 || return 1
