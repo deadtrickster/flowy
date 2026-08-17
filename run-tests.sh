@@ -15383,7 +15383,7 @@ repo_shell_scripts() {
 	# not ours to enforce; run-tests.sh itself is included, because it is the
 	# most load-bearing script here.
 	printf '%s\n' ./run-tests.sh ./scripts/deploy.sh ./scripts/migrate.sh \
-		./scripts/waiter-spin-test.sh
+		./scripts/waiter-spin-test.sh ./scripts/build-sut.sh
 }
 
 shell_scripts_parse() {
@@ -15490,6 +15490,65 @@ migrate_refuses_without_a_database() {
 	}
 }
 
+build_sut_refuses_misuse() {
+	# WHAT CAN BE CHECKED WITHOUT DOCKER, AND WHY IT IS WORTH CHECKING. An
+	# actual build needs a toolchain image, a source checkout and hours; none
+	# of that exists in here. What does exist is the front half of the script,
+	# and that half is the one the runner meets when something is wrong: it
+	# takes a commit sha and a project, and every one of those values is
+	# substituted into a path or a git command. A build that quietly runs
+	# against the wrong commit, or writes outside the scratch area, is worse
+	# than one that never starts, so each of these has to refuse with 2 rather
+	# than carry on.
+	local case out status
+	while read -r case; do
+		# shellcheck disable=SC2086  # each case is a deliberately split argv
+		out=$(./scripts/build-sut.sh $case 2>&1)
+		status=$?
+		[ "$status" -eq 2 ] || {
+			printf 'build-sut.sh %s exited %d, want a refusal (2):\n%s\n' \
+				"$case" "$status" "$out"
+			return 1
+		}
+	done <<-'EOF'
+
+		--wat abc1234def
+		--config /nonexistent/nope.env abc1234def
+		--project no-such-project abc1234def
+		--project serenedb not-a-sha
+		--project ../escape abc1234def
+	EOF
+	out=$(./scripts/build-sut.sh 2>&1) || true
+	printf '%s\n' "$out" | grep -q 'usage' || {
+		printf 'called with nothing, it does not say how to call it:\n%s\n' "$out"
+		return 1
+	}
+}
+
+build_sut_config_is_complete() {
+	# A build-sut config that is missing a value fails at the point a repro
+	# run wanted a binary - which is minutes into a queued run, in a log
+	# nobody is watching, and reported as a build failure rather than as the
+	# typo it is. The four required keys are cheap to assert here instead.
+	local f v
+	for f in ./scripts/build-sut.d/*.env; do
+		[ -e "$f" ] || {
+			printf 'no build-sut configs at all - the script has no project to build\n'
+			return 1
+		}
+		for v in SUT_SRC_REPO SUT_BUILD_IMAGE SUT_BUILD_CMD SUT_ARTIFACT; do
+			(
+				# shellcheck source=/dev/null  # a config file, named by the glob above
+				. "$f"
+				[ -n "${!v:-}" ]
+			) || {
+				printf '%s does not set %s\n' "$f" "$v"
+				return 1
+			}
+		done
+	done
+}
+
 check "the repo's shell scripts parse" shell_scripts_parse
 check "the repo's shell scripts are shellcheck clean" shell_scripts_lint
 check "the repo's shell scripts are shfmt clean" shell_scripts_formatted
@@ -15499,6 +15558,10 @@ check "deploy.sh refuses to deploy anything that is not master" \
 	deploy_refuses_off_master
 check "migrate.sh refuses rather than guessing which database to migrate" \
 	migrate_refuses_without_a_database
+check "build-sut.sh refuses a call it cannot build from, and says how to call it" \
+	build_sut_refuses_misuse
+check "the build-sut config it ships with sets everything a build needs" \
+	build_sut_config_is_complete
 
 # ------------------------------------------------------------------- verdict
 
