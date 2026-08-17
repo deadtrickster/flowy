@@ -76,7 +76,15 @@ export function Reports() {
   }, [token, query]);
 
   return (
-    <div className="flex flex-col gap-3">
+    // FULL HEIGHT, AND THE LIST IS WHAT SCROLLS. This page grew a column that
+    // sized to its content, so a long list ran off the bottom with nothing to
+    // scroll - the page has no scroller of its own and the list had no height
+    // to overflow. Worklog and Todos both solve it the same way and this now
+    // matches them: the page is a full-height flex column, the header is fixed,
+    // and min-h-0 lets the list shrink below its content so overflow-y-auto has
+    // something to do. Without min-h-0 a flex child refuses to shrink and the
+    // overflow never engages, which is why adding overflow alone does nothing.
+    <div className="flex h-full flex-col gap-3">
       <div className="flex flex-wrap items-center gap-2">
         <h2 className="text-lg font-semibold">reports</h2>
         <Input
@@ -95,7 +103,7 @@ export function Reports() {
       </div>
       {error ? <div className="text-destructive text-sm">{error}</div> : null}
 
-      <ol aria-label="reports" className="flex flex-col gap-3">
+      <ol aria-label="reports" className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
         {/* An empty list says which empty it is - see emptyReads below. */}
         {reports.length === 0 ? (
           <li className="text-muted-foreground text-sm">

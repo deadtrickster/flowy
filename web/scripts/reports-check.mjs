@@ -159,8 +159,40 @@ The word "reports" is in the global nav too, so this looks for the ELEMENT.${err
     );
   }
 
+  // THE LIST SCROLLS. Reported by the operator: a long reports list ran off the
+  // bottom with nothing to scroll, because the page sized to its content and
+  // the list had no height to overflow. Worklog and Todos already scroll, so
+  // this was two of three lists working - the kind of gap nothing notices until
+  // somebody has enough rows. Asserting the OVERFLOW rather than a class, so a
+  // rewrite that keeps the behaviour still passes.
+  const scrolls = await page
+    .locator('ol[aria-label="reports"]')
+    .evaluate((el) => {
+      const style = getComputedStyle(el);
+      return {
+        overflow: style.overflowY,
+        canScroll: el.scrollHeight > el.clientHeight,
+        height: el.clientHeight,
+      };
+    })
+    .catch(() => null);
+  if (!scrolls || !["auto", "scroll"].includes(scrolls.overflow)) {
+    await die(
+      `the reports list does not scroll: overflow-y is ${JSON.stringify(scrolls?.overflow)}.
+  A list that sizes to its content runs off the bottom of the page and there is nothing to scroll.`,
+      list,
+    );
+  }
+  if (!scrolls.height) {
+    await die(
+      `the reports list has no height (clientHeight 0), so overflow-y has nothing to act on -
+  a flex child needs min-h-0 before it will shrink below its content.`,
+      list,
+    );
+  }
+
   console.log(
-    `/reports: ${newTitle} is listed, ${oldTitle} is marked replaced by ${newID}, and a body-only word narrows to it through the node`,
+    `/reports: ${newTitle} is listed, ${oldTitle} is marked replaced by ${newID}, and a body-only word narrows, and the list scrolls (overflow-y ${scrolls.overflow}) to it through the node`,
   );
 } finally {
   await browser.close();
