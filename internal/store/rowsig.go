@@ -158,6 +158,22 @@ func canonicalEvent(e *Event) []byte {
 	})
 }
 
+// CanonicalEventBytes is canonicalEvent, for a caller outside this package that
+// needs to ask what an event's signature is over.
+//
+// It exists so that a surface which puts a CLAIM on a row can prove the claim is
+// inside the signature rather than beside it. A field a relay can strip or swap
+// on a row it did not write is decoration, and a marker saying "this entry was
+// written about somebody else's work" is exactly the kind of field that is
+// believed - so the worklog's test builds the row its own write builds and asks
+// these bytes whether the marker changed them. See worklog_test.go in the server
+// package, and Event.Addressee in the sign package for the same argument about
+// the field that got a column of its own.
+//
+// It answers bytes and never signs anything: the private key is this package's
+// and stays in it.
+func CanonicalEventBytes(e *Event) []byte { return canonicalEvent(e) }
+
 func canonicalIdentity(node string, public []byte) []byte {
 	return sign.CanonicalIdentity(node, public)
 }

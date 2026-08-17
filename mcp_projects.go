@@ -69,7 +69,7 @@ func projectsTool(ctx context.Context, m *mcpServer, p *store.Principal, _ json.
 	if p != nil {
 		answer["current"] = p.Project
 	}
-	if warning := fixtureWarning(ctx, m, p); warning != "" {
+	if warning := fixtureWarning(ctx, m.db, p); warning != "" {
 		answer["warning"] = warning
 	}
 	return answer, nil
@@ -85,11 +85,16 @@ func projectsTool(ctx context.Context, m *mcpServer, p *store.Principal, _ json.
 //
 // It never fails the call it is attached to. A warning that could turn a
 // successful write into an error would be a warning nobody dares attach.
-func fixtureWarning(ctx context.Context, m *mcpServer, p *store.Principal) string {
+//
+// It takes the store rather than the MCP server because the HTTP doors onto the
+// same writes answer with the same sentence - see handleWorklogAppend. A warning
+// that only one door gives is a warning that depends on which client an agent
+// happened to be holding.
+func fixtureWarning(ctx context.Context, db *store.DB, p *store.Principal) string {
 	if p == nil || p.Project == "" {
 		return ""
 	}
-	project, err := m.db.Project(ctx, p.Project)
+	project, err := db.Project(ctx, p.Project)
 	if err != nil || project == nil || !project.Fixture {
 		return ""
 	}
@@ -106,7 +111,7 @@ func fixtureWarning(ctx context.Context, m *mcpServer, p *store.Principal) strin
 func withFixtureWarning(ctx context.Context, m *mcpServer, p *store.Principal,
 	answer map[string]any,
 ) map[string]any {
-	if warning := fixtureWarning(ctx, m, p); warning != "" {
+	if warning := fixtureWarning(ctx, m.db, p); warning != "" {
 		answer["warning"] = warning
 	}
 	return answer

@@ -580,6 +580,19 @@ const actorMetaPrefix = store.ActorMetaPrefix
 // to prevent. The node stamps it where it has checked that the source is
 // readable and the span is inside it - see mayCite in chat.go.
 //
+// The worklog's stamped keys are the same rule for a claim about whose work
+// something was. A worklog entry is not a minted type - it has to replicate, and
+// a minted one does not - so POST /api/events will write an event of that type,
+// and every one of these fields is a claim the worklog verb CHECKS before it
+// stamps it: refs against the writer's own read filter, subject against the
+// principals that exist here, run and verify as the evidence a reader decides on.
+// Handed in through this door they would be the claim without the check - an
+// entry pointing at work its author cannot see, or one vouching for a seat, on a
+// row that is correctly signed and correctly actored. So they are the node's to
+// write, in worklog.go, and here they are dropped. What an entry says about its
+// own shift - what, next, as_of, branch - is not on the list: it claims nothing
+// about anybody else, and the body beside it was always a client's to write.
+//
 // Anything that is not a JSON object is dropped whole: there is nothing to
 // strip out of it and nothing that needs it through.
 func speakerStripped(meta json.RawMessage) json.RawMessage {
@@ -593,7 +606,7 @@ func speakerStripped(meta json.RawMessage) json.RawMessage {
 	for k := range fields {
 		if strings.HasPrefix(k, actorMetaPrefix) ||
 			k == store.TraceMetaKey || k == store.MentionsMetaKey ||
-			k == store.CiteMetaKey {
+			k == store.CiteMetaKey || worklogStampedKeys[k] {
 			delete(fields, k)
 		}
 	}

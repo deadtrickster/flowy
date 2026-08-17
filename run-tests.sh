@@ -1095,6 +1095,223 @@ entries_are_on_the_timeline_and_not_postable_onto_it() {
 		"$(jqv .error)"
 }
 
+# ------------------------------------------------- the worklog's other doors
+#
+# The worklog was MCP-ONLY, and the agents doing the work were exactly the ones
+# that could not record it: a spawned VM agent is given no MCP server, by design,
+# because one that could reach the spawn server would start VMs of its own. So
+# the fleet's memory had two entries ever, against 311 chat messages in the same
+# window. POST /api/worklog and `flowy worklog` are the doors those agents have.
+#
+# What these checks assert is not that the endpoint answers 200. It is that the
+# doors are doors onto ONE WAY IN: the same argument list, the same refusals, in
+# the same words. A second implementation of the write is a second place the
+# reference check can be missing, and the reference check is what the surface is
+# for.
+
+# The refusal, through all three doors, WORD FOR WORD. This is the assertion
+# rather than "each door refuses somehow": two implementations that both refuse
+# can still disagree about what they refuse, and the one that is wrong is the one
+# nobody read the code of. A's personal memory is the floor, so B cannot
+# reference it however many grants B holds.
+all_three_doors_refuse_a_ref_in_the_same_words() {
+	recall
+	local args
+	args="$(wl_args "claiming to have worked on something of A's" "" "" "$MEM_PERSONAL")" || return 1
+	want_tool_fails worklog_append "$TOKEN_B" "$args" "is not an artifact you can read" || return 1
+	local over_mcp="$TOOL_ERR"
+
+	# The HTTP door takes the same body the tool takes, on purpose: an agent that
+	# has learned one has learned the other.
+	want_status 400 POST "$TOKEN_B" /api/worklog "$args" || return 1
+	want_eq "the HTTP door refuses it in the tool's own words" "$(jqv .error)" "$over_mcp" || return 1
+
+	# And the CLI, which is the door a spawned agent actually has. A refusal is a
+	# non-zero exit as well as a message: an entry nobody recorded must not look
+	# like one that was.
+	local out
+	if out="$(FLOWY_TOKEN="$TOKEN_B" "$ROOT/flowy" worklog append \
+		--url "http://127.0.0.1:$HTTP_PORT" --ref "$MEM_PERSONAL" \
+		"claiming to have worked on something of A's" 2>&1)"; then
+		printf 'flowy worklog append referenced an artifact it cannot read and exited 0:\n%s\n' \
+			"$out" >&2
+		return 1
+	fi
+	case "$out" in
+	*"$over_mcp"*) ;;
+	*)
+		printf 'the CLI refused with %q, want the tool own words %q\n' "$out" "$over_mcp" >&2
+		return 1
+		;;
+	esac
+	printf 'three doors, one refusal: %s\n' "$over_mcp"
+}
+
+# And the write works through them, with the entry landing the same way. The CLI
+# prints the id on stdout so a script can hand it on, which is `flowy say`'s
+# rule: what a person reads goes to stderr and stdout stays parseable.
+the_http_and_cli_doors_append_an_entry() {
+	recall
+	local body id
+	body="$(wl_args "wrote the log from a VM with no MCP at all" \
+		"read it back through the same filter" 7a1c9de "$MEM_SHARED" wl/doors)" || return 1
+	api POST "$TOKEN_A" /api/worklog "$body" || return 1
+	want_eq "status" "$API_STATUS" 200 || return 1
+	want_eq "the actor is the token's" "$(jqv .entry.actor)" "$USER_A" || return 1
+	want_eq "the ref it may read is kept" "$(jqv '.entry.refs[0]')" "$MEM_SHARED" || return 1
+	want_eq "the branch is on the entry" "$(jqv .entry.branch)" wl/doors || return 1
+
+	id="$(FLOWY_TOKEN="$TOKEN_A" "$ROOT/flowy" worklog append \
+		--url "http://127.0.0.1:$HTTP_PORT" --branch wl/doors --as-of 7a1c9de \
+		--ref "$MEM_SHARED" "appended from the command line" 2>/dev/null)" || return 1
+	if [ -z "$id" ]; then
+		printf 'flowy worklog append printed no id on stdout\n' >&2
+		return 1
+	fi
+	# And the read half, which is the other reason a seat with no MCP was stuck:
+	# it could not read the handoff either. It goes through the timeline's filter
+	# rather than a read endpoint of its own.
+	local out
+	out="$(FLOWY_TOKEN="$TOKEN_A" "$ROOT/flowy" worklog read \
+		--url "http://127.0.0.1:$HTTP_PORT" --limit 5 2>/dev/null)" || return 1
+	case "$out" in
+	*"appended from the command line"*) ;;
+	*)
+		printf 'flowy worklog read did not show the entry just written:\n%s\n' "$out" >&2
+		return 1
+		;;
+	esac
+	printf 'appended over HTTP and over the CLI; %s reads back\n' "$id"
+}
+
+# VOUCHED IS NOT AUTHORED, and this is the check that matters.
+#
+# The drainer writes entries on behalf of runs: the harness knows the run id and
+# the verify status and cannot lie about whether the gate passed, so it is the
+# right author. But an entry written BY it ABOUT an agent must never read as the
+# agent's own word - that is the impersonation shape this project has open, and
+# the fix is to say which it is. So the row carries both, and the actor stays the
+# token's whatever the subject says.
+WORKLOG_VOUCHED_WHAT="drained the queue on this run and the gate came back clean"
+readonly WORKLOG_VOUCHED_WHAT
+
+an_entry_written_about_another_seat_says_it_is_vouched() {
+	recall
+	local body
+	body="$(jq -nc --arg w "$WORKLOG_VOUCHED_WHAT" --arg s "$AGENT_A" \
+		'{what: $w, subject: $s, run: "9f6af5dc9032", verify: "428/0", branch: "wl/vouched"}')" ||
+		return 1
+	api POST "$TOKEN_A" /api/worklog "$body" || return 1
+	want_eq "status" "$API_STATUS" 200 || return 1
+	want_eq "the actor is the seat that WROTE it" "$(jqv .entry.actor)" "$USER_A" || return 1
+	want_eq "the subject is the seat whose work it is" "$(jqv .entry.subject)" "$AGENT_A" || return 1
+	want_eq "and the entry says it is vouched" "$(jqv .entry.vouched)" true || return 1
+	want_eq "the run it is about" "$(jqv .entry.run)" 9f6af5dc9032 || return 1
+	want_eq "and what the gate said about it" "$(jqv .entry.verify)" 428/0 || return 1
+	local entry
+	entry="$(jqv .entry.id)"
+
+	# Read back through the timeline, which is where every human surface reads
+	# it. The subject rides meta, inside the row signature, so a relay cannot
+	# turn a vouched entry into the subject's own account.
+	api GET "$TOKEN_A" '/api/activity?kind=worklog&order=recent&limit=50' || return 1
+	local item
+	item="$(printf '%s' "$API_BODY" | jq -c ".items[] | select(.id == \"$entry\")")" || return 1
+	if [ -z "$item" ]; then
+		printf 'the vouched entry %s is not on the timeline\n' "$entry" >&2
+		return 1
+	fi
+	want_eq "the timeline carries the subject" \
+		"$(printf '%s' "$item" | jq -r .meta.subject)" "$AGENT_A" || return 1
+	want_eq "and still names the writer as the actor" \
+		"$(printf '%s' "$item" | jq -r .actor)" "$USER_A" || return 1
+	# The body says it too, because the body is what a surface that knows
+	# nothing about this kind renders - the TUI's timeline, the activity view.
+	case "$(printf '%s' "$item" | jq -r .body)" in
+	"vouched for $AGENT_A"*) ;;
+	*)
+		printf 'the body of a vouched entry is %q - a surface that renders bodies cannot tell it from an authored one\n' \
+			"$(printf '%s' "$item" | jq -r .body)" >&2
+		return 1
+		;;
+	esac
+	# And the CLI read says so as well, since that is one of the places somebody
+	# reads the worklog.
+	local out
+	out="$(FLOWY_TOKEN="$TOKEN_A" "$ROOT/flowy" worklog read \
+		--url "http://127.0.0.1:$HTTP_PORT" --limit 5 2>/dev/null)" || return 1
+	case "$out" in
+	*"VOUCHING FOR $AGENT_A"*) ;;
+	*)
+		printf 'flowy worklog read draws the vouched entry as its subject own account:\n%s\n' \
+			"$out" >&2
+		return 1
+		;;
+	esac
+	remember WORKLOG_VOUCHED "$entry"
+	printf 'entry %s: written by %s, about %s work, run 9f6af5dc9032 verify 428/0\n' \
+		"$entry" "$USER_A" "$AGENT_A"
+}
+
+# Vouching for yourself is authoring. Absent and self are one state, for the same
+# reason an absent addressee and an empty one are one row: a vouched badge on
+# somebody's own entry teaches a reader to ignore the badge.
+vouching_for_yourself_is_authoring() {
+	recall
+	local body
+	body="$(jq -nc --arg w "my own account of my own shift" --arg s "$USER_A" \
+		'{what: $w, subject: $s}')" || return 1
+	api POST "$TOKEN_A" /api/worklog "$body" || return 1
+	want_eq "status" "$API_STATUS" 200 || return 1
+	want_eq "naming yourself leaves no subject" "$(jqv .entry.subject)" null || return 1
+	want_eq "and the entry is not vouched" "$(jqv .entry.vouched)" null || return 1
+
+	# And a subject nobody answers to is refused at the door, the way an
+	# addressee is: an entry that reports on a seat that does not exist is
+	# written, reads as a report, and no surface anywhere says the name was a typo.
+	want_status 400 POST "$TOKEN_A" /api/worklog \
+		'{"what": "reporting on a seat that is not here", "subject": "ag-nobody-at-all"}' || return 1
+	case "$(jqv .error)" in
+	*"no principal called ag-nobody-at-all"*) ;;
+	*)
+		printf 'a subject nobody answers to was refused with %q\n' "$(jqv .error)" >&2
+		return 1
+		;;
+	esac
+	printf 'self is authoring, and a subject nobody answers to is refused: %s\n' "$(jqv .error)"
+}
+
+# The other entrance, and the reason it is closed the way it is.
+#
+# A worklog entry is NOT a minted type - it has to replicate, and a minted one
+# does not - so POST /api/events writes an event of that type and must keep
+# doing so. What it may not do is STAMP the entry's claims: refs is checked
+# against the writer's own read filter and subject against the principals that
+# exist here, so a client handing either in through the generic door would be
+# making the claim without the check. speakerStripped drops them, exactly as it
+# drops the actor keys and a citation.
+the_generic_event_door_cannot_stamp_a_worklogs_claims() {
+	recall
+	local body
+	body="$(jq -nc --arg r "$MEM_PERSONAL" --arg s "$AGENT_A" \
+		'{type: "worklog", room: "worklog", body: "an entry by the side door",
+		  meta: {what: "an entry by the side door", branch: "wl/side",
+		         refs: [$r], subject: $s, run: "r-forged", verify: "428/0"}}')" || return 1
+	api POST "$TOKEN_B" /api/events "$body" || return 1
+	want_eq "the event is still written, because a worklog entry has to replicate" \
+		"$API_STATUS" 200 || return 1
+	for key in refs subject run verify; do
+		want_eq "$key handed in through the generic door is dropped" \
+			"$(jqv ".meta.$key")" null || return 1
+	done
+	# What an entry says about its own shift is still a client's to write: it
+	# claims nothing about anybody else, and the body beside it was always theirs.
+	want_eq "what it says about its own shift survives" "$(jqv .meta.what)" \
+		"an entry by the side door" || return 1
+	want_eq "and so does the branch" "$(jqv .meta.branch)" wl/side || return 1
+	printf 'the generic door writes the event and stamps none of its claims\n'
+}
+
 # ------------------------------------------------------------- proposals
 #
 # A proposal is an artifact and a vote is an event, so what these checks assert
@@ -7179,6 +7396,18 @@ check "an entry carries the branch it was written on" \
 check "the timeline answers the worklog newest first" \
 	the_timeline_answers_the_worklog_newest_first
 
+say "the worklog's other doors: HTTP, the CLI, and vouching"
+check "all three doors refuse an unreadable ref in the same words" \
+	all_three_doors_refuse_a_ref_in_the_same_words
+check "the HTTP and CLI doors append an entry, and the CLI reads it back" \
+	the_http_and_cli_doors_append_an_entry
+check "an entry written by one seat about another's work says it is vouched" \
+	an_entry_written_about_another_seat_says_it_is_vouched
+check "vouching for yourself is authoring, and a subject nobody answers to is refused" \
+	vouching_for_yourself_is_authoring
+check "the generic event door writes the event and stamps none of its claims" \
+	the_generic_event_door_cannot_stamp_a_worklogs_claims
+
 say "proposals, and voting on them"
 check "a proposal is raised in a room, and the room narrows the list" \
 	a_proposal_is_raised_in_a_room
@@ -12036,14 +12265,25 @@ WORKLOG_PAGE_OLDER="stripped the old escapement out"
 WORKLOG_PAGE_OTHER="quenched the mainspring on its own branch"
 WORKLOG_PAGE_BRANCH="wl/escapement"
 WORKLOG_PAGE_OTHER_BRANCH="wl/mainspring"
+# The vouched one: written by the PERSON about the AGENT's shift, which is the
+# drainer's shape - a harness recording a run it drove. The page must not draw it
+# as the agent's own entry.
+WORKLOG_PAGE_VOUCHED="regulated the balance wheel on the run that just ended"
 readonly WORKLOG_PAGE_NEWEST WORKLOG_PAGE_OLDER WORKLOG_PAGE_OTHER
-readonly WORKLOG_PAGE_BRANCH WORKLOG_PAGE_OTHER_BRANCH
+readonly WORKLOG_PAGE_BRANCH WORKLOG_PAGE_OTHER_BRANCH WORKLOG_PAGE_VOUCHED
 
 seeds_the_worklog_the_page_has_to_show() {
 	recall
 	local args
 	args="$(wl_args "$WORKLOG_PAGE_OTHER" "" "" "" "$WORKLOG_PAGE_OTHER_BRANCH")" || return 1
 	want_tool worklog_append "$TOKEN_A" "$args" || return 1
+	# Seeded before the newest on purpose: the checks below assert which entry is
+	# FIRST, so a vouched entry appended last would be asserting about the wrong
+	# row in two places.
+	args="$(jq -nc --arg w "$WORKLOG_PAGE_VOUCHED" --arg s "$AGENT_A" --arg b "$WORKLOG_PAGE_BRANCH" \
+		'{what: $w, subject: $s, branch: $b, run: "b41c0de", verify: "428/0"}')" || return 1
+	api POST "$TOKEN_A" /api/worklog "$args" || return 1
+	want_eq "the vouched entry is vouched" "$(jqv .entry.vouched)" true || return 1
 	args="$(wl_args "$WORKLOG_PAGE_OLDER" "" "" "" "$WORKLOG_PAGE_BRANCH")" || return 1
 	want_tool worklog_append "$TOKEN_A" "$args" || return 1
 	# The newest is the agent's, so the page has a seat to name that is not the
@@ -12071,6 +12311,18 @@ browser_renders_the_worklog() {
 	cd "$ROOT/web" || return 1
 	node scripts/worklog-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" \
 		"$WORKLOG_PAGE_NEWEST" "$WORKLOG_PAGE_BRANCH" "$WORKLOG_PAGE_OTHER" "$AGENT_A"
+}
+
+# And an entry one seat wrote about another's work is drawn as VOUCHED rather
+# than as that seat's own entry. This is the half of the worklog change that
+# matters: the marker exists so a reader is not handed the harness's report of a
+# run as the run's own account of itself, and a marker no reader is shown has
+# bought nothing.
+browser_draws_a_vouched_entry_as_vouched() {
+	recall
+	cd "$ROOT/web" || return 1
+	node scripts/vouch-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" \
+		"$WORKLOG_PAGE_VOUCHED" "$AGENT_A" "$USER_A" "$WORKLOG_PAGE_NEWEST"
 }
 
 # ------------------------------------------------- reports: what replaced what
@@ -12354,6 +12606,8 @@ check "the worklog the page has to show is there to find" \
 check "the worklog tab mounts and renders a seeded entry" console_renders_the_worklog
 check "and a browser shows it newest first, narrowable by branch" \
 	browser_renders_the_worklog
+check "an entry written about another seat's work is drawn as vouched, and an authored one is not" \
+	browser_draws_a_vouched_entry_as_vouched
 
 # ---------------------------------------------------------------- phase 9
 #

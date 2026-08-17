@@ -4,7 +4,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import { Badge } from "@/components/ui/badge";
 import { Select } from "@/components/ui/select";
 import type { ActivityItem } from "@/lib/api";
-import { api } from "@/lib/api";
+import { api, isVouched } from "@/lib/api";
 import { useSession } from "@/lib/session";
 import { shortId } from "@/lib/utils";
 
@@ -153,29 +153,63 @@ function branchOf(item: ActivityItem) {
 }
 
 /**
- * One entry: who wrote it, when, the branch it belongs to if it has one, and
- * the body.
+ * One entry: who wrote it, whose work it is about, when, the branch it belongs
+ * to if it has one, and the body.
  *
- * What it says is read off meta, where worklog_append put it, and the event
- * body is the fallback - an entry from a peer running a build older than the
- * fields is still an entry and still says something, and dropping it here would
- * be a gap in a chronology with nothing to say there was one.
+ * What it says is read off meta, where the write put it, and the event body is
+ * the fallback - an entry from a peer running a build older than the fields is
+ * still an entry and still says something, and dropping it here would be a gap
+ * in a chronology with nothing to say there was one.
+ *
+ * A VOUCHED entry is drawn as vouched, and that is the half of this row that
+ * matters. The drainer writes entries on behalf of runs - the harness knows the
+ * run id and the verify status and cannot lie about whether the gate passed, so
+ * it is the right author - but an entry written by the harness ABOUT
+ * flowy-claude appearing as flowy-claude's own entry is the same shape as the
+ * impersonation finding this project has open. So the badge says vouched, the
+ * subject is named as whose work it is, and the writer is labelled "by" rather
+ * than left in the position a reader reads as the author of the account.
  */
 function Entry({ item, onBranch }: { item: ActivityItem; onBranch: (branch: string) => void }) {
   const meta = item.meta ?? {};
   const what = meta.what?.trim() || item.body;
   const branch = branchOf(item);
   const refs = meta.refs ?? [];
+  const vouched = isVouched(item);
+  const subject = meta.subject?.trim() ?? "";
   return (
     <li
       data-worklog-entry={item.id}
       data-branch={branch}
+      data-vouched={vouched ? "" : undefined}
+      data-worklog-subject={vouched ? subject : undefined}
       className="flex flex-col gap-1 border-border border-b px-4 py-3 text-sm"
     >
       <div className="flex flex-wrap items-center gap-2">
         <Badge variant={item.actor_kind === "agent" ? "agent" : "human"}>
           {item.actor_kind === "agent" ? "agent" : "person"}
         </Badge>
+        {/*
+         * Whose work it is, on the entries that are somebody's report of
+         * somebody else's shift. It comes FIRST, ahead of the writer: the
+         * question this row answers is "whose work is this", and putting the
+         * writer where the reader looks for the subject is what makes a vouched
+         * entry read as an authored one.
+         */}
+        {vouched ? (
+          <>
+            <Badge
+              variant="outline"
+              title="written by one seat about another's work - not that seat's own account"
+            >
+              vouched
+            </Badge>
+            <span data-worklog-subject-id="" className="font-mono text-xs" title={subject}>
+              {shortId(subject, 8)}
+            </span>
+            <span className="text-muted-foreground text-xs">by</span>
+          </>
+        ) : null}
         {/*
          * Who wrote it, by the name the node stamped when they wrote it. The id
          * is the fallback and stays on the title, because every entry written
@@ -195,6 +229,20 @@ function Entry({ item, onBranch }: { item: ActivityItem; onBranch: (branch: stri
           </button>
         ) : null}
         {meta.as_of ? <Badge variant="outline">as of {meta.as_of}</Badge> : null}
+        {/*
+         * The run and what the gate said about it, verbatim. verify is drawn as
+         * written rather than mapped onto a pass/fail colour: what a gate said is
+         * a measurement - "428/0", "green", "four failures, all pre-existing" -
+         * and a view that sorted those into two buckets would be inventing the
+         * half of the answer it did not get. This is the evidence a reader of a
+         * vouched entry decides on, so it is shown and not summarised.
+         */}
+        {meta.run ? <Badge variant="outline">run {meta.run}</Badge> : null}
+        {meta.verify ? (
+          <Badge variant="outline" title="what the gate said, as the entry recorded it">
+            verify {meta.verify}
+          </Badge>
+        ) : null}
       </div>
       <p data-worklog-what="" className="whitespace-pre-wrap break-words">
         {what}
