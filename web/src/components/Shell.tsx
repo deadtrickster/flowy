@@ -3,6 +3,7 @@ import {
   FileText,
   GitBranch,
   Hash,
+  History,
   Home as HomeIcon,
   Inbox as InboxIcon,
   ListTree,
@@ -46,6 +47,10 @@ export function Shell({ children }: { children: ReactNode }) {
           <NavLink to="/reports" className={navClass}>
             <FileText className="h-4 w-4" />
             reports
+          </NavLink>
+          <NavLink to="/worklog" className={navClass}>
+            <History className="h-4 w-4" />
+            worklog
           </NavLink>
           <NavLink to="/activity" className={navClass}>
             <ListTree className="h-4 w-4" />

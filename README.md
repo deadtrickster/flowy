@@ -433,7 +433,7 @@ transcript.
 
 | tool | arguments | what it does |
 | --- | --- | --- |
-| `worklog_append` | `what, next?, as_of?, refs?` | append one entry to this project's stream |
+| `worklog_append` | `what, next?, as_of?, branch?, refs?` | append one entry to this project's stream |
 | `worklog_read` | `limit?` | the most recent entries you may read, newest first, default 20 |
 
 **It is events, not a new artifact type**, and that decision is the shape of
@@ -468,6 +468,16 @@ durable revisable facts - one row per fact, edited in place as it changes. The
 worklog is chronological continuity - moments, accumulating. Same store, same
 permission filter, two read shapes, and the questions they answer are "what is
 true" against "what happened lately".
+
+An entry also carries the **branch or worktree** the shift worked in, when it
+worked in one. Several seats run at once on separate branches, so "which branch
+was this" is the second thing the next one asks, and it is what lets a reader
+narrow to one of them. It is optional and stays optional: an entry written off a
+branch names none rather than a default, which is what lets a reader tell
+"nowhere in particular" from "a branch called something". It is a **filter and
+not a heading** wherever it is read - the console's page defaults to every
+branch, because a worklog scoped to one by default hides the work somebody else
+did, which is the opposite of what the worklog is for.
 
 Entries are events, so they are on the activity timeline, in the console's
 activity view and in the TUI's with no new UI, as kind `worklog`. The timeline
@@ -887,7 +897,7 @@ and deletes are tombstones.
 | `POST /api/sync/push` | merge a peer's delta: upsert by id, append-only events, last-writer-wins by `hlc` and `node`. Rows the pushing principal could not have written are refused and counted |
 | `GET /api/peers` | replication bookmarks and their cursors; the operator only |
 | `GET /api/metrics?scope=all` | the six metric groups, filtered to this principal; `scope=all` is the node and is the operator's alone. Every group says whether it was measured, and why not when it was not |
-| `GET /api/activity?q=&kind=&room=&thread=&since=` | the timeline: turns, run logs, chat, steers and worklog entries this token may read, in log order, with a cursor |
+| `GET /api/activity?q=&kind=&room=&thread=&since=&order=` | the timeline: turns, run logs, chat, steers and worklog entries this token may read, in log order, with a cursor. `order=recent` answers the newest end of the same filtered read instead, for a view whose question is "what just happened"; it carries no cursor, because a descending page cuts at its old end |
 | `POST /api/activity` | post into it. Body: `kind` (`chat`\|`turn`\|`log`\|`steer` - `worklog` reads and does not post), `body`, and `room` and/or `thread`. Same three gates as `say`: the thread, the parents and the artifact all have to be yours to name |
 | `GET /api/traces?since=&limit=` | recent traces this token may read, one summary each |
 | `GET /api/trace/{id}` | one trace, its spans in start order, and the nodes that recorded them |
@@ -1677,6 +1687,7 @@ can bookmark or send:
 | `/inbox` | the work assigned to this token: state, delegate and done, and the auto-delegate switch |
 | `/task/:id` | one handoff: the task, and its thread rendered as chat with its DAG |
 | `/p/:project/:type/:id` | one artifact, with the lifecycle control and its history |
+| `/worklog` | the chronology: what the last few seats did and where they stopped, newest first, narrowable by branch and defaulting to every branch |
 | `/activity` | the timeline: every turn, run log line, message and steer this token may read, searchable, with the message box on it |
 | `/metrics` | the six metric groups, as this token may see them; a group that could not be measured renders its reason, never a zero |
 | `/traces` | the recent traces, and one of them as a waterfall |
@@ -1686,6 +1697,18 @@ serves `web/dist` and falls back to `index.html` for **any** non-`/api` GET, so
 a reload of `/chat/general` lands back on the room. Unknown `/api/*` paths still
 `404` in JSON - a client that asked for JSON and got a 200 of HTML would have to
 parse the app to find out it had a typo.
+
+`/worklog` reads through `GET /api/activity?kind=worklog&order=recent` and has
+no endpoint of its own. That is deliberate: the permission filter that decides
+which entries a token may see is on the timeline's read, and a second door onto
+the same rows is a second place for that filter to be forgotten - which is the
+shape of a finding this project already has open. What the page adds over the
+timeline is the entry's own fields, off the `meta` the write stamped: who wrote
+it, what changed, what is next, what it was true of, the branch it belongs to,
+and the ids of the work it was about. The branch is a picker, it defaults to
+every branch, and an empty list says which empty it is - "no entries you can
+read" rather than a blank page, because a blank page reads as "nothing
+happened", which is a different and false statement.
 
 Above the room, and above the transport rather than in it, is the announcement
 banner: the active announcements this token may read, worst severity first, with
