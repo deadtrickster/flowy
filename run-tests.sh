@@ -7284,10 +7284,15 @@ the_tombstone_is_on_b_too() {
 	# A tombstone is a row and stays one, on both nodes alike: what the delete
 	# removes is the artifact from every view, and what it leaves behind is the
 	# fact in the table, which is how the delete replicates at all. So the API
-	# answers 404 on both nodes - a deleted artifact is not there to read - and
+	# answers 410 on both nodes - a deleted artifact is not there to read, and a
+	# reader who could have read it is told so rather than told it never was - and
 	# the row is what the second client sees.
-	want_napi 404 "$N5_PORT_A" GET "$N5_TOKEN_A" "/api/artifact/$SHARED_ID" || return 1
-	want_napi 404 "$N5_PORT_B" GET "$N5_TOKEN_A" "/api/artifact/$SHARED_ID" || return 1
+	# 410 on both nodes now, not 404: the reader could read the row, so it is told
+	# the row was withdrawn rather than told it never existed - and a tombstone
+	# that replicated as a fact should read as one on the peer too, which is the
+	# whole reason it travels.
+	want_napi 410 "$N5_PORT_A" GET "$N5_TOKEN_A" "/api/artifact/$SHARED_ID" || return 1
+	want_napi 410 "$N5_PORT_B" GET "$N5_TOKEN_A" "/api/artifact/$SHARED_ID" || return 1
 	want_eq "the delete on A" \
 		"$(scalar5 "$N5_DSN_A" "SELECT tombstone FROM artifacts WHERE id = '$SHARED_ID'")" t || return 1
 	want_eq "at the delete's reading on A" \
@@ -13462,7 +13467,8 @@ fuse_unlink_tombstones_the_item() {
 	# Gone through every other door, and told in the words an id that never
 	# existed gets.
 	want_tool_fails mem_read "$TOKEN_A" "{\"id\": \"$FUSE_ITEM\"}" "no such memory item" || return 1
-	want_status 404 GET "$TOKEN_A" "/api/artifact/$FUSE_ITEM" || return 1
+	# Its owner is told it was withdrawn; the mount and the search still say gone.
+	want_status 410 GET "$TOKEN_A" "/api/artifact/$FUSE_ITEM" || return 1
 	want_tool mem_search "$TOKEN_A" "{\"q\": \"$FUSE_WORD\"}" || return 1
 	want_eq "and it is out of the index" "$(tv .count)" 0 || return 1
 	printf '%s is gone from the mount, the store and the search\n' "$FUSE_ITEM"
