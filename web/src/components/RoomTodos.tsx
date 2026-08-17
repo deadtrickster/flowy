@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import type { Artifact, FlowyEvent } from "@/lib/api";
 import { speakerStyle } from "@/lib/speakercolour";
 import {
+  TODO_KINDS,
   countTodos,
   hideDonePreference,
   isTodoDone,
@@ -24,7 +25,7 @@ interface Props {
   raiseFrom: FlowyEvent | null;
   disabled: boolean;
   error: string | null;
-  onRaise: (title: string) => Promise<void>;
+  onRaise: (title: string, category?: string) => Promise<void>;
   /** onAssign says who is carrying one. An empty name says nobody is. It has to
    * land on the node and come back from it - see the assignee cell below. */
   onAssign: (id: string, assignee: string) => Promise<void>;
@@ -52,6 +53,16 @@ interface Props {
  */
 export function RoomTodos({ room, todos, raiseFrom, disabled, error, onRaise, onAssign }: Props) {
   const [title, setTitle] = useState("");
+  /**
+   * What KIND of work this is, chosen when it is raised.
+   *
+   * The node has taken a category on this door since the ontology landed and
+   * the panel never sent one, so everything raised from a room arrived
+   * unclassified and somebody had to go back and file it afterwards - which
+   * nobody does. Empty is a real choice and stays the default: most of the
+   * queue is unclassified and that is legal.
+   */
+  const [category, setCategory] = useState("");
   const [raising, setRaising] = useState(false);
   const [failed, setFailed] = useState<string | null>(null);
   // Which row is being edited, and what has been typed into it. The name being
@@ -83,7 +94,7 @@ export function RoomTodos({ room, todos, raiseFrom, disabled, error, onRaise, on
     setRaising(true);
     setFailed(null);
     try {
-      await onRaise(said);
+      await onRaise(said, category);
       setTitle("");
     } catch (err) {
       setFailed(err instanceof Error ? err.message : String(err));
@@ -270,6 +281,25 @@ export function RoomTodos({ room, todos, raiseFrom, disabled, error, onRaise, on
             disabled={disabled || raising}
             aria-label={`raise a todo in ${room}`}
           />
+          {/* The kind, beside the title rather than after the fact. The closed
+              set is the node's - anything outside it is refused there - so this
+              offers exactly those four and "unclassified", which is legal and
+              is what most of the queue is. */}
+          <select
+            data-raise-category=""
+            aria-label="kind of work"
+            className="rounded border border-border bg-background px-2 py-1 text-xs"
+            value={category}
+            onChange={(event) => setCategory(event.target.value)}
+            disabled={disabled || raising}
+          >
+            <option value="">unclassified</option>
+            {TODO_KINDS.map((k) => (
+              <option key={k} value={k}>
+                {k}
+              </option>
+            ))}
+          </select>
           <Button type="submit" size="sm" disabled={disabled || raising || !title.trim()}>
             raise
           </Button>

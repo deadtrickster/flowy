@@ -1081,11 +1081,19 @@ export const api = {
       { method: "DELETE" },
     ),
 
-  raiseTodo: (room: string, title: string, body = "", message?: string) =>
+  raiseTodo: (room: string, title: string, body = "", message?: string, category = "") =>
     request<{ item: Artifact; event: FlowyEvent }>(`/api/chat/${encodeURIComponent(room)}/todo`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title, body, ...(message ? { message } : {}) }),
+      // category is sent only when chosen: empty means unclassified, which is a
+      // legal state and what most of the queue is, so sending "" would be
+      // indistinguishable from choosing it and is left out instead.
+      body: JSON.stringify({
+        title,
+        body,
+        ...(message ? { message } : {}),
+        ...(category ? { category } : {}),
+      }),
     }),
 
   /**

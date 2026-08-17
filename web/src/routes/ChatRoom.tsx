@@ -270,8 +270,8 @@ export function ChatRoom() {
    * together, and the poll brings that message back like anybody else's.
    */
   const raise = useCallback(
-    async (title: string) => {
-      await api.raiseTodo(room, title, "", selected?.id);
+    async (title: string, category?: string) => {
+      await api.raiseTodo(room, title, "", selected?.id, category);
       await loadTodos();
     },
     [room, selected, loadTodos],
