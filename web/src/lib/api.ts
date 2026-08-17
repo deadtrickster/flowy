@@ -345,6 +345,16 @@ export interface Artifact {
    */
   replaced_by?: string;
   /**
+   * replaced_by_ref is where that replacement lives - project/type/id, read off
+   * the replacement's own row. It is here because replaced_by alone is not an
+   * address: a replacement may sit in another project and may be another type,
+   * and a console holding only the id has nothing to build a link out of but
+   * the row it is already showing, which is the wrong row. Absent when the
+   * replacement is personal to its author and so has no project - see refPath,
+   * which is where that turns into no link rather than a broken one.
+   */
+  replaced_by_ref?: string;
+  /**
    * authorship is what this node can say about the owner's claim to the words:
    * "authored" when a signature made with the owner's own key verified here,
    * "attributed" when it did not and the row rests on the word of whichever
@@ -353,6 +363,27 @@ export interface Artifact {
    * (title, body, project, tags), so a party's status move does not disturb it.
    */
   authorship?: "authored" | "attributed";
+}
+
+/**
+ * refPath turns a reference the node sent - project/type/id - into the route
+ * that shows it, and returns undefined for anything that is not one.
+ *
+ * Undefined rather than a best effort, because the caller's alternative to a
+ * link is showing the id as text, and that is the better answer: a link built
+ * out of two guessed segments looks exactly like a good one and lands on a row
+ * that is not the one it named. Anything short of three non-empty segments is
+ * not a route.
+ *
+ * The segments are encoded one at a time and joined after, not encoded whole:
+ * a project name may hold a ? or a #, which the router would otherwise read as
+ * the start of a query or a hash. It may never hold a /, which is what makes
+ * splitting on one unambiguous.
+ */
+export function refPath(ref: string | undefined): string | undefined {
+  const parts = (ref ?? "").split("/");
+  if (parts.length !== 3 || parts.some((part) => part === "")) return undefined;
+  return `/p/${parts.map(encodeURIComponent).join("/")}`;
 }
 
 /**

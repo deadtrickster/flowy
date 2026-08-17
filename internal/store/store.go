@@ -335,6 +335,27 @@ type Artifact struct {
 	// filter fill it, and every other way of getting an Artifact leaves it
 	// empty, because the answer depends on who is asking.
 	ReplacedBy string `json:"replaced_by,omitempty"`
+	// ReplacedByRef is WHERE that replacement lives: project/type/id, the same
+	// three segments in the same order as the console's route, filled beside
+	// ReplacedBy off the replacement's own row.
+	//
+	// It exists because an id on its own is not an address. The console had to
+	// build a link to the replacement out of something, and the only pieces it
+	// had were the ones on the row in its hand, so it reused THAT row's project
+	// and type - which is right only while a replacement stays in the same
+	// project and keeps the same type, and nothing makes it. Every other reader
+	// of a bare id is in the same position, and none of them can tell they
+	// guessed wrong.
+	//
+	// Empty when the replacement is personal to its author: with no project
+	// there are no three segments, and half a reference that renders as a link
+	// is worse than none. ReplacedBy still names it, which is all the truth
+	// there is to tell.
+	//
+	// ReplacedBy stays a bare id beside this rather than being widened, because
+	// clients already read it as one. Derived at read time, same as ReplacedBy,
+	// so it is not stored, not signed and does not replicate.
+	ReplacedByRef string `json:"replaced_by_ref,omitempty"`
 	// Assignee is who is carrying the work, put where Status already is so ONE
 	// read answers both. It is derived at read time by AssigneeOf - the fields
 	// key first, the body's legacy OWNER line second - and filled in the same

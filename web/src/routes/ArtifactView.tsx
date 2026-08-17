@@ -7,7 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import DOMPurify from "dompurify";
 import { marked } from "marked";
 
-import { type Artifact, LIFECYCLE_TYPES, api } from "@/lib/api";
+import { type Artifact, LIFECYCLE_TYPES, api, refPath } from "@/lib/api";
 import { useSession } from "@/lib/session";
 
 /**
@@ -23,6 +23,7 @@ export function ArtifactView() {
   const { token } = useSession();
   const [artifact, setArtifact] = useState<Artifact | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const replacedPath = refPath(artifact?.replaced_by_ref);
 
   useEffect(() => {
     if (!token || !id) return;
@@ -71,6 +72,12 @@ export function ArtifactView() {
          * need before that is that a newer one exists. The node derives
          * replaced_by through the same filter as the row, so the link is only
          * ever offered when it goes somewhere this token can follow.
+         *
+         * Where it goes comes from replaced_by_ref, which is the replacement's
+         * own project and type. This used to be built out of the project and
+         * type of the row on screen, which is a guess: a replacement is a
+         * different row and may sit in another project or be another type.
+         * Without a ref there is no route to offer, so the id is shown as text.
          */}
         {artifact?.replaced_by ? (
           <div
@@ -78,12 +85,13 @@ export function ArtifactView() {
             className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-destructive text-sm"
           >
             this report has been replaced -{" "}
-            <Link
-              className="font-mono underline"
-              to={`/p/${artifact.project ?? "_"}/${artifact.type}/${artifact.replaced_by}`}
-            >
-              {artifact.replaced_by}
-            </Link>{" "}
+            {replacedPath ? (
+              <Link className="font-mono underline" to={replacedPath}>
+                {artifact.replaced_by}
+              </Link>
+            ) : (
+              <span className="font-mono">{artifact.replaced_by}</span>
+            )}{" "}
             supersedes it
           </div>
         ) : null}

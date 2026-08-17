@@ -113,6 +113,16 @@ func TestWhatReplacedAReportIsFilteredLikeTheReportItself(t *testing.T) {
 	assert("the author reading their own report", author, old.ID, replacement.ID)
 	assert("a reader who cannot see the replacement", reader, old.ID, "")
 
+	// A replacement personal to its author is a row nobody else has a route to,
+	// so the author is told which id replaced their report and given no address
+	// for it. Half a reference would render as a link and land nowhere.
+	if art, err := db.ReadArtifact(ctx, author, old.ID, false); err != nil {
+		t.Fatalf("read: %v", err)
+	} else if art.ReplacedByRef != "" {
+		t.Fatalf("a personal replacement was addressed as %q, and it has no project to address",
+			art.ReplacedByRef)
+	}
+
 	// And the replacement carries no mark of its own: nothing supersedes it.
 	if art, err := db.ReadArtifact(ctx, author, replacement.ID, false); err != nil {
 		t.Fatalf("read the replacement: %v", err)
@@ -174,6 +184,69 @@ func TestAReportReplacedTwiceNamesTheNewestReplacement(t *testing.T) {
 	}
 	if art.ReplacedBy != newest.ID {
 		t.Fatalf("replaced by %q, want the newest replacement %q", art.ReplacedBy, newest.ID)
+	}
+}
+
+// TestWhatReplacedAReportIsAddressedByItsOwnProjectAndType holds the claim
+// that makes replaced_by usable: the address comes off the REPLACEMENT.
+//
+// A supersedes chain is not held to one project or to one artifact type -
+// nothing here enforces either, and a design replaced by a decision, or a
+// report remeasured by a team that keeps its documents in its own project, are
+// both ordinary. A reader holding only the id has to invent the other two
+// segments, and the only ones it has are the ones on the row it is already
+// looking at, which is precisely the wrong row. That guess is right often
+// enough to look correct and silently wrong the rest of the time, so the case
+// worth pinning is the one where every segment differs.
+func TestWhatReplacedAReportIsAddressedByItsOwnProjectAndType(t *testing.T) {
+	ctx, db := open(t)
+
+	here := declaredProject(t, ctx, db, "rep-here")
+	elsewhere := declaredProject(t, ctx, db, "rep-elsewhere")
+	author := &Principal{UserID: "u-" + ulid.NewString(), Project: here}
+
+	write := func(project *string, typ, title, supersedes string) *Artifact {
+		t.Helper()
+		art := &Artifact{
+			ID: ulid.NewString(), Type: typ, OwnerUser: author.UserID,
+			Title: title, Body: "the weir crest, before and after the rebuild",
+			Visibility: VisibilityProject, Project: project,
+		}
+		if supersedes != "" {
+			fields, err := json.Marshal(map[string]any{SupersedesField: supersedes})
+			if err != nil {
+				t.Fatalf("fields: %v", err)
+			}
+			art.Fields = fields
+		}
+		if err := db.UpsertArtifact(ctx, art); err != nil {
+			t.Fatalf("upsert %s: %v", title, err)
+		}
+		return art
+	}
+
+	old := write(&here, "report", "the weir crest survey", "")
+	replacement := write(&elsewhere, "memory", "what we settled on for the weir crest", old.ID)
+
+	// One live edge, so the replacement is readable at all: without it this
+	// would be testing the filter again rather than the address.
+	if err := db.InsertGrant(ctx, &Grant{
+		FromProject: here, ToProject: elsewhere, Cap: CapRead, GrantedBy: author.UserID,
+	}); err != nil {
+		t.Fatalf("insert grant: %v", err)
+	}
+
+	art, err := db.ReadArtifact(ctx, author, old.ID, false)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if art.ReplacedBy != replacement.ID {
+		t.Fatalf("replaced by %q, want %q", art.ReplacedBy, replacement.ID)
+	}
+	want := elsewhere + "/memory/" + replacement.ID
+	if art.ReplacedByRef != want {
+		t.Fatalf("addressed as %q, want %q - the reference is built from the replacement, "+
+			"not from the report being read (%s/report/...)", art.ReplacedByRef, want, here)
 	}
 }
 

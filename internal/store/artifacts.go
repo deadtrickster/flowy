@@ -797,6 +797,12 @@ func fillCategory(arts []*Artifact) {
 // is told nothing about it, which is the answer they already get everywhere
 // else.
 //
+// It fills ReplacedByRef in the same pass, off the same row, because the id
+// alone does not tell a reader where the replacement lives - see the field's
+// comment in store.go. The query already has the replacement row; reading its
+// project and type out of it costs nothing here and is the only place that
+// knows them.
+//
 // One query for the whole page rather than one per row, and none at all when
 // the page is empty.
 func (d *DB) replacedBy(ctx context.Context, p *Principal, arts []*Artifact, scopeAll bool) error {
@@ -813,7 +819,7 @@ func (d *DB) replacedBy(ctx context.Context, p *Principal, arts []*Artifact, sco
 	idsArg := a.next(pq.Array(ids))
 	filter := ArtifactFilterSQL(p, "ar", a, scopeAll)
 	rows, err := d.sql.QueryContext(ctx,
-		`SELECT ar.fields->>'`+SupersedesField+`', ar.id
+		`SELECT ar.fields->>'`+SupersedesField+`', ar.id, ar.project, ar.type
 		   FROM artifacts ar
 		  WHERE ar.fields->>'`+SupersedesField+`' = ANY(`+idsArg+`)
 		    AND coalesce(ar.tombstone, false) = false
@@ -828,20 +834,39 @@ func (d *DB) replacedBy(ctx context.Context, p *Principal, arts []*Artifact, sco
 	// Oldest first and overwritten as they come, so a report that was replaced
 	// twice names the newest replacement - which is the one worth reading, and
 	// the one that is itself unreplaced.
-	newer := map[string]string{}
+	type replacement struct {
+		id  string
+		ref string
+	}
+	newer := map[string]replacement{}
 	for rows.Next() {
-		var old, replacement string
-		if err := rows.Scan(&old, &replacement); err != nil {
+		var old, id, typ string
+		var project sql.NullString
+		if err := rows.Scan(&old, &id, &project, &typ); err != nil {
 			return fmt.Errorf("store: read what replaced these artifacts: %w", err)
 		}
-		newer[old] = replacement
+		found := replacement{id: id}
+		// project/type/id, the three segments the console's route is made of,
+		// built from THE REPLACEMENT's own row rather than from the row being
+		// read - a supersedes chain is not held to one project or one type, and
+		// the caller has no way to tell it left either. A replacement personal
+		// to its author has no project, and a reference without one names no
+		// route anybody else can follow, so it gets no ref at all: the id is
+		// still there, and a reader is told the truth rather than sent
+		// somewhere wrong.
+		if project.Valid && project.String != "" && typ != "" {
+			found.ref = project.String + "/" + typ + "/" + id
+		}
+		newer[old] = found
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("store: read what replaced these artifacts: %w", err)
 	}
 	for _, art := range arts {
 		if art != nil {
-			art.ReplacedBy = newer[art.ID]
+			found := newer[art.ID]
+			art.ReplacedBy = found.id
+			art.ReplacedByRef = found.ref
 		}
 	}
 	return nil

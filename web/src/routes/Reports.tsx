@@ -4,7 +4,7 @@ import { Link } from "react-router-dom";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { type Artifact, api } from "@/lib/api";
+import { type Artifact, api, refPath } from "@/lib/api";
 import { useSession } from "@/lib/session";
 import { shortId } from "@/lib/utils";
 
@@ -160,6 +160,27 @@ function emptyReads({
 }
 
 /**
+ * The mark that says this report has been overtaken, a link when the node said
+ * where the replacement is and plain otherwise. The badge is the same either
+ * way on purpose: whether the console can address the replacement is its own
+ * problem, and the reader's question - is this still current - is answered
+ * before the link matters.
+ */
+function ReplacedByBadge({ id, path }: { id: string; path?: string }) {
+  const badge = (
+    <Badge variant="outline" className="border-destructive/40 bg-destructive/10 text-destructive">
+      replaced by {shortId(id)}
+    </Badge>
+  );
+  if (!path) return badge;
+  return (
+    <Link to={path} title={`read ${id} instead`}>
+      {badge}
+    </Link>
+  );
+}
+
+/**
  * One report: what it claims, what it was true of, and whether it still
  * stands.
  *
@@ -168,12 +189,19 @@ function emptyReads({
  * reader exactly where they were. The node only fills it in when the
  * replacement is one this token may read, so a link here always goes
  * somewhere.
+ *
+ * Where it goes is replaced_by_ref, the replacement's own project and type.
+ * This card used to send the reader to this report's project under the type
+ * report, which holds only while a replacement stays put and stays a report,
+ * and nothing holds it to either. With no ref the badge is still shown, just
+ * not as a link.
  */
 function ReportCard({ report }: { report: Artifact }) {
   const fields = (report.fields ?? {}) as Record<string, unknown>;
   const asOf = typeof fields.as_of === "string" ? fields.as_of : undefined;
   const supersedes = typeof fields.supersedes === "string" ? fields.supersedes : undefined;
   const replacedBy = report.replaced_by;
+  const replacedPath = refPath(report.replaced_by_ref);
   const project = report.project ?? "_";
   return (
     <li data-report={report.id} data-replaced-by={replacedBy ?? ""}>
@@ -188,16 +216,7 @@ function ReportCard({ report }: { report: Artifact }) {
             <Badge variant="secondary">report</Badge>
             {asOf ? <Badge variant="outline">as of {asOf}</Badge> : null}
             {supersedes ? <Badge variant="outline">supersedes {shortId(supersedes)}</Badge> : null}
-            {replacedBy ? (
-              <Link to={`/p/${project}/report/${replacedBy}`} title={`read ${replacedBy} instead`}>
-                <Badge
-                  variant="outline"
-                  className="border-destructive/40 bg-destructive/10 text-destructive"
-                >
-                  replaced by {shortId(replacedBy)}
-                </Badge>
-              </Link>
-            ) : null}
+            {replacedBy ? <ReplacedByBadge id={replacedBy} path={replacedPath} /> : null}
             {(report.tags ?? []).map((tag) => (
               <Badge key={tag} variant="outline">
                 {tag}
