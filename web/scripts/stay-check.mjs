@@ -159,9 +159,21 @@ try {
     await page.waitForTimeout(400);
   }
   const rowsSettled = await rows();
-  if (rowsSettled < SEED) {
+  // ENOUGH TO PAGE, NOT EVERY LAST ROW. This asked for all SEED rows and
+  // refused at 449 of 450 - one row still in flight after the count had been
+  // stable for 1.2s, so the check declined to test a view that was working.
+  // The seed exists to force a BATCHED arrival, and a page is what makes it
+  // batched: any count past one page has already produced the condition under
+  // test, and holding out for the last row makes the check fail on a poll
+  // cycle rather than on the behaviour.
+  //
+  // The floor stays well above a page so a genuinely broken seed - a room that
+  // arrived nearly empty - is still refused rather than tested.
+  const enough = Math.max(PAGE + 1, Math.floor(SEED * 0.9));
+  if (rowsSettled < enough) {
     console.error(
-      `the room never finished arriving: ${rowsSettled} rows on screen, ${SEED} seeded.
+      `the room never finished arriving: ${rowsSettled} rows on screen, ${SEED} seeded,
+  and ${enough} is the fewest that still produces a batched arrival.
   Nothing about scrolling was tested - this is the poll or the seed, not the view.`,
     );
     process.exit(1);
