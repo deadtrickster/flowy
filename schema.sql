@@ -213,6 +213,49 @@ ALTER TABLE inbox_readers ADD COLUMN IF NOT EXISTS waiter_kind text NOT NULL DEF
 -- registry adapts to the data and never the other way round - and because a
 -- revocable referent is a referent a peer can revoke: a tombstone arriving from
 -- a peer would stop this node writing into its own project.
+-- A ROOM IS AN OBJECT, not a string somebody typed.
+--
+-- Before this a room existed because a message mentioned it: `room text` on
+-- events and nothing else. That has three costs the operator hit in one
+-- afternoon - a room cannot be created before it has traffic, nobody can be
+-- invited to one, and the console had to hardcode which rooms exist
+-- (web/src/lib/unread.tsx:66, three names in an array).
+--
+-- MESSAGES STILL NAME A ROOM BY ITS NAME. Every event, todo and listener row
+-- references a room as text, and rewriting all of them to carry an id would be
+-- a large migration with nothing to show for it. So the key here is
+-- (project, name): the table gives a room an existence of its own without
+-- changing how anything refers to it.
+CREATE TABLE IF NOT EXISTS rooms (
+    project    text NOT NULL,
+    name       text NOT NULL,
+    topic      text DEFAULT '',
+    created_by text,
+    created    timestamptz DEFAULT now(),
+    PRIMARY KEY (project, name)
+);
+
+-- WHO IS IN A ROOM. Advisory for now, on purpose: today every principal in a
+-- project can read every room, and gating reads on this from the first day
+-- would silently cut off every reader whose membership row nobody created -
+-- which looks like the node being broken rather than a policy being applied.
+-- So phase one drives what the console LISTS, and gating reads is a separate
+-- decision made on its own evidence.
+--
+-- role is 'owner' or 'member'. An owner may invite and remove; anybody may
+-- remove themselves. There is no third role until a third question exists.
+CREATE TABLE IF NOT EXISTS room_members (
+    project   text NOT NULL,
+    room      text NOT NULL,
+    principal text NOT NULL,
+    role      text NOT NULL DEFAULT 'member',
+    added_by  text,
+    added     timestamptz DEFAULT now(),
+    PRIMARY KEY (project, room, principal)
+);
+
+CREATE INDEX IF NOT EXISTS room_members_principal_idx ON room_members (principal);
+
 CREATE TABLE IF NOT EXISTS projects (
     id         text PRIMARY KEY,
     name       text,
