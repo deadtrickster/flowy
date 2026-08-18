@@ -106,8 +106,13 @@ const context = await browser.newContext({ viewport: { width: 1600, height: 1000
  * arm opens the report, sends `line` through the box the way a person does, and
  * fails naming which of the four steps did not happen.
  */
-const arm = async (name, line, least = 0) => {
+const arm = async (name, line, least = 0, narrow = false) => {
   const page = await context.newPage();
+  // A NARROW WINDOW IS THE THIRD ARM'S WHOLE SUBJECT, so it is set before the
+  // page loads rather than resized after: a layout that reflows on resize and
+  // a layout that is correct at that width are the same reading afterwards,
+  // and only one of them is what somebody who opened a small window sees.
+  if (narrow) await page.setViewportSize({ width: 600, height: 900 });
   const crashes = [];
   page.on("pageerror", (err) => crashes.push(String(err)));
   await page.addInitScript((t) => localStorage.setItem("flowy.token", t), token);
@@ -139,6 +144,32 @@ const arm = async (name, line, least = 0) => {
       );
   }
   const drawn = await page.locator("aside [data-body]").count();
+
+  // ON SCREEN, WHICH CLICKING DOES NOT ASSERT. Playwright clicks an element's
+  // centre and scrolls it into view first, so a box half off the right edge is
+  // clicked and typed into by this check and unreachable to the person: the
+  // reported shape was "send button but no text area" at 600px, with the box
+  // sitting at x=301..692 in a 600px viewport - centre 496, comfortably
+  // clickable. So the arm that is about width asks about width.
+  if (narrow) {
+    const width = page.viewportSize()?.width ?? 0;
+    const rect = await box.boundingBox();
+    if (!rect || rect.x < 0 || rect.x + rect.width > width + 1) {
+      const from = Math.round(rect?.x ?? -1);
+      const to = Math.round((rect?.x ?? 0) + (rect?.width ?? 0));
+      die(
+        `${name}: the message box runs from x=${from} to x=${to} in a ${width}px window - part of it is off the screen, which is a box a person cannot type the end of`,
+      );
+    }
+    const spills = await page.evaluate(
+      () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    );
+    if (spills > 1) {
+      die(
+        `${name}: the page is ${spills}px wider than the window, so the document page scrolls sideways rather than stacking`,
+      );
+    }
+  }
 
   // THE STEP THE DEFECT FAILS. Not box.fill(), which sets the value through the
   // DOM and never asks whether anything could reach the element - it passed
@@ -218,6 +249,15 @@ try {
     await seed(`filler line ${i} - said so that the transcript is taller than the pane it is in`);
   }
   await arm("long conversation", `a person types into the box with a long transcript ${stamp}`, 30);
+
+  // ARM THREE. The same room in a window too narrow for two columns beside
+  // each other. The aside was a fixed 26rem that could not shrink, so below
+  // about 900px the room ran off the right edge and took the composer with it.
+  // Reported as the same words as the covering bug above - "send button but no
+  // text area" - which is why both arms live in this file: one person's report
+  // was two defects with one symptom, and a check that fixes only the one it
+  // was written for leaves the report open.
+  await arm("narrow window", `a person types into the box in a narrow window ${stamp}`, 30, true);
 } finally {
   await browser.close();
 }
