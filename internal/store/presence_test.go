@@ -176,6 +176,178 @@ func TestPresenceCarriesTheWaiterKind(t *testing.T) {
 	}
 }
 
+// TestPresenceRetiresAReaderThatStoppedMidPoll is the six-hour ghost.
+//
+// polls_in_flight only comes down when a handler returns, so a waiter killed
+// mid-poll - or a decrement issued on a request context that was already
+// cancelled - leaves the counter up with nobody behind it. The roster read
+// treated any positive counter as attached with no age test at all, so the row
+// said "attached, polling" for as long as the table lived. claude-glm sat there
+// for six hours and ho-test for thirty while the operator asked twice why an
+// agent was not answering.
+//
+// What is asserted here is not just that it stops saying attached. It is that
+// the row STAYS ON THE ROSTER, named as lost, carrying the timestamp that says
+// how long ago it went - because the fact somebody needs is that this seat is
+// deaf, and a fix that dropped the row would have deleted exactly that.
+func TestPresenceRetiresAReaderThatStoppedMidPoll(t *testing.T) {
+	ctx, db := open(t)
+	u := presenceUser(t, ctx, db, "stalled")
+	project := "presence-" + ulid.NewString()[:6]
+	if err := db.DeclareProject(ctx, &Project{ID: project, Name: project, CreatedBy: u.ID}); err != nil {
+		t.Fatalf("declare project: %v", err)
+	}
+	p := &Principal{UserID: u.ID, Project: project}
+
+	// rowFor is what the roster would draw for this reader, or nil for a reader
+	// it does not list. Absent and present-but-wrong are different failures.
+	rowFor := func(reader string) *PresenceRow {
+		t.Helper()
+		rows, err := db.Presence(ctx)
+		if err != nil {
+			t.Fatalf("presence: %v", err)
+		}
+		for _, r := range rows {
+			if r.Reader == reader && r.Principal == readerKey(p) {
+				return r
+			}
+		}
+		return nil
+	}
+
+	// stall ages a reader's last poll by hand and leaves the counter up: the
+	// state a killed waiter leaves behind, which is not reachable through
+	// PollStart and PollEnd because those two are the pair that never ran.
+	stall := func(reader, age string) {
+		t.Helper()
+		if _, err := db.sql.ExecContext(ctx,
+			`UPDATE inbox_readers
+			    SET last_poll_at = now() - $3::interval, polls_in_flight = 1
+			  WHERE principal = $1 AND reader = $2`,
+			readerKey(p), reader, age); err != nil {
+			t.Fatalf("stall %s: %v", reader, err)
+		}
+	}
+
+	for _, reader := range []string{"stopped-six-hours-ago", "stopped-yesterday"} {
+		if _, err := db.DeclareInboxReader(ctx, p, reader); err != nil {
+			t.Fatalf("declare reader %s: %v", reader, err)
+		}
+	}
+
+	// A poll in flight right now is the healthy case, and it has to keep
+	// reading that way - a window that retires live waiters is worse than the
+	// bug it replaces.
+	db.PollStart(ctx, p, "stopped-six-hours-ago", WaiterTracked)
+	if row := rowFor("stopped-six-hours-ago"); row == nil || !row.Attached ||
+		row.State != PresenceListening {
+		t.Fatalf("a poll in flight now reads as %+v, want attached and listening", row)
+	}
+
+	// Six hours later, with the poll still nominally in flight. The server
+	// blocks for twenty-five seconds at a time, so this is not a slow poll.
+	stall("stopped-six-hours-ago", "6 hours")
+	row := rowFor("stopped-six-hours-ago")
+	if row == nil {
+		t.Fatal("a reader that stopped mid-poll six hours ago vanished from the roster - " +
+			"that is the evidence the operator was asking for, not clutter")
+	}
+	if row.Attached {
+		t.Error("a poll that started six hours ago still reads as in flight")
+	}
+	if row.State != PresenceLost {
+		t.Errorf("a reader that stopped six hours ago reads as %q, want %q", row.State, PresenceLost)
+	}
+	// The row has to say WHEN, or "lost" is a word with no way to act on it.
+	if row.LastPoll == nil {
+		t.Error("a lost reader carries no last poll, so nothing can say how long it has been deaf")
+	}
+
+	// Past the waiter's own deadline it is no longer news. A waiter that armed
+	// a day ago would have gone home on its own budget, so an unfinished poll
+	// older than that is a row nobody cleaned up rather than a seat that just
+	// went deaf.
+	stall("stopped-yesterday", "30 hours")
+	if row := rowFor("stopped-yesterday"); row != nil {
+		t.Errorf("a poll abandoned 30 hours ago is still on the roster as %+v - "+
+			"past the waiter's own deadline it is noise, not an incident", row)
+	}
+
+	// And it comes back the moment it polls again: this is a reading of the
+	// row, not a retirement written into it.
+	db.PollStart(ctx, p, "stopped-yesterday", WaiterTracked)
+	if row := rowFor("stopped-yesterday"); row == nil || row.State != PresenceListening {
+		t.Errorf("a reader that polled again reads as %+v, want listening - "+
+			"the window is a reading and must not have marked the row dead", row)
+	}
+}
+
+// TestPresenceStartingIsJudgedByTheRowsAge is the other half of "still grows".
+//
+// The console declares a reader per room to hold a human's unread place. Those
+// never poll, and they ack every time somebody reads the room - which moved
+// `updated`, which was what the never-polled clause windowed on. So three
+// browser bookmarks were permanent residents of the listening pane, kept fresh
+// by the act of looking at the page they were cluttering.
+//
+// A never-polled row is a waiter STARTING, and how long ago it was declared is
+// what says whether that is still a plausible reading.
+func TestPresenceStartingIsJudgedByTheRowsAge(t *testing.T) {
+	ctx, db := open(t)
+	u := presenceUser(t, ctx, db, "bookmark")
+	project := "presence-" + ulid.NewString()[:6]
+	if err := db.DeclareProject(ctx, &Project{ID: project, Name: project, CreatedBy: u.ID}); err != nil {
+		t.Fatalf("declare project: %v", err)
+	}
+	p := &Principal{UserID: u.ID, Project: project}
+
+	listed := func(reader string) *PresenceRow {
+		t.Helper()
+		rows, err := db.Presence(ctx)
+		if err != nil {
+			t.Fatalf("presence: %v", err)
+		}
+		for _, r := range rows {
+			if r.Reader == reader && r.Principal == readerKey(p) {
+				return r
+			}
+		}
+		return nil
+	}
+
+	const bookmark = "console:general"
+	if _, err := db.DeclareInboxReader(ctx, p, bookmark); err != nil {
+		t.Fatalf("declare reader: %v", err)
+	}
+	// Freshly declared and not yet polling: a waiter arming itself looks exactly
+	// like this, and the roster is where somebody watches it start.
+	if row := listed(bookmark); row == nil || row.State != PresenceStarting {
+		t.Fatalf("a reader declared a moment ago reads as %+v, want %q", row, PresenceStarting)
+	}
+
+	// Declared hours ago and still never polled: whatever it is, it is not
+	// starting.
+	if _, err := db.sql.ExecContext(ctx,
+		`UPDATE inbox_readers SET created = now() - interval '3 hours'
+		  WHERE principal = $1 AND reader = $2`, readerKey(p), bookmark); err != nil {
+		t.Fatalf("age the bookmark: %v", err)
+	}
+	if row := listed(bookmark); row != nil {
+		t.Errorf("a bookmark declared three hours ago that never polled is on the roster as %+v", row)
+	}
+
+	// And reading the room does not put it back. This is the exact loop that
+	// made the pane grow: the tab acks, the ack stamps the row, and the row
+	// re-enters the roster it was just cleared from.
+	if _, err := db.AckInbox(ctx, p, bookmark, 1, false); err != nil {
+		t.Fatalf("ack: %v", err)
+	}
+	if row := listed(bookmark); row != nil {
+		t.Errorf("acking an unread bookmark put it back on the listening roster as %+v - "+
+			"an ack is a place in the log, not an ear on the room", row)
+	}
+}
+
 // TestDeleteInboxReader is the ghost fix: a test label must be droppable, and
 // only by the principal that owns it.
 func TestDeleteInboxReader(t *testing.T) {

@@ -971,6 +971,15 @@ var errQuietDeadline = errors.New("the deadline passed and nothing was said")
 // forked successor polls and is attached and is seconds fresh and can wake
 // nobody, so a roster without it says healthy about a session that has gone
 // deaf - and the only thing that ever noticed was the human, 28 minutes later.
+//
+// And the state is here because attachment could not be trusted at all. The
+// poll counter only comes down when a handler returns, so a listener that was
+// killed mid-poll left it up and read as attached for as long as the row
+// existed - six hours in one case, thirty in another, with the operator asking
+// twice why an agent was not answering. A listener that stopped now arrives
+// here as state "lost" rather than as attached, and rather than not arriving at
+// all: a caller that can see the seat went deaf can do something about it, and
+// one handed a shorter list learns nothing.
 func (s *server) handlePresence(w http.ResponseWriter, r *http.Request) {
 	p := principalOf(r)
 	members, err := s.db.RoomMembers(r.Context(), p)
