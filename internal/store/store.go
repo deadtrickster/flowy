@@ -491,9 +491,15 @@ func (d *DB) InsertArtifact(ctx context.Context, a *Artifact) error {
 		`INSERT INTO artifacts (id, type, kind, project, owner_user, title, body, discovery,
 		                        status, severity, tags, user_tags, related, visibility,
 		                        file_path, fields, hlc, node, tombstone, search, sig, created,
-		                        author_sig, authorship)
+		                        author_sig, authorship, started)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
-		         $19, `+fmt.Sprintf(artifactSearchSQL, 20)+`, $21, $22, $23, $24)
+		         $19, `+fmt.Sprintf(artifactSearchSQL, 20)+`, $21, $22, $23, $24,
+		         -- Born active, same rule as the other two inserts. This door is
+		         -- reached only by cmd/smoke, so no test in internal/store covers
+		         -- this line - it is here for consistency, and a mutation of it
+		         -- would go unnoticed by that package. Said out loud rather than
+		         -- left for somebody to discover by trusting the coverage.
+		         CASE WHEN $9 = '`+ActiveStatus+`' THEN now() END)
 		 RETURNING created, updated`,
 		a.ID, a.Type, a.Kind, a.Project, a.OwnerUser, a.Title, a.Body, a.Discovery,
 		a.Status, a.Severity, pq.Array(a.Tags), pq.Array(a.UserTags), pq.Array(a.Related),

@@ -184,9 +184,10 @@ func (d *DB) upsertArtifact(ctx context.Context, q execer, a *Artifact) error {
 		`INSERT INTO artifacts (id, type, kind, project, owner_user, title, body, discovery,
 		                        status, severity, tags, user_tags, related, visibility,
 		                        file_path, fields, hlc, node, tombstone, search, sig, created,
-		                        author_sig, authorship)
+		                        author_sig, authorship, started)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
-		         $19, `+fmt.Sprintf(artifactSearchSQL, 20)+`, $21, $22, $23, $24)
+		         $19, `+fmt.Sprintf(artifactSearchSQL, 20)+`, $21, $22, $23, $24,
+		         CASE WHEN $9 = '`+ActiveStatus+`' THEN now() END)
 		 ON CONFLICT (id) DO UPDATE SET
 		     type = excluded.type, kind = excluded.kind, project = excluded.project,
 		     owner_user = excluded.owner_user,
@@ -197,7 +198,22 @@ func (d *DB) upsertArtifact(ctx context.Context, q execer, a *Artifact) error {
 		     fields = excluded.fields, hlc = excluded.hlc, node = excluded.node,
 		     tombstone = excluded.tombstone, search = excluded.search, sig = excluded.sig,
 		     author_sig = excluded.author_sig, authorship = excluded.authorship,
-		     created = excluded.created, updated = now()
+		     created = excluded.created, updated = now(),
+		     -- A ROW CAN BE BORN ACTIVE, so this door owes the stamp too.
+		     -- POST /api/artifacts takes a status, so a client can create a row
+		     -- straight into active, or update one into it, without passing the
+		     -- transition verb - and started would then be null on exactly the
+		     -- rows a board shows as running.
+		     --
+		     -- Once-only, on the same condition setArtifactStatus uses:
+		     -- rewriting a row that is already active is not a restart.
+		     --
+		     -- last_worked is deliberately NOT moved here. An upsert is ANY
+		     -- write, a rename included, and counting it would rebuild the
+		     -- problem updated already has, which is why these columns exist.
+		     started = CASE
+		         WHEN excluded.status = '`+ActiveStatus+`' AND artifacts.started IS NULL
+		         THEN now() ELSE artifacts.started END
 		  WHERE artifacts.owner_user = excluded.owner_user
 		    AND coalesce(artifacts.tombstone, false) = false
 		 RETURNING created, updated`,
@@ -334,10 +350,31 @@ func (d *DB) SetArtifactFieldsIf(
 // status empty leaves the column alone, which is what every other caller of the
 // fields writers wants: a handover changes who is carrying the work and says
 // nothing about where the work is.
+//
+// IT MAY NOT MOVE A ROW TO `active`, and that refusal is the whole of the
+// single-writer rule made enforceable.
+//
+// A transition is setArtifactStatus's: it stamps `started` the first time a row
+// goes active, moves `last_worked`, and asks checkQueueRow whether the move is
+// coherent. None of that happens here, so a row activated through this door
+// would be active with no start - which is exactly the state the board showed
+// this morning and could not explain.
+//
+// No caller passes it today: putDownStatus returns `todo` or nothing (it fires
+// only when a claim is a RELEASE), and join passes `done`. So this starts green
+// and stays green - it is a rule stated where the next caller will meet it,
+// rather than a property that happens to hold and would break silently. The
+// alternative is a second stamping site, which is how one fact ends up with two
+// homes that disagree.
 func (d *DB) SetArtifactFieldsAndStatusIf(
 	ctx context.Context, a *Artifact, fields json.RawMessage, status, guard string,
 	events ...*Event,
 ) error {
+	if status == ActiveStatus {
+		return fmt.Errorf("store: %s cannot be moved to %s through the fields writer - "+
+			"a transition belongs to MoveArtifactStatus, which stamps started and "+
+			"checks the row is coherent", a.ID, ActiveStatus)
+	}
 	return d.writeArtifactFields(ctx, a, fields, status, guard, events...)
 }
 
@@ -610,9 +647,13 @@ func (d *DB) createArtifact(ctx context.Context, q execer, a *Artifact) error {
 		`INSERT INTO artifacts (id, type, kind, project, owner_user, title, body, discovery,
 		                        status, severity, tags, user_tags, related, visibility,
 		                        file_path, fields, hlc, node, tombstone, search, sig, created,
-		                        author_sig, authorship)
+		                        author_sig, authorship, started)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
-		         $19, `+fmt.Sprintf(artifactSearchSQL, 20)+`, $21, $22, $23, $24)
+		         $19, `+fmt.Sprintf(artifactSearchSQL, 20)+`, $21, $22, $23, $24,
+		         -- Born active, same rule as the upsert: a row created straight
+		         -- into active has started now, or the board shows it running
+		         -- with no answer to since-when.
+		         CASE WHEN $9 = '`+ActiveStatus+`' THEN now() END)
 		 ON CONFLICT (id) DO NOTHING
 		 RETURNING created, updated`,
 		a.ID, a.Type, a.Kind, a.Project, a.OwnerUser, a.Title, a.Body, a.Discovery,
