@@ -191,25 +191,45 @@ var findingTools = []tool{
 	},
 	{
 		Name: "finding_upstream",
-		Description: "Record where a finding stands on SOMEBODY ELSE'S tracker: which " +
-			"tracker, which issue number, and their state. This is a second axis, not a " +
-			"status: our lifecycle says how far we got writing it up, and this says what " +
-			"happened to it over there, so done/unfiled - written up, nobody sent it - is " +
-			"an ordinary combination and is the state most findings are in. A finding " +
-			"nobody filed carries none of this and reads as unfiled, so there is nothing " +
-			"to set for one. An update states what changes: {finding, state} advances the " +
-			"filing already on the row without restating its number. Read permission is " +
-			"the whole bar, the same as a status move or a repro tree - whoever can read " +
-			"the finding may record that it was filed. A thin wrapper over " +
-			"store.SetFindingUpstream, where every refusal lives.",
+		Description: "Record where a finding stands on SOMEBODY ELSE'S tracker, and what " +
+			"it cites over there. This is a second axis, not a status: our lifecycle says " +
+			"how far we got writing it up, and this says what happened to it over there, " +
+			"so done/unfiled - written up, nobody sent it - is an ordinary combination and " +
+			"is the state most findings are in. A finding nobody filed carries none of " +
+			"this and reads as unfiled, so there is nothing to set for one. A NUMBER IS " +
+			"NOT A FILING: refs are what this finding cites and assert nothing about who " +
+			"sent what, state is the only thing that says we filed it, and 'referenced' is " +
+			"the common case where issues are cited and nobody claims to have submitted " +
+			"anything. An update states what changes: {finding, state} advances the filing " +
+			"already on the row without restating its number, and refs left out leaves the " +
+			"citations alone. Read permission is the whole bar, the same as a status move " +
+			"or a repro tree. A thin wrapper over store.SetFindingUpstream, where every " +
+			"refusal lives.",
 		InputSchema: object(props{
 			"finding": str("The finding's id."),
-			"tracker": str("Whose tracker - serenedb, ragflow, or a host. Leave it out on " +
-				"an update to keep the tracker already on the row."),
-			"id": str("Their issue number, as a string - not every tracker numbers with " +
-				"integers. Leave it out on an update to keep the number already recorded."),
-			"url":   str("The link to the issue, so a reader gets there in one click."),
+			"tracker": str("THE FILING's tracker - serenedb, ragflow, or a host. Only for a " +
+				"state that says we sent it; a citation goes in refs. Leave it out on an " +
+				"update to keep the tracker already on the row."),
+			"kind": enum("Whether the thing we filed is an issue or a pull request - told "+
+				"them and sent a fix are different claims.", store.UpstreamKinds),
+			"id": str("Their number for THE FILING, as a string - not every tracker numbers " +
+				"with integers. Leave it out on an update to keep the number recorded."),
+			"url":   str("The link to it, so a reader gets there in one click."),
 			"state": enum("Where the filing stands. Empty is unfiled.", store.UpstreamStates),
+			"refs": map[string]any{
+				"type": "array",
+				"description": "Everything upstream this finding TOUCHES - issues and pull " +
+					"requests, many per finding, and the same one repeated on every finding " +
+					"it covers, which is how 'these three went in one PR' is answerable. It " +
+					"claims nothing about whether anybody filed this. Stating the list " +
+					"replaces it whole; leaving it out leaves it alone.",
+				"items": object(props{
+					"tracker": str("Whose tracker it is in - serenedb, ragflow, a host."),
+					"kind":    enum("issue or pr.", store.UpstreamKinds),
+					"id":      str("Their number for it, as a string."),
+					"url":     str("The link, when there is one."),
+				}, []string{"tracker", "kind", "id"}),
+			},
 			"filed_at": str("When it was filed - 2006-01-02 or full RFC3339. Leave it out " +
 				"and the node stamps now for a new filing, or keeps the day the standing " +
 				"one was made. State it when importing a filing somebody made by hand " +
@@ -236,13 +256,15 @@ var findingTools = []tool{
 // and this only carries the arguments across.
 func findingUpstream(ctx context.Context, m *mcpServer, p *store.Principal, raw json.RawMessage) (any, error) {
 	var a struct {
-		Finding string `json:"finding"`
-		Tracker string `json:"tracker"`
-		ID      string `json:"id"`
-		URL     string `json:"url"`
-		State   string `json:"state"`
-		FiledAt string `json:"filed_at"`
-		FiledBy string `json:"filed_by"`
+		Finding string              `json:"finding"`
+		Tracker string              `json:"tracker"`
+		Kind    string              `json:"kind"`
+		ID      string              `json:"id"`
+		URL     string              `json:"url"`
+		State   string              `json:"state"`
+		Refs    []store.UpstreamRef `json:"refs"`
+		FiledAt string              `json:"filed_at"`
+		FiledBy string              `json:"filed_by"`
 	}
 	if err := decodeParams(raw, &a); err != nil {
 		return nil, err
@@ -251,8 +273,8 @@ func findingUpstream(ctx context.Context, m *mcpServer, p *store.Principal, raw 
 		return nil, errors.New("finding is required")
 	}
 	art, entry, err := m.db.SetFindingUpstream(ctx, p, a.Finding, store.UpstreamFiling{
-		Tracker: a.Tracker, ID: a.ID, URL: a.URL, State: a.State,
-		FiledAt: a.FiledAt, FiledBy: a.FiledBy,
+		Tracker: a.Tracker, Kind: a.Kind, ID: a.ID, URL: a.URL, State: a.State,
+		Refs: a.Refs, FiledAt: a.FiledAt, FiledBy: a.FiledBy,
 	})
 	if err != nil {
 		return nil, err
