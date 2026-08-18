@@ -1127,7 +1127,14 @@ func (d *DB) syncApply(ctx context.Context, p *Principal, in *SyncSet) (*SyncRes
 		rows = append(rows, &syncRow{
 			table: "artifacts", hlc: art.HLC, node: art.Node,
 			verify: func(ctx context.Context, tx *sql.Tx) (string, error) {
-				why, err := d.authentic(ctx, tx, art.Node, canonicalArtifact(art), art.Sig,
+				// THE FORM THE ROW NAMES, and a refusal when this node does
+				// not know it. Falling back to v1 for an unrecognised name
+				// would let the sender pick its own verifier.
+				msg, err := canonicalArtifact(art)
+				if err != nil {
+					return "artifact " + art.ID + ": " + err.Error(), nil
+				}
+				why, err := d.authentic(ctx, tx, art.Node, msg, art.Sig,
 					"artifact "+art.ID)
 				if why != "" || err != nil {
 					return why, err
@@ -2897,10 +2904,10 @@ func applyArtifact(ctx context.Context, tx *sql.Tx, a *Artifact) (int, error) {
 		`INSERT INTO artifacts (id, type, kind, project, owner_user, title, body, discovery,
 		                        status, severity, tags, user_tags, related, visibility,
 		                        file_path, fields, hlc, node, tombstone, search, created, updated,
-		                        reported, external, sig, author_sig, authorship)
+		                        reported, external, sig, author_sig, authorship, sig_form)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
 		         $19, `+fmt.Sprintf(artifactSearchSQL, 20)+`, coalesce($21::timestamptz, now()), now(),
-		         $22, $23, $24, $25, $26)
+		         $22, $23, $24, $25, $26, $27)
 		 ON CONFLICT (id) DO UPDATE SET
 		     type = excluded.type, kind = excluded.kind, project = excluded.project,
 		     owner_user = excluded.owner_user, title = excluded.title, body = excluded.body,
@@ -2914,6 +2921,11 @@ func applyArtifact(ctx context.Context, tx *sql.Tx, a *Artifact) (int, error) {
 		     -- finding about it lands beside it: what is written here is what the
 		     -- verify step decided, never what the payload claimed.
 		     author_sig = excluded.author_sig, authorship = excluded.authorship,
+		     -- And which form that signature was made over, kept with it: the
+		     -- two are one fact, and a row stored under this node's idea of the
+		     -- form while carrying a peer's signature is a row nothing
+		     -- downstream could verify.
+		     sig_form = excluded.sig_form,
 		     -- created is inside the signature now, so the stored date has to be
 		     -- the one the sig column beside it was made over: a row kept at this
 		     -- node's own date, under the author's signature over theirs, is a row
@@ -2926,7 +2938,8 @@ func applyArtifact(ctx context.Context, tx *sql.Tx, a *Artifact) (int, error) {
 		a.ID, a.Type, a.Kind, a.Project, a.OwnerUser, a.Title, a.Body, a.Discovery,
 		a.Status, a.Severity, pq.Array(a.Tags), pq.Array(a.UserTags), pq.Array(a.Related),
 		a.Visibility, a.FilePath, fields, a.HLC, a.Node, a.Tombstone, searchText(a),
-		nullTime(a.Created), a.Reported, external, a.Sig, a.AuthorSig, authorshipOr(a.Authorship))
+		nullTime(a.Created), a.Reported, external, a.Sig, a.AuthorSig, authorshipOr(a.Authorship),
+		a.SigForm)
 	if err != nil {
 		return 0, fmt.Errorf("store: sync apply artifact %s: %w", a.ID, err)
 	}

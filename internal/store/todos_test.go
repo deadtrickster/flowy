@@ -196,7 +196,7 @@ func TestAnAssigneeHandsTheNamedPartyNothing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("identity: %v", err)
 	}
-	if !verifyBytes(id.PublicKey, canonicalArtifact(stored), stored.Sig) {
+	if !verifyBytes(id.PublicKey, mustCanonicalArtifact(stored), stored.Sig) {
 		t.Fatal("the row this node assigned no longer verifies under its own key")
 	}
 }

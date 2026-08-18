@@ -41,7 +41,7 @@ func searchText(a *Artifact) string {
 const artifactColumns = `id, type, kind, project, owner_user, title, body, discovery, status,
 	severity, tags, user_tags, related, visibility, file_path, fields, hlc, node,
 	tombstone, created, updated, reported, external, sig, author_sig, authorship,
-	started, last_worked`
+	started, last_worked, sig_form`
 
 // scanner is what both *sql.Row and *sql.Rows satisfy.
 type scanner interface{ Scan(dest ...any) error }
@@ -57,11 +57,12 @@ func scanArtifact(sc scanner, rank *float64) (*Artifact, error) {
 		clockVal                                   sql.NullInt64
 		tomb, reported                             sql.NullBool
 		started, lastWorked                        sql.NullTime
+		sigForm                                    sql.NullString
 	)
 	dest := []any{&a.ID, &typeCol, &kind, &project, &owner, &title, &body, &disc, &status, &severity,
 		pq.Array(&a.Tags), pq.Array(&a.UserTags), pq.Array(&a.Related), &vis, &filePath,
 		&fields, &clockVal, &nodeCol, &tomb, &a.Created, &a.Updated, &reported, &external, &a.Sig,
-		&a.AuthorSig, &authorship, &started, &lastWorked}
+		&a.AuthorSig, &authorship, &started, &lastWorked, &sigForm}
 	if rank != nil {
 		dest = append(dest, rank)
 	}
@@ -71,6 +72,11 @@ func scanArtifact(sc scanner, rank *float64) (*Artifact, error) {
 	// One of the two things this node can say, whatever the column holds - see
 	// authorshipOr and scanEvent, which does the same.
 	a.Authorship = authorshipOr(authorship.String)
+	// Empty stays empty and means v1 - see Artifact.SigForm. It is not
+	// normalised to the constant here, because "the row said nothing" and "the
+	// row said v1" are the same answer to a verifier and a different answer to
+	// anybody asking when this row was last signed.
+	a.SigForm = sigForm.String
 	if project.Valid {
 		p := project.String
 		a.Project = &p
@@ -457,10 +463,16 @@ func (d *DB) setArtifactFields(
 		if guard != "" {
 			where += " AND " + guard
 		}
-		set := `fields = $2, hlc = $3, node = $4, sig = $5, updated = now()`
-		args := []any{a.ID, column, a.HLC, a.Node, a.Sig}
+		// sig_form travels with sig, always: the two are one fact, and a row
+		// whose signature was remade while the form column kept its old value
+		// is a row nothing downstream can verify. It is written even though
+		// this build only ever signs v1, because the drift would be invisible
+		// until the day a second form exists.
+		set := `fields = $2, hlc = $3, node = $4, sig = $5, sig_form = $6, updated = now()`
+		args := []any{a.ID, column, a.HLC, a.Node, a.Sig, a.SigForm}
 		if withStatus {
-			set = `fields = $2, hlc = $3, node = $4, sig = $5, status = $6, updated = now()`
+			set = `fields = $2, hlc = $3, node = $4, sig = $5, sig_form = $6, status = $7,
+			       updated = now()`
 			args = append(args, a.Status)
 		}
 		res, err := tx.ExecContext(ctx, `UPDATE artifacts SET `+set+` WHERE `+where, args...)
@@ -567,10 +579,10 @@ func (d *DB) SetArtifactWordsIf(
 			`UPDATE artifacts
 			    SET title = $2, body = $3, search = `+fmt.Sprintf(artifactSearchSQL, 4)+`,
 			        hlc = $5, node = $6, sig = $7, author_sig = $8, authorship = $9,
-			        updated = now()
+			        sig_form = $10, updated = now()
 			  WHERE `+where,
 			a.ID, a.Title, a.Body, searchText(a), a.HLC, a.Node, a.Sig, a.AuthorSig,
-			authorshipOr(a.Authorship))
+			authorshipOr(a.Authorship), a.SigForm)
 		if err != nil {
 			return fmt.Errorf("store: set words of %s: %w", a.ID, err)
 		}
@@ -1442,9 +1454,9 @@ func (d *DB) TombstoneArtifact(ctx context.Context, p *Principal, id string) (*A
 	}
 	res, err := d.sql.ExecContext(ctx,
 		`UPDATE artifacts SET tombstone = true, hlc = $2, node = $3, sig = $5, fields = $6,
-		        updated = now()
+		        sig_form = $7, updated = now()
 		  WHERE id = $1 AND coalesce(owner_user, '') = $4`,
-		art.ID, art.HLC, art.Node, p.UserID, art.Sig, []byte(art.Fields))
+		art.ID, art.HLC, art.Node, p.UserID, art.Sig, []byte(art.Fields), art.SigForm)
 	if err != nil {
 		return nil, fmt.Errorf("store: tombstone artifact %s: %w", id, err)
 	}

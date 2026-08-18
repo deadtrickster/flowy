@@ -116,7 +116,7 @@ func TestThisNodeSignsAndKeepsItsKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if !verifyBytes(id.PublicKey, canonicalArtifact(read), read.Sig) {
+	if !verifyBytes(id.PublicKey, mustCanonicalArtifact(read), read.Sig) {
 		t.Fatal("the row this node wrote does not verify under this node's key")
 	}
 

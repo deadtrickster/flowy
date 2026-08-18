@@ -37,6 +37,7 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/binary"
+	"fmt"
 	"sort"
 	"time"
 )
@@ -46,11 +47,29 @@ import (
 // row type's signature.
 const (
 	domainArtifact = "flowy.artifact.v1"
-	domainGrant    = "flowy.grant.v1"
-	domainTask     = "flowy.task.v1"
-	domainEvent    = "flowy.event.v1"
-	domainIdentity = "flowy.identity.v1"
-	domainProject  = "flowy.project.v1"
+	// domainArtifactV2 is the next canonical form of an artifact, and it exists
+	// so that adding a signed column stops being impossible.
+	//
+	// THE VERSION WAS ALWAYS IN THE BYTES AND NOTHING READ IT. Every message
+	// starts with its domain, so "flowy.artifact.v1" is already the first field
+	// of every artifact signature - a signature made under one domain cannot
+	// verify under another, which is the property this needs. What was missing
+	// was a row saying which form its signature was made over, so a verifier
+	// had to assume, and assuming is what made a new column a choice between
+	// breaking every signature and putting the value outside the signature.
+	//
+	// V2 IS NOT USED BY ANY FIELD YET, deliberately. This change is the
+	// mechanism: the next signed column is then a schema change and a field
+	// added to CanonicalArtifactV2, rather than a re-sign of every row in every
+	// store. Adding one here without a caller keeps that change honest - it is
+	// exercised by the tests as the form a row can be stamped with, and nothing
+	// in production is written under it until a field moves.
+	domainArtifactV2 = "flowy.artifact.v2"
+	domainGrant      = "flowy.grant.v1"
+	domainTask       = "flowy.task.v1"
+	domainEvent      = "flowy.event.v1"
+	domainIdentity   = "flowy.identity.v1"
+	domainProject    = "flowy.project.v1"
 	// domainAuthorship is the second signature a row can carry, and it is a
 	// different claim from every domain above it. Those are a NODE saying "I
 	// wrote these bytes"; this one is a PRINCIPAL saying "I am the author". Two
@@ -102,7 +121,41 @@ type Artifact struct {
 
 // CanonicalArtifact is the byte string an artifact's signature is over.
 func CanonicalArtifact(a Artifact) []byte {
-	m := newMessage(domainArtifact)
+	return canonicalArtifactForm(domainArtifact, a)
+}
+
+// ArtifactFormV1 and ArtifactFormV2 are what a row calls the form its signature
+// was made over. A row that names neither is V1: every artifact written before
+// this existed was signed under that domain, and a default that guessed
+// anything else would refuse the whole store.
+const (
+	ArtifactFormV1 = "v1"
+	ArtifactFormV2 = "v2"
+)
+
+// CanonicalArtifactForm is the byte string an artifact's signature is over,
+// under the form NAMED BY THE ROW rather than the one this build happens to
+// write.
+//
+// AN UNKNOWN FORM IS AN ERROR AND NOT A DEFAULT. A row arriving from a peer
+// carries its own form, and falling back to v1 for anything unrecognised would
+// let that peer choose which verifier judges it - a row could name a form this
+// node has never heard of and be verified under the weakest one it has. So an
+// unknown name refuses, and a node that does not understand a form says so
+// rather than judging the row anyway.
+func CanonicalArtifactForm(form string, a Artifact) ([]byte, error) {
+	switch form {
+	case "", ArtifactFormV1:
+		return canonicalArtifactForm(domainArtifact, a), nil
+	case ArtifactFormV2:
+		return canonicalArtifactForm(domainArtifactV2, a), nil
+	}
+	return nil, fmt.Errorf("sign: unknown artifact form %q - this node cannot judge a row it "+
+		"does not know the shape of", form)
+}
+
+func canonicalArtifactForm(domain string, a Artifact) []byte {
+	m := newMessage(domain)
 	m.text(a.ID)
 	m.text(a.OwnerUser)
 	m.optional(a.Project)

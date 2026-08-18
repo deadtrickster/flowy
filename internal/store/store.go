@@ -450,6 +450,21 @@ type Artifact struct {
 	// authenticated fields - see internal/sign. It travels with the row and is
 	// what the merge on the far side checks before it looks at anything else.
 	Sig []byte `json:"sig,omitempty"`
+	// SigForm is WHICH CANONICAL FORM Sig was made over.
+	//
+	// Every signature already begins with a domain string - "flowy.artifact.v1"
+	// - so the version has always been in the bytes and nothing read it. A
+	// verifier had to assume the form, which is what made adding a signed
+	// column a choice between breaking every signature ever written and putting
+	// the value outside the signature where a relay can rewrite it.
+	//
+	// Empty means v1: every row written before this existed was signed under
+	// that domain. It is NOT itself signed, because it selects the verifier
+	// rather than asserting anything - a wrong value fails verification, which
+	// is the same answer tampering gets - and an unknown value is REFUSED
+	// rather than defaulted, so a peer cannot name a form this node has never
+	// heard of and have its row judged by the weakest one available.
+	SigForm string `json:"sig_form,omitempty"`
 	// AuthorSig is the OWNER's own signature over the fields only an owner
 	// writes - see sign.CanonicalArtifactAuthorship. It is a different claim
 	// from Sig, made with a different key: Sig says which node wrote these
@@ -491,9 +506,9 @@ func (d *DB) InsertArtifact(ctx context.Context, a *Artifact) error {
 		`INSERT INTO artifacts (id, type, kind, project, owner_user, title, body, discovery,
 		                        status, severity, tags, user_tags, related, visibility,
 		                        file_path, fields, hlc, node, tombstone, search, sig, created,
-		                        author_sig, authorship, started)
+		                        author_sig, authorship, sig_form, started)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
-		         $19, `+fmt.Sprintf(artifactSearchSQL, 20)+`, $21, $22, $23, $24,
+		         $19, `+fmt.Sprintf(artifactSearchSQL, 20)+`, $21, $22, $23, $24, $25,
 		         -- Born active, same rule as the other two inserts. This door is
 		         -- reached only by cmd/smoke, so no test in internal/store covers
 		         -- this line - it is here for consistency, and a mutation of it
@@ -504,7 +519,7 @@ func (d *DB) InsertArtifact(ctx context.Context, a *Artifact) error {
 		a.ID, a.Type, a.Kind, a.Project, a.OwnerUser, a.Title, a.Body, a.Discovery,
 		a.Status, a.Severity, pq.Array(a.Tags), pq.Array(a.UserTags), pq.Array(a.Related),
 		a.Visibility, a.FilePath, fields, a.HLC, a.Node, a.Tombstone, searchText(a), a.Sig,
-		a.Created, a.AuthorSig, authorshipOr(a.Authorship)).
+		a.Created, a.AuthorSig, authorshipOr(a.Authorship), a.SigForm).
 		Scan(&a.Created, &a.Updated)
 	if err != nil {
 		return fmt.Errorf("store: insert artifact: %w", err)

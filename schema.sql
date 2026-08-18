@@ -871,6 +871,25 @@ CREATE INDEX IF NOT EXISTS artifacts_hlc_idx          ON artifacts (hlc);
 -- The value is the raw field. "unassigned" and the rest of the words for nobody
 -- normalise in one place, NobodyName, and a query that wants that reading calls
 -- it - a column that normalised would be a third answer.
+-- WHICH CANONICAL FORM THIS ROW'S SIGNATURE WAS MADE OVER.
+--
+-- Every signature already starts with a domain string - "flowy.artifact.v1" -
+-- so the version has always been in the bytes, and nothing read it. A verifier
+-- therefore had to ASSUME the form, which is what made adding a signed column
+-- a choice between breaking every signature ever written and putting the value
+-- outside the signature where a relay can rewrite it.
+--
+-- Absent means v1, because every row written before this column existed was
+-- signed under that domain. A default of anything else would refuse the store.
+--
+-- IT IS NOT ITSELF SIGNED, and that is not an oversight. It selects the
+-- verifier; it does not assert anything. A row whose form is wrong fails
+-- verification, which is the same answer as a row whose bytes were tampered
+-- with - and an unknown form is REFUSED rather than defaulted, so a peer cannot
+-- name a form this node does not know and have it judged by the weakest one it
+-- has.
+ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS sig_form text;
+
 ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS assignee text
     GENERATED ALWAYS AS (fields->>'assignee') STORED;
 

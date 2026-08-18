@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/deadtrickster/flowy/internal/sign"
 	"github.com/deadtrickster/flowy/internal/ulid"
 )
 
@@ -494,7 +495,7 @@ func TestALocalWriteIsSignedForEveryTable(t *testing.T) {
 		t.Fatal("the share the assignment wrote is not there")
 	}
 
-	if !verifyBytes(id.PublicKey, canonicalArtifact(storedArt), storedArt.Sig) {
+	if !verifyBytes(id.PublicKey, mustCanonicalArtifact(storedArt), storedArt.Sig) {
 		t.Error("the artifact this node wrote does not verify under its own key")
 	}
 	if !verifyBytes(id.PublicKey, canonicalGrant(storedGrant), storedGrant.Sig) {
@@ -547,7 +548,7 @@ func TestALocalWriteIsSignedForEveryTable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get artifact: %v", err)
 	}
-	if !verifyBytes(id.PublicKey, canonicalArtifact(afterStatus), afterStatus.Sig) {
+	if !verifyBytes(id.PublicKey, mustCanonicalArtifact(afterStatus), afterStatus.Sig) {
 		t.Error("an artifact that moved status does not verify under this node's key")
 	}
 	if _, err := db.TombstoneArtifact(ctx, &Principal{UserID: from.ID, Project: project}, art.ID); err != nil {
@@ -560,7 +561,7 @@ func TestALocalWriteIsSignedForEveryTable(t *testing.T) {
 	if !deleted.Tombstone {
 		t.Fatal("the delete did not land")
 	}
-	if !verifyBytes(id.PublicKey, canonicalArtifact(deleted), deleted.Sig) {
+	if !verifyBytes(id.PublicKey, mustCanonicalArtifact(deleted), deleted.Sig) {
 		t.Error("a tombstone does not verify under this node's key: the delete cannot replicate")
 	}
 }
@@ -600,7 +601,7 @@ func TestASignatureSurvivesTheDatabase(t *testing.T) {
 	if string(stored.Fields) == string(art.Fields) {
 		t.Log("note: this database returned the fields column byte for byte")
 	}
-	if !verifyBytes(id.PublicKey, canonicalArtifact(stored), stored.Sig) {
+	if !verifyBytes(id.PublicKey, mustCanonicalArtifact(stored), stored.Sig) {
 		t.Error("an artifact with a fields object does not verify after a round trip: " +
 			"what was signed is not what a peer will be handed")
 	}
@@ -631,7 +632,7 @@ func TestASignatureSurvivesTheDatabase(t *testing.T) {
 	for _, one := range set.Artifacts {
 		if one.ID == art.ID {
 			seen++
-			if !verifyBytes(id.PublicKey, canonicalArtifact(one), one.Sig) {
+			if !verifyBytes(id.PublicKey, mustCanonicalArtifact(one), one.Sig) {
 				t.Error("the artifact as a peer is handed it does not verify")
 			}
 		}
@@ -729,14 +730,14 @@ func TestTheCreatedDateIsInsideTheSignature(t *testing.T) {
 		HLC: at + 1, Node: node, Created: when,
 	}
 	SignArtifact(key, art)
-	if !verifyBytes(publicOf(key), canonicalArtifact(art), art.Sig) {
+	if !verifyBytes(publicOf(key), mustCanonicalArtifact(art), art.Sig) {
 		t.Fatal("an artifact signed with its date does not verify")
 	}
 
 	// One field moved, nothing else touched.
 	moved := *art
 	moved.Created = planted
-	if verifyBytes(publicOf(key), canonicalArtifact(&moved), moved.Sig) {
+	if verifyBytes(publicOf(key), mustCanonicalArtifact(&moved), moved.Sig) {
 		t.Error("an artifact whose created was rewritten still verifies: " +
 			"the date is outside the signature")
 	}
@@ -834,12 +835,12 @@ func TestALocalWritesDateIsSignedWithIt(t *testing.T) {
 	if stored.Created.IsZero() {
 		t.Fatal("the stored artifact has no date at all")
 	}
-	if !verifyBytes(id.PublicKey, canonicalArtifact(stored), stored.Sig) {
+	if !verifyBytes(id.PublicKey, mustCanonicalArtifact(stored), stored.Sig) {
 		t.Error("a locally created artifact does not verify with the date the column holds")
 	}
 	backdated := *stored
 	backdated.Created = stored.Created.Add(-90 * 24 * time.Hour)
-	if verifyBytes(id.PublicKey, canonicalArtifact(&backdated), backdated.Sig) {
+	if verifyBytes(id.PublicKey, mustCanonicalArtifact(&backdated), backdated.Sig) {
 		t.Error("moving a locally written artifact's date leaves it verifying")
 	}
 
@@ -856,7 +857,7 @@ func TestALocalWritesDateIsSignedWithIt(t *testing.T) {
 	if !edited.Created.Equal(art.Created) {
 		t.Errorf("an edit moved the date from %s to %s", art.Created, edited.Created)
 	}
-	if !verifyBytes(id.PublicKey, canonicalArtifact(edited), edited.Sig) {
+	if !verifyBytes(id.PublicKey, mustCanonicalArtifact(edited), edited.Sig) {
 		t.Error("an edited artifact does not verify with the date the column holds")
 	}
 
@@ -875,5 +876,95 @@ func TestALocalWritesDateIsSignedWithIt(t *testing.T) {
 	}
 	if !verifyBytes(id.PublicKey, canonicalEvent(storedEvent), storedEvent.Sig) {
 		t.Error("a locally appended event does not verify with the date the column holds")
+	}
+}
+
+// A ROW SAYS WHICH FORM ITS SIGNATURE WAS MADE OVER, AND AN UNKNOWN ONE IS
+// REFUSED.
+//
+// The version was always in the bytes - every message begins with its domain,
+// and an artifact's is "flowy.artifact.v1" - and nothing read it. So a verifier
+// had to assume the form, which is what made adding a signed column a choice
+// between breaking every signature ever written and putting the value outside
+// the signature where a relay can rewrite it. The assignee column landed as a
+// projection of a signed field for exactly that reason.
+//
+// Three properties, and the third is the one that stops this being a hole of
+// its own: a row that names no form verifies as v1 (which is every row written
+// before today), a row stamped v2 verifies under v2 and NOT under v1, and a row
+// naming a form this build does not know is refused rather than judged by
+// whichever form happens to be the default.
+func TestASignatureSaysWhichFormItWasMadeOver(t *testing.T) {
+	priv := testKey("form-node")
+	row := func() *Artifact {
+		project := "pf"
+		return &Artifact{
+			ID: ulid.NewString(), Type: MemoryType, Kind: "note", Project: &project,
+			OwnerUser: "u-one", Title: "the shape of a signature", Visibility: VisibilityShared,
+			HLC: 42, Node: "form-node",
+		}
+	}
+
+	// What every existing row looks like: signed here, and the form column is
+	// whatever this build writes.
+	written := row()
+	SignArtifact(priv, written)
+	if written.SigForm != sign.ArtifactFormV1 {
+		t.Fatalf("a row signed by this build says form %q", written.SigForm)
+	}
+	msg, err := canonicalArtifact(written)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	if !verifyBytes(publicOf(priv), msg, written.Sig) {
+		t.Fatal("a row this build signed does not verify under the form it stamped")
+	}
+
+	// A row from before the column existed: no form at all, and it must verify
+	// exactly as it always did. This is the assertion that says the change is
+	// not a migration.
+	legacy := row()
+	SignArtifact(priv, legacy)
+	legacy.SigForm = ""
+	msg, err = canonicalArtifact(legacy)
+	if err != nil {
+		t.Fatalf("encode a row with no form: %v", err)
+	}
+	if !verifyBytes(publicOf(priv), msg, legacy.Sig) {
+		t.Fatal("a row written before the form column stopped verifying")
+	}
+
+	// A row under the NEXT form. Nothing writes v2 yet, so it is stamped by
+	// hand here - which is the point: the mechanism has to work before a field
+	// moves, or the field's own change carries the risk of both.
+	next := row()
+	next.SigForm = sign.ArtifactFormV2
+	v2, err := canonicalArtifact(next)
+	if err != nil {
+		t.Fatalf("encode v2: %v", err)
+	}
+	next.Sig = signBytes(priv, v2)
+	if !verifyBytes(publicOf(priv), v2, next.Sig) {
+		t.Fatal("a row signed under v2 does not verify under v2")
+	}
+	// AND NOT UNDER V1. The domain is the first field of the message, so the
+	// two forms cannot collide - this asserts that rather than trusting it.
+	asV1 := *next
+	asV1.SigForm = sign.ArtifactFormV1
+	wrong, err := canonicalArtifact(&asV1)
+	if err != nil {
+		t.Fatalf("encode as v1: %v", err)
+	}
+	if verifyBytes(publicOf(priv), wrong, next.Sig) {
+		t.Fatal("a v2 signature verified as v1, so the form says nothing")
+	}
+
+	// AND AN UNKNOWN FORM IS AN ERROR, not a default. A row arriving from a
+	// peer carries its own form; falling back would let the sender choose which
+	// verifier judges it.
+	strange := row()
+	strange.SigForm = "v99"
+	if _, err := canonicalArtifact(strange); err == nil {
+		t.Fatal("a form this build has never heard of was encoded anyway")
 	}
 }

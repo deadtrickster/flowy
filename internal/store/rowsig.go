@@ -49,9 +49,39 @@ func artifactView(a *Artifact) sign.Artifact {
 	}
 }
 
-// canonicalArtifact is the byte string an artifact's signature is over.
-func canonicalArtifact(a *Artifact) []byte {
-	return sign.CanonicalArtifact(artifactView(a))
+// canonicalArtifact is the byte string an artifact's signature is over, UNDER
+// THE FORM THE ROW NAMES.
+//
+// It errors on a form this build does not know rather than falling back: a row
+// arriving from a peer carries its own form, and a default would let that peer
+// choose which verifier judges it. See Artifact.SigForm.
+func canonicalArtifact(a *Artifact) ([]byte, error) {
+	return sign.CanonicalArtifactForm(a.SigForm, artifactView(a))
+}
+
+// mustCanonicalArtifact is canonicalArtifact for the places that already know
+// the row came from this store - a read of something this node wrote - where an
+// unknown form would be a bug in this build rather than a peer's doing. The
+// tests use it; nothing on a merge path may.
+func mustCanonicalArtifact(a *Artifact) []byte {
+	msg, err := canonicalArtifact(a)
+	if err != nil {
+		panic("store: " + err.Error())
+	}
+	return msg
+}
+
+// canonicalArtifactNow is the byte string a row written HERE is signed over:
+// the form this build writes. Signing cannot fail on an unknown form, because
+// the form is this node's own choice rather than something read off a row.
+func canonicalArtifactNow(a *Artifact) []byte {
+	a.SigForm = sign.ArtifactFormV1
+	msg, err := sign.CanonicalArtifactForm(a.SigForm, artifactView(a))
+	if err != nil {
+		// Unreachable: the constant above is one this package defines.
+		panic("store: this build cannot encode the form it writes: " + err.Error())
+	}
+	return msg
 }
 
 // canonicalArtifactAuthorship is the byte string the OWNER's signature over an
@@ -212,7 +242,7 @@ func verifyBytes(public, msg, sig []byte) bool { return sign.Verify(public, msg,
 // test or an operator hands a node a delta it will actually take, and the tests
 // that stand in for a second node.
 func SignArtifact(priv ed25519.PrivateKey, a *Artifact) {
-	a.Sig = signBytes(priv, canonicalArtifact(a))
+	a.Sig = signBytes(priv, canonicalArtifactNow(a))
 }
 
 // SignGrant stamps g's signature.
