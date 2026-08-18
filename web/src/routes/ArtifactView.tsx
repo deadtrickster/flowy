@@ -160,7 +160,17 @@ export function ArtifactView() {
           {artifact ? (
             <Card>
               <CardHeader>
-                <CardTitle className="text-base">{artifact.title || artifact.id}</CardTitle>
+                {/*
+                 * NAMED SO A CHECK CAN ASK FOR IT. A browser check that reads
+                 * the page's text cannot tell "the row did not render" from
+                 * "it rendered without a title" - both answer no - and the
+                 * failure that follows is a slice of document somebody has to
+                 * interpret. With the title as an element the question has
+                 * three answers, and they are three different bugs.
+                 */}
+                <CardTitle className="text-base" data-artifact-title={artifact.id}>
+                  {artifact.title || artifact.id}
+                </CardTitle>
                 <div className="flex flex-wrap gap-1 pt-1">
                   <Badge variant="secondary">{artifact.type}</Badge>
                   {artifact.kind ? <Badge variant="outline">{artifact.kind}</Badge> : null}

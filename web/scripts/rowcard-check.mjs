@@ -111,54 +111,37 @@ try {
   // WAITED FOR, NOT SAMPLED: the row page fetches its own artifact, so asking
   // the instant the route changes measures the render before the answer lands.
   //
-  // And read off the whole page rather than off one element, which is the
-  // opposite of what this file does everywhere else - deliberately. The reason
-  // for element-level assertions is the transcript, where the row's title sits
-  // a few pixels from the card. This page has no transcript, so "the page the
-  // link goes to shows this row" is exactly the claim, and pinning it to a
-  // particular tag would fail the day somebody moves the title.
-  const pageText = () => page.locator("body").innerText();
-  const shows = async () => (await pageText()).includes(rowTitle);
-  for (let waited = 0; waited < 30_000 && !(await shows()); waited += 250) {
-    await page.waitForTimeout(250);
-  }
-  if (!(await shows())) {
-    // WHICH failure, because the two are different bugs: a page that never
-    // painted is a routing or fetch problem, and a page that painted without
-    // the title is the card and the row disagreeing - which is what this
-    // assertion is actually for.
-    // The URL and not the page text decides which failure this is: the room
-    // itself contains the row id - in the chip and in the raise message - so
-    // "the id is on the page" is true of the room we may not have left.
-    // NAME WHICH FAILURE IT WAS. The row's own fetch is the split: a 404 or a
-    // 410 renders an empty page indistinguishable from a slow one, and no
-    // fetch at all says the route never mounted rather than the data never
-    // arriving. This check died in a VM while the same tree was green on the
-    // host, and nothing in its message could separate those three - two seats
-    // spent twenty minutes before anybody could even state a hypothesis.
+  // AND ASKED OF THE TITLE ELEMENT, not of the page's text. Reading the text
+  // was the obvious thing and it is why this failure took two seats and three
+  // cuts of the diagnostic: "the page does not contain that string" is one
+  // answer for three different bugs - the row never rendered, the row rendered
+  // under another title, the page is not the row's page at all - and the only
+  // way to separate them from a text reading is to print some slice of the
+  // document and interpret it, which is how a wrong diagnosis got made here in
+  // under an hour. ArtifactView names its title `data-artifact-title` for this
+  // reason, so the question has an answer instead of a neighbourhood.
+  const titled = page.locator(`[data-artifact-title="${rowId}"]`);
+  await titled.waitFor({ timeout: 30_000 }).catch(() => {});
+  const says = (await titled.count()) ? ((await titled.first().textContent()) || "").trim() : null;
+  if (says !== rowTitle) {
+    // WHICH failure, because the three are different bugs. The row's own fetch
+    // and anything the console threw are both already recorded here, and both
+    // were absent from this message the day it first went red - the evidence
+    // existed and the instrument did not print it.
     const answered = fetches.length ? fetches.join(", ") : "NO FETCH OF THE ROW AT ALL";
-    // WHERE THE TITLE BELONGS, not the head and not the tail.
-    //
-    // The first cut printed the head and returned the nav rail, identical on
-    // every page. The second printed the tail and returned the document's room
-    // panel - also identical on every page, because that panel is the last
-    // column of every artifact page whether the row loaded or not. Another
-    // seat read that tail as "it rendered the wrong panel" within the hour,
-    // which was a wrong diagnosis produced by my own instrument.
-    //
-    // So: the breadcrumb ends with the row id, and the title is the text that
-    // follows it. Printing that window says what IS there where the title
-    // should be, which is the only part that separates "rendered without the
-    // title" from "rendered something else entirely".
-    const whole = (await pageText()).replace(/\s+/g, " ");
-    const at = whole.indexOf(rowId);
-    const painted =
-      at >= 0
-        ? `[around the row id] ${whole.slice(at, at + 260)}`
-        : `[row id absent from the page] ${whole.slice(0, 260)}`;
+    const threw = crashes.length ? ` the console threw: ${crashes.join("; ")}.` : "";
+    if (says === null) {
+      const whole = (await page.locator("body").innerText()).replace(/\s+/g, " ");
+      die(
+        `on ${page.url()}: no row rendered at all - nothing on the page is the row's title. ` +
+          `the row's fetch answered: ${answered}.${threw} the page showed: ` +
+          `${JSON.stringify(whole.slice(0, 260))}`,
+      );
+    }
     die(
-      `on ${page.url()}: the page the card links to does not show ${JSON.stringify(rowTitle)}. ` +
-        `the row's fetch answered: ${answered}. the page showed: ${JSON.stringify(painted)}`,
+      `on ${page.url()}: the row's title is ${JSON.stringify(says)}, and the card that linked ` +
+        `here says ${JSON.stringify(rowTitle)} - the two surfaces disagree. ` +
+        `the row's fetch answered: ${answered}.${threw}`,
     );
   }
 
