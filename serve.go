@@ -406,6 +406,10 @@ func (s *server) routes() http.Handler {
 	// rules as the merge verbs take, deliberately: a second mechanism for one
 	// exclusion is two locks that cannot see each other.
 	api.HandleFunc("POST /api/lock", s.handleTakeLock)
+	// Instructions as rows - the read is what an agent calls at session start,
+	// and it composes nothing. See api_instructions.go.
+	api.HandleFunc("POST /api/instructions", s.handleWriteInstruction)
+	api.HandleFunc("GET /api/instructions", s.handleReadInstructions)
 	api.HandleFunc("POST /api/lock/release", s.handleReleaseLock)
 	api.HandleFunc("GET /api/lock", s.handleReadLock)
 	api.HandleFunc("POST /api/merge/{id}/land", s.handleMergeLand)
