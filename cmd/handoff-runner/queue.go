@@ -99,11 +99,28 @@ func (unlinkedQueue) Run(string) (Run, bool) { return Run{}, false }
 func (unlinkedQueue) Runs() []Run            { return nil }
 func (unlinkedQueue) Close() error           { return nil }
 
+// unlinkedReason is implemented by every queue that cannot run anything, and
+// answers WHY. It is an interface rather than a type check because there is
+// more than one way to be unable to run - a build without the runner in it,
+// and a host with no docker command - and `linked` must be false for both.
+// A queue that can run implements nothing here.
+type unlinkedReason interface{ unlinkedBecause() error }
+
 // linked reports whether the queue behind this binary can actually run
 // anything - what /version's answer says about itself, so an operator can
 // see from one request whether this deployment runs repros or only packages
 // them.
 func linked(q runQueue) bool {
-	_, unlinked := q.(unlinkedQueue)
+	_, unlinked := q.(unlinkedReason)
 	return !unlinked
+}
+
+// unlinkedError is the reason this queue cannot run anything, or nil when it
+// can. Callers turn it into a 503 that quotes it, so the sentence an
+// operator reads is the queue's own and not a second copy of it here.
+func unlinkedError(q runQueue) error {
+	if u, ok := q.(unlinkedReason); ok {
+		return u.unlinkedBecause()
+	}
+	return nil
 }

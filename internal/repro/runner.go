@@ -127,6 +127,20 @@ type Run struct {
 	// finish(), so that a run stays non-terminal until its containers are
 	// down. A reader outside sees the status, which is the truth it needs.
 	failed bool
+
+	// principal is WHO THIS RUN IS PERFORMED ON BEHALF OF, carried from the
+	// enqueue that asked for it to the store calls that read the finding and
+	// record the verdict. It is unexported and has no JSON name on purpose:
+	// a principal is a capability, and a run record is served to callers.
+	//
+	// It is per run rather than per runner because a verdict is evidence and
+	// evidence with no author is worth less. The trusted-host binary's whole
+	// boundary argument (cmd/handoff-runner/http.go) is that a run enqueued
+	// through its door is recorded against the principal that asked for it,
+	// so the finding's run log names a person or an agent rather than a
+	// daemon - and a runner holding ONE identity at construction could not
+	// honour that, whatever the door claimed.
+	principal *store.Principal
 }
 
 // clone returns a copy safe to hand outside the lock: the two pointer fields
@@ -251,10 +265,9 @@ type buildFunc func(ctx context.Context, script, project, sha string, log io.Wri
 // Runner is the queue, its workers, and the run records they produce. The
 // zero value is not usable: build one with NewRunner.
 type Runner struct {
-	findings  Findings
-	principal *store.Principal
-	projects  Projects
-	opt       Options
+	findings Findings
+	projects Projects
+	opt      Options
 
 	// The four steps a run is made of, as fields for the reason version.go
 	// gives for its own run field: a test drives the whole state machine -
@@ -281,15 +294,16 @@ type Runner struct {
 }
 
 // NewRunner builds a runner that shells to the real git, docker and build
-// script. p is the principal every store call is made as - a run reads a
-// finding and records a verdict with exactly the rights that principal has,
-// and no ambient ones.
-func NewRunner(findings Findings, p *store.Principal, projects Projects, opt Options) (*Runner, error) {
+// script.
+//
+// IT TAKES NO PRINCIPAL, and that is the decision this file was rewritten
+// for. It used to take one at construction and make every store call as it,
+// which made the runner a daemon that read findings and signed verdicts
+// under one name no matter who asked. A principal now arrives with each
+// Enqueue and stays on the run record: see Run.principal.
+func NewRunner(findings Findings, projects Projects, opt Options) (*Runner, error) {
 	if findings == nil {
 		return nil, errors.New("repro: a runner needs a store to read findings from")
-	}
-	if p == nil {
-		return nil, errors.New("repro: a runner needs a principal to read and record as")
 	}
 	if projects == nil {
 		return nil, errors.New("repro: a runner needs a project config lookup")
@@ -305,16 +319,15 @@ func NewRunner(findings Findings, p *store.Principal, projects Projects, opt Opt
 		return nil, fmt.Errorf("repro: package cache directory: %w", err)
 	}
 	return &Runner{
-		findings:  findings,
-		principal: p,
-		projects:  projects,
-		opt:       opt,
-		resolve:   NewResolver().Resolve,
-		stage:     NewPackager().StageForRun,
-		build:     runBuildScript,
-		compose:   dockerCompose,
-		runs:      map[int64]*Run{},
-		queue:     make(chan int64, opt.QueueDepth),
+		findings: findings,
+		projects: projects,
+		opt:      opt,
+		resolve:  NewResolver().Resolve,
+		stage:    NewPackager().StageForRun,
+		build:    runBuildScript,
+		compose:  dockerCompose,
+		runs:     map[int64]*Run{},
+		queue:    make(chan int64, opt.QueueDepth),
 	}, nil
 }
 
@@ -375,20 +388,31 @@ var ErrQueueFull = errors.New("repro: the run queue is full")
 // ErrStopped is what Enqueue answers after Stop.
 var ErrStopped = errors.New("repro: the runner is stopped")
 
-// Enqueue accepts one run per finding, all against the same version, and
-// returns their ids in the order the findings were given - runner.py's
-// enqueue, which took a list because the console's "rerun everything against
-// this version" button is one click over many findings.
+// Enqueue accepts one run per finding, all against the same version, ON
+// BEHALF OF p, and returns their ids in the order the findings were given -
+// runner.py's enqueue, which took a list because the console's "rerun
+// everything against this version" button is one click over many findings.
+//
+// p IS REQUIRED AND IS NOT A DEFAULT. Every store call these runs make - the
+// finding read, the repro tree read, the verdict write - is made as p and
+// with no rights beyond p's, minutes later, on a worker goroutine. A nil
+// here is refused rather than filled in from somewhere, because the one
+// thing that must never happen quietly is a verdict signed by a name that
+// did not ask for the run.
 //
 // The ids are handed out under the lock and are unique for the life of the
-// process. Nothing is validated here beyond the shape of the arguments: a
-// finding that does not exist, or has no repro tree, is a fact about the
-// run, discovered by the worker and reported on the run record - not a
-// reason to refuse the whole batch and leave the caller unable to see why.
-func (r *Runner) Enqueue(findingIDs []string, version string) ([]int64, error) {
+// process. Nothing else is validated here: a finding that does not exist, or
+// has no repro tree, is a fact about the run, discovered by the worker and
+// reported on the run record - not a reason to refuse the whole batch and
+// leave the caller unable to see why.
+func (r *Runner) Enqueue(p *store.Principal, findingIDs []string, version string) ([]int64, error) {
 	version = strings.TrimSpace(version)
 	if version == "" {
 		version = "latest"
+	}
+	if p == nil {
+		return nil, errors.New("repro: a run is performed on behalf of somebody - " +
+			"enqueue names the principal it reads and records as")
 	}
 	if len(findingIDs) == 0 {
 		return nil, errors.New("repro: a run names at least one finding")
@@ -400,7 +424,7 @@ func (r *Runner) Enqueue(findingIDs []string, version string) ([]int64, error) {
 		if fid == "" {
 			return ids, errors.New("repro: a run names a finding")
 		}
-		id, err := r.accept(fid, version)
+		id, err := r.accept(p, fid, version)
 		if err != nil {
 			return ids, err
 		}
@@ -416,7 +440,7 @@ func (r *Runner) Enqueue(findingIDs []string, version string) ([]int64, error) {
 // is a panic rather than an error. The send never blocks - the queue is
 // buffered and the send is a non-blocking select - so holding the lock
 // across it cannot deadlock.
-func (r *Runner) accept(findingID, version string) (int64, error) {
+func (r *Runner) accept(p *store.Principal, findingID, version string) (int64, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.stopped {
@@ -426,8 +450,9 @@ func (r *Runner) accept(findingID, version string) (int64, error) {
 	id := r.next
 	run := &Run{
 		ID: id, Finding: findingID, Version: version, Status: StatusQueued,
-		QueuedAt: time.Now().UTC(),
-		Log:      filepath.Join(r.opt.LogDir, fmt.Sprintf("run-%d.log", id)),
+		QueuedAt:  time.Now().UTC(),
+		Log:       filepath.Join(r.opt.LogDir, fmt.Sprintf("run-%d.log", id)),
+		principal: p,
 	}
 	r.runs[id] = run
 
@@ -519,7 +544,7 @@ func (r *Runner) runOne(ctx context.Context, id int64) {
 	}
 	defer log.Close()
 
-	in, err := r.RenderInputFor(ctx, run.Finding, run.Version)
+	in, err := r.RenderInputFor(ctx, run.principal, run.Finding, run.Version)
 	if err != nil {
 		fmt.Fprintf(log, "# run %d: %v\n", id, err)
 		r.failNow(id, err.Error())
@@ -678,20 +703,31 @@ func (r *Runner) buildBinary(ctx context.Context, id int64, in RenderInput, log 
 }
 
 // RenderInputFor assembles everything one package render needs for a finding
-// at a version: the finding's own row, its repro tree read back out of its
-// attachments, its project's config, and what the version string resolves
-// to.
+// at a version, READ AS p: the finding's own row, its repro tree read back
+// out of its attachments, its project's config, and what the version string
+// resolves to.
 //
 // It is exported because the trusted-host binary's package endpoint needs
 // the identical assembly to call BuildPackage - the downloadable tgz and the
 // run must describe the same finding at the same commit, and two places
 // building this struct independently is how they would come to disagree.
-func (r *Runner) RenderInputFor(ctx context.Context, findingID, version string) (RenderInput, error) {
+//
+// p is the run's own principal and not the runner's, for the reason
+// Run.principal gives. A nil p is refused here too rather than read as
+// "anybody": the store's filtered read is the only thing standing between a
+// run and a finding its asker could not open.
+func (r *Runner) RenderInputFor(
+	ctx context.Context, p *store.Principal, findingID, version string,
+) (RenderInput, error) {
 	version = strings.TrimSpace(version)
 	if version == "" {
 		version = "latest"
 	}
-	finding, err := r.findings.ReadArtifact(ctx, r.principal, findingID, false)
+	if p == nil {
+		return RenderInput{}, errors.New("repro: no principal on this run, so there is " +
+			"nobody to read the finding as")
+	}
+	finding, err := r.findings.ReadArtifact(ctx, p, findingID, false)
 	if err != nil {
 		return RenderInput{}, err
 	}
@@ -704,7 +740,7 @@ func (r *Runner) RenderInputFor(ctx context.Context, findingID, version string) 
 		return RenderInput{}, fmt.Errorf("project %s has no repro configuration on this runner, "+
 			"so there is nothing to resolve %s against", *finding.Project, version)
 	}
-	manifest, files, err := r.findings.ReadFindingRepro(ctx, r.principal, findingID)
+	manifest, files, err := r.findings.ReadFindingRepro(ctx, p, findingID)
 	if err != nil {
 		return RenderInput{}, err
 	}
@@ -774,7 +810,9 @@ func (r *Runner) fail(id int64, note string) {
 //
 // The recording goes through the store in this same process - no HTTP, no
 // second node - so the verdict a human sees on the finding is the one this
-// worker produced, and it is signed as this runner's principal. A store that
+// worker produced, and it is signed as the principal that ASKED for the run
+// rather than as this process - which is what makes the finding's run log
+// name a person or an agent. A store that
 // refuses the write (a projectless finding, a principal that may not read it)
 // leaves the run's own record standing and the reason in its note: the run
 // happened, and losing the fact that it happened would be worse than
@@ -800,7 +838,7 @@ func (r *Runner) finish(ctx context.Context, id int64) {
 	if run.Confirmed == nil {
 		return
 	}
-	_, err := r.findings.RecordFindingRun(ctx, r.principal, run.Finding, store.FindingRun{
+	_, err := r.findings.RecordFindingRun(ctx, run.principal, run.Finding, store.FindingRun{
 		Version:   run.Version,
 		SHA:       run.SHA,
 		Confirmed: *run.Confirmed,
