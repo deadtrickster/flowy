@@ -370,12 +370,27 @@ export function ChatRoom() {
   // cold has the id before it has the message, so this waits for the list
   // rather than reading it at mount - the same lesson the browser checks keep
   // learning about panels that exist before their contents do.
+  //
+  // APPLIED ONCE PER ID, and that is not a tidiness: putting the quote down
+  // clears the selection and asks the router to drop the segment, and the
+  // router's update does not land in the same render as the state one. So for
+  // one render the path still named a message and the selection was empty -
+  // and an effect that only asked "are they the same?" re-armed the reply the
+  // person had just dismissed. Measured in a browser: url /chat/general/thread,
+  // citation still on screen.
+  const applied = useRef("");
   useEffect(() => {
-    if (!linked) return;
-    if (selected?.id === linked) return;
+    if (!linked) {
+      applied.current = "";
+      return;
+    }
+    if (applied.current === linked) return;
     const found = events.find((e) => e.id === linked);
-    if (found) select(found);
-  }, [linked, events, selected, select]);
+    if (found) {
+      applied.current = linked;
+      select(found);
+    }
+  }, [linked, events, select]);
 
   useEffect(() => {
     setEvents([]);
