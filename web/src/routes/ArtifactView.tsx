@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import { DocumentPanes, documentRoom } from "@/components/DocumentPanes";
+import { ReproPanel } from "@/components/ReproPanel";
 import { StatusControl } from "@/components/StatusControl";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -10,6 +11,7 @@ import { marked } from "marked";
 
 import { type Artifact, LIFECYCLE_TYPES, api, refPath } from "@/lib/api";
 import { useSession } from "@/lib/session";
+import { shortId } from "@/lib/utils";
 
 /**
  * One artifact, at /p/:project/:type/:id.
@@ -194,6 +196,7 @@ export function ArtifactView() {
                     </pre>
                   </div>
                 ) : null}
+                {artifact.type === "finding" ? <FindingSection artifact={artifact} /> : null}
                 <div className="font-mono text-muted-foreground text-xs">
                   hlc {artifact.hlc} · node {artifact.node} · owner {artifact.owner_user} ·{" "}
                   {/*
@@ -270,6 +273,73 @@ export function ArtifactView() {
       <aside className="flex w-[26rem] shrink-0 flex-col border-border border-l">
         {id ? <DocumentPanes room={documentRoom(id)} quote={quote} /> : null}
       </aside>
+    </div>
+  );
+}
+
+/**
+ * The finding-specific section: severity, kind and repro-class, tags and
+ * related, and ReproPanel's mount point.
+ *
+ * NOT a file-an-issue control. Forge already works for any artifact - see the
+ * generic lifecycle/status machinery above, which a finding rides exactly
+ * like a bug - so a second, finding-only "file this" button here would be a
+ * second door onto the same write, disagreeing with the first the day one of
+ * them changes.
+ *
+ * severity has nowhere general to go: it is not in the badge row the card
+ * header draws for every artifact type above, because only a finding (and a
+ * bug) carries one that means anything. kind is already up there too, and is
+ * repeated here because a reader looking at this section for "is this worth
+ * my time" wants severity and kind together, not one here and one above.
+ *
+ * repro-class is read off Fields rather than a column of its own, because a
+ * finding's repro tree IS a manifest in Fields - see
+ * internal/store/findingrepro.go's head comment on why it gets no column,
+ * the same reason lifecycle.go's head comment gives for the type itself.
+ */
+function FindingSection({ artifact }: { artifact: Artifact }) {
+  const fields = (artifact.fields ?? {}) as Record<string, unknown>;
+  const files = Array.isArray(fields.repro_files) ? fields.repro_files : [];
+  const hasRepro = files.length > 0;
+  const isolation =
+    typeof fields.isolation === "string" && fields.isolation ? fields.isolation : "plain";
+
+  return (
+    <div className="flex flex-col gap-3 rounded-lg border border-border p-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
+          finding
+        </span>
+        {artifact.severity ? <Badge variant="outline">severity: {artifact.severity}</Badge> : null}
+        {artifact.kind ? <Badge variant="outline">{artifact.kind}</Badge> : null}
+        <Badge variant="outline">{hasRepro ? `repro: ${isolation}` : "no repro tree"}</Badge>
+        {(artifact.tags ?? []).map((tag) => (
+          <Badge key={tag} variant="outline">
+            {tag}
+          </Badge>
+        ))}
+      </div>
+
+      {artifact.related && artifact.related.length > 0 ? (
+        <div>
+          <div className="pb-1 font-medium text-muted-foreground text-xs">related</div>
+          <div className="flex flex-wrap gap-1">
+            {/* No link, unlike replaced_by above: related is a bare id with
+                no ref beside it to build one from, and a link guessed out of
+                this artifact's own project/type is exactly the mistake
+                refPath (lib/api.ts) exists to refuse - it would as often as
+                not point at the wrong row. */}
+            {artifact.related.map((relatedId) => (
+              <Badge key={relatedId} variant="outline" className="font-mono" title={relatedId}>
+                {shortId(relatedId)}
+              </Badge>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      <ReproPanel finding={artifact.id} runnable={hasRepro} />
     </div>
   );
 }
