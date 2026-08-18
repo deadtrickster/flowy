@@ -306,6 +306,21 @@ type PresenceRow struct {
 	State     string     `json:"state"`
 	LastPoll  *time.Time `json:"last_poll_at"`
 	Updated   time.Time  `json:"updated"`
+	// LastActed is when this seat last DID something - the newest event it
+	// authored, whatever room or row it was in. Nil when the log holds nothing
+	// for it.
+	//
+	// ATTACHED IS NOT ABLE, and last_poll_at cannot say which. A rate-limited
+	// seat polls on time and can do nothing; a seat mid-run may be silent for
+	// forty minutes and be the busiest thing on the node. On 2026-08-18 the
+	// operator asked why two agents were doing nothing, and presence said both
+	// were attached and polling within fifteen seconds - which was true, and
+	// was not the question.
+	//
+	// The poll is the waiter's pulse; this is the agent's. Both are needed
+	// because they fail independently: a live waiter with a blocked agent, and
+	// a working agent whose waiter died.
+	LastActed *time.Time `json:"last_acted_at,omitempty"`
 }
 
 // PollStart marks a waiter attaching: the poll is the one signal the server
@@ -440,6 +455,17 @@ func (d *DB) Presence(ctx context.Context) ([]*PresenceRow, error) {
 		        split_part(r.principal, chr(31), 3) AS project,
 		        r.reader, coalesce(u.handle, ''),
 		        r.polls_in_flight > 0, r.waiter_kind, r.last_poll_at, r.updated,
+		        -- WHEN THIS SEAT LAST DID SOMETHING, from the log rather than
+		        -- from the roster. The reader's own columns can only say that a
+		        -- waiter is alive; the events table is the only place that
+		        -- knows whether the agent behind it acted.
+		        --
+		        -- Matched on the actor, which is the seat's agent id - the
+		        -- first field of the principal. Not the user: two seats of one
+		        -- person act separately and the roster is per seat.
+		        (SELECT max(e.created) FROM events e
+		          WHERE e.actor = split_part(r.principal, chr(31), 1)
+		             OR e.actor = split_part(r.principal, chr(31), 2)),
 		        -- THE DATABASE'S CLOCK, ONCE, FOR EVERY ROW. The states below
 		        -- are ages, and an age measured by a Go clock against timestamps
 		        -- written by the database is wrong by the skew in both
@@ -500,7 +526,7 @@ func (d *DB) Presence(ctx context.Context) ([]*PresenceRow, error) {
 		var holdsPoll bool
 		var now time.Time
 		if err := rows.Scan(&p.Principal, &p.Project, &p.Reader, &p.UserName,
-			&holdsPoll, &p.Kind, &p.LastPoll, &p.Updated, &now); err != nil {
+			&holdsPoll, &p.Kind, &p.LastPoll, &p.Updated, &p.LastActed, &now); err != nil {
 			return nil, fmt.Errorf("store: presence: %w", err)
 		}
 		// Read through the same funnel it was written through, so a row from
