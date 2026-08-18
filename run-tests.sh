@@ -4704,8 +4704,19 @@ the_queue_is_worked_from_a_shell() {
 
 	# THE CLAIM GUARD, which is the only race here: a stale expectation is
 	# refused naming the holder rather than overwriting them.
+	#
+	# AS THE SAME PRINCIPAL, naming somebody else. The first version of this
+	# check claimed as B and got "no such todo": a row B cannot read answers 404
+	# for the same reason the check three lines up asserts - naming somebody on
+	# a todo hands them nothing, and B is in another project. That is the store
+	# being right and the check being wrong about who can see what. The race
+	# this is measuring is about the EXPECTATION, not about permission, so it is
+	# driven by a principal who can read the row.
+	#
+	# --as is a NAME, not a permission: naming B on A's row is an ordinary
+	# handover, and it is the stale --expect that must be refused.
 	local out
-	if out="$(FLOWY_AGENT='' FLOWY_ADDR="http://127.0.0.1:$HTTP_PORT" FLOWY_TOKEN="$TOKEN_B" \
+	if out="$(FLOWY_AGENT='' FLOWY_ADDR="http://127.0.0.1:$HTTP_PORT" FLOWY_TOKEN="$TOKEN_A" \
 		"$ROOT/flowy" todo claim --id "$board" --as "$HANDLE_B" --expect "" 2>&1)"; then
 		printf 'a claim expecting nobody took a row somebody is carrying:\n%s\n' "$out" >&2
 		return 1
