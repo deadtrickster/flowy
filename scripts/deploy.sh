@@ -163,8 +163,30 @@ find_token() {
 lock_token=$(find_token) || die "no token in ~/.config/flowy/token-flowy or ~/.config/flowy/token -
 deploy takes the landing lock, and it cannot ask for one without a credential"
 
+# A DIFFERENT RESOURCE, SO A DIFFERENT TARGET.
+#
+# This took "master", the landing lock, and the first time that was exercised it
+# refused a deploy because somebody was GATING: "the target is held by
+# flowy-claude until 20:02 (14m40s left)". Master was two landings ahead of the
+# node and stayed there for fifteen minutes, including a fix the operator was
+# waiting on.
+#
+# Landing needs exclusion on the TARGET BRANCH - one writer moving master. A
+# deploy needs exclusion on the CHECKOUT AND THE UNIT - one npm build, one
+# binary install, one restart. Those are different resources and they never
+# conflict, so putting both on one string bought nothing and cost a deploy per
+# gate.
+#
+# Same table, same holder rules, same expiry - only the name of the thing being
+# held is honest now. Two deploys still exclude each other, which is the whole
+# reason this lock exists.
+lock_target=deploy
+# THE COMMIT BEING DEPLOYED, not whatever the shared checkout has out. Deploy
+# resolves a ref and builds it in its own worktree, so HEAD here names a tree
+# nobody is deploying - and the lock's item is what another agent reads to see
+# what is going on.
 lock_item="deploy $commit"
-lock_body=$(printf '{"item":"%s"}' "$lock_item")
+lock_body=$(printf '{"target":"%s","item":"%s"}' "$lock_target" "$lock_item")
 lock_answer=$(curl -sS -m 10 -w '\n%{http_code}' -X POST \
 	-H "Authorization: Bearer $lock_token" -H 'Content-Type: application/json' \
 	-d "$lock_body" "$URL/api/lock" 2>/dev/null) || die "could not reach $URL to take the lock"
@@ -184,7 +206,7 @@ case "$lock_code" in
 	;;
 409)
 	printf '%s\n' "$lock_answer" | head -n -1 >&2
-	die "the target is held - somebody is landing or deploying. Wait for them, do not race"
+	die "another deploy holds this node - wait for it, do not race. A GATE does not block a deploy"
 	;;
 *)
 	printf '%s\n' "$lock_answer" | head -n -1 >&2
