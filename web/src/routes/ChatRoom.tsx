@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 
 import { AnnouncementBanner } from "@/components/AnnouncementBanner";
@@ -11,8 +11,16 @@ import { RoomSearch } from "@/components/RoomSearch";
 import { RoomTodos } from "@/components/RoomTodos";
 import { ThreadDag } from "@/components/ThreadDag";
 import { ThreadList } from "@/components/ThreadList";
+import { RoomWorklog } from "@/components/WorklogList";
 import { Badge } from "@/components/ui/badge";
-import { type Artifact, type FlowyEvent, type MergeRequest, type Presence, api } from "@/lib/api";
+import {
+  type ActivityItem,
+  type Artifact,
+  type FlowyEvent,
+  type MergeRequest,
+  type Presence,
+  api,
+} from "@/lib/api";
 import { useCitation } from "@/lib/cite";
 import { useSession } from "@/lib/session";
 import { useUnread } from "@/lib/unread";
@@ -47,6 +55,25 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
  */
 const CHAT_WINDOW = 60;
 
+/** Pane is which of the side column's four tabs is showing. */
+type Pane = "todos" | "merges" | "thread" | "worklog";
+
+/**
+ * The colours the tab counts are drawn in, and what each one means.
+ *
+ * They are the same values the panes below them use - the todo statuses come
+ * from lib/todos, the verdicts from MergeQueue - so a tab and the pane it opens
+ * agree about what amber and red mean. The two new ones are the speaker scale's
+ * cyan and violet, which are already in this console and belong to nothing that
+ * appears in the side column.
+ */
+const COUNT_ACTIVE = "#e0a03f"; // amber - somebody is on it
+const COUNT_OPEN = "#8b93a7"; // grey - waiting, and quiet on purpose
+const COUNT_LAND = "#4fae7a"; // green - the node says it may land
+const COUNT_REFUSED = "#d1585f"; // red - the node says it may not
+const COUNT_THREAD = "#3fa3c9"; // cyan - how much has been said in the thread
+const COUNT_WORKLOG = "#b07ae0"; // violet - how much the fleet has written down
+
 /**
  * One room: the messages, a box to say something as the person holding the
  * token, and the thread of whichever message is selected drawn as its DAG.
@@ -79,7 +106,19 @@ export function ChatRoom() {
   const [merges, setMerges] = useState<MergeRequest[]>([]);
   const [mergesDecided, setMergesDecided] = useState(false);
   const [mergeTip, setMergeTip] = useState("");
-  const [pane, setPane] = useState<"todos" | "merges">("todos");
+  /**
+   * WHICH PANE THE SIDE COLUMN IS SHOWING - four of them now, in one bar.
+   *
+   * The thread used to sit BELOW the todos and the merges permanently, so the
+   * column was two tabs and two stacked panes and everything in it had half the
+   * height it wanted. It is a tab like the rest now, and the worklog - which
+   * until now was only ever a page away at /worklog - is the fourth.
+   */
+  const [pane, setPane] = useState<Pane>("todos");
+  /** The worklog, for the pane and for the count in its tab. See the read below. */
+  const [worklog, setWorklog] = useState<ActivityItem[]>([]);
+  const [worklogError, setWorklogError] = useState<string | null>(null);
+  const [worklogLoaded, setWorklogLoaded] = useState(false);
   const [todoError, setTodoError] = useState<string | null>(null);
   // HOW FAR BACK THIS VIEW HAS BEEN, held in a ref because the scroll handler
   // that reads it fires between renders and a reading React has not committed
@@ -138,6 +177,58 @@ export function ChatRoom() {
     };
     load();
     const every = setInterval(load, 15_000);
+    return () => {
+      stopped = true;
+      clearInterval(every);
+    };
+  }, [token]);
+
+  /**
+   * The worklog, on a clock of its own, and NOT narrowed to this room.
+   *
+   * There is no such thing as this room's worklog to ask the node for. Every
+   * entry is written into a room of its own - worklogRoom in worklog.go, the
+   * same string for every seat and every project - so /api/activity narrowed to
+   * #general comes back empty, and a tab that read it that way would say "0
+   * entries" about a log with forty in it. So this reads the whole log, the
+   * pane says whose entries they are, and narrowing one properly is a store
+   * change rather than something to guess at from here.
+   *
+   * It rides its own timer rather than the room's poll, like the roster does: a
+   * seat writes an entry at the end of a shift, which is a far slower fact than
+   * a message, and putting it on the poll would be a third read on every
+   * returning wait.
+   */
+  useEffect(() => {
+    if (!token) {
+      setWorklog([]);
+      setWorklogLoaded(false);
+      return;
+    }
+    let stopped = false;
+    const read = () => {
+      api
+        .worklog()
+        .then((page) => {
+          if (stopped) return;
+          // ?? [] for the same reason the pins read has it: Go marshals an
+          // empty slice as null, and a null here reaches the pane and the tab's
+          // count as a value that cannot be mapped over or measured.
+          setWorklog(page.items ?? []);
+          setWorklogError(null);
+          setWorklogLoaded(true);
+        })
+        .catch((err) => {
+          if (stopped) return;
+          // Kept, not emptied. An empty list under a heading that says what
+          // happened reads as "nothing happened", which is a false statement
+          // rather than a missing one - see the pane's empty reads.
+          setWorklogError(err instanceof Error ? err.message : String(err));
+          setWorklogLoaded(true);
+        });
+    };
+    read();
+    const every = setInterval(read, 15_000);
     return () => {
       stopped = true;
       clearInterval(every);
@@ -489,116 +580,208 @@ export function ChatRoom() {
 
       {/*
         The side column, beside the conversation rather than a page away from
-        it: who is here, what this room has decided to do, and the DAG of
-        whichever message is selected. The todos sit above the thread because
-        the plan is what somebody in a room glances at; the thread is what they
-        open when they are answering one message.
+        it: who is here, what this room has decided to do, what is waiting to
+        land, the thread of whichever message is selected, and what the last few
+        seats wrote down. One of them at a time, chosen from a bar whose titles
+        carry the numbers - so the column is one pane deep and a person can see
+        which of the four wants them without opening any.
       */}
       <aside className="flex w-[26rem] shrink-0 flex-col border-border border-l">
         <RoomRoster presence={presence} />
 
         {/*
-          Tabs, not a stack. The operator asked three times: the counts belong in
+          Tabs, not a stack. The operator asked four times: the counts belong in
           the tab title so a person can see whether a pane needs them without
-          opening it. A merge list below the todos answers the same question only
-          after you scroll to it.
+          opening it. A merge list below the todos answers the same question
+          only after you scroll to it.
+
+          FOUR of them now, and the thread is one of the four. The thread used
+          to be rendered under whichever pane was chosen, permanently - so the
+          column was two tabs and two stacked panes, the thread with a third of
+          the height and the pane above it with the rest, whether or not anybody
+          was reading either. The worklog was worse off than that: it was a
+          whole page away, at /worklog, so reading what the last few seats did
+          meant leaving the room.
+
+          The bar WRAPS rather than shrinking what is in it. The counts are the
+          point of these titles, and a bar that fits four of them onto one line
+          by dropping them is a bar that has thrown away the thing it is for.
         */}
-        <div className="flex items-center gap-1 border-border border-b px-2 pt-2" role="tablist">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={pane === "todos"}
-            data-room-pane="todos"
-            onClick={() => setPane("todos")}
-            className={`flex items-center gap-2 rounded-t px-3 py-1.5 text-sm ${
-              pane === "todos"
-                ? "border-border border-x border-t bg-background font-medium"
-                : "text-muted-foreground hover:text-foreground"
-            }`}
-          >
-            todos
-            <span className="text-xs" style={{ color: "#e0a03f" }}>
+        <div
+          className="flex flex-wrap items-center gap-1 border-border border-b px-2 pt-2"
+          role="tablist"
+        >
+          <PaneTab name="todos" on={pane === "todos"} pick={setPane}>
+            <Count colour={COUNT_ACTIVE}>
               {todos.filter((t) => (t.status || "todo") === "active").length} active
-            </span>
-            <span className="text-xs" style={{ color: "#8b93a7" }}>
+            </Count>
+            <Count colour={COUNT_OPEN}>
               {todos.filter((t) => (t.status || "todo") !== "done").length} open
-            </span>
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={pane === "merges"}
-            data-room-pane="merges"
-            onClick={() => setPane("merges")}
-            className={`flex items-center gap-2 rounded-t px-3 py-1.5 text-sm ${
-              pane === "merges"
-                ? "border-border border-x border-t bg-background font-medium"
-                : "text-muted-foreground hover:text-foreground"
-            }`}
-          >
-            merges
-            <span className="text-xs" style={{ color: "#4fae7a" }}>
+            </Count>
+          </PaneTab>
+          <PaneTab name="merges" on={pane === "merges"} pick={setPane}>
+            <Count colour={COUNT_LAND}>
               {merges.filter((m) => m.admissible === true).length} may land
-            </span>
-            <span className="text-xs" style={{ color: "#d1585f" }}>
+            </Count>
+            <Count colour={COUNT_REFUSED}>
               {merges.filter((m) => m.admissible === false).length} refused
-            </span>
-          </button>
+            </Count>
+          </PaneTab>
+          {/*
+            The thread's count is the one the pane's own header already draws,
+            and it is the number that says whether the tab is worth opening: a
+            reply that landed on the message somebody is looking at moves it.
+          */}
+          <PaneTab name="thread" on={pane === "thread"} pick={setPane}>
+            <Count colour={COUNT_THREAD}>
+              {threadEvents.length} event{threadEvents.length === 1 ? "" : "s"}
+            </Count>
+          </PaneTab>
+          {/*
+            The worklog's count is the WHOLE log's, because the log is not per
+            room - see the read above, and RoomWorklog, which says so where a
+            reader of the numbers will see it.
+          */}
+          <PaneTab name="worklog" on={pane === "worklog"} pick={setPane}>
+            <Count colour={COUNT_WORKLOG}>
+              {worklog.length} entr{worklog.length === 1 ? "y" : "ies"}
+            </Count>
+          </PaneTab>
         </div>
 
+        {/*
+          One body at a time, each named on the element. The tab and its body
+          are two halves of one claim - a bar whose buttons all draw the same
+          pane looks correct in a screenshot - so the body says which pane it is
+          and the check reads it off the page rather than off the tab it just
+          clicked.
+        */}
         {pane === "todos" ? (
-          <RoomTodos
-            room={room}
-            todos={todos}
-            raiseFrom={selected}
-            disabled={!token}
-            error={todoError}
-            onRaise={raise}
-            onAssign={assign}
-          />
-        ) : (
-          <MergeQueue
-            items={merges}
-            tip={mergeTip}
-            tipFrom="deployed"
-            decided={mergesDecided}
-            loaded={true}
-          />
-        )}
-
-        <section className="flex min-h-0 flex-1 flex-col">
-          <header className="flex items-center gap-2 border-border border-b px-4 py-3">
-            <h2 className="font-semibold text-sm">thread</h2>
-            {thread ? (
-              <span className="font-mono text-muted-foreground text-xs">{shortId(thread, 10)}</span>
-            ) : null}
-            {/*
-              Reading is the default and the graph is a keystroke away. The
-              button says which view you would get rather than which you are in,
-              because a toggle that names the current state reads as a label and
-              gets ignored.
-            */}
-            <button
-              type="button"
-              onClick={() => setThreadGraph((on) => !on)}
-              className="rounded border border-border px-1.5 py-0.5 text-muted-foreground text-xs hover:bg-accent/60"
-              title="d"
-            >
-              {threadGraph ? "list" : "graph"}
-            </button>
-            <span className="ml-auto text-muted-foreground text-xs">
-              {threadEvents.length} event{threadEvents.length === 1 ? "" : "s"}
-            </span>
-          </header>
-          <div className="min-h-0 flex-1">
-            {threadGraph ? (
-              <ThreadDag events={threadEvents} />
-            ) : (
-              <ThreadList events={threadEvents} selected={selected} onSelect={select} />
-            )}
+          <div data-room-pane-body="todos" className="flex min-h-0 flex-1 flex-col">
+            <RoomTodos
+              room={room}
+              todos={todos}
+              raiseFrom={selected}
+              disabled={!token}
+              error={todoError}
+              onRaise={raise}
+              onAssign={assign}
+            />
           </div>
-        </section>
+        ) : null}
+        {pane === "merges" ? (
+          <div data-room-pane-body="merges" className="min-h-0 flex-1 overflow-y-auto">
+            <MergeQueue
+              items={merges}
+              tip={mergeTip}
+              tipFrom="deployed"
+              decided={mergesDecided}
+              loaded={true}
+            />
+          </div>
+        ) : null}
+        {pane === "thread" ? (
+          <section data-room-pane-body="thread" className="flex min-h-0 flex-1 flex-col">
+            <header className="flex items-center gap-2 border-border border-b px-4 py-3">
+              <h2 className="font-semibold text-sm">thread</h2>
+              {thread ? (
+                <span className="font-mono text-muted-foreground text-xs">
+                  {shortId(thread, 10)}
+                </span>
+              ) : null}
+              {/*
+                Reading is the default and the graph is a keystroke away. The
+                button says which view you would get rather than which you are
+                in, because a toggle that names the current state reads as a
+                label and gets ignored.
+              */}
+              <button
+                type="button"
+                onClick={() => setThreadGraph((on) => !on)}
+                className="rounded border border-border px-1.5 py-0.5 text-muted-foreground text-xs hover:bg-accent/60"
+                title="d"
+              >
+                {threadGraph ? "list" : "graph"}
+              </button>
+              <span className="ml-auto text-muted-foreground text-xs">
+                {threadEvents.length} event
+                {threadEvents.length === 1 ? "" : "s"}
+              </span>
+            </header>
+            <div className="min-h-0 flex-1">
+              {threadGraph ? (
+                <ThreadDag events={threadEvents} />
+              ) : (
+                <ThreadList events={threadEvents} selected={selected} onSelect={select} />
+              )}
+            </div>
+          </section>
+        ) : null}
+        {pane === "worklog" ? (
+          <div data-room-pane-body="worklog" className="flex min-h-0 flex-1 flex-col">
+            <RoomWorklog
+              items={worklog}
+              error={worklogError}
+              loaded={worklogLoaded}
+              token={Boolean(token)}
+            />
+          </div>
+        ) : null}
       </aside>
     </div>
+  );
+}
+
+/**
+ * One tab in the side column's bar: its name, its counts, and whether it is the
+ * one showing.
+ *
+ * The counts are children rather than a prop because each pane counts different
+ * things - two for the todos, two for the merges, one each for the thread and
+ * the worklog - and a component that took `active` and `open` would be a todo
+ * tab that the other three borrowed.
+ */
+function PaneTab({
+  name,
+  on,
+  pick,
+  children,
+}: {
+  name: Pane;
+  on: boolean;
+  pick: (pane: Pane) => void;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      role="tab"
+      aria-selected={on}
+      data-room-pane={name}
+      onClick={() => pick(name)}
+      className={`flex items-center gap-2 rounded-t px-3 py-1.5 text-sm ${
+        on
+          ? "border-border border-x border-t bg-background font-medium"
+          : "text-muted-foreground hover:text-foreground"
+      }`}
+    >
+      {name}
+      {children}
+    </button>
+  );
+}
+
+/**
+ * One number in a tab title, in the colour of the thing it counts.
+ *
+ * Named on the element as well as coloured: "0 refused" and "0 open" are the
+ * same string to a page-text search, and the check that reads these has to be
+ * able to say WHICH tab it read a number off.
+ */
+function Count({ colour, children }: { colour: string; children: ReactNode }) {
+  return (
+    <span data-room-count="" className="text-xs" style={{ color: colour }}>
+      {children}
+    </span>
   );
 }

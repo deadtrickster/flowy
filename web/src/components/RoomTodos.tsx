@@ -146,7 +146,10 @@ export function RoomTodos({ room, todos, raiseFrom, disabled, error, onRaise, on
   const withheld = todos.length - drawn.length;
 
   return (
-    <section className="flex min-h-0 flex-col border-border border-b">
+    // flex-1 because this is a whole pane now rather than the top half of one:
+    // it used to sit above the thread in the room's column and take its content
+    // height, and under a tab bar that leaves the rest of the column blank.
+    <section className="flex min-h-0 flex-1 flex-col border-border border-b">
       {/* Two lines rather than one: the panel is 26rem wide, and the counts plus
           the control plus what is being withheld do not fit beside the heading
           at a readable size. The line the numbers are already on is where the

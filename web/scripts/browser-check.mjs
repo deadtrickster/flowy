@@ -16,6 +16,13 @@
  *
  * EXPECTED_TEXT has to appear INSIDE the room's todo panel, which is the aside
  * section headed "todos" - not anywhere on the page.
+ *
+ * It also drives the side column's TABS, because that column is where the todo
+ * panel lives and there are four of them now - todos, merges, thread, worklog -
+ * where there were two tabs and two stacked panes. Every one of them is clicked,
+ * the body that comes up is read off the element rather than assumed from the
+ * button, and every title is read for the coloured count that is the reason the
+ * bar exists. See the tab section below.
  */
 
 import { chromium } from "playwright";
@@ -105,6 +112,196 @@ ${shown}`);
       process.exit(1);
     }
   }
+
+  // ------------------------------------------------- the side column's tabs
+  //
+  // FOUR PANES, ONE BAR, AND A NUMBER ON EVERY TITLE. The column used to be two
+  // tabs with the thread stacked permanently underneath them and the worklog a
+  // whole page away; it is four tabs now, and the counts in the titles are the
+  // reason the operator asked for tabs in the first place - "both tab titles
+  // have basic colored stats", so a person can see whether a pane wants them
+  // WITHOUT opening it.
+  //
+  // So this drives all four and asserts both halves. A bar whose buttons all
+  // opened the same pane looks right in a screenshot, and a tab whose title
+  // lost its count looks right in a click-through - which is why the body says
+  // which pane it is on the element, and why every title is read for a number
+  // in a colour of its own.
+  const PANES = ["todos", "merges", "thread", "worklog"];
+
+  const named = await page
+    .locator("aside [data-room-pane]")
+    .evaluateAll((nodes) => nodes.map((n) => n.getAttribute("data-room-pane")));
+  if (named.join(",") !== PANES.join(",")) {
+    console.error(
+      `the room's side column has tabs [${named.join(", ")}], and this check is about
+[${PANES.join(", ")}]`,
+    );
+    process.exit(1);
+  }
+
+  // The worklog's count is checked against the NODE, because it is the one
+  // number on the bar that is not derived from something already on screen -
+  // and because the log is not per-room: an entry is written into a room of its
+  // own, so this tab shows the whole log, and a build that "narrowed" it to
+  // #general would draw 0 entries here and be indistinguishable from an empty
+  // log. The node is asked the same way the console asks.
+  const answered = await fetch(`${base}/api/activity?kind=worklog&order=recent`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!answered.ok) {
+    console.error(`the node will not answer for the worklog: ${answered.status}`);
+    process.exit(1);
+  }
+  const entries = ((await answered.json()).items ?? []).length;
+
+  // The bar is drawn from the moment the room mounts and the worklog arrives a
+  // fetch later, so the number in the title settles after the title does.
+  // Waited for rather than read once: reading it the moment the bar appears
+  // asserts against "0 entries" and fails a tab that works, which is the
+  // mistake the todo half of this check already made once.
+  await page
+    .waitForFunction(
+      (want) =>
+        document.querySelector('[data-room-pane="worklog"] [data-room-count]')?.textContent ===
+        `${want} entr${want === 1 ? "y" : "ies"}`,
+      entries,
+      { timeout: 15_000 },
+    )
+    .catch(() => {});
+
+  for (const name of PANES) {
+    const tab = page.locator(`aside [data-room-pane="${name}"]`);
+
+    // The count first, while the tab is whatever it is: a title only carries a
+    // number for the reader if it carries it CLOSED, which is the whole point
+    // of putting it there.
+    const counts = await tab.locator("[data-room-count]").evaluateAll((nodes) =>
+      nodes.map((n) => ({
+        text: (n.textContent || "").trim(),
+        colour: getComputedStyle(n).color,
+      })),
+    );
+    if (counts.length === 0) {
+      console.error(`the ${name} tab carries no count, so it says nothing about its pane:
+${await tab.innerText()}`);
+      process.exit(1);
+    }
+    const wordy = counts.filter((c) => !/^\d+\s+\S/.test(c.text));
+    if (wordy.length > 0) {
+      console.error(
+        `the ${name} tab has a stat that is not a number and a word: ${wordy
+          .map((c) => JSON.stringify(c.text))
+          .join(", ")}`,
+      );
+      process.exit(1);
+    }
+    // Coloured, and measured rather than assumed - a stylesheet that defines a
+    // palette and a title that never uses it look identical from every angle
+    // except a rendered page. The tab's own text colour is the baseline, so
+    // this stays true on either theme.
+    const plain = await tab.evaluate((n) => getComputedStyle(n).color);
+    if (counts.every((c) => c.colour === plain)) {
+      console.error(
+        `every stat in the ${name} tab is drawn in the tab's own colour (${plain}), so the
+numbers do not stand out from the title: ${counts.map((c) => c.text).join(", ")}`,
+      );
+      process.exit(1);
+    }
+
+    if (name === "worklog") {
+      const said = counts.map((c) => c.text).join(" ");
+      const shown = Number.parseInt(said, 10);
+      if (shown !== entries) {
+        console.error(
+          `the worklog tab says ${JSON.stringify(said)} and the node holds ${entries} entr${
+            entries === 1 ? "y" : "ies"
+          } - the tab is counting something else, or it narrowed a log that is not per-room`,
+        );
+        process.exit(1);
+      }
+    }
+
+    // And now open it. The body carries its own name, so this is an assertion
+    // about which pane rendered rather than about which button was clicked.
+    await tab.click();
+    // Waited for, not read: a click is a React state change, and reading the
+    // column in the same turn asks it what it looked like before.
+    await page
+      .locator(`aside [data-room-pane-body="${name}"]`)
+      .waitFor({ state: "visible", timeout: 15_000 })
+      .catch(() => {});
+    const bodies = await page
+      .locator("aside [data-room-pane-body]")
+      .evaluateAll((nodes) => nodes.map((n) => n.getAttribute("data-room-pane-body")));
+    if (bodies.join(",") !== name) {
+      console.error(
+        `clicking the ${name} tab left [${bodies.join(", ")}] on screen, and there must be
+exactly one body and it must be the ${name} one`,
+      );
+      process.exit(1);
+    }
+    if ((await tab.getAttribute("aria-selected")) !== "true") {
+      console.error(`the ${name} tab draws its body without marking itself selected`);
+      process.exit(1);
+    }
+  }
+
+  // ------------------------------------------ the thread, inside its own tab
+  //
+  // The thread moved into a tab from a section that was always on screen, and
+  // the two things that could have been dropped on the way are the ones the
+  // reader uses: the count in the tab has to be the thread that is drawn, and
+  // the graph/list toggle - the button and the `d` it promises - has to still
+  // work in here.
+  const thread = page.locator('aside [data-room-pane-body="thread"]');
+  await page.locator('aside [data-room-pane="thread"]').click();
+  await thread.waitFor({ state: "visible", timeout: 15_000 });
+
+  const threadTab = await page.locator('aside [data-room-pane="thread"]').innerText();
+  const events = Number.parseInt(threadTab.replace(/^\D+/, ""), 10);
+  const rows = await thread.locator("ul li").count();
+  if (!Number.isFinite(events) || events !== rows) {
+    console.error(`the thread tab says ${JSON.stringify(threadTab.replace(/\n/g, " "))} and its
+pane draws ${rows} message(s) - the count in the title is not the thread on screen`);
+    process.exit(1);
+  }
+
+  if (rows === 0) {
+    // Said out loud rather than passed quietly: an empty thread cannot show
+    // that the two views are told apart.
+    console.log("the thread pane is empty in this room, so the graph toggle was not driven");
+  } else {
+    const toggle = thread.getByRole("button", { name: /^(graph|list)$/ });
+    await toggle.click();
+    await thread
+      .locator(".react-flow")
+      .waitFor({ state: "attached", timeout: 15_000 })
+      .catch(() => {});
+    if ((await thread.locator(".react-flow").count()) === 0) {
+      console.error(`the graph button did not draw the DAG in the thread pane. It shows:
+${await thread.innerText()}`);
+      process.exit(1);
+    }
+    // `d` is the binding the ThreadList advertises - "press d for the graph" -
+    // and a promise in one component with no binding anywhere is the affordance
+    // lying about itself. It has to still be a promise from inside a tab.
+    await page.keyboard.press("d");
+    await thread
+      .locator("ul li")
+      .first()
+      .waitFor({ state: "visible", timeout: 15_000 })
+      .catch(() => {});
+    if ((await thread.locator("ul li").count()) !== rows) {
+      console.error(`pressing d did not bring the thread back to its list of ${rows}. It shows:
+${await thread.innerText()}`);
+      process.exit(1);
+    }
+  }
+
+  console.log(
+    `the room's side column: ${PANES.join(", ")}, each with a coloured count, each drawing its own body`,
+  );
 
   console.log(
     `the room's todo panel shows ${JSON.stringify(expected)}${absent ? ` and never ${JSON.stringify(absent)}` : ""}, in a browser`,
