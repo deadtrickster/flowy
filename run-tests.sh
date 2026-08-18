@@ -16308,6 +16308,20 @@ the_diagrams_page_says_it_is_signed_out() {
 # session cookie is httpOnly, so nothing in the console can read it and nothing
 # stores it - which means a console keeping its own idea of signed-in passes
 # every click-through and fails exactly there. See scripts/login-check.mjs.
+# AND FIXES A TYPO IN WHAT THEY WROTE. /new landed this afternoon and a row
+# could be written and never corrected, which is half of "user
+# creatable/editable".
+#
+# The two rules are the store's and the page follows them: an item's title and
+# body are its AUTHOR'S - a stranger rewriting them is refused in one sentence,
+# asserted at the store where it lives - and its queue metadata moves for
+# anybody who can read it. What a browser adds is that the CONTROL is not
+# offered to somebody the node would refuse.
+a_person_fixes_the_words_they_wrote() {
+	cd "$ROOT/web" || return 1
+	node scripts/editwords-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A"
+}
+
 a_person_logs_in_from_the_console() {
 	recall
 	local pw="a-password-the-gate-picked"
@@ -16341,6 +16355,8 @@ check "a person writes a row from the console, and it lands where its list reads
 	a_person_writes_a_row_from_the_console
 check "a person logs in with a password, and the session survives a reload with nothing stored" \
 	a_person_logs_in_from_the_console
+check "the author of a row can fix its words, and the node holds the new ones" \
+	a_person_fixes_the_words_they_wrote
 check "a shape inside a diagram is addressable, and a dead reference says so" \
 	a_shape_inside_a_diagram_is_addressable
 check "a row says where it came from, and the queue does not treat it as a blocker" \

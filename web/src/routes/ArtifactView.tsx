@@ -7,7 +7,9 @@ import { RowNotes } from "@/components/RowNotes";
 import { SeverityDot, StateChip } from "@/components/StateMarks";
 import { StatusControl } from "@/components/StatusControl";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { type Artifact, LIFECYCLE_TYPES, type OriginRef, api, refPath } from "@/lib/api";
 import {
   UNKNOWN_UPSTREAM,
@@ -42,7 +44,7 @@ import { shortId } from "@/lib/utils";
  */
 export function ArtifactView() {
   const { project, type, id = "" } = useParams();
-  const { token } = useSession();
+  const { token, whoami } = useSession();
   const [artifact, setArtifact] = useState<Artifact | null>(null);
   const [error, setError] = useState<string | null>(null);
   // Where the replacement lives, from ITS OWN ref rather than from the row on
@@ -66,6 +68,20 @@ export function ArtifactView() {
   // entries and the row is a row, and a field on the artifact would be a second
   // copy that disagrees the moment somebody takes a relation back.
   const [origins, setOrigins] = useState<OriginRef[]>([]);
+  // FIXING YOUR OWN WORDS. Two rules live on this page and the store decides
+  // both: an item's title and body are its AUTHOR'S - a stranger rewriting them
+  // is refused in one sentence - while its queue metadata moves for anybody who
+  // can read it. So the editor is offered on the words and only to the owner,
+  // and the status control beside it stays open to every reader.
+  //
+  // Offered rather than assumed: the check is whoami's user against the row's
+  // owner, which is what the node will judge. A page that showed the editor to
+  // everybody would be handing people a refusal instead of a control.
+  const [editing, setEditing] = useState(false);
+  const [draftTitle, setDraftTitle] = useState("");
+  const [draftBody, setDraftBody] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [selection, setSelection] = useState("");
   const [quote, setQuote] = useState<{ text: string } | null>(null);
 
@@ -197,9 +213,92 @@ export function ArtifactView() {
                  * interpret. With the title as an element the question has
                  * three answers, and they are three different bugs.
                  */}
-                <CardTitle className="text-base" data-artifact-title={artifact.id}>
-                  {artifact.title || artifact.id}
-                </CardTitle>
+                {editing ? (
+                  <div className="flex flex-col gap-2">
+                    <Input
+                      aria-label="title"
+                      data-edit-title=""
+                      value={draftTitle}
+                      onChange={(e) => setDraftTitle(e.target.value)}
+                    />
+                    <textarea
+                      aria-label="body"
+                      data-edit-body=""
+                      rows={12}
+                      value={draftBody}
+                      onChange={(e) => setDraftBody(e.target.value)}
+                      className="rounded border border-border bg-background px-2 py-1 font-mono text-foreground text-xs"
+                    />
+                    {saveError ? (
+                      <p data-edit-refused="" className="text-destructive text-xs">
+                        {saveError}
+                      </p>
+                    ) : null}
+                    <div className="flex items-center gap-2">
+                      <Button
+                        size="sm"
+                        data-edit-save=""
+                        disabled={saving || !draftTitle.trim()}
+                        onClick={async () => {
+                          setSaving(true);
+                          setSaveError(null);
+                          try {
+                            const saved = await api.editWords({
+                              id: artifact.id,
+                              type: artifact.type,
+                              kind: artifact.kind,
+                              title: draftTitle.trim(),
+                              body: draftBody,
+                            });
+                            setArtifact(saved);
+                            setEditing(false);
+                          } catch (err) {
+                            // The node's own sentence. It says which rule was
+                            // broken - words versus queue metadata - and this
+                            // page must not improve on it.
+                            setSaveError((err as Error).message);
+                          } finally {
+                            setSaving(false);
+                          }
+                        }}
+                      >
+                        {saving ? "saving…" : "save"}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        data-edit-cancel=""
+                        onClick={() => {
+                          setEditing(false);
+                          setSaveError(null);
+                        }}
+                      >
+                        cancel
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex items-start gap-2">
+                    <CardTitle className="text-base" data-artifact-title={artifact.id}>
+                      {artifact.title || artifact.id}
+                    </CardTitle>
+                    {whoami && artifact.owner_user && whoami.user === artifact.owner_user ? (
+                      <button
+                        type="button"
+                        data-edit-open=""
+                        className="ml-auto shrink-0 text-muted-foreground text-xs hover:underline"
+                        onClick={() => {
+                          setDraftTitle(artifact.title || "");
+                          setDraftBody(artifact.body || "");
+                          setSaveError(null);
+                          setEditing(true);
+                        }}
+                      >
+                        edit
+                      </button>
+                    ) : null}
+                  </div>
+                )}
                 <div className="flex flex-wrap gap-1 pt-1">
                   <Badge variant="secondary">{artifact.type}</Badge>
                   {artifact.kind ? <Badge variant="outline">{artifact.kind}</Badge> : null}

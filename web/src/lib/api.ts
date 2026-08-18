@@ -1537,6 +1537,34 @@ export const api = {
       }),
     }),
 
+  /**
+   * FIX YOUR OWN WORDS. An item's title and body are its author's - the store
+   * refuses a stranger rewriting them, and says so in one sentence - while its
+   * queue metadata moves for anybody who can read it. Two rules, and this is
+   * the door for the first one.
+   *
+   * POST /api/artifacts with an id is the update branch of an upsert, which is
+   * the same door the diagram editor saves through: there is no second write
+   * path to keep in step, and a save is not a different verb from a create.
+   */
+  editWords: (opts: { id: string; type: string; kind?: string; title: string; body: string }) =>
+    request<Artifact>("/api/artifacts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      // The type rides along because this door is an UPSERT and an upsert has
+      // to know what it would create: the node refuses a write with no type
+      // rather than guessing one, which is the same refusal a create gets.
+      // Taken off the row being edited, so an edit cannot quietly change what
+      // a row IS while claiming to fix its words.
+      body: JSON.stringify({
+        id: opts.id,
+        type: opts.type,
+        ...(opts.kind ? { kind: opts.kind } : {}),
+        title: opts.title,
+        body: opts.body,
+      }),
+    }),
+
   todos: () =>
     request<{ artifacts: Artifact[]; withheld?: Withheld; refused?: Refused }>(
       `/api/artifacts?type=memory&kind=todo&limit=${TODO_PAGE}`,
