@@ -43,6 +43,9 @@ type Room struct {
 	Created time.Time `json:"created"`
 	Members int       `json:"members"`
 	Role    string    `json:"role,omitempty"`
+	// Declared is false for a room that exists only because somebody spoke in
+	// it. It has no owner, so nobody can invite into it until it is created.
+	Declared bool `json:"declared"`
 }
 
 // roomName is the one place a room's name is judged, so the rules cannot
@@ -133,14 +136,31 @@ func (d *DB) RoomsFor(ctx context.Context, p *Principal) ([]Room, error) {
 	if actor == "" {
 		return nil, fmt.Errorf("store: this token resolves to nobody, so it has no rooms")
 	}
+	// THE UNION IS THE MIGRATION. Rooms existed before this table did, as
+	// nothing but a name on a message, and general/handoffs/incidents are full
+	// of traffic nobody is going to migrate. Seeding rows for them would mean
+	// guessing which rooms and which members, and a seed that guesses wrong is
+	// worse than no seed.
+	//
+	// So a room is listed if somebody created it OR if somebody has spoken in
+	// it. The second is not a reader inventing a value - it is the definition
+	// a room has had all along, reported rather than assumed, and `created`
+	// being null is how a caller tells an implicit room from a declared one.
 	rows, err := d.sql.QueryContext(ctx,
-		`SELECT r.project, r.name, r.topic, coalesce(r.created_by, ''), r.created,
-		        (SELECT count(*) FROM room_members m WHERE m.project = r.project AND m.room = r.name),
+		`WITH named AS (
+		     SELECT project, name FROM rooms WHERE project = $1
+		     UNION
+		     SELECT project, room AS name FROM events
+		      WHERE project = $1 AND coalesce(room, '') <> ''
+		 )
+		 SELECT n.project, n.name,
+		        coalesce(r.topic, ''), coalesce(r.created_by, ''), r.created,
+		        (SELECT count(*) FROM room_members m WHERE m.project = n.project AND m.room = n.name),
 		        coalesce((SELECT m.role FROM room_members m
-		                   WHERE m.project = r.project AND m.room = r.name AND m.principal = $2), '')
-		   FROM rooms r
-		  WHERE r.project = $1
-		  ORDER BY r.created`,
+		                   WHERE m.project = n.project AND m.room = n.name AND m.principal = $2), '')
+		   FROM named n
+		   LEFT JOIN rooms r ON r.project = n.project AND r.name = n.name
+		  ORDER BY r.created NULLS LAST, n.name`,
 		strings.TrimSpace(p.Project), actor)
 	if err != nil {
 		return nil, fmt.Errorf("store: list rooms: %w", err)
@@ -149,9 +169,19 @@ func (d *DB) RoomsFor(ctx context.Context, p *Principal) ([]Room, error) {
 
 	out := []Room{}
 	for rows.Next() {
-		var r Room
-		if err := rows.Scan(&r.Project, &r.Name, &r.Topic, &r.Creator, &r.Created, &r.Members, &r.Role); err != nil {
+		var (
+			r       Room
+			created sql.NullTime
+		)
+		if err := rows.Scan(&r.Project, &r.Name, &r.Topic, &r.Creator, &created, &r.Members, &r.Role); err != nil {
 			return nil, fmt.Errorf("store: list rooms: %w", err)
+		}
+		// A room nobody declared has no creation moment, and saying so is the
+		// point: Declared is what a caller checks before offering to invite
+		// into it, because there is nobody to be its owner yet.
+		r.Declared = created.Valid
+		if created.Valid {
+			r.Created = created.Time
 		}
 		out = append(out, r)
 	}
@@ -190,7 +220,12 @@ func (d *DB) InviteToRoom(ctx context.Context, p *Principal, room, principal str
 		  WHERE r.project = $1 AND r.name = $2`,
 		project, room, actor).Scan(&role)
 	if errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("store: no room %q here - create it first", room)
+		// A room somebody has spoken in but nobody declared is not a room you
+		// can be invited to: it has no owner, so there is nobody whose
+		// invitation would mean anything. Saying "create it first" is the
+		// actual next step rather than a bare not-found.
+		return fmt.Errorf("store: no room %q has been created here - somebody may have spoken in one by that name, "+
+			"but an invitation needs an owner, so create it first", room)
 	}
 	if err != nil {
 		return fmt.Errorf("store: invite to %q: %w", room, err)
