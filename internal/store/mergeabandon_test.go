@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/deadtrickster/flowy/internal/ulid"
 )
@@ -82,6 +83,23 @@ func TestAHolderGivesTheTargetBackWithoutLanding(t *testing.T) {
 	}
 	if BranchOf(again) != "feat-red" {
 		t.Errorf("the branch was disturbed: %q", BranchOf(again))
+	}
+
+	// AND THE DECLARATION IS OVER, which is the half that was missing. The row
+	// kept gate_run and gate_at after an abandon, so GatingAt went on answering
+	// true and the queue went on showing a run that had explicitly stopped -
+	// blocking two landings inside twenty minutes, then healing itself when the
+	// fifteen-minute belief window lapsed, which is why nothing caught it.
+	//
+	// Asserted through GatingAt at the instant of the abandon rather than
+	// against the fields, because the flag is what the queue and the land door
+	// actually read, and a row can carry any fields it likes as long as the
+	// answer to "is somebody measuring this" is no.
+	if GatingAt(again, time.Now().UTC()) {
+		t.Error("the row still reads as gating after its runner said it stopped")
+	}
+	if GateRunOf(again) != "" {
+		t.Errorf("the abandoned declaration left its run on the row: %q", GateRunOf(again))
 	}
 
 	// The target is free for the next declarer, which is the whole point.

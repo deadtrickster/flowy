@@ -138,11 +138,42 @@ func (d *DB) AbandonMerge(ctx context.Context, p *Principal, id, reason string) 
 		Meta:     meta,
 	}
 
+	// AND THE DECLARATION ENDS WITH IT.
+	//
+	// The first version released the lock and left the row's gate_run and
+	// gate_at exactly where the declaration put them, so GatingAt kept
+	// answering true and the queue kept showing a run that had explicitly
+	// stopped. It blocked two landings within twenty minutes of shipping, and
+	// it self-healed after the fifteen-minute belief window - which is why no
+	// test and no author ever saw it.
+	//
+	// It is this store's own rule broken by the verb written to enforce it: ANY
+	// STATE SET BY AN EVENT MUST BE CLEARED BY AN EVENT. Declaring stamps the
+	// row; abandoning IS the statement that the measuring stopped, so it is the
+	// event that clears the stamp. Waiting for an expiry is what the abandon
+	// door exists instead of.
+	//
+	// gated_tip is NOT touched: a verdict recorded before the caller gave up is
+	// a true statement about a tip that was measured, and it stays true.
+	fields, err := ArtifactFields(art)
+	if err != nil {
+		return nil, nil, err
+	}
+	delete(fields, GateRunField)
+	delete(fields, GateAtField)
+	column, err := json.Marshal(fields)
+	if err != nil {
+		return nil, nil, fmt.Errorf("store: abandon %s: %w", art.ID, err)
+	}
+
 	// THE RECORD GOES FIRST, the release second - the same order the land verb
 	// uses and for the same reason. A release that preceded the write would open
 	// the target while the log still said nothing, and the next declarer would
 	// take a lock that looks like it was never held.
-	if err := d.AppendEvent(ctx, entry); err != nil {
+	//
+	// SetArtifactFields writes the row and appends the event in one call, so the
+	// cleared declaration and the record of why cannot come apart.
+	if err := d.SetArtifactFields(ctx, art, column, entry); err != nil {
 		return nil, nil, err
 	}
 	if _, err := d.ReleaseMergeLock(ctx, p, target, art.ID); err != nil {
