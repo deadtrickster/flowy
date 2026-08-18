@@ -159,6 +159,13 @@ type todoFields struct {
 	Room     string  `json:"room"`
 	Message  string  `json:"message"`
 	Assignee *string `json:"assignee"`
+	// Raiser is who the work came from, and it is a plain string where the
+	// assignee is a pointer, because the two absences are not the same absence.
+	// An empty assignee is somebody saying nobody is carrying this; a raiser is
+	// settled when the row is raised and never restated, so an absent one is a
+	// row that does not say where its work came from - which is every queue item
+	// written before the field, and is not a claim anybody made.
+	Raiser string `json:"raiser"`
 }
 
 func todoProvenance(a *Artifact) todoFields {
@@ -172,6 +179,17 @@ func todoProvenance(a *Artifact) todoFields {
 
 // todoRoomOf is the room a todo was raised in, or "" for one raised in none.
 func todoRoomOf(a *Artifact) string { return todoProvenance(a).Room }
+
+// todoRaiser is who the work came from: the party that asked for it, which is
+// not the party carrying it and is not owner_user either.
+//
+// owner_user is the seat whose token wrote the row - one agent for a whole
+// board it filed on somebody else's behalf - so this client has never drawn it
+// and does not start here. A row that says nothing gets nothing: there is no
+// older convention to fall back on the way todoOwner falls back on an OWNER
+// line, and guessing the author would put a name on the screen that nobody
+// claimed.
+func todoRaiser(a *Artifact) string { return somebody(todoProvenance(a).Raiser) }
 
 // todoCounts is the header: how many are in flight, how many are waiting, and
 // how many are finished.
@@ -217,11 +235,32 @@ func (m *Model) selectedTodo() *Artifact {
 	return m.todos[m.todoSel]
 }
 
-// todoOwnerWidth is what the owner column gets. A handle has no length limit
-// and a terminal does: at 80 columns the status and the owner take 23 of them
-// and the title keeps the rest, which is the point of fixing it rather than
-// letting one long name push what the item is off the right of the row.
+// todoOwnerWidth is what each of the two name columns gets. A handle has no
+// length limit and a terminal does: at 80 columns the status and the two names
+// take 37 of them and the title keeps the rest, which is the point of fixing
+// them rather than letting one long name push what the item is off the right of
+// the row.
 const todoOwnerWidth = 14
+
+// todoStatusColumn is what the status word gets, and it is the width the header
+// below lines its own labels up on.
+const todoStatusColumn = 8
+
+// todoHeader names the columns, and it is here because the row grew a SECOND
+// name.
+//
+// One name needed no label - a queue row was a state and a person, and which
+// person was obvious. Two are not: "raised by" and "carried by" are different
+// claims and are frequently different parties, and a reader who has to work out
+// which column is which from the values in it will get it wrong on the rows
+// where it matters, which are the rows where they differ. The console says the
+// words on every row because it has the width for it; a terminal says them once
+// at the top.
+func todoHeader() string {
+	return fmt.Sprintf("%-*s %-*s %-*s %s",
+		todoStatusColumn, "status", todoOwnerWidth, "raised by",
+		todoOwnerWidth, "carried by", "what")
+}
 
 func (m *Model) todosView(height int) []string {
 	active, open, done := todoCounts(m.todos)
@@ -246,7 +285,11 @@ func (m *Model) todosView(height int) []string {
 	// selected item under the rule. What is under the rule here is the body,
 	// which is where the DEPENDS ON line lives - the half of the question this
 	// view was asked for that a row has no room for.
-	listHeight := max(1, (height-1)/2)
+	//
+	// Two lines are spent before the list now rather than one - the count and
+	// the column labels - so the list gets one fewer.
+	lines = append(lines, m.theme.Dim.Render(m.theme.clip(todoHeader(), m.width)))
+	listHeight := max(1, (height-2)/2)
 	start, end := window(len(m.todos), m.todoSel, listHeight)
 	for i := start; i < end; i++ {
 		a := m.todos[i]
@@ -254,11 +297,20 @@ func (m *Model) todosView(height int) []string {
 		if owner == "" {
 			owner = "-"
 		}
+		// One dash for a row that does not say where the work came from, which
+		// is the same dash an unowned row gets and says the same thing: nobody
+		// stated this. It is not owner_user standing in - see todoRaiser.
+		raiser := todoRaiser(a)
+		if raiser == "" {
+			raiser = "-"
+		}
 		status := a.Status
 		if status == "" {
 			status = todoTodo
 		}
-		text := fmt.Sprintf("%-8s %-*s %s", m.theme.clip(status, 8),
+		text := fmt.Sprintf("%-*s %-*s %-*s %s",
+			todoStatusColumn, m.theme.clip(status, todoStatusColumn),
+			todoOwnerWidth, m.theme.clip(raiser, todoOwnerWidth),
 			todoOwnerWidth, m.theme.clip(owner, todoOwnerWidth), a.Title)
 		text = m.theme.clip(text, m.width)
 		if i == m.todoSel {

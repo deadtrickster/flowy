@@ -151,6 +151,12 @@ func seed(m *Model) {
 			Title:      "a todos view in the terminal client",
 			Body:       "OWNER: todo-view\nDEPENDS ON: the kind filter on /api/artifacts",
 			Visibility: "project", Status: "active", Updated: now,
+			// The one row that says where the work came from, which is the
+			// shape a row raised out of a conversation has: somebody asked,
+			// somebody else is carrying it. The rest of the queue predates the
+			// field and says nothing, which is what the board really looks
+			// like.
+			Fields: json.RawMessage(`{"raiser":"the-asker"}`),
 		},
 	})
 	m.tl = []*ActivityItem{{
@@ -917,6 +923,55 @@ func TestATodoRowSaysWhoOwnsIt(t *testing.T) {
 	}
 	if got := todoOwner(m.todos[0]); got != "todo-view" {
 		t.Fatalf("the owner parsed as %q", got)
+	}
+}
+
+// The row says WHO RAISED IT beside who is carrying it, and the two are told
+// apart by a header rather than by guesswork.
+//
+// One name on a row needed no label. Two do: "raised by" and "carried by" are
+// different claims about different parties, and a reader working out which
+// column is which from the values in them gets it wrong on exactly the rows
+// where it matters, which are the rows where they differ. So the queue names
+// its columns once at the top, and the row carries both names.
+//
+// A row that says nothing draws a dash, the same dash an unowned row draws:
+// most of this queue was written before the field, and owner_user - the seat
+// whose token wrote the row - is not the answer and is not put there.
+func TestATodoRowSaysWhoRaisedItBesideWhoIsCarryingIt(t *testing.T) {
+	m := testModel(t, NewClient("http://127.0.0.1:1", "t"))
+	seed(m)
+	m.view = viewTodos
+
+	screen := m.View()
+	header := rowWith(t, screen, "raised by")
+	if !strings.Contains(header, "carried by") {
+		t.Fatalf("the queue names one name column and not the other: %q", header)
+	}
+
+	row := rowWith(t, screen, "a todos view in the terminal client")
+	for _, want := range []string{"the-asker", "todo-view"} {
+		if !strings.Contains(row, want) {
+			t.Fatalf("the row does not say %q, so it carries one of the two parties: %q",
+				want, row)
+		}
+	}
+	if strings.Index(row, "the-asker") > strings.Index(row, "todo-view") {
+		t.Fatalf("the raiser is drawn after the carrier, which is not the order the "+
+			"header names: %q", row)
+	}
+	if got := todoRaiser(m.todos[0]); got != "the-asker" {
+		t.Fatalf("the raiser parsed as %q", got)
+	}
+
+	// And the rows that say nothing about where the work came from say nothing,
+	// rather than borrowing the id of whoever wrote them.
+	unowned := rowWith(t, screen, "decide what closing a todo means")
+	if !strings.Contains(unowned, "-") {
+		t.Fatalf("a row nobody raised and nobody is carrying draws neither dash: %q", unowned)
+	}
+	if got := todoRaiser(m.todos[len(m.todos)-1]); got != "" {
+		t.Fatalf("a row from before this field reads as raised by %q", got)
 	}
 }
 

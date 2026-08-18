@@ -929,6 +929,7 @@ func (d *DB) ListArtifacts(ctx context.Context, p *Principal, q ArtifactQuery) (
 	}
 	fillAssignee(out)
 	fillCategory(out)
+	fillRaiser(out)
 	return out, nil
 }
 
@@ -965,6 +966,25 @@ func fillCategory(arts []*Artifact) {
 	for _, art := range arts {
 		if art != nil {
 			art.Category = CategoryOf(art)
+		}
+	}
+}
+
+// fillRaiser puts who the work came from on the row itself, beside Assignee.
+//
+// It is fillAssignee one field along, with one difference that is the whole of
+// what a raiser is: there is nothing to fall back to. AssigneeOf reads a legacy
+// OWNER line for the rows written before its field existed; a row written
+// before THIS field simply does not say where its work came from, and the
+// answer is empty rather than owner_user - which is the row's signing author
+// and a different question. See RaiserField.
+//
+// Called beside fillAssignee in the permission-filtered read paths only, so a
+// derived value never reaches the sync paths or the signature.
+func fillRaiser(arts []*Artifact) {
+	for _, art := range arts {
+		if art != nil {
+			art.Raiser = RaiserOf(art)
 		}
 	}
 }
@@ -1114,6 +1134,7 @@ func (d *DB) SearchArtifacts(ctx context.Context, p *Principal, q ArtifactQuery)
 	}
 	fillAssignee(found)
 	fillCategory(found)
+	fillRaiser(found)
 	return out, nil
 }
 
@@ -1160,6 +1181,7 @@ func (d *DB) ReadArtifact(ctx context.Context, p *Principal, id string, scopeAll
 	}
 	fillAssignee([]*Artifact{art})
 	fillCategory([]*Artifact{art})
+	fillRaiser([]*Artifact{art})
 	return art, nil
 }
 

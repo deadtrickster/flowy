@@ -120,6 +120,56 @@ func speakerNameOf(ctx context.Context, db *store.DB, p *store.Principal) string
 	return ""
 }
 
+// speakerNameOfEvent is what the speaker of a message that HAS ALREADY BEEN
+// SAID was called, for a reader looking at the message rather than holding the
+// token that wrote it.
+//
+// The stamped name comes first, and it is the one that is true. speakerMeta
+// records what somebody was called AT THE MOMENT THEY SPOKE, on purpose - a
+// handle edited later must not silently reattribute everything that person ever
+// said - so a reader that went and resolved the actor id afresh would undo
+// exactly the thing that key exists to do.
+//
+// The fallback is speakerNameOf's rule with an id in place of a principal, for
+// the messages written before the node stamped a name: the person's handle when
+// the actor is a person or an agent acting for one, and the agent's runtime kind
+// when there is no handle to lend. It answers "" when it can resolve neither -
+// a speaker this node can only name by id - and an id is not a handle, so
+// nothing here hands one back as though it were.
+func speakerNameOfEvent(ctx context.Context, db *store.DB, e *store.Event) string {
+	if e == nil {
+		return ""
+	}
+	// Into raw messages rather than map[string]string, for activityItem's
+	// reason: meta is not all strings - a worklog entry keeps its refs there as
+	// a list - and one non-string value would fail the whole unmarshal and drop
+	// the speaker off every event that had one.
+	var fields map[string]json.RawMessage
+	if len(e.Meta) > 0 {
+		_ = json.Unmarshal(e.Meta, &fields)
+	}
+	if name := metaString(fields, "actor_name"); name != "" {
+		return name
+	}
+	// actor_user first, because an agent speaks under the handle of the person
+	// it acts for and the actor itself is the agent. A message said by a person
+	// carries the same id in both places, so the order costs nothing there.
+	for _, id := range []string{metaString(fields, "actor_user"), e.Actor} {
+		if id == "" {
+			continue
+		}
+		if user, err := db.GetUser(ctx, id); err == nil && user.Handle != "" {
+			return user.Handle
+		}
+	}
+	if e.Actor != "" {
+		if agent, err := db.GetAgent(ctx, e.Actor); err == nil {
+			return agent.Kind
+		}
+	}
+	return ""
+}
+
 // speakerMeta is the speaker, as the handlers that mint an event stamp it:
 // which kind of principal said it, which person, and what they were called.
 //

@@ -16,6 +16,7 @@ import {
   tagsIn,
   todoAssignee,
   todoKind,
+  todoRaiser,
   todoRoom,
   todoTags,
 } from "@/lib/todos";
@@ -577,6 +578,7 @@ function emptyReads({
  */
 function Row({ todo, onTag }: { todo: Artifact; onTag: (tag: string) => void }) {
   const owner = todoAssignee(todo);
+  const raiser = todoRaiser(todo);
   const room = todoRoom(todo);
   const project = todo.project ?? "";
   const kind = todoKind(todo);
@@ -608,8 +610,26 @@ function Row({ todo, onTag }: { todo: Artifact; onTag: (tag: string) => void }) 
       <Badge variant="outline" data-todo-project={project} title={project || "no project"}>
         {project || "personal"}
       </Badge>
+      {/* Raised by X, carried by Y - two facts, drawn as two, in the colour
+          each party speaks in. The raiser is only there when the row says one:
+          most of this queue predates the field and drawing "raised by nobody"
+          on all of it would put the least informative words on the page more
+          often than any others. Who is carrying it is always drawn, unowned
+          included, because an unowned todo is work nobody has picked up and
+          that is the thing to see. */}
+      {raiser ? (
+        <span
+          data-todo-raiser={raiser}
+          className="shrink-0 text-muted-foreground text-xs"
+          title="who this work came from"
+        >
+          raised by <span style={speakerStyle(raiser)}>{raiser}</span>
+        </span>
+      ) : null}
       <span
+        data-todo-assignee={owner}
         className="shrink-0 text-muted-foreground text-xs"
+        title="who is carrying this"
         style={owner ? speakerStyle(owner) : undefined}
       >
         {owner || "unowned"}

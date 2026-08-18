@@ -4353,6 +4353,145 @@ mem_write_takes_an_assignee() {
 		"{\"id\": \"$id\", \"assignee\": \"two\nlines\"}" "is not a name" || return 1
 }
 
+# --------------------------------------------------------------- who raised it
+#
+# A row on this board has two parties and until now it carried one. owner_user
+# is the seat whose TOKEN wrote the row - signed, load-bearing, and untouched by
+# any of this - and for a queue four agents file into it is the agent that
+# typed the line rather than the party the work came from. So an agent filing
+# what the operator asked for in #general produced a row that reads as the
+# agent's own idea, and the trail back to the ask was four messages up a
+# conversation nobody rereads.
+#
+# The raiser is that second, weaker fact, beside the assignee and shaped like
+# it: a handle, granting nothing, and set when the row is raised. The default is
+# what makes it worth having - a todo raised out of a message takes the SPEAKER
+# of that message, so the ask is recorded without anybody typing it - and the
+# stated one is what makes it honest, for the agent filing on somebody's behalf
+# out of no message at all.
+#
+# Its own room, for the reason the assignee checks have one: the browser check
+# reads exact rows, and a room the rest of the run is still writing into is a
+# queue that moves while it is being asserted.
+ROOM_RAISED="raised"
+RAISED_TODO="split the todo title from the body"
+RAISED_STATED="file the gap in the deploy script"
+RAISED_CARRIER="a-drainer"
+RAISED_BEHALF="the-operator"
+readonly ROOM_RAISED RAISED_TODO RAISED_STATED RAISED_CARRIER RAISED_BEHALF
+
+# The default, at the door a room raises work through: the operator asks for
+# something, ALICE files it, and the row says whose request it was without
+# either of them saying so.
+#
+# Both names are asserted, and so is owner_user. A change that recorded the
+# raiser by moving owner_user would pass a check that only looked at the new
+# field, and it would be rewriting the one fact on this row that is inside the
+# signature.
+a_todo_says_who_raised_it() {
+	recall
+	api POST "$TOKEN_OP" "/api/chat/$ROOM_RAISED/say" \
+		'{"body": "split todo title and body, record and show who raised it"}' || return 1
+	want_eq "the ask" "$API_STATUS" 200 || return 1
+	local message id
+	message="$(jqv .id)"
+
+	api POST "$TOKEN_A" "/api/chat/$ROOM_RAISED/todo" \
+		"$(jq -nc --arg t "$RAISED_TODO" --arg m "$message" '{title: $t, message: $m}')" || return 1
+	want_eq "raise status" "$API_STATUS" 200 || return 1
+	want_eq "the work came from the seat that asked" \
+		"$(jqv .item.fields.raiser)" "$HANDLE_OP" || return 1
+	# And on the row itself, beside the assignee, so one read answers both
+	# rather than each client digging into fields for one of them.
+	want_eq "on the row beside the assignee" "$(jqv .item.raiser)" "$HANDLE_OP" || return 1
+	want_eq "written by the seat that filed it" "$(jqv .item.owner_user)" "$USER_A" || return 1
+	id="$(jqv .item.id)"
+	remember RAISED_ID "$id"
+
+	# The other name: somebody picks the work up. Two parties on one row is the
+	# whole point - raised by the operator, carried by whoever drains it.
+	api POST "$TOKEN_A" "/api/todo/$id/assignee" \
+		"$(jq -nc --arg a "$RAISED_CARRIER" '{assignee: $a}')" || return 1
+	want_eq "assign status" "$API_STATUS" 200 || return 1
+	api GET "$TOKEN_A" "/api/artifact/$id" || return 1
+	want_eq "raised by" "$(jqv .raiser)" "$HANDLE_OP" || return 1
+	want_eq "carried by" "$(jqv .assignee)" "$RAISED_CARRIER" || return 1
+	printf 'todo %s raised by %s, carried by %s\n' "$id" "$HANDLE_OP" "$RAISED_CARRIER"
+}
+
+# A stated raiser is the last word, a name that is not one is refused, and a row
+# raised out of no conversation says nothing rather than guessing its author.
+#
+# The last of those is the one a lenient version gets wrong. Every todo on this
+# board was written before the field, and answering owner_user for them would
+# put a name nobody claimed on the whole queue at once - which reads exactly
+# like a fact somebody stated.
+a_stated_raiser_wins_and_nothing_is_guessed() {
+	recall
+	api POST "$TOKEN_OP" "/api/chat/$ROOM_RAISED/say" \
+		'{"body": "and the deploy script skips the migration"}' || return 1
+	local message
+	message="$(jqv .id)"
+
+	api POST "$TOKEN_A" "/api/chat/$ROOM_RAISED/todo" \
+		"$(jq -nc --arg t "$RAISED_STATED" --arg m "$message" --arg r "$RAISED_BEHALF" \
+			'{title: $t, message: $m, raiser: $r}')" || return 1
+	want_eq "the stated raiser wins over the message speaker" \
+		"$(jqv .item.fields.raiser)" "$RAISED_BEHALF" || return 1
+
+	# Raised out of nothing, by a seat filing its own work: no raiser at all,
+	# and the key is absent rather than empty - an empty one would be somebody
+	# saying the work came from nobody, which is a claim and not a silence.
+	api POST "$TOKEN_A" "/api/chat/$ROOM_RAISED/todo" \
+		'{"title": "a line nobody asked for"}' || return 1
+	want_eq "nothing is inferred from the author" "$(jqv .item.fields.raiser)" null || return 1
+	want_eq "and the row says nobody" "$(jqv .item.raiser)" null || return 1
+
+	want_status 400 POST "$TOKEN_A" "/api/chat/$ROOM_RAISED/todo" \
+		'{"title": "a raiser that is a paragraph", "raiser": "two\nlines"}' || return 1
+	printf 'stated wins, absent stays absent, a paragraph is refused\n'
+}
+
+# The same field over MCP, which is where an agent files a line it was asked
+# for. It defaults from the raising message exactly as the room door does - one
+# rule, two doors - and it is settled at the raise: an update that restates it
+# is refused rather than quietly rewriting where the work came from.
+mem_write_takes_a_raiser_and_settles_it() {
+	recall
+	api POST "$TOKEN_OP" "/api/chat/$ROOM_RAISED/say" \
+		'{"body": "the tui queue should say this too"}' || return 1
+	local message id
+	message="$(jqv .id)"
+
+	want_tool mem_write "$TOKEN_A" \
+		"$(jq -nc --arg t "say it in the terminal client as well" --arg m "$message" \
+			'{title: $t, scope: "project", kind: "todo", room: "raised", message: $m}')" || return 1
+	want_eq "defaulted from the message speaker" "$(tv .item.fields.raiser)" "$HANDLE_OP" || return 1
+	id="$(tv .item.id)"
+
+	want_tool mem_write "$TOKEN_A" "{\"id\": \"$id\", \"status\": \"active\"}" || return 1
+	want_eq "kept by an update about something else" \
+		"$(tv .item.fields.raiser)" "$HANDLE_OP" || return 1
+
+	want_tool_fails mem_write "$TOKEN_A" \
+		"{\"id\": \"$id\", \"raiser\": \"somebody-else\"}" "settled when it is raised" || return 1
+	want_tool_fails mem_write "$TOKEN_A" \
+		'{"title": "a note about who asked", "kind": "note", "raiser": "the-operator"}' \
+		"is not in the queue" || return 1
+	api GET "$TOKEN_A" "/api/artifact/$id" || return 1
+	want_eq "unmoved by the refused update" "$(jqv .raiser)" "$HANDLE_OP" || return 1
+}
+
+# And both names on the screen, in a browser, on the row. A feature that is
+# complete in the store and shows one of the two parties leaves a reader exactly
+# where they were: unable to tell an agent's own idea from somebody's request.
+browser_shows_who_raised_a_todo() {
+	recall
+	cd "$ROOT/web" || return 1
+	node scripts/raiser-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" \
+		pa "$RAISED_ID" "$RAISED_TODO" "$HANDLE_OP" "$RAISED_CARRIER"
+}
+
 # ------------------------------------------------------------ assignment, shared
 #
 # A todo is not the property of whoever typed it. One agent files the queue and
@@ -9827,6 +9966,24 @@ check "the assignee is not a permission axis, in the store" \
 	go test -count=1 -run TestAnAssigneeHandsTheNamedPartyNothing ./internal/store
 check "mem_write carries the assignee, and an empty one means nobody" \
 	mem_write_takes_an_assignee
+
+# And WHO RAISED IT, which is the other party on the row and was not on it at
+# all. owner_user is the signing author and stays that; this is a second, weaker
+# fact beside it, and the queue was ambiguous without it - a row an agent filed
+# because somebody asked read exactly like a row the agent invented.
+say "a todo says who raised it"
+check "a todo raised out of a message carries the speaker of it" \
+	a_todo_says_who_raised_it
+check "a stated raiser wins, and a row that says nothing is not guessed at" \
+	a_stated_raiser_wins_and_nothing_is_guessed
+check "mem_write defaults one from the message and refuses to restate it" \
+	mem_write_takes_a_raiser_and_settles_it
+check "the raiser is a handle, is never inferred, and is settled at the raise, in Go" \
+	go test -count=1 \
+	-run 'TestATodoRaisedOutOfAMessageSaysWhoseRequestItWas|TestAnExplicitRaiserWinsOverTheMessagesSpeaker|TestARowWithNoRaiserSaysNobodyAndNothingIsInferred|TestARaiserIsAHandleAndTheWordsForNobodyCollapse' \
+	.
+check "the queue row and the artifact page say both names, in a browser" \
+	browser_shows_who_raised_a_todo
 
 # A todo belongs to the queue and not to whoever typed it. The checks above are
 # the AUTHOR's own surface; these are the ones that were missing, and each drives

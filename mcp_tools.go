@@ -95,6 +95,13 @@ var tools = []tool{
 				"of two agents claiming one row at the same moment exactly one comes away " +
 				"holding it. Leave it out and assignee behaves as it always has and the " +
 				"last write wins, which is right for handing somebody work."),
+			"raiser": str("WHO THE WORK CAME FROM, as a handle, beside who is carrying " +
+				"it. Leave it out on a queue item raised out of a `message` and it is that " +
+				"message's speaker, which is the point of it: a row you file because " +
+				"somebody asked says whose ask it was. State it when you are filing on " +
+				"somebody's behalf out of no message. It is settled when the item is " +
+				"raised - an update that states one is refused - and it is not owner_user, " +
+				"which is the seat whose token wrote the row."),
 			"category": enumOrEmpty("What KIND of work a queue item is, out of a closed "+
 				"set - anything else is refused. It is what the queue is counted and routed "+
 				"by; use tags for every other label, they are free-form and unlimited. "+
@@ -288,6 +295,13 @@ type memWriteArgs struct {
 	// of the three: claiming a row nobody holds is expect:"", so absent and
 	// present-but-empty cannot be the same request. See memClaim.
 	Expect *string `json:"expect"`
+	// WHO THE WORK CAME FROM, which is not who is writing the row. A plain
+	// string rather than a pointer, unlike the two above, because there is no
+	// "set it back to empty" to express: where a piece of work came from is
+	// settled when it is raised, an update that states one is refused rather
+	// than rewriting it, and an empty argument here is a caller saying nothing.
+	// See store.RaiserField.
+	Raiser string `json:"raiser"`
 	// What a MERGE request is about: the branch, and the verdict that measured
 	// it. Plain strings rather than pointers, because unlike assignee and
 	// category there is no meaningful "set it back to empty" here - a merge
@@ -375,6 +389,37 @@ func memWrite(ctx context.Context, m *mcpServer, p *store.Principal, raw json.Ra
 			return nil, err
 		}
 	}
+	// Who the work came from. Stated, it is whoever the writer says - which is
+	// how an agent files a line on somebody's behalf and says so. Unstated on a
+	// create raised out of a message, it is that message's speaker, which is
+	// what makes a row filed out of a conversation carry the ask without anybody
+	// typing it: see raisedBy.
+	//
+	// TWO REFUSALS, and both are about what this field is rather than about who
+	// is asking. It is refused on an UPDATE because a raiser does not change
+	// hands - an assignee does, and has a log behind every move for that reason,
+	// and quietly rewriting where work came from on an unrelated edit is how a
+	// weak fact turns into a wrong one. And it is refused on anything the queue
+	// does not hold, for mergeFields' reason: a field stored where nothing ever
+	// reads it is indistinguishable from a field that was ignored.
+	raiser, err := store.NormalizeRaiser(a.Raiser)
+	if err != nil {
+		return nil, err
+	}
+	if raiser != "" {
+		if a.ID != "" {
+			return nil, fmt.Errorf("memory item %s already exists, and where a piece of "+
+				"work came from is settled when it is raised: a raiser is not something "+
+				"an update restates. Who is CARRYING it does change hands - that is "+
+				"{id, assignee} and todo_assign", a.ID)
+		}
+		if !isWorkKind(kind) {
+			return nil, fmt.Errorf("a raiser says where a piece of QUEUE work came from, "+
+				"and a %s is not in the queue: nothing would ever read it off this item. "+
+				"Raise it as a todo, a feature or a handoff, or say it in the body", kind)
+		}
+	}
+
 	var fields map[string]any
 	// Where the item was before this write, which is what the status entry names
 	// as the end it came from. Empty on a create, and empty for a row that never
@@ -501,6 +546,26 @@ func memWrite(ctx context.Context, m *mcpServer, p *store.Principal, raw json.Ra
 			fields = map[string]any{}
 		}
 		fields[store.CategoryField] = category
+	}
+	// And the raiser, on a create and nowhere else. The default is asked for
+	// here rather than above because it costs a read of the raising message, and
+	// there is no point spending one on a write that has already been refused.
+	//
+	// An absent key is written as an ABSENT key, never as an empty one: a row
+	// that says nothing about where its work came from is most of this queue,
+	// and a key present and empty would be somebody stating that it came from
+	// nobody - which is a claim, and not one anybody made here. That is the
+	// opposite of the assignee's rule one field up, and deliberately so.
+	if raiser == "" && a.ID == "" && isWorkKind(art.Kind) {
+		if raiser, err = raisedBy(ctx, m.db, p, a.Message); err != nil {
+			return nil, err
+		}
+	}
+	if raiser != "" {
+		if fields == nil {
+			fields = map[string]any{}
+		}
+		fields[store.RaiserField] = raiser
 	}
 	// What a merge request is about. These four go through the same door as
 	// everything else and are refused on anything that is not a merge item,

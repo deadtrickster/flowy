@@ -391,6 +391,18 @@ type Artifact struct {
 	// who never sees this name. Empty is a todo nobody has classified, which is
 	// legal and is most of the queue.
 	Category string `json:"category,omitempty"`
+	// Raiser is WHO THE WORK CAME FROM, put beside Assignee for the reason
+	// Category is put beside Status: the queue is read by these facts together,
+	// and one of them living a level down in fields is how a client ends up
+	// answering a question about the wrong population. Derived at read time by
+	// RaiserOf and filled in the same three read paths as ReplacedBy, never in
+	// scanArtifact, so it does not ride the sync paths or the signature.
+	//
+	// Raised by X, carried by Y are two facts and neither is owner_user, which
+	// is the seat whose token wrote the row and is a column above. Empty is a
+	// row that does not say where its work came from - every queue item written
+	// before this field, and nothing here guesses one. See RaiserField.
+	Raiser string `json:"raiser,omitempty"`
 	// Reported and External are the forge link: whether this artifact has been
 	// filed as an issue somewhere, and where. Both are written only by the
 	// forge endpoints - see SetArtifactExternal - so an ordinary update of the

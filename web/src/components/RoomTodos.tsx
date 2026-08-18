@@ -14,6 +14,7 @@ import {
   sortTodos,
   statusStyle,
   todoAssignee,
+  todoRaiser,
 } from "@/lib/todos";
 import { shortId } from "@/lib/utils";
 
@@ -208,6 +209,12 @@ export function RoomTodos({ room, todos, raiseFrom, disabled, error, onRaise, on
         <ul className="flex flex-col">
           {sortTodos(drawn).map((todo) => {
             const owner = todoAssignee(todo);
+            // Where the work came from, when the row says. A todo raised out of
+            // a message carries the speaker of that message without anybody
+            // typing it, which is the case this panel produces most of: the ask
+            // is four messages up the column beside it, and the row is what is
+            // still here tomorrow.
+            const raiser = todoRaiser(todo);
             return (
               <li
                 key={todo.id}
@@ -265,6 +272,20 @@ export function RoomTodos({ room, todos, raiseFrom, disabled, error, onRaise, on
                     {owner || "unowned"}
                   </button>
                 )}
+                {/* Raised by X, carried by Y. The cell to the left is who is
+                    carrying it and is the control; this is who it came from and
+                    is not - nobody hands the origin of a piece of work to
+                    somebody else. Drawn only when the row says one, because
+                    every todo raised before this field says nothing here. */}
+                {raiser ? (
+                  <span
+                    data-todo-raiser={raiser}
+                    className="shrink-0 text-muted-foreground"
+                    title="who this work came from"
+                  >
+                    from <span style={speakerStyle(raiser)}>{raiser}</span>
+                  </span>
+                ) : null}
                 <span className="min-w-0 flex-1 break-words">{todo.title || todo.id}</span>
               </li>
             );

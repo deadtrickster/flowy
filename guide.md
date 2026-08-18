@@ -116,7 +116,7 @@ the subject and a look at the open handoffs.
 
 ## Tools
 
-- `mem_write {title, body, scope?, kind?, tags?, status?, room?, message?, assignee?, expect?, category?, id?}` -
+- `mem_write {title, body, scope?, kind?, tags?, status?, room?, message?, assignee?, expect?, raiser?, category?, id?}
   create an item, or update one by passing its `id`. Fields you leave out keep
   their old values. Set `status: "done"` to close a todo. `expect` makes the
   write a claim and is refused if somebody got there first - see below.
@@ -224,6 +224,45 @@ work the same way; they are work in the same queue.
 
 It is not a lock. `todo_assign` still moves anything you can read, exactly as
 before - what this adds is the ask, the clock and the record.
+
+## Who it came from
+
+`raiser` is the other party on a queue item: who the work came FROM, as a
+handle, the same kind of claim `assignee` is. Raised by X, carried by Y are two
+facts, and until this field there was one - `owner_user`, which is the seat
+whose token wrote the row.
+
+That is a different question, and the difference is the whole of this. Four
+agents share this board. When an agent files a line because the operator asked
+for it in a room, `owner_user` is the agent - true, signed, and not where the
+work came from - so the row reads as something the agent thought of, and the ask
+is four messages up a conversation nobody rereads. When the operator raises it
+themselves, `owner_user` is the operator, which happens to be right, and nothing
+told a reader which of the two they were looking at.
+
+**A todo raised out of a `message` takes the speaker of that message.** Nobody
+types it: the item already names the conversation it came out of, and the
+message already knows who spoke. That is the case the field exists for, and it
+is why raising work where it was agreed is worth more than filing it somewhere
+else.
+
+State it when you are filing on somebody's behalf out of no message -
+`mem_write {title, kind: "todo", raiser: "..."}`, or `raiser` on the room's
+raise. A stated one wins over the message's speaker.
+
+Three things it is not:
+
+- **It is not `owner_user` and does not move it.** That column is the signing
+  author, inside the signature, and it stays exactly what it was.
+- **It is settled when the item is raised.** An update that restates it is
+  refused. Who is CARRYING work changes hands - that is `assignee`, and it has a
+  log behind every move for that reason - and where the work came from does not.
+- **It hands the named party nothing**, the way `assignee` hands them nothing:
+  no permission filter has ever looked at these keys.
+
+An item with no raiser says nobody said, and nothing infers one. That is every
+queue item written before this field, and the surfaces draw it as what it is
+rather than putting the author's name where a raiser would go.
 
 
 Reports are finished documents - research findings, designs, reviews - published for

@@ -117,6 +117,46 @@ func readableMessage(ctx context.Context, db *store.DB, p *store.Principal, id s
 	return nil
 }
 
+// raisedBy is who a queue item's work came from when it came out of a message:
+// the speaker of that message, resolved the way every other surface resolves a
+// speaker's name.
+//
+// THIS IS THE POINT OF THE FIELD. A row filed out of a conversation should say
+// whose request it was without anybody typing it - the operator asks for
+// something in #general, an agent files the line, and the trail from the row
+// back to the ask is one field rather than four messages of scrollback. An
+// explicit raiser overrides it, which is the case of an agent filing on
+// somebody's behalf out of no message at all.
+//
+// A message this writer cannot read has already been refused by
+// readableMessage, so ErrNotFound here means the row went away between two
+// reads: the todo is written with no raiser rather than the write failing. The
+// work still came from somewhere and this node can no longer say where, which
+// is what an empty raiser says.
+//
+// A resolved name that will not normalise is dropped for the same reason. The
+// default is this node's courtesy on somebody else's write, and a handle that
+// happens to be too long for the column must not turn their todo into a
+// refusal - what they asked for was a todo.
+func raisedBy(ctx context.Context, db *store.DB, p *store.Principal, message string) (string, error) {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return "", nil
+	}
+	said, err := db.ReadEvent(ctx, p, message)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return "", nil
+	case err != nil:
+		return "", err
+	}
+	name, err := store.NormalizeRaiser(speakerNameOfEvent(ctx, db, said))
+	if err != nil {
+		return "", nil
+	}
+	return name, nil
+}
+
 // roomTodoRequest is what raising a todo from a room takes. Everything but the
 // title is optional: the point of the surface is that it costs one line in the
 // middle of a conversation.
@@ -126,6 +166,13 @@ type roomTodoRequest struct {
 	Status   string `json:"status"`
 	Message  string `json:"message"`
 	Category string `json:"category"`
+	// Who the work came from, when it did not come from whoever is posting
+	// this. Left out, a todo raised out of a message takes the speaker of that
+	// message - see raisedBy - and one raised out of no message says nobody,
+	// because owner_user already records the seat that typed it and inventing a
+	// second copy of that answer would be inventing the fact this field exists
+	// to keep honest.
+	Raiser string `json:"raiser"`
 }
 
 // handleRoomTodoRaise files a todo out of a room, and says so in the room.
@@ -209,12 +256,35 @@ func (s *server) handleRoomTodoRaise(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorBody(err.Error()))
 		return
 	}
+	// And who it came from. Stated, it is whoever the writer says - an agent
+	// filing a line on the operator's behalf says so here. Unstated and raised
+	// out of a message, it is that message's speaker, which is the case this
+	// whole field is for. Unstated and raised out of nothing, it stays absent:
+	// see store.RaiserField, where a row that says nothing is not a row to
+	// guess owner_user onto.
+	raiser, err := store.NormalizeRaiser(req.Raiser)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody(err.Error()))
+		return
+	}
+	if raiser == "" {
+		if raiser, err = raisedBy(r.Context(), s.db, p, req.Message); err != nil {
+			serverError(w, r, err)
+			return
+		}
+	}
 	raised := withRoom(nil, room, req.Message)
 	if category != "" {
 		if raised == nil {
 			raised = map[string]any{}
 		}
 		raised[store.CategoryField] = category
+	}
+	if raiser != "" {
+		if raised == nil {
+			raised = map[string]any{}
+		}
+		raised[store.RaiserField] = raiser
 	}
 	fields, err := json.Marshal(raised)
 	if err != nil {

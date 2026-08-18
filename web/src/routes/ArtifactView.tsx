@@ -11,6 +11,7 @@ import { marked } from "marked";
 
 import { type Artifact, LIFECYCLE_TYPES, api, refPath } from "@/lib/api";
 import { useSession } from "@/lib/session";
+import { todoAssignee, todoRaiser } from "@/lib/todos";
 import { shortId } from "@/lib/utils";
 
 /**
@@ -38,6 +39,11 @@ export function ArtifactView() {
   // replacement is a different row and may sit in another project or be another
   // type. Without a ref there is no route to offer, so the id shows as text.
   const replacedPath = refPath(artifact?.replaced_by_ref);
+  // Who the work came from and who is carrying it, off the same fields the queue
+  // reads them off - see web/src/lib/todos.ts, which is the one place this
+  // console digs into an artifact's fields for either.
+  const raiser = artifact ? todoRaiser(artifact) : "";
+  const assignee = artifact ? todoAssignee(artifact) : "";
   // The words somebody has selected in the document, and the ones they have
   // asked to quote. Two states rather than one: selecting is reading, and the
   // draft is only written when somebody says so.
@@ -197,6 +203,31 @@ export function ArtifactView() {
                   </div>
                 ) : null}
                 {artifact.type === "finding" ? <FindingSection artifact={artifact} /> : null}
+
+                {/*
+                 * WHERE THE WORK CAME FROM AND WHO HAS IT, for the items that
+                 * are work. Two facts and neither is the `owner` on the line
+                 * below: that is the seat whose token wrote the row, which for
+                 * a board four agents file into is the agent that typed it and
+                 * not the party that asked for it. A page that showed only the
+                 * author is the ambiguity the raiser exists to end, so both are
+                 * here, said in words rather than as two bare names.
+                 *
+                 * Drawn when the row says either one. A note is not in the queue
+                 * and carries neither, and it gets no line rather than a line of
+                 * blanks.
+                 */}
+                {raiser || assignee ? (
+                  <div className="text-muted-foreground text-xs">
+                    <span data-artifact-raiser={raiser}>
+                      raised by {raiser ? <strong>{raiser}</strong> : "nobody on the record"}
+                    </span>
+                    {", "}
+                    <span data-artifact-assignee={assignee}>
+                      carried by {assignee ? <strong>{assignee}</strong> : "nobody"}
+                    </span>
+                  </div>
+                ) : null}
                 <div className="font-mono text-muted-foreground text-xs">
                   hlc {artifact.hlc} · node {artifact.node} · owner {artifact.owner_user} ·{" "}
                   {/*

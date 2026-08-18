@@ -146,6 +146,29 @@ export function todoAssignee(artifact: Artifact): string {
 }
 
 /**
+ * WHO RAISED IT: who the work came from, beside who is carrying it.
+ *
+ * These are two facts and the row draws both, because a row that draws one of
+ * them is ambiguous in exactly the way this field exists to fix. Four agents
+ * share this board and one of them files rows out of conversations the operator
+ * had - `owner_user` is then the agent, which is true and is not where the work
+ * came from, and nothing on the row said so.
+ *
+ * It is NOT `owner_user` and it is not a fallback for it. owner_user is the seat
+ * whose token wrote the row - the signing author, and the answer to a different
+ * question - so a todo with no raiser is drawn with none rather than with the
+ * author's id standing in for one. Most of this queue was written before the
+ * field and says nothing here, which is the truth about it.
+ *
+ * Read off `fields`, like the room and the message beside it: the node also
+ * derives it onto the row at read time, and one place to dig is what keeps the
+ * two clients agreeing about what an absent one means.
+ */
+export function todoRaiser(artifact: Artifact): string {
+  return fieldOf(artifact, "raiser").trim();
+}
+
+/**
  * THE KIND OF WORK, which the node calls `category`.
  *
  * Two different things are labelled on a todo and they are not variants of each
