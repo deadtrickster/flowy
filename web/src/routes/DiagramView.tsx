@@ -4,6 +4,7 @@ import { Link, useParams } from "react-router-dom";
 import { DrawioEditor } from "@/components/DrawioEditor";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { type Artifact, api } from "@/lib/api";
 import {
@@ -35,6 +36,10 @@ export function DiagramView() {
   const { id = "" } = useParams();
   const { token } = useSession();
   const [artifact, setArtifact] = useState<Artifact | null>(null);
+  // The title as it is being typed. It is state of its own rather than read
+  // off the artifact because the artifact is what the node last accepted, and
+  // a box that snapped back to that on every keystroke could not be typed in.
+  const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [refs, setRefs] = useState<EntityRef[]>([]);
   const [saving, setSaving] = useState<"clean" | "pending" | "saving" | "failed">("clean");
@@ -57,6 +62,7 @@ export function DiagramView() {
       .then((found) => {
         if (stopped) return;
         setArtifact(found);
+        setName(found.title);
         setRefs(entityRefs(xmlOf(found)));
       })
       .catch((err: Error) => {
@@ -91,7 +97,11 @@ export function DiagramView() {
       const written = await diagrams.write({
         id: artifact.id,
         title: artifact.title,
-        xml: latest.current,
+        // latest.current is only set once the editor has volunteered an
+        // autosave, so a write that happens before the first edit has to fall
+        // back to the document as it was read. Posting the empty string here
+        // would be an upsert of a blank body over the drawing.
+        xml: latest.current || xmlOf(artifact),
         project: artifact.project,
       });
       setArtifact(written);
@@ -101,6 +111,42 @@ export function DiagramView() {
       setSaving("failed");
     }
   }, [artifact]);
+
+  /**
+   * Give the diagram a name.
+   *
+   * A diagram can be created without one - the new button on /diagrams makes a
+   * drawing whether or not the box beside it was filled in - so the editor is
+   * where the name is settled, and without this the default name would be
+   * permanent. It is the same door as a save, because POST /api/artifacts is
+   * an upsert on the id, and it carries the document so a rename is not a
+   * write of a title over a blank body.
+   */
+  const rename = useCallback(async () => {
+    if (!artifact) return;
+    const next = name.trim();
+    if (!next || next === artifact.title) {
+      // Nothing to write, and an emptied box is a rename to nothing rather
+      // than a rename: put back what the row actually says.
+      setName(artifact.title);
+      return;
+    }
+    setSaving("saving");
+    try {
+      const written = await diagrams.write({
+        id: artifact.id,
+        title: next,
+        xml: latest.current || xmlOf(artifact),
+        project: artifact.project,
+      });
+      setArtifact(written);
+      setName(written.title);
+      setSaving("clean");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setSaving("failed");
+    }
+  }, [artifact, name]);
 
   // Debounced: drawio fires autosave per edit, and a write per keystroke would
   // be a request storm against a row the node signs each time.
@@ -174,7 +220,25 @@ export function DiagramView() {
           diagrams
         </Link>
         <span className="text-muted-foreground text-xs">/</span>
-        <h1 className="font-semibold text-sm">{artifact.title || artifact.id}</h1>
+        <Input
+          className="h-7 w-64 font-semibold text-sm"
+          aria-label="diagram title"
+          data-testid="diagram-title"
+          placeholder={artifact.id}
+          value={name}
+          autoComplete="off"
+          onChange={(event) => setName(event.target.value)}
+          onBlur={() => void rename()}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              event.currentTarget.blur();
+            }
+            if (event.key === "Escape") {
+              setName(artifact.title);
+            }
+          }}
+        />
         <Badge variant="outline">{artifact.visibility}</Badge>
         <span className="ml-auto text-muted-foreground text-xs" data-save-state={saving}>
           {saving === "clean"

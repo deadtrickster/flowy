@@ -477,8 +477,31 @@ func (d *DB) Project(ctx context.Context, id string) (*Project, error) {
 //
 // It is a filter over NAMES and nothing else. It does not decide what anybody
 // may read - the artifact and event filters do that, unchanged - and widening
-// it would leak nothing but a list of names, which is why the operator's
-// scope=all is simply the whole table.
+// it would leak nothing but a list of names, which is why scope=all is simply
+// the whole table.
+//
+// scope=all is the whole table for EVERY principal, and not only for this
+// node's operator. That is the one place this filter differs from
+// ArtifactFilterSQL, where the same word is an operator-only escape hatch,
+// because the two are asking different questions. An artifact is a row somebody
+// may not read; a project name is not a secret and never was. Project() reads
+// one by name for anybody who asks, requireProject refuses a write by name, and
+// every artifact, event, task and grant carries the name inside its signature.
+// So an operator-only scope=all bought no secrecy - a caller could already probe
+// the registry one name at a time - and it cost the thing the enumeration exists
+// for: a project that was just declared was invisible to the principal that
+// declared it, so a declaration that SUCCEEDED read back exactly like one that
+// did nothing, and no console could offer a project it could not list.
+//
+// Which project a principal may WRITE into is untouched by this: a write lands
+// in the token's own project and nowhere else. Which rows they may read is
+// untouched too, and the projects response says so in a second list - see
+// ReadableProjects, which asks the read rule rather than this one.
+//
+// The narrow form below is still what sync sends, and it must stay evaluable
+// against a bare name: projectReachable applies it to a VALUES row that has an
+// id column and nothing more, so a clause here that reaches for another column
+// of the table would break the merge rather than fail a test.
 //
 // The edge is read in both directions on purpose: a project that opened itself
 // up to you and a project you opened yourself up to are both projects you are
@@ -487,7 +510,7 @@ func ProjectFilterSQL(p *Principal, alias string, a *args, scopeAll bool) string
 	if p == nil {
 		return "FALSE"
 	}
-	if scopeAll && p.Operator {
+	if scopeAll {
 		return "TRUE"
 	}
 	project := a.next(p.Project)
