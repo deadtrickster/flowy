@@ -18,6 +18,10 @@ func TestClassifyVersion(t *testing.T) {
 	}{
 		{"26.07.5", KindRelease},
 		{"1.0.0", KindRelease},
+		{"v0.26.4", KindRelease}, // ragflow spells its releases with the v
+		{"v26.07.5", KindRelease},
+		{"v0.26", KindRef}, // still not X.Y.Z
+		{"v-branch", KindRef},
 		{"latest", KindLatest},
 		{"LATEST", KindLatest},
 		{"main", KindLatest},
@@ -274,5 +278,167 @@ func TestFromCommitBuildCacheHit(t *testing.T) {
 	}
 	if !strings.Contains(v.Note, "built, cached") {
 		t.Errorf("note = %q", v.Note)
+	}
+}
+
+// TestResolveReleaseAcceptsBothSpellings is the ragflow defect: the release
+// regex took "0.26.4" and not "v0.26.4", so a finding spelling its version
+// the way ragflow tags its releases fell through to the git-ref path and
+// died on "could not resolve git ref v0.26.4" - which is why no ragflow
+// finding could be run against its own release.
+//
+// The property is not "the v is accepted", it is that BOTH spellings take
+// the SAME path to the SAME digest and commit: a registry publishes one of
+// them, and which one is the project's habit, not the caller's mistake. Two
+// arms, one registry that only has the v-tag, and the answers must agree.
+func TestResolveReleaseAcceptsBothSpellings(t *testing.T) {
+	if ClassifyVersion("v0.26.4") != KindRelease {
+		t.Fatalf("ClassifyVersion(\"v0.26.4\") = %v, want KindRelease", ClassifyVersion("v0.26.4"))
+	}
+	cfg := ProjectConfig{Registry: "infiniflow/ragflow"}
+	const digest = "16d24d1968ab59e2715a85d2590f1569c9539e0362344a42f3a23e8be06a655b"
+	pinned := "infiniflow/ragflow@sha256:" + digest
+
+	resolve := func(asked string) Version {
+		sr := newScriptedRunner(t)
+		// The registry has v0.26.4 and does not have 0.26.4.
+		sr.on("", "docker", "pull", "infiniflow/ragflow:v0.26.4")
+		sr.on("infiniflow/ragflow@sha256:"+digest, "docker", "image", "inspect", "-f",
+			"{{index .RepoDigests 0}}", "infiniflow/ragflow:v0.26.4")
+		sr.on("", "docker", "pull", "infiniflow/ragflow:0.26.4")
+		sr.on("", "docker", "image", "inspect", "-f",
+			"{{index .RepoDigests 0}}", "infiniflow/ragflow:0.26.4")
+		sr.on("d4c0ffee1234567890abcdef1234567890abcdef", "docker", "image", "inspect", "-f",
+			`{{index .Config.Labels "org.opencontainers.image.revision"}}`, pinned)
+		sr.on("2026-08-01T00:00:00Z", "docker", "image", "inspect", "-f",
+			`{{index .Config.Labels "org.opencontainers.image.created"}}`, pinned)
+		r := &Resolver{run: sr.run}
+		return r.Resolve(context.Background(), cfg, asked)
+	}
+
+	withV := resolve("v0.26.4")
+	bare := resolve("0.26.4")
+	for _, v := range []Version{withV, bare} {
+		if v.Unresolved {
+			t.Fatalf("%+v: a published release must resolve", v)
+		}
+		if v.Image != pinned {
+			t.Errorf("image = %q, want the digest-pinned ref %q", v.Image, pinned)
+		}
+	}
+	if withV.SHA != bare.SHA || withV.Image != bare.Image {
+		t.Errorf("the two spellings of one release resolved differently: %+v vs %+v", withV, bare)
+	}
+	if withV.SHA != "d4c0ffee1234567890abcdef1234567890abcdef" {
+		t.Errorf("sha = %q, want the OCI revision label's value", withV.SHA)
+	}
+	if !strings.Contains(bare.Note, "pulled as infiniflow/ragflow:v0.26.4") {
+		t.Errorf("note = %q, should say which tag actually pulled", bare.Note)
+	}
+}
+
+// TestResolveReleaseNamesWhatIsMissing: "the project never tagged this
+// release" and "the release exists but no image was published" are different
+// problems with different fixes, and both used to arrive as the single line
+// "could not pull <registry>:<version>".
+//
+// Three arms, differing only in what the checkout knows, so a message that
+// was constant would fail here: no checkout at all, a checkout without the
+// tag, and a checkout WITH the tag.
+func TestResolveReleaseNamesWhatIsMissing(t *testing.T) {
+	nothingPulls := func(sr *scriptedRunner) *Resolver { return &Resolver{run: sr.run} }
+
+	// No checkout to ask: all that can be known is that no image pulled.
+	noSource := nothingPulls(newScriptedRunner(t)).Resolve(context.Background(),
+		ProjectConfig{Registry: "infiniflow/ragflow"}, "v9.9.9")
+
+	// A checkout that has neither spelling as a tag: the release itself does
+	// not exist.
+	srNoTag := newScriptedRunner(t)
+	noTag := nothingPulls(srNoTag).Resolve(context.Background(),
+		ProjectConfig{Registry: "infiniflow/ragflow", Source: "/src"}, "v9.9.9")
+
+	// A checkout that DOES have the tag: the release exists, its image does
+	// not.
+	srTagged := newScriptedRunner(t)
+	srTagged.on("cafebabecafebabecafebabecafebabecafebabe", "git", "-C", "/src",
+		"rev-parse", "-q", "--verify", "refs/tags/v9.9.9")
+	tagged := nothingPulls(srTagged).Resolve(context.Background(),
+		ProjectConfig{Registry: "infiniflow/ragflow", Source: "/src"}, "v9.9.9")
+
+	for _, v := range []Version{noSource, noTag, tagged} {
+		if !v.Unresolved {
+			t.Fatalf("%+v: a release that could not be pulled is unresolved", v)
+		}
+	}
+	if !strings.Contains(noSource.Note, "no such image") {
+		t.Errorf("no checkout: note = %q, want it to name the missing image", noSource.Note)
+	}
+	if !strings.Contains(noTag.Note, "no such release tag") || !strings.Contains(noTag.Note, "/src") {
+		t.Errorf("no tag in the checkout: note = %q, want it to name the missing release tag", noTag.Note)
+	}
+	if !strings.Contains(tagged.Note, "no such image") {
+		t.Errorf("tag present, image absent: note = %q, want it to name the missing image", tagged.Note)
+	}
+	if noTag.Note == tagged.Note {
+		t.Errorf("both failures read %q - the message does not distinguish them", noTag.Note)
+	}
+}
+
+// TestResolvedReleaseIsNotMarkedUnresolved is the other arm of the flag
+// itself: Unresolved has to differ between a release that pulled and one
+// that did not, or a caller reading it learns nothing. Buildable cannot
+// carry this - it is false for both.
+func TestResolvedReleaseIsNotMarkedUnresolved(t *testing.T) {
+	cfg := ProjectConfig{Registry: "proj/proj"}
+	tag := "proj/proj:1.2.3"
+	pinned := "proj/proj@sha256:deadbeefcafe0000000000000000000000000000000000000000000000beef"
+
+	sr := newScriptedRunner(t)
+	sr.on("", "docker", "pull", tag)
+	sr.on(pinned, "docker", "image", "inspect", "-f", "{{index .RepoDigests 0}}", tag)
+	sr.on("bc07c51d4b8d9f0c6f4e3ad6a3a8952decd6d032", "docker", "image", "inspect", "-f",
+		`{{index .Config.Labels "org.opencontainers.image.revision"}}`, pinned)
+	ok := (&Resolver{run: sr.run}).Resolve(context.Background(), cfg, "1.2.3")
+
+	gone := (&Resolver{run: newScriptedRunner(t).run}).Resolve(context.Background(), cfg, "9.9.9")
+
+	if ok.Unresolved {
+		t.Errorf("a release that pulled is marked unresolved: %+v", ok)
+	}
+	if !gone.Unresolved {
+		t.Errorf("a release that did not pull is not marked unresolved: %+v", gone)
+	}
+	if ok.Buildable != gone.Buildable {
+		t.Fatal("this test assumes Buildable is the same for both, which is why Unresolved exists")
+	}
+}
+
+// TestResolveReleaseTimeoutIsNotAMissingTag: when the context dies mid-pull,
+// the git call that would say whether the release exists cannot run either,
+// so both answers are empty - and reporting that as "no such release tag" is
+// a claim about the project made out of a fact about the clock. Measured
+// live: ragflow v0.7.0, a 3 GB image still downloading when the runner's
+// request timeout fired, came back as a missing tag against a checkout that
+// has it.
+func TestResolveReleaseTimeoutIsNotAMissingTag(t *testing.T) {
+	cfg := ProjectConfig{Registry: "infiniflow/ragflow", Source: "/src"}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	dead := (&Resolver{run: newScriptedRunner(t).run}).Resolve(ctx, cfg, "v0.7.0")
+	live := (&Resolver{run: newScriptedRunner(t).run}).Resolve(context.Background(), cfg, "v0.7.0")
+
+	if !dead.Unresolved || !live.Unresolved {
+		t.Fatalf("both arms failed to resolve: dead=%+v live=%+v", dead, live)
+	}
+	if strings.Contains(dead.Note, "no such release tag") {
+		t.Errorf("a cancelled resolve reads as a missing tag: %q", dead.Note)
+	}
+	if !strings.Contains(dead.Note, "context canceled") {
+		t.Errorf("note = %q, want it to name the cancellation", dead.Note)
+	}
+	if !strings.Contains(live.Note, "no such release tag") {
+		t.Errorf("the live arm should still name the missing tag: %q", live.Note)
 	}
 }

@@ -555,15 +555,26 @@ func (r *Runner) runOne(ctx context.Context, id int64) {
 		run.Note = in.Version.Note
 	})
 
-	// A SOURCE BUILD WITHOUT A BINARY NEEDS ONE BUILT, and a version that
-	// could not be resolved at all needs saying so. This is the one place
+	// A VERSION THAT DID NOT RESOLVE STOPS HERE, whatever kind it was. This
+	// check used to live inside the source-build branch below, keyed on
+	// Buildable, and so it never saw a release: Buildable is false for every
+	// published release, and SourceBuild is false too, so a release whose
+	// image could not be pulled walked straight past it and burned a full
+	// compose build before failing as "package build failed" - a note that
+	// blames the package for a version that was never obtainable. The answer
+	// was already known at resolve time; this is where it gets read.
+	if in.Version.Unresolved {
+		fmt.Fprintf(log, "# run %d: %s\n", id, in.Version.Note)
+		r.failNow(id, in.Version.Note)
+		return
+	}
+
+	// A SOURCE BUILD WITHOUT A BINARY NEEDS ONE BUILT. This is the one place
 	// the port deliberately reads differently from runner.py: there, ANY
 	// version with no binary was either built or refused, because its only
 	// release path always extracted one. Here a published release runs from
 	// its own image and needs no local binary at all (see sutImage in
-	// packager.go), so only a source build is gated on having one - and a
-	// resolution that failed outright is caught by Buildable being false,
-	// with the resolver's own note as the reason.
+	// packager.go), so only a source build is gated on having one.
 	if in.Version.SourceBuild && in.Version.Binary == "" {
 		if !in.Version.Buildable {
 			fmt.Fprintf(log, "# run %d: %s\n", id, in.Version.Note)

@@ -973,3 +973,52 @@ func TestAnUnexecutableReproIsAHarnessErrorNotAVerdict(t *testing.T) {
 		t.Fatalf("recorded %+v, want nothing", v)
 	}
 }
+
+// TestUnpullableReleaseFailsAtResolveNotAfterABuild: a release whose image
+// could not be pulled has nothing to run, and the answer was already known
+// at resolve time. This check used to sit inside the source-build branch and
+// key on Buildable, which is false for EVERY release, so an unpullable one
+// walked past it, burned a full compose build and was recorded as "package
+// build failed" - blaming the package for a version that was never
+// obtainable.
+//
+// Two arms, differing only in Unresolved: the same runner with a release
+// that did resolve stages a package and runs compose. Without the second
+// arm, "nothing ran" would also be what a broken harness looks like.
+func TestUnpullableReleaseFailsAtResolveNotAfterABuild(t *testing.T) {
+	h := newHarness(t, Options{Workers: 1})
+	h.Runner.resolve = func(_ context.Context, _ ProjectConfig, version string) Version {
+		return Version{SHA: version, Image: "infiniflow/ragflow:" + version, Unresolved: true,
+			Note: "no such image infiniflow/ragflow:" + version +
+				": no spelling of it could be pulled (tried tags " + version + ", v" + version + ")"}
+	}
+	run := h.runOnce(t, "9.9.9")
+
+	if run.Status != StatusError {
+		t.Fatalf("status = %q, want an error (note %q)", run.Status, run.Note)
+	}
+	if !strings.Contains(run.Note, "no such image") {
+		t.Errorf("note = %q, want the resolver's named reason", run.Note)
+	}
+	if strings.Contains(run.Note, "package build failed") {
+		t.Errorf("note = %q - the package is blamed for a version that never resolved", run.Note)
+	}
+	if len(h.stagedInputs()) != 0 {
+		t.Errorf("staged %d package(s) for a version that never resolved", len(h.stagedInputs()))
+	}
+	if calls := h.composeCalls(); len(calls) != 0 {
+		t.Errorf("ran compose %+v for a version that never resolved", calls)
+	}
+
+	// The other arm: the harness's default resolve is a release that DID
+	// pull, and it must still stage and run.
+	ok := newHarness(t, Options{Workers: 1})
+	okRun := ok.runOnce(t, "26.07.5")
+	if okRun.Status != StatusConfirmed {
+		t.Fatalf("a resolved release: status = %q, note %q", okRun.Status, okRun.Note)
+	}
+	if len(ok.stagedInputs()) != 1 || len(ok.composeCalls()) == 0 {
+		t.Fatalf("a resolved release staged %d package(s) and ran %d compose call(s)",
+			len(ok.stagedInputs()), len(ok.composeCalls()))
+	}
+}

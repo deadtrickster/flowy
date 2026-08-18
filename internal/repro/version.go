@@ -99,7 +99,7 @@ func (c ProjectConfig) isolation() string {
 
 // Version is what a version string resolves to: the commit it names and how
 // to run it. It is never an error on its own - an unresolvable ref comes
-// back with Buildable false and Note saying why, the same way runner.py's
+// back with Unresolved true and Note saying why, the same way runner.py's
 // resolve_version always returned a dict rather than raising, because the
 // caller (a run, a package) needs to report the failure to a human rather
 // than crash on it.
@@ -123,6 +123,18 @@ type Version struct {
 	// from Source, rather than shipped in a published release image. It
 	// decides how a package bakes/mounts the binary - see packager.go.
 	SourceBuild bool
+	// Unresolved is whether resolution failed outright: there is no commit,
+	// no image, nothing to run, and Note says which of those was missing.
+	//
+	// It exists because Buildable could not carry this. Buildable is false
+	// for EVERY published release - a release runs from its own image and is
+	// never built here - so a caller reading Buildable cannot tell a release
+	// that resolved from one whose image does not exist. runner.go's runOne
+	// read it that way and only consulted it under SourceBuild, so an
+	// unpullable release ran a full compose build and failed as "package
+	// build failed", blaming the package for a version that was never
+	// obtainable.
+	Unresolved bool
 	// Note is a one-line human explanation of what was resolved and how -
 	// "latest @ bc07c51d4b8d (built, cached)", "release 26.07.5 @ commit
 	// bc07c51d4b8d", "could not resolve git ref foo". It is the only place
@@ -137,7 +149,8 @@ type Version struct {
 type VersionKind int
 
 const (
-	// KindRelease is an X.Y.Z published release tag.
+	// KindRelease is an X.Y.Z published release tag, with or without the
+	// leading "v" - both spellings name the same release.
 	KindRelease VersionKind = iota
 	// KindLatest is latest/main/head - the default branch's live tip,
 	// re-resolved on every call rather than cached, because the whole point
@@ -151,7 +164,15 @@ const (
 )
 
 var (
-	releaseTagRE = regexp.MustCompile(`^\d+\.\d+\.\d+$`)
+	// releaseTagRE accepts both spellings of a release, "0.26.4" and
+	// "v0.26.4". The "v" is a project's habit and not a different kind of
+	// thing: SereneDB publishes 26.07.5, ragflow publishes v0.26.4, and
+	// before this pattern took the "v" a ragflow finding fell through to the
+	// git-ref path and died on "could not resolve git ref v0.26.4" - which
+	// is why 16 of the corpus's 40 findings could not be run against their
+	// own release at all. It is one pattern rather than two so that both
+	// spellings take the same path through the resolver.
+	releaseTagRE = regexp.MustCompile(`^v?\d+\.\d+\.\d+$`)
 	commitSHARE  = regexp.MustCompile(`^[0-9a-fA-F]{7,40}$`)
 )
 
@@ -252,14 +273,14 @@ func (r *Resolver) Resolve(ctx context.Context, cfg ProjectConfig, version strin
 
 func (r *Resolver) resolveLatest(ctx context.Context, cfg ProjectConfig, version string) Version {
 	if cfg.Source == "" {
-		return Version{SHA: version, Image: cfg.BaseImage, SourceBuild: true,
+		return Version{SHA: version, Image: cfg.BaseImage, SourceBuild: true, Unresolved: true,
 			Note: "project has no source checkout configured; cannot resolve " + version}
 	}
 	branch := cfg.branch()
 	r.run(ctx, "git", "-C", cfg.Source, "fetch", "origin", branch, "--quiet")
 	commit := r.run(ctx, "git", "-C", cfg.Source, "rev-parse", "origin/"+branch)
 	if commit == "" {
-		return Version{SHA: version, Image: cfg.BaseImage, SourceBuild: true,
+		return Version{SHA: version, Image: cfg.BaseImage, SourceBuild: true, Unresolved: true,
 			Note: "could not resolve origin/" + branch}
 	}
 	label := "latest"
@@ -271,7 +292,7 @@ func (r *Resolver) resolveLatest(ctx context.Context, cfg ProjectConfig, version
 
 func (r *Resolver) resolveSHA(ctx context.Context, cfg ProjectConfig, version string) Version {
 	if cfg.Source == "" {
-		return Version{SHA: version, Image: cfg.BaseImage, SourceBuild: true,
+		return Version{SHA: version, Image: cfg.BaseImage, SourceBuild: true, Unresolved: true,
 			Note: "project has no source checkout configured; cannot resolve " + version}
 	}
 	commit := r.run(ctx, "git", "-C", cfg.Source, "rev-parse", version)
@@ -283,7 +304,7 @@ func (r *Resolver) resolveSHA(ctx context.Context, cfg ProjectConfig, version st
 
 func (r *Resolver) resolveRef(ctx context.Context, cfg ProjectConfig, version string) Version {
 	if cfg.Source == "" {
-		return Version{SHA: version, Image: cfg.BaseImage, SourceBuild: true,
+		return Version{SHA: version, Image: cfg.BaseImage, SourceBuild: true, Unresolved: true,
 			Note: "project has no source checkout configured; cannot resolve " + version}
 	}
 	r.run(ctx, "git", "-C", cfg.Source, "fetch", "origin", version, "--quiet")
@@ -292,7 +313,7 @@ func (r *Resolver) resolveRef(ctx context.Context, cfg ProjectConfig, version st
 		commit = r.run(ctx, "git", "-C", cfg.Source, "rev-parse", version)
 	}
 	if commit == "" {
-		return Version{SHA: version, Image: cfg.BaseImage, SourceBuild: true,
+		return Version{SHA: version, Image: cfg.BaseImage, SourceBuild: true, Unresolved: true,
 			Note: "could not resolve git ref " + version}
 	}
 	return r.fromCommit(ctx, cfg, commit, version)
@@ -331,15 +352,23 @@ func (r *Resolver) fromCommit(ctx context.Context, cfg ProjectConfig, commit, la
 // identity, the tag is only how a human spelled it.
 func (r *Resolver) resolveRelease(ctx context.Context, cfg ProjectConfig, version string) Version {
 	if cfg.Registry == "" {
-		return Version{SHA: version, Buildable: false, SourceBuild: false,
+		return Version{SHA: version, Buildable: false, SourceBuild: false, Unresolved: true,
 			Note: "project has no configured registry; cannot resolve release " + version}
 	}
-	tag := cfg.Registry + ":" + version
-	r.run(ctx, "docker", "pull", tag)
-	digest := repoDigest(r.run(ctx, "docker", "image", "inspect", "-f", "{{index .RepoDigests 0}}", tag))
+	spellings := releaseSpellings(version)
+	tag, digest := "", ""
+	for _, s := range spellings {
+		candidate := cfg.Registry + ":" + s
+		r.run(ctx, "docker", "pull", candidate)
+		if d := repoDigest(r.run(ctx, "docker", "image", "inspect", "-f", "{{index .RepoDigests 0}}", candidate)); d != "" {
+			tag, digest = candidate, d
+			break
+		}
+	}
 	if digest == "" {
-		return Version{SHA: version, Image: tag, Buildable: false, SourceBuild: false,
-			Note: "could not pull " + tag}
+		return Version{SHA: version, Image: cfg.Registry + ":" + version,
+			Buildable: false, SourceBuild: false, Unresolved: true,
+			Note: r.releaseFailure(ctx, cfg, version, spellings)}
 	}
 	pinned := cfg.Registry + "@sha256:" + digest
 	rev := r.label(ctx, pinned, "org.opencontainers.image.revision")
@@ -366,10 +395,75 @@ func (r *Resolver) resolveRelease(ctx context.Context, cfg ProjectConfig, versio
 		}
 	}
 	note := fmt.Sprintf("release %s @ commit %s", version, shortSHA(sha))
+	if tag != cfg.Registry+":"+version {
+		note += fmt.Sprintf(" (pulled as %s)", tag)
+	}
 	if created != "" {
 		note += fmt.Sprintf(" (built %s)", created)
 	}
 	return Version{SHA: sha, Image: pinned, Binary: binary, Buildable: false, SourceBuild: false, Note: note}
+}
+
+// releaseSpellings is one release wearing both its prefixes, the spelling
+// that was asked for first: "v0.26.4" and "0.26.4".
+//
+// A project's git tags and its registry tags do not have to agree about the
+// "v" - ragflow publishes infiniflow/ragflow:v0.26.4 and tags its commits
+// v0.26.4, SereneDB publishes serenedb/serenedb:26.07.5 - and neither
+// spelling is more correct than the other, so the resolver tries both rather
+// than declaring one of them wrong. Trying is what makes this a single path:
+// a finding asking for v0.26.4 and one asking for 0.26.4 resolve to the same
+// digest and the same commit.
+func releaseSpellings(version string) []string {
+	v := strings.TrimSpace(version)
+	if bare := strings.TrimPrefix(v, "v"); bare != v {
+		return []string{v, bare}
+	}
+	return []string{v, "v" + v}
+}
+
+// releaseFailure names WHICH thing was missing when no spelling of a release
+// could be pulled, because "the project never tagged this release" and "the
+// release exists but its image was never published (or the registry/network
+// is unreachable)" are different problems with different fixes, and both used
+// to arrive as the one line "could not pull <registry>:<version>".
+//
+// The image is asked first and git second, deliberately: the image is a
+// release's identity here (its commit is read off the image's own OCI label),
+// so git is consulted only to explain a failure, never to cause one. A
+// project with no local checkout gets the image answer, which is all that can
+// be known without one.
+func (r *Resolver) releaseFailure(ctx context.Context, cfg ProjectConfig, version string, spellings []string) string {
+	tried := strings.Join(spellings, ", ")
+	// A DEAD CONTEXT IS NOT A MISSING RELEASE, and it is the one way this
+	// function can lie twice over: the pull was killed mid-download, and the
+	// git call that would explain it cannot run either, so both answers come
+	// back empty and the honest report is neither of them. Measured while
+	// resolving ragflow v0.7.0 through the runner's five-minute request
+	// timeout: a 3 GB image that was still downloading was reported as "no
+	// such release tag", against a checkout that has the tag.
+	if err := ctx.Err(); err != nil {
+		return fmt.Sprintf("could not resolve release %s: %v while pulling %s (tried %s)",
+			version, err, cfg.Registry+":"+version, tried)
+	}
+	if cfg.Source != "" && !r.hasReleaseTag(ctx, cfg, spellings) {
+		return fmt.Sprintf("no such release tag %s: not a tag in %s (tried %s)", version, cfg.Source, tried)
+	}
+	return fmt.Sprintf("no such image %s: no spelling of it could be pulled (tried tags %s)",
+		cfg.Registry+":"+version, tried)
+}
+
+// hasReleaseTag is whether the project's checkout knows either spelling of
+// this release as a tag. `rev-parse -q --verify` prints nothing and exits
+// nonzero for a tag that is not there, which runFunc reports as "" - the same
+// "got nothing is the failure signal" every caller here uses.
+func (r *Resolver) hasReleaseTag(ctx context.Context, cfg ProjectConfig, spellings []string) bool {
+	for _, s := range spellings {
+		if r.run(ctx, "git", "-C", cfg.Source, "rev-parse", "-q", "--verify", "refs/tags/"+s) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // label reads one OCI label off an image, "" if it is absent or docker has

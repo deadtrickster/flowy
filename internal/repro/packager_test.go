@@ -426,3 +426,74 @@ func TestStageForRunRestagesWhenContentChanges(t *testing.T) {
 		t.Errorf("restaged repro content = %q, %v", got, err)
 	}
 }
+
+// TestPlainComposeClearsTheImageEntrypoint: `command:` replaces an image's
+// CMD and is handed to its ENTRYPOINT as arguments, so a plain package
+// against any image that ships an ENTRYPOINT runs that entrypoint with the
+// repro's argv appended instead of running the repro. Measured against
+// infiniflow/ragflow:v0.26.4, whose entrypoint is ["./entrypoint.sh"]: the
+// container died on `stat ./entrypoint.sh: no such file or directory` and
+// the run recorded a harness error against the version under test.
+//
+// The dind package is the other arm: it builds its own Alpine image and its
+// entrypoint.sh IS the thing to run, so it must not be cleared there.
+func TestPlainComposeClearsTheImageEntrypoint(t *testing.T) {
+	plain := readTgz(t, mustBuild(t, testInput("plain")))
+	dind := readTgz(t, mustBuild(t, testInput("dind")))
+
+	plainCompose := string(findEntry(t, plain, "docker-compose.yml"))
+	dindCompose := string(findEntry(t, dind, "docker-compose.yml"))
+
+	if !strings.Contains(plainCompose, "entrypoint: []") {
+		t.Errorf("the plain compose does not clear the SUT image's entrypoint:\n%s", plainCompose)
+	}
+	if strings.Contains(dindCompose, "entrypoint: []") {
+		t.Errorf("the dind compose cleared an entrypoint it supplies itself:\n%s", dindCompose)
+	}
+}
+
+// mustBuild packages one input and returns the tgz path.
+func mustBuild(t *testing.T, in RenderInput) string {
+	t.Helper()
+	res, err := BuildPackage(t.TempDir(), in)
+	if err != nil {
+		t.Fatalf("BuildPackage: %v", err)
+	}
+	return res.Path
+}
+
+// findEntry is one file out of a package tgz, by its name inside the
+// package's directory.
+func findEntry(t *testing.T, entries map[string][]byte, name string) []byte {
+	t.Helper()
+	for path, content := range entries {
+		if strings.HasSuffix(path, "/"+name) {
+			return content
+		}
+	}
+	t.Fatalf("no %s in the package (have %v)", name, keys(entries))
+	return nil
+}
+
+// TestSutImageRefusesOnlyAnUnresolvedRelease: an unpullable release keeps the
+// tag it was asked for in Image so the failure can name it, and a package
+// rendered FROM that tag would only move the failure to whoever ran the
+// tarball - so there is no SUT for it. A source build that did not resolve is
+// the other arm and must be left alone: its Image is the project's own
+// BaseImage, which is pullable whether or not git found the ref, and a runner
+// with no checkout still packages findings at "latest".
+func TestSutImageRefusesOnlyAnUnresolvedRelease(t *testing.T) {
+	cfg := ProjectConfig{BaseImage: "proj/base:runtime"}
+
+	release := Version{SHA: "v9.9.9", Image: "proj/proj:v9.9.9", Unresolved: true,
+		Note: "no such image proj/proj:v9.9.9"}
+	source := Version{SHA: "latest", Image: cfg.BaseImage, SourceBuild: true, Unresolved: true,
+		Note: "project has no source checkout configured; cannot resolve latest"}
+
+	if img, ok := sutImage(release, cfg); ok || img != "" {
+		t.Errorf("an unresolved release offered %q as its SUT", img)
+	}
+	if img, ok := sutImage(source, cfg); !ok || img != cfg.BaseImage {
+		t.Errorf("an unresolved source build lost its base image: %q, %v", img, ok)
+	}
+}

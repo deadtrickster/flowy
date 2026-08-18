@@ -198,6 +198,14 @@ var (
 			"  repro:\n" +
 			"    build: .\n" +
 			"    image: {{.ImgName}}\n" +
+			"    # The SUT image's own ENTRYPOINT is cleared, because `command:`\n" +
+			"    # replaces an image's CMD and is then passed to its ENTRYPOINT as\n" +
+			"    # arguments. A release image usually has one - ragflow's is\n" +
+			"    # [\"./entrypoint.sh\"] - so without this the repro never runs and the\n" +
+			"    # container dies on `stat ./entrypoint.sh: no such file or directory`,\n" +
+			"    # a failure about the package's own plumbing recorded against the\n" +
+			"    # version under test. Measured on infiniflow/ragflow:v0.26.4.\n" +
+			"    entrypoint: []\n" +
 			"    working_dir: /repro\n" +
 			"    command: [{{.Cmd}}]\n"))
 
@@ -317,6 +325,19 @@ func isPublished(image string) bool {
 //   - see the entrypoint template. "" only when neither applies: a
 //     non-published, non-source image this package cannot use.
 func sutImage(v Version, cfg ProjectConfig) (image string, published bool) {
+	// A RELEASE THAT DID NOT RESOLVE HAS NO IMAGE, whatever its Image field
+	// holds: an unpullable release keeps the tag it was asked for there so
+	// the failure can name it, and rendering a package whose FROM is a tag
+	// nobody could pull only moves the failure to whoever runs the tarball.
+	//
+	// Only the release case. A source build that did not resolve still has a
+	// real image - the project's own BaseImage, which is pullable whether or
+	// not git could find the ref - so a package for it renders exactly as it
+	// did before, and a runner with no checkout can still package a finding
+	// at "latest" (cmd/handoff-runner's own disclosure test does).
+	if v.Unresolved && !v.SourceBuild {
+		return "", false
+	}
 	if v.SourceBuild {
 		img := v.Image
 		if img == "" {

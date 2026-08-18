@@ -374,7 +374,12 @@ type versionAnswer struct {
 	BinaryReady bool   `json:"binary_ready"`
 	Buildable   bool   `json:"buildable"`
 	SourceBuild bool   `json:"source_build"`
-	Note        string `json:"note"`
+	// Unresolved is whether this version names nothing that can be run - no
+	// commit, no image - with Note saying which was missing. Buildable does
+	// not answer that question for a release: it is false for every
+	// published release, resolved or not.
+	Unresolved bool   `json:"unresolved"`
+	Note       string `json:"note"`
 	// Runnable is whether this deployment can actually run the version it
 	// just resolved, rather than only describe or package it.
 	Runnable bool `json:"runnable"`
@@ -422,6 +427,7 @@ func (s *service) handleVersion(w http.ResponseWriter, r *http.Request, _ *store
 		BinaryReady: v.Binary != "",
 		Buildable:   v.Buildable,
 		SourceBuild: v.SourceBuild,
+		Unresolved:  v.Unresolved,
 		Note:        v.Note,
 		Runnable:    linked(s.queue),
 	})
