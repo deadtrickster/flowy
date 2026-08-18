@@ -29,6 +29,25 @@ const EventMergeGate = "merge.gate"
 // expiry can set it to never.
 const GateAtField = "gate_at"
 
+// GateRefField names where the evidence lives when that is not the row's own
+// branch: an integration branch whose tree the run actually measured. It is
+// what a lander is handed after batching - the row's branch would hand them one
+// commit of a union that went green as a whole, and it did, twice, silently.
+const GateRefField = "gated_ref"
+
+// GateActorField records WHO declared the run, which is the half the lock
+// needs: "the target is held" and "the target is held by somebody else" are
+// different facts to a holder who is green and ready to land.
+const GateActorField = "gate_actor"
+
+// GateRefOf and GateActorOf read what a declaration recorded. They live here
+// and not beside GatedTipOf in mergequeue.go on purpose: that file is one
+// admission opinion under active change by another hand, and these are facts
+// about the gate, which is this file's subject.
+func GateRefOf(a *Artifact) string { return strings.TrimSpace(artifactString(a, GateRefField)) }
+
+func GateActorOf(a *Artifact) string { return strings.TrimSpace(artifactString(a, GateActorField)) }
+
 // GateBelievedFor is how long a declaration is taken seriously.
 //
 // A gate on this project runs four to six minutes. Fifteen is long enough that a
@@ -111,8 +130,21 @@ func applyGate(fields map[string]any, run, tip string, now time.Time) bool {
 //
 // A declaration with no tip moves the request to active: something is happening
 // to it, and a board that keeps offering it is how two agents gate one branch.
+//
+// A declaration also TAKES THE LANDING LOCK on the request's target, before
+// anything is written - see mergelock.go for why a refusal alone reserved
+// nothing. The taker who loses is refused here, naming the holder, which means
+// the run they were about to start never starts: the lock is taken at the door
+// the protocol walks through first, not announced once the VM is booting.
+//
+// ref names where the evidence LIVES when that is not the row's own branch - an
+// integration branch carrying this row's branch alongside others. It rides the
+// declaration because it is a fact about the measurement, not about the request:
+// the lander is handed the tree that went green, not the branch the row was
+// filed about, and the row that never says so is the one that lands one commit
+// of a sixteen-commit union and calls it done.
 func (d *DB) SetMergeGate(
-	ctx context.Context, p *Principal, id, run, tip string,
+	ctx context.Context, p *Principal, id, run, tip, ref string,
 ) (*Artifact, *Event, error) {
 	ctx, span := otel.Start(ctx, otel.KindIngest, "merge.gate")
 	defer span.End()
@@ -137,6 +169,16 @@ func (d *DB) SetMergeGate(
 		return nil, nil, ErrNotFound
 	}
 
+	// THE LOCK GOES ON FIRST, and only for a declaration: a verdict is the end
+	// of a run the declarer already holds the target for, and re-taking it here
+	// would let a verdict from a principal who never declared steal the target
+	// from whoever is actually measuring.
+	if ref = strings.TrimSpace(ref); strings.TrimSpace(tip) == "" {
+		if _, err := d.TakeMergeLock(ctx, p, TargetOf(art)); err != nil {
+			return nil, nil, err
+		}
+	}
+
 	fields, err := ArtifactFields(art)
 	if err != nil {
 		return nil, nil, err
@@ -145,6 +187,13 @@ func (d *DB) SetMergeGate(
 	if applyGate(fields, run, tip, time.Now().UTC()) {
 		status = ActiveStatus
 	}
+	// The ref rides both moments, because it describes the measurement rather
+	// than either half of it: a verdict recorded without it would leave the
+	// lander holding a green tip and no name for the tree it came from.
+	if ref != "" {
+		fields[GateRefField] = ref
+	}
+	fields[GateActorField] = actor
 	column, err := json.Marshal(fields)
 	if err != nil {
 		return nil, nil, fmt.Errorf("store: declare gate on %s: %w", art.ID, err)
@@ -153,6 +202,7 @@ func (d *DB) SetMergeGate(
 	meta, err := json.Marshal(map[string]string{
 		GateRunField:  run,
 		GatedTipField: normalizeTip(tip),
+		GateRefField:  ref,
 		"actor_kind":  actorKind,
 		"actor_user":  p.UserID,
 		BranchField:   BranchOf(art),
@@ -161,8 +211,15 @@ func (d *DB) SetMergeGate(
 		return nil, nil, fmt.Errorf("store: declare gate on %s: %w", art.ID, err)
 	}
 	body := fmt.Sprintf("run %s is measuring %s", run, BranchOf(art))
+	if ref != "" {
+		body = fmt.Sprintf("run %s is measuring %s through %s", run, BranchOf(art), ref)
+	}
 	if tip != "" {
 		body = fmt.Sprintf("run %s measured %s on %s", run, BranchOf(art), normalizeTip(tip))
+		if ref != "" {
+			body = fmt.Sprintf("run %s measured %s through %s on %s",
+				run, BranchOf(art), ref, normalizeTip(tip))
+		}
 	}
 	entry := &Event{
 		Type:     EventMergeGate,

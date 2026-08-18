@@ -1,0 +1,240 @@
+package store
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/deadtrickster/flowy/internal/ulid"
+)
+
+// The pure half first, exactly as the gate's tests split: the reading must not
+// need a run to be alive.
+
+func TestALiveLockIsLiveAndADeadOneIsNot(t *testing.T) {
+	now := time.Now()
+	live := &MergeLock{Target: "master", Holder: "a1", Until: now.Add(time.Minute)}
+	if !live.Live(now) {
+		t.Fatal("a lock whose until is in the future is live")
+	}
+	dead := &MergeLock{Target: "master", Holder: "a1", Until: now.Add(-time.Second)}
+	if dead.Live(now) {
+		t.Fatal("a lock past its until must not be believed")
+	}
+	var absent *MergeLock
+	if absent.Live(now) {
+		t.Fatal("no lock reads as held")
+	}
+}
+
+// The refusal names the holder and the time, because "wait" without a until is
+// "wait forever" and "somebody" without a name is a room nobody can ask.
+func TestAHeldTargetNamesItsHolderAndItsUntil(t *testing.T) {
+	now := time.Now()
+	held := &ErrTargetHeld{
+		Target: "master",
+		Held: &MergeLock{
+			Target: "master", Holder: "a1", HolderName: "flowy-glm",
+			Until: now.Add(10 * time.Minute),
+		},
+		Now: now,
+	}
+	msg := held.Error()
+	for _, want := range []string{"master", "flowy-glm", "held by"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("refusal %q does not say %q", msg, want)
+		}
+	}
+}
+
+// A gate row carries where its evidence lives, and who declared it - the two
+// halves the lock's answers need.
+func TestARefAndActorRideTheGateRow(t *testing.T) {
+	a := gateItem(t, map[string]any{
+		GateRunField:   "run1",
+		GateRefField:   "integration/claude-host-2",
+		GateActorField: "a1",
+	})
+	if GateRefOf(a) != "integration/claude-host-2" {
+		t.Errorf("gated_ref = %q", GateRefOf(a))
+	}
+	if GateActorOf(a) != "a1" {
+		t.Errorf("gate_actor = %q", GateActorOf(a))
+	}
+	// Absent is empty, not a guess: a row gated before refs existed read as
+	// its own branch, which is what it was.
+	if got := GateRefOf(gateItem(t, map[string]any{GateRunField: "run1"})); got != "" {
+		t.Errorf("absent gated_ref = %q, want empty", got)
+	}
+}
+
+// The live half: the compare-and-set, the takeover, and the verb wiring. These
+// need the database the gate starts.
+
+// lockCtx opens the database and declares this test's own project, so no two
+// runs can leave rows that make the other pass or fail by accident.
+func lockCtx(t *testing.T) (context.Context, *DB, string) {
+	t.Helper()
+	ctx, db := open(t)
+	return ctx, db, declaredProject(t, ctx, db, "ml")
+}
+
+// takeBy is TakeMergeLock for one principal, so every test below exercises the
+// real compare-and-set rather than a shared shortcut.
+func takeBy(t *testing.T, ctx context.Context, db *DB, actor string) (*MergeLock, error) {
+	t.Helper()
+	return db.TakeMergeLock(ctx, &Principal{UserID: actor, Project: "ml"}, DefaultMergeTarget)
+}
+
+func TestASecondDeclarerLosesAndIsToldWhoHolds(t *testing.T) {
+	ctx, db, _ := lockCtx(t)
+
+	first, err := takeBy(t, ctx, db, "u-first")
+	if err != nil {
+		t.Fatalf("the first declarer takes the target: %v", err)
+	}
+	_, err = takeBy(t, ctx, db, "u-second")
+	var held *ErrTargetHeld
+	if !errors.As(err, &held) {
+		t.Fatalf("the second declarer came back %v, want ErrTargetHeld", err)
+	}
+	if held.Held == nil || held.Held.Holder != first.Holder {
+		t.Fatalf("the refusal does not name the holder: %+v", held.Held)
+	}
+
+	// The holder's own renewal wins: a re-declare is the same principal
+	// measuring again, not a rival.
+	if _, err := takeBy(t, ctx, db, "u-first"); err != nil {
+		t.Fatalf("the holder's own re-declare was refused: %v", err)
+	}
+	// Non-holders cannot release what they do not hold: the release reports
+	// nothing gone, and the lock reads back still held by the first.
+	gone, err := db.ReleaseMergeLock(ctx, &Principal{UserID: "u-second"}, DefaultMergeTarget)
+	if err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	if gone {
+		t.Fatal("a non-holder released somebody else's lock")
+	}
+	still, err := db.MergeLockOf(ctx, DefaultMergeTarget)
+	if err != nil || still == nil || still.Holder != first.Holder {
+		t.Fatalf("the lock did not survive the non-holder's release: %+v %v", still, err)
+	}
+}
+
+func TestAnExpiredLockLosesToTheNextDeclarer(t *testing.T) {
+	ctx, db, _ := lockCtx(t)
+
+	if _, err := takeBy(t, ctx, db, "u-first"); err != nil {
+		t.Fatalf("take: %v", err)
+	}
+	// Age the row past its until directly: the belief window is the expiry's
+	// business, and no test should wait fifteen minutes for it.
+	if _, err := db.sql.ExecContext(ctx,
+		`UPDATE merge_locks SET until = now() - interval '1 second' WHERE target = $1`,
+		DefaultMergeTarget); err != nil {
+		t.Fatalf("age the lock: %v", err)
+	}
+	if _, err := takeBy(t, ctx, db, "u-second"); err != nil {
+		t.Fatalf("an expired lock must lose to the next declarer: %v", err)
+	}
+}
+
+// The declaration takes the target, which is the piece the night was missing:
+// gating reserved nothing, so every honest run raced every landing.
+func TestADeclarationTakesTheTargetAndRefusesItsRival(t *testing.T) {
+	ctx, db, project := lockCtx(t)
+
+	first := &Principal{UserID: "u-first", Project: project}
+	row := &Artifact{
+		ID: ulid.NewString(), Type: MemoryType, Kind: MergeKind, Project: &project,
+		OwnerUser: first.UserID, Title: "one branch", Visibility: "project",
+		Fields: marshalFields(t, map[string]any{BranchField: "feat-one"}),
+	}
+	if err := db.UpsertArtifact(ctx, row); err != nil {
+		t.Fatalf("file the merge request: %v", err)
+	}
+
+	if _, _, err := db.SetMergeGate(ctx, first, row.ID, "run1", "", ""); err != nil {
+		t.Fatalf("the declaration must take the target: %v", err)
+	}
+	rival := &Principal{UserID: "u-second", Project: project}
+	_, _, err := db.SetMergeGate(ctx, rival, row.ID, "run2", "", "")
+	var held *ErrTargetHeld
+	if !errors.As(err, &held) {
+		t.Fatalf("a rival declaration came back %v, want ErrTargetHeld", err)
+	}
+}
+
+// The land verb's refusals, each a different sentence: no verdict, no lock,
+// somebody else's lock - and then the happy path, which records the tip,
+// closes the row, advances the chain and releases the lock.
+func TestLandRefusesAndThenLands(t *testing.T) {
+	ctx, db, project := lockCtx(t)
+
+	holder := &Principal{UserID: "u-holder", Project: project}
+	other := &Principal{UserID: "u-other", Project: project}
+	row := &Artifact{
+		ID: ulid.NewString(), Type: MemoryType, Kind: MergeKind, Project: &project,
+		OwnerUser: holder.UserID, Title: "one branch", Visibility: "project",
+		Fields: marshalFields(t, map[string]any{BranchField: "feat-one"}),
+	}
+	if err := db.UpsertArtifact(ctx, row); err != nil {
+		t.Fatalf("file the merge request: %v", err)
+	}
+
+	// No verdict: nothing measured it, and a land is not the place to discover
+	// that.
+	if _, _, err := db.LandMerge(ctx, holder, row.ID, "abc1234"); err == nil {
+		t.Fatal("a land without a verdict succeeded")
+	}
+	// No lock: a land that skips the declaration skips the exclusivity.
+	if _, _, err := db.SetMergeGate(ctx, holder, row.ID, "run1", "1111111", ""); err != nil {
+		t.Fatalf("declare and record the verdict: %v", err)
+	}
+	if _, _, err := db.LandMerge(ctx, other, row.ID, "abc1234"); err == nil {
+		t.Fatal("a land by a principal who holds no lock succeeded")
+	}
+
+	// The holder lands: the row carries what master became, the chain knows
+	// the target's newest tip, and the lock is gone.
+	art, _, err := db.LandMerge(ctx, holder, row.ID, "abc1234def5678")
+	if err != nil {
+		t.Fatalf("the holder's land: %v", err)
+	}
+	if landedTipOfRow(art) != "abc1234def5678" {
+		t.Errorf("landed_tip = %q", landedTipOfRow(art))
+	}
+	if art.Status != DoneStatus {
+		t.Errorf("status = %q, want done", art.Status)
+	}
+	chain, err := db.LandedTipOf(ctx, DefaultMergeTarget)
+	if err != nil || chain == nil || chain.Tip != "abc1234def5678" {
+		t.Fatalf("the chain did not advance: %+v %v", chain, err)
+	}
+	lock, err := db.MergeLockOf(ctx, DefaultMergeTarget)
+	if err != nil {
+		t.Fatalf("read the lock after land: %v", err)
+	}
+	if lock != nil {
+		t.Fatalf("the lock survived its own land: %+v", lock)
+	}
+}
+
+// landedTipOfRow reads the landed tip off a row the verb returned, for the
+// assertions above without a second fetch.
+func landedTipOfRow(a *Artifact) string {
+	return normalizeTip(artifactString(a, LandedTipField))
+}
+
+func marshalFields(t *testing.T, fields map[string]any) json.RawMessage {
+	t.Helper()
+	raw, err := json.Marshal(fields)
+	if err != nil {
+		t.Fatalf("marshal fields: %v", err)
+	}
+	return raw
+}

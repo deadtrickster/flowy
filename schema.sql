@@ -1000,4 +1000,43 @@ ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS search tsvector;
 
 CREATE INDEX IF NOT EXISTS artifacts_search_idx ON artifacts USING gin (search);
 
+-- The landing lock. A merge target can be held by one declarer at a time, taken
+-- when a gate is declared and held through the run and the fast-forward. This is
+-- what the admission rule was missing: it refused branches whose evidence was
+-- stale but reserved nothing, so on a floor of four agents somebody landed
+-- inside nearly every five-minute gate window and every honest measurement was
+-- wasted - correct and livelocked is still livelocked.
+--
+-- The lock is a fact about THIS node's landing discipline, not a replicable
+-- row, and it carries no hlc or node column for the same reason inbox_readers
+-- does not: a peer taking this node's target would be a peer landing here,
+-- which is not a merge, it is a second node with its own floor to coordinate.
+-- Expiry is in the until column rather than swept by a job: a holder that dies
+-- must not freeze the target, and the compare-and-set reads until itself, so an
+-- expired row loses to the next taker without anybody clearing it.
+CREATE TABLE IF NOT EXISTS merge_locks (
+    target   text PRIMARY KEY,
+    holder   text NOT NULL,
+    taken_at timestamptz NOT NULL DEFAULT now(),
+    until    timestamptz NOT NULL
+);
+
+-- The landed-tip chain. Every land through POST /api/merge/{id}/land states
+-- the sha its target BECAME, and this row is where the queue reads "where is
+-- master" from when nobody stated a tip. Before it existed the fallback was
+-- the commit the running binary was built from, which is a fact about the last
+-- DEPLOY, not the last land - a held deploy left the queue answering every
+-- branch against a tip twelve landings old, and refusing green work all night
+-- for reasons that were already false.
+--
+-- One row per target, overwritten on each land: the chain's newest link is the
+-- only one the queue asks for, and the history of lands is in the log, where
+-- every land wrote an event.
+CREATE TABLE IF NOT EXISTS merge_lands (
+    target   text PRIMARY KEY,
+    tip      text NOT NULL,
+    actor    text NOT NULL,
+    landed_at timestamptz NOT NULL DEFAULT now()
+);
+
 COMMIT;

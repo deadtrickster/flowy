@@ -164,6 +164,7 @@ func mergeGate(ctx context.Context, m *mcpServer, p *store.Principal, raw json.R
 		ID       string `json:"id"`
 		Run      string `json:"run"`
 		GatedTip string `json:"gated_tip"`
+		GatedRef string `json:"gated_ref"`
 	}
 	if err := decodeParams(raw, &a); err != nil {
 		return nil, err
@@ -174,7 +175,7 @@ func mergeGate(ctx context.Context, m *mcpServer, p *store.Principal, raw json.R
 	// The same store verb the HTTP door calls. Two implementations of "declare a
 	// gate" would drift, and what they would drift about is whether a run was
 	// ever declared - which is the one thing this is for.
-	art, entry, err := m.db.SetMergeGate(ctx, p, a.ID, a.Run, a.GatedTip)
+	art, entry, err := m.db.SetMergeGate(ctx, p, a.ID, a.Run, a.GatedTip, a.GatedRef)
 	if err != nil {
 		return nil, err
 	}
