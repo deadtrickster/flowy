@@ -237,8 +237,33 @@ func (d *DB) SetMergeGate(
 	// caller's problem to hear about at the land door, not a reason to fail
 	// recording a measurement that really happened.
 	if !declaring {
-		if _, err := d.RenewMergeLock(ctx, p, TargetOf(art), art.ID); err != nil {
+		// A VERDICT NEEDS THE LOCK IT WAS MEASURED UNDER.
+		//
+		// The declare branch takes the lock and the record branch deliberately
+		// does not, so that a verdict cannot STEAL a target from whoever is
+		// measuring. That reasoning is right about taking, and it silently
+		// assumed a verdict could only follow a declaration by the same holder.
+		// Nothing enforced it: on 2026-08-18 a declare 409'd because somebody
+		// else held master, and the verdict that followed was written anyway -
+		// a green sitting on a row that never held the target.
+		//
+		// The renew below is what hid it. It is an UPDATE matching holder and
+		// item, so for a non-holder it matches nothing, changes nothing and
+		// returns false, and the verdict landed regardless. Built not to take,
+		// and not-taking silently is exactly the gap.
+		//
+		// So: renew, and refuse when there was nothing to renew. Refusing here
+		// cannot steal anything - it is the opposite verb.
+		held, err := d.RenewMergeLock(ctx, p, TargetOf(art), art.ID)
+		if err != nil {
 			return nil, nil, err
+		}
+		if !held {
+			lock, lockErr := d.MergeLockOf(ctx, TargetOf(art))
+			if lockErr != nil {
+				return nil, nil, lockErr
+			}
+			return nil, nil, &ErrTargetHeld{Target: TargetOf(art), Held: lock, Now: time.Now().UTC()}
 		}
 	}
 	column, err := json.Marshal(fields)
