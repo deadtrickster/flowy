@@ -746,6 +746,13 @@ func memClaim(ctx context.Context, m *mcpServer, p *store.Principal, a memWriteA
 		{"target", a.Target != ""},
 		{"gated_tip", a.GatedTip != ""},
 		{"gate_run", a.GateRun != ""},
+		// AND THE RAISER, which was missing and is the reason this list exists.
+		// It is not in memWriteAuthorFields either - a raiser is settled when
+		// the item is raised and is nobody's to restate - so a claim carrying
+		// one fell through both guards and was dropped SILENTLY while the claim
+		// succeeded. The caller got a 200 and half of what they asked for, which
+		// is the one answer this surface must never give.
+		{"raiser", a.Raiser != ""},
 	} {
 		if field.given {
 			stated = append(stated, field.name)
