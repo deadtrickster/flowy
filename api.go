@@ -72,6 +72,16 @@ func decodeJSONLimit(r *http.Request, into any, limit int64) error {
 // handleCreateArtifact creates an artifact, or replaces one the principal owns.
 //
 // POST /api/artifacts
+// defaultWorkStatus is the rule above, as a function, so the test exercises the
+// code the door runs rather than a copy of it that cannot notice the door
+// changing underneath it.
+func defaultWorkStatus(status, kind string, update bool) string {
+	if status == "" && !update && isWorkKind(kind) {
+		return store.TodoStatus
+	}
+	return status
+}
+
 func (s *server) handleCreateArtifact(w http.ResponseWriter, r *http.Request) {
 	p := principalOf(r)
 
@@ -200,6 +210,27 @@ func (s *server) handleCreateArtifact(w http.ResponseWriter, r *http.Request) {
 		FilePath:   req.FilePath,
 		Fields:     req.Fields,
 	}
+	// A work item raised here with NO status starts at the beginning of the
+	// lifecycle, the same as one raised through MCP or through
+	// POST /api/chat/{room}/todo.
+	//
+	// mcp_tools.go carries the story of this exact bug being found and fixed -
+	// "THE DOOR NEVER SET ONE" - and it was fixed in that door alone. This one
+	// kept writing "", which is not a state any reader can compare: it is not
+	// todo, so a board filtering for outstanding work skips the row, and it is
+	// not done either. Measured on the live node before this change: 179
+	// kind=todo rows, ?status=todo returned 29, and six rows filed through this
+	// door in one afternoon were invisible to every board query and to the nag
+	// that reads them.
+	//
+	// So the fix is the same fix, in the door the console actually uses. Two
+	// ways in that default differently are two boards.
+	//
+	// Create only, and only when nothing was stated. An update that restates
+	// nothing keeps what the row has, including empty, because healing a stale
+	// status on an unrelated edit moves other people's work behind their backs.
+	art.Status = defaultWorkStatus(art.Status, art.Kind, update)
+
 	write := s.db.CreateArtifact
 	if update {
 		write = s.db.UpsertArtifact
