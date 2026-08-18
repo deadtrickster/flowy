@@ -194,6 +194,13 @@ export interface InboxReader {
  * it hears, "forked" hears and wakes nobody, "unknown" has not said. It is the
  * only field here that answers the question a roster is actually read for, and
  * the node reports "unknown" rather than assuming, so it is never absent.
+ *
+ * state is what the seat is DOING, which is not the same question: "listening"
+ * polled inside the window, "starting" has never polled and was declared a
+ * moment ago, and "lost" is holding a poll that never ended and is older than
+ * any poll can be - something armed a waiter there and it stopped. A lost row
+ * is deliberately still on this list: the panel's job is to say a seat has gone
+ * deaf, and dropping the row would have deleted the only record that it had.
  */
 export interface Presence {
   members: { actor: string; name: string; kind: string }[];
@@ -204,6 +211,7 @@ export interface Presence {
     user_name: string;
     attached: boolean;
     waiter_kind: string;
+    state: string;
     last_poll_at?: string | null;
     updated: string;
   }[];
