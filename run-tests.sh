@@ -15363,6 +15363,140 @@ check "a superseded report is marked where somebody reads it, and the console's 
 check "signed out, the reports page says so rather than looking empty" \
 	the_reports_page_says_it_is_signed_out
 
+# The findings console: three axes, and the two documents that are not the body.
+#
+# A finding carries OUR lifecycle (open/triaged/done), a filing state on
+# SOMEBODY ELSE'S tracker (unfiled/filed as #123/accepted), and evidence (source/
+# reproduced/verified against a commit). None of the three answers either of the
+# others - done-and-unfiled is written up and sent to nobody, which is the state
+# most of the corpus sits in - and every attempt to draw one in place of another
+# has produced a page that says something false. The console reads all three off
+# the row through web/src/lib/findings.ts, and these checks are what stops that
+# collapsing again.
+#
+# TWO FINDINGS, DELIBERATELY OPPOSITE. One is done for us, filed upstream with a
+# number, ships a repro tree and carries an upstream draft. The other is open,
+# unfiled, has no tree and no draft. Everything either page claims about the
+# first has to be denied about the second, or a page that stamped every row
+# alike would pass.
+#
+# The filing keys are written with SQL rather than through a verb, because the
+# verb that writes them (store.SetFindingUpstream) is landing on another branch.
+# What the console must do is render a row that carries them, and that row is a
+# row whether a tool or an operator's import put the keys there - the names are
+# the ones internal/store/findingupstream.go and the corpus importers were both
+# given, and if they ever disagree this check is what goes red.
+FINDING_ISSUE="4471"
+# In the upstream draft and nowhere else - not in the body, not in the
+# discovery, not in a title. A pane that showed the body over again would
+# otherwise pass every assertion about the draft.
+FINDING_DRAFT_WORD="quernstone"
+FINDING_REPRO_PATH="repro-01-tables.sh"
+readonly FINDING_ISSUE FINDING_DRAFT_WORD FINDING_REPRO_PATH
+
+seeds_two_findings_on_three_axes() {
+	recall
+	local script filed unfiled project
+	script="$(printf '#!/usr/bin/env bash\nexit 0\n' | base64 -w0)"
+
+	want_tool finding_write "$TOKEN_A" \
+		"$(jq -nc --arg c "$script" --arg w "$FINDING_DRAFT_WORD" --arg p "$FINDING_REPRO_PATH" \
+			'{title: "the sluice gate counter double-counts a reversed flow",
+			  body: "the counter adds on both edges, so a reversal reads as throughput",
+			  discovery: "found while reconciling the weir log against the day sheet",
+			  report: ("Reversed flow is counted as throughput. The " + $w +
+			           " test rig reproduces it in one pass."),
+			  scope: "project", severity: "high", kind: "correctness",
+			  repro: [{path: $p, content_base64: $c}],
+			  repro_entrypoint: $p, repro_interp: "bash", isolation: "plain"}')" || return 1
+	filed="$(tv .item.id)"
+	project="$(tv .item.project)"
+	want_eq "the repro tree is on the row" "$(tv '.item.fields.repro_files | length')" 1 || return 1
+	want_eq "and the upstream draft is a field, not the body" \
+		"$(tv '.item.fields.report | contains("'"$FINDING_DRAFT_WORD"'")')" true || return 1
+	want_eq "which the body does not carry" \
+		"$(tv '.item.body | contains("'"$FINDING_DRAFT_WORD"'")')" false || return 1
+
+	# Our lifecycle, moved through the door that leaves the trail event.
+	api POST "$TOKEN_A" "/api/artifact/$filed/status" '{"status": "done"}' || return 1
+	want_eq "our work on it is done" "$(printf '%s' "$API_BODY" | jq -r .artifact.status)" "done" || return 1
+
+	# Their tracker, which our status says nothing about. See the head of this
+	# block on why this is SQL.
+	psql_do "UPDATE artifacts SET fields = coalesce(fields, '{}'::jsonb) || jsonb_build_object(
+		 'upstream_tracker', 'serenedb',
+		 'upstream_id', '$FINDING_ISSUE',
+		 'upstream_state', 'filed',
+		 'upstream_url', 'https://tracker.invalid/issues/$FINDING_ISSUE',
+		 'evidence_state', 'reproduced')
+	   WHERE id = '$filed'" || return 1
+
+	# The opposite row: nothing written up for anybody else, nothing to run.
+	want_tool finding_write "$TOKEN_A" \
+		'{"title": "the weir board warps in the wet and the reading drifts",
+		  "body": "suspected from the shape of the drift; nobody has run anything",
+		  "scope": "project", "severity": "medium", "kind": "correctness"}' || return 1
+	unfiled="$(tv .item.id)"
+	want_eq "and it is open" "$(tv .item.status)" open || return 1
+
+	remember FINDING_FILED "$filed"
+	remember FINDING_UNFILED "$unfiled"
+	remember FINDING_PROJECT "$project"
+	printf '%s is done here and filed there as #%s; %s is open and unfiled\n' \
+		"$filed" "$FINDING_ISSUE" "$unfiled"
+}
+
+# The list read the way the console reads it: both axes have to survive the trip
+# out, or the page has nothing to draw them from. This asserts on the API before
+# the browser check asserts on the elements, so a failure says which half broke.
+the_list_carries_both_axes() {
+	recall
+	api GET "$TOKEN_A" '/api/artifacts?type=finding' || return 1
+	local row
+	row="$(printf '%s' "$API_BODY" | jq -c --arg id "$FINDING_FILED" '[.artifacts[] | select(.id == $id)][0]')"
+	want_eq "our lifecycle is on the row" "$(printf '%s' "$row" | jq -r .status)" "done" || return 1
+	want_eq "their filing state is on it too" \
+		"$(printf '%s' "$row" | jq -r .fields.upstream_state)" filed || return 1
+	want_eq "with the number a reader can act on" \
+		"$(printf '%s' "$row" | jq -r .fields.upstream_id)" "$FINDING_ISSUE" || return 1
+	want_eq "and the evidence, which is neither of them" \
+		"$(printf '%s' "$row" | jq -r .fields.evidence_state)" reproduced || return 1
+	want_eq "the upstream draft rides out with it" \
+		"$(printf '%s' "$row" | jq -r '.fields.report | contains("'"$FINDING_DRAFT_WORD"'")')" true || return 1
+	printf 'the list read carries status, upstream_state #%s and evidence_state separately\n' \
+		"$FINDING_ISSUE"
+}
+
+# And the same claims one layer out, in a browser, on the ELEMENTS - plus the
+# filter, which is the thing the list exists for: "everything written up and not
+# yet filed" is the question somebody asks before filing anything.
+browser_shows_both_axes_and_the_two_documents() {
+	recall
+	cd "$ROOT/web" || return 1
+	node scripts/findings-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" \
+		"$FINDING_PROJECT" "$FINDING_FILED" "$FINDING_UNFILED" "$FINDING_ISSUE" \
+		"$FINDING_DRAFT_WORD" "$FINDING_REPRO_PATH"
+}
+
+# The repro runner is a second binary on a second host, so nothing in this
+# build makes the console and its doors agree. This drives the real client
+# against the answers cmd/handoff-runner/http.go actually writes - no node and
+# no runner needed, which is why it does not sit behind the live phase.
+the_console_speaks_the_runners_answers() {
+	cd "$ROOT/web" || return 1
+	node scripts/repro-contract-check.mjs
+}
+
+say "findings: our lifecycle, their filing, and the evidence - three axes"
+check "two findings, one done and filed as #4471, one open and unfiled" \
+	seeds_two_findings_on_three_axes
+check "the list read carries all three axes, and the upstream draft" \
+	the_list_carries_both_axes
+check "the console draws both axes, filters on the mark, and keeps the draft and the tree apart" \
+	browser_shows_both_axes_and_the_two_documents
+check "the console reads the repro runner's own answers - /runs, /run and /version" \
+	the_console_speaks_the_runners_answers
+
 say "metrics: what was measured, and for whom"
 check "every group is in the answer, and says whether it was measured" \
 	metrics_answers_every_group

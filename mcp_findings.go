@@ -98,6 +98,13 @@ var findingTools = []tool{
 			"discovery": str("The investigation write-up: how this was found, what was " +
 				"tried, what the evidence shows. Searched with the title and the body. " +
 				"Same 100KB ceiling as body, same fix over it."),
+			"report": str("The draft that goes UPSTREAM: this defect written for a " +
+				"maintainer who has never seen our setup, which is a different document " +
+				"from body (for whoever here has to fix it) and from discovery (how it " +
+				"was found, and never packaged). Kept on the row so it can be reviewed " +
+				"before it is sent and read after. It says nothing about whether it HAS " +
+				"been sent - that is finding_upstream's axis. Same 100KB ceiling as " +
+				"body. Leaving it out on an update keeps the draft already there."),
 			"severity": str("Free text, e.g. low, medium, high, critical. Leaving it out " +
 				"on an update keeps what the finding already says."),
 			"kind": str("What kind of finding this is, e.g. crash, race, correctness, " +
@@ -197,6 +204,7 @@ type findingWriteArgs struct {
 	Title           string         `json:"title"`
 	Body            string         `json:"body"`
 	Discovery       string         `json:"discovery"`
+	Report          string         `json:"report"`
 	Severity        string         `json:"severity"`
 	Kind            string         `json:"kind"`
 	Scope           string         `json:"scope"`
@@ -266,6 +274,12 @@ func findingWrite(ctx context.Context, m *mcpServer, p *store.Principal, raw jso
 			"the same ceiling body carries, and the same fix: attachment_write the "+
 			"full write-up and reference the id here", len(a.Discovery), maxFindingBody)
 	}
+	if len(a.Report) > store.MaxReportDraft {
+		return nil, fmt.Errorf("finding report draft is %d bytes, over the %d ceiling - "+
+			"the same ceiling body and discovery carry, and the same fix: "+
+			"attachment_write the full draft and reference the id here",
+			len(a.Report), store.MaxReportDraft)
+	}
 
 	art := &store.Artifact{
 		ID:        a.ID,
@@ -328,6 +342,20 @@ func findingWrite(ctx context.Context, m *mcpServer, p *store.Principal, raw jso
 		// for todos, see the head of mcp_tools.go. A finding starts the issue
 		// workflow the same way a bug does.
 		art.Status = statusOpen
+	}
+
+	// The upstream draft is stated fresh or left alone, which is why it is
+	// folded in HERE - after the update branch has read the old row's fields
+	// back - rather than beside title and body above. A call that leaves report
+	// out keeps the draft that is there, the same way it keeps the repro
+	// manifest and every other key riding in fields, and a call that states one
+	// replaces it whole: a report is a document, and half of a new draft over
+	// half of an old one is not one.
+	if strings.TrimSpace(a.Report) != "" {
+		if fields == nil {
+			fields = map[string]any{}
+		}
+		fields[store.ReportDraftField] = a.Report
 	}
 
 	if len(fields) > 0 {
@@ -410,6 +438,7 @@ func findingWriteReproOnly(
 		{"title", strings.TrimSpace(a.Title) != ""},
 		{"body", a.Body != ""},
 		{"discovery", a.Discovery != ""},
+		{"report", a.Report != ""},
 		{"severity", a.Severity != ""},
 		{"kind", a.Kind != ""},
 		{"tags", a.Tags != nil},
