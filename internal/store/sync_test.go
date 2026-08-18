@@ -1808,3 +1808,50 @@ func TestADateHasToBelongToItsClockReading(t *testing.T) {
 		}
 	}
 }
+
+// A DATE IS SIGNED, WHICH BINDS IT TO ITS AUTHOR AND DOES NOT BOUND IT.
+//
+// A pinned peer signs its own forgeries, so signing stops a relay rewriting
+// somebody else's date in flight and stops nothing about a date the signer
+// invented. Measured on a real node: rows dated 2024 and 2027 were both
+// accepted and shown as when the subject said it. The hlc has been bounded
+// since it existed; `created` is what a person actually reads off the screen,
+// and it was not.
+//
+// The bound is deliberately one-sided. Replicating a log means taking rows
+// older than this node - that is the ordinary case, not the attack - so only
+// the future is refused, and only past the skew a wrong clock could explain.
+func TestCreatedFurtherAheadThanAClockCanBeWrongIsRefused(t *testing.T) {
+	now := time.Now().UTC()
+	nowHLC := hlc.Pack(now.UnixMilli(), 0)
+
+	ahead := &SyncSet{Artifacts: []*Artifact{{
+		ID: ulid.NewString(), HLC: nowHLC, Created: now.Add(hlc.MaxSkew + time.Hour),
+	}}}
+	if err := checkReadings(ahead); !errors.Is(err, ErrBadReading) {
+		t.Fatalf("an artifact dated past the skew was believed: %v", err)
+	}
+
+	saidLater := &SyncSet{Events: []*Event{{
+		ID: ulid.NewString(), SeqHLC: nowHLC, Created: now.AddDate(1, 0, 0),
+	}}}
+	if err := checkReadings(saidLater); !errors.Is(err, ErrBadReading) {
+		t.Fatalf("an event dated a year out was believed: %v", err)
+	}
+
+	// AND THE ORDINARY CASES STILL PASS, which is the half that decides
+	// whether this is a bound or an outage: a row written last year, a row
+	// written by a clock an hour ahead of ours, and a row carrying no date at
+	// all are all things a working fabric hands over every day.
+	fine := &SyncSet{
+		Artifacts: []*Artifact{
+			{ID: ulid.NewString(), HLC: nowHLC, Created: now.AddDate(-1, 0, 0)},
+			{ID: ulid.NewString(), HLC: nowHLC, Created: now.Add(time.Hour)},
+			{ID: ulid.NewString(), HLC: nowHLC},
+		},
+		Events: []*Event{{ID: ulid.NewString(), SeqHLC: nowHLC, Created: now.AddDate(-1, 0, 0)}},
+	}
+	if err := checkReadings(fine); err != nil {
+		t.Fatalf("a believable delta was refused: %v", err)
+	}
+}

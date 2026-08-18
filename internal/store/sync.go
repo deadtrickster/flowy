@@ -1371,14 +1371,37 @@ func checkReadings(in *SyncSet) error {
 	bad := func(kind, id string, packed int64) error {
 		return fmt.Errorf("%w: %s %s carries %d", ErrBadReading, kind, id, packed)
 	}
+	// SIGNING BINDS A DATE TO ITS AUTHOR WITHOUT BOUNDING IT, and a peer
+	// authoring a forgery signs its own. Measured: dates of 2024 and 2027 were
+	// both accepted and displayed as when the subject said it, on a row the
+	// receiver's own user never wrote. The hlc has had this treatment since it
+	// existed - a reading no working clock could have produced is refused, and
+	// the whole delta with it - and `created` is the value a person actually
+	// reads off the screen, so it is the one a forged date is read from.
+	//
+	// The bound is one-sided on purpose. A row genuinely older than this node
+	// is ordinary - that is what replicating a log means - so only the future
+	// is refused, at the same MaxSkew the hlc uses, because a date further
+	// ahead than a wrong clock could explain is not a clock.
+	future := time.Now().UTC().Add(hlc.MaxSkew)
+	late := func(kind, id string, at time.Time) error {
+		return fmt.Errorf("%w: %s %s says it was created at %s, which is further ahead than a clock can be wrong",
+			ErrBadReading, kind, id, at.UTC().Format(time.RFC3339))
+	}
 	for _, a := range in.Artifacts {
 		if !hlc.BelievableAt(a.HLC, nowMS) {
 			return bad("artifact", a.ID, a.HLC)
+		}
+		if a.Created.After(future) {
+			return late("artifact", a.ID, a.Created)
 		}
 	}
 	for _, e := range in.Events {
 		if !hlc.BelievableAt(e.SeqHLC, nowMS) {
 			return bad("event", e.ID, e.SeqHLC)
+		}
+		if e.Created.After(future) {
+			return late("event", e.ID, e.Created)
 		}
 	}
 	for _, t := range in.Tasks {
