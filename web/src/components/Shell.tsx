@@ -13,6 +13,7 @@ import {
   ListTree,
   Lock,
   Shapes,
+  UserRound,
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { NavLink } from "react-router-dom";
@@ -132,6 +133,10 @@ export function Shell({ children }: { children: ReactNode }) {
           <NavLink to="/traces" className={navClass}>
             <GitBranch className="h-4 w-4" />
             traces
+          </NavLink>
+          <NavLink to="/profile" className={navClass}>
+            <UserRound className="h-4 w-4" />
+            profile
           </NavLink>
         </nav>
 

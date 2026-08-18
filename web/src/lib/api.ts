@@ -251,6 +251,27 @@ export interface Whoami {
   project_origin?: string;
 }
 
+/** MeUser is the registry's row for the person or seat behind this request. */
+export interface MeUser {
+  id: string;
+  handle?: string;
+  display?: string;
+  auto_delegate?: boolean;
+  hlc?: number;
+  node?: string;
+}
+
+/**
+ * Me is GET /api/me: the row, whether a password exists, and whether this
+ * request arrived on a bearer token rather than a cookie. The last two are what
+ * decide whether changing a password has to prove the old one.
+ */
+export interface Me {
+  user: MeUser;
+  has_password: boolean;
+  by_bearer: boolean;
+}
+
 /** Project is one row of the registry every project column points at. */
 export interface Project {
   id: string;
@@ -1187,6 +1208,39 @@ export const api = {
   rooms: () => request<{ rooms: Room[] }>("/api/rooms"),
 
   whoami: () => request<Whoami>("/api/whoami"),
+
+  /**
+   * WHO THIS BROWSER IS, WITH A NAME ON IT.
+   *
+   * whoami answers ids - user, agent, project - which is the honest answer for
+   * a permission question and useless for a panel that has to show somebody
+   * their own handle. An empty box cannot tell "no handle is set" from "not
+   * loaded yet", so the panel renders a value or says it has none, and this is
+   * where the value comes from.
+   *
+   * has_password and by_bearer are not decoration either. A browser holding a
+   * bearer token may set a first password without proving an old one; a browser
+   * on a cookie must send `current`. The panel asks for that field or does not
+   * ask, and it decides from these two rather than from a guess about how the
+   * reader got here.
+   */
+  me: () => request<Me>("/api/me"),
+
+  /**
+   * And changing it. `current` - not current_password - is the old password,
+   * required when a cookie session changes one and ignored when there is none
+   * to prove.
+   *
+   * sessions_ended comes back because a password change signs other browsers
+   * out, and a panel that did not say so would log somebody out of the page
+   * they were standing on with no warning.
+   */
+  updateMe: (body: { handle?: string; password?: string; current?: string }) =>
+    request<{ user: MeUser; sessions_ended: number }>("/api/me", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
 
   /**
    * What this node is, and which console it serves. `bundle` is the hashed
