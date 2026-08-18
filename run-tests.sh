@@ -16851,12 +16851,47 @@ check "signed out, the queue says so instead of reading as no work" \
 # nobody asked about.
 
 repo_shell_scripts() {
-	# The repo's own scripts. vendor/ is other people's code and its style is
-	# not ours to enforce; run-tests.sh itself is included, because it is the
-	# most load-bearing script here.
-	printf '%s\n' ./run-tests.sh ./scripts/deploy.sh ./scripts/migrate.sh \
-		./scripts/waiter-spin-test.sh ./scripts/build-sut.sh \
-		./deploy/bootstrap.sh ./deploy/handoff-runner.sh
+	# ENUMERATED, NOT LISTED. This was seven paths written by hand, and the tree
+	# had eleven: scripts/dev-db.sh, scripts/install-land-guard.sh,
+	# web/scripts/vendor-drawio.sh and - worst - scripts/land-guard.sh, which is
+	# installed as the reference-transaction hook that guards every landing in
+	# this fleet. The most load-bearing script here after this one was never
+	# parsed, never shellchecked and never formatted by the suite that claims to
+	# check "the repo's shell scripts".
+	#
+	# Nothing announced that. A list of paths is a claim about the tree that
+	# only a human comparing two things can falsify, and adding a script is
+	# exactly when nobody is comparing.
+	#
+	# git ls-files rather than find: it is the same question - what is IN this
+	# repo - asked of the thing that knows, so an untracked scratch script in
+	# somebody's working tree is not linted on their behalf and a tracked one
+	# cannot be missed. vendor/ is other people's code and its style is not ours
+	# to enforce. run-tests.sh is included, because it is the most load-bearing
+	# script here.
+	git ls-files '*.sh' | grep -v '^vendor/' | sed 's|^|./|'
+}
+
+# AND THE ENUMERATION FOUND SOMETHING. An empty or truncated list makes every
+# check built on it pass while measuring nothing - the shape this whole file is
+# careful about elsewhere.
+shell_scripts_enumerated() {
+	local n
+	n=$(repo_shell_scripts | wc -l)
+	if [ "$n" -lt 8 ]; then
+		printf 'only %s shell scripts found, which is fewer than this repo has -\n' "$n" >&2
+		printf 'the lint below would pass by looking at almost nothing\n' >&2
+		return 1
+	fi
+	# The two that must never fall out, named because they are the ones whose
+	# silence costs most: this suite, and the hook that guards every landing.
+	local script
+	for script in ./run-tests.sh ./scripts/land-guard.sh; do
+		if ! repo_shell_scripts | grep -qxF "$script"; then
+			printf '%s is not in the list the shell checks walk\n' "$script" >&2
+			return 1
+		fi
+	done
 }
 
 shell_scripts_parse() {
@@ -17291,6 +17326,7 @@ handoff_runner_refuses_without_config() {
 	}
 }
 
+check "the repo's shell scripts are all found" shell_scripts_enumerated
 check "the repo's shell scripts parse" shell_scripts_parse
 check "the repo's shell scripts are shellcheck clean" shell_scripts_lint
 check "the repo's shell scripts are shfmt clean" shell_scripts_formatted
