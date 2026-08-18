@@ -51,6 +51,22 @@ const (
 	// green points at the log that says so rather than at somebody's memory
 	// of it. A verdict with no run behind it is a self-report.
 	GateRunField = "gate_run"
+	// GatedBaseField is WHAT THE TARGET WAS WHEN THE RUN STARTED, which is a
+	// different fact from GatedTipField and was being asked of it.
+	//
+	// One name was carrying two questions. The land door asks "did you test
+	// what you are landing", which is gated_tip against the sha being landed.
+	// The queue asks "has the ground moved since you measured", which is this
+	// against the target's tip right now. For a fast-forward those can never
+	// both hold: the branch tip B contains master M, so B != M by
+	// construction, and demanding one value satisfy both is demanding B == M.
+	//
+	// The visible symptom was a queue where every pending item read
+	// inadmissible and every landed one read admissible, because gated_tip
+	// only equals the target's tip AFTER the fast-forward has happened. The
+	// column answered "has this landed?" while claiming to answer "may this
+	// land?".
+	GatedBaseField = "gated_base"
 )
 
 // DefaultMergeTarget is where work lands when an item does not say.
@@ -111,6 +127,12 @@ func TargetOf(a *Artifact) string {
 }
 
 func GatedTipOf(a *Artifact) string { return normalizeTip(artifactString(a, GatedTipField)) }
+
+// GatedBaseOf is the target tip the gate ran from, or "" for a row gated
+// before the field existed - which is the whole compatibility story: an item
+// with no base is judged the old way rather than refused for lacking a field
+// nobody could have written.
+func GatedBaseOf(a *Artifact) string { return normalizeTip(artifactString(a, GatedBaseField)) }
 
 func GateRunOf(a *Artifact) string { return strings.TrimSpace(artifactString(a, GateRunField)) }
 
@@ -201,6 +223,26 @@ func MergeAdmissible(a *Artifact, targetTip string) error {
 			Code:   RefusalMergeUngated,
 			Reason: "no gate has measured it - there is no verdict to be stale",
 		}
+	}
+	// WHICH FACT IS COMPARED depends on which one the row carries.
+	//
+	// A row with a base was gated from a known target tip, and the question is
+	// whether the target has moved since - base against tip. A row without one
+	// predates the field, and the only comparison available is the old
+	// gated_tip against tip. Judging an old row by the new rule would refuse
+	// every row written before today for missing a field nobody could have
+	// written, so the fallback is not politeness, it is the difference between
+	// a migration and an outage.
+	if base := GatedBaseOf(a); base != "" {
+		if !sameCommit(base, tip) {
+			return &ErrMergeNotAdmissible{
+				Item: a.ID, Branch: BranchOf(a), Target: TargetOf(a),
+				GatedTip: gated, TargetTip: tip,
+				Code:   RefusalMergeStaleGate,
+				Reason: "the target moved after its gate ran - it measured from " + base,
+			}
+		}
+		return nil
 	}
 	if !sameCommit(gated, tip) {
 		return &ErrMergeNotAdmissible{

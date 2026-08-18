@@ -173,9 +173,26 @@ func (d *DB) SetMergeGate(
 	// of a run the declarer already holds the target for, and re-taking it here
 	// would let a verdict from a principal who never declared steal the target
 	// from whoever is actually measuring.
-	if ref = strings.TrimSpace(ref); strings.TrimSpace(tip) == "" {
+	declaring := strings.TrimSpace(tip) == ""
+	if ref = strings.TrimSpace(ref); declaring {
 		if _, err := d.TakeMergeLock(ctx, p, TargetOf(art), art.ID); err != nil {
 			return nil, nil, err
+		}
+	}
+
+	// WHAT THE TARGET WAS WHEN THE RUN STARTED, stamped at declare and never
+	// at verdict. Stamping it later would record where the target had got to
+	// by the time somebody reported, which is exactly the drift the field
+	// exists to detect - the value has to be read at the moment the
+	// measurement begins or it measures nothing.
+	//
+	// A target nothing has landed on yet has no base to record. That is not an
+	// error: the row simply carries no base and MergeAdmissible judges it the
+	// old way, which is the same fallback every pre-existing row gets.
+	var base string
+	if declaring {
+		if landed, err := d.LandedTipOf(ctx, TargetOf(art)); err == nil && landed != nil {
+			base = normalizeTip(landed.Tip)
 		}
 	}
 
@@ -186,6 +203,17 @@ func (d *DB) SetMergeGate(
 	status := art.Status
 	if applyGate(fields, run, tip, time.Now().UTC()) {
 		status = ActiveStatus
+	}
+	if declaring {
+		// A re-declaration after a rebase is a NEW measurement from wherever
+		// the target is now, so the base is rewritten rather than kept. Keeping
+		// the first one would leave the row claiming it measured from a tip its
+		// current run never saw.
+		if base != "" {
+			fields[GatedBaseField] = base
+		} else {
+			delete(fields, GatedBaseField)
+		}
 	}
 	// The ref rides both moments, because it describes the measurement rather
 	// than either half of it: a verdict recorded without it would leave the
