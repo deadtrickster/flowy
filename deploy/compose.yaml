@@ -1,0 +1,164 @@
+# The Flowy node and its Postgres, as the store side and nothing else.
+#
+#   cd deploy && ./bootstrap.sh          # clone to reachable node, one command
+#
+# The shape is the one the Python handoff service settled on and for the same
+# reasons: the database is on a network with no route off the box, the node
+# drops every capability it does not need, its filesystem is read only, and no
+# port is published to the host. The only way in is a sidecar on the `edge`
+# network, or the loopback override in compose.loopback.yaml when the operator
+# is on the machine anyway.
+#
+# What is NOT here is cmd/handoff-runner. It needs the Docker socket, and a
+# container holding the Docker socket is root on the host with extra steps -
+# putting it beside a node that dropped ALL capabilities would hand back
+# everything the rest of this file takes away. It is deployed on the trusted
+# host: see handoff-runner.compose.yaml.
+#
+# Also not here: the per-finding compose files a repro run generates. Those are
+# the runner's output at run time, not deployment.
+
+name: flowy
+
+services:
+  db:
+    # Pinned to a minor, not to `latest`: a Postgres major upgrade rewrites the
+    # data directory, and a node that pulled one by surprise comes up refusing
+    # to read its own store.
+    image: postgres:17-alpine
+    init: true
+    # Run as the image's own postgres user rather than as root. The entrypoint
+    # normally starts as root and drops privilege with su-exec, which needs
+    # CAP_SETUID and CAP_SETGID - the two capabilities that would have to be
+    # added back to a cap_drop ALL container. Starting as the right user in the
+    # first place means there is no privilege to drop and nothing to grant.
+    user: "70:70"
+    environment:
+      POSTGRES_USER: ${FLOWY_DB_USER:-flowy}
+      POSTGRES_PASSWORD: ${FLOWY_DB_PASSWORD:?set FLOWY_DB_PASSWORD in deploy/.env}
+      POSTGRES_DB: ${FLOWY_DB_NAME:-flowy}
+      # initdb only reads these on a fresh data directory, which is the only
+      # time they matter: they make the cluster C/UTF8, the way the gate's
+      # throwaway cluster is built.
+      POSTGRES_INITDB_ARGS: "-E UTF8 --locale=C"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+      # The schema is applied by initdb, on the first start of an empty data
+      # directory, because a node cannot create its own tables: BackfillProjects
+      # refuses a database with no projects table and tells the operator to
+      # apply schema.sql. Doing it here means the operator never has to.
+      - ../schema.sql:/docker-entrypoint-initdb.d/10-schema.sql:ro
+    networks: [inner]
+    # A read-only root filesystem, with writable space only where Postgres
+    # genuinely writes: its data directory (the volume), the directory it puts
+    # the unix socket in, and /tmp for sort spills.
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/run/postgresql
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      # Dependents wait on this rather than on the container being up, because
+      # Postgres accepts a connection some seconds before it will answer a
+      # query, and a node that dialled in that window used to die at startup.
+      test: ["CMD-SHELL", "pg_isready -U ${FLOWY_DB_USER:-flowy} -d ${FLOWY_DB_NAME:-flowy} -h 127.0.0.1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+
+  node:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      # Named explicitly. The Dockerfile's LAST stage is the runner, which is a
+      # different image for a different host, and a build with no target would
+      # take it.
+      target: node
+      args:
+        BUILD_STAMP: ${FLOWY_BUILD_STAMP:-}
+    image: flowy:${FLOWY_TAG:-local}
+    init: true
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://${FLOWY_DB_USER:-flowy}:${FLOWY_DB_PASSWORD}@db:5432/${FLOWY_DB_NAME:-flowy}?sslmode=disable
+      # The node name is stamped onto every row this node writes and is what a
+      # peer's merge decides against. It must be declared rather than defaulted:
+      # the default is the hostname, and a container's hostname is its id, so a
+      # recreated container would start writing rows under a name nothing in the
+      # store had ever seen.
+      FLOWY_NODE: ${FLOWY_NODE:?set FLOWY_NODE in deploy/.env}
+      FLOWY_ADDR: 0.0.0.0:8787
+      # The operator is the one principal ?scope=all obeys, and it is local
+      # configuration on purpose. bootstrap.sh fills this in with the user id it
+      # minted; empty means this node has no operator, which is a safe default
+      # rather than a broken one.
+      FLOWY_OPERATOR: ${FLOWY_OPERATOR:-}
+      FLOWY_PEERS: ${FLOWY_PEERS:-}
+      FLOWY_FORGE: ${FLOWY_FORGE:-}
+    networks: [inner, edge]
+    # No host ports. The node is reachable from the `edge` network - a tunnel or
+    # a proxy sidecar - and from nowhere else. compose.loopback.yaml adds a
+    # 127.0.0.1 publish for an operator working on the box.
+    ports: []
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+
+  # A seat, minted once, by hand. It is a profile rather than a service so that
+  # `docker compose up` never runs it: minting is an operator action with a
+  # secret for output, and a thing that mints on every start would either fail
+  # on the handle already existing or quietly issue tokens nobody asked for.
+  #
+  #   docker compose --profile bootstrap run --rm mint --handle NAME --kind claude --project P
+  #
+  # The token goes to stdout and the description of the seat to stderr, so a
+  # redirect files the secret and the operator still reads what happened.
+  mint:
+    profiles: [bootstrap]
+    image: flowy:${FLOWY_TAG:-local}
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://${FLOWY_DB_USER:-flowy}:${FLOWY_DB_PASSWORD}@db:5432/${FLOWY_DB_NAME:-flowy}?sslmode=disable
+      FLOWY_NODE: ${FLOWY_NODE:?set FLOWY_NODE in deploy/.env}
+    networks: [inner]
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    entrypoint: ["flowy", "mint"]
+
+  # The ingress, commented out because which one is the host's choice and
+  # because a tunnel with no credential is a service that crash-loops. Whatever
+  # goes here is the ONLY thing that reaches the node from outside, and it
+  # belongs on `edge` alone - it has no business on the network the database is
+  # on.
+  #
+  # tunnel:
+  #   image: cloudflare/cloudflared:latest
+  #   command: tunnel run
+  #   environment:
+  #     TUNNEL_TOKEN: ${TUNNEL_TOKEN:?set TUNNEL_TOKEN}
+  #   networks: [edge]
+  #   depends_on: [node]
+  #   restart: unless-stopped
+
+networks:
+  # db <-> node only. `internal` means Docker adds no default route, so nothing
+  # on this network can reach the internet and nothing off the host can reach
+  # the database, whatever else is misconfigured later.
+  inner:
+    internal: true
+  # node <-> ingress, and the node's own way out to peers and to a forge.
+  edge: {}
+
+volumes:
+  db-data: {}

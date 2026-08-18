@@ -1,0 +1,90 @@
+# The repro runner, on the trusted host.
+#
+#   deploy/handoff-runner.sh up -d        # preflight, then bring it up
+#
+# It is a SEPARATE deployment from compose.yaml, and the separation is the whole
+# design rather than tidiness. This container is handed /var/run/docker.sock,
+# which is root on the host with extra steps: it can start a privileged
+# container, mount any path and read any image. Nothing about that can be capped
+# away, so the answer is to keep it away from the node - the node drops every
+# capability, mounts nothing and publishes no port, and stays that way because
+# the thing that needs Docker is over here.
+#
+# It reaches the SAME Postgres as the node, over the node deployment's internal
+# network, because internal/repro writes verdicts through internal/store rather
+# than over HTTP: same module, same database, no token and no FLOWY_URL. That is
+# why the network below is external and named after the other compose project -
+# joining it is how this container gets a route to `db` without a host port
+# being opened on the database.
+#
+# WHAT IS ASSUMED HERE, said plainly because piece 9 (cmd/handoff-runner) may not
+# have landed yet when you read this. DATABASE_URL and the SUT_* configuration
+# are certain: the first was settled in the room, and the second is what the
+# landed scripts/build-sut.sh already reads. The runner's OWN flags - listen
+# address, worker count, log and cache directories - are not: they live in one
+# line of deploy/.env as HANDOFF_RUNNER_ARGS, so correcting them is one edit
+# rather than a rewrite of this file. handoff-runner.sh checks whether the image
+# has the binary at all and says so.
+#
+# Configuration comes from deploy/.env, the same file the node deployment uses,
+# so the database credential is written once and cannot drift between the two
+# halves of one system.
+
+name: flowy-runner
+
+services:
+  runner:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      target: runner
+    image: flowy-handoff-runner:${FLOWY_TAG:-local}
+    init: true
+    # The runner's own flags. One line, deliberately: see the note above.
+    command: ${HANDOFF_RUNNER_ARGS:-}
+    volumes:
+      # The host's Docker daemon. Read-write because the runner starts and stops
+      # containers; :ro on a socket buys nothing, since the protection is a file
+      # descriptor either way.
+      - /var/run/docker.sock:/var/run/docker.sock
+      # The project's source checkout. READ-WRITE, which is not an oversight:
+      # build-sut.sh checks a commit out with `git worktree add` against this
+      # repository, and a worktree is a write into its .git directory.
+      - ${SUT_SRC_REPO:?set SUT_SRC_REPO in deploy/.env}:${SUT_SRC_REPO:?}
+      # The build scratch area: worktrees, and the sha-keyed binary cache that
+      # makes the second run of a commit free. Bound at the same path inside as
+      # out, because the paths in a generated compose package have to resolve in
+      # both places.
+      - ${SUT_SCRATCH:-/mnt/data/handoff-build}:${SUT_SCRATCH:-/mnt/data/handoff-build}
+      # Run logs, so a restart does not take the history of what was run with it.
+      - runner-logs:/var/lib/handoff-runner
+    environment:
+      # The same database the node writes to, reached over its internal network.
+      DATABASE_URL: postgres://${FLOWY_DB_USER:-flowy}:${FLOWY_DB_PASSWORD:?set FLOWY_DB_PASSWORD in deploy/.env}@db:5432/${FLOWY_DB_NAME:-flowy}?sslmode=disable
+      FLOWY_NODE: ${FLOWY_NODE:?set FLOWY_NODE in deploy/.env}
+      # Where build-sut.sh looks up a project's build recipe. Baked into the
+      # image at /opt/flowy/scripts/build-sut.d; override to a bind mount to
+      # add a project without rebuilding.
+      SUT_CONFIG_DIR: ${SUT_CONFIG_DIR:-/opt/flowy/scripts/build-sut.d}
+      SUT_SCRATCH: ${SUT_SCRATCH:-/mnt/data/handoff-build}
+      # build-sut.sh takes the environment over its config file, by design, so
+      # passing the source path here means one deployment can point at this
+      # host's checkout without editing a file that describes the project.
+      SUT_SRC_REPO: ${SUT_SRC_REPO}
+    networks: [store]
+    # No host ports. A run is asked for through the node, and an operator who
+    # wants to reach the runner directly does it from this host with
+    # `docker compose exec` or adds a 127.0.0.1 publish here knowingly.
+    ports: []
+    restart: unless-stopped
+
+networks:
+  # The node deployment's internal network, joined rather than created: `flowy`
+  # is the project name compose.yaml declares, so `inner` is `flowy_inner`. The
+  # node deployment has to be up first, which handoff-runner.sh checks.
+  store:
+    external: true
+    name: flowy_inner
+
+volumes:
+  runner-logs: {}

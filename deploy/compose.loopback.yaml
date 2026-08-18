@@ -1,0 +1,14 @@
+# An override that publishes the node on the host's loopback, for the operator
+# who is already on the machine.
+#
+#   docker compose -f compose.yaml -f compose.loopback.yaml up -d
+#
+# The base file publishes nothing on purpose, and this does not undo that: the
+# bind address is 127.0.0.1, so the port is reachable from processes on this
+# host and from nothing on the network. A node meant to be reached from
+# elsewhere gets a tunnel or a proxy on the `edge` network instead; changing
+# this to 0.0.0.0 would put an authenticated but unencrypted API on the LAN.
+services:
+  node:
+    ports:
+      - "127.0.0.1:${FLOWY_PORT:-8787}:8787"

@@ -15455,7 +15455,8 @@ repo_shell_scripts() {
 	# not ours to enforce; run-tests.sh itself is included, because it is the
 	# most load-bearing script here.
 	printf '%s\n' ./run-tests.sh ./scripts/deploy.sh ./scripts/migrate.sh \
-		./scripts/waiter-spin-test.sh ./scripts/build-sut.sh
+		./scripts/waiter-spin-test.sh ./scripts/build-sut.sh \
+		./deploy/bootstrap.sh ./deploy/handoff-runner.sh
 }
 
 shell_scripts_parse() {
@@ -15477,8 +15478,8 @@ shell_scripts_lint() {
 	# style notes too, and this suite is not the place to hold anybody's
 	# hand about single quotes in a jq program - what it must refuse is the
 	# class that actually breaks a script at 3am: unquoted expansions, an
-	# unchecked cd, a masked pipeline status. All four scripts are clean at
-	# this level today, so a new warning means somebody added one.
+	# unchecked cd, a masked pipeline status. Every script in the list is clean
+	# at this level today, so a new warning means somebody added one.
 	local script
 	while read -r script; do
 		shellcheck --severity=warning "$script" || return 1
@@ -15621,6 +15622,43 @@ build_sut_config_is_complete() {
 	done
 }
 
+bootstrap_refuses_misuse() {
+	# THE SAME REASONING AS deploy.sh, for the script that stands a node up from
+	# nothing. It parses its arguments before it touches Docker, so this refusal
+	# is checkable in an image with no daemon in it - which is the only part of
+	# either deployment script a gate can exercise.
+	local out status
+	out=$(./deploy/bootstrap.sh --wat 2>&1)
+	status=$?
+	[ "$status" -eq 2 ] || {
+		printf 'an unknown argument exited %d, want 2:\n%s\n' "$status" "$out"
+		return 1
+	}
+	printf '%s\n' "$out" | grep -q 'usage' || {
+		printf 'the refusal does not say how to call it:\n%s\n' "$out"
+		return 1
+	}
+}
+
+handoff_runner_refuses_without_config() {
+	# deploy/.env holds the database password and is gitignored, so it is never
+	# present in a checkout - which makes "no configuration" the state this
+	# script meets on any fresh clone, and refusing clearly the behaviour worth
+	# pinning. It must not fall through to docker compose with an empty
+	# environment, where the failure would name an interpolation variable.
+	local out status
+	out=$(./deploy/handoff-runner.sh up -d 2>&1)
+	status=$?
+	[ "$status" -eq 2 ] || {
+		printf 'a missing deploy/.env exited %d, want 2:\n%s\n' "$status" "$out"
+		return 1
+	}
+	printf '%s\n' "$out" | grep -q 'bootstrap.sh' || {
+		printf 'the refusal does not say how to produce the file:\n%s\n' "$out"
+		return 1
+	}
+}
+
 check "the repo's shell scripts parse" shell_scripts_parse
 check "the repo's shell scripts are shellcheck clean" shell_scripts_lint
 check "the repo's shell scripts are shfmt clean" shell_scripts_formatted
@@ -15634,6 +15672,10 @@ check "build-sut.sh refuses a call it cannot build from, and says how to call it
 	build_sut_refuses_misuse
 check "the build-sut config it ships with sets everything a build needs" \
 	build_sut_config_is_complete
+check "bootstrap.sh refuses an argument it does not know, and says how to call it" \
+	bootstrap_refuses_misuse
+check "handoff-runner.sh refuses to run with no deploy/.env, and says where it comes from" \
+	handoff_runner_refuses_without_config
 
 # ------------------------------------------------------------------- verdict
 

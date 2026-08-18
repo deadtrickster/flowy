@@ -12,3 +12,9 @@
 
 # the harness writes these into the project root while it runs the gate
 .firecode-*
+
+# what a deployment produces on the machine it is deployed to: the database
+# password lives in .env and the first minted token in .flowy-token, and a
+# deployment secret committed here is a secret in everybody's clone.
+/deploy/.env
+/deploy/.flowy-token

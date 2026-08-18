@@ -1,0 +1,23 @@
+# The build context is the repository, and these are the parts of it that either
+# do not belong in an image or would defeat the layer cache.
+#
+# web/node_modules is the important one twice over: it is the largest thing in
+# the tree, and the console stage installs its own from the lockfile - copying
+# the host's over the top would put whatever is on this machine into the image
+# instead of what the lockfile says.
+web/node_modules/
+web/dist/
+
+# Build output of a local `go build` or a gate run. The image builds its own.
+/flowy
+/smoke
+*.test
+
+# Nothing in here changes what is built, and .git in particular is large.
+.git/
+.github/
+.claude/
+.firecode-*
+
+# The gate's own scratch and anything a run left behind.
+run-tests.log
