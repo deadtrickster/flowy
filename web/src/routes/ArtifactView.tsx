@@ -103,7 +103,17 @@ export function ArtifactView() {
   }, [token, id]);
 
   return (
-    <div className="flex h-full min-h-0">
+    /*
+      STACKS WHEN THERE IS NO ROOM FOR TWO COLUMNS. This was a flex ROW with a
+      fixed 26rem aside that could not shrink, so below about 900px the room
+      ran off the right edge: measured at 600px the composer sat at x=301..692
+      in a 600px viewport, which is a text area you cannot reach beside a send
+      button you can - reported as "send button but no text area".
+
+      The document reads first and the room follows it, because a narrow window
+      is somebody reading rather than somebody chatting beside what they read.
+    */
+    <div className="flex h-full min-h-0 flex-col lg:flex-row">
       {/*
         The document column listens for the end of a selection - mouse-up and
         key-up are every way a browser finishes one. It is a listener and not a
@@ -346,7 +356,7 @@ export function ArtifactView() {
         document itself is a 404 for this token - which is the case where
         somebody most needs to ask about it.
       */}
-      <aside className="flex w-[26rem] shrink-0 flex-col border-border border-l">
+      <aside className="flex h-[28rem] w-full shrink-0 flex-col border-border border-t lg:h-auto lg:w-[26rem] lg:border-t-0 lg:border-l">
         {id ? <DocumentPanes room={documentRoom(id)} quote={quote} /> : null}
       </aside>
     </div>
