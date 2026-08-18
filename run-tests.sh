@@ -16579,6 +16579,19 @@ browser_shows_where_a_row_came_from() {
 # perfectly ordinary while the thing somebody was sent to look at is missing is
 # the silent failure the reference exists to avoid, and from the page both
 # cases render a diagram.
+
+# Selecting findings, and what a bulk action says before and after it runs. The
+# python console had select-all, an n-selected counter and "run a selection";
+# twenty-seven findings carry repro trees now, so this is a batch job.
+#
+# The run arm asserts the REFUSAL is reported, because this gate has no runner
+# behind the node: the node answers 503 and the page has to say so. A page that
+# swallowed that answer would look exactly like one that worked.
+a_selection_of_findings_can_be_run_together() {
+	recall
+	cd "$ROOT/web" || return 1
+	node scripts/findings-selection-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" "$PROJECT_A"
+}
 a_shape_inside_a_diagram_is_addressable() {
 	recall
 	cd "$ROOT/web" || return 1
@@ -16683,6 +16696,8 @@ check "the diagram editor is dark, like the console around it" \
 	the_diagram_editor_matches_the_console
 check "a merge request with no branch is refused at the http door, and one with a branch lands" \
 	a_branchless_merge_request_is_refused_at_the_http_door
+check "a selection of findings can be run together, and says what it skipped" \
+	a_selection_of_findings_can_be_run_together
 check "a row says where it came from, and the queue does not treat it as a blocker" \
 	a_row_says_where_it_came_from
 check "the artifact page says where the row came from" \

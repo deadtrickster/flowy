@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { SeverityBar, SeverityDot, StateChip } from "@/components/StateMarks";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
@@ -126,7 +127,64 @@ export function Findings() {
   const filtered = Object.values(filters).some((value) => value !== "");
   const counts = countAxes(findings);
   const groups = groupByUpstream(shown);
+  // WHAT IS TICKED, and it is page state rather than anything the node holds -
+  // a selection is a sentence about what somebody is about to do, not a fact
+  // about the corpus.
+  //
+  // Kept as ids rather than as a filtered list for the reason flow 5 on the row
+  // names: a selection that quietly changed when a filter did would be one
+  // nobody could trust the count of. The ids survive the filter; the header
+  // says how many of them are off-screen.
+  const [selected, setSelected] = useState<Set<string>>(() => new Set());
+  const [bulk, setBulk] = useState<string | null>(null);
+  const [bulkBusy, setBulkBusy] = useState(false);
 
+  const toggle = useCallback((id: string) => {
+    setSelected((was) => {
+      const next = new Set(was);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  // The runnable half of the selection, and the part of it that is off-screen.
+  // Both are counted from the SAME ids the header shows, so the numbers on the
+  // control and the number beside it cannot disagree.
+  const chosen = useMemo(() => findings.filter((f) => selected.has(f.id)), [findings, selected]);
+  const runnableChosen = useMemo(() => chosen.filter((f) => hasRepro(reproOf(f))), [chosen]);
+  const offscreen = chosen.length - chosen.filter((f) => shown.includes(f)).length;
+
+  // RUN WHAT WAS ASKED FOR AND SAY WHAT HAPPENED. One POST per finding rather
+  // than a bulk door: the runner queues per finding, and a door that took a
+  // list would have to invent an answer for "three queued, one refused" that
+  // this loop can just report.
+  const runSelection = async () => {
+    if (bulkBusy || runnableChosen.length === 0) return;
+    // A dind run is a container, a database and a compile. Twelve of them by
+    // mis-click is somebody's whole evening, so past ten it asks first.
+    if (runnableChosen.length > 10 && !window.confirm(`start ${runnableChosen.length} runs?`)) {
+      return;
+    }
+    setBulkBusy(true);
+    setBulk(null);
+    let queued = 0;
+    const refused: string[] = [];
+    for (const finding of runnableChosen) {
+      try {
+        await api.reproRun(finding.id, "latest");
+        queued += 1;
+      } catch (err) {
+        refused.push(`${finding.title || finding.id}: ${(err as Error).message}`);
+      }
+    }
+    setBulkBusy(false);
+    setBulk(
+      refused.length === 0
+        ? `queued ${queued} run${queued === 1 ? "" : "s"}`
+        : `queued ${queued}, refused ${refused.length} - ${refused[0]}`,
+    );
+  };
   return (
     // Same full-height-flex-column shape as Reports.tsx and Todos.tsx: the
     // list is what scrolls, the header and filter row stay put.
@@ -231,6 +289,55 @@ export function Findings() {
         </div>
       ) : null}
 
+      {/* THE SELECTION BAR, and it only exists when something is selected: an
+          always-present "0 selected" is a line of chrome that says nothing on
+          the ordinary visit. Twenty-seven findings carry repro trees now, which
+          is what makes this a batch rather than a list. */}
+      {selected.size > 0 ? (
+        <div
+          className="flex flex-wrap items-center gap-2 rounded-md border border-border bg-card px-2 py-1.5 text-xs"
+          data-finding-selection=""
+        >
+          <span data-finding-selected-count={selected.size}>
+            <span className="font-mono tabular-nums">{selected.size}</span> selected
+          </span>
+          {offscreen > 0 ? (
+            <span className="text-muted-foreground" data-finding-selected-offscreen={offscreen}>
+              {offscreen} of them not shown by this filter
+            </span>
+          ) : null}
+          <Button
+            type="button"
+            size="sm"
+            variant="secondary"
+            data-finding-run-selected=""
+            disabled={bulkBusy || runnableChosen.length === 0}
+            onClick={() => {
+              void runSelection();
+            }}
+          >
+            {bulkBusy
+              ? "starting..."
+              : runnableChosen.length === chosen.length
+                ? `run ${runnableChosen.length}`
+                : `run ${runnableChosen.length} of ${chosen.length}`}
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            data-finding-select-none=""
+            onClick={() => setSelected(new Set())}
+          >
+            clear
+          </Button>
+          {bulk ? (
+            <span className="text-muted-foreground" data-finding-bulk-result="">
+              {bulk}
+            </span>
+          ) : null}
+        </div>
+      ) : null}
       <div className="flex flex-wrap items-center gap-2 text-xs">
         <FilterSelect label="status" value={status} onChange={setStatus} options={statusOptions} />
         <FilterSelect
@@ -298,12 +405,19 @@ export function Findings() {
                 </div>
                 <ol className="flex flex-col gap-3 pt-2">
                   {group.items.map((f) => (
-                    <FindingCard key={f.id} finding={f} />
+                    <FindingCard
+                      key={f.id}
+                      finding={f}
+                      selected={selected.has(f.id)}
+                      onToggle={toggle}
+                    />
                   ))}
                 </ol>
               </li>
             ))
-          : shown.map((f) => <FindingCard key={f.id} finding={f} />)}
+          : shown.map((f) => (
+              <FindingCard key={f.id} finding={f} selected={selected.has(f.id)} onToggle={toggle} />
+            ))}
       </ol>
     </div>
   );
@@ -563,7 +677,15 @@ function emptyReads({
  * badges reading "done" and "fixed" are one string apart on screen and a page
  * that drew our status twice would look right in a screenshot.
  */
-function FindingCard({ finding }: { finding: Artifact }) {
+function FindingCard({
+  finding,
+  selected,
+  onToggle,
+}: {
+  finding: Artifact;
+  selected: boolean;
+  onToggle: (id: string) => void;
+}) {
   const project = finding.project ?? "_";
   const filing = upstreamOf(finding);
   const evidence = evidenceOf(finding);
@@ -596,10 +718,20 @@ function FindingCard({ finding }: { finding: Artifact }) {
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base">
-            {/* The severity dot, before the title, so how bad this is arrives
-                before the sentence does. A row with no severity gets no dot -
-                see SeverityDot on why an unrated row is not painted as a mild
-                one. */}
+            {/* THE TICK COMES FIRST, before the severity dot, because it is the
+                one control on the card and a control a reader has to hunt for
+                is one they use once. Its label carries the title so that a
+                screen reader announcing it says which finding is being
+                selected, and so a browser check can tick a NAMED row rather
+                than the third box down. */}
+            <input
+              type="checkbox"
+              data-finding-select={finding.id}
+              aria-label={`select ${finding.title || finding.id}`}
+              checked={selected}
+              onChange={() => onToggle(finding.id)}
+              className="h-3.5 w-3.5 shrink-0 accent-foreground"
+            />
             <SeverityDot severity={finding.severity} />
             <Link className="hover:underline" to={`/p/${project}/finding/${finding.id}`}>
               {finding.title || finding.id}
