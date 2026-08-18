@@ -10378,16 +10378,59 @@ fi
 check "two users, their agents and their tokens are seeded" seeded_ok
 
 say "live node"
-HTTP_PORT="$(free_port 8787)"
+# NOT 8787, AND THE NUMBER IS THE POINT. free_port answers about an INSTANT: it
+# returns the first port nothing is listening on right now, and the suite then
+# believes that for thirty-five minutes. Starting the scan at the fleet's own
+# node port made the losing side of that race production.
+#
+# Measured, on the drainer's first full run: a deploy restarted the dogfood node
+# at 19:07, this suite started at 19:11 and printed "flowy serve on
+# 127.0.0.1:8787" - it took the production port during the restart window. Every
+# CLI call it then made went to the live node once that came back, and five
+# checks failed with "peer answered 401: unknown token" from a token production
+# has never seen. The diff under test touched none of them.
+#
+# The suite WRITES - worklog appends, artifact creates, chat. The only thing that
+# kept those out of the live store was that its tokens are unknown there.
+HTTP_PORT="$(free_port 19787)"
 # FLOWY_FORGE_REPOS is the operator's list of repositories this node may file
 # into. It is o/r and nothing else, which is what makes "file it into a repo
 # nobody said you could" a refusal rather than a filing.
-DATABASE_URL="$DATABASE_URL" FLOWY_NODE=gate FLOWY_OPERATOR="${USER_OP:-}" FLOWY_FORGE=mock \
+# A NAME NO OTHER RUN CAN HAVE. Every suite called its node "gate", so two runs
+# on one box were indistinguishable to anything that asked - and two runs on one
+# box is the ordinary case here now.
+GATE_NODE="gate-$$"
+DATABASE_URL="$DATABASE_URL" FLOWY_NODE="$GATE_NODE" FLOWY_OPERATOR="${USER_OP:-}" FLOWY_FORGE=mock \
 	FLOWY_FORGE_REPOS=o/r \
 	./flowy serve -addr "127.0.0.1:$HTTP_PORT" >"$SERVE_LOG" 2>&1 &
 SERVE_PID=$!
 printf 'flowy serve pid %s on 127.0.0.1:%s\n' "$SERVE_PID" "$HTTP_PORT"
 
+# AND IT IS OUR NODE ANSWERING, not somebody else's on a port we thought was
+# free. healthz carries the node name, and this suite gives itself one no other
+# run can have - so a node answering with any other name is one we did not
+# start, and every check after this would be measuring it.
+#
+# MEASURED, and the reason the name carries a pid: `ss -ltnp` on this box showed
+# TWO flowy processes on port 8787 - one on 127.0.0.1 belonging to another
+# seat's suite, one on 192.168.1.55 which is the fleet's node. Both suites named
+# their node "gate", so a bare name check would have accepted the other seat's
+# node as its own.
+its_our_node() {
+	local body name
+	body=$(curl -sS -m 5 "http://127.0.0.1:$HTTP_PORT/healthz" 2>/dev/null) || {
+		printf 'nothing answered /healthz on the port this suite started its node on\n' >&2
+		return 1
+	}
+	name=$(printf '%s' "$body" | sed -n 's/.*"node":"\([^"]*\)".*/\1/p')
+	if [ "$name" != "$GATE_NODE" ]; then
+		printf 'the node on 127.0.0.1:%s calls itself %s, not %s - this suite is talking to\n' \
+			"$HTTP_PORT" "${name:-nothing}" "$GATE_NODE" >&2
+		printf 'something it did not start, and every check after this would measure that\n' >&2
+		return 1
+	fi
+}
+check "the node on our port is the one this suite started" its_our_node
 check "flowy serve answers /healthz" "$WORK/smoke" healthz "http://127.0.0.1:$HTTP_PORT/healthz"
 check "healthz answers when counts are asked for" \
 	"$WORK/smoke" healthz "http://127.0.0.1:$HTTP_PORT/healthz?counts=1"
