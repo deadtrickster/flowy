@@ -3,16 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import {
-  ApiError,
-  type ReproRun,
-  type ReproStatus,
-  ReproUnconfigured,
-  type ReproVersion,
-  api,
-  getReproBase,
-  setReproBase,
-} from "@/lib/api";
+import { ApiError, type ReproRun, type ReproStatus, type ReproVersion, api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 /**
@@ -45,11 +36,6 @@ export function ReproPanel({
   project?: string | null;
   runnable: boolean;
 }) {
-  // Read once per mount rather than subscribed: this is the only place the
-  // setting is edited, so a change here is a call to setReproBase followed
-  // by re-reading it, not a value anything else could move out from under.
-  const [base, setBase] = useState(() => getReproBase());
-
   if (!runnable) {
     return (
       <div
@@ -61,67 +47,18 @@ export function ReproPanel({
     );
   }
 
-  if (!base) {
-    return (
-      <RunnerBaseSetup
-        onSave={(next) => {
-          setReproBase(next);
-          setBase(getReproBase());
-        }}
-      />
-    );
-  }
-
-  return (
-    <ReproPanelBody
-      finding={finding}
-      project={project}
-      onBaseCleared={() => setBase(getReproBase())}
-    />
-  );
-}
-
-/**
- * What shows when no runner base is configured. THE PANEL MUST SAY SO
- * PLAINLY rather than let a call fall through to a relative fetch, which
- * would silently hit flowy's own origin - a 404 there is indistinguishable
- * from "not confirmed" to anything that does not check, and this panel is
- * the one place that has to.
- */
-function RunnerBaseSetup({ onSave }: { onSave: (base: string) => void }) {
-  const [draft, setDraft] = useState("");
-  return (
-    <form
-      className="flex flex-col gap-2 rounded-md border border-dashed border-border p-3 text-xs"
-      autoComplete="off"
-      onSubmit={(event) => {
-        event.preventDefault();
-        if (draft.trim()) onSave(draft);
-      }}
-    >
-      <div className="text-muted-foreground">
-        no repro runner configured - repro runs are served by cmd/handoff-runner, a separate binary
-        on a trusted host with Docker access, not by this node. Paste its base URL to enable runs,
-        logs and package downloads for this finding.
-      </div>
-      <div className="flex items-center gap-2">
-        <Input
-          aria-label="repro runner base URL"
-          placeholder="http://runner-host:8801"
-          value={draft}
-          autoComplete="off"
-          spellCheck={false}
-          onChange={(event) => setDraft(event.target.value)}
-        />
-        {/* Marked, not found by its label: "use" is a one-word button and
-            the sidebar has one too, so a check that asked the page for it by
-            role and name would find two and be unable to say which. */}
-        <Button data-repro-base-save type="submit" size="sm" variant="secondary">
-          use
-        </Button>
-      </div>
-    </form>
-  );
+  // NO ADDRESS TO TYPE. There used to be a setup form here, asking whoever
+  // opened a finding for the runner's base URL before anything worked. The
+  // operator's answer to it, 2026-08-18: "i dont want to type address of the
+  // runner, that python console had none."
+  //
+  // The runner is still a separate process - a browser cannot run Docker - but
+  // the node forwards to it now, so this panel calls /api/repro/* on its own
+  // origin and the address is the node's configuration. A deployment with no
+  // runner answers 503 with a sentence, which lands in the panel's own error
+  // line: better than a form, because it names what an operator has to do on
+  // the machine rather than asking a reader to know it.
+  return <ReproPanelBody finding={finding} project={project} />;
 }
 
 const ACTIVE: ReproStatus[] = ["queued", "building", "running"];
@@ -167,11 +104,9 @@ function StatusBadge({ status }: { status: ReproStatus }) {
 function ReproPanelBody({
   finding,
   project,
-  onBaseCleared,
 }: {
   finding: string;
   project?: string | null;
-  onBaseCleared: () => void;
 }) {
   const [version, setVersion] = useState("latest");
   const [versionInfo, setVersionInfo] = useState<ReproVersion | null>(null);
@@ -221,16 +156,13 @@ function ReproPanelBody({
         setRunsError(null);
       })
       .catch((err: Error) => {
-        // A misconfigured base looks like every other failure to fetch, so
-        // hand it back up rather than showing "could not read runs" for
-        // something the setup screen already explains better.
-        if (err instanceof ReproUnconfigured) {
-          onBaseCleared();
-          return;
-        }
+        // Whatever it was, it is a sentence for the reader. There used to be a
+        // branch here for "no base configured" that swapped the panel for a
+        // form; the node answers that case now, with a 503 that names what an
+        // operator has to start, and that message is worth more than the form.
         setRunsError(err.message);
       });
-  }, [finding, onBaseCleared]);
+  }, [finding]);
 
   useEffect(() => {
     loadRuns();

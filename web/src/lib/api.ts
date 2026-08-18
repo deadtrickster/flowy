@@ -1123,10 +1123,21 @@ export class ReproUnconfigured extends Error {
   }
 }
 
+/**
+ * The base every repro call is made against.
+ *
+ * Empty string means "this origin", which is where the node's own /api/repro/*
+ * lives - so with nothing configured anywhere, the panel talks to the node and
+ * the node talks to the runner. That is the default, and it is why nobody has
+ * to type an address.
+ *
+ * An explicit override still wins, and still goes straight to that runner. It
+ * no longer throws when there is none: a deployment without a runner now gets
+ * the node's 503 and its sentence, which says more than this file could.
+ */
 function reproBase(): string {
-  const base = getReproBase() || memoryReproBase;
-  if (!base) throw new ReproUnconfigured();
-  return base;
+  const override = getReproBase() || memoryReproBase;
+  return override || "/api/repro";
 }
 
 /**

@@ -52,6 +52,15 @@ type server struct {
 	// choice rather than a field in a request body.
 	forgeRepos map[string]bool
 	started    time.Time
+	// reproBase is the repro runner this node forwards to, or empty when there
+	// is none. Local configuration for the reason operator and forgeRepos are:
+	// which machine holds Docker is a fact about this deployment, and a caller
+	// that could name one could make this process reach any address it liked.
+	//
+	// It is here rather than in the browser because it used to be in the
+	// browser - see repro_proxy.go, and the operator's "i dont want to type
+	// address of the runner".
+	reproBase string
 	// apiPatterns is every route registered on the guarded mux, filled in by
 	// routes(). It is here so a check can read the router instead of reading
 	// this file - see recordingMux.
@@ -102,6 +111,10 @@ func serve(args []string) error {
 		"comma-separated principal=publickey[@epoch] pairs to pin, so that rows naming "+
 			"those principals as their author have to carry their own signature "+
 			"(default $FLOWY_PRINCIPAL_KEYS)")
+	repro := fs.String("repro", os.Getenv("FLOWY_REPRO"),
+		"base url of the repro runner this node forwards /api/repro/* to, e.g. "+
+			"http://127.0.0.1:8806 - empty means this deployment runs no repros "+
+			"(default $FLOWY_REPRO)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -176,6 +189,7 @@ func serve(args []string) error {
 		started:    time.Now(),
 		tracer:     newTracer(*node, db),
 		joins:      newJoinLimiter(),
+		reproBase:  strings.TrimRight(strings.TrimSpace(*repro), "/"),
 	}
 	defer srv.tracer.Close()
 	if len(srv.peers) > 0 {
@@ -306,6 +320,15 @@ var apiRoutes = []string{
 	// evidence doors two lines below this one in serve.go are still missing from
 	// here, which is the same omission one axis over.
 	"GET /api/finding/{id}/runs",
+	// And the runner behind it. On this list because a console that cannot find
+	// these doors falls back to asking the operator for an address, which is the
+	// thing they asked to stop doing.
+	"POST /api/repro/run",
+	"GET /api/repro/runs",
+	"GET /api/repro/run/{id}/log",
+	"GET /api/repro/version",
+	"GET /api/repro/package",
+	"GET /api/repro/healthz",
 	"POST /api/dm/{to}",
 	"GET /api/dm",
 	"GET /api/dm/wait",
@@ -438,6 +461,14 @@ func (s *server) routes() http.Handler {
 	// verdict a repro run records is the console's red/green line, and the
 	// console speaks HTTP - see findingruns.go.
 	api.HandleFunc("GET /api/finding/{id}/runs", s.handleFindingRuns)
+	// The repro runner, forwarded. One origin and one token for the console, and
+	// no address in anybody's browser - see repro_proxy.go.
+	api.HandleFunc("POST /api/repro/run", s.handleRepro)
+	api.HandleFunc("GET /api/repro/runs", s.handleRepro)
+	api.HandleFunc("GET /api/repro/run/{id}/log", s.handleRepro)
+	api.HandleFunc("GET /api/repro/version", s.handleRepro)
+	api.HandleFunc("GET /api/repro/package", s.handleRepro)
+	api.HandleFunc("GET /api/repro/healthz", s.handleRepro)
 	api.HandleFunc("GET /api/search", s.handleSearch)
 	api.HandleFunc("POST /api/events", s.handleAppendEvent)
 	api.HandleFunc("GET /api/events", s.handleListEvents)
