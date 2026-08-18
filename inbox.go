@@ -646,7 +646,17 @@ func inboxCmd(args []string) error {
 		fmt.Fprintf(os.Stderr, "reader %s at %d\n", declared.Reader, declared.Cursor)
 	}
 
-	err = waitOnInbox(ctx, client, base, bearer, *as, *room, *toMe, *deadline)
+	// The seat name is threaded in so the loop can re-read the credential it
+	// started with. Empty when the token came from a flag or the environment,
+	// which cannot change under a running process.
+	seat := strings.TrimSpace(*agent)
+	if seat == "" {
+		seat = strings.TrimSpace(os.Getenv("FLOWY_AGENT"))
+	}
+	if strings.TrimSpace(*token) != "" || strings.TrimSpace(os.Getenv("FLOWY_TOKEN")) != "" {
+		seat = ""
+	}
+	err = waitOnInbox(ctx, client, base, bearer, *as, *room, bearer, seat, *toMe, *deadline)
 
 	// A PROBE LEAVES NOTHING BEHIND, however it ends.
 	//
@@ -701,7 +711,38 @@ func inboxCmd(args []string) error {
 
 // waitOnInbox is the loop: bounded server polls until the deadline, the first
 // message ends it, and the mark moves only after what was said is written out.
+// tokenStillOurs answers whether the credential this waiter started with is
+// still the one its seat file holds.
+//
+// A waiter resolves its bearer ONCE and then polls for hours. When a seat is
+// re-minted, the file on disk changes and the running waiter keeps the old
+// credential - and every poll under the old identity SUCCEEDS: the reader
+// exists, the cursor moves, and nothing is refused. The waiter looks healthy
+// while polling as somebody the seat no longer is, and the messages addressed
+// to the new identity are never delivered. That cost six and a half hours on
+// 2026-08-18, and the refusal added at the start-up door never fires because
+// the waiter is never restarted.
+//
+// Only a FILE can change under a running process. A --token flag and
+// $FLOWY_TOKEN are fixed for the life of the process, so there is nothing to
+// re-read and this says so by returning true rather than pretending to check.
+//
+// An unreadable file is NOT a switch. A seat file being briefly absent - a
+// re-mint writing it, a backup moving it - must not kill a waiter that is
+// otherwise fine: absence is unknown, and unknown is not evidence of a change.
+func tokenStillOurs(started, agentName string) bool {
+	if strings.TrimSpace(agentName) == "" {
+		return true
+	}
+	now, err := agentToken(agentName, "FLOWY_AGENT")
+	if err != nil || strings.TrimSpace(now) == "" {
+		return true
+	}
+	return now == started
+}
+
 func waitOnInbox(ctx context.Context, client *http.Client, base, bearer, as, room string,
+	startedWith, agentName string,
 	toMe bool, deadline int,
 ) error {
 	query := url.Values{}
@@ -736,6 +777,22 @@ func waitOnInbox(ctx context.Context, client *http.Client, base, bearer, as, roo
 		// deadline means the number of seconds it says. Without this a
 		// --deadline under one window still blocks for a whole window, and a
 		// caller that asked to wait three seconds waits twenty.
+		// THE IDENTITY IS RE-READ EVERY POLL, not only at start-up. See
+		// tokenStillOurs: a re-minted seat leaves this process polling as
+		// somebody it no longer is, successfully, for as long as the old
+		// credential is accepted.
+		//
+		// It EXITS rather than picking up the new token. Switching identity
+		// mid-loop would keep the same reader cursor under a different
+		// principal, which is the impersonation shape this fleet spent a day
+		// on - and the loop is supervised, so exiting with a named reason gets
+		// a fresh waiter on the new credential in seconds.
+		if !tokenStillOurs(startedWith, agentName) {
+			return fmt.Errorf("the token for %q changed while this waiter was running: it has been "+
+				"polling as the principal it started with, which still works and is no longer this "+
+				"seat - restart it to pick up the new one", agentName)
+		}
+
 		window := pollWindowLeft(until)
 		query.Set("window", strconv.Itoa(window))
 		endpoint := base + "/api/inbox/wait?" + query.Encode()
