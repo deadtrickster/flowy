@@ -578,8 +578,15 @@ type Event struct {
 func workEvidence(kind string) bool {
 	switch kind {
 	case EventMergeGate, EventMergeLand, EventMergeAbandon,
-		EventTodoNote, EventTodoStatus, EventTodoAssign, EventTodoEdit:
+		EventTodoNote, EventTodoStatus, EventTodoAssign:
 		return true
+		// EventTodoEdit is DELIBERATELY ABSENT. It records an edit of a queue
+		// item's WORDS - a retitling, a reworded body - and a rename is exactly
+		// what made `updated` useless for this question. Counting it would widen
+		// "evidence of work" back to "any write" one case at a time, which is how
+		// the column being replaced got that way.
+		//
+		// Changing what a row SAYS is not progress on what it asks for.
 	}
 	return false
 }

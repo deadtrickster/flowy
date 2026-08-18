@@ -12,11 +12,23 @@ import "testing"
 func TestOnlyRealWorkMovesTheClock(t *testing.T) {
 	for _, kind := range []string{
 		EventMergeGate, EventMergeLand, EventMergeAbandon,
-		EventTodoNote, EventTodoStatus, EventTodoAssign, EventTodoEdit,
+		EventTodoNote, EventTodoStatus, EventTodoAssign,
 	} {
 		if !workEvidence(kind) {
 			t.Errorf("%q should count as work - somebody did something to the row", kind)
 		}
+	}
+}
+
+// AND RENAMING IS NOT WORKING EITHER. todo.edit records a change to the row's
+// WORDS, which is the case that made `updated` useless - if an edit moved this
+// clock, "evidence of work" would widen back to "any write" one case at a time.
+//
+// claude-host caught this in review: my first list counted todo.edit, so the
+// test asserted the bug.
+func TestRenamingARowIsNotWorkingIt(t *testing.T) {
+	if workEvidence(EventTodoEdit) {
+		t.Error("todo.edit is a change to what the row SAYS, not progress on what it asks for")
 	}
 }
 
