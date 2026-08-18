@@ -1021,6 +1021,13 @@ CREATE TABLE IF NOT EXISTS merge_locks (
     until    timestamptz NOT NULL
 );
 
+-- WHICH MERGE REQUEST the target is held for, not just by whom. Every subagent
+-- runs under its parent seat's token, so holder alone cannot tell two processes
+-- of one seat apart: one renewed a lock it never took, and one released a live
+-- holder's lock after its own landing. The row id is the discriminator, so a
+-- re-gate of the same work renews and a sibling on different work loses.
+ALTER TABLE merge_locks ADD COLUMN IF NOT EXISTS item text NOT NULL DEFAULT '';
+
 -- The landed-tip chain. Every land through POST /api/merge/{id}/land states
 -- the sha its target BECAME, and this row is where the queue reads "where is
 -- master" from when nobody stated a tip. Before it existed the fallback was

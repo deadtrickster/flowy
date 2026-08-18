@@ -103,6 +103,16 @@ func (d *DB) AbandonMerge(ctx context.Context, p *Principal, id, reason string) 
 	if lock.Holder != actor {
 		return nil, nil, &ErrAbandonRefused{Reason: "the target is held by another declarer", Held: lock, Now: now}
 	}
+	// HELD FOR WHICH WORK, not merely by whom. Two agents of one seat share a
+	// principal, so holder alone let a sibling release through a lock it never
+	// took. An empty item is a lock from before the column and is not refused -
+	// nothing took it under the new rule, so nothing may be concluded from it.
+	if lock.Item != "" && lock.Item != art.ID {
+		return nil, nil, &ErrAbandonRefused{
+			Reason: "the target is held for a different merge request",
+			Held:   lock, Now: now,
+		}
+	}
 
 	meta, err := json.Marshal(map[string]string{
 		"target":      target,
@@ -135,7 +145,7 @@ func (d *DB) AbandonMerge(ctx context.Context, p *Principal, id, reason string) 
 	if err := d.AppendEvent(ctx, entry); err != nil {
 		return nil, nil, err
 	}
-	if _, err := d.ReleaseMergeLock(ctx, p, target); err != nil {
+	if _, err := d.ReleaseMergeLock(ctx, p, target, art.ID); err != nil {
 		return nil, nil, err
 	}
 	span.SetArtifact(art.ID)

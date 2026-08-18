@@ -133,6 +133,16 @@ func (d *DB) LandMerge(ctx context.Context, p *Principal, id, sha string) (*Arti
 	if lock.Holder != actor {
 		return nil, nil, &ErrLandRefused{Reason: "the target is held by another declarer", Held: lock, Now: now}
 	}
+	// HELD FOR WHICH WORK, not merely by whom. Two agents of one seat share a
+	// principal, so holder alone let a sibling land through a lock it never
+	// took. An empty item is a lock from before the column and is not refused -
+	// nothing took it under the new rule, so nothing may be concluded from it.
+	if lock.Item != "" && lock.Item != art.ID {
+		return nil, nil, &ErrLandRefused{
+			Reason: "the target is held for a different merge request",
+			Held:   lock, Now: now,
+		}
+	}
 
 	fields, err := ArtifactFields(art)
 	if err != nil {
@@ -198,7 +208,7 @@ func (d *DB) LandMerge(ctx context.Context, p *Principal, id, sha string) (*Arti
 	// a release that preceded the write would open the target while the landed
 	// tip was still unsaid, and the next declarer would measure a tip nobody
 	// had announced.
-	if _, err := d.ReleaseMergeLock(ctx, p, target); err != nil {
+	if _, err := d.ReleaseMergeLock(ctx, p, target, art.ID); err != nil {
 		// Not fatal to the land - the tip is recorded and the row is closed.
 		// The lock expires on its own, and saying so beats failing a land that
 		// already happened.

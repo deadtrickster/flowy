@@ -86,7 +86,7 @@ func TestAHolderGivesTheTargetBackWithoutLanding(t *testing.T) {
 
 	// The target is free for the next declarer, which is the whole point.
 	rival := &Principal{UserID: "u-next", Project: project}
-	if _, err := db.TakeMergeLock(ctx, rival, target); err != nil {
+	if _, err := db.TakeMergeLock(ctx, rival, target, "some-other-row"); err != nil {
 		t.Fatalf("the next declarer could not take the freed target: %v", err)
 	}
 }

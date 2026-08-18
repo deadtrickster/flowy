@@ -94,7 +94,9 @@ func ownTarget(t *testing.T) string {
 // real compare-and-set rather than a shared shortcut.
 func takeBy(t *testing.T, ctx context.Context, db *DB, actor, target string) (*MergeLock, error) {
 	t.Helper()
-	return db.TakeMergeLock(ctx, &Principal{UserID: actor, Project: "ml"}, target)
+	// Each principal here declares its own work, which is the ordinary case:
+	// one seat, one row. The same-seat-different-row case has its own test.
+	return db.TakeMergeLock(ctx, &Principal{UserID: actor, Project: "ml"}, target, "item-"+actor)
 }
 
 func TestASecondDeclarerLosesAndIsToldWhoHolds(t *testing.T) {
@@ -121,7 +123,7 @@ func TestASecondDeclarerLosesAndIsToldWhoHolds(t *testing.T) {
 	}
 	// Non-holders cannot release what they do not hold: the release reports
 	// nothing gone, and the lock reads back still held by the first.
-	gone, err := db.ReleaseMergeLock(ctx, &Principal{UserID: "u-second"}, target)
+	gone, err := db.ReleaseMergeLock(ctx, &Principal{UserID: "u-second"}, target, "item-u-second")
 	if err != nil {
 		t.Fatalf("release: %v", err)
 	}

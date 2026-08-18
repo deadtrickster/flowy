@@ -45,11 +45,25 @@ var lockInterval = fmt.Sprintf("%d seconds", int(MergeLockBelievedFor.Seconds())
 // name a holder answers to now is the name worth saying, exactly as the roster
 // resolves speakers from their rows and not from what somebody cached once.
 type MergeLock struct {
-	Target     string    `json:"target"`
-	Holder     string    `json:"holder"`
-	HolderName string    `json:"holder_name,omitempty"`
-	TakenAt    time.Time `json:"taken_at"`
-	Until      time.Time `json:"until"`
+	Target     string `json:"target"`
+	Holder     string `json:"holder"`
+	HolderName string `json:"holder_name,omitempty"`
+	// Item is WHICH MERGE REQUEST the target is held for.
+	//
+	// The lock used to record only the principal, and every subagent of a seat
+	// runs under its parent's token - so two processes of one seat read each
+	// other's lock as their own. One could renew a lock it never took and land
+	// through it, and on 18 Aug a sibling session did exactly that: it finished
+	// its own landing, released, and deleted a live holder's lock, invalidating
+	// a green verdict mid-flight.
+	//
+	// The row id is the natural discriminator and it costs no new parameter:
+	// the lock is held BY a principal FOR a piece of work, and two agents of a
+	// seat are working on two different rows. Same row is the one case that
+	// should renew - a re-gate after a rebase is the same work measured again.
+	Item    string    `json:"item,omitempty"`
+	TakenAt time.Time `json:"taken_at"`
+	Until   time.Time `json:"until"`
 }
 
 // Live says whether the lock should still be believed at now. Absent answers
@@ -100,7 +114,7 @@ func lockTarget(target string) string {
 // loser is HANDED the holder rather than a bare refusal - "held by X until T"
 // is actionable in a way "not admissible" is not, which is the whole point of
 // distinguishing this from the stale-evidence refusal.
-func (d *DB) TakeMergeLock(ctx context.Context, p *Principal, target string) (*MergeLock, error) {
+func (d *DB) TakeMergeLock(ctx context.Context, p *Principal, target, item string) (*MergeLock, error) {
 	actor, _ := voteActor(p)
 	if actor == "" {
 		return nil, fmt.Errorf("store: this token resolves to nobody, so it cannot hold a landing lock")
@@ -118,14 +132,15 @@ func (d *DB) TakeMergeLock(ctx context.Context, p *Principal, target string) (*M
 	// by construction rather than unlikely by deployment.
 	var got MergeLock
 	err := d.sql.QueryRowContext(ctx,
-		`INSERT INTO merge_locks (target, holder, taken_at, until)
-		 VALUES ($1, $2, now(), now() + $3::interval)
+		`INSERT INTO merge_locks (target, holder, item, taken_at, until)
+		 VALUES ($1, $2, $4, now(), now() + $3::interval)
 		 ON CONFLICT (target) DO UPDATE
-		    SET holder = $2, taken_at = now(), until = now() + $3::interval
-		  WHERE merge_locks.holder = $2 OR merge_locks.until <= now()
-		 RETURNING target, holder, taken_at, until`,
-		target, actor, lockInterval).
-		Scan(&got.Target, &got.Holder, &got.TakenAt, &got.Until)
+		    SET holder = $2, item = $4, taken_at = now(), until = now() + $3::interval
+		  WHERE (merge_locks.holder = $2 AND merge_locks.item = $4)
+		     OR merge_locks.until <= now()
+		 RETURNING target, holder, item, taken_at, until`,
+		target, actor, lockInterval, strings.TrimSpace(item)).
+		Scan(&got.Target, &got.Holder, &got.Item, &got.TakenAt, &got.Until)
 	if err == nil {
 		return &got, nil
 	}
@@ -142,14 +157,20 @@ func (d *DB) TakeMergeLock(ctx context.Context, p *Principal, target string) (*M
 
 // ReleaseMergeLock gives the target back. The holder only: nobody releases
 // somebody else's reservation, exactly as nobody deletes somebody else's reader.
-func (d *DB) ReleaseMergeLock(ctx context.Context, p *Principal, target string) (bool, error) {
+func (d *DB) ReleaseMergeLock(ctx context.Context, p *Principal, target, item string) (bool, error) {
 	actor, _ := voteActor(p)
 	if actor == "" {
 		return false, fmt.Errorf("store: this token resolves to nobody, so it cannot release a landing lock")
 	}
 	res, err := d.sql.ExecContext(ctx,
-		`DELETE FROM merge_locks WHERE target = $1 AND holder = $2`,
-		lockTarget(target), actor)
+		// item = '' is a lock taken before the column existed. Its holder may
+		// still give it back: refusing there would strand every lock held
+		// across the deploy that introduced this, for the full expiry, with
+		// nothing anybody could do - which is the freeze the abandon door was
+		// built to end, reintroduced by its own fix.
+		`DELETE FROM merge_locks
+		  WHERE target = $1 AND holder = $2 AND (item = $3 OR item = '')`,
+		lockTarget(target), actor, strings.TrimSpace(item))
 	if err != nil {
 		return false, fmt.Errorf("store: release merge lock on %s: %w", lockTarget(target), err)
 	}
@@ -166,7 +187,7 @@ func (d *DB) ReleaseMergeLock(ctx context.Context, p *Principal, target string) 
 // stores - it is a join, so a renamed holder is named by their current name in
 // every refusal that mentions them.
 const mergeLockSQL = `SELECT l.target, l.holder,
-        coalesce(u.handle, '') AS holder_name,
+        coalesce(u.handle, '') AS holder_name, l.item,
         l.taken_at, l.until
    FROM merge_locks l
    LEFT JOIN agents g ON g.id = l.holder
@@ -180,7 +201,7 @@ const mergeLockSQL = `SELECT l.target, l.holder,
 func (d *DB) MergeLockOf(ctx context.Context, target string) (*MergeLock, error) {
 	var got MergeLock
 	err := d.sql.QueryRowContext(ctx, mergeLockSQL, lockTarget(target)).
-		Scan(&got.Target, &got.Holder, &got.HolderName, &got.TakenAt, &got.Until)
+		Scan(&got.Target, &got.Holder, &got.HolderName, &got.Item, &got.TakenAt, &got.Until)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
