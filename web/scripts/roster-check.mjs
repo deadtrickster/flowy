@@ -26,19 +26,28 @@ import { chromium } from "playwright";
 const [base, token, ...want] = process.argv.slice(2);
 if (!base || !token || want.length === 0) {
   console.error(
-    "usage: node scripts/roster-check.mjs BASE_URL TOKEN reader=kind [reader=kind ...]",
+    "usage: node scripts/roster-check.mjs BASE_URL TOKEN reader=kind [reader=kind ...] [--went-quiet=READER]",
   );
   process.exit(2);
 }
 
-const expected = want.map((pair) => {
-  const [reader, kind] = pair.split("=");
-  if (!reader || !kind) {
-    console.error(`"${pair}" is not reader=kind`);
-    process.exit(2);
-  }
-  return { reader, kind };
-});
+// The reader that was armed and stopped, if the caller staged one. Its whole
+// point is that it is NOT among the listeners above: it must be drawn, in its
+// own right, as a seat that is not answering.
+const wentQuiet = want
+  .filter((arg) => arg.startsWith("--went-quiet="))
+  .map((arg) => arg.slice("--went-quiet=".length));
+
+const expected = want
+  .filter((arg) => !arg.startsWith("--"))
+  .map((pair) => {
+    const [reader, kind] = pair.split("=");
+    if (!reader || !kind) {
+      console.error(`"${pair}" is not reader=kind`);
+      process.exit(2);
+    }
+    return { reader, kind };
+  });
 
 const browser = await chromium.launch();
 try {
@@ -160,12 +169,55 @@ Either the roster is not drawing its listeners or it does not mark them.${errors
     }
   }
 
+  // A SEAT THAT WENT QUIET IS ON THE SCREEN, SAYING SO.
+  //
+  // This is the row the operator asked about twice: an agent had not polled in
+  // six hours, its poll counter had been left up by a decrement that never ran,
+  // and every surface here drew it as attached and polling. The obvious repair -
+  // window it out with the dead cursors - would have made this panel tidy and
+  // deleted the only record that the seat had ever gone deaf.
+  //
+  // So the assertion is not that it is gone. It is that it is DRAWN, marked
+  // lost, in words, with how long ago it was last heard from - and that it is
+  // not sitting up among the listeners claiming to be polling.
+  for (const reader of wentQuiet) {
+    const line = page.locator(`aside li[data-listener="${reader}"]`);
+    if ((await line.count()) === 0) {
+      console.error(
+        `${reader} stopped mid-poll six hours ago and the roster draws no line for it at all.
+  Dropping the row tidies the panel and destroys the only evidence that the seat
+  went deaf - which is the thing somebody is looking at this panel to find out.`,
+      );
+      process.exit(1);
+    }
+    const state = await line.first().getAttribute("data-listener-state");
+    if (state !== "lost") {
+      console.error(
+        `${reader} has not polled in six hours and its line is marked ${JSON.stringify(state)}.
+  A poll that started six hours ago is not in flight: the server blocks for
+  twenty-five seconds at a time, so the counter that says otherwise is a
+  decrement that never ran.`,
+      );
+      process.exit(1);
+    }
+    const says = (await line.first().innerText()).trim();
+    if (!/not answering/i.test(says) || !/\d+h/.test(says)) {
+      console.error(
+        `${reader} is marked lost in the markup and the line says ${JSON.stringify(says)}.
+  It has to say, in words, that the seat is not answering and how long it has
+  been since anything was heard from it. A state carried only in an attribute
+  is a state nobody reads.`,
+      );
+      process.exit(1);
+    }
+  }
+
   console.log(
     `the roster draws each listener's kind, distinctly, in a browser: ${seen
       .map((s) => `${s.kind} -> ${JSON.stringify(s.label)}`)
       .join(", ")}; no never-polled bookmarks drawn as listeners${
       doubled.length ? `; ${doubled.length} doubled identity named as doubled` : ""
-    }`,
+    }${wentQuiet.length ? `; ${wentQuiet.join(", ")} drawn as not answering` : ""}`,
   );
 } finally {
   await browser.close();

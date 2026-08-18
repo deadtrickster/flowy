@@ -244,6 +244,11 @@ func rebalanceOffer(
 	listening := map[string]string{}
 	if rows, err := m.db.Presence(ctx); err == nil {
 		for _, r := range rows {
+			// Attached is a poll in flight AND recent enough to be one - see
+			// PresenceRow. A row whose poll never ended is on the roster as
+			// lost and does not read as attached here, so a holder whose seat
+			// went deaf six hours ago is offered up for rebalancing instead of
+			// counted as somebody you could go and ask.
 			if !r.Attached {
 				continue
 			}

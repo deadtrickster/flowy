@@ -3799,7 +3799,11 @@ a_broken_waiter_is_exit_2_and_not_exit_1() {
 ROSTER_TRACKED=roster-tracked
 ROSTER_FORKED=roster-forked
 ROSTER_QUIET=roster-quiet
-readonly ROSTER_TRACKED ROSTER_FORKED ROSTER_QUIET
+# The seat that was armed and stopped. Stalled by the presence check below and
+# still stalled when the browser check reads it, because being SAID OUT LOUD on
+# the operator's own surface is the half of this that matters.
+ROSTER_STOPPED=roster-went-quiet
+readonly ROSTER_TRACKED ROSTER_FORKED ROSTER_QUIET ROSTER_STOPPED
 
 # presence_kind NAME - what /api/presence says that listener can do. Not listed
 # at all and listed with no kind are two different failures, and a jq default
@@ -3892,6 +3896,96 @@ presence_says_what_each_listener_can_do() {
 	poll_as "$ROSTER_QUIET" wide-awake-honest || return 1
 	want_eq "a kind nobody can draw" "$(presence_kind "$ROSTER_QUIET")" unknown || return 1
 	printf 'presence: tracked, forked, and unknown for everything that has not said\n'
+}
+
+# presence_field NAME FIELD - one field of that listener's row, or the marker
+# for a reader the roster does not list at all. Not-listed has to be its own
+# answer: a jq default would turn "the row is gone" into "the field is empty",
+# and those send somebody looking in two different places.
+presence_field() {
+	api GET "$TOKEN_A" /api/presence || return 1
+	printf '%s' "$API_BODY" | jq -r --arg r "$1" --arg f "$2" \
+		'[.listeners[] | select(.reader == $r)]
+		 | if length == 0 then "<not listed>" else (.[0][$f] | tostring) end'
+}
+
+# A SEAT THAT WAS ARMED AND STOPPED IS NAMED, NOT TIDIED AWAY.
+#
+# polls_in_flight only comes down when a handler returns, so a waiter killed
+# mid-poll - or a decrement issued on a request context that had already been
+# cancelled by the client going away - leaves the counter up with nobody behind
+# it. The roster read used to take any positive counter as attached with no age
+# test at all, so such a row said "attached, polling" for as long as the table
+# lived. claude-glm sat like that for six hours and ho-test for thirty, and the
+# operator asked twice why an agent was not answering.
+#
+# The fix is not a shorter list. It is that the node can tell the three states
+# apart and SAYS which one this is: still polling, never polled yet, or armed
+# and stopped. The last one keeps its place on the roster - with the time it was
+# last heard from - because that is the fact somebody needs, and a version of
+# this that merely dropped the row would have deleted the evidence the complaint
+# was about.
+presence_retires_a_seat_that_stopped_mid_poll() {
+	recall
+	api POST "$TOKEN_A" /api/inbox/reader "{\"as\": \"$ROSTER_STOPPED\"}" || return 1
+	want_eq "declaring $ROSTER_STOPPED" "$API_STATUS" 200 || return 1
+
+	# Declared and not yet polling: a waiter arming itself, which the roster is
+	# where somebody watches.
+	want_eq "a reader that has not polled yet" \
+		"$(presence_field "$ROSTER_STOPPED" state)" starting || return 1
+
+	poll_as "$ROSTER_STOPPED" tracked || return 1
+	want_eq "a reader that just polled" \
+		"$(presence_field "$ROSTER_STOPPED" state)" listening || return 1
+
+	# The state a killed waiter leaves behind, written by hand because the pair
+	# of calls that would produce it is exactly the pair that never ran.
+	psql_do "UPDATE inbox_readers
+	            SET last_poll_at = now() - interval '6 hours', polls_in_flight = 1
+	          WHERE reader = '$ROSTER_STOPPED'" || return 1
+	want_eq "six hours after it stopped, still holding a poll" \
+		"$(presence_field "$ROSTER_STOPPED" state)" lost || return 1
+	want_eq "and what it says about being attached" \
+		"$(presence_field "$ROSTER_STOPPED" attached)" false || return 1
+	# The timestamp is what makes "lost" actionable rather than a shrug.
+	if [ "$(presence_field "$ROSTER_STOPPED" last_poll_at)" = null ]; then
+		printf 'a lost seat carries no last poll, so nothing can say how long it has been deaf\n' >&2
+		return 1
+	fi
+
+	# A second label, aged past the waiter's own deadline: by then it is a row
+	# nobody cleaned up rather than a seat that just went deaf, and it goes.
+	local old=roster-stopped-yesterday
+	api POST "$TOKEN_A" /api/inbox/reader "{\"as\": \"$old\"}" || return 1
+	want_eq "declaring $old" "$API_STATUS" 200 || return 1
+	poll_as "$old" tracked || return 1
+	psql_do "UPDATE inbox_readers
+	            SET last_poll_at = now() - interval '30 hours', polls_in_flight = 1
+	          WHERE reader = '$old'" || return 1
+	want_eq "a poll abandoned 30 hours ago" \
+		"$(presence_field "$old" state)" '<not listed>' || return 1
+
+	# And a bookmark that has never polled does not ride its acks onto the
+	# roster. The console keeps one of these per room to hold a human's unread
+	# place; they ack every time somebody reads the room, which is what kept
+	# three of them on the listening pane permanently - refreshed by the act of
+	# looking at the page they were cluttering.
+	local bookmark=console:roster-bookmark
+	api POST "$TOKEN_A" /api/inbox/reader "{\"as\": \"$bookmark\"}" || return 1
+	want_eq "declaring $bookmark" "$API_STATUS" 200 || return 1
+	psql_do "UPDATE inbox_readers SET created = now() - interval '3 hours'
+	          WHERE reader = '$bookmark'" || return 1
+	# Past its own mark, or the ack moves nothing and stamps nothing - which
+	# would make this pass without the row ever being touched.
+	local mark
+	mark="$(scalar "SELECT read_cursor + 1 FROM inbox_readers WHERE reader = '$bookmark'")" || return 1
+	api POST "$TOKEN_A" /api/inbox/ack "{\"as\": \"$bookmark\", \"cursor\": $mark}" || return 1
+	want_eq "acking the bookmark" "$API_STATUS" 200 || return 1
+	want_eq "a bookmark that never polled, acked just now" \
+		"$(presence_field "$bookmark" state)" '<not listed>' || return 1
+
+	printf 'presence: polling, starting, and armed-then-stopped are three answers, and the stopped one keeps its place\n'
 }
 
 # ------------------------------------------------------------ per-room todos
@@ -5710,7 +5804,8 @@ browser_shows_what_a_listener_can_do() {
 	recall
 	cd "$ROOT/web" || return 1
 	node scripts/roster-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" \
-		"$ROSTER_TRACKED=tracked" "$ROSTER_FORKED=forked" "$ROSTER_QUIET=unknown"
+		"$ROSTER_TRACKED=tracked" "$ROSTER_FORKED=forked" "$ROSTER_QUIET=unknown" \
+		--went-quiet="$ROSTER_STOPPED"
 }
 
 # Speakers are drawn in their own colour, and it is really applied. A palette
@@ -10218,6 +10313,18 @@ check "presence answers tracked, forked, and unknown for anything unsaid" \
 	presence_says_what_each_listener_can_do
 check "the kind is per reader and survives the poll that set it" \
 	go test -count=1 -run TestPresenceCarriesTheWaiterKind ./internal/store
+
+# Hearing stops, and the node has to be able to say so. A poll counter that only
+# comes down when a handler returns kept two seats on this roster reading
+# "attached" - one for six hours, one for thirty - while the operator asked twice
+# why an agent was not answering. The answer is not a shorter list: it is a row
+# that says the seat was armed, stopped, and when.
+check "a seat that stopped mid-poll is named as gone quiet, not left reading attached" \
+	presence_retires_a_seat_that_stopped_mid_poll
+check "the roster retires a stalled reader and keeps the evidence" \
+	go test -count=1 -run 'TestPresenceRetiresAReaderThatStoppedMidPoll|TestPresenceStartingIsJudgedByTheRowsAge' ./internal/store
+check "the two windows follow the waiter's own numbers" \
+	go test -count=1 -run 'TestPresenceWindowIsManyServerWindowsWide|TestPresenceLostWindowFollowsTheWaitersDeadline' .
 
 # A todo panel inside the room, and the field it needs. The room rides fields
 # the way as_of rides a report, and it is a filter and not a permission axis -
@@ -15362,6 +15469,32 @@ check "a superseded report is marked where somebody reads it, and the console's 
 	browser_marks_a_superseded_report
 check "signed out, the reports page says so rather than looking empty" \
 	the_reports_page_says_it_is_signed_out
+
+# The new button on /diagrams, clicked in a real browser with the name box
+# EMPTY - the state an operator reported as "cant create a diagram". Every unit
+# test passed and the node's write door was fine; the button was simply
+# disabled until the box beside it was filled, and a disabled button here has
+# no cursor, no hover, no message and no navigation. Nothing exercised the
+# click, so nothing saw it. See scripts/diagram-new-check.mjs for why the four
+# ways this fails are told apart in its output rather than after the fact.
+a_diagram_is_created_by_clicking_new() {
+	cd "$ROOT/web" || return 1
+	node scripts/diagram-new-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A"
+}
+
+# Signed out, the page says what to do about it rather than reading as "there
+# are no diagrams". No node and no token on purpose: this is the state a
+# browser is in when somebody opens the link for the first time.
+the_diagrams_page_says_it_is_signed_out() {
+	cd "$ROOT/web" || return 1
+	node scripts/render-check.mjs "" "" "paste a token to see the diagrams" /diagrams
+}
+
+say "diagrams: the new button, clicked"
+check "new with an empty name makes a diagram, opens the editor and can be renamed" \
+	a_diagram_is_created_by_clicking_new
+check "signed out, the diagrams page says so rather than looking empty" \
+	the_diagrams_page_says_it_is_signed_out
 
 say "metrics: what was measured, and for whom"
 check "every group is in the answer, and says whether it was measured" \
