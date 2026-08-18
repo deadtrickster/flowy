@@ -981,6 +981,27 @@ func fillCategory(arts []*Artifact) {
 //
 // Called beside fillAssignee in the permission-filtered read paths only, so a
 // derived value never reaches the sync paths or the signature.
+// FillDerived puts the derived queue fields on rows a WRITE is about to answer
+// with, which the read paths do for rows they return and a write path cannot
+// borrow.
+//
+// The three fills below run inside the permission-filtered reads, deliberately,
+// so a derived value never reaches sync or the signature. A door that CREATES a
+// row answers with the artifact it just wrote, which never went through those
+// reads - so `fields.raiser` was set and `item.raiser` came back null, and the
+// gate caught exactly that. Every client then has to decide whether a null
+// top-level field means "no raiser" or "this response does not carry it", which
+// is the ambiguity these fields exist to remove.
+//
+// Exported because the doors live in package main. It takes the row it is given
+// and asks it nothing else - there is no query here and no permission decision,
+// because the caller has already made both by writing the row.
+func FillDerived(arts ...*Artifact) {
+	fillAssignee(arts)
+	fillCategory(arts)
+	fillRaiser(arts)
+}
+
 func fillRaiser(arts []*Artifact) {
 	for _, art := range arts {
 		if art != nil {

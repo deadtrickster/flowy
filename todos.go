@@ -351,6 +351,10 @@ func (s *server) handleRoomTodoRaise(w http.ResponseWriter, r *http.Request) {
 		serverError(w, r, err)
 		return
 	}
+	// The row this door just wrote, answered in the shape a READ of it would
+	// have. Without this the raiser is in fields and absent from the row, which
+	// is how the gate found it: `fields.raiser` correct, `item.raiser` null.
+	store.FillDerived(art)
 	writeJSON(w, http.StatusOK, map[string]any{"item": art, "event": e})
 }
 
