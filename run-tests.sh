@@ -16715,6 +16715,79 @@ the_land_guard_refuses_what_it_should() {
 # The half that matters: GIT ITSELF refuses. The checks above measure a script;
 # this measures the thing the script was written to stop, in the form it took -
 # a fast-forward of master by somebody holding no lock.
+# THE ESCAPE HATCH, which is the arm nobody drove in the suite. Its three
+# properties were proved by hand on a scratch clone and then nothing kept them
+# proved - and it is the one branch of this guard whose rules are the OPPOSITE
+# of the guard's own: it must never refuse, and an unreachable node must let it
+# through rather than block it. A hatch that can fail is a second lock, failing
+# in exactly the conditions it exists for.
+#
+# Driven as a DIFFERENCE: the same merge, in the same repository, with the node
+# unreachable - refused without the hatch, allowed with it. "The hatch allows"
+# on its own would pass against a hook that allows everything.
+the_hatch_never_refuses_and_leaves_a_trace() {
+	recall
+	local repo before log
+	repo="$(mktemp -d)" || return 1
+	(
+		cd "$repo" || exit 1
+		git init -q -b master .
+		git config user.email a@b
+		git config user.name a
+		git config commit.gpgsign false
+		echo one >f
+		git add f
+		git commit -qm one
+		git checkout -qb feature
+		echo two >f
+		git commit -qam two
+		git checkout -q master
+	) || {
+		rm -rf "$repo"
+		return 1
+	}
+	bash "$ROOT/scripts/install-land-guard.sh" "$repo" >/dev/null || {
+		rm -rf "$repo"
+		return 1
+	}
+	before="$(git -C "$repo" rev-parse master)"
+
+	# One arm: no hatch, node unreachable. Refused, and the ref does not move.
+	(cd "$repo" && FLOWY_ADDR=http://127.0.0.1:9 FLOWY_TOKEN=tok git merge --ff-only feature >/dev/null 2>&1) || true
+	want_eq "without the hatch an unreachable node refuses" \
+		"$(git -C "$repo" rev-parse master)" "$before" || {
+		rm -rf "$repo"
+		return 1
+	}
+
+	# Other arm: same merge, hatch on, same dead node. Allowed.
+	(cd "$repo" && FLOWY_ADDR=http://127.0.0.1:9 FLOWY_LAND_GUARD=off \
+		FLOWY_LAND_GUARD_REASON="driven by the suite" FLOWY_AGENT=a-lander \
+		git merge --ff-only feature >/dev/null 2>&1) || true
+	if [ "$(git -C "$repo" rev-parse master)" != "$(git -C "$repo" rev-parse feature)" ]; then
+		printf 'the hatch refused with the node down - it is a second lock\n'
+		rm -rf "$repo"
+		return 1
+	fi
+
+	# AND THE TRACE SURVIVES THE NODE BEING DOWN, which is the whole point: the
+	# announcement cannot be sent in exactly the case somebody reaches for the
+	# hatch, so a bypass whose only record is that announcement is a bypass
+	# nobody can find afterwards.
+	log="$repo/.git/flowy-bypass.log"
+	if ! grep -q 'driven by the suite' "$log" 2>/dev/null; then
+		printf 'the hatch left no local trace: %s\n' "$(cat "$log" 2>/dev/null)"
+		rm -rf "$repo"
+		return 1
+	fi
+	grep -q 'a-lander' "$log" 2>/dev/null || {
+		printf 'the trace does not name who used the hatch\n'
+		rm -rf "$repo"
+		return 1
+	}
+	rm -rf "$repo"
+}
+
 git_refuses_to_move_master_without_the_lock() {
 	recall
 	local repo pid out before
@@ -16938,6 +17011,8 @@ check "the land guard refuses a move by anybody who does not hold the lock" \
 	the_land_guard_refuses_what_it_should
 check "git itself will not move master without the lock" \
 	git_refuses_to_move_master_without_the_lock
+check "the escape hatch never refuses and writes a trace with no node" \
+	the_hatch_never_refuses_and_leaves_a_trace
 check "deploy.sh refuses an argument it does not know, and says how to call it" \
 	deploy_refuses_misuse
 check "deploy.sh refuses to deploy anything that is not master" \
