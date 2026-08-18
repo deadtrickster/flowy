@@ -956,6 +956,25 @@ type ArtifactQuery struct {
 	Query      string // free text; SearchArtifacts only
 	ScopeAll   bool   // ?scope=all - honoured only for the operator principal
 	Limit      int
+	// QueuedOrder answers OLDEST FIRST, by the order the rows were created.
+	//
+	// The default here is `updated DESC`, which is right for a board somebody
+	// is browsing - what changed lately is what they came to see - and wrong
+	// for anything that CONSUMES a list in turn. A queue sorted by last write
+	// is not a queue: any write reorders it, and none of the writes are about
+	// readiness.
+	//
+	// Measured on 2026-08-18. The merge queue read this list, the drainer took
+	// the first row it could work, and so: a row jumped to the head the moment
+	// it was filed, a declare moved a row being gated ahead of every row never
+	// tried, and batch/orchestrator-evening - queued at 19:55 and touched by
+	// nobody since - was last in every answer for two hours. Its turn was not
+	// coming, it was arriving only when the queue emptied.
+	//
+	// created ASC rather than a position column: the moment a row was queued is
+	// a fact about it that no later write changes, which is the whole property
+	// the sort needs and the one `updated` does not have.
+	QueuedOrder bool
 }
 
 const defaultLimit = 200
@@ -984,6 +1003,22 @@ func clampLimit(asked int) int {
 }
 
 func (q ArtifactQuery) limit() int { return clampLimit(q.Limit) }
+
+// order is the sort this query runs under, as SQL.
+//
+// IT IS INSIDE THE LIMIT, which is the half worth stating: the LIMIT applies to
+// the sorted rows, so a queued-order read of a queue longer than one page hands
+// back the OLDEST page - the rows next to be worked - rather than the most
+// recently written ones re-sorted after the fact. Sorting in Go after the query
+// would have looked identical on a five-row queue and dropped the oldest rows
+// on a long one, which is the version of this bug that would not have been
+// noticed.
+func (q ArtifactQuery) order(alias string) string {
+	if q.QueuedOrder {
+		return alias + ".created ASC, " + alias + ".id ASC"
+	}
+	return alias + ".updated DESC, " + alias + ".id DESC"
+}
 
 // PageLimit is that same number, for a caller that has to know whether a full
 // page means "that is all of them". Limit as asked is not it: zero means the
@@ -1075,7 +1110,7 @@ func (d *DB) ListArtifacts(ctx context.Context, p *Principal, q ArtifactQuery) (
 	            FROM artifacts ar
 	           WHERE coalesce(ar.tombstone, false) = false
 	             AND ` + filter + q.narrow(a, "ar") + `
-	           ORDER BY ar.updated DESC, ar.id DESC
+	           ORDER BY ` + q.order("ar") + `
 	           LIMIT ` + a.next(q.limit())
 
 	rows, err := d.sql.QueryContext(ctx, query, a.vals...)

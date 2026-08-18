@@ -55,11 +55,17 @@ type mergeQueueItem struct {
 	// Absent when there is none, and absent once it is older than
 	// store.BlockBelievedFor: a skip is a fact about a moment, and an old answer
 	// about a fast-moving fact is furniture rather than evidence.
-	Blocked    *mergeQueueBlocked `json:"blocked,omitempty"`
-	Status     string             `json:"status"`
-	Assignee   string             `json:"assignee,omitempty"`
-	Admissible *bool              `json:"admissible,omitempty"`
-	Reason     string             `json:"reason,omitempty"`
+	Blocked *mergeQueueBlocked `json:"blocked,omitempty"`
+	// Queued is WHEN THIS ROW JOINED THE QUEUE, and it is the field this list
+	// is now sorted by. It was absent, and a sort by a value the view does not
+	// carry is a sort nobody can check: a reader who suspected the order was
+	// wrong had to fetch /api/artifact/<id> once per row to see it. Two of us
+	// did exactly that tonight.
+	Queued     time.Time `json:"queued"`
+	Status     string    `json:"status"`
+	Assignee   string    `json:"assignee,omitempty"`
+	Admissible *bool     `json:"admissible,omitempty"`
+	Reason     string    `json:"reason,omitempty"`
 	// Held says the target is reserved by another declarer's lock - a WAIT, as
 	// against Admissible's verdict about this row's own evidence. Distinct on
 	// purpose: collapsing them is how an agent re-gates when it should sleep
@@ -143,6 +149,12 @@ func (s *server) handleMergeQueue(w http.ResponseWriter, r *http.Request) {
 		NotStatus: store.DoneStatus,
 		ScopeAll:  scopeAll(r, p),
 		Limit:     intParam(q.Get("limit")),
+		// IN THE ORDER THEY WERE QUEUED, because this list is consumed in turn
+		// rather than browsed. The drainer takes the first row of this answer
+		// it can work, so whatever this door sorts by IS the queue discipline -
+		// and until now that was `updated DESC`, which made every write a
+		// promotion. See store.ArtifactQuery.QueuedOrder for what that cost.
+		QueuedOrder: true,
 	})
 	if err != nil {
 		serverError(w, r, err)
@@ -175,6 +187,7 @@ func (s *server) handleMergeQueue(w http.ResponseWriter, r *http.Request) {
 			GateRef:  store.GateRefOf(a),
 			Red:      queueRedOf(a),
 			Blocked:  queueBlockedOf(a, time.Now().UTC()),
+			Queued:   a.Created,
 			Status:   store.TodoStatusOf(a),
 			Assignee: store.AssigneeOf(a),
 		}
