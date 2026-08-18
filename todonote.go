@@ -87,7 +87,9 @@ func (s *server) handleTodoNote(w http.ResponseWriter, r *http.Request) {
 	}
 	art, _, err := s.db.AppendTodoNote(r.Context(), p, r.PathValue("id"), req.Note)
 	if err != nil {
-		s.writeQueueError(w, r, err)
+		// One id in the path, so the 404 for an id that is not a row can say
+		// which space it came from instead - see misreadIDNote.
+		s.writeQueueErrorFor(w, r, err, r.PathValue("id"))
 		return
 	}
 	// No FillDerived here, unlike the doors that CREATE a row: the append reads
@@ -106,7 +108,7 @@ func (s *server) handleTodoNotes(w http.ResponseWriter, r *http.Request) {
 
 	art, err := s.db.ReadWorkItem(r.Context(), p, r.PathValue("id"))
 	if err != nil {
-		s.writeQueueError(w, r, err)
+		s.writeQueueErrorFor(w, r, err, r.PathValue("id"))
 		return
 	}
 	writeJSON(w, http.StatusOK, viewNotes(art))

@@ -405,7 +405,10 @@ func (s *server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		writeJSON(w, http.StatusNotFound, errorBody("no such artifact"))
+		// And the fourth truth 404 was answering: the id is real and is not an
+		// artifact id at all. See misreadIDNote.
+		writeJSON(w, http.StatusNotFound,
+			errorBody("no such artifact"+s.misreadIDNote(r, r.PathValue("id"))))
 		return
 	}
 	if err != nil {
@@ -413,6 +416,45 @@ func (s *server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, art)
+}
+
+// misreadIDNote is what a not-found answer adds when the id the caller used
+// names something real in another id space: a chat message, or a chat thread.
+// It is empty when the id names nothing this reader can reach, which leaves the
+// refusal exactly as it was.
+//
+// THE REFUSAL CARRIES THE DIAGNOSIS, which is the pattern the merge queue
+// already keeps. A 404 that says only "no such artifact" is true and useless
+// against a thread id: the reader goes looking for a deleted row, finds nothing,
+// and concludes the row is gone - when the row is there and they are holding the
+// wrong end of it. Two agents did exactly that within five minutes on
+// 2026-08-18, over two ids that differed in their last character.
+//
+// The id is an argument rather than read off the path here, because a door that
+// names two rows - an edge has a todo and a blocker - cannot tell which of them
+// missed, and a note that guessed would be this same defect wearing a label.
+// Only a caller that knows which id failed may ask for the sentence.
+//
+// A diagnosis that cannot be produced is not an error the caller should see:
+// the answer to their request is 404 either way, and turning a failed
+// explanation into a 500 would replace a usable refusal with an unusable one.
+// So a store failure here costs the sentence and nothing else.
+func (s *server) misreadIDNote(r *http.Request, id string) string {
+	m, err := s.db.MisreadArtifactID(r.Context(), principalOf(r), id)
+	if err != nil || m == nil {
+		return ""
+	}
+	what := "a chat message"
+	names := "; the row it is about is "
+	if m.Space == store.IDSpaceThread {
+		what = "a chat thread"
+		names = "; the row raised in it is "
+	}
+	note := " - that id names " + what + ", not a row"
+	if m.Artifact != "" {
+		note += names + m.Artifact
+	}
+	return note
 }
 
 // handleDeleteArtifact tombstones an artifact: the row stays, marked, with a

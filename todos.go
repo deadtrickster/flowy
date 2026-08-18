@@ -299,6 +299,12 @@ func (s *server) handleRoomTodoRaise(w http.ResponseWriter, r *http.Request) {
 	// project to write into and keeps its own item, which is what a principal
 	// with no project has for everything else here.
 	art := &store.Artifact{
+		// Minted here rather than left to the write, because the message posted
+		// below has to name the row it raised and a sentence cannot be given a
+		// name that does not exist yet. store.WriteMemory mints one only for a
+		// row that arrives without, so this is the id the row is stored under
+		// and not a second id that agrees with it by luck.
+		ID:         ulid.NewString(),
 		Type:       memoryType,
 		Kind:       todoKind,
 		Title:      title,
@@ -325,13 +331,29 @@ func (s *server) handleRoomTodoRaise(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// THE ANNOUNCEMENT NAMES THE ROW IT IS ANNOUNCING, in the prose, with the
+	// word "todo" in front of the id so that the id says which id it is.
+	//
+	// The artifact column carries this already, and every reader that keeps the
+	// whole event has always had it. But a message is read through renderings -
+	// a room in a terminal, a line of inbox JSONL, a person's eye - and a
+	// rendering that drops a column leaves a reader holding a message with two
+	// other ULIDs on it, the event's own id and its thread, and no way to tell
+	// that neither of them is the row. That is what happened on 2026-08-18:
+	// two agents took the thread id out of a raise notification, called the row
+	// doors with it, and read the 404 as a row that had gone away. The ids
+	// differed in their last character.
+	//
+	// So the id goes where it cannot be dropped and cannot be confused with the
+	// two beside it, and a reader who copies what follows "todo" reaches the row
+	// that was raised or reaches nothing at all.
 	e := &store.Event{
 		Type:    chatEventType,
 		Room:    room,
 		Thread:  thread,
 		Parents: parents,
 		Actor:   actor,
-		Body:    "raised a todo: " + title,
+		Body:    "raised a todo " + art.ID + ": " + title,
 		Meta:    withTrace(json.RawMessage(meta), traceIDOf(r)),
 	}
 	events := []*store.Event{e}
