@@ -49,12 +49,18 @@ CREATE TABLE IF NOT EXISTS users (
     -- node actually asks - ?scope=all, minting, join approval, the mock forge -
     -- and a matrix invented before the third question arrives will be wrong
     -- when it does.
-    role          text NOT NULL DEFAULT 'member'
+    -- NULL means the store holds no opinion, and that is a REACHABLE STATE on
+    -- purpose. A NOT NULL DEFAULT 'member' looked tidier and was a lockout: it
+    -- made absent unreachable, so isOperator's fallback to $FLOWY_OPERATOR
+    -- could never fire and every operator-only route refused the operator.
+    -- Seventeen checks caught it; the test I wrote to prevent it did not,
+    -- because it asserted the code path while the schema removed the state.
+    role          text
 );
 
 -- Nodes that predate the column get it, defaulting everybody to member. The
 -- bootstrap below is what makes the first operator exist.
-ALTER TABLE users ADD COLUMN IF NOT EXISTS role text NOT NULL DEFAULT 'member';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS role text;
 
 -- Agents acting for a user.
 --
