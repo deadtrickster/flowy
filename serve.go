@@ -416,6 +416,10 @@ func (s *server) routes() http.Handler {
 	// and it composes nothing. See api_instructions.go.
 	api.HandleFunc("POST /api/instructions", s.handleWriteInstruction)
 	api.HandleFunc("GET /api/instructions", s.handleReadInstructions)
+	// A person changes their own name and password without a shell - see
+	// api_me.go. PUT because it is an update to one thing that already exists.
+	api.HandleFunc("PUT /api/me", s.handleUpdateMe)
+	api.HandleFunc("GET /api/me", s.handleReadMe)
 	api.HandleFunc("POST /api/lock/release", s.handleReleaseLock)
 	api.HandleFunc("GET /api/lock", s.handleReadLock)
 	api.HandleFunc("POST /api/merge/{id}/land", s.handleMergeLand)

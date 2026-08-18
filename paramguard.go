@@ -76,6 +76,8 @@ var routeParams = map[string][]string{
 	"POST /api/artifact/{id}/origins":            {},
 	"POST /api/lock":                             {},
 	"POST /api/lock/release":                     {},
+	"GET /api/me":                                {},
+	"PUT /api/me":                                {},
 	"GET /api/merge-queue":                       {"limit", "project", "room", "scope", "target", "target_tip"},
 	"GET /api/metrics":                           {"scope"},
 	"GET /api/node":                              {},

@@ -292,3 +292,46 @@ func (d *DB) UserByHandle(ctx context.Context, handle string) (*User, error) {
 	}
 	return d.GetUser(ctx, id)
 }
+
+// SetHandle names a person after they exist.
+//
+// users.handle could be written when the row was CREATED and never again -
+// InsertUser inserts it, MintAgent inserts it, and no other statement in this
+// store touches it. That was invisible until login started matching on it: the
+// operator's row carried a placeholder handle nobody could change, and the only
+// way to set a real one was raw SQL by whoever was at the box.
+//
+// UNIQUE IS A SENTENCE, NOT A CONSTRAINT NAME. The index already refuses a
+// duplicate; what a caller needs to hear is which name is taken.
+func (d *DB) SetHandle(ctx context.Context, user, handle string) error {
+	user, handle = strings.TrimSpace(user), strings.TrimSpace(handle)
+	if user == "" {
+		return fmt.Errorf("store: a handle belongs to somebody")
+	}
+	if handle == "" {
+		return fmt.Errorf("store: a handle is how a person is addressed and how they log in - " +
+			"it cannot be empty")
+	}
+	var taken string
+	err := d.sql.QueryRowContext(ctx,
+		`SELECT id FROM users WHERE handle = $1 AND id <> $2`, handle, user).Scan(&taken)
+	switch {
+	case err == nil:
+		return fmt.Errorf("store: %q is somebody else's handle", handle)
+	case !errors.Is(err, sql.ErrNoRows):
+		return fmt.Errorf("store: set handle: %w", err)
+	}
+
+	res, err := d.sql.ExecContext(ctx, `UPDATE users SET handle = $2 WHERE id = $1`, user, handle)
+	if err != nil {
+		return fmt.Errorf("store: set handle of %s: %w", user, err)
+	}
+	n, err := affectedRows(res)
+	if err != nil {
+		return fmt.Errorf("store: set handle of %s: %w", user, err)
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}

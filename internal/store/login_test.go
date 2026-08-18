@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -250,5 +251,64 @@ func TestDeletingAUserTakesTheirSecretAndSessions(t *testing.T) {
 	}
 	if secrets != 0 || sessions != 0 {
 		t.Errorf("after deleting the user: %d secrets and %d sessions remain", secrets, sessions)
+	}
+}
+
+// A person can be named after they exist, which nothing could do before: handle
+// was written by InsertUser and by MintAgent and by no other statement.
+func TestAPersonCanBeRenamed(t *testing.T) {
+	ctx, db := open(t)
+	u := loginUser(t, ctx, db)
+
+	if err := db.SetHandle(ctx, u.ID, "renamed-"+ulid.NewString()); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+	// AND THE PASSWORD FOLLOWS THE PERSON, because the secret is keyed on the
+	// user id. A rename that silently invalidated a login would be the worst
+	// possible shape: the account works until the next time somebody types the
+	// new name.
+	if err := db.SetPassword(ctx, u.ID, "correct horse battery"); err != nil {
+		t.Fatalf("set password: %v", err)
+	}
+	renamed, err := db.GetUser(ctx, u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.VerifyLogin(ctx, renamed.Handle, "correct horse battery"); err != nil {
+		t.Errorf("the new handle cannot log in: %v", err)
+	}
+	if _, err := db.VerifyLogin(ctx, u.Handle, "correct horse battery"); !errors.Is(err, ErrBadLogin) {
+		t.Errorf("the OLD handle still logs in: %v", err)
+	}
+}
+
+// Somebody else's handle is refused in a sentence, not as a constraint name.
+func TestATakenHandleIsRefusedByName(t *testing.T) {
+	ctx, db := open(t)
+	first := loginUser(t, ctx, db)
+	second := loginUser(t, ctx, db)
+
+	err := db.SetHandle(ctx, second.ID, first.Handle)
+	if err == nil {
+		t.Fatal("two people now share a handle, which login resolves through")
+	}
+	if !strings.Contains(err.Error(), first.Handle) {
+		t.Errorf("the refusal does not name the handle: %v", err)
+	}
+	// And the second user still has their own.
+	still, err := db.GetUser(ctx, second.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if still.Handle != second.Handle {
+		t.Errorf("a refused rename changed the handle to %q", still.Handle)
+	}
+}
+
+// Renaming somebody who is not there is ErrNotFound, not a silent success.
+func TestRenamingNobodyIsRefused(t *testing.T) {
+	ctx, db := open(t)
+	if err := db.SetHandle(ctx, "01USER-DOES-NOT-EXIST", "ghost"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("got %v, want ErrNotFound", err)
 	}
 }
