@@ -1277,11 +1277,11 @@ export const api = {
    * idempotent - an existing label comes back where it stands - so the console
    * can call it for a room it has not read before without checking first.
    */
-  declareInboxReader: (as: string) =>
+  declareInboxReader: (as: string, kind?: string) =>
     request<InboxReader>("/api/inbox/reader", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ as }),
+      body: JSON.stringify({ as, kind }),
     }),
 
   /**

@@ -80,7 +80,12 @@ type inboxWaitResponse struct {
 // inbox for good. An id is a string and survives the trip, so a client that
 // cannot hold a reading names the message instead of measuring it.
 type inboxReaderRequest struct {
-	As        string `json:"as"`
+	As string `json:"as"`
+	// What the label IS, on the declaration that creates it: a waiter some
+	// harness watches, a detached fork, or a cursor that never blocks at all.
+	// It is asked here because it is unanswerable later - a cursor and a
+	// waiter that has not polled yet are the same row.
+	Kind      string `json:"kind"`
 	Cursor    int64  `json:"cursor"`
 	Event     string `json:"event"`
 	Delivered bool   `json:"delivered"`
@@ -363,7 +368,7 @@ func (s *server) handleInboxReader(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorBody("as is required"))
 		return
 	}
-	reader, err := s.db.DeclareInboxReader(r.Context(), p, req.As)
+	reader, err := s.db.DeclareInboxReader(r.Context(), p, req.As, req.Kind)
 	if err != nil {
 		serverError(w, r, err)
 		return

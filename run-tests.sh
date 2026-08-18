@@ -4012,7 +4012,32 @@ presence_retires_a_seat_that_stopped_mid_poll() {
 	want_eq "a bookmark that never polled, acked just now" \
 		"$(presence_field "$bookmark" state)" '<not listed>' || return 1
 
-	printf 'presence: polling, starting, and armed-then-stopped are three answers, and the stopped one keeps its place\n'
+	# AND A LABEL THAT SAYS IT IS A CURSOR IS NOT ON THE ROSTER AT ALL, from
+	# the moment it is declared. The clause above ages a never-polled row out
+	# after the window, which is right for a waiter arming itself and too slow
+	# for the console's per-room labels: those never poll by design, and the
+	# operator reloads more often than the window is long. The kind is asked at
+	# declare because it is unanswerable later - a cursor and a waiter before
+	# its first poll are the same row.
+	#
+	# Through the API rather than the store, because the wiring between them is
+	# what a store test cannot see: the door reads `kind` off the body and the
+	# roster reads it off the column, and either half missing looks exactly like
+	# this check passing on the store alone.
+	local cursor=console:roster-cursor
+	api POST "$TOKEN_A" /api/inbox/reader "{\"as\": \"$cursor\", \"kind\": \"cursor\"}" || return 1
+	want_eq "declaring $cursor" "$API_STATUS" 200 || return 1
+	want_eq "a cursor declared a moment ago" \
+		"$(presence_field "$cursor" state)" '<not listed>' || return 1
+	# THE CONTROL, same instant, same door: a label declared without saying
+	# what it is still reads as starting. Without this the check passes just as
+	# well against a roster that lost the starting state altogether.
+	local arming=roster-arming
+	api POST "$TOKEN_A" /api/inbox/reader "{\"as\": \"$arming\"}" || return 1
+	want_eq "a waiter declared a moment ago" \
+		"$(presence_field "$arming" state)" starting || return 1
+
+	printf 'presence: polling, starting, and armed-then-stopped are three answers, the stopped one keeps its place, and a cursor is not on the roster\n'
 }
 
 # ------------------------------------------------------------ per-room todos

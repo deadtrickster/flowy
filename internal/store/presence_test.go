@@ -35,7 +35,7 @@ func TestPresenceTracksPollsNotAcks(t *testing.T) {
 	}
 	p := &Principal{UserID: u.ID, Project: project}
 
-	if _, err := db.DeclareInboxReader(ctx, p, "waiter"); err != nil {
+	if _, err := db.DeclareInboxReader(ctx, p, "waiter", ""); err != nil {
 		t.Fatalf("declare reader: %v", err)
 	}
 
@@ -122,7 +122,7 @@ func TestPresenceCarriesTheWaiterKind(t *testing.T) {
 	}
 
 	for _, reader := range []string{"tracked-one", "forked-one", "quiet-one", "never-polled"} {
-		if _, err := db.DeclareInboxReader(ctx, p, reader); err != nil {
+		if _, err := db.DeclareInboxReader(ctx, p, reader, ""); err != nil {
 			t.Fatalf("declare reader %s: %v", reader, err)
 		}
 	}
@@ -230,7 +230,7 @@ func TestPresenceRetiresAReaderThatStoppedMidPoll(t *testing.T) {
 	}
 
 	for _, reader := range []string{"stopped-six-hours-ago", "stopped-yesterday"} {
-		if _, err := db.DeclareInboxReader(ctx, p, reader); err != nil {
+		if _, err := db.DeclareInboxReader(ctx, p, reader, ""); err != nil {
 			t.Fatalf("declare reader %s: %v", reader, err)
 		}
 	}
@@ -316,7 +316,7 @@ func TestPresenceStartingIsJudgedByTheRowsAge(t *testing.T) {
 	}
 
 	const bookmark = "console:general"
-	if _, err := db.DeclareInboxReader(ctx, p, bookmark); err != nil {
+	if _, err := db.DeclareInboxReader(ctx, p, bookmark, ""); err != nil {
 		t.Fatalf("declare reader: %v", err)
 	}
 	// Freshly declared and not yet polling: a waiter arming itself looks exactly
@@ -361,7 +361,7 @@ func TestDeleteInboxReader(t *testing.T) {
 	p := &Principal{UserID: u.ID, Project: project}
 	po := &Principal{UserID: other.ID, Project: project}
 
-	if _, err := db.DeclareInboxReader(ctx, p, "test-label"); err != nil {
+	if _, err := db.DeclareInboxReader(ctx, p, "test-label", ""); err != nil {
 		t.Fatalf("declare reader: %v", err)
 	}
 
@@ -414,5 +414,69 @@ func TestRoomMembersNamesSpeakers(t *testing.T) {
 	}
 	if members[0].Kind != "user" {
 		t.Errorf("member kind is %q, want user", members[0].Kind)
+	}
+}
+
+// A CURSOR IS NOT A WAITER STARTING UP, AND ONLY THE DECLARATION CAN SAY SO.
+//
+// The clause above windows a never-polled row by its age, which is right for a
+// waiter arming itself and wrong for the console's per-room labels: those never
+// poll at all, by design, so "starting" was a state they could not leave and
+// three of them were half the pane. Ageing them out helps after the window and
+// not before it - the operator reloads more often than that.
+//
+// The row itself cannot answer it. A cursor and a waiter before its first poll
+// are the same two facts: a label, and no poll. So the kind is asked at the one
+// moment somebody knows - the declaration - and the roster reads it.
+func TestACursorIsNotOnTheRosterAtAll(t *testing.T) {
+	ctx, db := open(t)
+	u := presenceUser(t, ctx, db, "cursor")
+	project := "presence-" + ulid.NewString()[:6]
+	if err := db.DeclareProject(ctx, &Project{ID: project, Name: project, CreatedBy: u.ID}); err != nil {
+		t.Fatalf("declare project: %v", err)
+	}
+	p := &Principal{UserID: u.ID, Project: project}
+
+	listed := func(reader string) *PresenceRow {
+		t.Helper()
+		rows, err := db.Presence(ctx)
+		if err != nil {
+			t.Fatalf("presence: %v", err)
+		}
+		for _, r := range rows {
+			if r.Reader == reader && r.Principal == readerKey(p) {
+				return r
+			}
+		}
+		return nil
+	}
+
+	const cursor = "console:general"
+	if _, err := db.DeclareInboxReader(ctx, p, cursor, WaiterCursor); err != nil {
+		t.Fatalf("declare the cursor: %v", err)
+	}
+	if row := listed(cursor); row != nil {
+		t.Errorf("a cursor declared a moment ago is on the roster as %+v", row)
+	}
+
+	// THE CONTROL, in the same call and on the same clock: a label declared
+	// without saying what it is still reads as starting. Otherwise this change
+	// is not "cursors are not listeners", it is the starting state deleted -
+	// and the way that failure presents is a green suite and a roster that
+	// never shows a waiter arming.
+	const arming = "a-waiter-arming"
+	if _, err := db.DeclareInboxReader(ctx, p, arming, ""); err != nil {
+		t.Fatalf("declare the waiter: %v", err)
+	}
+	if row := listed(arming); row == nil || row.State != PresenceStarting {
+		t.Fatalf("a waiter declared a moment ago reads as %+v, want %q", row, PresenceStarting)
+	}
+
+	// And a cursor that does poll is a waiter after all, said by the only
+	// evidence that outranks a declaration: it polled. Nothing here has to
+	// believe the label forever.
+	db.PollStart(ctx, p, cursor, WaiterTracked)
+	if row := listed(cursor); row == nil || row.State != PresenceListening {
+		t.Fatalf("a label that polled reads as %+v, want %q", row, PresenceListening)
 	}
 }

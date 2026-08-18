@@ -160,7 +160,13 @@ export function UnreadProvider({ children }: { children: ReactNode }) {
           // before somebody first opened the console is history rather than
           // unread, and a first load that reported the whole log as unread
           // would be a number nobody can act on and nobody can clear.
-          await api.declareInboxReader(label);
+          // AS A CURSOR, WHICH IS WHAT IT IS. This label holds a position
+          // and never blocks on the inbox, so on a roster built out of polls
+          // it read as a waiter that had not got going yet - forever, and
+          // three of them were half the listening pane. The node cannot work
+          // that out later: a cursor and a waiter before its first poll are
+          // the same row.
+          await api.declareInboxReader(label, "cursor");
           if (stopped) return;
         }
         // Anything read while the reader did not exist yet, or while an ack

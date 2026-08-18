@@ -125,7 +125,11 @@ func (d *DB) InboxReaderAt(ctx context.Context, p *Principal, name string) (*Inb
 // The head is the principal's own: the highest reading among the chat events
 // the permission filter lets them read. It is a filtered read like any other,
 // so declaring a reader tells its caller nothing a read of the inbox would not.
-func (d *DB) DeclareInboxReader(ctx context.Context, p *Principal, name string) (*InboxReader, error) {
+// kind is what the label IS, and it is asked here because it can only be
+// answered here: a cursor and a waiter that has not polled yet are the same row
+// afterwards, so a roster reading the row later cannot tell them apart. Anything
+// that is not one of the claims is unknown, exactly as on a poll.
+func (d *DB) DeclareInboxReader(ctx context.Context, p *Principal, name, kind string) (*InboxReader, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return nil, fmt.Errorf("store: an inbox reader needs a name")
@@ -135,10 +139,10 @@ func (d *DB) DeclareInboxReader(ctx context.Context, p *Principal, name string) 
 		return nil, err
 	}
 	if _, err := d.sql.ExecContext(ctx,
-		`INSERT INTO inbox_readers (principal, reader, read_cursor)
-		 VALUES ($1, $2, $3)
+		`INSERT INTO inbox_readers (principal, reader, read_cursor, waiter_kind)
+		 VALUES ($1, $2, $3, $4)
 		 ON CONFLICT (principal, reader) DO NOTHING`,
-		readerKey(p), name, head); err != nil {
+		readerKey(p), name, head, WaiterKindOf(kind)); err != nil {
 		return nil, fmt.Errorf("store: declare inbox reader %s: %w", name, err)
 	}
 	return d.InboxReaderAt(ctx, p, name)
@@ -211,9 +215,18 @@ func (d *DB) inboxHead(ctx context.Context, p *Principal) (int64, error) {
 // Unknown is emphatically not tracked. The whole cost of this distinction was
 // paid by reading absence as the good case: presence answered "is somebody
 // polling" for 28 minutes while the question was "can anybody be woken".
+//
+// WaiterCursor is the fourth and it is not a waiter at all: a label somebody
+// keeps a POSITION under without ever blocking on it. The console holds one
+// per room to draw its unread badges. It cannot be woken, it is not starting
+// up, and it never polls - so on a roster built out of polls it sat forever in
+// the one state that means "any moment now". Three of them were half the
+// listening pane. A cursor says so at declare, because nothing about the row
+// afterwards distinguishes it from a waiter that has not got going yet.
 const (
 	WaiterTracked = "tracked"
 	WaiterForked  = "forked"
+	WaiterCursor  = "cursor"
 	WaiterUnknown = "unknown"
 )
 
@@ -227,6 +240,8 @@ func WaiterKindOf(s string) string {
 		return WaiterTracked
 	case WaiterForked:
 		return WaiterForked
+	case WaiterCursor:
+		return WaiterCursor
 	}
 	return WaiterUnknown
 }
@@ -462,7 +477,16 @@ func (d *DB) Presence(ctx context.Context) ([]*PresenceRow, error) {
 		     -- the listening pane, refreshed by the very act of looking at the
 		     -- page they were cluttering. A row's age as a candidate listener is
 		     -- how long ago it was declared.
-		     OR (r.last_poll_at IS NULL AND r.created > now() - $1::interval)
+		     --
+		     -- AND A CURSOR IS NOT A WAITER STARTING UP. A label declared as a
+		     -- cursor never polls by design - the console keeps one per room to
+		     -- draw its unread badges - so "starting" was a state it could
+		     -- never leave, and three of them were half this roster. It is
+		     -- excluded here rather than filtered by the view because the
+		     -- question this query answers is who has an ear on, and a cursor
+		     -- has none.
+		     OR (r.last_poll_at IS NULL AND r.created > now() - $1::interval
+		         AND coalesce(r.waiter_kind, '') <> 'cursor')
 		  ORDER BY r.updated DESC, r.reader`,
 		PresenceWindow.String(), PresenceLostWindow.String())
 	if err != nil {
