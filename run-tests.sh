@@ -15970,6 +15970,29 @@ check "new with an empty name makes a diagram, opens the editor and can be renam
 check "signed out, the diagrams page says so rather than looking empty" \
 	the_diagrams_page_says_it_is_signed_out
 
+# The message box beside a document, at two lengths of conversation. Reported as
+# "reports chat has send button but no text area": the textarea was in the DOM
+# the whole time, the right size and not disabled, and no click could reach it -
+# the transcript beside it sized to its content instead of to the pane, overflowed
+# downwards and, being positioned, painted over the form.
+#
+# TWO ARMS BECAUSE ONE READING CANNOT SEE IT. With two messages in the room the
+# box is reachable and always was, so a check that opened a fresh document room
+# and typed into the box passes against the broken console. The defect is the
+# DIFFERENCE between a short transcript and a long one, and that is what is
+# asserted. Presence is asserted nowhere: the element existed throughout.
+#
+# The check makes a report of its own rather than borrowing one of the gate's,
+# because a short arm is only short in a room nobody has spoken in.
+a_person_can_type_into_the_box_beside_a_document() {
+	cd "$ROOT/web" || return 1
+	node scripts/docchat-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" "$PROJECT_A"
+}
+
+say "documents: the conversation beside one, typed into"
+check "the message box beside a document is reachable at both lengths of transcript" \
+	a_person_can_type_into_the_box_beside_a_document
+
 say "metrics: what was measured, and for whom"
 check "every group is in the answer, and says whether it was measured" \
 	metrics_answers_every_group

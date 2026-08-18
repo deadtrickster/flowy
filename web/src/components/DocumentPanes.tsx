@@ -217,15 +217,29 @@ export function DocumentPanes({ room, quote }: Props) {
           </div>
         ) : null}
 
-        <div className="min-h-0 flex-1">
-          <MessageList
-            events={events}
-            selected={selected}
-            onSelect={select}
-            onCite={citeSpan}
-            me={{ user: whoami?.user, agent: whoami?.agent }}
-          />
-        </div>
+        {/*
+          THE TRANSCRIPT IS A FLEX CHILD OF THIS SECTION, with nothing between.
+          It was wrapped in a plain block div, and that div is what the operator
+          reported as "reports chat has send button but no text area": MessageList
+          sizes itself with `flex min-h-0 flex-1`, which needs a flex parent to
+          mean anything. Inside a block it fell back to height:auto, grew to the
+          full length of the conversation, and - being position:relative, so it
+          paints after the static form below it - covered the message box. The
+          box was there the whole time, correctly sized and enabled, and no click
+          could reach it. Every unit test and every reading of the DOM agreed it
+          was fine.
+
+          It only shows once the conversation is longer than the pane, which is
+          why a document room with three messages in it looks perfect. See
+          web/scripts/docchat-check.mjs, which drives both lengths.
+        */}
+        <MessageList
+          events={events}
+          selected={selected}
+          onSelect={select}
+          onCite={citeSpan}
+          me={{ user: whoami?.user, agent: whoami?.agent }}
+        />
 
         <MessageBox
           citation={citation}
