@@ -17099,6 +17099,8 @@ check "a message written where the key is lands on the other node as that person
 	a_message_from_the_node_holding_the_key_is_authored
 check "a pinned peer cannot speak for a principal with a key, and rows below the epoch still land" \
 	a_pinned_peer_cannot_speak_for_a_principal_with_a_key
+check "a write this node cannot sign is refused at the door, and one it can is authored" \
+	go test -count=1 -run TestAWriteThisNodeCannotSignIsRefusedAtTheDoor ./internal/store
 check "a well-formed signature by the wrong key is refused, and hers is not" \
 	a_signature_that_is_not_the_principals_is_not_authorship
 check "a rewrite of what somebody wrote is refused, and an edit they signed is not" \

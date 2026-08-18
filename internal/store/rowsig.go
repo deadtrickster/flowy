@@ -366,6 +366,9 @@ func (d *DB) authorArtifact(ctx context.Context, q execer, a *Artifact) error {
 		a.Authorship = AuthorshipAuthored
 		return nil
 	}
+	if err := d.refuseUnsignableWrite(ctx, q, a.OwnerUser, len(a.AuthorSig) > 0); err != nil {
+		return err
+	}
 	a.Authorship, err = d.authorshipHere(ctx, q, a.OwnerUser,
 		canonicalArtifactAuthorship(a.OwnerUser, a), a.AuthorSig)
 	return err
@@ -394,6 +397,9 @@ func (d *DB) authorEvent(ctx context.Context, q execer, e *Event) error {
 		SignEventAs(priv, e.Actor, e)
 		e.Authorship = AuthorshipAuthored
 		return nil
+	}
+	if err := d.refuseUnsignableWrite(ctx, q, e.Actor, len(e.AuthorSig) > 0); err != nil {
+		return err
 	}
 	e.Authorship, err = d.authorshipHere(ctx, q, e.Actor,
 		canonicalEventAuthorship(e.Actor, e), e.AuthorSig)
