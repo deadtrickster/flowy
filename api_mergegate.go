@@ -17,25 +17,44 @@ package main
 // by flowy-glm until 01:41" is the whole of what it needs to decide to wait.
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
 
 	"github.com/deadtrickster/flowy/internal/store"
 )
 
+// mergeGateRequest is one gate moment as it arrives on the wire.
+//
+// It is a named type rather than an anonymous struct in the handler so that the
+// shape this door accepts can be decoded, and refused, in a test that needs no
+// database - the refusal below happens before the store is ever reached, and
+// that is the half worth pinning down.
+type mergeGateRequest struct {
+	Run      string `json:"run"`
+	GatedTip string `json:"gated_tip"`
+	// GatedRef names where the evidence lives when that is not the row's own
+	// branch - an integration branch. Optional, and ignored on a verdict that
+	// follows a declaration which carried it.
+	GatedRef string `json:"gated_ref"`
+}
+
 func (s *server) handleMergeGate(w http.ResponseWriter, r *http.Request) {
 	p := principalOf(r)
 
-	var req struct {
-		Run      string `json:"run"`
-		GatedTip string `json:"gated_tip"`
-		// GatedRef names where the evidence lives when that is not the row's
-		// own branch - an integration branch. Optional, and ignored on a
-		// verdict that follows a declaration which carried it.
-		GatedRef string `json:"gated_ref"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	// STRICT, like every other write door here: a field this struct does not
+	// know is a 400 naming it, not a value dropped on the floor.
+	//
+	// It used to be a plain decoder, and the cost was not a lost value. A body
+	// meaning "record this verdict" with the tip misspelt - `tip` for
+	// `gated_tip` - decoded into a declaration with no tip in it, which is a
+	// DIFFERENT VERB: it takes the landing lock on the target and pushes the
+	// window out fifteen minutes. Nothing releases that lock early, so the
+	// person who made the typo cannot undo it, and the 200 they got back told
+	// them nothing was wrong. One misspelt field held master for a quarter of
+	// an hour and sent its author looking for a bug in the store, which was
+	// behaving exactly as written.
+	var req mergeGateRequest
+	if err := decodeJSON(r, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, errorBody("body must be json: "+err.Error()))
 		return
 	}
