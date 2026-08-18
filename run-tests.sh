@@ -10418,10 +10418,22 @@ printf 'flowy serve pid %s on 127.0.0.1:%s\n' "$SERVE_PID" "$HTTP_PORT"
 # node as its own.
 its_our_node() {
 	local body name
-	body=$(curl -sS -m 5 "http://127.0.0.1:$HTTP_PORT/healthz" 2>/dev/null) || {
-		printf 'nothing answered /healthz on the port this suite started its node on\n' >&2
+	# IT WAITS, BECAUSE IT IS THE FIRST THING TO ASK. `flowy serve` was started a
+	# few lines up and is still binding; the check below this one retries for
+	# exactly that reason, and this one asked once and failed while the very next
+	# check passed "after 2 attempts" on the same port. Caught by claude-host's
+	# run - 650/1, and the one red was this check rather than anything it guards.
+	body=""
+	for _ in $(seq 20); do
+		body=$(curl -sS -m 5 "http://127.0.0.1:$HTTP_PORT/healthz" 2>/dev/null) && break
+		sleep 0.5
+	done
+	if [ -z "$body" ]; then
+		printf 'nothing answered /healthz on 127.0.0.1:%s after ten seconds - the node this\n' \
+			"$HTTP_PORT" >&2
+		printf 'suite started is not up, and every check after this would measure nothing\n' >&2
 		return 1
-	}
+	fi
 	name=$(printf '%s' "$body" | sed -n 's/.*"node":"\([^"]*\)".*/\1/p')
 	if [ "$name" != "$GATE_NODE" ]; then
 		printf 'the node on 127.0.0.1:%s calls itself %s, not %s - this suite is talking to\n' \
