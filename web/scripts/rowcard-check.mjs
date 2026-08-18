@@ -137,13 +137,25 @@ try {
     // host, and nothing in its message could separate those three - two seats
     // spent twenty minutes before anybody could even state a hypothesis.
     const answered = fetches.length ? fetches.join(", ") : "NO FETCH OF THE ROW AT ALL";
-    // THE TAIL, NOT THE HEAD. Every page here starts with the same nav rail, so
-    // the first 200 characters are identical whatever went wrong - the first
-    // run of this diagnostic returned the sidebar and nothing else. The
-    // document renders after it, so the end of the text is where the evidence
-    // is.
+    // WHERE THE TITLE BELONGS, not the head and not the tail.
+    //
+    // The first cut printed the head and returned the nav rail, identical on
+    // every page. The second printed the tail and returned the document's room
+    // panel - also identical on every page, because that panel is the last
+    // column of every artifact page whether the row loaded or not. Another
+    // seat read that tail as "it rendered the wrong panel" within the hour,
+    // which was a wrong diagnosis produced by my own instrument.
+    //
+    // So: the breadcrumb ends with the row id, and the title is the text that
+    // follows it. Printing that window says what IS there where the title
+    // should be, which is the only part that separates "rendered without the
+    // title" from "rendered something else entirely".
     const whole = (await pageText()).replace(/\s+/g, " ");
-    const painted = whole.length > 240 ? `...${whole.slice(-240)}` : whole;
+    const at = whole.indexOf(rowId);
+    const painted =
+      at >= 0
+        ? `[around the row id] ${whole.slice(at, at + 260)}`
+        : `[row id absent from the page] ${whole.slice(0, 260)}`;
     die(
       `on ${page.url()}: the page the card links to does not show ${JSON.stringify(rowTitle)}. ` +
         `the row's fetch answered: ${answered}. the page showed: ${JSON.stringify(painted)}`,
