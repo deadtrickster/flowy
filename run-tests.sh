@@ -15503,7 +15503,7 @@ readonly FINDING_ISSUE FINDING_DRAFT_WORD FINDING_REPRO_PATH
 
 seeds_two_findings_on_three_axes() {
 	recall
-	local script filed unfiled project
+	local script filed unfiled referenced project
 	script="$(printf '#!/usr/bin/env bash\nexit 0\n' | base64 -w0)"
 
 	want_tool finding_write "$TOKEN_A" \
@@ -15554,11 +15554,30 @@ seeds_two_findings_on_three_axes() {
 	unfiled="$(tv .item.id)"
 	want_eq "and it is open" "$(tv .item.status)" open || return 1
 
+	# THE THIRD ROW IS THE ONE THAT GETS MISCOUNTED: it names things over there
+	# and nobody claims to have sent it. Seven of the sixteen RAGFlow findings
+	# are that, and reading them as filings is what reported one filing as
+	# eight - so the console has to draw REFERENCED as its own word and leave it
+	# out of the filed count. The row carries citations and no state, which is
+	# exactly what an import writes, and the state it reads as is the store's
+	# own fallback (FindingUpstreamOf) rather than anything this check states.
+	want_tool finding_write "$TOKEN_A" \
+		'{"title": "the tailrace gauge disagrees with two of their open issues",
+		  "body": "their issue text describes the same drift; nobody has written to them",
+		  "scope": "project", "severity": "low", "kind": "correctness"}' || return 1
+	referenced="$(tv .item.id)"
+	psql_do "UPDATE artifacts SET fields = coalesce(fields, '{}'::jsonb) || jsonb_build_object(
+		 'upstream_refs', jsonb_build_array(
+		   jsonb_build_object('tracker', 'serenedb', 'kind', 'issue', 'id', '901'),
+		   jsonb_build_object('tracker', 'serenedb', 'kind', 'pr', 'id', '902')))
+	   WHERE id = '$referenced'" || return 1
+
 	remember FINDING_FILED "$filed"
 	remember FINDING_UNFILED "$unfiled"
+	remember FINDING_REFERENCED "$referenced"
 	remember FINDING_PROJECT "$project"
-	printf '%s is done here and filed there as #%s; %s is open and unfiled\n' \
-		"$filed" "$FINDING_ISSUE" "$unfiled"
+	printf '%s is done here and filed there as #%s; %s is open and unfiled; %s cites two and was sent to nobody\n' \
+		"$filed" "$FINDING_ISSUE" "$unfiled" "$referenced"
 }
 
 # The list read the way the console reads it: both axes have to survive the trip
@@ -15589,8 +15608,8 @@ browser_shows_both_axes_and_the_two_documents() {
 	recall
 	cd "$ROOT/web" || return 1
 	node scripts/findings-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" \
-		"$FINDING_PROJECT" "$FINDING_FILED" "$FINDING_UNFILED" "$FINDING_ISSUE" \
-		"$FINDING_DRAFT_WORD" "$FINDING_REPRO_PATH"
+		"$FINDING_PROJECT" "$FINDING_FILED" "$FINDING_UNFILED" "$FINDING_REFERENCED" \
+		"$FINDING_ISSUE" "$FINDING_DRAFT_WORD" "$FINDING_REPRO_PATH"
 }
 
 # The repro runner is a second binary on a second host, so nothing in this

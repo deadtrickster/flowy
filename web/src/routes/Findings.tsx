@@ -11,6 +11,7 @@ import {
   UNKNOWN_UPSTREAM,
   UPSTREAM_STATES,
   evidenceOf,
+  filedUpstream,
   hasRepro,
   knownUpstream,
   reproOf,
@@ -172,11 +173,16 @@ export function Findings() {
         <div
           aria-label="findings counts"
           data-unfiled={counts.unfiled}
+          data-referenced={counts.referenced}
           data-filed={counts.filed}
           data-repro={counts.repro}
           className="flex flex-wrap items-center gap-2 text-muted-foreground text-xs"
         >
           <span>{counts.unfiled} unfiled</span>
+          <span>·</span>
+          <span title="these name something over there and nobody claims to have sent them">
+            {counts.referenced} referenced
+          </span>
           <span>·</span>
           <span>{counts.filed} filed upstream</span>
           <span>·</span>
@@ -266,26 +272,29 @@ function tagsIn(list: Artifact[]): string[] {
 }
 
 /**
- * countAxes is the header's three numbers.
+ * countAxes is the header's numbers.
  *
- * unfiled and filed are NOT complements: rejected and withdrawn are filings
- * that happened and no longer stand, so they are in neither count, and a page
- * that showed "22 unfiled of 24" would be claiming two are filed when what is
- * true is that two were and are not now. Each count says only what it says.
+ * unfiled and filed are NOT complements, and the gap between them is the point.
+ * rejected and withdrawn are filings that happened and no longer stand, so they
+ * are in neither. REFERENCED IS IN NEITHER EITHER: it means the finding names
+ * something over there and nobody claims to have sent it, which is exactly the
+ * state that gets miscounted as filed - seven of sixteen RAGFlow findings are
+ * that, and counting them as sent is how one filing was reported as eight. So
+ * it gets a count of its own and each number says only what it says.
  */
 function countAxes(list: Artifact[]) {
   let unfiled = 0;
+  let referenced = 0;
   let filed = 0;
   let repro = 0;
   for (const finding of list) {
     const filing = upstreamOf(finding);
     if (filing.state === "unfiled") unfiled += 1;
-    if (filing.state === "filed" || filing.state === "accepted" || filing.state === "fixed") {
-      filed += 1;
-    }
+    if (filing.state === "referenced") referenced += 1;
+    if (filedUpstream(filing)) filed += 1;
     if (hasRepro(reproOf(finding))) repro += 1;
   }
-  return { unfiled, filed, repro };
+  return { unfiled, referenced, filed, repro };
 }
 
 function narrow(
@@ -415,7 +424,15 @@ function FindingCard({ finding }: { finding: Artifact }) {
   // not in a tooltip. The link is drawn only when the row carries a url: a URL
   // built here out of a tracker name and a number would be a guess, and a guess
   // that 404s is worse than a number somebody can search for themselves.
-  const upstreamLabel = filing.id ? `${filing.state} #${filing.id}` : filing.state;
+  // "filed pr #16958" reads differently from "filed #16958", and the difference
+  // is whether we reported a defect or sent them a fix. A finding with no
+  // filing of its own but citations over there says how many it cites, because
+  // referenced-with-nothing-named is not a state anybody can act on.
+  const upstreamLabel = filing.id
+    ? `${filing.state} ${filing.kind === "pr" ? "pr " : ""}#${filing.id}`
+    : filing.refs.length > 0
+      ? `${filing.state} · ${filing.refs.length} ref${filing.refs.length === 1 ? "" : "s"}`
+      : filing.state;
 
   return (
     <li

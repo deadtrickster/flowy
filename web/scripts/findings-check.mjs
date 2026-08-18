@@ -36,12 +36,22 @@
 
 import { chromium } from "playwright";
 
-const [base, token, project, filedID, unfiledID, issue, draftWord, reproPath] =
+const [base, token, project, filedID, unfiledID, referencedID, issue, draftWord, reproPath] =
   process.argv.slice(2);
 
-if (!base || !token || !project || !filedID || !unfiledID || !issue || !draftWord || !reproPath) {
+if (
+  !base ||
+  !token ||
+  !project ||
+  !filedID ||
+  !unfiledID ||
+  !referencedID ||
+  !issue ||
+  !draftWord ||
+  !reproPath
+) {
   console.error(
-    "usage: node scripts/findings-check.mjs BASE_URL TOKEN PROJECT FILED_ID UNFILED_ID ISSUE DRAFT_WORD REPRO_PATH",
+    "usage: node scripts/findings-check.mjs BASE_URL TOKEN PROJECT FILED_ID UNFILED_ID REFERENCED_ID ISSUE DRAFT_WORD REPRO_PATH",
   );
   process.exit(2);
 }
@@ -129,6 +139,25 @@ The word "findings" is in the global nav too, so this looks for the ELEMENT.${er
     );
   }
 
+  // REFERENCED IS NOT FILED. This row names two things over there and nobody
+  // claims to have sent it, and it carries no state word at all - so the page
+  // has to reach the store's own answer for that shape (FindingUpstreamOf's
+  // fallback) rather than calling it unfiled, and must not fold it into the
+  // filed count. Reading these as filings is what reported one filing as eight.
+  const referenced = list.locator(`li[data-finding="${referencedID}"]`);
+  try {
+    await referenced.waitFor({ state: "visible", timeout: 15_000 });
+  } catch {
+    await die("the findings list never showed the referenced finding", list);
+  }
+  const cites = await referenced.getAttribute("data-upstream");
+  if (cites !== "referenced") {
+    await die(
+      `the finding that cites two issues and was sent to nobody says ${JSON.stringify(cites)}, want referenced`,
+      list,
+    );
+  }
+
   // The counts, which is what makes the page report its own state without being
   // filtered first.
   const counts = page.locator('[aria-label="findings counts"]');
@@ -137,9 +166,19 @@ The word "findings" is in the global nav too, so this looks for the ELEMENT.${er
   }
   const unfiledCount = Number(await counts.getAttribute("data-unfiled"));
   const filedCount = Number(await counts.getAttribute("data-filed"));
-  if (!(unfiledCount >= 1 && filedCount >= 1)) {
+  const referencedCount = Number(await counts.getAttribute("data-referenced"));
+  if (!(unfiledCount >= 1 && filedCount >= 1 && referencedCount >= 1)) {
     await die(
-      `the counts say ${unfiledCount} unfiled and ${filedCount} filed, and both seeded findings are on the page`,
+      `the counts say ${unfiledCount} unfiled, ${referencedCount} referenced and ${filedCount} filed, and all three seeded findings are on the page`,
+      counts,
+    );
+  }
+  // The three are separate counts and the referenced one is NOT inside filed:
+  // one seeded finding is filed and one is referenced, so a page folding them
+  // together reports two.
+  if (filedCount !== 1) {
+    await die(
+      `the page counts ${filedCount} findings as filed upstream, and exactly one was sent anywhere - a referenced finding is not a filed one`,
       counts,
     );
   }
@@ -156,6 +195,15 @@ The word "findings" is in the global nav too, so this looks for the ELEMENT.${er
   }
   if ((await unfiled.count()) !== 1) {
     await die("narrowing to unfiled also removed the unfiled finding", list);
+  }
+  // And the referenced one goes with the filed one, because it is not unfiled
+  // either - it is the third answer, and a filter that kept it here would be
+  // saying nobody has touched it upstream.
+  if ((await referenced.count()) !== 0) {
+    await die(
+      "narrowing to unfiled kept the finding that cites two of their issues - referenced is not unfiled",
+      list,
+    );
   }
 
   // The finding page: three faces, and the repro tree.

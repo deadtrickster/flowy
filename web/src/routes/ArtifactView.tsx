@@ -16,6 +16,7 @@ import {
   evidenceOf,
   hasRepro,
   knownUpstream,
+  refLabel,
   reportDraftOf,
   reproOf,
   upstreamOf,
@@ -436,6 +437,34 @@ function FindingSection({ artifact }: { artifact: Artifact }) {
             filed {filing.filed_at}
             {filing.filed_by ? ` by ${filing.filed_by}` : ""}
           </span>
+        ) : null}
+        {/* WHAT THIS FINDING CITES, which is not what was filed. A reference is
+            something over there this finding touches - an issue somebody
+            mentioned, a pull request that covers three findings at once - and
+            it asserts nothing about whether we sent anything. Drawn under its
+            own word rather than beside the filing badge, because reading one as
+            the other is what turned one filing into eight. */}
+        {filing.refs.length > 0 ? (
+          <>
+            <span className="text-muted-foreground">cites</span>
+            {filing.refs.map((ref) =>
+              ref.url ? (
+                <a
+                  key={`${ref.tracker}/${ref.kind}/${ref.id}`}
+                  href={ref.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="hover:underline"
+                >
+                  <Badge variant="outline">{refLabel(ref)}</Badge>
+                </a>
+              ) : (
+                <Badge key={`${ref.tracker}/${ref.kind}/${ref.id}`} variant="outline">
+                  {refLabel(ref)}
+                </Badge>
+              ),
+            )}
+          </>
         ) : null}
         <span className="text-muted-foreground">evidence</span>
         <Badge variant="outline">{evidence.state ?? "not stated"}</Badge>

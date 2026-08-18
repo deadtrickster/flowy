@@ -45,16 +45,32 @@ import type { Artifact } from "@/lib/api";
 
 /** UpstreamState is where a filing stands on somebody else's tracker.
  *
- * Five of the six are THEIR judgements. withdrawn is ours - we pulled the
+ * Five of the seven are THEIR judgements. withdrawn is ours - we pulled the
  * filing back - and it is a separate word because going back to unfiled would
  * erase an issue number that still exists over there, and rejected would
- * attribute our own retraction to maintainers who never looked at it. The list
- * and its order are internal/store/findingupstream.go's UpstreamStates, in the
- * order a filing travels through it. */
-export type UpstreamState = "unfiled" | "filed" | "accepted" | "fixed" | "rejected" | "withdrawn";
+ * attribute our own retraction to maintainers who never looked at it.
+ *
+ * REFERENCED IS NOT A WEAKER FILED, and it is the one a reader will get wrong
+ * if this list is skimmed: it means the finding NAMES issues or pull requests
+ * over there and nobody is claiming we sent anything. Seven of the sixteen
+ * RAGFlow findings are that, and reading them as filings is what turned one
+ * filing into eight. Anything that counts "what have we sent upstream" counts
+ * filed/accepted/fixed and never this.
+ *
+ * The list and its order are internal/store/findingupstream.go's
+ * UpstreamStates, in the order a filing travels through it. */
+export type UpstreamState =
+  | "unfiled"
+  | "referenced"
+  | "filed"
+  | "accepted"
+  | "fixed"
+  | "rejected"
+  | "withdrawn";
 
 export const UPSTREAM_STATES: UpstreamState[] = [
   "unfiled",
+  "referenced",
   "filed",
   "accepted",
   "fixed",
@@ -74,11 +90,28 @@ export const UPSTREAM_STATES: UpstreamState[] = [
  */
 export interface UpstreamFiling {
   tracker?: string;
+  /** issue or pr. "We reported it" and "we sent a fix" are different claims,
+   * and the corpus field these came out of held both in one string. */
+  kind?: string;
   id?: string;
   url?: string;
   state: UpstreamState;
   filed_at?: string;
   filed_by?: string;
+  /** Everything upstream this finding TOUCHES - issues and pull requests, many
+   * per finding, the same one repeated on every finding a pull request covers.
+   * It asserts nothing about whether anybody filed anything; that is state's
+   * job and only state's. */
+  refs: UpstreamRef[];
+}
+
+/** UpstreamRef is one thing over there a finding cites: whose tracker, whether
+ * it is an issue or a pull request, their number and the link. */
+export interface UpstreamRef {
+  tracker: string;
+  kind: string;
+  id: string;
+  url?: string;
 }
 
 /**
@@ -157,14 +190,49 @@ function text(fields: Record<string, unknown>, key: string): string | undefined 
 export function upstreamOf(artifact: Artifact): UpstreamFiling {
   const fields = fieldsOf(artifact);
   const state = text(fields, "upstream_state");
+  const id = text(fields, "upstream_id");
+  const refs = refsIn(fields);
   return {
     tracker: text(fields, "upstream_tracker"),
-    id: text(fields, "upstream_id"),
+    kind: text(fields, "upstream_kind"),
+    id,
     url: text(fields, "upstream_url"),
-    state: (state ?? "unfiled") as UpstreamState,
+    // The store's own fallback, mirrored rather than approximated
+    // (FindingUpstreamOf): a row with numbers on it and no state word is
+    // REFERENCED, because something over there is named and nobody said they
+    // sent it. Answering unfiled here would be this page contradicting the node
+    // about the same row, and answering filed would be the count that turned
+    // one filing into eight.
+    state: (state ?? (id || refs.length > 0 ? "referenced" : "unfiled")) as UpstreamState,
     filed_at: text(fields, "filed_at"),
     filed_by: text(fields, "filed_by"),
+    refs,
   };
+}
+
+/** refsIn reads upstream_refs, dropping anything that is not a reference. A
+ * malformed entry is left out rather than rendered as a blank chip pointing
+ * nowhere. */
+function refsIn(fields: Record<string, unknown>): UpstreamRef[] {
+  const raw = Array.isArray(fields.upstream_refs) ? fields.upstream_refs : [];
+  return raw.flatMap((entry) => {
+    if (!entry || typeof entry !== "object") return [];
+    const ref = entry as Record<string, unknown>;
+    const tracker = typeof ref.tracker === "string" ? ref.tracker : "";
+    const kind = typeof ref.kind === "string" ? ref.kind : "";
+    const id = typeof ref.id === "string" ? ref.id : "";
+    const url = typeof ref.url === "string" ? ref.url : undefined;
+    if (!id && !tracker) return [];
+    return [{ tracker, kind, id, url }];
+  });
+}
+
+/** refLabel is how a reference is named on screen - "ragflow pr #16958" - the
+ * same sentence UpstreamRef.String builds on the other side. */
+export function refLabel(ref: UpstreamRef): string {
+  if (!ref.id) return ref.tracker || "nothing";
+  const number = ref.kind === "pr" ? `pr #${ref.id}` : `#${ref.id}`;
+  return ref.tracker ? `${ref.tracker} ${number}` : number;
 }
 
 /** knownUpstream reports whether a state is one of the six. A row carrying
