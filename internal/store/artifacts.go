@@ -40,7 +40,8 @@ func searchText(a *Artifact) string {
 // artifactColumns is the read list, in the order scanArtifact expects.
 const artifactColumns = `id, type, kind, project, owner_user, title, body, discovery, status,
 	severity, tags, user_tags, related, visibility, file_path, fields, hlc, node,
-	tombstone, created, updated, reported, external, sig, author_sig, authorship`
+	tombstone, created, updated, reported, external, sig, author_sig, authorship,
+	started, last_worked`
 
 // scanner is what both *sql.Row and *sql.Rows satisfy.
 type scanner interface{ Scan(dest ...any) error }
@@ -55,11 +56,12 @@ func scanArtifact(sc scanner, rank *float64) (*Artifact, error) {
 		fields, external                           []byte
 		clockVal                                   sql.NullInt64
 		tomb, reported                             sql.NullBool
+		started, lastWorked                        sql.NullTime
 	)
 	dest := []any{&a.ID, &typeCol, &kind, &project, &owner, &title, &body, &disc, &status, &severity,
 		pq.Array(&a.Tags), pq.Array(&a.UserTags), pq.Array(&a.Related), &vis, &filePath,
 		&fields, &clockVal, &nodeCol, &tomb, &a.Created, &a.Updated, &reported, &external, &a.Sig,
-		&a.AuthorSig, &authorship}
+		&a.AuthorSig, &authorship, &started, &lastWorked}
 	if rank != nil {
 		dest = append(dest, rank)
 	}
@@ -78,6 +80,17 @@ func scanArtifact(sc scanner, rank *float64) (*Artifact, error) {
 	a.Discovery, a.Status, a.Severity = disc.String, status.String, severity.String
 	a.Visibility, a.FilePath, a.Node = vis.String, filePath.String, nodeCol.String
 	a.HLC, a.Tombstone, a.Reported = clockVal.Int64, tomb.Bool, reported.Bool
+	// NULL stays absent rather than becoming the zero time: never-started and
+	// started-at-the-epoch are different answers, and only one of them is true
+	// of a row nobody has picked up.
+	if started.Valid {
+		at := started.Time.UTC()
+		a.Started = &at
+	}
+	if lastWorked.Valid {
+		at := lastWorked.Time.UTC()
+		a.LastWorked = &at
+	}
 	if len(fields) > 0 {
 		a.Fields = json.RawMessage(fields)
 	}

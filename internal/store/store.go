@@ -403,6 +403,22 @@ type Artifact struct {
 	// row that does not say where its work came from - every queue item written
 	// before this field, and nothing here guesses one. See RaiserField.
 	Raiser string `json:"raiser,omitempty"`
+	// Started is when this row FIRST went active, and LastWorked is when
+	// something that counts as work last touched it. Both are columns, stamped
+	// by setArtifactStatus and appendEvent, and both are pointers because ABSENT
+	// IS A REAL ANSWER: a row nobody has started has no start, and a zero time
+	// would read as 1970 - the worst case - for the ordinary case of a fresh
+	// row. See workEvidence for what moves LastWorked and why the list is short.
+	//
+	// They are separate from Updated, which moves on ANY write. A rename looked
+	// exactly like progress, which is what left six-hour-old claims reading as
+	// work in flight, and is the whole reason these two exist.
+	//
+	// Unlike Assignee and Category above, these ARE scanned: they are columns
+	// rather than derivations, and a reader that cannot see them has to ask the
+	// database directly - which is the state these shipped in.
+	Started    *time.Time `json:"started,omitempty"`
+	LastWorked *time.Time `json:"last_worked,omitempty"`
 	// Notes is what has been LEARNED about this row since it was filed, oldest
 	// first: measurements, the fix shape somebody worked out, what it turned out
 	// to be blocked on. Each one is attributed to the seat that wrote it and
