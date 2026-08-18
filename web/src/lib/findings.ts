@@ -121,16 +121,24 @@ export interface UpstreamRef {
  *   source      somebody read the code and believes this is wrong
  *   reproduced  somebody ran it and watched it happen
  *   verified    it was run against a named commit, which is recorded beside it
+ *   refuted     it was run against a named commit and DID NOT happen
  *
  * verified is a word PLUS A COMMIT. REPORTABLE-FINDINGS' filing rule - nothing
  * goes upstream until its reproduction has been run against a build of current
  * origin/main HEAD, with that SHA on the item - is a transition on this axis and
  * not on either of the others, and "reproduced, but not against current main" is
  * the list an operator works from before filing anything.
+ *
+ * REFUTED IS NOT AN ABSENCE OF EVIDENCE, and it is the one a reader will get
+ * wrong if this list is skimmed - the same trap `referenced` sets on the axis
+ * above. It is the STRONGEST thing anybody can say: somebody ran it against a
+ * named commit and the defect was not there. Two of the twenty-four SereneDB
+ * reproductions are that, both retitled "not reproduced on main" by hand, and
+ * anything counting "what have we verified" counts verified and never this.
  */
-export type EvidenceState = "source" | "reproduced" | "verified";
+export type EvidenceState = "source" | "reproduced" | "verified" | "refuted";
 
-export const EVIDENCE_STATES: EvidenceState[] = ["source", "reproduced", "verified"];
+export const EVIDENCE_STATES: EvidenceState[] = ["source", "reproduced", "verified", "refuted"];
 
 /**
  * Evidence is that axis as it rides in fields: evidence_state, plus the commit a

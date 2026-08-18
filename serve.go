@@ -386,6 +386,12 @@ func (s *server) routes() http.Handler {
 	api.HandleFunc("POST /api/artifact/{id}/delete", s.handleDeleteArtifact)
 	api.HandleFunc("POST /api/artifact/{id}/status", s.handleArtifactStatus)
 	api.HandleFunc("GET /api/artifact/{id}/history", s.handleArtifactHistory)
+
+	// How strong a finding's evidence is, and the log behind it. Over HTTP as
+	// well as MCP, for api_mergegate.go's reason: a door only agents can knock
+	// on is half a door - see findingevidence.go.
+	api.HandleFunc("POST /api/finding/{id}/evidence", s.handleFindingEvidence)
+	api.HandleFunc("GET /api/finding/{id}/evidence", s.handleFindingEvidenceLog)
 	api.HandleFunc("GET /api/search", s.handleSearch)
 	api.HandleFunc("POST /api/events", s.handleAppendEvent)
 	api.HandleFunc("GET /api/events", s.handleListEvents)
