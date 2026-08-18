@@ -580,7 +580,7 @@ func (s *server) routes() http.Handler {
 	// observed is outside authenticate, so that resolving the token is a span
 	// inside the request's rather than something that happened before it, and so
 	// that a 401 is counted like every other refusal.
-	mux.Handle("/api/", s.observed(s.authenticate(api)))
+	mux.Handle("/api/", s.observed(s.authenticate(paramGuard(api, api))))
 
 	return logRequests(mux)
 }
