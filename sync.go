@@ -552,6 +552,15 @@ func peerRequest(ctx context.Context, client *http.Client, method, url, token st
 		return fmt.Errorf("%s %s: %w", method, url, err)
 	}
 	if resp.StatusCode != http.StatusOK {
+		// THE NODE'S OWN SENTENCE, when it sent one. Every refusal on this
+		// fabric is written to be read by whoever hit it - "somebody took it
+		// first, so ask them or take another row" - and wrapping that in a JSON
+		// envelope inside a Go error hands a person the punctuation instead of
+		// the reason. The status stays, because 409 and 400 are different
+		// things to do next; the braces go.
+		if said := refusalSentence(answer); said != "" {
+			return fmt.Errorf("%s %s: %d %s", method, url, resp.StatusCode, said)
+		}
 		return fmt.Errorf("%s %s: peer answered %d: %s", method, url, resp.StatusCode,
 			strings.TrimSpace(string(answer)))
 	}
@@ -631,4 +640,18 @@ func short(s string) string {
 		return s
 	}
 	return s[:max] + "..."
+}
+
+// refusalSentence is the node's own words out of an error body, or "" when the
+// answer is not one - a peer that sent HTML, or a body with no error in it,
+// falls back to being quoted verbatim rather than being summarised into
+// nothing.
+func refusalSentence(answer []byte) string {
+	var body struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(answer, &body); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(body.Error)
 }

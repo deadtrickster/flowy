@@ -4656,6 +4656,83 @@ the_board_answers_who_is_carrying_a_row() {
 	printf 'carried %s, unowned %s\n' "$mine" "$free"
 }
 
+# The queue from a shell: file a row, note on it, take it, close it.
+#
+# A seat with MCP files a row with one tool call. A seat with a SHELL had no
+# verb at all, so it spawned `flowy mcp` over stdio and hand-built the JSON-RPC
+# - about 300 tokens of protocol re-authored from memory per write, and a shim
+# that knows the wire format and nothing about what a row is for. That is how
+# three rows were filed at a scope nobody could read.
+#
+# What this asserts is the ROW each verb leaves behind, not the printing: every
+# field lands where the readers of this board look for it, and the claim guard
+# still refuses a stale expectation - the one thing here that is a race.
+the_queue_is_worked_from_a_shell() {
+	recall
+	local board room id
+	board="$(FLOWY_AGENT='' FLOWY_ADDR="http://127.0.0.1:$HTTP_PORT" FLOWY_TOKEN="$TOKEN_A" \
+		"$ROOT/flowy" todo file --title "filed from a shell" --category chore \
+		--assignee "$HANDLE_A" "what changed and what was measured" 2>/dev/null)" || return 1
+	if [ -z "$board" ]; then
+		printf 'flowy todo file printed no id on stdout\n' >&2
+		return 1
+	fi
+	api GET "$TOKEN_A" "/api/artifact/$board" || return 1
+	want_eq "the kind" "$(jqv .kind)" todo || return 1
+	want_eq "the category, through the door that checks the closed set" \
+		"$(jqv .fields.category)" chore || return 1
+	want_eq "who is carrying it" "$(jqv .fields.assignee)" "$HANDLE_A" || return 1
+	if [ "$(jqv .visibility)" = personal ]; then
+		printf 'a queue row filed from the shell is personal - it is not on the queue\n' >&2
+		return 1
+	fi
+
+	# The room door writes a different row on purpose: it carries the room it
+	# was agreed in and says so where the work was agreed.
+	room="$(FLOWY_AGENT='' FLOWY_ADDR="http://127.0.0.1:$HTTP_PORT" FLOWY_TOKEN="$TOKEN_A" \
+		"$ROOT/flowy" todo file --room general --title "raised in a room from a shell" \
+		--category bug "measured" 2>/dev/null)" || return 1
+	api GET "$TOKEN_A" "/api/artifact/$room" || return 1
+	want_eq "the room it was agreed in" "$(jqv .fields.room)" general || return 1
+	want_eq "and its category" "$(jqv .fields.category)" bug || return 1
+
+	FLOWY_AGENT='' FLOWY_ADDR="http://127.0.0.1:$HTTP_PORT" FLOWY_TOKEN="$TOKEN_A" \
+		"$ROOT/flowy" todo note --id "$board" "what was learned about it" >/dev/null 2>&1 || return 1
+	api GET "$TOKEN_A" "/api/todo/$board/notes" || return 1
+	want_eq "the note is on the row" \
+		"$(printf '%s' "$API_BODY" | jq -r '.notes[-1].note')" "what was learned about it" || return 1
+
+	# THE CLAIM GUARD, which is the only race here: a stale expectation is
+	# refused naming the holder rather than overwriting them.
+	local out
+	if out="$(FLOWY_AGENT='' FLOWY_ADDR="http://127.0.0.1:$HTTP_PORT" FLOWY_TOKEN="$TOKEN_B" \
+		"$ROOT/flowy" todo claim --id "$board" --as "$HANDLE_B" --expect "" 2>&1)"; then
+		printf 'a claim expecting nobody took a row somebody is carrying:\n%s\n' "$out" >&2
+		return 1
+	fi
+	case "$out" in
+	*"$HANDLE_A"*) ;;
+	*)
+		printf 'the refusal does not name who has it:\n%s\n' "$out" >&2
+		return 1
+		;;
+	esac
+
+	FLOWY_AGENT='' FLOWY_ADDR="http://127.0.0.1:$HTTP_PORT" FLOWY_TOKEN="$TOKEN_A" \
+		"$ROOT/flowy" todo "done" --id "$board" >/dev/null 2>&1 || return 1
+	api GET "$TOKEN_A" "/api/artifact/$board" || return 1
+	want_eq "closed from the shell" "$(jqv .status)" "done" || return 1
+
+	# A note is a memory and stays personal unless somebody says otherwise -
+	# which is the whole difference between a note and a queue row.
+	id="$(FLOWY_AGENT='' FLOWY_ADDR="http://127.0.0.1:$HTTP_PORT" FLOWY_TOKEN="$TOKEN_A" \
+		"$ROOT/flowy" note write --title "a note from a shell" "for myself" 2>/dev/null)" || return 1
+	api GET "$TOKEN_A" "/api/artifact/$id" || return 1
+	want_eq "a note is a note" "$(jqv .kind)" note || return 1
+	want_eq "and is its author's own" "$(jqv .visibility)" personal || return 1
+	printf 'filed %s and %s, noted, claimed, closed\n' "$board" "$room"
+}
+
 mem_write_takes_an_assignee() {
 	recall
 	want_tool mem_write "$TOKEN_A" \
@@ -10921,6 +10998,8 @@ check "the assignee is not a permission axis, in the store" \
 	go test -count=1 -run TestAnAssigneeHandsTheNamedPartyNothing ./internal/store
 check "mem_write carries the assignee, and an empty one means nobody" \
 	mem_write_takes_an_assignee
+check "the queue is filed, noted, claimed and closed from a shell" \
+	the_queue_is_worked_from_a_shell
 check "the board answers who is carrying a row, and who is carrying nothing" \
 	the_board_answers_who_is_carrying_a_row
 

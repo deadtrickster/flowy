@@ -68,6 +68,12 @@ commands:
            env: DATABASE_URL, FLOWY_NODE, FLOWY_TOKEN, FLOWY_OPERATOR)
   identity this node's signing key, and the peer keys it holds
            (flowy identity | list | pin --node N --key K | keygen --node N)
+  todo     the queue from a shell: file a row, note on one, take one, close one
+           (flowy todo file --title T [--room R] [--category C] [--scope S]
+           "body" | note --id ID "text" | claim --id ID [--expect WHO]
+           | done --id ID)
+  note     a memory from a shell, personal unless a scope says otherwise
+           (flowy note write --title T [--scope S] "body")
   merge    file a branch for the queue to land. Filing only - gating and
            landing belong to the drainer (flowy merge open --branch B
            [--target T] [--title L] [--assignee A] "what changed")
@@ -204,6 +210,16 @@ func main() {
 	case "passwd":
 		if err := passwdCmd(os.Args[2:]); err != nil {
 			fmt.Fprintf(os.Stderr, "flowy passwd: %v\n", err)
+			os.Exit(1)
+		}
+	case "todo":
+		if err := todoCmd(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "flowy todo: %v\n", err)
+			os.Exit(1)
+		}
+	case "note":
+		if err := noteCmd(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "flowy note: %v\n", err)
 			os.Exit(1)
 		}
 	case "merge":
