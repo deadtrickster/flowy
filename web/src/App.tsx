@@ -11,6 +11,7 @@ import { Direct } from "@/routes/Direct";
 import { Findings } from "@/routes/Findings";
 import { Home } from "@/routes/Home";
 import { Inbox } from "@/routes/Inbox";
+import { Login } from "@/routes/Login";
 import { Memory } from "@/routes/Memory";
 import { Metrics } from "@/routes/Metrics";
 import { NewEntity } from "@/routes/NewEntity";
@@ -74,6 +75,12 @@ export default function App() {
           types - see NewEntity for why offering both spellings of identity
           would make the ambiguity permanent.
         */}
+          {/*
+          Where a person gets in. A seat's bearer token is pasted into the rail
+          and a person's session is a cookie the node sets - two credentials,
+          one answer from whoami.
+        */}
+          <Route path="/login" element={<Login />} />
           <Route path="/new" element={<NewEntity />} />
           <Route path="/todos" element={<Todos />} />
           {/*

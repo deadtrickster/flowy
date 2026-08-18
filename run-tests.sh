@@ -16211,6 +16211,22 @@ the_diagrams_page_says_it_is_signed_out() {
 	node scripts/render-check.mjs "" "" "paste a token to see the diagrams" /diagrams
 }
 
+# A PERSON LOGS IN, in a browser, with a password set the only way one can be
+# set: `flowy passwd` at the shell. The operator's words were "i dont want to
+# bother with token. token is for api, not for me".
+#
+# The arm that decides this is the reload with an EMPTY localStorage. The
+# session cookie is httpOnly, so nothing in the console can read it and nothing
+# stores it - which means a console keeping its own idea of signed-in passes
+# every click-through and fails exactly there. See scripts/login-check.mjs.
+a_person_logs_in_from_the_console() {
+	recall
+	local pw="a-password-the-gate-picked"
+	printf '%s\n' "$pw" | "$ROOT/flowy" passwd --handle "$HANDLE_A" >/dev/null || return 1
+	cd "$ROOT/web" || return 1
+	node scripts/login-check.mjs "http://127.0.0.1:$HTTP_PORT" "$HANDLE_A" "$pw"
+}
+
 # The one door a person makes a row through, driven as the journey rather than
 # the handler. The operator's ask was "make all entity types user creatable",
 # and this console could make two of the nine things this store holds - a
@@ -16234,6 +16250,8 @@ check "signed out, the diagrams page says so rather than looking empty" \
 	the_diagrams_page_says_it_is_signed_out
 check "a person writes a row from the console, and it lands where its list reads it" \
 	a_person_writes_a_row_from_the_console
+check "a person logs in with a password, and the session survives a reload with nothing stored" \
+	a_person_logs_in_from_the_console
 check "a shape inside a diagram is addressable, and a dead reference says so" \
 	a_shape_inside_a_diagram_is_addressable
 

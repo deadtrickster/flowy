@@ -1024,6 +1024,11 @@ function parseBody(text: string, response: Response) {
 export async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(path, {
     ...init,
+    // SAME-ORIGIN, SAID OUT LOUD. It is the default today and it is the whole
+    // of how a logged-in person authenticates - the session cookie is httpOnly,
+    // so this is the only way it reaches the node, and a default that changed
+    // under us would log everybody out with no line of code to blame.
+    credentials: "same-origin",
     headers: { ...authHeader(), ...(init.headers ?? {}) },
   });
   const text = await response.text();
@@ -1420,6 +1425,28 @@ export const api = {
    * making one from the console means by it, and the store's own default here
    * is personal.
    */
+  /**
+   * A PERSON LOGS IN. The node answers a cookie - httpOnly, so nothing here can
+   * read it and there is nothing to keep. "Am I logged in" is whoami answering
+   * 200, never a value this console stored: a page holding its own idea of
+   * signed-in disagrees with the node the first time a session ends, and the
+   * disagreement is invisible until somebody tries to write.
+   *
+   * The refusal is the node's sentence, not one composed here. It says one
+   * thing for a wrong handle and a wrong password on purpose - which of the two
+   * was wrong is an oracle for which accounts exist - and this console must not
+   * improve on it.
+   */
+  login: (handle: string, password: string) =>
+    request<{ user: string; handle: string }>("/api/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ handle, password }),
+    }),
+
+  /** And out. Always 200, cookie cleared, whether or not one was sent. */
+  logout: () => request<{ ok: boolean }>("/api/logout", { method: "POST" }),
+
   writeEntity: (opts: { type: string; title: string; body?: string }) =>
     request<Artifact>("/api/artifacts", {
       method: "POST",
