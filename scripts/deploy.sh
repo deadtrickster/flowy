@@ -77,6 +77,66 @@ if [ -n "$(git status --porcelain)" ]; then
 	die "the tree has uncommitted changes - deploy ships whatever is lying around"
 fi
 
+# ---------------------------------------------------------------- the lock
+
+# TWO DEPLOYS AT ONCE ARE TWO BUILDS OVER EACH OTHER.
+#
+# This runs npm and go build in the shared checkout and then installs the
+# binary. Two of them interleave: one is still writing web/dist while the other
+# embeds it, or one installs a binary built from the other's half-finished
+# bundle. Nothing prevented that, and the only reason it has not happened is
+# that one agent has been doing all the deploying.
+#
+# It is the same exclusion landing takes, so it is the same lock - see
+# api_lock.go. A second mechanism would be two locks that cannot see each other,
+# which is the shape of the bug rather than the fix.
+#
+# NO TOKEN IS A REFUSAL, not a warning that scrolls past. A guard you can skip
+# by not having a credential is the opt-in guard this fleet spent the morning
+# removing: it protects the careful path and leaves the default one as it was.
+find_token() {
+	local candidate
+	for candidate in "$HOME/.config/flowy/token-flowy" "$HOME/.config/flowy/token"; do
+		if [ -r "$candidate" ]; then
+			cat "$candidate"
+			return 0
+		fi
+	done
+	return 1
+}
+
+lock_token=$(find_token) || die "no token in ~/.config/flowy/token-flowy or ~/.config/flowy/token -
+deploy takes the landing lock, and it cannot ask for one without a credential"
+
+lock_item="deploy $(git rev-parse --short HEAD)"
+lock_body=$(printf '{"item":"%s"}' "$lock_item")
+lock_answer=$(curl -sS -m 10 -w '\n%{http_code}' -X POST \
+	-H "Authorization: Bearer $lock_token" -H 'Content-Type: application/json' \
+	-d "$lock_body" "$URL/api/lock" 2>/dev/null) || die "could not reach $URL to take the lock"
+lock_code=$(printf '%s' "$lock_answer" | tail -1)
+case "$lock_code" in
+200) : ;;
+409)
+	printf '%s\n' "$lock_answer" | head -n -1 >&2
+	die "the target is held - somebody is landing or deploying. Wait for them, do not race"
+	;;
+*)
+	printf '%s\n' "$lock_answer" | head -n -1 >&2
+	die "taking the lock answered $lock_code"
+	;;
+esac
+
+# GIVEN BACK ON EVERY EXIT, including a die four steps down. A deploy that
+# fails holding the lock freezes landing for the full expiry, and the person
+# who has to wait is not the one who broke it.
+release_lock() {
+	curl -sS -m 10 -o /dev/null -X POST \
+		-H "Authorization: Bearer $lock_token" -H 'Content-Type: application/json' \
+		-d "$lock_body" "$URL/api/lock/release" 2>/dev/null || true
+}
+trap release_lock EXIT
+say "    took the landing lock for \"$lock_item\""
+
 commit=$(git rev-parse --short HEAD)
 branch=$(git rev-parse --abbrev-ref HEAD)
 [ "$branch" = "master" ] || die "on branch '$branch' - master is the only deploy source"
@@ -226,13 +286,7 @@ say "    healthz 200"
 
 # A REAL READ, because healthz answers from a handler that touches nothing.
 # This is the check that a missing column fails and healthz does not.
-token=""
-for candidate in "$HOME/.config/flowy/token-flowy" "$HOME/.config/flowy/token"; do
-	[ -r "$candidate" ] && {
-		token=$(cat "$candidate")
-		break
-	}
-done
+token=$(find_token)
 if [ -n "$token" ]; then
 	code=$(curl -sS -m 10 -o /dev/null -w '%{http_code}' \
 		-H "Authorization: Bearer $token" "$URL/api/chat/general?limit=2" 2>/dev/null)

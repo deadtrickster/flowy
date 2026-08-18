@@ -401,6 +401,13 @@ func (s *server) routes() http.Handler {
 	api.HandleFunc("POST /api/rooms/{room}/leave", s.handleLeaveRoom)
 	api.HandleFunc("GET /api/merge-queue", s.handleMergeQueue)
 	api.HandleFunc("POST /api/merge/{id}/gate", s.handleMergeGate)
+	// The lock on its own, because landing is not the only thing that needs the
+	// shared checkout to itself - see api_lock.go. Same table and same holder
+	// rules as the merge verbs take, deliberately: a second mechanism for one
+	// exclusion is two locks that cannot see each other.
+	api.HandleFunc("POST /api/lock", s.handleTakeLock)
+	api.HandleFunc("POST /api/lock/release", s.handleReleaseLock)
+	api.HandleFunc("GET /api/lock", s.handleReadLock)
 	api.HandleFunc("POST /api/merge/{id}/land", s.handleMergeLand)
 	api.HandleFunc("POST /api/merge/{id}/abandon", s.handleMergeAbandon)
 	api.HandleFunc("GET /api/artifact/{id}", s.handleGetArtifact)
