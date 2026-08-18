@@ -21,6 +21,15 @@ import { type Artifact, request } from "@/lib/api";
  * today; when the store half rules, DIAGRAM_TYPE/DIAGRAM_KIND and bodyOf/xmlOf
  * are the only things here that change.
  *
+ * The store half has since landed and ruled differently: store.DiagramType is
+ * the type "diagram" with kind "drawio", not the memory/diagram this file
+ * writes. Nothing reads that ruling yet - ParseDiagramCells and
+ * ValidateArtifactCell have no caller outside their own tests, and no write
+ * door checks a type against them - so the two halves disagree without
+ * anything failing, and the console keeps writing what every row already in
+ * the fabric is. Reconciling them is a migration of the rows that exist, not
+ * an edit of these two constants, which is why it is not done here.
+ *
  * One known hazard to hand to that side rather than paper over: the node feeds
  * `body` to to_tsvector inline on every write, and Postgres refuses a tsvector
  * input over about a megabyte. Diagram xml passes a megabyte easily. So an xml

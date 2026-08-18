@@ -15363,6 +15363,32 @@ check "a superseded report is marked where somebody reads it, and the console's 
 check "signed out, the reports page says so rather than looking empty" \
 	the_reports_page_says_it_is_signed_out
 
+# The new button on /diagrams, clicked in a real browser with the name box
+# EMPTY - the state an operator reported as "cant create a diagram". Every unit
+# test passed and the node's write door was fine; the button was simply
+# disabled until the box beside it was filled, and a disabled button here has
+# no cursor, no hover, no message and no navigation. Nothing exercised the
+# click, so nothing saw it. See scripts/diagram-new-check.mjs for why the four
+# ways this fails are told apart in its output rather than after the fact.
+a_diagram_is_created_by_clicking_new() {
+	cd "$ROOT/web" || return 1
+	node scripts/diagram-new-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A"
+}
+
+# Signed out, the page says what to do about it rather than reading as "there
+# are no diagrams". No node and no token on purpose: this is the state a
+# browser is in when somebody opens the link for the first time.
+the_diagrams_page_says_it_is_signed_out() {
+	cd "$ROOT/web" || return 1
+	node scripts/render-check.mjs "" "" "paste a token to see the diagrams" /diagrams
+}
+
+say "diagrams: the new button, clicked"
+check "new with an empty name makes a diagram, opens the editor and can be renamed" \
+	a_diagram_is_created_by_clicking_new
+check "signed out, the diagrams page says so rather than looking empty" \
+	the_diagrams_page_says_it_is_signed_out
+
 say "metrics: what was measured, and for whom"
 check "every group is in the answer, and says whether it was measured" \
 	metrics_answers_every_group

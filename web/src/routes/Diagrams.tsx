@@ -9,6 +9,13 @@ import { EMPTY_DIAGRAM, diagrams } from "@/lib/diagrams";
 import { useSession } from "@/lib/session";
 
 /**
+ * What a diagram nobody named is called. It is a real title rather than an
+ * empty one because every list in this console falls back to the id when a
+ * title is missing, and a shelf of ULIDs is not a shelf anybody can read.
+ */
+const UNTITLED = "untitled diagram";
+
+/**
  * The diagrams: draw.io documents that belong to the fabric rather than to
  * somebody's desktop.
  *
@@ -53,9 +60,17 @@ export function Diagrams() {
   // A new diagram is written before it is opened, rather than opened and
   // written on first edit. An editor holding a document with no id is a
   // document that a closed tab loses, and the id is what the route needs.
+  //
+  // The name is not a precondition for the drawing. This button used to be
+  // disabled until the box beside it had something in it, which is how it was
+  // reported as broken: an operator who does not read the empty box as a
+  // required field clicks new, gets no navigation, no error and no cursor
+  // change, and has been told nothing at all - a dead button and a dead page
+  // look exactly the same from the outside. So new always makes a diagram. One
+  // made without a name gets UNTITLED, and the editor is where it is renamed.
   async function create() {
-    const named = title.trim();
-    if (!named || making) return;
+    if (making) return;
+    const named = title.trim() || UNTITLED;
     setMaking(true);
     try {
       const made = await diagrams.write({ title: named, xml: EMPTY_DIAGRAM });
@@ -83,12 +98,17 @@ export function Diagrams() {
           <Input
             className="h-8 w-56"
             aria-label="new diagram title"
-            placeholder="name a new diagram…"
+            placeholder="name it, or leave it blank…"
             value={title}
             autoComplete="off"
             onChange={(event) => setTitle(event.target.value)}
           />
-          <Button type="submit" size="sm" disabled={!token || !title.trim() || making}>
+          {/*
+            Signed out is the only state that disables this: there is no token
+            to write with, and the page says so under the header. An empty name
+            is not a reason to refuse - see create().
+          */}
+          <Button type="submit" size="sm" disabled={!token || making}>
             {making ? "creating…" : "new"}
           </Button>
         </form>
