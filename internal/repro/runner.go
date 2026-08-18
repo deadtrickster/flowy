@@ -121,6 +121,12 @@ type Run struct {
 	// it sees the run as it happens - which is what the trusted-host
 	// binary's GET /run/{id}/log serves.
 	Log string `json:"log"`
+
+	// failed records that this run has already lost, without yet ending it.
+	// Unexported and not on the wire: it exists only between fail() and
+	// finish(), so that a run stays non-terminal until its containers are
+	// down. A reader outside sees the status, which is the truth it needs.
+	failed bool
 }
 
 // clone returns a copy safe to hand outside the lock: the two pointer fields
@@ -508,7 +514,7 @@ func (r *Runner) runOne(ctx context.Context, id int64) {
 	// appending would grow one file holding two unrelated runs.
 	log, err := os.Create(run.Log)
 	if err != nil {
-		r.fail(id, fmt.Sprintf("could not open the run log: %v", err))
+		r.failNow(id, fmt.Sprintf("could not open the run log: %v", err))
 		return
 	}
 	defer log.Close()
@@ -516,7 +522,7 @@ func (r *Runner) runOne(ctx context.Context, id int64) {
 	in, err := r.RenderInputFor(ctx, run.Finding, run.Version)
 	if err != nil {
 		fmt.Fprintf(log, "# run %d: %v\n", id, err)
-		r.fail(id, err.Error())
+		r.failNow(id, err.Error())
 		return
 	}
 	r.update(id, func(run *Run) {
@@ -536,13 +542,13 @@ func (r *Runner) runOne(ctx context.Context, id int64) {
 	if in.Version.SourceBuild && in.Version.Binary == "" {
 		if !in.Version.Buildable {
 			fmt.Fprintf(log, "# run %d: %s\n", id, in.Version.Note)
-			r.fail(id, in.Version.Note)
+			r.failNow(id, in.Version.Note)
 			return
 		}
 		binary, err := r.buildBinary(ctx, id, in, log)
 		if err != nil {
 			fmt.Fprintf(log, "# run %d: %v\n", id, err)
-			r.fail(id, err.Error())
+			r.failNow(id, err.Error())
 			return
 		}
 		in.Version.Binary = binary
@@ -556,7 +562,7 @@ func (r *Runner) runOne(ctx context.Context, id int64) {
 	staged, err := r.stage(ctx, r.opt.CacheDir, in)
 	if err != nil {
 		fmt.Fprintf(log, "# run %d: %v\n", id, err)
-		r.fail(id, err.Error())
+		r.failNow(id, err.Error())
 		return
 	}
 
@@ -733,14 +739,33 @@ func (r *Runner) verdict(id int64, confirmed bool, status Status) {
 
 // fail ends a run without a verdict. Note carries the reason a human reads
 // in the runs list; the log carries the detail.
-func (r *Runner) fail(id int64, note string) {
+// failNow is a failure with nothing left running - a log that would not open,
+// an unresolvable version, a package that could not be staged. There are no
+// containers to tear down, so the run ends where it failed.
+func (r *Runner) failNow(id int64, note string) {
+	r.fail(id, note)
 	r.update(id, func(run *Run) {
 		run.Status = StatusError
+		run.EndedAt = nowPtr()
+	})
+}
+
+func (r *Runner) fail(id int64, note string) {
+	// THE NOTE AND THE VERDICT, NOT THE ENDING. A run is not finished while its
+	// containers are still up, and teardown happens after this returns - so
+	// marking it terminal here publishes a run that anything watching will treat
+	// as done while `down -v` has not run yet. That is not only a racy test: a
+	// caller that waits for terminal and starts the next run collides with the
+	// previous one's containers and volumes.
+	//
+	// So this records WHY it failed and finish() ends it, once the teardown it
+	// was waiting for has happened.
+	r.update(id, func(run *Run) {
 		run.Confirmed = nil
 		if note != "" {
 			run.Note = note
 		}
-		run.EndedAt = nowPtr()
+		run.failed = true
 	})
 }
 
@@ -762,6 +787,12 @@ func (r *Runner) finish(ctx context.Context, id int64) {
 	// An error run was already stamped by fail, at the moment it failed;
 	// this only stamps the runs that ended with a verdict.
 	r.update(id, func(run *Run) {
+		// The ending is stamped HERE, after teardown, for both paths. A failed
+		// run reaches its terminal status at the same moment a successful one
+		// does: when there is nothing of it left running.
+		if run.failed {
+			run.Status = StatusError
+		}
 		if run.EndedAt == nil {
 			run.EndedAt = nowPtr()
 		}
