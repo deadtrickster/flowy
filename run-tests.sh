@@ -16292,6 +16292,17 @@ a_shape_inside_a_diagram_is_addressable() {
 	node scripts/diagram-cell-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" "$PROJECT_A"
 }
 
+# And it is dark, like every other pane. Raised by the operator against a white
+# editor opening inside a console that is dark everywhere else. Two arms: the
+# same editor loaded with and without the parameter, failing unless the two
+# backgrounds differ, so a drawio that stops honouring `dark` shows up here
+# rather than on somebody's screen.
+the_diagram_editor_matches_the_console() {
+	recall
+	cd "$ROOT/web" || return 1
+	node scripts/diagram-theme-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" "$PROJECT_A"
+}
+
 # Signed out, the page says what to do about it rather than reading as "there
 # are no diagrams". No node and no token on purpose: this is the state a
 # browser is in when somebody opens the link for the first time.
@@ -16359,6 +16370,8 @@ check "the author of a row can fix its words, and the node holds the new ones" \
 	a_person_fixes_the_words_they_wrote
 check "a shape inside a diagram is addressable, and a dead reference says so" \
 	a_shape_inside_a_diagram_is_addressable
+check "the diagram editor is dark, like the console around it" \
+	the_diagram_editor_matches_the_console
 check "a row says where it came from, and the queue does not treat it as a blocker" \
 	a_row_says_where_it_came_from
 check "the artifact page says where the row came from" \

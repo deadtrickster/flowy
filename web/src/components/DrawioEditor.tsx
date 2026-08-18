@@ -35,10 +35,21 @@ import { useCallback, useEffect, useRef, useState } from "react";
  * conveniences (templates, shape search, the plugin registry) would otherwise
  * reach for diagrams.net and quietly fail. The rest turn off chrome that
  * belongs to a standalone app and not to a pane inside another one.
+ *
+ * dark=1 is the theme, and it is a url parameter rather than a message because
+ * that is the only seam this build honours: app.min.js reads `urlParams.dark`
+ * FIRST and falls back to mxSettings only when it is absent, while
+ * Editor.configure - the obvious place to put it - never looks at darkMode at
+ * all. Measured in the vendored file rather than assumed from drawio's docs.
+ *
+ * It is fixed rather than followed, because the console has one theme: see
+ * index.css, "the console is dark, once". A white editor inside a dark console
+ * is the mismatch the operator raised, and a switch here would be a second
+ * palette to keep in step with a first one that never moves.
  */
 const EDITOR_URL =
   "/drawio/index.html?embed=1&proto=json&offline=1&spin=0&libraries=1" +
-  "&noExitBtn=1&noSaveBtn=1&saveAndExit=0&modified=unsavedChanges";
+  "&noExitBtn=1&noSaveBtn=1&saveAndExit=0&modified=unsavedChanges&dark=1";
 
 interface Message {
   event?: string;
