@@ -72,6 +72,39 @@ func decodeJSONLimit(r *http.Request, into any, limit int64) error {
 // handleCreateArtifact creates an artifact, or replaces one the principal owns.
 //
 // POST /api/artifacts
+// defaultWorkRoom puts a work item somewhere a person can browse to.
+//
+// This door already left status empty and the cost was six rows nobody could
+// find with ?status=todo. Room is the same defect one field over, and worse in
+// one way: a roomless row is not merely mis-filtered, it belongs to no room, so
+// no value of a room filter shows it. 22 rows were filed that way in one
+// afternoon by the agent who then could not find them.
+//
+// Fixing one field and leaving the other is the state to avoid - a caller
+// cannot tell which fields a door fills in, and the surviving gap is the one
+// nobody remembers. So this defaults the same way, at the same moment, under
+// the same rule: create only, work kinds only, never overwriting a stated
+// value, and never healing an existing row on an unrelated edit.
+//
+// DefaultMergeTarget's room is deliberately not used here: a merge request is
+// not raised in a room and does not want to appear in one.
+func defaultWorkRoom(art *store.Artifact, update bool) {
+	if update || !isWorkKind(art.Kind) || art.Kind == store.MergeKind {
+		return
+	}
+	fields, err := store.ArtifactFields(art)
+	if err != nil {
+		return
+	}
+	if room, ok := fields[store.RoomField].(string); ok && strings.TrimSpace(room) != "" {
+		return
+	}
+	fields[store.RoomField] = store.DefaultRoom
+	if raw, err := json.Marshal(fields); err == nil {
+		art.Fields = raw
+	}
+}
+
 // defaultWorkStatus is the rule above, as a function, so the test exercises the
 // code the door runs rather than a copy of it that cannot notice the door
 // changing underneath it.
@@ -230,6 +263,7 @@ func (s *server) handleCreateArtifact(w http.ResponseWriter, r *http.Request) {
 	// nothing keeps what the row has, including empty, because healing a stale
 	// status on an unrelated edit moves other people's work behind their backs.
 	art.Status = defaultWorkStatus(art.Status, art.Kind, update)
+	defaultWorkRoom(art, update)
 
 	write := s.db.CreateArtifact
 	if update {

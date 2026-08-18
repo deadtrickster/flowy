@@ -669,6 +669,13 @@ func (d *DB) fillAt(a *Artifact, at int64) {
 // conversation: which of the project's todos came out of this room.
 const RoomField = "room"
 
+// DefaultRoom is where a work item goes when nobody said. A row with no room
+// belongs to no room, so no room filter can show it - which is how 22 rows
+// filed in one afternoon became invisible to the person who filed them. It is
+// "general" for the same reason JoinRoom is: it is the room every principal on
+// this node already reads.
+const DefaultRoom = "general"
+
 // RoomOf is the room an artifact belongs to, or "" for one that names none.
 //
 // It is one function rather than one per surface because the key is one key:
