@@ -1,0 +1,32 @@
+{
+  "//": "handoff-runner's configuration, by example. Copy it, edit it, and point the binary at it with -config or $HANDOFF_RUNNER_CONFIG. An unknown key is refused rather than ignored, so a typo here is caught at startup instead of showing up hours later as a strange run verdict - which is why this comment is a key called '//' and not a JSON comment.",
+
+  "addr": "127.0.0.1:8801",
+  "dsn": "postgres://flowy@127.0.0.1:5432/flowy?sslmode=disable",
+  "node": "dogfood",
+
+  "cache_dir": "/var/lib/handoff-runner",
+  "log_dir": "/var/lib/handoff-runner/runs",
+  "workers": 2,
+
+  "run_timeout": "25m",
+  "build_timeout": "3h",
+  "package_build_timeout": "30m",
+
+  "build_script": "/opt/flowy/scripts/build-sut.sh",
+  "build_config_dir": "/opt/flowy/scripts/build-sut.d",
+
+  "projects": {
+    "serenedb": {
+      "source": "/home/dead/Projects/serenedb/serenedb-main",
+      "default_branch": "main",
+      "base_image": "serenedb/serenedb:26.07.4",
+      "registry": "serenedb/serenedb",
+      "binary_path": "/usr/bin/serened",
+      "prebuilt_binary": "/home/dead/Projects/serenedb/serenedb-main/build_perf/bin/serened",
+      "default_isolation": "dind",
+      "dind_packages": ["postgresql-client"],
+      "python_client_packages": ["py3-psycopg"]
+    }
+  }
+}

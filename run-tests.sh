@@ -9357,6 +9357,12 @@ check "schema.sql loads" psql -v ON_ERROR_STOP=1 -q -f "$ROOT/schema.sql"
 check "schema.sql reloads cleanly" psql -v ON_ERROR_STOP=1 -q -f "$ROOT/schema.sql"
 check "go build" go_build
 check "go build ./cmd/smoke" go build -o "$WORK/smoke" ./cmd/smoke
+# The trusted-host binary is built by the gate but never run by it: it needs a
+# Docker daemon and a source checkout, which is exactly why it is a second
+# deployable. Building it is what catches the case that matters here - a change
+# to internal/store or internal/repro that leaves the node compiling and the
+# runner not.
+check "go build ./cmd/handoff-runner" go build -o "$WORK/handoff-runner" ./cmd/handoff-runner
 check "gofmt" gofmt_clean
 check "go vet" go vet ./...
 
