@@ -58,13 +58,20 @@ func TestPresenceTracksPollsNotAcks(t *testing.T) {
 	}
 
 	// In flight: attached, whatever the room has said.
+	//
+	// MATCHED ON THE PRINCIPAL AS WELL AS THE NAME. "waiter" is a label, not an
+	// identity - every run of this test declares one, and against a database
+	// that has been used before there are several, belonging to users this
+	// principal is not. Asserting on all of them measured the leftovers: two
+	// seats hit it independently today, both reading "poll in flight reads as
+	// not attached" about somebody else's row.
 	db.PollStart(ctx, p, "waiter", WaiterTracked)
 	rows, err = db.Presence(ctx)
 	if err != nil {
 		t.Fatalf("presence: %v", err)
 	}
 	for _, r := range rows {
-		if r.Reader == "waiter" {
+		if r.Reader == "waiter" && r.Principal == readerKey(p) {
 			if !r.Attached {
 				t.Error("poll in flight reads as not attached")
 			}
@@ -81,7 +88,7 @@ func TestPresenceTracksPollsNotAcks(t *testing.T) {
 		t.Fatalf("presence: %v", err)
 	}
 	for _, r := range rows {
-		if r.Reader == "waiter" && r.Attached {
+		if r.Reader == "waiter" && r.Principal == readerKey(p) && r.Attached {
 			t.Error("poll ended and the reader still reads attached")
 		}
 	}
@@ -402,18 +409,31 @@ func TestRoomMembersNamesSpeakers(t *testing.T) {
 		}
 	}
 
+	// ABOUT THIS ACTOR, not about the size of the list. The claim is that two
+	// messages from one speaker are one member - a dedup - and the list itself
+	// is every chat event this principal may read, which against a database
+	// that has been used before includes rows from other tests' principals.
+	// Counting the whole list measured the database's history: it read 2 on the
+	// second run of this package against one database, and two seats hit that
+	// independently today.
 	members, err := db.RoomMembers(ctx, p)
 	if err != nil {
 		t.Fatalf("room members: %v", err)
 	}
-	if len(members) != 1 {
-		t.Fatalf("two messages from one actor gave %d members, want 1", len(members))
+	mine := []*RoomMember{}
+	for _, m := range members {
+		if m.Actor == u.ID {
+			mine = append(mine, m)
+		}
 	}
-	if members[0].Name != u.Handle {
-		t.Errorf("member is named %q, want the user's handle %q", members[0].Name, u.Handle)
+	if len(mine) != 1 {
+		t.Fatalf("two messages from one actor gave %d rows for that actor, want 1", len(mine))
 	}
-	if members[0].Kind != "user" {
-		t.Errorf("member kind is %q, want user", members[0].Kind)
+	if mine[0].Name != u.Handle {
+		t.Errorf("member is named %q, want the user's handle %q", mine[0].Name, u.Handle)
+	}
+	if mine[0].Kind != "user" {
+		t.Errorf("member kind is %q, want user", mine[0].Kind)
 	}
 }
 
