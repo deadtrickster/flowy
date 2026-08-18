@@ -1618,6 +1618,55 @@ all_three_doors_refuse_a_ref_in_the_same_words() {
 # And the write works through them, with the entry landing the same way. The CLI
 # prints the id on stdout so a script can hand it on, which is `flowy say`'s
 # rule: what a person reads goes to stderr and stdout stays parseable.
+# `flowy merge open` files the row the console would have filed.
+#
+# The verb exists because four seats filed merge requests four different ways -
+# an MCP shim, curl, prose - and none of those copies live in this repository.
+# What it must get right is the ROW, not the printing: the kind, the branch in
+# fields where BranchOf reads it, and a scope somebody other than the author can
+# read. That last one is why this check asserts visibility at all: three merge
+# rows sat at personal scope for hours where the drainer could not see them, and
+# every symptom of that reads as an empty queue.
+#
+# FLOWY_AGENT is cleared deliberately - resolveToken prefers a named seat over
+# an explicit token, so a suite inheriting one from whoever ran it would be
+# testing somebody else's credential.
+a_branch_is_filed_for_the_queue_from_the_shell() {
+	recall
+	local id out
+	id="$(FLOWY_AGENT='' FLOWY_ADDR="http://127.0.0.1:$HTTP_PORT" FLOWY_TOKEN="$TOKEN_A" \
+		"$ROOT/flowy" merge open --branch feat/from-the-shell --assignee alice \
+		"filed from the shell to prove the verb writes what the console writes" 2>/dev/null)" || return 1
+	if [ -z "$id" ]; then
+		printf 'flowy merge open printed no id on stdout\n' >&2
+		return 1
+	fi
+	api GET "$TOKEN_A" "/api/artifact/$id" || return 1
+	want_eq "the kind" "$(jqv .kind)" merge || return 1
+	want_eq "the branch, where BranchOf reads it" "$(jqv .fields.branch)" feat/from-the-shell || return 1
+	want_eq "who is carrying it" "$(jqv .fields.assignee)" alice || return 1
+	if [ "$(jqv .visibility)" = personal ]; then
+		printf 'the row is personal - nobody but its author can read it, including whatever lands it\n' >&2
+		return 1
+	fi
+
+	# And the refusal, because a merge request with no branch is the one that
+	# sits in the queue looking like work nobody can do.
+	if out="$(FLOWY_AGENT='' FLOWY_ADDR="http://127.0.0.1:$HTTP_PORT" FLOWY_TOKEN="$TOKEN_A" \
+		"$ROOT/flowy" merge open "no branch on this one" 2>&1)"; then
+		printf 'flowy merge open with no --branch was accepted:\n%s\n' "$out" >&2
+		return 1
+	fi
+	case "$out" in
+	*--branch*) ;;
+	*)
+		printf 'it refused without naming what is missing:\n%s\n' "$out" >&2
+		return 1
+		;;
+	esac
+	printf 'filed %s, and refused a branchless one\n' "$id"
+}
+
 the_http_and_cli_doors_append_an_entry() {
 	recall
 	local body id
@@ -10588,6 +10637,8 @@ check "all three doors refuse an unreadable ref in the same words" \
 	all_three_doors_refuse_a_ref_in_the_same_words
 check "the HTTP and CLI doors append an entry, and the CLI reads it back" \
 	the_http_and_cli_doors_append_an_entry
+check "a branch is filed for the queue from the shell, and a branchless one is refused" \
+	a_branch_is_filed_for_the_queue_from_the_shell
 check "an entry written by one seat about another's work says it is vouched" \
 	an_entry_written_about_another_seat_says_it_is_vouched
 check "vouching for yourself is authoring, and a subject nobody answers to is refused" \

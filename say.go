@@ -116,7 +116,14 @@ func sayCmd(args []string) error {
 // sayBody takes the message from the arguments, or from stdin when there are
 // none. Reading stdin only in that case matters: a `flowy say "text"` inside a
 // pipeline must not block waiting for input nobody is going to send.
-func sayBody(rest []string) (string, error) {
+func sayBody(rest []string) (string, error) { return bodyOrStdin(rest, "say", sayUsage) }
+
+// bodyOrStdin is sayBody with the verb's own words on the empty case. Three
+// verbs read a body this way now, and a caller who typed `flowy merge open`
+// and gave it nothing was being handed `flowy say`'s usage - the right rule
+// with the wrong verb's help under it, which reads as the tool being confused
+// about what was asked.
+func bodyOrStdin(rest []string, verb, usage string) (string, error) {
 	if len(rest) > 0 {
 		return strings.Join(rest, " "), nil
 	}
@@ -125,7 +132,7 @@ func sayBody(rest []string) (string, error) {
 		return "", err
 	}
 	if stat.Mode()&os.ModeCharDevice != 0 {
-		return "", errors.New("nothing to say: pass the text as an argument or on stdin\n\n" + sayUsage)
+		return "", errors.New("nothing to " + verb + ": pass the text as an argument or on stdin\n\n" + usage)
 	}
 	text, err := io.ReadAll(os.Stdin)
 	if err != nil {

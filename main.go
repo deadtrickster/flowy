@@ -68,7 +68,9 @@ commands:
            env: DATABASE_URL, FLOWY_NODE, FLOWY_TOKEN, FLOWY_OPERATOR)
   identity this node's signing key, and the peer keys it holds
            (flowy identity | list | pin --node N --key K | keygen --node N)
-  principal
+  merge    file a branch for the queue to land. Filing only - gating and
+           landing belong to the drainer (flowy merge open --branch B
+           [--target T] [--title L] [--assignee A] "what changed")
   mint     seat an agent: user, token and signing key in one operation, from
            the operator's hands - the only door besides MCP, and no agent may
            knock (flowy mint --handle N --kind K --project P [--agent-kind W];
@@ -77,9 +79,10 @@ commands:
            the shell history and the process list. There is no signup door -
            this is how an account gets one (flowy passwd --handle N
            [--keep-sessions]; a change signs every browser out by default)
+  principal
            whose word a row is: the principal keys this node signs with and
            checks against (flowy principal [list] | keygen --as P [--epoch N]
-           | pin --as P --key K [--epoch N])
+           | pin --as P --key K [--epoch N] | exposed)
   sign     sign a replication delta read on stdin (flowy sign [--seed HEX]
            [--as P --principal-seed HEX])
   version  print the version and exit
@@ -201,6 +204,11 @@ func main() {
 	case "passwd":
 		if err := passwdCmd(os.Args[2:]); err != nil {
 			fmt.Fprintf(os.Stderr, "flowy passwd: %v\n", err)
+			os.Exit(1)
+		}
+	case "merge":
+		if err := mergeCmd(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "flowy merge: %v\n", err)
 			os.Exit(1)
 		}
 	case "principal":
