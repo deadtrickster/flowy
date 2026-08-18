@@ -10465,6 +10465,15 @@ check "go vet" go vet ./...
 say "unit tests"
 # -count=1 so the live store tests really talk to the database this run rather
 # than replaying a cached result from an earlier one.
+# Named ahead of the whole-package run, because of what this one failing means:
+# a red verdict recorded as a green makes a broken branch LANDABLE, and every
+# other reader downstream - the lander, the drainer, the queue view - would be
+# reading it as measured-and-passed. A row that is wrong in that direction is
+# the one failure this queue cannot recover from by waiting.
+check "a red verdict ends the declaration and does not admit the branch" \
+	go test -count=1 \
+	-run 'TestARedVerdictEndsTheDeclarationAndDoesNotAdmitTheBranch|TestARedIsRecordedByTheHolderAndRefusedFromAnybodyElse' \
+	./internal/store
 check "go test ./..." go test -count=1 ./...
 # Named as well as covered by `go test ./...` above, because this one failing
 # means every console on this node loses its stream on a sixty-second clock -

@@ -39,11 +39,21 @@ type mergeQueueItem struct {
 	// integration branch a union actually measured. A lander reading only
 	// Branch lands one commit of a sixteen-commit union and calls it done; it
 	// happened twice in one night and nobody lied.
-	GateRef    string `json:"gated_ref,omitempty"`
-	Status     string `json:"status"`
-	Assignee   string `json:"assignee,omitempty"`
-	Admissible *bool  `json:"admissible,omitempty"`
-	Reason     string `json:"reason,omitempty"`
+	GateRef string `json:"gated_ref,omitempty"`
+	// Red is the last verdict that said no: the tip that was measured and found
+	// broken, the base it was measured from, when, and one line about it.
+	// Absent when there is none.
+	//
+	// Until this existed a red lived in a file named red-<row>-<tip> on
+	// whichever box ran the gate. The queue therefore showed a finished failed
+	// run as work in progress - gating true, status active - and the only way to
+	// learn a branch was broken was to ask the agent who ran it. A verdict is a
+	// fact about the row.
+	Red        *mergeQueueRed `json:"red,omitempty"`
+	Status     string         `json:"status"`
+	Assignee   string         `json:"assignee,omitempty"`
+	Admissible *bool          `json:"admissible,omitempty"`
+	Reason     string         `json:"reason,omitempty"`
 	// Held says the target is reserved by another declarer's lock - a WAIT, as
 	// against Admissible's verdict about this row's own evidence. Distinct on
 	// purpose: collapsing them is how an agent re-gates when it should sleep
@@ -157,6 +167,7 @@ func (s *server) handleMergeQueue(w http.ResponseWriter, r *http.Request) {
 			GatedTip: store.GatedTipOf(a),
 			GateRun:  store.GateRunOf(a),
 			GateRef:  store.GateRefOf(a),
+			Red:      queueRedOf(a),
 			Status:   store.TodoStatusOf(a),
 			Assignee: store.AssigneeOf(a),
 		}
@@ -276,4 +287,27 @@ func (s *server) handleMergeQueue(w http.ResponseWriter, r *http.Request) {
 		response["lock"] = map[string]any{"held": false}
 	}
 	writeJSON(w, http.StatusOK, response)
+}
+
+// mergeQueueRed is the last red as a browser reads it.
+type mergeQueueRed struct {
+	Tip  string `json:"tip"`
+	Base string `json:"base,omitempty"`
+	At   string `json:"at,omitempty"`
+	Note string `json:"note,omitempty"`
+}
+
+// queueRedOf reads the red a row carries, or nil. A declaration clears it, so
+// this is always about the current run rather than one three landings ago.
+func queueRedOf(a *store.Artifact) *mergeQueueRed {
+	tip := store.RedTipOf(a)
+	if tip == "" {
+		return nil
+	}
+	return &mergeQueueRed{
+		Tip:  tip,
+		Base: store.GatedBaseOf(a),
+		At:   store.RedAtOf(a),
+		Note: store.RedNoteOf(a),
+	}
 }

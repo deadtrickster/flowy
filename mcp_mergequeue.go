@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/deadtrickster/flowy/internal/store"
@@ -70,14 +71,24 @@ var mergeTools = []tool{
 // the refusal shape that sends somebody to measure the wrong thing, which
 // happened repeatedly today. The reason names both tips.
 type mergeEntry struct {
-	Item       *store.Artifact `json:"item"`
-	Branch     string          `json:"branch"`
-	Target     string          `json:"target"`
-	GatedTip   string          `json:"gated_tip"`
-	GateRun    string          `json:"gate_run"`
-	Status     string          `json:"status"`
-	Admissible *bool           `json:"admissible,omitempty"`
-	Reason     string          `json:"reason,omitempty"`
+	Item     *store.Artifact `json:"item"`
+	Branch   string          `json:"branch"`
+	Target   string          `json:"target"`
+	GatedTip string          `json:"gated_tip"`
+	GateRun  string          `json:"gate_run"`
+	Status   string          `json:"status"`
+	// Red is what the last run found when it did not pass: the tip it measured,
+	// when, and one line about it. Absent when there is none, so a row nobody
+	// has failed on says nothing rather than saying "not red" on every line.
+	//
+	// It is why this field exists at all: a red used to live in a file named
+	// red-<row>-<tip> on whichever box ran the gate, so the queue showed a
+	// finished failed run as work in progress and a second drainer would have
+	// measured the same broken tree. A verdict is a fact about the row, and a
+	// fact about the row belongs where everybody reads the row.
+	Red        *mergeRed `json:"red,omitempty"`
+	Admissible *bool     `json:"admissible,omitempty"`
+	Reason     string    `json:"reason,omitempty"`
 	// KnownIssue is the row somebody wrote about this refusal, under the same
 	// key and in the same shape the HTTP door uses - see knownissue.go. An agent
 	// reading a no it did not expect is the reader this exists for: it is the
@@ -87,6 +98,30 @@ type mergeEntry struct {
 	// code carries the refusal's token as far as the batch lookup below, and no
 	// further.
 	code string
+}
+
+// mergeRed is the last verdict that said no, as a reader sees it.
+type mergeRed struct {
+	Tip  string `json:"tip"`
+	Base string `json:"base,omitempty"`
+	At   string `json:"at,omitempty"`
+	Note string `json:"note,omitempty"`
+}
+
+// redOf reads the red a row carries, or nil. A declaration clears it - see
+// applyGate - so what this returns is always about the run that is current, not
+// about one three landings ago.
+func redOf(item *store.Artifact) *mergeRed {
+	tip := store.RedTipOf(item)
+	if tip == "" {
+		return nil
+	}
+	return &mergeRed{
+		Tip:  tip,
+		Base: store.GatedBaseOf(item),
+		At:   store.RedAtOf(item),
+		Note: store.RedNoteOf(item),
+	}
 }
 
 func mergeQueueTool(ctx context.Context, m *mcpServer, p *store.Principal, raw json.RawMessage) (any, error) {
@@ -136,6 +171,7 @@ func mergeQueueTool(ctx context.Context, m *mcpServer, p *store.Principal, raw j
 			GatedTip: store.GatedTipOf(item),
 			GateRun:  store.GateRunOf(item),
 			Status:   store.TodoStatusOf(item),
+			Red:      redOf(item),
 		}
 		// No tip, no verdict. Answering "admissible" against a tip nobody
 		// stated would be the always-true check this whole surface exists to
@@ -190,6 +226,8 @@ func mergeGate(ctx context.Context, m *mcpServer, p *store.Principal, raw json.R
 		Run      string `json:"run"`
 		GatedTip string `json:"gated_tip"`
 		GatedRef string `json:"gated_ref"`
+		Result   string `json:"result"`
+		Note     string `json:"note"`
 	}
 	if err := decodeParams(raw, &a); err != nil {
 		return nil, err
@@ -200,7 +238,24 @@ func mergeGate(ctx context.Context, m *mcpServer, p *store.Principal, raw json.R
 	// The same store verb the HTTP door calls. Two implementations of "declare a
 	// gate" would drift, and what they would drift about is whether a run was
 	// ever declared - which is the one thing this is for.
-	art, entry, err := m.db.SetMergeGate(ctx, p, a.ID, a.Run, a.GatedTip, a.GatedRef)
+	// The same word-to-verb decision the HTTP door makes, and an unknown word is
+	// refused rather than read as a pass: a caller who typed `fail` and got a
+	// green recorded would have the queue admitting a branch their own run
+	// rejected.
+	var (
+		art   *store.Artifact
+		entry *store.Event
+		err   error
+	)
+	switch strings.ToLower(strings.TrimSpace(a.Result)) {
+	case "", "pass", "green":
+		art, entry, err = m.db.SetMergeGate(ctx, p, a.ID, a.Run, a.GatedTip, a.GatedRef)
+	case "red", "fail", "failed":
+		art, entry, err = m.db.SetMergeRed(ctx, p, a.ID, a.Run, a.GatedTip, a.GatedRef, a.Note)
+	default:
+		return nil, fmt.Errorf("result %q is not one of pass, red - and a word this door "+
+			"does not know must not be read as a pass", a.Result)
+	}
 	if err != nil {
 		return nil, err
 	}

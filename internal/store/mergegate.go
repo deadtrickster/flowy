@@ -40,6 +40,44 @@ const GateRefField = "gated_ref"
 // different facts to a holder who is green and ready to land.
 const GateActorField = "gate_actor"
 
+// A VERDICT THAT SAYS NO.
+//
+// gated_tip carried two facts at once - which tree was measured, and that the
+// measurement passed - and every symptom on 18 Aug came from those two coming
+// apart. applyGate had exactly two cases: a declaration (stamp gate_at, clear
+// the tip) and a verdict (write the tip, clear gate_at). There was no third,
+// and MergeAdmissible reads a written tip as evidence FOR landing, so recording
+// a red would have made the red branch landable. A drainer that found a red had
+// two legal exits: land it, or say nothing.
+//
+// It said nothing. So the row went on reading gating=true for the full fifteen
+// minutes after the run had died, the red existed only as a file named
+// red-<row>-<tip> on the box that ran it, and any second drainer - or a person -
+// would gate the same broken tree again because nothing here knew.
+//
+// These fields are the third case. RedTipField names THE TIP THAT WAS MEASURED
+// AND FOUND BROKEN, which is what it holds - not the run, which gate_run
+// already names, and not "the gate failed", which is a sentence rather than a
+// fact. Beside gated_base, which the declaration stamped, the pair (red_tip,
+// gated_base) is the whole subject of the verdict: this tree, from that base.
+const RedTipField = "red_tip"
+
+// RedAtField is when the red was recorded, so a reader can tell a verdict from
+// this pass from one three landings ago without opening the log.
+const RedAtField = "red_at"
+
+// RedNoteField is what the run said about it in one line - a count, a check
+// name, where the log is. It is not the log: the evidence stays where it was
+// written, and a note that tried to be the log would be a copy that rots.
+const RedNoteField = "red_note"
+
+// RedTipOf, RedAtOf and RedNoteOf read the verdict a row carries.
+func RedTipOf(a *Artifact) string { return normalizeTip(artifactString(a, RedTipField)) }
+
+func RedAtOf(a *Artifact) string { return strings.TrimSpace(artifactString(a, RedAtField)) }
+
+func RedNoteOf(a *Artifact) string { return strings.TrimSpace(artifactString(a, RedNoteField)) }
+
 // GateRefOf and GateActorOf read what a declaration recorded. They live here
 // and not beside GatedTipOf in mergequeue.go on purpose: that file is one
 // admission opinion under active change by another hand, and these are facts
@@ -108,7 +146,38 @@ func applyGate(fields map[string]any, run, tip string, now time.Time) bool {
 	// on the SAME tip left the superseded verdict admitting the branch while its
 	// replacement was still measuring.
 	delete(fields, GatedTipField)
+	// AND SO DOES THE RED, for exactly that reason and no other. A declaration
+	// says the old evidence is being replaced; a red left behind would outlive
+	// the run that found it and describe a tree this one is not measuring.
+	delete(fields, RedTipField)
+	delete(fields, RedAtField)
+	delete(fields, RedNoteField)
 	return true
+}
+
+// applyRed writes a verdict that says no.
+//
+// It is applyGate's third case, kept as its own function because it is the one
+// that must NOT write gated_tip: MergeAdmissible reads a written tip as
+// evidence for landing, so a red recorded there would make the broken branch
+// landable, which is why this case did not exist rather than existing wrongly.
+// With the tip left alone, MergeAdmissible needs no change at all - it answers
+// "no gate has measured it", which is the honest thing to say about a branch
+// that has no green.
+//
+// It clears gate_at like a green verdict does, and that is the whole of the
+// gating=true fix: the run is over, so the declaration is over, whichever way it
+// went.
+func applyRed(fields map[string]any, run, tip, note string, now time.Time) {
+	fields[GateRunField] = run
+	fields[RedTipField] = normalizeTip(tip)
+	fields[RedAtField] = now.Format(time.RFC3339Nano)
+	if note = strings.TrimSpace(note); note != "" {
+		fields[RedNoteField] = note
+	} else {
+		delete(fields, RedNoteField)
+	}
+	delete(fields, GateAtField)
 }
 
 // SetMergeGate declares that a run is measuring a merge request, or records the
@@ -146,8 +215,61 @@ func applyGate(fields map[string]any, run, tip string, now time.Time) bool {
 func (d *DB) SetMergeGate(
 	ctx context.Context, p *Principal, id, run, tip, ref string,
 ) (*Artifact, *Event, error) {
+	return d.setMergeGate(ctx, p, id, gateMoment{Run: run, Tip: tip, Ref: ref})
+}
+
+// SetMergeRed records that a run measured a tip and it did not pass.
+//
+// It is the same verb as SetMergeGate and shares its whole path - the same
+// refusals, the same lock rule, the same one-transaction write - because a red
+// and a green are one fact at one moment reported two ways, and two
+// implementations of "what a run found" would drift about the thing that
+// decides landing.
+//
+// THE TIP IS REQUIRED. A red is a statement about a TREE: "this one is broken",
+// with the base the declaration stamped beside it. Without a tip it would be
+// "something went wrong at some point", which is what the file on one box
+// already said and which nothing can act on - a second drainer would not know
+// whether it is about to measure the same tree.
+//
+// It takes the VERDICT branch of the lock rule, not the declaring branch: renew
+// and refuse when there is nothing to renew. A red from somebody who never held
+// the target is the same forgery as a green from them, and it is worse in one
+// way - it tells the queue a branch is broken on the word of a run nobody
+// declared.
+//
+// IT DOES NOT TOUCH THE ROW'S STATUS, for the reason abandon does not: this
+// records a measurement, not a lifecycle move. The branch still wants to land
+// and whoever is carrying it still is.
+func (d *DB) SetMergeRed(
+	ctx context.Context, p *Principal, id, run, tip, ref, note string,
+) (*Artifact, *Event, error) {
+	if strings.TrimSpace(tip) == "" {
+		return nil, nil, fmt.Errorf("store: a red verdict names the tip it measured - " +
+			"a red with no tree is a rumour, and the next run cannot tell whether it is " +
+			"about to measure the same one")
+	}
+	return d.setMergeGate(ctx, p, id, gateMoment{Run: run, Tip: tip, Ref: ref, Red: true, Note: note})
+}
+
+// gateMoment is one report from a run: a declaration, a green verdict, or a red
+// one. It is a struct rather than four more parameters because the three cases
+// differ by which fields are set, and a positional call site cannot say which
+// case it means.
+type gateMoment struct {
+	Run  string
+	Tip  string
+	Ref  string
+	Red  bool
+	Note string
+}
+
+func (d *DB) setMergeGate(
+	ctx context.Context, p *Principal, id string, g gateMoment,
+) (*Artifact, *Event, error) {
 	ctx, span := otel.Start(ctx, otel.KindIngest, "merge.gate")
 	defer span.End()
+	run, tip, ref := g.Run, g.Tip, g.Ref
 
 	actor, actorKind := voteActor(p)
 	if actor == "" {
@@ -173,7 +295,7 @@ func (d *DB) SetMergeGate(
 	// of a run the declarer already holds the target for, and re-taking it here
 	// would let a verdict from a principal who never declared steal the target
 	// from whoever is actually measuring.
-	declaring := strings.TrimSpace(tip) == ""
+	declaring := strings.TrimSpace(tip) == "" && !g.Red
 	if ref = strings.TrimSpace(ref); declaring {
 		if _, err := d.TakeMergeLock(ctx, p, TargetOf(art), art.ID); err != nil {
 			return nil, nil, err
@@ -201,7 +323,10 @@ func (d *DB) SetMergeGate(
 		return nil, nil, err
 	}
 	status := art.Status
-	if applyGate(fields, run, tip, time.Now().UTC()) {
+	switch {
+	case g.Red:
+		applyRed(fields, run, tip, g.Note, time.Now().UTC())
+	case applyGate(fields, run, tip, time.Now().UTC()):
 		status = ActiveStatus
 	}
 	if declaring {
@@ -271,14 +396,33 @@ func (d *DB) SetMergeGate(
 		return nil, nil, fmt.Errorf("store: declare gate on %s: %w", art.ID, err)
 	}
 
-	meta, err := json.Marshal(map[string]string{
+	// THE LOG IS THE RECORD AND THE FIELDS ARE ITS PROJECTION, so a red says on
+	// the entry which tree it was about and what the run said, in the same shape
+	// a green says which tree it measured. A field can be superseded by the next
+	// declaration; the entry cannot, which is what makes "has this tree ever
+	// been measured" answerable after the row has moved on.
+	verdict := map[string]string{
 		GateRunField:  run,
 		GatedTipField: normalizeTip(tip),
 		GateRefField:  ref,
 		"actor_kind":  actorKind,
 		"actor_user":  p.UserID,
 		BranchField:   BranchOf(art),
-	})
+	}
+	if g.Red {
+		// The tip does NOT ride the gated_tip key on a red. Every reader of this
+		// log treats that key as the tree that passed - the queue, the lander,
+		// the drainer - and a red arriving under it would be read as a green by
+		// anything that looked at the meta rather than the result.
+		delete(verdict, GatedTipField)
+		verdict["result"] = "red"
+		verdict[RedTipField] = normalizeTip(tip)
+		verdict[GatedBaseField] = GatedBaseOf(art)
+		if note := strings.TrimSpace(g.Note); note != "" {
+			verdict[RedNoteField] = note
+		}
+	}
+	meta, err := json.Marshal(verdict)
 	if err != nil {
 		return nil, nil, fmt.Errorf("store: declare gate on %s: %w", art.ID, err)
 	}
@@ -291,6 +435,13 @@ func (d *DB) SetMergeGate(
 		if ref != "" {
 			body = fmt.Sprintf("run %s measured %s through %s on %s",
 				run, BranchOf(art), ref, normalizeTip(tip))
+		}
+	}
+	if g.Red {
+		body = fmt.Sprintf("run %s measured %s on %s and it did not pass",
+			run, BranchOf(art), normalizeTip(tip))
+		if note := strings.TrimSpace(g.Note); note != "" {
+			body += ": " + note
 		}
 	}
 	entry := &Event{

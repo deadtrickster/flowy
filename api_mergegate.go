@@ -18,7 +18,9 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/deadtrickster/flowy/internal/store"
 )
@@ -36,6 +38,18 @@ type mergeGateRequest struct {
 	// branch - an integration branch. Optional, and ignored on a verdict that
 	// follows a declaration which carried it.
 	GatedRef string `json:"gated_ref"`
+	// Result is what the run found: empty or "pass" for the verdict this door
+	// has always recorded, "red" for one that did not pass.
+	//
+	// It is a WORD ON THE VERDICT rather than a second endpoint because a red
+	// and a green are one fact reported two ways, and the refusals - the row
+	// must exist, be a merge request, and be held by the caller - are the same
+	// refusals. A /red door would be a second place to forget one of them.
+	Result string `json:"result"`
+	// Note is one line about the red: a count, a check name, where the log is.
+	// It is not the log, and it is ignored on a pass, where there is nothing to
+	// explain.
+	Note string `json:"note"`
 }
 
 func (s *server) handleMergeGate(w http.ResponseWriter, r *http.Request) {
@@ -58,8 +72,12 @@ func (s *server) handleMergeGate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorBody("body must be json: "+err.Error()))
 		return
 	}
-	art, entry, err := s.db.SetMergeGate(r.Context(), p, r.PathValue("id"),
-		req.Run, req.GatedTip, req.GatedRef)
+	// WHICH VERB THIS BODY MEANT, decided before anything is written. An
+	// unknown word is refused rather than read as a pass: a caller who typed
+	// `result: "fail"` and got a green recorded would have the queue admitting a
+	// branch their own run rejected, which is the worst answer this door can
+	// give.
+	art, entry, err := s.recordGate(r, p, req)
 	if errors.Is(err, store.ErrNotFound) {
 		writeJSON(w, http.StatusNotFound, errorBody("no such merge request"))
 		return
@@ -78,4 +96,23 @@ func (s *server) handleMergeGate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"item": art, "event": entry})
+}
+
+// recordGate sends one gate moment to the store: a declaration, a pass, or a
+// red. It is split out so the word-to-verb decision is one place and a test can
+// reach it.
+func (s *server) recordGate(
+	r *http.Request, p *store.Principal, req mergeGateRequest,
+) (*store.Artifact, *store.Event, error) {
+	switch strings.ToLower(strings.TrimSpace(req.Result)) {
+	case "", "pass", "green":
+		return s.db.SetMergeGate(r.Context(), p, r.PathValue("id"),
+			req.Run, req.GatedTip, req.GatedRef)
+	case "red", "fail", "failed":
+		return s.db.SetMergeRed(r.Context(), p, r.PathValue("id"),
+			req.Run, req.GatedTip, req.GatedRef, req.Note)
+	default:
+		return nil, nil, fmt.Errorf("result %q is not one of pass, red - and a word this "+
+			"door does not know must not be read as a pass", req.Result)
+	}
 }
