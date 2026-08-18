@@ -328,6 +328,72 @@ links to has to be a page the node serves`);
     process.exit(1);
   }
 
+  // AND THE CONTROL, which is what makes the line above evidence. This console
+  // is a single page served on a catch-all, so EVERY path under /chat answers
+  // 200 with the same document - a status code says the server handed back the
+  // app and nothing about whether the route means anything. A pane name that
+  // exists and one that does not have to render differently, or "the link
+  // works" is a claim about the web server.
+  //
+  // Measured by the orchestrator running exactly this and finding the two
+  // indistinguishable: a typo in a shared link showed a working room, and
+  // neither the sender nor the reader could tell they were looking at
+  // different panes.
+  const nonsense = `${base}/chat/general/nosuchpane`;
+  await page.goto(nonsense, { timeout: 20_000 }).catch(() => {});
+  const said = page.locator("aside [data-room-pane-unknown]");
+  try {
+    await said.waitFor({ state: "visible", timeout: 20_000 });
+  } catch {
+    const drawn = await page
+      .locator("aside [data-room-pane-body]")
+      .evaluateAll((nodes) => nodes.map((n) => n.getAttribute("data-room-pane-body")));
+    console.error(
+      `${nonsense} drew [${drawn.join(", ")}] and said nothing about the name - a pane that does
+not exist has to be distinguishable from one that does, or a typo in a link is invisible to
+everybody it was sent to`,
+    );
+    process.exit(1);
+  }
+  const fell = await page
+    .locator("aside [data-room-pane-body]")
+    .evaluateAll((nodes) => nodes.map((n) => n.getAttribute("data-room-pane-body")));
+  if (fell.join(",") !== "todos") {
+    console.error(`${nonsense} fell back to [${fell.join(", ")}], want the queue`);
+    process.exit(1);
+  }
+
+  // ONE MESSAGE IS A PLACE TOO. "Look at what X said" was a screenshot: the
+  // selected message was component state, so the thread on screen could not be
+  // sent to anybody. The pointer in the path is the same pointer a citation
+  // travels as.
+  await page.goto(`${base}/chat/general`, { timeout: 20_000 }).catch(() => {});
+  await page.waitForSelector("main [data-body]", { timeout: 20_000 }).catch(() => {});
+  const messageRows = page.locator("main [data-body]");
+  const howMany = await messageRows.count();
+  if (howMany === 0) {
+    console.error("no message in #general to point at, so the message link was not driven");
+    process.exit(1);
+  }
+  const target = await messageRows.nth(howMany - 1).getAttribute("data-body");
+  const linked = `${base}/chat/general/thread/${target}`;
+  await page.goto(linked, { timeout: 20_000 }).catch(() => {});
+  const quoted = page.locator("form [data-citation]");
+  try {
+    await quoted.waitFor({ state: "visible", timeout: 20_000 });
+  } catch {
+    console.error(
+      `${linked} opened without arming a reply to ${target} - a link to a message has to land on
+that message, or the pointer in the path is decoration`,
+    );
+    process.exit(1);
+  }
+  const armed = await quoted.first().getAttribute("data-citation");
+  if (armed !== target) {
+    console.error(`${linked} armed a reply to ${armed}, want ${target}`);
+    process.exit(1);
+  }
+
   // ------------------------------------------ the thread, inside its own tab
   //
   // The thread moved into a tab from a section that was always on screen, and

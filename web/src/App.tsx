@@ -49,6 +49,13 @@ export default function App() {
         */}
           <Route path="/chat/:room/:pane" element={<ChatRoom />} />
           {/*
+          And one message inside it, which is the pointer a citation already
+          travels as - see lib/cite. "Look at what X said" was a screenshot
+          before this: the selected message was component state, so the thread
+          on screen could not be sent to anybody.
+        */}
+          <Route path="/chat/:room/thread/:message" element={<ChatRoom />} />
+          {/*
           Not /chat/dm. A direct message is not in a room, so there is no room
           name to put in the path - and a path that looked like a room's would
           be the first place somebody assumed a room could be private.

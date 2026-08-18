@@ -94,7 +94,7 @@ const COUNT_LISTENING = "#4fae7a"; // green - somebody has an ear on this room
  * the console has to keep alive itself.
  */
 export function ChatRoom() {
-  const { room = "general", pane: asked } = useParams();
+  const { room = "general", pane: asked, message: linked } = useParams();
   const navigate = useNavigate();
   const { token, whoami } = useSession();
   const { markRead } = useUnread();
@@ -138,8 +138,54 @@ export function ChatRoom() {
    * the room is what the URL is mostly about - and the strip then says what is
    * actually there.
    */
-  const pane: Pane = PANES.includes(asked as Pane) ? (asked as Pane) : "todos";
+  const pane: Pane = linked ? "thread" : PANES.includes(asked as Pane) ? (asked as Pane) : "todos";
+  // A SEGMENT THAT NAMES NO PANE SAYS SO. Falling back silently makes a typo in
+  // a shared link indistinguishable from the link that was meant - the person
+  // who sent it and the person who opened it both see a working room, and the
+  // one thing neither can tell is that they are not looking at the same pane.
+  // Raised by the orchestrator running the control I did not: right and wrong
+  // rendered identically.
+  const unknownPane = asked && !linked && !PANES.includes(asked as Pane) ? asked : "";
   const setPane = (next: Pane) => navigate(`/chat/${encodeURIComponent(room)}/${next}`);
+  /**
+   * AND THE MESSAGE SOMEBODY IS POINTING AT, when the path names one.
+   *
+   * "Look at what X said" was a screenshot: the selected message lived in
+   * component state, so the thread on screen could not be sent to anybody and
+   * the back button could not undo picking one. /chat/:room/thread/:message is
+   * that pointer, and it is the same pointer a citation already travels as -
+   * see lib/cite, where what a reply carries is the message id and a span.
+   *
+   * Selecting from the path rather than at the click, so a cold load and a
+   * click end in the same state. The list arrives a fetch after the route
+   * does, so this runs when the events land as well as when the id changes;
+   * it is guarded on the selection already being right, or it would fight
+   * every re-render of a live room.
+   */
+  const point = (event: FlowyEvent) => {
+    // Both, and the selection FIRST: arming a reply is what the person pressed
+    // the control for, and it must not wait on a route change to happen. The
+    // navigation is what makes the state addressable afterwards; the effect
+    // below is for the other direction, a link opened cold.
+    select(event);
+    navigate(`/chat/${encodeURIComponent(room)}/thread/${encodeURIComponent(event.id)}`);
+  };
+  /**
+   * And putting it down has to leave the path too, or it does not go down.
+   *
+   * Measured by reply-check going red: clearing the composer emptied the
+   * selection and left the id in the URL, so the effect below put it straight
+   * back and the reply target could not be dismissed. Two places holding one
+   * fact, and the one nobody updated won.
+   *
+   * Replacing rather than pushing: dismissing a quote is undoing a step, not
+   * taking one, and a back button that walked through every dismissal would be
+   * a worse thing than the state this replaced.
+   */
+  const unpoint = () => {
+    if (linked) navigate(`/chat/${encodeURIComponent(room)}/thread`, { replace: true });
+    clear();
+  };
   // The roster's two numbers, read where the tab is drawn rather than inside
   // the pane: the strip has to report them without being opened, which is the
   // whole reason these are tabs. A presence that has not arrived is not zero -
@@ -319,6 +365,17 @@ export function ChatRoom() {
       /* keep what is on screen */
     }
   }, [room]);
+
+  // The path's message, applied once the transcript holds it. A link opened
+  // cold has the id before it has the message, so this waits for the list
+  // rather than reading it at mount - the same lesson the browser checks keep
+  // learning about panels that exist before their contents do.
+  useEffect(() => {
+    if (!linked) return;
+    if (selected?.id === linked) return;
+    const found = events.find((e) => e.id === linked);
+    if (found) select(found);
+  }, [linked, events, selected, select]);
 
   useEffect(() => {
     setEvents([]);
@@ -554,7 +611,7 @@ export function ChatRoom() {
         <PinnedStrip
           pinned={pinned}
           events={events}
-          onSelect={select}
+          onSelect={point}
           onUnpin={(id) => {
             // Optimistic on purpose, unlike the assignee cell: unpinning is
             // reversible in one click and the poll corrects it within a window,
@@ -574,7 +631,7 @@ export function ChatRoom() {
         <MessageList
           events={events}
           selected={selected}
-          onSelect={select}
+          onSelect={point}
           onCite={citeSpan}
           me={{ user: whoami?.user, agent: whoami?.agent }}
           onSeen={seen}
@@ -607,7 +664,7 @@ export function ChatRoom() {
           </div>
         ) : null}
 
-        <MessageBox citation={citation} clearReply={clear} disabled={!token} onSend={send} />
+        <MessageBox citation={citation} clearReply={unpoint} disabled={!token} onSend={send} />
       </section>
 
       {/*
@@ -703,6 +760,14 @@ export function ChatRoom() {
           and the check reads it off the page rather than off the tab it just
           clicked.
         */}
+        {unknownPane ? (
+          <div
+            data-room-pane-unknown={unknownPane}
+            className="border-border border-b px-4 py-2 text-muted-foreground text-xs"
+          >
+            no pane called {JSON.stringify(unknownPane)} - showing the queue
+          </div>
+        ) : null}
         {pane === "todos" ? (
           <div data-room-pane-body="todos" className="flex min-h-0 flex-1 flex-col">
             <RoomTodos
@@ -759,7 +824,7 @@ export function ChatRoom() {
               {threadGraph ? (
                 <ThreadDag events={threadEvents} />
               ) : (
-                <ThreadList events={threadEvents} selected={selected} onSelect={select} />
+                <ThreadList events={threadEvents} selected={selected} onSelect={point} />
               )}
             </div>
           </section>
