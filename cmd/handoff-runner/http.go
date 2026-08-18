@@ -204,8 +204,14 @@ func (s *service) handleRun(w http.ResponseWriter, r *http.Request, p *store.Pri
 		}
 		runID, err := s.queue.Enqueue(r.Context(), p, id, version)
 		if err != nil {
-			if errors.Is(err, errQueueUnlinked) {
-				return refuse(http.StatusServiceUnavailable, err.Error())
+			// A QUEUE THAT CANNOT RUN AT ALL REFUSES THE WHOLE REQUEST, not
+			// each finding in it: that is a fact about the deployment, and
+			// repeating it once per finding would read as twenty separate
+			// problems with twenty findings. It is asked for AFTER the reach
+			// check above and not before, so that a caller who may not read
+			// the finding is told that and learns nothing else.
+			if unlinked := unlinkedError(s.queue); unlinked != nil {
+				return refuse(http.StatusServiceUnavailable, unlinked.Error())
 			}
 			out.Refused = append(out.Refused, refused{Finding: id, Error: faultMessage(err)})
 			continue
@@ -255,8 +261,8 @@ func (s *service) handleRunLog(w http.ResponseWriter, r *http.Request, p *store.
 	id := r.PathValue("id")
 	run, ok := s.queue.Run(id)
 	if !ok {
-		if !linked(s.queue) {
-			return refuse(http.StatusServiceUnavailable, errQueueUnlinked.Error())
+		if err := unlinkedError(s.queue); err != nil {
+			return refuse(http.StatusServiceUnavailable, err.Error())
 		}
 		return refuse(http.StatusNotFound, "no such run: "+id)
 	}

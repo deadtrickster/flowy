@@ -29,9 +29,27 @@ type fakeStore struct {
 
 	mu       sync.Mutex
 	recorded []store.FindingRun
+	// asWho is the agent id of the principal each of the three calls was
+	// made as, in call order. It is recorded because "the run is performed
+	// on behalf of somebody" is a claim about WHO the store was asked as,
+	// and nothing else in a run record can be read as evidence of it.
+	readAs   []string
+	reproAs  []string
+	recordAs []string
 }
 
-func (f *fakeStore) ReadArtifact(_ context.Context, _ *store.Principal, id string, _ bool) (*store.Artifact, error) {
+func (f *fakeStore) note(list *[]string, p *store.Principal) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if p == nil {
+		*list = append(*list, "<nil>")
+		return
+	}
+	*list = append(*list, p.AgentID)
+}
+
+func (f *fakeStore) ReadArtifact(_ context.Context, p *store.Principal, id string, _ bool) (*store.Artifact, error) {
+	f.note(&f.readAs, p)
 	if f.readErr != nil {
 		return nil, f.readErr
 	}
@@ -40,14 +58,16 @@ func (f *fakeStore) ReadArtifact(_ context.Context, _ *store.Principal, id strin
 	return &art, nil
 }
 
-func (f *fakeStore) ReadFindingRepro(_ context.Context, _ *store.Principal, _ string) (store.ReproManifest, []store.ReproFileBytes, error) {
+func (f *fakeStore) ReadFindingRepro(_ context.Context, p *store.Principal, _ string) (store.ReproManifest, []store.ReproFileBytes, error) {
+	f.note(&f.reproAs, p)
 	if f.reproErr != nil {
 		return store.ReproManifest{}, nil, f.reproErr
 	}
 	return f.manifest, f.files, nil
 }
 
-func (f *fakeStore) RecordFindingRun(_ context.Context, _ *store.Principal, _ string, run store.FindingRun) (*store.Event, error) {
+func (f *fakeStore) RecordFindingRun(_ context.Context, p *store.Principal, _ string, run store.FindingRun) (*store.Event, error) {
+	f.note(&f.recordAs, p)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.recErr != nil {
@@ -61,6 +81,19 @@ func (f *fakeStore) verdicts() []store.FindingRun {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]store.FindingRun(nil), f.recorded...)
+}
+
+// whoRecorded is the agent ids the verdicts were signed as, in order.
+func (f *fakeStore) whoRecorded() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.recordAs...)
+}
+
+func (f *fakeStore) whoRead() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.readAs...)
 }
 
 // composeCall is one docker-compose invocation the runner made.
@@ -101,6 +134,13 @@ func (h *harness) builtSHAs() []string {
 
 const testProject = "serenedb"
 
+// asker is the principal a test enqueues on behalf of. Every Enqueue below
+// names one, because there is no longer anywhere for a runner to get one
+// from if a caller does not give it one.
+func asker(agent string) *store.Principal { return &store.Principal{AgentID: agent} }
+
+var testAsker = asker("01M05TQ6Z3YDMP88TYZX1N1Z4R")
+
 // newHarness builds a runner whose version resolves to a published release
 // (no build needed) and whose compose always succeeds, so each test changes
 // only the one thing it is about.
@@ -127,7 +167,7 @@ func newHarness(t *testing.T, opt Options) *harness {
 	if opt.PackageBuildTimeout == 0 {
 		opt.PackageBuildTimeout = 5 * time.Second
 	}
-	r, err := NewRunner(fs, &store.Principal{}, func(name string) (ProjectConfig, bool) {
+	r, err := NewRunner(fs, func(name string) (ProjectConfig, bool) {
 		if name != testProject {
 			return ProjectConfig{}, false
 		}
@@ -200,7 +240,7 @@ func (h *harness) await(t *testing.T, id int64) Run {
 
 func (h *harness) runOnce(t *testing.T, version string) Run {
 	t.Helper()
-	ids, err := h.Enqueue([]string{"01M08YNY9ZFD7089CKAGM6HMA3"}, version)
+	ids, err := h.Enqueue(testAsker, []string{"01M08YNY9ZFD7089CKAGM6HMA3"}, version)
 	if err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
@@ -626,7 +666,7 @@ func TestPoolRunsInParallel(t *testing.T) {
 		return 0, nil
 	})
 
-	ids, err := h.Enqueue([]string{"finding-a", "finding-b"}, "latest")
+	ids, err := h.Enqueue(testAsker, []string{"finding-a", "finding-b"}, "latest")
 	if err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
@@ -648,14 +688,14 @@ func TestPoolRunsInParallel(t *testing.T) {
 // queue is full tells an operator nothing.
 func TestQueueFullIsRefused(t *testing.T) {
 	fs := &fakeStore{art: &store.Artifact{}}
-	r, err := NewRunner(fs, &store.Principal{}, func(string) (ProjectConfig, bool) {
+	r, err := NewRunner(fs, func(string) (ProjectConfig, bool) {
 		return ProjectConfig{}, true
 	}, Options{Workers: 1, QueueDepth: 1, LogDir: t.TempDir(), CacheDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
 	// Never started, so nothing drains the queue.
-	ids, err := r.Enqueue([]string{"a", "b"}, "latest")
+	ids, err := r.Enqueue(testAsker, []string{"a", "b"}, "latest")
 	if !errors.Is(err, ErrQueueFull) {
 		t.Fatalf("err = %v, want ErrQueueFull", err)
 	}
@@ -684,7 +724,7 @@ func TestStopMarksQueuedRunsError(t *testing.T) {
 		}
 		return 0, nil
 	})
-	ids, err := h.Enqueue([]string{"a", "b", "c"}, "latest")
+	ids, err := h.Enqueue(testAsker, []string{"a", "b", "c"}, "latest")
 	if err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
@@ -724,7 +764,7 @@ func TestStopMarksQueuedRunsError(t *testing.T) {
 			t.Errorf("run %d has a verdict after a shutdown: %v", id, *run.Confirmed)
 		}
 	}
-	if _, err := h.Enqueue([]string{"d"}, "latest"); !errors.Is(err, ErrStopped) {
+	if _, err := h.Enqueue(testAsker, []string{"d"}, "latest"); !errors.Is(err, ErrStopped) {
 		t.Fatalf("enqueue after stop = %v, want ErrStopped", err)
 	}
 	h.Stop() // idempotent
@@ -733,7 +773,7 @@ func TestStopMarksQueuedRunsError(t *testing.T) {
 // TestEnqueueDefaultsAndRefusals.
 func TestEnqueueDefaultsAndRefusals(t *testing.T) {
 	h := newHarness(t, Options{Workers: 1})
-	ids, err := h.Enqueue([]string{"a"}, "  ")
+	ids, err := h.Enqueue(testAsker, []string{"a"}, "  ")
 	if err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
@@ -741,10 +781,10 @@ func TestEnqueueDefaultsAndRefusals(t *testing.T) {
 	if run.Version != "latest" {
 		t.Errorf("version = %q, want the latest default", run.Version)
 	}
-	if _, err := h.Enqueue(nil, "latest"); err == nil {
+	if _, err := h.Enqueue(testAsker, nil, "latest"); err == nil {
 		t.Error("enqueued a batch naming no finding")
 	}
-	if _, err := h.Enqueue([]string{" "}, "latest"); err == nil {
+	if _, err := h.Enqueue(testAsker, []string{" "}, "latest"); err == nil {
 		t.Error("enqueued a run naming no finding")
 	}
 }
@@ -802,24 +842,78 @@ func TestLastLine(t *testing.T) {
 	}
 }
 
+// TestVerdictIsSignedByWhoeverAsked is the whole of the principal-per-enqueue
+// decision, checked at the only place it is observable: WHO the store was
+// called as.
+//
+// It enqueues the same finding twice on behalf of two different agents and
+// asserts that the two verdicts were recorded under those two names. A test
+// that only asserted the runner accepts a principal argument would pass with
+// the argument ignored, which is the version of this that was already true.
+func TestVerdictIsSignedByWhoeverAsked(t *testing.T) {
+	h := newHarness(t, Options{Workers: 1})
+	one, two := asker("agent-one"), asker("agent-two")
+
+	first, err := h.Enqueue(one, []string{"01M08YNY9ZFD7089CKAGM6HMA3"}, "26.07.5")
+	if err != nil {
+		t.Fatalf("Enqueue as one: %v", err)
+	}
+	h.await(t, first[0])
+	second, err := h.Enqueue(two, []string{"01M08YNY9ZFD7089CKAGM6HMA3"}, "26.07.5")
+	if err != nil {
+		t.Fatalf("Enqueue as two: %v", err)
+	}
+	h.await(t, second[0])
+
+	if got, want := h.store.whoRecorded(), []string{"agent-one", "agent-two"}; !equalStrings(got, want) {
+		t.Errorf("verdicts recorded as %v, want %v - a run's author is whoever asked for it", got, want)
+	}
+	if got, want := h.store.whoRead(), []string{"agent-one", "agent-two"}; !equalStrings(got, want) {
+		t.Errorf("findings read as %v, want %v - a run reads with the asker's reach, not the daemon's",
+			got, want)
+	}
+}
+
+// TestEnqueueRefusesWithNoPrincipal: there is no default to fall back to, so
+// a run with nobody behind it is refused at the door rather than performed
+// under some other name.
+func TestEnqueueRefusesWithNoPrincipal(t *testing.T) {
+	h := newHarness(t, Options{Workers: 1})
+	if _, err := h.Enqueue(nil, []string{"01M08YNY9ZFD7089CKAGM6HMA3"}, "latest"); err == nil {
+		t.Fatal("enqueued a run on behalf of nobody")
+	}
+	if runs := h.Runs(); len(runs) != 0 {
+		t.Errorf("a refused enqueue left %d run records", len(runs))
+	}
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // TestNewRunnerRefusesAnUnusableConfiguration.
 func TestNewRunnerRefusesAnUnusableConfiguration(t *testing.T) {
 	fs := &fakeStore{art: &store.Artifact{}}
 	projects := func(string) (ProjectConfig, bool) { return ProjectConfig{}, true }
 	dir := t.TempDir()
-	if _, err := NewRunner(nil, &store.Principal{}, projects, Options{LogDir: dir, CacheDir: dir}); err == nil {
+	if _, err := NewRunner(nil, projects, Options{LogDir: dir, CacheDir: dir}); err == nil {
 		t.Error("built a runner with no store")
 	}
-	if _, err := NewRunner(fs, nil, projects, Options{LogDir: dir, CacheDir: dir}); err == nil {
-		t.Error("built a runner with no principal")
-	}
-	if _, err := NewRunner(fs, &store.Principal{}, nil, Options{LogDir: dir, CacheDir: dir}); err == nil {
+	if _, err := NewRunner(fs, nil, Options{LogDir: dir, CacheDir: dir}); err == nil {
 		t.Error("built a runner with no project lookup")
 	}
-	if _, err := NewRunner(fs, &store.Principal{}, projects, Options{CacheDir: dir}); err == nil {
+	if _, err := NewRunner(fs, projects, Options{CacheDir: dir}); err == nil {
 		t.Error("built a runner with nowhere to write logs")
 	}
-	r, err := NewRunner(fs, &store.Principal{}, projects, Options{LogDir: dir, CacheDir: dir})
+	r, err := NewRunner(fs, projects, Options{LogDir: dir, CacheDir: dir})
 	if err != nil {
 		t.Fatal(err)
 	}
