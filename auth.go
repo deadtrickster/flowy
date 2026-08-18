@@ -41,13 +41,30 @@ func (s *server) authenticate(next http.Handler) http.Handler {
 		defer permission.End()
 		r = r.WithContext(ctx)
 
-		token, ok := bearerToken(r)
-		if !ok {
-			permission.Fail("no bearer token")
-			unauthorized(w, "missing bearer token")
+		// TWO WAYS TO BE SOMEBODY, and the bearer is tried first so that
+		// nothing an agent does changes. A process sends a header; a person
+		// sends a cookie, because the operator asked not to hold a token for a
+		// browser - "token is for api, not for me".
+		//
+		// A cookie resolves to a USER AND NO AGENT, which is exactly right: the
+		// person is not a seat. Everything downstream already handles a
+		// principal with no agent - that is what an operator's own token has
+		// always been - so this adds a way in rather than a kind of caller.
+		p, err := s.principalFor(r)
+		if errors.Is(err, errNoCredential) {
+			permission.Fail("no credential")
+			// NAMES BOTH WAYS IN, because there are now two and the caller is
+			// one or the other. "missing bearer token" is the whole truth for a
+			// script and nonsense to a person whose session ended - they never
+			// had a bearer and cannot be told to send one.
+			unauthorized(w, "no credential: send a bearer token, or log in")
 			return
 		}
-		p, err := s.db.PrincipalForToken(r.Context(), token)
+		if errors.Is(err, errSessionEnded) {
+			permission.Fail("session ended")
+			unauthorized(w, "your session has ended - log in again")
+			return
+		}
 		if errors.Is(err, store.ErrNotFound) {
 			permission.Fail("unknown token")
 			unauthorized(w, "unknown token")
@@ -152,6 +169,54 @@ func bearerToken(r *http.Request) (string, bool) {
 	}
 	token = strings.TrimSpace(token)
 	return token, token != ""
+}
+
+// errNoCredential is "nothing was presented", as opposed to "what was
+// presented is not known here". They answer differently and a caller acts on
+// the difference: one means log in, the other means your session ended.
+var errNoCredential = errors.New("no credential")
+
+// errSessionEnded is a cookie that was presented and no longer resolves -
+// logged out, expired, or its user deleted. Distinct from errNoCredential
+// because the caller does something different: log in again, rather than start
+// holding a credential at all.
+var errSessionEnded = errors.New("session ended")
+
+// principalFor resolves whoever is making this request.
+//
+// BEARER FIRST. An agent that also happens to carry a stale cookie - a browser
+// tab and a script sharing a profile - is the agent it says it is, and a header
+// is an explicit claim where a cookie is one the browser makes on its own.
+//
+// A SESSION IS NOT A TOKEN and does not become one: it names a user, and the
+// Principal it produces carries no agent and no project. Project scoping for a
+// person comes from what they ask for, not from a credential, which is the same
+// place it comes from for an operator's own token today.
+func (s *server) principalFor(r *http.Request) (*store.Principal, error) {
+	if token, ok := bearerToken(r); ok {
+		return s.db.PrincipalForToken(r.Context(), token)
+	}
+	c, err := r.Cookie(sessionCookie)
+	if err != nil || strings.TrimSpace(c.Value) == "" {
+		return nil, errNoCredential
+	}
+	user, err := s.db.UserForSession(r.Context(), c.Value)
+	if errors.Is(err, store.ErrNotFound) {
+		// A COOKIE THAT NO LONGER RESOLVES IS AN ENDED SESSION, and saying
+		// "unknown token" to somebody who has never held a token sends them
+		// looking for the wrong thing. Measured on a scratch node: log in, log
+		// out, send the same id again - 401 "unknown token", which is true
+		// about the store and useless to the person reading it.
+		//
+		// It tells a cookie-holder that their own cookie is dead, which is not
+		// a leak - they already have it, and every other answer to it is a 401
+		// too.
+		return nil, errSessionEnded
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &store.Principal{UserID: user.ID}, nil
 }
 
 // principalOf returns the principal the middleware resolved for r.

@@ -20,7 +20,7 @@ require (
 	github.com/muesli/cancelreader v0.2.2 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	golang.org/x/sync v0.10.0 // indirect
-	golang.org/x/text v0.17.0 // indirect
+	golang.org/x/text v0.21.0 // indirect
 )
 
 require (
@@ -30,5 +30,6 @@ require (
 	github.com/charmbracelet/x/exp/teatest v0.0.0-20240815200342-61de596daa2b
 	github.com/hanwen/go-fuse/v2 v2.9.0
 	github.com/muesli/termenv v0.15.2
+	golang.org/x/crypto v0.31.0
 	golang.org/x/sys v0.28.0
 )

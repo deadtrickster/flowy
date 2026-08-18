@@ -356,6 +356,13 @@ func (s *server) routes() http.Handler {
 	// have one yet and cannot be given one without asking. It writes a request
 	// row and grants nothing - see handleJoin.
 	mux.HandleFunc("POST /api/join", s.handleJoin)
+	// The two doors a PERSON uses, outside the token for the reason join is:
+	// somebody logging in has no credential yet, and a 401 in front of the
+	// login form can only be opened by whoever is already through it. Login
+	// grants one session for a password that was already right; logout grants
+	// nothing. Neither reads a row of fabric data. See api_login.go.
+	mux.HandleFunc("POST /api/login", s.handleLogin)
+	mux.HandleFunc("POST /api/logout", s.handleLogout)
 	mux.HandleFunc("GET /version", s.handleVersion)
 	// The Prometheus text endpoint. It is at /metrics because that is where a
 	// scraper looks, and it is behind the same token and the same scope filter

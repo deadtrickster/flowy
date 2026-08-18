@@ -1140,4 +1140,62 @@ CREATE TABLE IF NOT EXISTS merge_lands (
     landed_at timestamptz NOT NULL DEFAULT now()
 );
 
+-- ---------------------------------------------------------------- HUMAN LOGIN
+--
+-- The operator asked for this in one line: "i dont want to bother with token.
+-- token is for api, not for me". A person should not be pasting a bearer into
+-- a browser, and until now the console had no other way in - session.tsx says
+-- so outright, "there is no login".
+--
+-- WHY THIS IS NOT A COLUMN ON users, AND NOT A ROW IN tokens.
+--
+-- tokens is (token, user_id, agent_id, project): an API credential a seat
+-- holds, long-lived, handed to a process. A password verifier has a different
+-- lifetime, a different owner and a different blast radius, and sharing a table
+-- would make every reader of one a reader of the other - PrincipalForToken
+-- SELECTs across tokens on every single request.
+--
+-- It does not replicate today, and that is worth saying precisely because it is
+-- easy to believe for the wrong reason: sync READS tokens for an authorization
+-- check and never selects it into a payload, so nothing copies it. That is a
+-- property of what the sync code happens to do, not a rule the schema enforces.
+-- Keeping the verifier in its own table means a change to what replicates
+-- cannot quietly take it along.
+CREATE TABLE IF NOT EXISTS user_secrets (
+    user_id text PRIMARY KEY REFERENCES users (id) ON DELETE CASCADE,
+    -- WHICH ALGORITHM, stored beside the hash rather than assumed. A hash whose
+    -- format is inferred from its shape is one that cannot be migrated: the day
+    -- the cost changes, or bcrypt is replaced, the reader has to know what it
+    -- is holding to decide whether to re-hash on the next correct login.
+    algo    text NOT NULL,
+    hash    text NOT NULL,
+    updated timestamptz NOT NULL DEFAULT now()
+);
+
+-- A SESSION IS A ROW, not a signed blob, and the reason is revocation. Logging
+-- out has to actually end the session, and "sign me out everywhere" has to be
+-- one statement - a self-contained token can do neither without a revocation
+-- list, which is this table with extra steps and a window where the answer is
+-- wrong.
+--
+-- expires is stored rather than derived so that shortening the lifetime later
+-- does not retroactively end sessions somebody is in the middle of using, and
+-- so a session can be given a different lifetime without a second column
+-- somewhere else deciding.
+--
+-- last_seen is separate from created for the reason started is separate from
+-- last_worked on an artifact: "when did this begin" and "is it still in use"
+-- are different questions, and one column answering both answers neither.
+CREATE TABLE IF NOT EXISTS sessions (
+    id         text PRIMARY KEY,
+    user_id    text NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    created    timestamptz NOT NULL DEFAULT now(),
+    expires    timestamptz NOT NULL,
+    last_seen  timestamptz NOT NULL DEFAULT now(),
+    user_agent text
+);
+
+CREATE INDEX IF NOT EXISTS sessions_user_idx ON sessions (user_id);
+CREATE INDEX IF NOT EXISTS sessions_expires_idx ON sessions (expires);
+
 COMMIT;

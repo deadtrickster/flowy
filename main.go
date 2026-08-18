@@ -73,6 +73,10 @@ commands:
            the operator's hands - the only door besides MCP, and no agent may
            knock (flowy mint --handle N --kind K --project P [--agent-kind W];
            prints the token on stdout, everything else to stderr)
+  passwd   set a PERSON's console password, read from stdin so it stays out of
+           the shell history and the process list. There is no signup door -
+           this is how an account gets one (flowy passwd --handle N
+           [--keep-sessions]; a change signs every browser out by default)
            whose word a row is: the principal keys this node signs with and
            checks against (flowy principal [list] | keygen --as P [--epoch N]
            | pin --as P --key K [--epoch N])
@@ -192,6 +196,11 @@ func main() {
 	case "mint":
 		if err := mintCmd(os.Args[2:]); err != nil {
 			fmt.Fprintf(os.Stderr, "flowy mint: %v\n", err)
+			os.Exit(1)
+		}
+	case "passwd":
+		if err := passwdCmd(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "flowy passwd: %v\n", err)
 			os.Exit(1)
 		}
 	case "principal":
