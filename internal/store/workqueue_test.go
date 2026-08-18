@@ -244,3 +244,55 @@ func mustJSON(t *testing.T, v any) []byte {
 	}
 	return raw
 }
+
+// AND A ROW THAT NEVER HAD A STATUS FINISHES TO DONE, rather than to the empty
+// string it started with.
+//
+// This is the shape the defect was reported in, and it is not the same row as
+// the one above. Two merge rows were closed through this door two hours apart:
+// one came out `done` and one came out EMPTY, and an empty status renders as
+// pending on every surface - so a finished row read as open work for two hours
+// and was reported as blocked. Calling the door again answered 200 and left it
+// empty again.
+//
+// A merge row is filed with no status at all; a queue item is filed with todo.
+// The move now runs on whatever the row's status is rather than on the one the
+// queue expects, so the two arms differ in their starting state and agree at
+// the end - which is the whole claim.
+func TestFinishingARowThatNeverHadAStatus(t *testing.T) {
+	ctx, db := open(t)
+	project := declaredProject(t, ctx, db, "workq")
+	me := &Principal{UserID: "01USER-ME", AgentID: "01AGENT-ME", Project: project}
+
+	art := &Artifact{
+		Type: MemoryType, Kind: WorkKind, Project: &project,
+		OwnerUser: "01USER-OPERATOR", Title: "a row filed with no status",
+		Visibility: VisibilityShared,
+	}
+	if err := db.WriteMemory(ctx, art); err != nil {
+		t.Fatalf("write the item: %v", err)
+	}
+	if _, err := db.sql.ExecContext(ctx,
+		`UPDATE artifacts SET status = '' WHERE id = $1`, art.ID); err != nil {
+		t.Fatalf("empty its status: %v", err)
+	}
+	before, err := db.GetArtifact(ctx, art.ID)
+	if err != nil {
+		t.Fatalf("read it back: %v", err)
+	}
+	if before.Status != "" {
+		t.Fatalf("the fixture starts at %q, so this arm is the other arm", before.Status)
+	}
+
+	if _, _, err := db.FinishWork(ctx, me, art.ID); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+	after, err := db.GetArtifact(ctx, art.ID)
+	if err != nil {
+		t.Fatalf("the item is gone after being finished: %v", err)
+	}
+	if after.Status != DoneStatus {
+		t.Errorf("a finished row reads %q, want %q - an empty status draws as pending everywhere",
+			after.Status, DoneStatus)
+	}
+}
