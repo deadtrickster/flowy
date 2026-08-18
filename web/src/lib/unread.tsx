@@ -166,11 +166,11 @@ export function UnreadProvider({ children }: { children: ReactNode }) {
         void api.deleteInboxReader(consoleReader(room), true).catch(() => {});
       }
     };
-    addEventListener("pagehide", bye);
+    window.addEventListener("pagehide", bye);
     return () => {
       stopped = true;
       clearInterval(every);
-      removeEventListener("pagehide", bye);
+      window.removeEventListener("pagehide", bye);
     };
   }, [token]);
 
