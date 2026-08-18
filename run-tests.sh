@@ -16311,8 +16311,14 @@ shell_scripts_lint() {
 	# 0 because the thing it checks with is absent reads as a pass, which is
 	# how "the suite is green" and "the suite ran" came apart here before.
 	if ! command -v shellcheck >/dev/null 2>&1; then
-		printf 'shellcheck is not installed in this image - NOT CHECKED\n'
-		return 0
+		# A NAMED FAILURE, NOT A QUIET PASS. The comment above said absent
+		# tooling must not read as a pass and the code returned 0 anyway,
+		# which is the same defect it was warning about - and the suite's own
+		# convention elsewhere is that a skip IS a failure. Both tools are in
+		# the gate image today, so this changes no verdict; it removes the
+		# path where losing them turns two checks into silence.
+		printf 'shellcheck is not installed, so the scripts were NOT CHECKED - install it (mise) or this suite is lying about them\n'
+		return 1
 	fi
 	# --severity=warning, not the default. The default reports info-level
 	# style notes too, and this suite is not the place to hold anybody's
@@ -16328,8 +16334,8 @@ shell_scripts_lint() {
 
 shell_scripts_formatted() {
 	if ! command -v shfmt >/dev/null 2>&1; then
-		printf 'shfmt is not installed in this image - NOT CHECKED\n'
-		return 0
+		printf 'shfmt is not installed, so the scripts were NOT CHECKED - install it (mise) or this suite is lying about them\n'
+		return 1
 	fi
 	# -d prints the diff and exits non-zero, so a script somebody hand-edited
 	# out of shape fails with the change it needs attached rather than with a
