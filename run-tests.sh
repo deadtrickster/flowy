@@ -10537,6 +10537,15 @@ check "a red verdict ends the declaration and does not admit the branch" \
 # found nothing it was allowed to work on.
 check "a skip is recorded, ages out, and is cleared by the next declaration" \
 	go test -count=1 -run TestASkipIsRecordedAndAgesOut ./internal/store
+# Named because of what it protects against being confidently wrong about: a
+# repudiation names a WINDOW of clock readings and every principal writes into
+# that window at once, so a reader that matched on the window and forgot the
+# subject would disown the whole fabric for that period - every row by
+# everybody, on one person's word about their own key.
+check "a repudiation marks its subject's rows and nobody else's" \
+	go test -count=1 \
+	-run 'TestTheMarkIsPutOnTheSubjectsRowsAndNobodyElses|TestTheMarkDoesNotReplaceTheAuthorshipItQualifies' \
+	./internal/store
 check "go test ./..." go test -count=1 ./...
 # Named as well as covered by `go test ./...` above, because this one failing
 # means every console on this node loses its stream on a sixty-second clock -

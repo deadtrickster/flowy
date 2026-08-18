@@ -476,9 +476,39 @@ type Artifact struct {
 	// is decided on the way in - at the local write, or at the merge - and never
 	// taken from the wire, because it is this node's own finding and not
 	// something a peer gets to assert about itself.
-	Authorship string    `json:"authorship,omitempty"`
-	Created    time.Time `json:"created"`
-	Updated    time.Time `json:"updated"`
+	Authorship string `json:"authorship,omitempty"`
+	// Disowned is the repudiation covering this row's author at this row's
+	// reading, resolved for whoever is reading - see repudiation.go and
+	// FillDisowned. It is a THIRD reading beside authored and attributed and it
+	// replaces neither: Authorship records whether a signature verified here,
+	// which stays true of a stolen key. "Authored, and its author disowns it"
+	// is a stranger sentence than either half and it is the accurate one.
+	//
+	// Derived at read time rather than stored, exactly as ReplacedBy is: what
+	// exists is a repudiation row with a window, and whether it covers this row
+	// is a question asked of the pair.
+	Disowned *Disowned `json:"disowned,omitempty"`
+	Created  time.Time `json:"created"`
+	Updated  time.Time `json:"updated"`
+}
+
+// Disowned is what a reader is told about a row whose author has taken it back.
+//
+// It names the repudiation rather than summarising it, so a reader who wants
+// the reason or the window can go and read the row that says so - and so that
+// a mark on a page always has something behind it that somebody signed.
+type Disowned struct {
+	// By is the repudiation's id.
+	By string `json:"by"`
+	// Subject is who disowned it, which is also this row's author: a
+	// repudiation only ever speaks for its own signer.
+	Subject string `json:"subject"`
+	// Reason is what they said, empty when they said nothing.
+	Reason string `json:"reason,omitempty"`
+	// From and To are the window they disowned, as packed clock readings, so a
+	// reader can see whether this row sits at the edge of it or in the middle.
+	From int64 `json:"from"`
+	To   int64 `json:"to"`
 }
 
 // InsertArtifact writes an artifact, stamping id/hlc/node when unset.
@@ -591,9 +621,15 @@ type Event struct {
 	// and Artifact.Authorship. An event is the row where the two claims come
 	// apart most sharply: the actor column is the whole of what a message
 	// means, and a node signature says nothing about it.
-	AuthorSig  []byte    `json:"author_sig,omitempty"`
-	Authorship string    `json:"authorship,omitempty"`
-	Created    time.Time `json:"created"`
+	AuthorSig  []byte `json:"author_sig,omitempty"`
+	Authorship string `json:"authorship,omitempty"`
+	// Disowned is the repudiation covering this entry's ACTOR at its reading -
+	// see Artifact.Disowned, which carries the whole argument. An event is
+	// where it matters most: the actor column is the whole of what a message
+	// means, so a chat line nobody disowned and one its speaker has taken back
+	// must not read the same.
+	Disowned *Disowned `json:"disowned,omitempty"`
+	Created  time.Time `json:"created"`
 	// Citation is the message this one says it is about, resolved for whoever
 	// is reading - see citations.go. It is derived at read time rather than
 	// stored, exactly as Artifact.ReplacedBy is: what the row holds is a
