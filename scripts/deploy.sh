@@ -151,7 +151,29 @@ release_lock() {
 		-H "Authorization: Bearer $lock_token" -H 'Content-Type: application/json' \
 		-d "$lock_body" "$URL/api/lock/release" 2>/dev/null || true
 }
-trap release_lock EXIT
+
+# ONE EXIT HANDLER, BECAUSE BASH HAS ONLY ONE.
+#
+# The first cut of this set `trap release_lock EXIT` here and a later step set
+# `trap 'rm -f "$tmp"' EXIT` for its temp file. The second REPLACED the first -
+# a later trap on the same signal is not an addition - so the release never ran,
+# and a `trap - EXIT` in the dry-run path cleared what was left.
+#
+# Measured, on the deploy of 227d627: the lock was taken at 18:29, the script
+# exited 0 at 18:29, and at 18:30 the queue still read "held by operator for
+# deploy 227d627 until 18:44". Every landing in that window would have been
+# refused for a deploy that had finished.
+#
+# So there is one handler and everything that must happen on exit goes in it.
+# on_exit is defined before anything registers work with it, and $tmp is empty
+# until the build step makes one.
+tmp=""
+on_exit() {
+	release_lock
+	[ -n "$tmp" ] && rm -f "$tmp"
+	return 0
+}
+trap on_exit EXIT
 say "    took the landing lock for \"$lock_item\""
 
 # ------------------------------------------------------- schema comes first
@@ -226,7 +248,6 @@ say "    fresh bundle: $bundle"
 
 say "==> building the binary"
 tmp=$(mktemp -t flowy-deploy-XXXXXX) || die "cannot make a temp file"
-trap 'rm -f "$tmp"' EXIT
 # STAMP THE COMMIT IN. main.go has carried a buildStamp ldflag for exactly this
 # since it was written - "a version that is only the release is a version that
 # cannot answer the question" - and nothing ever set it, so every node has
@@ -249,7 +270,10 @@ if [ "$DRY" = yes ]; then
 	say "  commit  $commit"
 	say "  bundle  $bundle"
 	say "  binary  $tmp (kept)"
-	trap - EXIT
+	# The binary is kept on purpose, and the lock is NOT: clearing the whole
+	# EXIT trap here is what used to strand it. Emptying $tmp keeps the file
+	# and leaves the release to run.
+	tmp=""
 	exit 0
 fi
 
