@@ -3,6 +3,8 @@ package main
 import (
 	"net/http"
 	"strings"
+
+	"github.com/deadtrickster/flowy/internal/store"
 )
 
 // Where a row came from, over HTTP.
@@ -23,6 +25,22 @@ type originRequest struct {
 	Origin string `json:"origin"`
 }
 
+// originView is one end of a relation as a reader sees it: always the id,
+// and a route and a title only when this reader can already read that row.
+//
+// THE ID IS ALWAYS THERE AND THE REST IS EARNED. The entry itself carries a
+// bare id on purpose - it is readable by principals who cannot read the origin,
+// so a title in the meta would be a leak. Resolving it HERE is not the same
+// thing: this asks the store, as this principal, and only says what a read
+// would have told them anyway. A reader who cannot see it still learns that
+// their row came out of something, which is the honest half of the answer and
+// is what makes an unresolvable origin a fact rather than an absence.
+type originView struct {
+	ID    string `json:"id"`
+	Ref   string `json:"ref,omitempty"`
+	Title string `json:"title,omitempty"`
+}
+
 // viewOrigins is a row's live origins and the log behind them, which is the
 // answer both writes return so a caller sees what it did without asking again.
 func viewOrigins(r *http.Request, s *server, id string) (map[string]any, error) {
@@ -31,11 +49,22 @@ func viewOrigins(r *http.Request, s *server, id string) (map[string]any, error) 
 	if err != nil {
 		return nil, err
 	}
+	seen := make([]originView, 0, len(live))
+	for _, origin := range live {
+		row := originView{ID: origin}
+		if art, err := s.db.ReadArtifact(r.Context(), p, origin, false); err == nil {
+			row.Title = art.Title
+			if ref, err := store.RefOf(art); err == nil {
+				row.Ref = ref.String()
+			}
+		}
+		seen = append(seen, row)
+	}
 	log, err := s.db.OriginLog(r.Context(), p, id)
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"artifact": id, "origins": live, "log": log}, nil
+	return map[string]any{"artifact": id, "origins": seen, "log": log}, nil
 }
 
 // handleAddOrigin records that a row came out of another.

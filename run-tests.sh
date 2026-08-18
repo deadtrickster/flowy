@@ -16225,7 +16225,18 @@ a_row_says_where_it_came_from() {
 		"$(jq -nc --arg o "$diagram" '{origin: $o}')" || return 1
 	want_eq "saying where it came from" "$API_STATUS" 200 || return 1
 	want_eq "the row it came out of" \
-		"$(printf '%s' "$API_BODY" | jq -r '.provenance.origins[0]')" "$diagram" || return 1
+		"$(printf '%s' "$API_BODY" | jq -r '.provenance.origins[0].id')" "$diagram" || return 1
+	# And a route to it, because this reader can read it. The ENTRY carries a
+	# bare id - it is readable by principals who cannot read the origin - and
+	# resolving it here says only what a read would have told this caller
+	# anyway. A reader who cannot see it still gets the id, which is the honest
+	# half: something you cannot see is where this came from.
+	want_eq "with a route this reader can follow" \
+		"$(printf '%s' "$API_BODY" | jq -r '.provenance.origins[0].ref | split("/") | .[2]')" \
+		"$diagram" || return 1
+	want_eq "and its title" \
+		"$(printf '%s' "$API_BODY" | jq -r '.provenance.origins[0].title')" \
+		"the shape of the thing" || return 1
 
 	# AND THE QUEUE DOES NOT CARE, which is the whole difference from dep.add.
 	api GET "$TOKEN_A" "/api/todo/$todo/deps" || return 1
@@ -16241,6 +16252,28 @@ a_row_says_where_it_came_from() {
 	want_eq "and the log kept both" \
 		"$(printf '%s' "$API_BODY" | jq '.log | length')" 2 || return 1
 	printf 'a todo came out of a diagram, the queue is unchanged, and the log keeps the taking-back\n'
+}
+
+# AND IT IS ON THE PAGE. The store answers and the console draws it: a link
+# where this reader can follow one, the bare id where they cannot. The API half
+# answering while the screen says nothing is the half-landing shape this fleet
+# has closed four times today, so it is asserted rather than assumed.
+browser_shows_where_a_row_came_from() {
+	recall
+	local diagram todo
+	api POST "$TOKEN_A" /api/artifacts \
+		'{"type": "memory", "kind": "diagram", "visibility": "project",
+		  "title": "the drawing the work came out of", "body": "<mxfile></mxfile>"}' || return 1
+	diagram="$(jqv .id)"
+	api POST "$TOKEN_A" /api/chat/general/todo \
+		'{"title": "the work that came out of a drawing"}' || return 1
+	todo="$(jqv .item.id)"
+	api POST "$TOKEN_A" "/api/artifact/$todo/origins" \
+		"$(jq -nc --arg o "$diagram" '{origin: $o}')" || return 1
+	want_eq "the relation" "$API_STATUS" 200 || return 1
+	cd "$ROOT/web" || return 1
+	node scripts/render-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" \
+		"the drawing the work came out of" "/p/pa/memory/$todo"
 }
 
 # A shape inside a diagram is a place you can send somebody. The reference in
@@ -16312,6 +16345,8 @@ check "a shape inside a diagram is addressable, and a dead reference says so" \
 	a_shape_inside_a_diagram_is_addressable
 check "a row says where it came from, and the queue does not treat it as a blocker" \
 	a_row_says_where_it_came_from
+check "the artifact page says where the row came from" \
+	browser_shows_where_a_row_came_from
 
 # The message box beside a document, at two lengths of conversation. Reported as
 # "reports chat has send button but no text area": the textarea was in the DOM

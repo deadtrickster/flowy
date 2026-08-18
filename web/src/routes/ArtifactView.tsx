@@ -8,7 +8,7 @@ import { SeverityDot, StateChip } from "@/components/StateMarks";
 import { StatusControl } from "@/components/StatusControl";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { type Artifact, LIFECYCLE_TYPES, api, refPath } from "@/lib/api";
+import { type Artifact, LIFECYCLE_TYPES, type OriginRef, api, refPath } from "@/lib/api";
 import {
   UNKNOWN_UPSTREAM,
   evidenceOf,
@@ -58,6 +58,14 @@ export function ArtifactView() {
   // The words somebody has selected in the document, and the ones they have
   // asked to quote. Two states rather than one: selecting is reading, and the
   // draft is only written when somebody says so.
+  // WHERE THIS ROW CAME FROM, which is not what blocks it - see
+  // internal/store/origin.go, where the two are different verbs because an edge
+  // the ready query never reads must not share a name with one it does.
+  //
+  // Read beside the row rather than folded into it: provenance is a log of
+  // entries and the row is a row, and a field on the artifact would be a second
+  // copy that disagrees the moment somebody takes a relation back.
+  const [origins, setOrigins] = useState<OriginRef[]>([]);
   const [selection, setSelection] = useState("");
   const [quote, setQuote] = useState<{ text: string } | null>(null);
 
@@ -83,6 +91,17 @@ export function ArtifactView() {
   useEffect(() => {
     if (!token || !id) return;
     let stopped = false;
+    api
+      .origins(id)
+      .then((seen) => {
+        if (!stopped) setOrigins(seen.origins ?? []);
+      })
+      .catch(() => {
+        // A row with no provenance and a node that could not answer are
+        // different, and neither is worth an error banner on a page about
+        // something else: the section simply does not draw.
+        if (!stopped) setOrigins([]);
+      });
     api
       .artifact(id)
       .then((found) => {
@@ -257,6 +276,53 @@ export function ArtifactView() {
                  */}
                 {isQueueItem(artifact) ? (
                   <RowNotes artifact={artifact} onAppended={setArtifact} />
+                ) : null}
+
+                {origins.length > 0 ? (
+                  <div>
+                    <div className="pb-1 font-medium text-muted-foreground text-xs">
+                      came out of
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      {/*
+                    A LINK WHERE THE READER HAS EARNED ONE, and the bare id where they
+                    have not. The entry behind this carries only an id, because it is
+                    readable by principals who cannot read the origin - so the node
+                    resolves what this token could have read anyway and leaves the
+                    rest alone. An unresolved origin is drawn rather than dropped:
+                    "this came out of something you cannot see" is a fact, and a
+                    section that hid it would be answering a different question.
+                  */}
+                      {origins.map((origin) => {
+                        const path = refPath(origin.ref);
+                        return (
+                          <div key={origin.id} className="flex items-center gap-2 text-xs">
+                            {path ? (
+                              <Link className="hover:underline" data-origin={origin.id} to={path}>
+                                {origin.title || origin.id}
+                              </Link>
+                            ) : (
+                              <span
+                                data-origin={origin.id}
+                                className="font-mono text-muted-foreground"
+                              >
+                                {shortId(origin.id)}
+                              </span>
+                            )}
+                            {path ? (
+                              <span className="font-mono text-muted-foreground">
+                                {shortId(origin.id)}
+                              </span>
+                            ) : (
+                              <span className="text-muted-foreground">
+                                you cannot read this one
+                              </span>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
                 ) : null}
 
                 {/*

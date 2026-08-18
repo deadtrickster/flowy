@@ -228,6 +228,13 @@ export interface Presence {
   }[];
 }
 
+/** One end of a provenance relation, as the node hands it to a reader. */
+export interface OriginRef {
+  id: string;
+  ref?: string;
+  title?: string;
+}
+
 export interface Whoami {
   user: string;
   agent?: string;
@@ -1437,6 +1444,22 @@ export const api = {
    * was wrong is an oracle for which accounts exist - and this console must not
    * improve on it.
    */
+  /**
+   * WHERE A ROW CAME FROM. Not what blocks it - see internal/store/origin.go,
+   * where the two are deliberately different verbs because an edge the ready
+   * query never reads must not share a name with one it does.
+   *
+   * Each origin carries its id always, and a ref and title only when this
+   * token can already read that row. The id on its own is a real answer: it
+   * says this came out of something you cannot see, which is the honest half
+   * and the reason the console must render an unresolved origin rather than
+   * drop it.
+   */
+  origins: (id: string) =>
+    request<{ artifact: string; origins: OriginRef[]; log: unknown[] }>(
+      `/api/artifact/${encodeURIComponent(id)}/origins`,
+    ),
+
   login: (handle: string, password: string) =>
     request<{ user: string; handle: string }>("/api/login", {
       method: "POST",
