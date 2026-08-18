@@ -4661,6 +4661,17 @@ browser_shows_who_raised_a_todo() {
 		pa "$RAISED_ID" "$RAISED_TODO" "$HANDLE_OP" "$RAISED_CARRIER"
 }
 
+# The room says which of its messages raised a row, and shows the row without
+# leaving the conversation. Raised by the operator, who tapped a raise and got
+# nothing: the id was on the event all along and the transcript never read it,
+# so the failure looked like a dead control rather than a missing one.
+browser_opens_the_row_a_message_raised() {
+	recall
+	cd "$ROOT/web" || return 1
+	node scripts/rowcard-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" \
+		"$ROOM_RAISED" "$RAISED_ID" "$RAISED_TODO"
+}
+
 # ------------------------------------------------------------ assignment, shared
 #
 # A todo is not the property of whoever typed it. One agent files the queue and
@@ -10559,6 +10570,8 @@ check "the raiser is a handle, is never inferred, and is settled at the raise, i
 	.
 check "the queue row and the artifact page say both names, in a browser" \
 	browser_shows_who_raised_a_todo
+check "tapping a raise opens the row, links to it, dismisses, and names a failure" \
+	browser_opens_the_row_a_message_raised
 
 # A todo belongs to the queue and not to whoever typed it. The checks above are
 # the AUTHOR's own surface; these are the ones that were missing, and each drives

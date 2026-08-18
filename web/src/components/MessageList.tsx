@@ -5,6 +5,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 
 import { AttachmentCards } from "@/components/AttachmentCards";
 import { CitedMessage } from "@/components/CitedMessage";
+import { RowCard } from "@/components/RowCard";
 import { Badge } from "@/components/ui/badge";
 import { type FlowyEvent, isAgent } from "@/lib/api";
 import { selectedSpan } from "@/lib/cite";
@@ -96,6 +97,15 @@ export function MessageList({
   // Whether an id is the person reading or the agent working for them, which
   // is the pair the node treats as one reader everywhere else.
   const isMe = (id?: string) => !!id && (id === me?.user || id === me?.agent);
+
+  /**
+   * The row a reader has opened a card on, or nothing.
+   *
+   * Held here rather than in each message so only one card is ever open: two
+   * cards over one transcript is a state nobody asked for, and Escape closing
+   * "the" card would then be ambiguous.
+   */
+  const [cardFor, setCardFor] = useState<string | null>(null);
 
   const scroller = useRef<HTMLDivElement>(null);
   const count = events.length;
@@ -468,6 +478,30 @@ export function MessageList({
                     moving down the room hears "reply" against every line
                     otherwise, which names none of them.
                   */}
+                  {/*
+                    THE MESSAGE IS ABOUT A ROW, and until now the transcript
+                    did not say so. event.artifact has carried the id on every
+                    raise since raises existed and nothing here read it, so a
+                    tap on the message landed on prose and did nothing - which
+                    reads as a broken control rather than as a missing one.
+
+                    A real button beside reply, always in the document and
+                    focusable for the same reason reply is: a control that
+                    exists only on hover is a control a keyboard does not have.
+                    It names the row it opens, because a screen reader moving
+                    down a busy room hears "row" against every raise otherwise.
+                  */}
+                  {event.artifact ? (
+                    <button
+                      type="button"
+                      data-row-chip={event.artifact}
+                      onClick={() => setCardFor(event.artifact)}
+                      aria-label={`open the row ${shortId(event.artifact)} this message raised`}
+                      className="rounded border border-border px-1.5 py-0.5 text-[11px] text-muted-foreground transition hover:border-primary/50 hover:text-foreground"
+                    >
+                      row {shortId(event.artifact)}
+                    </button>
+                  ) : null}
                   <button
                     type="button"
                     data-reply={event.id}
@@ -592,6 +626,12 @@ export function MessageList({
           {pending} new message{pending === 1 ? "" : "s"} - jump to latest
         </button>
       ) : null}
+      {/*
+        One card, over the room, outside the scroller - inside it the card
+        would scroll away from the reader who opened it, and the transcript
+        keeps moving while a card is open because messages keep arriving.
+      */}
+      {cardFor ? <RowCard id={cardFor} onClose={() => setCardFor(null)} /> : null}
     </div>
   );
 }
