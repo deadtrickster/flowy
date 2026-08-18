@@ -1529,6 +1529,15 @@ var mintedEventTypes = map[string]bool{
 	// refuses one rather than silently writing a verdict only its reporter
 	// could read back.
 	EventFindingRun: true,
+	// And where a finding stands on somebody else's tracker. Minted for the
+	// first reason - a filing is a claim that an issue exists over there, and it
+	// is only worth reading if somebody made it by going through the verb - and
+	// because every refusal that keeps the fact a FACT is on the verb: a state
+	// inside the vocabulary, a tracker and a number behind any state but
+	// unfiled, and no second filing over one that still stands. An entry handed
+	// over here would be a filing with none of those asked, sitting beside a row
+	// that never moved.
+	EventFindingUpstream: true,
 	// And an edit of a todo's words. Minted for the first reason and for the
 	// one this verb is entirely made of: the entry says the edit was written
 	// against a state the row was actually in, and the only thing that makes

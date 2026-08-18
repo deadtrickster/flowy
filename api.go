@@ -551,6 +551,13 @@ var mintedTypes = map[string]bool{
 	// read the finding rather than only by whoever reported it - is on the
 	// verb. See store.RecordFindingRun.
 	store.EventFindingRun: true,
+	// And where a finding stands upstream. The refusals that make the record a
+	// fact rather than a word - a state in the vocabulary, an issue number
+	// behind it, and no second filing over one that still stands - are all on
+	// the verb, and the filing is written on the row in the same transaction. An
+	// entry typed in here would say a finding was filed as an issue that nobody
+	// opened. See store.SetFindingUpstream.
+	store.EventFindingUpstream: true,
 	// And an edit of a todo's words, which is the sharpest case on this list:
 	// the entry's whole content is "this was written against a row that had not
 	// moved", and the compare-and-set on the verb is the only thing that makes
