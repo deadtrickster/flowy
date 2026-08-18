@@ -30,6 +30,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -50,6 +51,9 @@ of you: what changed, what was measured, what is deliberately not in it.
   --title     one line for the queue (default "land <branch>").
   --assignee  who is carrying it. An unassigned row with a branch already
               written is how two people build the same thing.
+  --scope     who may read it (default project). It is SENT rather than left
+              to the door: three rows sat invisible for hours because a default
+              decided this and nobody typed it.
 
 It prints the row id on stdout and everything a person reads on stderr, so a
 script can hand the id straight on.
@@ -84,6 +88,7 @@ func mergeOpen(args []string) error {
 	target := fs.String("target", "", "where it lands (default master)")
 	title := fs.String("title", "", `one line for the queue (default "land <branch>")`)
 	assignee := fs.String("assignee", "", "who is carrying it")
+	scope := fs.String("scope", "project", "who may read it: "+strings.Join(store.MemScopes, ", "))
 	urlFlag := fs.String("url", "", "node to talk to (default $FLOWY_ADDR or "+defaultTUIAddr+")")
 	token := fs.String("token", "", "bearer token (default $FLOWY_TOKEN, then ~/.config/flowy/token)")
 	agent := fs.String("agent", "", agentFlagHelp)
@@ -124,6 +129,22 @@ func mergeOpen(args []string) error {
 	if err != nil {
 		return err
 	}
+	// THE SCOPE IS STATED, NOT INHERITED. The door's default happens to be the
+	// right one today, and that is exactly the argument against relying on it:
+	// three merge rows sat at personal scope for hours because a default
+	// decided who could read them and nobody had typed a word about it. A
+	// caller saying what they want is not a second opinion about the rule - it
+	// is the door being used for what it is for.
+	//
+	// The membership test is explicit because VisibilityForScope hands an
+	// unknown word straight back - it is a lookup with a passthrough, not a
+	// validator - and an unrecognised scope would otherwise be posted verbatim
+	// as a visibility nothing reads.
+	if !slices.Contains(store.MemScopes, *scope) {
+		return fmt.Errorf("scope %q is not one of %s", *scope, strings.Join(store.MemScopes, ", "))
+	}
+	visibility := store.VisibilityForScope(*scope)
+
 	line := strings.TrimSpace(*title)
 	if line == "" {
 		line = "land " + name
@@ -131,6 +152,7 @@ func mergeOpen(args []string) error {
 	payload, err := json.Marshal(map[string]any{
 		"type": store.MemoryType, "kind": store.MergeKind,
 		"title": line, "body": body, "fields": json.RawMessage(raw),
+		"visibility": visibility,
 	})
 	if err != nil {
 		return err
