@@ -6290,12 +6290,39 @@ browser_draws_the_mentions() {
 }
 
 # A URL somebody typed is a link, and the mention beside it survives. The second
-# half is the point: linkifying by sending the body through the markdown
-# renderer would work and would silently drop mention chips and span citations,
-# which is why it happens on the plain path instead.
+# half is the point: the renderer that linkifies the URL is the one that used to
+# have no mention chips in it, so a body arriving with both is where the two
+# would come apart.
 a_typed_url_is_a_link() {
 	cd "$ROOT/web" || return 1
 	node scripts/link-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" links "$HANDLE_A"
+}
+
+# EVERY chat body is GitHub-flavoured markdown.
+#
+# It was not: the console decided per body, from a fence, a list, a heading or a
+# table pipe, and everything else took a plain path that rendered the body as
+# text. So a message with `backticks` in it and nothing else showed backticks.
+# The operator typed one, saw that, and asked for "full gh flavored markdown
+# everywhere", which is a request to delete the fork rather than widen it.
+#
+# The plain path was carrying two things, and both had to move rather than go:
+# the mention chips, and span citations. The chips are drawn by the renderer
+# now. The spans are FOUND in the raw body rather than counted off the screen -
+# under markdown the rendered text is shorter than the body it came from, so an
+# offset counted on screen quotes bytes nobody selected, which is the one
+# failure the citation design exists to prevent.
+#
+# Hence both arms of one gesture in this check: a selection that exists in the
+# raw body cites exactly it - proven on the NODE, from the bytes that were
+# stored - and a selection that crosses a code span, and so appears nowhere in
+# the raw body, cites the whole message instead of guessing. One reading cannot
+# tell a mapping that works from a feature that was quietly dropped.
+every_chat_body_is_markdown() {
+	recall
+	cd "$ROOT/web" || return 1
+	node scripts/gfm-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" gfm \
+		"$HANDLE_A" "$HANDLE_B"
 }
 
 # Two waiters under one name share one cursor, so the second takes deliveries
@@ -10770,6 +10797,8 @@ check "the roster draws what each listener can do, distinctly, in a browser" \
 	browser_shows_what_a_listener_can_do
 check "a typed URL is a link, and the mention beside it survives" \
 	a_typed_url_is_a_link
+check "every chat body renders as GFM, keeping its mentions and its span citations" \
+	every_chat_body_is_markdown
 check "an @name is drawn as a mention, in their colour, in a browser" \
 	browser_draws_the_mentions
 check "a pin puts a message up in the room's strip" a_pin_puts_a_message_up_in_the_room

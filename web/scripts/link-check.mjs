@@ -1,14 +1,13 @@
 /**
  * A URL somebody typed is a link, and the mention beside it survives.
  *
- * Bodies render down two paths: markdown for the ones with structure, and a
- * plain path that keeps mention chips and span citations. Routing everything
- * through markdown would linkify URLs and lose both, which is why isMarkdown is
- * deliberately narrow - so the linkifying happens on the plain path instead.
- *
- * That makes the mention the thing most likely to break, so it is asserted here
- * rather than assumed: one message, a link and a mention in it, and both have
- * to be there afterwards.
+ * Bodies used to render down two paths - markdown for the ones a heuristic read
+ * as structured, and a plain path that carried the mention chips and the span
+ * citations - and this check was written when linkifying happened on the plain
+ * one. There is one path now, and the claim is unchanged and worth more: the
+ * renderer that turns the URL into an anchor is the same renderer that has to
+ * draw the chip beside it, so a body carrying both is exactly where the two
+ * would come apart.
  *
  *   node scripts/link-check.mjs BASE_URL TOKEN ROOM HANDLE
  */
@@ -42,7 +41,7 @@ try {
   const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
   await page.addInitScript((t) => localStorage.setItem("flowy.token", t), token);
   await page.goto(`${base}/chat/${room}`, { timeout: 20_000 }).catch(() => {});
-  await page.waitForSelector("main div.whitespace-pre-wrap", { timeout: 20_000 }).catch(() => {});
+  await page.waitForSelector("main [data-body]", { timeout: 20_000 }).catch(() => {});
 
   const anchor = page.locator(`main a[href="${URL_IN_BODY}"]`).first();
   try {

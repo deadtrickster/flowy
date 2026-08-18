@@ -160,3 +160,22 @@
   border-color: var(--color-border);
   margin: 1rem 0;
 }
+/* The same rhythm renders a CHAT MESSAGE now - every body is markdown - and a
+   message must not open or close with a margin. Its first block sits directly
+   under the speaker line, and dragging over the top of the box is how a span
+   is cited: a half-rem of empty paragraph margin there selects nothing and
+   reads exactly like a broken feature. */
+.report-body > :first-child {
+  margin-top: 0;
+}
+.report-body > :last-child {
+  margin-bottom: 0;
+}
+/* A task list is GFM's, and its bullets are the checkboxes. */
+.report-body ul:has(> li > input[type="checkbox"]) {
+  list-style: none;
+  margin-left: 0.2rem;
+}
+.report-body li > input[type="checkbox"] {
+  margin-right: 0.4rem;
+}

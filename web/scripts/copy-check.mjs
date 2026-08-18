@@ -33,8 +33,8 @@ try {
   // The witness that this run measured anything at all. A room that never
   // painted a message would report "nothing selected", which is exactly what
   // the bug looks like - so an empty transcript has to fail differently.
-  await page.waitForSelector("main div.whitespace-pre-wrap", { timeout: 15_000 }).catch(() => {});
-  const bodies = page.locator("main div.whitespace-pre-wrap");
+  await page.waitForSelector("main [data-body]", { timeout: 15_000 }).catch(() => {});
+  const bodies = page.locator("main [data-body]");
   const count = await bodies.count();
   if (count === 0) {
     console.error("no message bodies were rendered, so nothing about copying was tested");

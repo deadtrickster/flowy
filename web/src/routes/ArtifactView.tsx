@@ -8,9 +8,6 @@ import { SeverityDot, StateChip } from "@/components/StateMarks";
 import { StatusControl } from "@/components/StatusControl";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import DOMPurify from "dompurify";
-import { marked } from "marked";
-
 import { type Artifact, LIFECYCLE_TYPES, api, refPath } from "@/lib/api";
 import {
   UNKNOWN_UPSTREAM,
@@ -22,6 +19,7 @@ import {
   reproOf,
   upstreamOf,
 } from "@/lib/findings";
+import { renderDocument } from "@/lib/markdown";
 import { useSession } from "@/lib/session";
 import { evidenceTone, reproTone, severityTone, upstreamTone } from "@/lib/statecolour";
 import { isQueueItem, todoAssignee, todoRaiser } from "@/lib/todos";
@@ -194,14 +192,15 @@ export function ArtifactView() {
                   // noDangerouslySetInnerHtml is off for this file in biome.json -
                   // the rule cannot see through DOMPurify, and the comment cannot
                   // sit inside the tag where the rule fires.
+                  //
+                  // Through lib/markdown, which is the same GFM the room
+                  // renders. Two call sites parsing markdown with two sets of
+                  // options is how a console ends up with two dialects and
+                  // nobody able to say which one a body is written in.
                   <div
                     data-artifact-body=""
                     className="report-body text-sm"
-                    dangerouslySetInnerHTML={{
-                      __html: DOMPurify.sanitize(
-                        marked.parse(artifact.body, { async: false }) as string,
-                      ),
-                    }}
+                    dangerouslySetInnerHTML={{ __html: renderDocument(artifact.body) }}
                   />
                 ) : (
                   <pre

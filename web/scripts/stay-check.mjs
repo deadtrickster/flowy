@@ -126,12 +126,12 @@ try {
   const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
   await page.addInitScript((t) => localStorage.setItem("flowy.token", t), token);
   await page.goto(`${base}/chat/${room}`, { timeout: 20_000 }).catch(() => {});
-  await page.waitForSelector("main div.whitespace-pre-wrap", { timeout: 15_000 }).catch(() => {});
+  await page.waitForSelector("main [data-body]", { timeout: 15_000 }).catch(() => {});
 
   // The scroller is the element that actually overflows, found by asking the
   // page rather than by guessing a selector a class rename would break.
   const scroller = await page.evaluateHandle(() => {
-    const el = document.querySelector("main div.whitespace-pre-wrap");
+    const el = document.querySelector("main [data-body]");
     let p = el?.parentElement;
     while (p && p.scrollHeight <= p.clientHeight) p = p.parentElement;
     return p;
@@ -146,7 +146,7 @@ try {
           }
         : null,
     );
-  const rows = () => page.locator("main div.whitespace-pre-wrap").count();
+  const rows = () => page.locator("main [data-body]").count();
 
   if (!(await where())) {
     console.error("the transcript does not scroll here, so nothing about scrolling was tested");

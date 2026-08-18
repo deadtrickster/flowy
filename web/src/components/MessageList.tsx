@@ -1,15 +1,13 @@
-import DOMPurify from "dompurify";
 import { AnimatePresence, motion } from "framer-motion";
-import { marked } from "marked";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { AttachmentCards } from "@/components/AttachmentCards";
 import { CitedMessage } from "@/components/CitedMessage";
 import { RowCard } from "@/components/RowCard";
 import { Badge } from "@/components/ui/badge";
 import { type FlowyEvent, isAgent } from "@/lib/api";
-import { selectedSpan } from "@/lib/cite";
-import { splitBody } from "@/lib/mentions";
+import { type Selected, selectedSpan } from "@/lib/cite";
+import { renderChat } from "@/lib/markdown";
 import { speakerStyle } from "@/lib/speakercolour";
 import { clock, cn, shortId, speaker } from "@/lib/utils";
 
@@ -534,72 +532,36 @@ export function MessageList({
                 citation above and the ids below would each shift every offset
                 by their own length.
               */}
-                <div
-                  data-body={event.id}
-                  className="select-text whitespace-pre-wrap break-words text-sm"
-                  onMouseUp={(released) => {
-                    // Markdown-rendered bodies carry rendered text, not the raw
-                    // body, so a span measured here would quote the wrong bytes.
-                    if (isMarkdown(event.body)) return;
-                    const span = selectedSpan(released.currentTarget, event.body);
-                    if (span && onCite) onCite(event, span.start, span.end);
+                {/*
+                  EVERY body is markdown now. There used to be a heuristic here
+                  - a fence, a list, a heading or a table pipe took the markdown
+                  path and everything else took a plain one - and it is deleted
+                  rather than widened. It could not be widened: the operator
+                  typed a message with `backticks` in it, saw backticks, and
+                  said so, and any rule that decides "is this markdown" from the
+                  body has the same class of answer for the next construct.
+                  Reported as "just go full gh flavored markdown everywhere".
+
+                  What the plain path was carrying, both halves, moved rather
+                  than went: mention chips are rendered by lib/markdown, in the
+                  colour of whoever they name and ringed when they name YOU, and
+                  span citations are found in the raw body rather than counted
+                  off the screen - see lib/cite.
+                */}
+                <MessageBody
+                  id={event.id}
+                  body={event.body}
+                  mentions={event.meta?.mentions}
+                  user={me?.user}
+                  agent={me?.agent}
+                  onSelected={(span) => {
+                    // A selection that cannot be placed in the raw body cites
+                    // the whole message. Dragging across a body always arms a
+                    // reply at it; what varies is the grain.
+                    if ("whole" in span) onSelect(event);
+                    else if (onCite) onCite(event, span.start, span.end);
                   }}
-                >
-                  {isMarkdown(event.body) ? (
-                    // A body with structure renders as what it is - the code
-                    // block a log is, the list a plan is - rather than as a
-                    // wall of signs. Sanitized because bodies are agent-written;
-                    // the same renderer the report page uses, at chat size.
-                    //
-                    // Span citations are skipped for these: a cite records byte
-                    // offsets into the RAW body, and markdown rendering changes
-                    // the visible text, so a span selected against the rendered
-                    // DOM would quote the wrong bytes. Whole-message replies
-                    // still work - they name the id, not a span.
-                    //
-                    <div
-                      className="report-body text-sm"
-                      dangerouslySetInnerHTML={{
-                        __html: DOMPurify.sanitize(
-                          marked.parse(event.body, { async: false }) as string,
-                        ),
-                      }}
-                    />
-                  ) : (
-                    splitBody(event.body, event.meta?.mentions).map((run) =>
-                      run.name ? (
-                        <span
-                          key={run.key}
-                          data-mention={run.id}
-                          className={cn(
-                            "rounded px-0.5 font-medium",
-                            isMe(run.id) && "ring-1 ring-primary/70",
-                          )}
-                          style={speakerStyle(run.name)}
-                        >
-                          {run.text}
-                        </span>
-                      ) : run.href ? (
-                        // A link somebody typed. rel is not decoration: the
-                        // body is text a peer wrote, so the target must not be
-                        // handed a window handle it can navigate back, and the
-                        // referrer is nobody else's business. splitBody only
-                        // ever produces http and https hrefs.
-                        <a
-                          key={run.key}
-                          href={run.href}
-                          target="_blank"
-                          rel="noreferrer noopener"
-                          className="text-primary underline underline-offset-2"
-                        >
-                          {run.text}
-                        </a>
-                      ) : (
-                        run.text
-                      ),
-                    )
-                  )}
-                </div>
+                />
                 {event.meta?.attachments ? (
                   <AttachmentCards ids={event.meta.attachments.split(" ").filter(Boolean)} />
                 ) : null}
@@ -637,13 +599,58 @@ export function MessageList({
 }
 
 /**
- * isMarkdown says whether a body carries structure worth rendering: a fenced
- * code block, a list, a heading, or a table. Prose with a bold word stays on
- * the plain path - that path is where mention colours and span citations
- * live, and neither survives markdown rendering, so the upgrade is only for
- * the bodies that need it.
+ * One message body, rendered once.
+ *
+ * IT IS ITS OWN MEMOISED COMPONENT BECAUSE A SELECTION DID NOT SURVIVE
+ * OTHERWISE, and that is a browser fact rather than a tidiness one. React
+ * compares dangerouslySetInnerHTML by the identity of the object it is handed,
+ * so a fresh `{ __html: render(...) }` on every render writes innerHTML again
+ * with the same string - which destroys and rebuilds the text nodes the
+ * reader's selection is anchored in. The room re-renders on every poll, and it
+ * re-renders the instant a citation is armed, so dragging over a body armed the
+ * span and then dropped the highlight under the pointer. Measured in a real
+ * browser: the composer held the right span and getSelection() was empty.
+ *
+ * useMemo on the RENDERED OBJECT fixes it at the root - same body, same object,
+ * no write - and it stops re-parsing every message's markdown on every poll,
+ * which the transcript was doing for a room of a hundred.
+ *
+ * The reader is taken apart into `user` and `agent` rather than passed as an
+ * object for the same reason: the caller builds that object inline, so it is a
+ * new identity every render and would defeat the memo it is a dependency of.
  */
-function isMarkdown(body: string): boolean {
-  if (body.includes("```")) return true;
-  return /^(\s*[-*+]\s+\S|\s*\d+\.\s+\S|#{1,6}\s+\S|\|.*\|)/m.test(body);
-}
+const MessageBody = memo(function MessageBody({
+  id,
+  body,
+  mentions,
+  user,
+  agent,
+  onSelected,
+}: {
+  id: string;
+  body: string;
+  mentions?: string;
+  user?: string;
+  agent?: string;
+  onSelected: (span: NonNullable<Selected>) => void;
+}) {
+  const html = useMemo(
+    () => ({ __html: renderChat(body, mentions, { user, agent }) }),
+    [body, mentions, user, agent],
+  );
+  return (
+    <div
+      data-body={id}
+      className="report-body select-text break-words text-sm"
+      onMouseUp={(released) => {
+        const span = selectedSpan(released.currentTarget, body);
+        if (span) onSelected(span);
+      }}
+      // The sanitizer is in lib/markdown, which is why
+      // noDangerouslySetInnerHtml is off for this file in biome.json - the
+      // rule cannot see through DOMPurify, and the comment cannot sit inside
+      // the tag where it fires.
+      dangerouslySetInnerHTML={html}
+    />
+  );
+});

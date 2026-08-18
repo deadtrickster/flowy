@@ -191,7 +191,7 @@ try {
 
   const before = await mark();
   await page.goto(`${base}/chat/${ROOM}`, { timeout: 20_000 }).catch(() => {});
-  await page.waitForSelector("main div.whitespace-pre-wrap", { timeout: 15_000 }).catch(() => {});
+  await page.waitForSelector("main [data-body]", { timeout: 15_000 }).catch(() => {});
   // READ IT THE WAY A PERSON DOES: to the end of the transcript. What clears
   // the badge is reaching the bottom, not opening the room, so the check has to
   // do the reaching - and it has to keep doing it while the room fills, because
@@ -202,7 +202,7 @@ try {
   // it was racing.
   const toBottom = () =>
     page.evaluate(() => {
-      const body = document.querySelector("main div.whitespace-pre-wrap");
+      const body = document.querySelector("main [data-body]");
       let scroller = body?.parentElement;
       while (scroller && scroller.scrollHeight <= scroller.clientHeight) {
         scroller = scroller.parentElement;

@@ -27,17 +27,46 @@ const bytes = new TextEncoder();
 const text = new TextDecoder();
 
 /**
- * The byte span of whatever the reader has selected inside `container`, or null
- * when the selection is empty, is outside it, or runs across two of them.
- *
- * The offset is measured against the container's own text, so the container has
- * to hold the body and nothing else: an attribution or a citation drawn inside
- * it would shift every span by its own length.
+ * What a drag across a message body means: a span of it, the whole of it, or
+ * nothing at all. Three answers rather than two, because "the reader selected
+ * nothing" and "the reader selected something this cannot place" are different
+ * events and the room does different things with them - a click must arm no
+ * reply, and a drag across a body must always arm one.
  */
-export function selectedSpan(
-  container: HTMLElement,
-  body: string,
-): { start: number; end: number } | null {
+export type Selected = { start: number; end: number } | { whole: true } | null;
+
+/**
+ * The byte span of whatever the reader has selected inside `container`.
+ *
+ * EVERY BODY IS RENDERED MARKDOWN NOW, which is what this function had to be
+ * rewritten for. It used to measure the offset as the LENGTH OF THE RENDERED
+ * TEXT before the selection, which is only the same number as an offset into
+ * the raw body when the two strings are the same string. Under markdown they
+ * are not: backticks, list markers and emphasis are in the body and not on the
+ * screen, so an offset counted on screen lands earlier and earlier through the
+ * message and the citation quotes the wrong words. The old code was correct
+ * because the old plain path guaranteed rendered text == raw body; that
+ * guarantee is what this change removes.
+ *
+ * So the span is found rather than counted: locate the selected text IN THE RAW
+ * BODY, at the same occurrence the reader dragged over, and use those offsets.
+ * The result is verified by construction - the offsets come from an index of
+ * the selected string in the body, so the bytes between them ARE the selected
+ * text and a misquote is not expressible.
+ *
+ * When the selection cannot be found in the raw body at all - it crossed a code
+ * span, so what is on screen has no backticks in it, or it crossed an escape or
+ * an entity - the honest answer is the whole message. A citation of the whole
+ * is true; a span quoting bytes nobody selected is not.
+ *
+ * Why not map every rendered character back to a source offset through the
+ * token stream: measured first. 2073 messages in the busiest room carry three
+ * citations, two of them spans. A per-token offset table is a second renderer
+ * to keep in step with marked for 0.1 percent of messages, and it fails in the
+ * one direction that matters - quietly, quoting somebody as saying something
+ * they did not.
+ */
+export function selectedSpan(container: HTMLElement, body: string): Selected {
   const selection = window.getSelection();
   if (!selection || selection.isCollapsed || selection.rangeCount === 0) return null;
   const range = selection.getRangeAt(0);
@@ -47,11 +76,31 @@ export function selectedSpan(
   const selected = range.toString();
   if (!selected.trim()) return null;
 
+  // WHICH occurrence this is, counted in the rendered text before it. A word
+  // said twice in one message is two different spans, and dragging over the
+  // second one has to cite the second one.
   const before = range.cloneRange();
   before.selectNodeContents(container);
   before.setEnd(range.startContainer, range.startOffset);
+  const rendered = before.toString();
+  let nth = 0;
+  for (let at = rendered.indexOf(selected); at >= 0; at = rendered.indexOf(selected, at + 1)) {
+    nth++;
+  }
 
-  const start = bytes.encode(body.slice(0, before.toString().length)).length;
+  // The same occurrence in the raw body. Counting in the rendered text and
+  // seeking in the raw one can disagree when the markup itself repeats the
+  // words - a link whose text is its own URL - and the disagreement costs a
+  // citation of an IDENTICAL string somewhere else in the message, never a
+  // citation of different words.
+  let at = body.indexOf(selected);
+  for (let skipped = 0; at >= 0 && skipped < nth; skipped++) {
+    at = body.indexOf(selected, at + 1);
+  }
+  if (at < 0) at = body.indexOf(selected);
+  if (at < 0) return { whole: true };
+
+  const start = bytes.encode(body.slice(0, at)).length;
   return { start, end: start + bytes.encode(selected).length };
 }
 
