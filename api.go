@@ -83,6 +83,44 @@ func defaultWorkStatus(status, kind string, update bool) string {
 	return status
 }
 
+// mergeRowSentAsAType refuses a merge request sent as a TYPE, and says what to
+// send instead. Empty means the request is fine.
+//
+// A merge request is type "memory" with kind "merge". Send "merge" as the TYPE
+// instead - the obvious guess, and the word every queue answer prints - and
+// this door used to take it: 200, signed, and a row the merge queue cannot see,
+// because MergeAdmissible asks a.Kind and the kind is empty. Its status came
+// back empty too, and the status door then refused "todo" with the ARTIFACT
+// vocabulary, because IsQueueItem is false for it and the row never reaches the
+// queue's lifecycle at all.
+//
+// Nothing said a word. The row looked filed and was not.
+//
+// ONLY MERGE, and the narrowing is measured rather than cautious. The first cut
+// of this refused every work kind sent as a type, and the gate caught it: the
+// suite creates a top-level `feature` and moves it open -> triaged -> wont-fix,
+// which is a legitimate artifact with the artifact lifecycle. todo, note,
+// report, diagram and feature all live on both sides of that fence - 636 rows
+// measured on the live node, one top-level todo among them - so refusing the
+// general case refuses shapes this fabric supports.
+//
+// Merge is the one with no other reading: nothing consumes a top-level merge
+// artifact, no lifecycle path claims it, and there are zero of them in 636 rows.
+// The general ambiguity is not a door's problem to fix - it is the migration
+// under the ruling on 01M0ANFYWY, and a refusal is not a substitute for it.
+//
+// A function of two strings rather than a block in the handler, so it can be
+// exercised without a database or a request.
+func mergeRowSentAsAType(typ, kind string) string {
+	if kind != "" || typ != store.MergeKind {
+		return ""
+	}
+	return fmt.Sprintf(
+		"a merge request is type %q with kind %q - sent as a type with no kind it is on no "+
+			"queue, and the status door speaks a different vocabulary to it",
+		store.MemoryType, store.MergeKind)
+}
+
 func (s *server) handleCreateArtifact(w http.ResponseWriter, r *http.Request) {
 	p := principalOf(r)
 
@@ -105,6 +143,11 @@ func (s *server) handleCreateArtifact(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusForbidden, errorBody(
 			"an announcement is posted through POST /api/announcements, "+
 				"which is where its scope is checked"))
+		return
+	}
+
+	if why := mergeRowSentAsAType(req.Type, req.Kind); why != "" {
+		writeJSON(w, http.StatusBadRequest, errorBody(why))
 		return
 	}
 
