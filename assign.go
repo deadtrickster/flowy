@@ -121,10 +121,13 @@ func (s *server) handleTodoAssign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// TWO VERBS THROUGH ONE DOOR, told apart by whether the caller stated what
-	// it expected to find. Without `expect` this is a handover and behaves as it
-	// always has; with it, it is a claim and exactly one of two racing callers
-	// wins. Giving the claim its own door would have been cleaner and would have
-	// meant every existing caller keeps using the racy one.
+	// it expected to find. With `expect` this is a claim, and exactly one of two
+	// racing callers wins. Without it, it is a plain assignment - which an
+	// UNHELD row still takes from anybody, and which a held row now refuses,
+	// naming the holder: an unguarded write used to move a held row, and twice
+	// in one morning that is exactly how a guarded claim got overwritten by a
+	// careless one. The handover path is the guarded path with the holder named
+	// - one field longer, and it cannot be fallen into by accident.
 	var (
 		art *store.Artifact
 		err error
