@@ -222,6 +222,25 @@ func (d *DB) SetMergeGate(
 		fields[GateRefField] = ref
 	}
 	fields[GateActorField] = actor
+
+	// A VERDICT RENEWS THE WINDOW IT WAS MEASURED IN.
+	//
+	// Recording one is the strongest liveness signal this system gets - the
+	// holder is alive, still on this item, and has just finished the run the
+	// lock was taken for. Until now it extended nothing, so the common case
+	// (declare, gate for eight minutes, record, land) raced a clock that
+	// started before the measurement did, and lost.
+	//
+	// Renew, never take: a verdict from somebody who does not hold the target
+	// must not acquire it. RenewMergeLock is an UPDATE for exactly that reason,
+	// and a false here means the window had already gone - which is the
+	// caller's problem to hear about at the land door, not a reason to fail
+	// recording a measurement that really happened.
+	if !declaring {
+		if _, err := d.RenewMergeLock(ctx, p, TargetOf(art), art.ID); err != nil {
+			return nil, nil, err
+		}
+	}
 	column, err := json.Marshal(fields)
 	if err != nil {
 		return nil, nil, fmt.Errorf("store: declare gate on %s: %w", art.ID, err)

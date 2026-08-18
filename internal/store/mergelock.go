@@ -155,6 +155,47 @@ func (d *DB) TakeMergeLock(ctx context.Context, p *Principal, target, item strin
 	return nil, &ErrTargetHeld{Target: target, Held: held, Now: time.Now().UTC()}
 }
 
+// renewMergeLockSQL is named so a test can read it. now() + interval on the
+// server, like TakeMergeLock: the window is measured by the clock that judges
+// it, never by the caller's.
+const renewMergeLockSQL = `UPDATE merge_locks
+    SET until = now() + $3::interval
+  WHERE target = $1 AND holder = $2 AND (item = $4 OR item = '')`
+
+// RenewMergeLock pushes the holder's window out without taking anything.
+//
+// The window is MergeLockBelievedFor from the declaration, and a gate plus the
+// land does not fit inside it reliably: on 2026-08-18 a declare at 09:52, an
+// eight-minute run and a verdict at 10:12 produced a land the door refused,
+// because the lock had gone while the run it was taken for was still measuring.
+//
+// There was no renew until this. The only way to extend the window was to
+// DECLARE AGAIN, which rewrites gate_run and deletes gated_tip - so renewing
+// meant destroying the verdict being renewed for and writing it back by hand.
+// A re-declare after a rebase and a re-declare to hold the door then look
+// identical on the row, and one of them is a lie.
+//
+// It is an UPDATE and never an insert, so it cannot take a lock that is free,
+// expired, or somebody else's: renewing something you do not hold is taking it,
+// and taking is what declare is for. false means the caller was not the holder,
+// which the caller should treat as "your window is gone" rather than retry.
+func (d *DB) RenewMergeLock(ctx context.Context, p *Principal, target, item string) (bool, error) {
+	actor, _ := voteActor(p)
+	if actor == "" {
+		return false, fmt.Errorf("store: this token resolves to nobody, so it cannot renew a landing lock")
+	}
+	res, err := d.sql.ExecContext(ctx, renewMergeLockSQL,
+		lockTarget(target), actor, lockInterval, strings.TrimSpace(item))
+	if err != nil {
+		return false, fmt.Errorf("store: renew merge lock on %s: %w", lockTarget(target), err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("store: renew merge lock on %s: %w", lockTarget(target), err)
+	}
+	return n > 0, nil
+}
+
 // ReleaseMergeLock gives the target back. The holder only: nobody releases
 // somebody else's reservation, exactly as nobody deletes somebody else's reader.
 func (d *DB) ReleaseMergeLock(ctx context.Context, p *Principal, target, item string) (bool, error) {
