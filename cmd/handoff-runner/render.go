@@ -47,27 +47,27 @@ func checkVersion(v string) error {
 // checkIsolation refuses a manifest whose isolation the packager does not
 // know, instead of letting it be silently downgraded.
 //
-// THE TWO HALVES SPEAK DIFFERENT VOCABULARIES, and this is where that shows.
-// store's IsolationField documents "vm", "container" or empty; packager.go
-// asks `iso == "dind"` and treats everything else as plain. So a finding
-// whose repro needs its own Docker daemon, recorded as "container", would be
-// run directly in the image with no daemon at all - and the repro would fail
-// for a reason that has nothing to do with the code under test, which is the
-// exact shape of error this system exists to keep out of a verdict.
+// The vocabulary is store.CheckIsolation's and not a second copy of it: the
+// manifest is the store's field, so the set of words it may hold is decided
+// there, in one named place, and this door only turns that refusal into an
+// HTTP answer. Since that check now runs at write time too, a finding
+// reaching here with an unknown isolation is one written before the
+// vocabulary was narrowed - "vm" and "container", which nothing ever built.
+// It is still refused rather than downgraded: running a repro that needs its
+// own Docker daemon without one makes it fail for a reason that has nothing
+// to do with the code under test, and that failure would be recorded as a
+// verdict.
 //
-// Downgrading silently is the one thing that must not happen, so the door
-// refuses and says which two words disagree. Mapping them is a decision
-// about what the words mean, and that belongs to whoever owns the manifest -
-// see the row raised against this.
+// 409 rather than 400 because the request is well formed and the finding is
+// the thing that cannot be served: rewrite its manifest with an isolation
+// this runner builds, and the same request works.
 func checkIsolation(iso string) error {
-	switch iso {
-	case "", "dind", "plain":
-		return nil
+	if err := store.CheckIsolation(iso); err != nil {
+		return refuse(http.StatusConflict, fmt.Sprintf(
+			"this finding's repro cannot be run as recorded: %s - running it anyway would "+
+				"run it under the wrong isolation and report the failure as a verdict", err))
 	}
-	return refuse(http.StatusConflict, fmt.Sprintf(
-		"this finding's repro asks for isolation %q, and the packager only builds "+
-			"\"dind\" or \"plain\" - running it anyway would run it under the wrong "+
-			"isolation and report the failure as a verdict", iso))
+	return nil
 }
 
 // renderInput assembles everything one package render needs for one finding

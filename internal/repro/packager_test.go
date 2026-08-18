@@ -308,6 +308,23 @@ func TestBuildPackageRefusesUnavailableSUT(t *testing.T) {
 	}
 }
 
+// TestBuildPackageRefusesUnbuildableIsolation: the render itself refuses a
+// word it does not build rather than falling through to plain, whether the
+// word came off the finding's manifest or off an operator's project default.
+// A package that quietly dropped the inner daemon would run and fail, and
+// the failure would read as the code under test.
+func TestBuildPackageRefusesUnbuildableIsolation(t *testing.T) {
+	in := testInput("container")
+	if _, err := BuildPackage(t.TempDir(), in); err == nil {
+		t.Fatal("isolation \"container\" should be refused rather than rendered as plain")
+	}
+	in = testInput("")
+	in.Cfg.DefaultIsolation = "vm"
+	if _, err := BuildPackage(t.TempDir(), in); err == nil {
+		t.Fatal("a project default of \"vm\" should be refused rather than rendered as plain")
+	}
+}
+
 func keys(m map[string][]byte) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {

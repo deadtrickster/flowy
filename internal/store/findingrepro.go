@@ -52,8 +52,10 @@ const (
 	// ReproInterpField is what runs the entrypoint - "bash", "python3" - or
 	// empty when the entrypoint is executed directly.
 	ReproInterpField = "repro_interp"
-	// IsolationField is what the tree wants to run inside - "vm",
-	// "container", or empty for whatever a runner does by default.
+	// IsolationField is what the tree wants to run inside - "dind",
+	// "plain", or empty for whatever a runner does by default. See
+	// CheckIsolation for what those two words mean and why they are the
+	// only ones.
 	IsolationField = "isolation"
 	// CmdOverrideField is the rare tree whose command line is not
 	// "interp entrypoint": a full command a runner should use instead of
@@ -78,6 +80,60 @@ type ReproManifest struct {
 	Interp      string `json:"repro_interp,omitempty"`
 	Isolation   string `json:"isolation,omitempty"`
 	CmdOverride string `json:"cmd_override,omitempty"`
+}
+
+// The isolation vocabulary: the whole set of words a manifest's isolation
+// may be, and the one place that set is written down.
+//
+// IsolationDind is a repro that launches its OWN containers and therefore
+// needs a Docker daemon of its own: the packager wraps it in a privileged
+// docker:dind service, and the script's `docker run` talks to that inner
+// daemon instead of a host socket. IsolationPlain is a repro that is just a
+// command run directly in an image - a unit test, a script - with no daemon
+// and no binary. Empty means neither is stated and a runner uses its own
+// per-project default, which is "plain" unless the operator configured
+// otherwise (internal/repro/version.go's ProjectConfig.DefaultIsolation).
+const (
+	IsolationDind  = "dind"
+	IsolationPlain = "plain"
+)
+
+// CheckIsolation refuses an isolation nothing builds, and it is deliberately
+// refused HERE, at the write, rather than at the run.
+//
+// This field used to be documented as "vm" or "container", which no code on
+// either side of it has ever implemented. hands-off's packager.py - the
+// service this one was ported from - only ever knew "dind" and "plain", and
+// internal/repro/packager.go asks `iso == "dind"` and renders everything
+// else as plain. So a finding whose repro spins its own containers, recorded
+// in the vocabulary this file documented, would have been run with no daemon
+// at all: it would fail for a reason that has nothing to do with the code
+// under test, and that failure would then be recorded as a verdict - the
+// exact confusion the harness-error split exists to keep out of the record.
+//
+// Two ways to close that gap: teach the packager two more isolation modes,
+// or narrow the vocabulary to what is actually built. The words were narrowed,
+// because there is no VM machinery anywhere in this tree to name and a
+// vocabulary that promises what nothing implements is the defect either way.
+// "container" in particular was never a third thing: a repro tree ALWAYS
+// runs in a container here, and the only real question is whether it gets a
+// daemon of its own - which is what "dind" answers.
+//
+// A word outside the set is refused when it is WRITTEN, so a finding cannot
+// carry an isolation no runner could honour and be discovered to be
+// unrunnable weeks later by whoever tries to reproduce it. The runner keeps
+// its own check at the door for rows written before this rule (see
+// cmd/handoff-runner/render.go), and the packager keeps one at the point of
+// rendering, so nothing downgrades silently at any of the three.
+func CheckIsolation(iso string) error {
+	switch iso {
+	case "", IsolationDind, IsolationPlain:
+		return nil
+	}
+	return fmt.Errorf("isolation %q is not one a runner can build: a repro tree is either "+
+		"%q (it launches its own containers, so it needs a Docker daemon of its own) or "+
+		"%q (a command run directly in the image), or empty for the runner's default",
+		iso, IsolationDind, IsolationPlain)
 }
 
 // ReproSource is one file going INTO WriteFindingRepro: the path it will have
@@ -159,6 +215,12 @@ func (d *DB) WriteFindingRepro(
 	}
 	if len(sources) == 0 {
 		return nil, fmt.Errorf("finding %s: a repro tree needs at least one file", findingID)
+	}
+	// Before any attachment is written, not after: an isolation no runner
+	// can build makes the whole tree unrunnable, and a call that refused
+	// halfway would leave the files attached and orphaned for nothing.
+	if err := CheckIsolation(manifest.Isolation); err != nil {
+		return nil, fmt.Errorf("finding %s: %w", findingID, err)
 	}
 	if p.UserID == "" {
 		return nil, fmt.Errorf("this token resolves to no user, so it cannot own a repro attachment")
