@@ -182,8 +182,16 @@ func ValidateArtifactCell(a *Artifact, cellID string) error {
 	if a == nil {
 		return fmt.Errorf("store: no diagram to validate a cell reference against")
 	}
-	if a.Type != DiagramType {
-		return fmt.Errorf("store: %s is a %s, not a diagram, so it has no cells to reference", a.ID, a.Type)
+	// THROUGH EntityType, because a diagram is written both ways on this node
+	// and this check saw only one of them. Measured: every diagram the console
+	// has ever written is type=memory kind=diagram, and one row is type=diagram
+	// - so a validator comparing a.Type refused the two real diagrams and
+	// accepted the one that came in through the other door. It has no callers
+	// yet, which is the only reason nobody has hit it: a latent defect is not
+	// dormant, it is waiting for its first caller.
+	if !IsEntityType(a, DiagramType) {
+		return fmt.Errorf("store: %s is a %s, not a diagram, so it has no cells to reference",
+			a.ID, EntityType(a))
 	}
 	return ValidateDiagramCell(a.ID, a.Body, cellID)
 }
