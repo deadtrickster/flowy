@@ -95,6 +95,30 @@ die() {
 # path carries the sha so two runs cannot land in one directory. A worktree left
 # behind is the same defect one level up: a directory nobody owns, pinning
 # something, that the next tool trips over.
+# MASTER, OR SOMEBODY SAYING OUT LOUD THAT THEY MEAN OTHERWISE.
+#
+# The refusal this replaces was "you are on branch X, and master is the only
+# deploy source", and it was there because a deploy from a branch ships whatever
+# that branch happens to be - a spawned agent could put its own unlanded work on
+# the node everyone uses. Reading a commit instead of a checkout removes the
+# accident: whatever anybody has checked out, this builds master.
+#
+# It does not remove the INTENT, which is why this is here. FLOWY_DEPLOY_REF is
+# a way to deploy something else on purpose - a rollback to a known sha is the
+# case it exists for - and a way to deploy something else on purpose is a way to
+# deploy unlanded work. So anything but master needs a second variable, which is
+# not something anybody sets by accident and which says in the log what was
+# meant.
+#
+# Asked BEFORE the lock, so the refusal costs no network and cannot be confused
+# with "the target is held" - the confusion that made the old check unreadable
+# on every drain pass.
+if [ "$DEPLOY_REF" != master ] && [ "${FLOWY_DEPLOY_ANY_REF:-no}" != yes ]; then
+	die "asked to deploy '$DEPLOY_REF' and master is the only deploy source -
+set FLOWY_DEPLOY_ANY_REF=yes to mean it, which is for a rollback to a known sha and
+is recorded in this shell rather than in the log"
+fi
+
 commit=$(git -C "$REPO" rev-parse --short "$DEPLOY_REF" 2>/dev/null) ||
 	die "no ref '$DEPLOY_REF' in $REPO - that is what would be deployed"
 full=$(git -C "$REPO" rev-parse "$DEPLOY_REF")

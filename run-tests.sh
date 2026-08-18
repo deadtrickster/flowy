@@ -17677,31 +17677,45 @@ deploy_refuses_misuse() {
 }
 
 deploy_refuses_off_master() {
-	# THE ONE THAT MATTERS HERE. The gate runs on a branch, never on master, so
-	# this is the refusal every gate run is in a position to exercise: a deploy
-	# from a branch would ship whatever that branch happens to be, and four
-	# agents share the checkout it reads. If this ever passes silently, a
-	# spawned agent can deploy its own unlanded work to the node everyone uses.
-	# On master there is nothing to refuse, and a dry run there would go on to
-	# npm ci and a full build - minutes, for a check about a guard that does
-	# not apply. Said out loud rather than passed over, so a run that skipped
-	# it does not read the same as a run that exercised it.
-	if [ "$(git rev-parse --abbrev-ref HEAD)" = "master" ]; then
-		printf 'HEAD is master, so there is no off-master refusal to make - NOT CHECKED\n'
-		return 0
-	fi
+	# THE ONE THAT MATTERS HERE, and it is now about a REF rather than about
+	# whatever this checkout has out.
+	#
+	# It used to run deploy.sh and expect "master is the only deploy source",
+	# because the script built the checkout it was standing in and the gate
+	# stands on a branch. The script builds a COMMIT now, so what anybody has
+	# checked out cannot reach the node by accident - but deploying something
+	# other than master ON PURPOSE is still a way to put unlanded work on the
+	# machine everyone uses, and that is what this exercises.
+	#
+	# NO NODE IS INVOLVED, deliberately. The old version asked the live node,
+	# and every drain pass reds on it: the drainer holds master for the length
+	# of its own gate, so deploy.sh answered "the target is held" and the check
+	# could not tell that from the refusal it was looking for. A check that
+	# cannot distinguish its own arm from an unrelated one is measuring nothing.
+	# This refusal is made before any network call, so it is the only thing that
+	# can come back.
 	local out status
-	out=$(FLOWY_REPO="$PWD" ./scripts/deploy.sh --dry-run 2>&1)
+	out=$(FLOWY_REPO="$PWD" FLOWY_DEPLOY_REF=some-branch ./scripts/deploy.sh --dry-run 2>&1)
 	status=$?
 	[ "$status" -eq 1 ] || {
-		printf 'a dry run on branch %s exited %d, want a refusal (1):\n%s\n' \
-			"$(git rev-parse --abbrev-ref HEAD)" "$status" "$out"
+		printf 'a dry run of a non-master ref exited %d, want a refusal (1):\n%s\n' "$status" "$out"
 		return 1
 	}
-	printf '%s\n' "$out" | grep -qE 'master is the only deploy source|uncommitted changes' || {
-		printf 'it refused for some other reason than the branch or the tree:\n%s\n' "$out"
+	printf '%s\n' "$out" | grep -q 'master is the only deploy source' || {
+		printf 'it refused for some other reason than the ref:\n%s\n' "$out"
 		return 1
 	}
+	# AND THE HATCH OPENS, or the refusal above is just a wall. A rollback to a
+	# known sha is what it is for. This one stops at the ref check either way -
+	# the ref does not exist, so it dies naming that instead, which is the next
+	# refusal along and proves the first one is no longer the answer.
+	out=$(FLOWY_REPO="$PWD" FLOWY_DEPLOY_REF=some-branch FLOWY_DEPLOY_ANY_REF=yes \
+		./scripts/deploy.sh --dry-run 2>&1)
+	printf '%s\n' "$out" | grep -q "no ref 'some-branch'" || {
+		printf 'with the hatch open it still refused on the ref rule:\n%s\n' "$out"
+		return 1
+	}
+	printf 'refused a non-master ref, and the hatch gets past it\n'
 }
 
 migrate_refuses_without_a_database() {
