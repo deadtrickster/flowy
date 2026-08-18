@@ -132,7 +132,9 @@ func TestPuttingWorkDownReturnsTheRowToTheQueue(t *testing.T) {
 	todo := todoIn(t, ctx, db, author, "drain the queue", VisibilityProjectOnly, "")
 	pickUp(t, ctx, db, worker, todo.ID, worker.AgentID)
 
-	if _, _, err := db.AssignTodo(ctx, worker, todo.ID, "", nil); err != nil {
+	// Putting it down names who it is putting down, like every move of a held
+	// row: the pick-up wrote the worker's agent id as the holder.
+	if _, _, err := db.ClaimTodo(ctx, worker, todo.ID, "", worker.AgentID); err != nil {
 		t.Fatalf("putting the row down was refused: %v", err)
 	}
 	if got := statusIn(t, ctx, db, author, todo.ID); got != TodoStatus {
@@ -166,7 +168,8 @@ func TestPuttingWorkDownReturnsTheRowToTheQueue(t *testing.T) {
 	// A HANDOVER IS NOT A RELEASE. Naming somebody else leaves the work in
 	// flight, because somebody is still on it.
 	pickUp(t, ctx, db, worker, todo.ID, worker.AgentID)
-	if _, _, err := db.AssignTodo(ctx, worker, todo.ID, "a-nextshift", nil); err != nil {
+	// Handing on names who it hands on from, like every move of a held row.
+	if _, _, err := db.ClaimTodo(ctx, worker, todo.ID, "a-nextshift", worker.AgentID); err != nil {
 		t.Fatalf("handing the row on was refused: %v", err)
 	}
 	if got := statusIn(t, ctx, db, author, todo.ID); got != ActiveStatus {

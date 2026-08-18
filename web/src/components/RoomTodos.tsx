@@ -1,4 +1,4 @@
-import { type FormEvent, useState } from "react";
+import { type FormEvent, useRef, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -14,6 +14,7 @@ import {
   sortTodos,
   statusStyle,
   todoAssignee,
+  todoAssigneeClaimed,
   todoRaiser,
 } from "@/lib/todos";
 import { shortId } from "@/lib/utils";
@@ -29,7 +30,7 @@ interface Props {
   onRaise: (title: string, category?: string) => Promise<void>;
   /** onAssign says who is carrying one. An empty name says nobody is. It has to
    * land on the node and come back from it - see the assignee cell below. */
-  onAssign: (id: string, assignee: string) => Promise<void>;
+  onAssign: (id: string, assignee: string, expect: string) => Promise<void>;
 }
 
 /**
@@ -104,9 +105,17 @@ export function RoomTodos({ room, todos, raiseFrom, disabled, error, onRaise, on
     }
   };
 
+  // expected holds what the cell CLAIMED when it was clicked - the field, not
+  // the OWNER-line the display may fall back to. The commit claims against it,
+  // so the two names a handover needs - who this had, who has it now - are
+  // captured from the same reading the person acted on, and a row whose holder
+  // is only the body's OWNER line claims against nothing, which is what the
+  // node's compare-and-set will judge.
+  const expected = useRef("");
   const edit = (todo: Artifact) => {
     setEditing(todo.id);
     setNamed(todoAssignee(todo));
+    expected.current = todoAssigneeClaimed(todo);
     setFailed(null);
   };
 
@@ -126,7 +135,7 @@ export function RoomTodos({ room, todos, raiseFrom, disabled, error, onRaise, on
     setAssigning(true);
     setFailed(null);
     try {
-      await onAssign(editing, named.trim());
+      await onAssign(editing, named.trim(), expected.current);
       setEditing(null);
     } catch (err) {
       setFailed(err instanceof Error ? err.message : String(err));

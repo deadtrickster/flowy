@@ -121,10 +121,13 @@ func (s *server) handleTodoAssign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// TWO VERBS THROUGH ONE DOOR, told apart by whether the caller stated what
-	// it expected to find. Without `expect` this is a handover and behaves as it
-	// always has; with it, it is a claim and exactly one of two racing callers
-	// wins. Giving the claim its own door would have been cleaner and would have
-	// meant every existing caller keeps using the racy one.
+	// it expected to find. With `expect` this is a claim, and exactly one of two
+	// racing callers wins. Without it, it is a plain assignment - which an
+	// UNHELD row still takes from anybody, and which a held row now refuses,
+	// naming the holder: an unguarded write used to move a held row, and twice
+	// in one morning that is exactly how a guarded claim got overwritten by a
+	// careless one. The handover path is the guarded path with the holder named
+	// - one field longer, and it cannot be fallen into by accident.
 	var (
 		art *store.Artifact
 		err error
@@ -248,7 +251,16 @@ func (s *server) handleRoomTodoAssign(w http.ResponseWriter, r *http.Request) {
 		serverError(w, r, err)
 		return
 	}
-	art, _, err = s.db.AssignTodo(r.Context(), p, id, name, said)
+	// The same two verbs as the door without a room, told apart the same way:
+	// expect stated is a claim, expect absent is a plain assignment that a held
+	// row refuses. The room hears either way - `said` is the message - because
+	// the room this todo was raised in is the room its plan changes hands in
+	// front of, whichever verb moved it.
+	if req.Expect != nil {
+		art, _, err = s.db.ClaimTodo(r.Context(), p, id, name, *req.Expect, said)
+	} else {
+		art, _, err = s.db.AssignTodo(r.Context(), p, id, name, said)
+	}
 	if err != nil {
 		s.writeQueueError(w, r, err)
 		return

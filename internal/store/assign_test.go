@@ -172,8 +172,10 @@ func TestTheLatestClaimWinsAndTheLogKeepsTheRest(t *testing.T) {
 	if _, _, err := db.AssignTodo(ctx, author, todo.ID, "a-bench", nil); err != nil {
 		t.Fatalf("the author claiming their own todo was refused: %v", err)
 	}
-	// The handover: somebody else takes it, from another project, over the grant.
-	if _, _, err := db.AssignTodo(ctx, across, todo.ID, "b-drainer", nil); err != nil {
+	// The handover: somebody else takes it, from another project, over the
+	// grant - naming the holder they take it from, which is what a handover
+	// is since a held row stopped moving to an unguarded write.
+	if _, _, err := db.ClaimTodo(ctx, across, todo.ID, "b-drainer", "a-bench"); err != nil {
 		t.Fatalf("a reader across the grant was refused: %v", err)
 	}
 
@@ -196,8 +198,9 @@ func TestTheLatestClaimWinsAndTheLogKeepsTheRest(t *testing.T) {
 		t.Fatalf("the log is %q then %q, want oldest first", log[0].Assignee, log[1].Assignee)
 	}
 	// Putting it down is a claim too, and it is the case a truthiness test gets
-	// wrong: the empty name is a value somebody chose.
-	if _, _, err := db.AssignTodo(ctx, across, todo.ID, "unassigned", nil); err != nil {
+	// wrong: the empty name is a value somebody chose. It states what it is
+	// putting down, like every move of a held row now does.
+	if _, _, err := db.ClaimTodo(ctx, across, todo.ID, "unassigned", "b-drainer"); err != nil {
 		t.Fatalf("putting the work down was refused: %v", err)
 	}
 	got, claim = assigneeIn(t, ctx, db, author, todo.ID)
@@ -362,8 +365,8 @@ func TestAClaimSaysWhoItTookTheWorkFrom(t *testing.T) {
 		t.Fatal("the first claim wrote no entry")
 	}
 
-	// And now somebody takes it off them.
-	if _, _, err := db.AssignTodo(ctx, author, todo.ID, "a-gardener", nil); err != nil {
+	// And now somebody takes it off them, naming who they took it from.
+	if _, _, err := db.ClaimTodo(ctx, author, todo.ID, "a-gardener", "a-welder"); err != nil {
 		t.Fatalf("handover: %v", err)
 	}
 

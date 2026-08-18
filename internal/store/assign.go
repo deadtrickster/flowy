@@ -199,6 +199,21 @@ func NormalizeAssignee(name string) (string, error) {
 // ordinary chat message in the thread the todo was raised out of - and it is a
 // parameter rather than a second write so that the room hearing about it and the
 // assignment landing are one thing. Nothing else passes it.
+// seatHandle is the handle this principal's seat speaks under, or "" when it
+// has none. The assignee field holds a name, not an id, so "is the caller the
+// holder" is a handle comparison, and a seat with no handle is never the
+// holder. Swallowed errors read the same way: a handle that cannot be read
+// cannot authorize a takeover, which is the strict direction.
+func (d *DB) seatHandle(ctx context.Context, p *Principal) string {
+	if p == nil || p.UserID == "" {
+		return ""
+	}
+	var handle string
+	_ = d.sql.QueryRowContext(ctx,
+		`SELECT coalesce(handle, '') FROM users WHERE id = $1`, p.UserID).Scan(&handle)
+	return strings.TrimSpace(handle)
+}
+
 func (d *DB) AssignTodo(
 	ctx context.Context, p *Principal, todo, asked string, said *Event,
 ) (*Artifact, *Event, error) {
@@ -227,18 +242,41 @@ func (d *DB) AssignTodo(
 	if err != nil {
 		return nil, nil, err
 	}
-	// WHO HAD IT BEFORE, so the answer can say. A handover is legal - read
-	// permission is the whole bar and that does not change here - but taking one
-	// silently is how three rows moved off two agents in a minute this afternoon
-	// and answered 200 three times with no hint anything had been taken.
+	// WHO HAD IT BEFORE, and a held row is TAKEN, not overwritten.
 	//
-	// It is on the ANSWER rather than a refusal because refusing would break the
-	// thing assignment is for: the operator handing work out, and an agent
-	// picking up what somebody abandoned. A caller that wants to refuse a
-	// contested claim - a work queue's take, where the second taker must lose -
-	// compares Held against what it expected and decides for itself. The store
-	// reports; the verb above it rules.
+	// This verb was report-only - the answer said who had it before, and any
+	// write moved it - because refusing seemed to break what assignment is for:
+	// the operator handing work out, an agent picking up what somebody
+	// abandoned. Neither breaks by naming who the taker takes FROM, which is
+	// what expect is. What the report-only version actually enabled, measured
+	// twice in one morning: a claim written WITHOUT expect - the very writer the
+	// CAS exists to guard - lands over a guarded claim, and the board reads the
+	// accident as the holder. The guard was optional and the unguarded path was
+	// the default.
+	//
+	// So: an unheld row takes any write; the holder moves their own row as they
+	// like - release it, hand it on, renew it - and anybody ELSE changing who
+	// carries it is refused, named the holder and told the way through:
+	// expect:that-holder, which is the handover. Every path that worked still
+	// works; what stops working is moving a row whose holder you could not be
+	// bothered to read.
+	//
+	// THE GUARD READS THE FIELD, not AssigneeOf, and the difference is the
+	// compatibility just below: an absent field falls back to the OWNER line in
+	// the body, which is authorship from before claims existed and not a claim
+	// anybody made. Guarding that line would refuse the first assignment on
+	// every legacy row on behalf of a holder who never claimed anything -
+	// measured as this change's first cut refusing a fresh todo named by its
+	// author. The EVENT keeps the fallback ("moved it from a-bench"), because a
+	// narrative that names the author is right; a refusal guarding the author
+	// is not.
 	held := strings.TrimSpace(AssigneeOf(art))
+	claimed := strings.TrimSpace(artifactString(art, AssigneeField))
+	if claimed != "" && claimed != name && d.seatHandle(ctx, p) != claimed {
+		return nil, nil, refuseAssign(fmt.Sprintf(
+			"todo %s is carried by %s - a held row moves by naming its holder: pass expect:%s to take it over",
+			art.ID, claimed, claimed))
+	}
 	// Written whenever it was asked for, including empty: the key being there at
 	// all is what says somebody decided, and what outranks a stale OWNER line in
 	// the body. See AssigneeOf.

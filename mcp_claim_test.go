@@ -182,9 +182,12 @@ func TestAStaleClaimOverMCPIsRefusedAndAnHonestTakeoverIsNot(t *testing.T) {
 
 // A HANDOVER IS NOT A RACE, and an absent argument keeps today's behaviour. Both
 // tools without expect stay last-write-wins, so the operator handing work out and
-// an agent picking up an abandoned row are untouched by any of this - which is
-// the whole reason the guard is an argument rather than the default.
-func TestMCPAssignmentWithoutExpectIsStillLastWriteWins(t *testing.T) {
+// This was "assignment without expect is still last-write-wins", and the
+// contract it encoded is the one the store guard replaces: an unguarded write
+// moving a held row is how a careless claim overwrote a guarded one, twice in
+// one morning. Over MCP as over HTTP, a held row now moves by naming its
+// holder, and the first write onto an unheld row still needs nothing.
+func TestMCPHandoversNameWhoTheyTakeFrom(t *testing.T) {
 	ctx, db := chatStore(t)
 	project, room := declaredRoom(t, ctx, db, "mcpclaim")
 	op := newSeat(t, ctx, db, project, "operator")
@@ -195,8 +198,8 @@ func TestMCPAssignmentWithoutExpectIsStillLastWriteWins(t *testing.T) {
 		args map[string]any
 	}{
 		{"todo_assign", map[string]any{"todo": id, "assignee": "a"}},
-		{"mem_write", map[string]any{"id": id, "assignee": "b"}},
-		{"todo_assign", map[string]any{"todo": id, "assignee": "c"}},
+		{"mem_write", map[string]any{"id": id, "assignee": "b", "expect": "a"}},
+		{"todo_assign", map[string]any{"todo": id, "assignee": "c", "expect": "b"}},
 	} {
 		if _, err := claimCall(ctx, db, op.p, hand.tool, hand.args); err != nil {
 			t.Fatalf("%s handing the row on: %v", hand.tool, err)

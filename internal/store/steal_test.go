@@ -254,9 +254,10 @@ func TestAMaturedRequestGoesStaleWhenTheRowMoves(t *testing.T) {
 		t.Fatalf("the ask was refused: %v", err)
 	}
 	expire(t, ctx, db, asker, todo.ID)
-	// Somebody else picked it up in the meantime, through the door that has no
-	// protocol - which is still legal and is exactly why this case exists.
-	if _, _, err := db.AssignTodo(ctx, author, todo.ID, "c-new", nil); err != nil {
+	// Somebody else picked it up in the meantime, through the plain door -
+	// which takes a held row only by naming who it takes it from, and is
+	// exactly why this case exists: the row moved, whoever moved it.
+	if _, _, err := db.ClaimTodo(ctx, author, todo.ID, "c-new", "a-gone"); err != nil {
 		t.Fatalf("assign: %v", err)
 	}
 

@@ -170,6 +170,23 @@ export function todoAssignee(artifact: Artifact): string {
 }
 
 /**
+ * todoAssigneeClaimed is the FIELD alone, without the OWNER-line fallback, and
+ * it is what a claim states it expected. The node's compare-and-set judges the
+ * field: a row whose holder lives only on the body's OWNER line holds nothing a
+ * claim can race for, and a claim that expected the display's fallback would be
+ * refused by the guard for a holder the guard cannot see. The display keeps the
+ * compatibility; the claim states the fact.
+ */
+export function todoAssigneeClaimed(artifact: Artifact): string {
+  const fields = artifact.fields;
+  if (fields && typeof fields === "object") {
+    const named = (fields as Record<string, unknown>).assignee;
+    if (typeof named === "string") return named.trim();
+  }
+  return "";
+}
+
+/**
  * WHO RAISED IT: who the work came from, beside who is carrying it.
  *
  * These are two facts and the row draws both, because a row that draws one of

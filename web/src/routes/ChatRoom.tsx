@@ -469,8 +469,8 @@ export function ChatRoom() {
    * with - so there is no second idea of who has what for a poll to overwrite.
    */
   const assign = useCallback(
-    async (id: string, assignee: string) => {
-      await api.assignTodo(room, id, assignee);
+    async (id: string, assignee: string, expect: string) => {
+      await api.assignTodo(room, id, assignee, expect);
       await loadTodos();
     },
     [room, loadTodos],

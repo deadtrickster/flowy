@@ -66,8 +66,12 @@ func (e ErrHeldBy) depRefusal() {}
 // Restating your own claim is allowed and writes nothing new, for AssignTodo's
 // reason: an agent re-reading its own queue after a restart is not losing a
 // race with itself.
+// said is an extra event the caller wants in the same transaction, when the
+// claim happens somewhere with something to say about it - the room panel's
+// door, which announces its plan changing hands in the room the plan was made
+// in. Variadic so the claim a queue takes stays a one-argument decision.
 func (d *DB) ClaimTodo(
-	ctx context.Context, p *Principal, todo, asked, expect string,
+	ctx context.Context, p *Principal, todo, asked, expect string, said ...*Event,
 ) (*Artifact, *Event, error) {
 	actor, _ := voteActor(p)
 	if actor == "" {
@@ -86,7 +90,16 @@ func (d *DB) ClaimTodo(
 	if err != nil {
 		return nil, nil, err
 	}
-	held := strings.TrimSpace(AssigneeOf(art))
+	// THE CLAIM RACES THE FIELD, not AssigneeOf, and the difference is the
+	// OWNER-line compatibility: a row whose holder lives only in the body's
+	// OWNER line holds nothing a claim can race for, and the display that
+	// falls back to that line is showing authorship, not a claim anybody
+	// made. The cheap answer and the transactional guard below must judge the
+	// same reading or a claim that passed one is refused by the other - which
+	// is what the first cut of this did, both ways round, measured from a
+	// browser: expected the fallback and lost to the guard; expected the field
+	// and lost to the cheap answer.
+	held := strings.TrimSpace(artifactString(art, AssigneeField))
 	// The cheap answers first, so the common cases carry a better message than
 	// a guard failure can. The guard below is still what makes it true.
 	switch {
@@ -105,7 +118,7 @@ func (d *DB) ClaimTodo(
 	if err != nil {
 		return nil, nil, err
 	}
-	events := []*Event{entry}
+	events := append([]*Event{entry}, said...)
 	// A CLAIM OF NOBODY IS A RELEASE, and it moves both facts for AssignTodo's
 	// reason: an unowned row cannot be `active`, so this write takes it back to
 	// `todo` and says so in the log. It is here as well as there because a

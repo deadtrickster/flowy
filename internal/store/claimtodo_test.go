@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -111,26 +112,93 @@ func TestAClaimAgainstAStaleReadingIsRefused(t *testing.T) {
 	}
 }
 
-// A HANDOVER IS NOT A RACE. AssignTodo keeps its last-write-wins behaviour, so
-// the operator handing work out and an agent picking up an abandoned row are
-// untouched by any of this.
-func TestPlainAssignmentIsStillLastWriteWins(t *testing.T) {
+// This was "plain assignment is still last-write-wins", and the contract it
+// encoded is the one the guard replaces: a write with no expect moved a held
+// row, which is how a claim written through the unguarded door landed over a
+// guarded one, twice in one morning. The deliberate handover still exists - it
+// names the holder it takes from - and what the plain door does now is refuse.
+func TestPlainAssignmentRefusesAHeldRowAndNamesTheHolder(t *testing.T) {
 	ctx, db := open(t)
 	project := declaredProject(t, ctx, db, "claimtodo")
 	id := todoRow(t, ctx, db, project, "hand this around")
 	p := &Principal{UserID: "01USER-OP", AgentID: "01AGENT-OP", Project: project}
 
-	for _, name := range []string{"a", "b", "c"} {
-		if _, _, err := db.AssignTodo(ctx, p, id, name, nil); err != nil {
-			t.Fatalf("assign to %s: %v", name, err)
+	// An unheld row takes any write: the first assignment is not a takeover.
+	if _, _, err := db.AssignTodo(ctx, p, id, "a", nil); err != nil {
+		t.Fatalf("assign to a: %v", err)
+	}
+	_, _, err := db.AssignTodo(ctx, p, id, "b", nil)
+	if err == nil {
+		t.Fatal("an unguarded write moved a held row")
+	}
+	msg := err.Error()
+	for _, want := range []string{"carried by a", "expect:a"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("refusal %q does not say %q", msg, want)
 		}
 	}
 	art, err := db.GetArtifact(ctx, id)
 	if err != nil {
 		t.Fatalf("read back: %v", err)
 	}
-	if got := AssigneeOf(art); got != "c" {
-		t.Errorf("after three handovers the row reads %q, want c", got)
+	if got := AssigneeOf(art); got != "a" {
+		t.Errorf("after the refused write the row reads %q, want a", got)
+	}
+	// The handover, done as a handover: naming who it takes from.
+	if _, _, err := db.ClaimTodo(ctx, p, id, "b", "a"); err != nil {
+		t.Fatalf("handover with expect: %v", err)
+	}
+	if art, err = db.GetArtifact(ctx, id); err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if got := AssigneeOf(art); got != "b" {
+		t.Errorf("after the handover the row reads %q, want b", got)
+	}
+	// And on down the line: the deliberate path is one field longer, always.
+	if _, _, err := db.ClaimTodo(ctx, p, id, "c", "b"); err != nil {
+		t.Fatalf("handover with expect: %v", err)
+	}
+}
+
+// The holder moves their own row: releasing it and handing it on are both
+// theirs, because holding it is what earned that. What nobody else may do is
+// move it without saying whose it was.
+func TestTheHolderMovesTheirOwnRowUnchallenged(t *testing.T) {
+	ctx, db := open(t)
+	project := declaredProject(t, ctx, db, "claimtodo")
+	id := todoRow(t, ctx, db, project, "keep this moving")
+	if _, err := db.sql.ExecContext(ctx,
+		`INSERT INTO users (id, handle) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+		"01USER-HOLD", "holder-seat"); err != nil {
+		t.Fatalf("seat the holder: %v", err)
+	}
+	holder := &Principal{UserID: "01USER-HOLD", Project: project}
+	other := &Principal{UserID: "01USER-OTH", Project: project}
+
+	if _, _, err := db.AssignTodo(ctx, holder, id, "holder-seat", nil); err != nil {
+		t.Fatalf("the holder takes the unheld row: %v", err)
+	}
+	// Releasing it to nobody, as the holder, and the row really is empty.
+	if _, _, err := db.AssignTodo(ctx, holder, id, "", nil); err != nil {
+		t.Fatalf("the holder releases their row: %v", err)
+	}
+	art, err := db.GetArtifact(ctx, id)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if got := AssigneeOf(art); got != "" {
+		t.Fatalf("after the release the row reads %q, want nobody", got)
+	}
+	// Taking it again, then handing it on deliberately, still as the holder.
+	if _, _, err := db.AssignTodo(ctx, holder, id, "holder-seat", nil); err != nil {
+		t.Fatalf("the holder retakes the now-unheld row: %v", err)
+	}
+	if _, _, err := db.AssignTodo(ctx, holder, id, "someone-else", nil); err != nil {
+		t.Fatalf("the holder hands their row on: %v", err)
+	}
+	// And the next move by anyone else is refused until they name the holder.
+	if _, _, err := db.AssignTodo(ctx, other, id, "other-seat", nil); err == nil {
+		t.Fatal("a third party moved a held row without naming its holder")
 	}
 }
 

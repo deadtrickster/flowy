@@ -182,8 +182,8 @@ export function DocumentPanes({ room, quote }: Props) {
   );
 
   const assign = useCallback(
-    async (id: string, assignee: string) => {
-      await api.assignTodo(room, id, assignee);
+    async (id: string, assignee: string, expect: string) => {
+      await api.assignTodo(room, id, assignee, expect);
       await loadTodos();
     },
     [room, loadTodos],

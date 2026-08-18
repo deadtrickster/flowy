@@ -4375,8 +4375,10 @@ a_todo_takes_an_assignee_and_an_override() {
 	want_eq "and saying it changed hands" \
 		"$(jqv .event.body)" "moved $ROOM_TODO_BUILD from $PLAN_OWNER to $PLAN_TAKER" || return 1
 
-	# The override.
-	api POST "$TOKEN_A" "$at" "$(jq -nc --arg a "$PLAN_SECOND" '{assignee: $a}')" || return 1
+	# The override. A held row moves by naming its holder, so the override is a
+	# handover: it says who it takes the work from.
+	api POST "$TOKEN_A" "$at" \
+		"$(jq -nc --arg a "$PLAN_SECOND" --arg e "$PLAN_TAKER" '{assignee: $a, expect: $e}')" || return 1
 	want_eq "override status" "$API_STATUS" 200 || return 1
 	want_eq "who has it now" "$(jqv .item.fields.assignee)" "$PLAN_SECOND" || return 1
 	want_eq "and the handover is two names" \
@@ -4385,7 +4387,7 @@ a_todo_takes_an_assignee_and_an_override() {
 	# Putting it down. An empty name is a value and not a silence: the key stays
 	# on the item, saying nobody, which is what outranks the OWNER line still in
 	# the body - the next set says "gave", not "moved from a-bench".
-	api POST "$TOKEN_A" "$at" '{"assignee": ""}' || return 1
+	api POST "$TOKEN_A" "$at" "$(jq -nc --arg e "$PLAN_SECOND" '{assignee: "", expect: $e}')" || return 1
 	want_eq "unassign status" "$API_STATUS" 200 || return 1
 	want_eq "nobody has it" "$(jqv .item.fields.assignee)" "" || return 1
 	want_eq "said as a handover back" \
@@ -4472,7 +4474,7 @@ an_assignee_is_refused_where_it_is_not_one() {
 an_assignee_hands_the_named_party_nothing() {
 	recall
 	api POST "$TOKEN_A" "/api/chat/build/todo/$ROOM_TODO_ID/assignee" \
-		"$(jq -nc --arg a "$HANDLE_B" '{assignee: $a}')" || return 1
+		"$(jq -nc --arg a "$HANDLE_B" --arg e "$PLAN_TAKER" '{assignee: $a, expect: $e}')" || return 1
 	want_eq "named the other project's person" "$(jqv .item.fields.assignee)" "$HANDLE_B" || return 1
 
 	want_status 404 GET "$TOKEN_B" "/api/artifact/$ROOM_TODO_ID" || return 1
@@ -4483,7 +4485,7 @@ an_assignee_hands_the_named_party_nothing() {
 
 	# Put it back, because the checks after this one read it.
 	api POST "$TOKEN_A" "/api/chat/build/todo/$ROOM_TODO_ID/assignee" \
-		"$(jq -nc --arg a "$PLAN_TAKER" '{assignee: $a}')" || return 1
+		"$(jq -nc --arg a "$PLAN_TAKER" --arg e "$HANDLE_B" '{assignee: $a, expect: $e}')" || return 1
 	want_eq "handed back" "$(jqv .item.fields.assignee)" "$PLAN_TAKER" || return 1
 	printf 'B was named on A todo and still reads none of it\n'
 }
@@ -4719,9 +4721,11 @@ a_todo_is_assigned_by_somebody_who_did_not_write_it() {
 	ready_row "$id" "$TOKEN_A" || return 1
 	want_eq "and the queue says it too" "$(readyv .assignee)" "$HANDOUT_TAKER" || return 1
 
-	# The second door, and a third seat: A's agent takes the work over MCP.
+	# The second door, and a third seat: A's agent takes the work over MCP,
+	# naming who they take it from - a held row moves by naming its holder.
 	want_tool todo_assign "$TOKEN_A_AGENT" \
-		"$(jq -nc --arg i "$id" --arg a "$HANDOUT_SECOND" '{todo: $i, assignee: $a}')" || return 1
+		"$(jq -nc --arg i "$id" --arg a "$HANDOUT_SECOND" --arg e "$HANDOUT_TAKER" \
+			'{todo: $i, assignee: $a, expect: $e}')" || return 1
 	want_eq "the claim over MCP" "$(tv .assignee)" "$HANDOUT_SECOND" || return 1
 	api GET "$TOKEN_OP" "/api/todo/$id/assignee" || return 1
 	want_eq "read back through the other door" "$(jqv .assignee)" "$HANDOUT_SECOND" || return 1
@@ -4834,8 +4838,9 @@ an_assignment_records_who_made_it() {
 			'[.log[] | select(.id == $e)] | length')" 1 || return 1
 	said_when "the standing claim" "$(jqv .assignment.at)" || return 1
 
-	# Putting it down, by a third seat again.
-	api POST "$TOKEN_OP" "/api/todo/$id/assignee" '{"assignee": "unassigned"}' || return 1
+	# Putting it down, by a third seat again, naming who it is putting down.
+	api POST "$TOKEN_OP" "/api/todo/$id/assignee" \
+		"$(jq -nc --arg e "$HANDOUT_SECOND" '{assignee: "unassigned", expect: $e}')" || return 1
 	want_eq "nobody has it" "$(jqv .assignee)" "" || return 1
 	want_eq "and the claim says nobody, rather than saying nothing" \
 		"$(jqv .assignment.assignee)" "" || return 1
@@ -5223,7 +5228,8 @@ active_and_unowned_is_refused_at_every_door() {
 	# PUTTING IT DOWN MOVES BOTH FACTS. It is not refused - an agent that cannot
 	# hand work back holds it forever - it returns the row to the queue, and the
 	# move is in the trail rather than only on the row.
-	api POST "$TOKEN_OP" "/api/todo/$id/assignee" '{"assignee": ""}' || return 1
+	api POST "$TOKEN_OP" "/api/todo/$id/assignee" \
+		"$(jq -nc '{assignee: "", expect: "a-escapement"}')" || return 1
 	want_eq "put down" "$API_STATUS" 200 || return 1
 	want_eq "carried by nobody again" "$(jqv .assignee)" "" || return 1
 	api GET "$TOKEN_A" "/api/artifact/$id" || return 1
@@ -5256,7 +5262,8 @@ active_and_unowned_is_refused_at_every_door() {
 	want_eq "and it says who" "$(tv .item.fields.assignee)" a-escapement || return 1
 	# The same put-down over MCP, where the caller said nothing about the status:
 	# the queue moves it, rather than refusing a contradiction nobody typed.
-	want_tool mem_write "$TOKEN_OP" "{\"id\": \"$id\", \"assignee\": \"\"}" || return 1
+	want_tool mem_write "$TOKEN_OP" \
+		"{\"id\": \"$id\", \"assignee\": \"\", \"expect\": \"a-escapement\"}" || return 1
 	want_eq "put down over MCP" "$(tv .item.fields.assignee)" "" || return 1
 	want_eq "and the row came back with it" "$(tv .item.status)" todo || return 1
 	printf 'active with nobody on it is refused at four doors, and putting work down returns the row\n'
