@@ -15732,9 +15732,17 @@ seeds_two_findings_on_three_axes() {
 		 'upstream_tracker', 'serenedb',
 		 'upstream_id', '$FINDING_ISSUE',
 		 'upstream_state', 'filed',
-		 'upstream_url', 'https://tracker.invalid/issues/$FINDING_ISSUE',
-		 'evidence_state', 'reproduced')
+		 'upstream_url', 'https://tracker.invalid/issues/$FINDING_ISSUE')
 	   WHERE id = '$filed'" || return 1
+
+	# The evidence, THROUGH THE VERB. It used to be another key in the SQL
+	# above, with a comment saying the verb was landing on another branch. It
+	# has landed, so the seed goes through the door a person would use - which
+	# means this check now also proves the door writes the key the console
+	# reads, rather than proving that psql can write a string.
+	api POST "$TOKEN_A" "/api/finding/$filed/evidence" '{"state": "reproduced"}' || return 1
+	want_eq "the evidence door wrote the key the console reads" \
+		"$(printf '%s' "$API_BODY" | jq -r .evidence.evidence_state)" reproduced || return 1
 
 	# The opposite row: nothing written up for anybody else, nothing to run.
 	want_tool finding_write "$TOKEN_A" \
@@ -15811,6 +15819,51 @@ the_console_speaks_the_runners_answers() {
 	node scripts/repro-contract-check.mjs
 }
 
+# THE REFUSAL THE EVIDENCE AXIS EXISTS FOR, over the wire.
+#
+# `verified` is a word PLUS A COMMIT: REPORTABLE-FINDINGS' filing rule is that
+# nothing goes upstream until its reproduction has been run against a build of
+# current origin/main HEAD with that sha on the item, because a report whose
+# repro ran against the released image is closed as already-fixed. Without the
+# sha the word is `reproduced` spelled more confidently, and the list somebody
+# works from before filing - reproduced but not against current main - loses rows
+# to it silently.
+#
+# So the refusal is driven here rather than trusted from the store test: a rule
+# that is only true in a unit test is a rule that has never met the door. It also
+# asserts THE REFUSED WRITE CHANGED NOTHING, which is the half that would
+# otherwise go unnoticed - a 400 with the row moved anyway is worse than no
+# check.
+the_evidence_door_requires_a_commit() {
+	recall
+	want_status 400 POST "$TOKEN_A" "/api/finding/$FINDING_FILED/evidence" \
+		'{"state": "verified"}' || return 1
+	want_eq "the refusal names the commit it wanted" \
+		"$(printf '%s' "$API_BODY" | jq -r '.error | contains("verified_on")')" true || return 1
+	api GET "$TOKEN_A" "/api/finding/$FINDING_FILED/evidence" || return 1
+	want_eq "and the refused write left the claim where it stood" \
+		"$(printf '%s' "$API_BODY" | jq -r .evidence.evidence_state)" reproduced || return 1
+
+	# A commit under `source` is the mirror refusal: source is nobody having run
+	# it, so there is no run for a commit to be the commit OF.
+	want_status 400 POST "$TOKEN_A" "/api/finding/$FINDING_UNFILED/evidence" \
+		'{"state": "source", "verified_on": "67adbe04"}' || return 1
+
+	# And the accepted shape, on the row that carries no claim yet: the word and
+	# the commit land together and read back off the row.
+	api POST "$TOKEN_A" "/api/finding/$FINDING_REFERENCED/evidence" \
+		'{"state": "verified", "verified_on": "67adbe04", "verified_at": "2026-08-07"}' || return 1
+	want_eq "verified is recorded" \
+		"$(printf '%s' "$API_BODY" | jq -r .evidence.evidence_state)" verified || return 1
+	want_eq "with the commit it rests on" \
+		"$(printf '%s' "$API_BODY" | jq -r .evidence.verified_on)" 67adbe04 || return 1
+	# The log's first entry comes out of an unstated claim, which is what "nobody
+	# has said" reads as - and is not the word `source`.
+	want_eq "and the log says it came from nobody having said" \
+		"$(printf '%s' "$API_BODY" | jq -r '.log[0].from')" "" || return 1
+	printf 'verified is refused without a commit, refused under source, and recorded with one\n'
+}
+
 say "findings: our lifecycle, their filing, and the evidence - three axes"
 check "two findings, one done and filed as #4471, one open and unfiled" \
 	seeds_two_findings_on_three_axes
@@ -15818,6 +15871,8 @@ check "the list read carries all three axes, and the upstream draft" \
 	the_list_carries_both_axes
 check "the console draws both axes, filters on the mark, and keeps the draft and the tree apart" \
 	browser_shows_both_axes_and_the_two_documents
+check "verified is a word plus a commit, and the door refuses the word alone" \
+	the_evidence_door_requires_a_commit
 check "the console reads the repro runner's own answers - /runs, /run and /version" \
 	the_console_speaks_the_runners_answers
 
