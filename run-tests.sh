@@ -47,6 +47,46 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 ROOT="$PWD"
+
+# ONE SUITE PER MACHINE, AND THE SUITE IS WHAT ENFORCES IT.
+#
+# The landing lock is about the TARGET - who may move master - and says nothing
+# about the box. Two seats holding no lock at all can still run two suites here,
+# and they collide: both start a node, both scan for a port from the same
+# number, and the loser talks to the winner's node. Measured tonight, twice, with
+# `ss -ltnp` - one suite four seconds old while another was 227 seconds in, one
+# node holding 127.0.0.1:8787 and two suites believing it was theirs.
+#
+# Every seat said they would gate alone. Two of us were not, at the moment the
+# measurement was taken. That is not a discipline problem to be solved by asking
+# again: a convention nobody can verify is one that quietly stops holding, so
+# the check goes where it cannot be forgotten.
+#
+# flock rather than the node's lock, deliberately: this must hold when the node
+# is down, when the token is missing, and for anybody who runs ./run-tests.sh by
+# hand without knowing about any of it. The lock is released when this process
+# exits, however it exits, because the kernel holds it against the descriptor.
+#
+# FLOWY_GATE_LOCK=off is for the one honest exception - a second suite against a
+# different checkout on purpose, by somebody who has just read this paragraph.
+GATE_LOCK=${FLOWY_GATE_LOCK:-${TMPDIR:-/tmp}/flowy-gate.lock}
+if [ "$GATE_LOCK" != off ]; then
+	exec 9>"$GATE_LOCK" || {
+		printf 'cannot open the gate lock at %s\n' "$GATE_LOCK" >&2
+		exit 2
+	}
+	if ! flock -n 9; then
+		holder=$(cat "$GATE_LOCK" 2>/dev/null || true)
+		printf 'ANOTHER SUITE IS RUNNING ON THIS MACHINE%s\n' \
+			"${holder:+ (pid $holder)}" >&2
+		printf 'Two suites here take the same port and the second one measures the\n' >&2
+		printf 'first one node - red or green, whichever the borrowed answers give.\n' >&2
+		printf 'Wait for it, or FLOWY_GATE_LOCK=off if you mean to run two.\n' >&2
+		exit 2
+	fi
+	printf '%s' "$$" >&9
+fi
+
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/flowy-gate.XXXXXX")"
 PGDATA="$WORK/pgdata"
 PGSOCK="$WORK/sock"
