@@ -50,6 +50,19 @@ refs=""
 # report nobody can check afterwards. From-and-to is what makes it auditable.
 moves=""
 while read -r old new ref; do
+	# A TRANSACTION THAT DOES NOT MOVE THE BRANCH IS NOT A LANDING. git puts
+	# the branch in the transaction with old == new for operations that only
+	# LOOK at it, and `git stash` is the one everybody hits: it runs a
+	# `reset --hard HEAD` internally, which writes refs/heads/master back to
+	# the sha it already had. That was refused, so on a protected branch a
+	# stash - and a `reset --hard HEAD`, and a `checkout -B` onto the same
+	# commit - failed with a message about the landing lock, which is not what
+	# any of them are doing.
+	#
+	# Skipping them is safe by construction rather than by judgement: the ref
+	# holds the same commit before and after, so no measurement anybody made
+	# against it can be invalidated by something that did not happen.
+	[ "$old" = "$new" ] && continue
 	for want in $protected; do
 		if [ "$ref" = "$want" ]; then
 			refs="$refs $ref"

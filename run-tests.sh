@@ -17413,6 +17413,18 @@ guard_says() {
 	printf '%s' "$?"
 }
 
+# guard_says_noop is guard_says for a transaction where the branch does not
+# move - the same sha on both sides, which is what git writes for the internal
+# `reset --hard HEAD` inside a stash, and for a checkout -B onto the commit that
+# is already there.
+guard_says_noop() {
+	local addr="$1" ref="$2" token="${3-}"
+	printf 'aaa aaa %s\n' "$ref" |
+		env FLOWY_ADDR="$addr" FLOWY_TOKEN="$token" FLOWY_LAND_GUARD=on \
+			bash "$ROOT/scripts/land-guard.sh" prepared >/dev/null 2>&1
+	printf '%s' "$?"
+}
+
 the_land_guard_refuses_what_it_should() {
 	recall
 	local dead=http://127.0.0.1:9 pid rc
@@ -17421,6 +17433,17 @@ the_land_guard_refuses_what_it_should() {
 	# server would be removed within the hour, and then it guards nothing.
 	want_eq "a feature branch is not the guard's business" \
 		"$(guard_says "$dead" refs/heads/feature tok)" 0 || return 1
+
+	# A TRANSACTION THAT DOES NOT MOVE THE BRANCH IS NOT A LANDING, and this is
+	# asked against a DEAD node on purpose: the hook must decide it without
+	# asking anybody, because the sha is the same on both sides and there is
+	# nothing anybody could tell it that would change the answer.
+	#
+	# It cost a `git stash` on master, which half-completed - git saved the
+	# stash and then had its internal `reset --hard HEAD` refused, so the
+	# changes were both stashed and still in the tree.
+	want_eq "a transaction that does not move the branch is not a landing" \
+		"$(guard_says_noop "$dead" refs/heads/master tok)" 0 || return 1
 
 	# Each of these is a REFUSAL, and each is a way the guard could otherwise
 	# turn itself off exactly when nobody is watching.
