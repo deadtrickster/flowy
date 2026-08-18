@@ -17204,6 +17204,11 @@ check "a well-formed signature by the wrong key is refused, and hers is not" \
 	a_signature_that_is_not_the_principals_is_not_authorship
 check "a rewrite of what somebody wrote is refused, and an edit they signed is not" \
 	a_rewrite_of_what_somebody_wrote_is_refused
+# The other half of that rule, which is the half no accept rule can close: the
+# names this node holds NO key for are the names a pinned peer may write under,
+# and until this check they were a list nobody had ever printed.
+check "a principal with rows here and no key is named, with the command that closes it" \
+	go test -count=1 -run TestAPrincipalWithNoKeyIsNamed ./internal/store
 
 say "and the refusal stands"
 check "a refused row stays refused when it is re-offered, and after a pin that would have allowed it" \

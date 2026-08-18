@@ -51,6 +51,7 @@ usage:
   flowy principal keygen --as P [--epoch N]    mint P a keypair here, and sign P's rows with it
   flowy principal pin --as P --key K [--epoch N]
                                                record P's public key, out of band
+  flowy principal exposed                      every principal with rows here and no key
 
 A row carries two signatures. The node's says which machine relayed it; the
 principal's says who wrote it. From a principal's EPOCH - a clock reading - this
@@ -78,6 +79,8 @@ func principalCmd(args []string) error {
 		return principalKeygen(args)
 	case "pin":
 		return principalPin(args)
+	case "exposed", "unkeyed":
+		return principalExposed(args)
 	case "help", "-h", "--help":
 		fmt.Print(principalUsage)
 		return nil
@@ -210,4 +213,40 @@ func principalSeed(raw string) ([]byte, error) {
 		return nil, fmt.Errorf("--principal-seed is hex: %w", err)
 	}
 	return seed, nil
+}
+
+// principalExposed prints every principal this node has rows from and holds no
+// key for - which is every name a pinned peer could author rows under here and
+// have them stored and shown as that person's own.
+//
+// It is the other half of `list`, and it is the half that was missing. `list`
+// answers "whose word would this node take as their own", and a fabric that has
+// provisioned nothing gets an empty answer that reads like nothing to do. This
+// answers "whose word would it take from anybody at all", which on that same
+// fabric is everybody, and prints the one command that closes each name.
+//
+// It exits 0 with an empty list rather than refusing: nothing exposed is a real
+// answer and a script should be able to read it. See internal/store/unkeyed.go
+// for why the credentialed flag chooses the command and decides nothing else.
+func principalExposed(args []string) error {
+	fs := flag.NewFlagSet("principal exposed", flag.ContinueOnError)
+	return withPrincipalDB(fs, args, func(ctx context.Context, db *store.DB) error {
+		open, err := db.UnkeyedPrincipals(ctx)
+		if err != nil {
+			return err
+		}
+		out := make([]map[string]any, 0, len(open))
+		for _, u := range open {
+			out = append(out, map[string]any{
+				"principal":    u.Principal,
+				"handle":       u.Handle,
+				"rows":         u.Rows,
+				"credentialed": u.Credentialed,
+				"fix":          u.Fix(),
+			})
+		}
+		return printJSON(map[string]any{
+			"node": db.Node(), "exposed": len(out), "principals": out,
+		})
+	})
 }
