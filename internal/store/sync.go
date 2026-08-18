@@ -1535,6 +1535,15 @@ var mintedEventTypes = map[string]bool{
 	// that true is the compare-and-set on the verb. An entry handed over here
 	// would be a lost update with a record behind it claiming it was not one.
 	EventTodoEdit: true,
+	// And a note on a row. Minted for the first reason, and for one that bites
+	// harder here than anywhere else on this list: the entry IS its content, so
+	// an entry a client could hand over would be words attributed to a seat that
+	// never wrote them, sitting under the author's own body as what somebody
+	// learned about the work. The refusals that keep a note readable by the
+	// row's own readers are on the verb as well - see todonote.go on why a
+	// projectless todo refuses one rather than writing a note only its writer
+	// could ever read back.
+	EventTodoNote: true,
 }
 
 // MintedEventType reports whether an event type is one this node's own handlers

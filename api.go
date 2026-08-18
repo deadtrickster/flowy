@@ -547,6 +547,12 @@ var mintedTypes = map[string]bool{
 	// that sentence true. One typed by hand would be a lost update carrying a
 	// record that says it was not one. See store.EditTodo.
 	store.EventTodoEdit: true,
+	// And a note on a row. The entry is its own content here rather than the
+	// record of a value written beside it, so one typed in by hand is a
+	// paragraph attributed to a seat that never wrote it, rendered under the
+	// author's body as what somebody learned about the work. See
+	// store.AppendTodoNote.
+	store.EventTodoNote: true,
 }
 
 // handleAppendEvent appends to the log. The log is append-only: there is no

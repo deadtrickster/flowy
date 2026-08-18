@@ -264,6 +264,45 @@ An item with no raiser says nobody said, and nothing infers one. That is every
 queue item written before this field, and the surfaces draw it as what it is
 rather than putting the author's name where a raiser would go.
 
+## What was learned about it
+
+A row is filed by somebody who knew one thing about the work, and everything
+learned afterwards used to have nowhere to go. The body is the author's and only
+the author may edit it, and only while nobody has started - which is right, and
+which leaves the agent who picked the row up and worked out the actual fix shape
+typing it into a room, where it scrolls away and the next agent derives it again.
+
+- `todo_note {todo, note}` - attach what you learned to any row you can READ,
+  yours or not. A measurement, the fix shape, what it turned out to be blocked
+  on, what you tried that did not work.
+
+It is an APPEND, not an edit, and the difference is the point:
+
+- **Nothing already written changes.** The title, the body and every earlier note
+  stay exactly as they are. Your note sits beside them, attributed to you and
+  timestamped.
+- **Anybody who can read the row may add one.** What is learned about a row is
+  not authorship of it - the seat that measured the thing is usually not the seat
+  that typed the title.
+- **It is not refused once somebody has picked the row up**, unlike an edit,
+  which is guarded against exactly that. Active and done are when a note is worth
+  the most.
+- **There is no way to edit or delete one.** A note that turns out to be wrong is
+  answered by another note saying so, which is what the record should have said
+  anyway.
+
+Notes come back on the row itself - `mem_read` and `GET /api/artifact/{id}` -
+oldest first, so the next reader gets the author's statement and then what was
+learned, without knowing this tool exists. `GET /api/todo/{id}/notes` reads them
+on their own.
+
+Write the reasoning, not the conclusion. A note that says only "blocked" costs
+the next reader the investigation you just did.
+
+A row with no project cannot take one: a note on it would be readable by whoever
+wrote it and by nobody else, not even by the row's author, so it is refused
+rather than written somewhere nobody reads. Give the row a project first.
+
 
 Reports are finished documents - research findings, designs, reviews - published for
 the project to read, with the same permission filter as everything else and no work

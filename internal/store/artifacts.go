@@ -1203,6 +1203,13 @@ func (d *DB) ReadArtifact(ctx context.Context, p *Principal, id string, scopeAll
 	fillAssignee([]*Artifact{art})
 	fillCategory([]*Artifact{art})
 	fillRaiser([]*Artifact{art})
+	// And what has been learned about it since it was filed. It is on the
+	// single-row read and not on the list beside it: whoever opened one row is
+	// the reader the notes are for, and a list carrying every note on every row
+	// would pay for them on every queue draw. See fillNotes.
+	if err := d.fillNotes(ctx, p, []*Artifact{art}); err != nil {
+		return nil, err
+	}
 	return art, nil
 }
 

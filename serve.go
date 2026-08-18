@@ -278,6 +278,12 @@ var apiRoutes = []string{
 	// unguarded write this one exists to replace.
 	"POST /api/todo/{id}/edit",
 	"GET /api/todo/{id}/edits",
+	// And adding to a row without changing it. It is on this list for the same
+	// reason and a sharper one: an agent that cannot find this door writes what
+	// it learned in the room, where it scrolls away and the next agent
+	// rediscovers it - which is the whole failure the door exists to end.
+	"POST /api/todo/{id}/note",
+	"GET /api/todo/{id}/notes",
 	"GET /api/proposals",
 	"GET /api/proposal/{id}",
 	"GET /api/attachment/{id}",
@@ -426,6 +432,15 @@ func (s *server) routes() http.Handler {
 	// internal/store/todoedit.go.
 	api.HandleFunc("POST /api/todo/{id}/edit", s.handleTodoEdit)
 	api.HandleFunc("GET /api/todo/{id}/edits", s.handleTodoEdits)
+	// And the other way a row changes: an APPEND. Anybody who can read the row
+	// may attach what they learned about it - a measurement, the fix shape, what
+	// it turned out to be blocked on - and nothing already written moves. It is
+	// the opposite door to the one above it on purpose: the edit is the author's
+	// words and is guarded on the row not having been started, a note is a second
+	// person's words beside them and is most worth writing once it has. See
+	// todonote.go and internal/store/todonote.go.
+	api.HandleFunc("POST /api/todo/{id}/note", s.handleTodoNote)
+	api.HandleFunc("GET /api/todo/{id}/notes", s.handleTodoNotes)
 	// An attachment's bytes, permission-filtered exactly as the row is - the
 	// card a reader sees names this, and "the card is there but the bytes are
 	// not" is a real state the filter produces, answered as metadata without
