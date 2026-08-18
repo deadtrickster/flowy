@@ -5587,6 +5587,82 @@ mem_write_takes_a_category_and_tags_take_anything() {
 	printf 'the kind rode a write, survived an update, came off, and rode a raise\n'
 }
 
+# A TAG NARROWS THE LIST, AND A PARAMETER THIS DOOR DOES NOT HONOUR IS REFUSED
+# BY NAME.
+#
+# The measurement this is for, on 0.8.0+980a537:
+#
+#   GET /api/artifacts?type=finding             -> 40 artifacts
+#   GET /api/artifacts?type=finding&tag=ragflow -> 40 artifacts
+#
+# with 16 of those findings carrying the tag. The filter was dropped, and a
+# dropped filter answers 200 with MORE than was asked for - which no caller can
+# detect, because there is no field to check and no count to compare. It is over
+# the wire and not in a Go test on purpose: that is where it was measured, and a
+# handler test would not see a route or a middleware losing the parameter.
+a_tag_narrows_the_list_and_an_unhonoured_parameter_is_refused() {
+	recall
+	local both="tagfilter both" xonly="tagfilter x" yonly="tagfilter y by its author"
+	local plain="tagfilter none"
+
+	api POST "$TOKEN_A" /api/artifacts \
+		"$(jq -nc --arg t "$both" '{type: "memory", kind: "note", title: $t,
+		   tags: ["tagfilter-x", "tagfilter-y"]}')" || return 1
+	want_eq "the row carrying both" "$API_STATUS" 200 || return 1
+	api POST "$TOKEN_A" /api/artifacts \
+		"$(jq -nc --arg t "$xonly" '{type: "memory", kind: "note", title: $t,
+		   tags: ["tagfilter-x"]}')" || return 1
+	want_eq "the row carrying one" "$API_STATUS" 200 || return 1
+	# On the other column of labels, which is the one a reader cannot tell apart:
+	# the console draws tags and user_tags as one list, so the chip somebody
+	# clicked may have come from either.
+	api POST "$TOKEN_A" /api/artifacts \
+		"$(jq -nc --arg t "$yonly" '{type: "memory", kind: "note", title: $t,
+		   user_tags: ["tagfilter-y"]}')" || return 1
+	want_eq "the row labelled by its author" "$API_STATUS" 200 || return 1
+	api POST "$TOKEN_A" /api/artifacts \
+		"$(jq -nc --arg t "$plain" '{type: "memory", kind: "note", title: $t}')" || return 1
+	want_eq "the row carrying nothing" "$API_STATUS" 200 || return 1
+
+	# One tag: the two rows that carry it and nothing else at all.
+	api GET "$TOKEN_A" "/api/artifacts?type=memory&kind=note&tag=tagfilter-x" || return 1
+	want_eq "narrowed status" "$API_STATUS" 200 || return 1
+	want_todos "the rows tagged x" "$both" "$xonly" -- "$yonly" "$plain" || return 1
+	want_eq "and nothing came with them" "$(hits)" 2 || return 1
+
+	# Two tags mean AND, because that is what a second click on a stacked filter
+	# means to the person clicking it.
+	api GET "$TOKEN_A" "/api/artifacts?tag=tagfilter-x&tag=tagfilter-y" || return 1
+	want_todos "the rows carrying both" "$both" -- "$xonly" "$yonly" "$plain" || return 1
+	want_eq "and only that one" "$(hits)" 1 || return 1
+
+	# Either column of labels answers a tag.
+	api GET "$TOKEN_A" "/api/artifacts?tag=tagfilter-y" || return 1
+	want_todos "the rows tagged y in either column" "$both" "$yonly" -- "$xonly" "$plain" || return 1
+
+	# Filter first, then cut the page. A filter applied after the limit is the
+	# same defect in different clothes: short AND wrong.
+	api GET "$TOKEN_A" "/api/artifacts?type=memory&kind=note&tag=tagfilter-x&limit=1" || return 1
+	want_eq "one row on the page" "$(hits)" 1 || return 1
+	want_eq "and it is one of the tagged ones" \
+		"$(hits '((.tags // []) + (.user_tags // [])) | index("tagfilter-x")')" 1 || return 1
+
+	# The unnarrowed list still holds all four: a tag is a filter, not a
+	# permission axis, and an untagged row is on every page it was on before.
+	api GET "$TOKEN_A" "/api/artifacts?type=memory&kind=note" || return 1
+	want_todos "the unnarrowed list" "$both" "$xonly" "$yonly" "$plain" || return 1
+
+	# And the plural the defect was filed with is a refusal naming it, rather
+	# than an answer that looks right.
+	want_status 400 GET "$TOKEN_A" "/api/artifacts?tags=tagfilter-x" || return 1
+	printf '%s' "$API_BODY" | grep -q 'tags' || {
+		printf 'the refusal does not name the parameter:\n%s\n' "$API_BODY" >&2
+		return 1
+	}
+	want_status 400 GET "$TOKEN_A" "/api/artifacts?type=memory&q=gearbox" || return 1
+	printf 'a tag narrowed the list, two meant both, the limit came after it, and the plural was refused\n'
+}
+
 # --------------------------------------------- what was learned about a row
 #
 # A row was fixed at the moment it was filed: the words are its author's, and
@@ -10535,6 +10611,15 @@ check "an unclassified todo reads, lists, and drops out of a narrowed list, in t
 	go test -count=1 -run TestATodoWithNoCategoryReadsAndListsFine ./internal/store
 check "the console draws the kind and filters by it and by a tag, in a browser" \
 	console_filters_the_queue_by_kind_and_tag
+# And the tags beside the kind are a filter the NODE applies, which is the half
+# that was missing: the console could narrow a page it had already been handed,
+# and the door handed it every row whatever it asked for.
+check "A TAG NARROWS THE LIST AT THE DOOR, and a parameter it does not honour is refused" \
+	a_tag_narrows_the_list_and_an_unhonoured_parameter_is_refused
+check "the list door's tag filter, composition and refusal, in the handler" \
+	go test -count=1 \
+	-run 'TestATagNarrowsTheListAndTwoTagsMeanBoth|TestATagMatchesEitherColumnOfLabels|TestATagComposesWithTheOtherNarrowingsAndIsAppliedBeforeTheLimit|TestTheListRefusesAParameterItDoesNotHonour|TestTheListStillTakesTheParametersItDocuments' \
+	.
 
 say "what was learned about a row"
 check "somebody who did not raise a row attaches what they learned, at both doors" \
