@@ -48,6 +48,22 @@ import {
  * panel showing another project's work is the confusion this page is meant to
  * end, not spread; what the two share is lib/todos, so the reading order, the
  * statuses and the owner line cannot drift into two ideas of what a todo is.
+ *
+ * AND IT IS EVERY ROOM, INCLUDING NO ROOM. api.todos() asks for no room and the
+ * node narrows by one only when it is asked to, so this list has always held the
+ * roomless rows - what it did not do is SAY SO. A row filed through POST
+ * /api/artifacts carries no fields.room, because that door sets none, and about
+ * half the open queue is filed that way; those rows drew a blank where a room
+ * goes, which reads as a room that failed to load rather than as a row filed
+ * nowhere. So the room cell is drawn on every row either way, and the count of
+ * rows carrying none is in the scope line.
+ *
+ * That split is the point and it is written on the page rather than implied: THE
+ * BOARD IS EVERYTHING AND THE ROOM'S PANEL IS THE FILTER. A row nobody filed in
+ * a room is in no panel at all, so if this page narrowed too it would be the
+ * only surface those rows could appear on, narrowing them away - which is what
+ * an afternoon of the operator reading 24 and the API answering 46 felt like
+ * from the inside.
  */
 
 export function Todos() {
@@ -165,6 +181,18 @@ export function Todos() {
   const { projects, personal } = scopeOf(todos, reach);
   const capped = todos.length >= TODO_PAGE;
   /**
+   * How many of these rows were filed in no room at all.
+   *
+   * It is on the page because it is a DEFECT COUNT, not decoration: a row gets
+   * no room when it is filed through POST /api/artifacts, which sets none, and
+   * that is most of what the agents file. Nothing anywhere showed that number,
+   * so "half the queue was raised through a door that loses where it came from"
+   * was a thing you could only learn by reading the API yourself - which is
+   * exactly how the operator and every agent spent an afternoon each certain
+   * about a different set of rows.
+   */
+  const roomless = todos.filter((todo) => todoRoom(todo) === "").length;
+  /**
    * Whether there is an answer to state the size of. Before the reads land,
    * every number here is zero and "0 todos across 0 projects you can read" is a
    * false sentence rather than an empty one - which is the sentence this page
@@ -230,7 +258,7 @@ export function Todos() {
             <div className="flex flex-wrap items-center gap-2">
               <h1 className="font-semibold text-base">todos</h1>
               <span className="text-muted-foreground text-xs">
-                every project you can read, not just the one you write into
+                every project you can read and every room, including the rows filed in none
               </span>
               {answered ? (
                 <span className="ml-auto text-muted-foreground text-xs">
@@ -339,6 +367,23 @@ export function Todos() {
                     {name}
                   </Badge>
                 ))}
+                {/* And how many of them name no room, which is a statement about
+                the DOOR they came through rather than about this page. This
+                board is every room by construction - the fetch asks for no room
+                and the node narrows by one only when it is asked to - so the
+                number that is worth saying out loud is how much of the queue
+                carries no room at all. Said at zero too: "none of them" is the
+                answer somebody chasing this defect needs, and a count that
+                appears only when it is bad is a count nobody trusts is running. */}
+                <span
+                  data-todo-roomless-count={roomless}
+                  title="A todo carries the room it was raised in under fields.room. One filed through
+POST /api/artifacts carries none, because that door sets none - so it belongs to
+no room's panel and is only ever seen here. This board never narrows by room;
+the todo panel inside a chat room is the surface that does."
+                >
+                  - {roomless > 0 ? `${roomless} filed in no room` : "all filed in a room"}
+                </span>
                 {capped ? (
                   <span data-todo-capped="">
                     - the node stopped at {TODO_PAGE} rows, so there may be more
@@ -665,13 +710,41 @@ function Row({ todo, onTag }: { todo: Artifact; onTag: (tag: string) => void }) 
           </Badge>
         </button>
       ))}
-      {/* Where it was agreed, when it was agreed anywhere. It is a link back to
-          that room's own panel, which is the surface that can answer it. */}
+      {/* Where it was agreed - and, when it was agreed nowhere, THOSE WORDS.
+          Drawn on every row rather than only on the ones that have a room,
+          which is the whole of this fix.
+
+          A blank here read as neither: half this queue is filed through POST
+          /api/artifacts, which sets no room, and those rows appeared beside the
+          roomed ones with nothing where a room goes. "Filed nowhere" and "filed
+          in general" are not the same fact - the first is a defect at the create
+          door that somebody should fix, the second is ordinary - and a reader
+          scanning a column cannot see the absence of a link.
+
+          The room is a link, because it goes to that room's own panel. The
+          absence is not, because there is nowhere for it to go: a row with no
+          room is in no room's panel, and this board is the only place it is
+          ever seen. */}
       {room ? (
-        <Link to={`/chat/${encodeURIComponent(room)}`} className="text-muted-foreground text-xs">
+        <Link
+          to={`/chat/${encodeURIComponent(room)}`}
+          data-todo-room={room}
+          className="shrink-0 text-muted-foreground text-xs"
+          title={`raised in #${room} - open that room's panel`}
+        >
           #{room}
         </Link>
-      ) : null}
+      ) : (
+        <span
+          data-todo-room=""
+          data-todo-roomless=""
+          className="shrink-0 text-muted-foreground/70 text-xs italic"
+          title="Filed in no room: this row carries no fields.room, which is what POST /api/artifacts
+leaves behind. It is in no room's todo panel and is only ever seen on this board."
+        >
+          no room
+        </span>
+      )}
     </li>
   );
 }

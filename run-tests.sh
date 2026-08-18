@@ -6494,6 +6494,51 @@ console_says_which_empty_the_queue_is() {
 		"no todos in the 1 project you can read" /todos
 }
 
+# THE BOARD IS EVERY ROOM AND THE ROOM'S PANEL IS THE FILTER.
+#
+# Measured on the live node on 2026-08-18: 46 open todos, 24 carrying
+# fields.room=general and 22 carrying no room at all. The operator's board read
+# 24 and the API answered 46, for an afternoon, with everybody correct about a
+# different set and nobody able to see it. The rows carry no room because POST
+# /api/artifacts sets none and that is the door most agent-filed work goes
+# through.
+#
+# The two rows below differ in exactly one thing - one is raised in #general and
+# one is filed through that door - so every claim about them is a DIFFERENCE
+# rather than a presence. A check asserting "the board renders rows" passes
+# today and would have passed all afternoon while 22 were invisible, which is
+# the failure mode, not an example of it.
+#
+# The second arm is the same pair on the room's own panel, which holds one of
+# them. Without it, "the board shows both" is equally true of a node that
+# narrows nothing anywhere, and the page's claim to be the unfiltered surface
+# would be unproven rather than proven.
+ROOMLESS_TODO_IN_ROOM="the pond sluice wants a new paddle"
+ROOMLESS_TODO_NOWHERE="the bellows crank sticks on the upstroke"
+readonly ROOMLESS_TODO_IN_ROOM ROOMLESS_TODO_NOWHERE
+
+the_board_shows_the_row_that_was_filed_in_no_room() {
+	recall
+	# Raised in a room, through the room's own door, which is what puts a room
+	# on it.
+	api POST "$TOKEN_A" /api/chat/general/todo \
+		"$(jq -nc --arg t "$ROOMLESS_TODO_IN_ROOM" '{title: $t}')" || return 1
+	want_eq "the roomed one" "$API_STATUS" 200 || return 1
+	want_eq "and it carries the room" "$(jqv .item.fields.room)" general || return 1
+	# And one through the door that sets none. NOT backfilled with a room here
+	# or anywhere: writing a room a row was never filed in hides the defect and
+	# makes the row lie about where it came from. The operator refused that
+	# outright, so the fix is that the board says so instead.
+	api POST "$TOKEN_A" /api/artifacts \
+		"$(jq -nc --arg t "$ROOMLESS_TODO_NOWHERE" \
+			'{type: "memory", kind: "todo", status: "todo", title: $t}')" || return 1
+	want_eq "the roomless one" "$API_STATUS" 200 || return 1
+	want_eq "and it carries no room" "$(jqv '.fields.room // "none"')" none || return 1
+	cd "$ROOT/web" || return 1
+	node scripts/roomless-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" general \
+		"$ROOMLESS_TODO_IN_ROOM" "$ROOMLESS_TODO_NOWHERE"
+}
+
 # ---------------------------------------------------- phase 3 console helpers
 
 # The three steps of the frontend build, each its own check so a failure names
@@ -16543,6 +16588,8 @@ check "what a token READS is narrower than what the registry SHOWS it" \
 	the_reach_is_narrower_than_the_enumeration
 check "the page lists both projects for the reader who reaches both, one for the other, and says which" \
 	console_lists_the_queue_across_projects
+check "THE BOARD SHOWS THE ROW FILED IN NO ROOM, says so in words, counts them, and the room's panel does not" \
+	the_board_shows_the_row_that_was_filed_in_no_room
 check "signed out, the queue says so instead of reading as no work" \
 	console_todos_signed_out
 
