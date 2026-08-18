@@ -37,7 +37,11 @@ const die = (message) => {
 };
 
 const say = async (room, text) => {
-  const res = await fetch(`${base}/api/chat/${room}`, {
+  // /say, not /{room}. The first cut posted to /api/chat/{room} and the suite
+  // answered "no such endpoint" thirty checks in - a route I assumed from the
+  // shape of the read rather than reading serve.go, which registers
+  // POST /api/chat/{room}/say beside /todo and /pin.
+  const res = await fetch(`${base}/api/chat/${room}/say`, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
     body: JSON.stringify({ body: text }),
