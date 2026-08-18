@@ -756,6 +756,26 @@ func waitOnInbox(ctx context.Context, client *http.Client, base, bearer, as, roo
 			// shared with the federation driver and somebody else is in it.
 			var netErr *url.Error
 			if !errors.As(err, &netErr) {
+				// The one refusal that is allowed to say more than the
+				// server already did. A reader held under a DIFFERENT
+				// principal than this token's is the switched-token trap:
+				// a seat gets minted, the agent swaps tokens, and the
+				// reader - with every message since the swap waiting at
+				// its mark - stays behind with the old identity. From the
+				// room that agent looks mute and from its own side
+				// everything seems fine, which is why the fix has to be
+				// printed here rather than hoped for: the deaf agent is
+				// the one party that cannot notice.
+				if strings.Contains(err.Error(), "no inbox reader called") {
+					return fmt.Errorf("%w\n\n"+
+						"the principal behind this token holds no reader %q. two causes, "+
+						"and only you can tell them apart:\n"+
+						"  the name is new here - declare it: flowy inbox --as %s --new\n"+
+						"  the token was switched (a minted seat, another agent's token) - "+
+						"the reader stayed with the OLD identity and every message since "+
+						"the switch is waiting THERE. check that identity's mark before "+
+						"re-declaring, or the gap goes unread", err, as, as)
+				}
 				return err
 			}
 			if !time.Now().Before(until) {
