@@ -231,15 +231,23 @@ try {
   const runButton = main.locator("[data-repro-run]");
   const versionBox = main.locator('input[aria-label="version"]');
   const baseBox = main.locator('input[aria-label="repro runner base URL"]');
-  const saveBase = main.locator("[data-repro-base-save]");
   const runError = main.locator("[data-repro-error]");
 
   // ------------------------------------------------------------------- F2
+  //
+  // REWRITTEN when the node started forwarding. There used to be a form here
+  // asking for the runner's address, and F2 asserted that it appeared and that
+  // pasting a base brought up the run control. The operator's answer to that
+  // form - "i dont want to type address of the runner, that python console had
+  // none" - is why it is gone, so what F2 asserts now is the behaviour that
+  // replaced it: the panel is READY with nothing configured, because it calls
+  // /api/repro/* on its own origin, and a node with no runner behind it says so
+  // in the panel's own error line rather than drawing a question.
   await page.goto(findingPage(withTree), { timeout: 20_000 }).catch(() => {});
-  if (!(await until(async () => (await baseBox.count()) > 0))) {
+  if (!(await until(async () => (await runButton.count()) > 0))) {
     const errors = crashes.length ? `\npage errors:\n  ${crashes.join("\n  ")}` : "";
     console.error(
-      `the finding page never offered a runner base box.
+      `the finding page never offered a run control.
 Either the page did not paint, or ${withTree} carries no repro tree - in which
 case the panel drew "nothing here to run" and this check is measuring the wrong
 finding.${errors}`,
@@ -247,17 +255,32 @@ finding.${errors}`,
     process.exit(1);
   }
   claim(
-    "F2 with no runner configured, no run button is offered",
-    (await runButton.count()) === 0,
-    "a button whose every click can only fail is the defect this file exists for",
+    "F2 no box asks for the runner's address",
+    (await baseBox.count()) === 0,
+    "the setup form is back: the console is meant to reach the runner through the node",
+  );
+  await runButton.click();
+  claim(
+    "F2 a node with no runner configured says so, in the panel",
+    await until(async () => {
+      if ((await runError.count()) === 0) return false;
+      const said = (await runError.first().innerText()).toLowerCase();
+      return said.includes("runner") || said.includes("503") || said.includes("unavailable");
+    }),
+    "the gate's node has no -repro, so this click can only fail - and a click that fails " +
+      "silently is indistinguishable from one that worked",
   );
 
-  await baseBox.fill(runnerBase);
-  await saveBase.click();
+  // The override, which is what the rest of this file exercises: a runner on a
+  // second origin, reached directly. It is still supported and still the only
+  // way to drive the console's own half of the journey in a gate with no real
+  // runner behind the node.
+  await page.evaluate((b) => localStorage.setItem("flowy.reproBase", b), runnerBase);
+  await page.reload({ timeout: 20_000 }).catch(() => {});
   claim(
-    "F2 pasting a runner base brings up the run control",
+    "F2 an explicit runner base brings up the run control against it",
     await until(async () => (await runButton.count()) > 0 && (await versionBox.count()) > 0),
-    "the setup form was submitted and the panel body never appeared",
+    "the panel never came back after the override was set",
   );
 
   // ------------------------------------------------------------------- F1
