@@ -249,6 +249,13 @@ func TestATagComposesWithTheOtherNarrowingsAndIsAppliedBeforeTheLimit(t *testing
 // No database: every refusal here happens before s.db is touched, so a case
 // that reached the store would nil-deref instead of returning a status. A
 // passing case is proof the door stopped short of the query.
+//
+// `assignee` used to be in this table and is not any more, because the door
+// honours it now - see assigneeArg and the board check in run-tests.sh. That
+// removal is the correct half of the rule: this list is what is REFUSED, and
+// implementing a filter means moving it out of here rather than leaving a
+// refusal that outlived its reason. The nil-deref above is what caught it,
+// which is the same property the comment is claiming.
 func TestTheListRefusesAParameterItDoesNotHonour(t *testing.T) {
 	s := &server{}
 	p := &store.Principal{UserID: "u-nobody", Project: "p"}
@@ -256,7 +263,6 @@ func TestTheListRefusesAParameterItDoesNotHonour(t *testing.T) {
 	for _, c := range []struct{ query, param string }{
 		{"tags=node-wide", "tags"},
 		{"type=finding&tags=ragflow", "tags"},
-		{"assignee=claude-host", "assignee"},
 		{"severity=high", "severity"},
 		{"visibility=personal", "visibility"},
 		{"q=tailrace", "q"},
