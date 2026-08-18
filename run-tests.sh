@@ -4127,9 +4127,68 @@ a_todo_is_raised_out_of_a_message() {
 	want_eq "under the message it came out of" \
 		"$(jqv '.event.parents | join(",")')" "$message" || return 1
 	want_eq "in that conversation's thread" "$(jqv .event.thread)" "$thread" || return 1
+	# AND THE MESSAGE NAMES THE ROW IN ITS OWN PROSE. The artifact column above
+	# is the machine answer and every rendering is free to drop it; the body is
+	# what a reader reads however they are reading. Without the id in here, the
+	# only two ULIDs a reader had in hand were the message and its thread, and
+	# both of them 404 at every row door.
+	want_eq "the announcement names the row it raised" "$(jqv .event.body)" \
+		"raised a todo $(jqv .item.id): $ROOM_TODO_BUILD" || return 1
 	remember ROOM_TODO_ID "$(jqv .item.id)"
 	remember ROOM_TODO_MESSAGE "$message"
+	remember ROOM_TODO_EVENT "$(jqv .event.id)"
+	remember ROOM_TODO_THREAD "$(jqv .event.thread)"
 	printf 'todo %s raised in #build out of message %s\n' "$(jqv .item.id)" "$message"
+}
+
+# The other half of the same fix: the refusal a reader gets when they act on the
+# WRONG id out of that notification. A message id and a thread id are ULIDs of
+# the same shape as a row id, minted moments apart, so they share a long prefix
+# and differ in a character or two - and a bare 404 against one reads as "the row
+# is gone", which is what sent two agents looking for a deleted artifact on
+# 2026-08-18. The refusal now says which id space the id came from and which row
+# the message or thread is about, at the read door and at the claim door.
+#
+# The last assertion is the one that keeps this from being an existence oracle:
+# the sentence is assembled out of this reader's own filtered reads, so it stops
+# at whatever this reader could already have reached and never a row past it.
+a_misread_id_says_which_space_it_came_from() {
+	recall
+	local diag="the row raised in it is $ROOM_TODO_ID"
+
+	want_status 404 GET "$TOKEN_A" "/api/artifact/$ROOM_TODO_THREAD" || return 1
+	want_eq "the read door diagnoses a thread id" "$(jqv .error)" \
+		"no such artifact - that id names a chat thread, not a row; $diag" || return 1
+
+	want_status 404 GET "$TOKEN_A" "/api/artifact/$ROOM_TODO_EVENT" || return 1
+	want_eq "and tells a message from a thread" "$(jqv .error)" \
+		"no such artifact - that id names a chat message, not a row; the row it is about is $ROOM_TODO_ID" ||
+		return 1
+
+	# The claim door, which is where the loss actually happened: an agent read
+	# the notification, claimed the id it found, and was told there was no such
+	# todo by a node that could see perfectly well which one it meant.
+	want_status 404 POST "$TOKEN_A" "/api/work/$ROOM_TODO_THREAD/claim" || return 1
+	want_eq "the claim door says it too" "$(jqv .error)" \
+		"no such todo: $ROOM_TODO_THREAD - that id names a chat thread, not a row; $diag" || return 1
+
+	# An id nothing was ever written under stays a bare 404: there is nothing to
+	# diagnose and inventing a sentence would be worse than the silence.
+	want_status 404 GET "$TOKEN_A" /api/artifact/01HNOSUCHROW00000000000000 || return 1
+	want_eq "an id nothing answers to" "$(jqv .error)" "no such artifact" || return 1
+
+	# AND THE SENTENCE STOPS AT THE PERMISSION BOUNDARY. B is in pb and holds a
+	# project grant onto pa, so B genuinely reads the room's messages and is
+	# rightly told the id is a thread - and the todo is project-only, which a
+	# grant does not reach, so the half of the answer that would name a row B
+	# cannot read is not said. The diagnosis is every read it is built from and
+	# nothing more: it runs the asking principal's own filter, one clause at a
+	# time. Compare TestADiagnosisTellsAStranger... in the store, where a reader
+	# with no grant at all is told nothing whatsoever.
+	want_status 404 GET "$TOKEN_B" "/api/artifact/$ROOM_TODO_THREAD" || return 1
+	want_eq "a grantee is told the space and not the row" "$(jqv .error)" \
+		"no such artifact - that id names a chat thread, not a row" || return 1
+	printf 'thread %s diagnosed to row %s\n' "$ROOM_TODO_THREAD" "$ROOM_TODO_ID"
 }
 
 # The filter, and the case a room-shaped change gets wrong: a todo with no room
@@ -10340,6 +10399,10 @@ check "the two windows follow the waiter's own numbers" \
 say "per-room todos"
 check "a todo is raised out of a message, and the room hears about it" \
 	a_todo_is_raised_out_of_a_message
+check "a message or thread id out of that notification says which it is" \
+	a_misread_id_says_which_space_it_came_from
+check "the id spaces, in the store" \
+	go test -count=1 -run 'TestAThreadIdOutOfARaise|TestADiagnosisTellsAStranger' ./internal/store
 check "each room's panel holds its own, and a roomless todo is in every list" \
 	a_room_is_a_filter_and_not_a_move
 check "the room filter, in the store" \

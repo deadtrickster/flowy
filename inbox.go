@@ -882,6 +882,20 @@ func writeInbox(page inboxWaitResponse) error {
 			"created":   e.Created,
 			"cursor":    page.Cursor,
 		}
+		// THE ROW THE MESSAGE IS ABOUT, UNDER ITS OWN NAME. Without it a
+		// delivery carried two ULIDs - the message and its thread - and a reader
+		// acting on a "raised a todo" line had nothing else to reach for, so it
+		// reached for one of those and got a 404 from every row door. Both fixes
+		// are here: the id is in the body too, and the key that names it says
+		// what space it is from.
+		//
+		// Present only when the event names a row, because a key that is there
+		// is a key that answers. An ordinary remark in a room is about nothing,
+		// and an empty string beside "thread" and "id" would be a third id-shaped
+		// field for a reader to try.
+		if e.Artifact != "" {
+			line["artifact"] = e.Artifact
+		}
 		// THE QUOTE, INLINE, IN THE FIELD THE READER ALREADY READS.
 		//
 		// A sidecar field is one more thing every consumer has to remember to

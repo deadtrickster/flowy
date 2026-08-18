@@ -95,6 +95,11 @@ func (s *server) writeWorkError(w http.ResponseWriter, r *http.Request, err erro
 	case errors.As(err, &bound):
 		s.writeRefusal(w, r, http.StatusConflict, err, bound.Error())
 	default:
-		s.writeQueueError(w, r, err)
+		// Every route through here names one item and names it in the path, so
+		// a 404 can say what the id turned out to be instead. This is the door a
+		// claim was lost at on 2026-08-18: the id came out of a room message,
+		// named the conversation rather than the row, and the bare 404 read as
+		// "that todo is gone" to the agent that had just been told about it.
+		s.writeQueueErrorFor(w, r, err, r.PathValue("id"))
 	}
 }

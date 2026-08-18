@@ -179,12 +179,19 @@ func (s *server) handleReady(w http.ResponseWriter, r *http.Request) {
 // assign.go - because a refusal added to either verb must not be one that this
 // door maps to 400 and the other maps to 500. See store.DepRefusal.
 //
-// An id that names nothing this principal may read is a 404 and says nothing
-// more, which is the answer a read of it would give: naming an id in an edge is
-// not a way to find out what else that id might be. The rest are the caller's
-// mistake and say what it was, because each of them is something the caller can
-// fix - the two ends are the same todo, the loop already goes the other way, the
-// edge is already there, the assignee is a paragraph.
+// An id that names nothing this principal may read is a 404, and it names no
+// row it did not already reach: naming an id in an edge is not a way to find out
+// what else that id might be. What it now adds, when it can, is which ID SPACE
+// the caller's id came from - a chat message, a chat thread - because that is a
+// fact about the id in the caller's own hand and not about the store's contents.
+// It is read through this principal's filter, so a reader who could not have
+// read the message is told nothing and gets the bare refusal. See misreadIDNote.
+//
+// The rest are the caller's mistake and say what it was, because each of them
+// is something the caller can fix - the two ends are the same todo, the loop
+// already goes the other way, the edge is already there, the assignee is a
+// paragraph.
+//
 // A refusal that carries a code also carries the row explaining it - see
 // knownissue.go. None of the refusals below carries one yet, so this costs a
 // type assertion and no query today; it is here rather than at the merge queue
@@ -192,15 +199,36 @@ func (s *server) handleReady(w http.ResponseWriter, r *http.Request) {
 // reason somebody has already written down cites where it is written, and the
 // next such reason should need a code on the refusal and nothing else.
 func (s *server) writeQueueError(w http.ResponseWriter, r *http.Request, err error) {
+	s.writeQueueErrorFor(w, r, err, "")
+}
+
+// writeQueueErrorFor is writeQueueError for a door whose path names exactly one
+// row: the 404 it gives for an id nothing answers to also says whether that id
+// is a chat message or a chat thread, and which row that message or thread is
+// about. See misreadIDNote for why, and for why the sentence names no row this
+// caller could not already read.
+//
+// The id is passed in rather than taken off the request because the doors are
+// not all one-id doors. An edge names a todo and a blocker, the store's
+// not-found does not say which of the two it was, and a note that assumed would
+// point the reader at the wrong end - the exact failure being fixed here. Those
+// doors keep calling writeQueueError and keep giving the bare 404.
+func (s *server) writeQueueErrorFor(w http.ResponseWriter, r *http.Request, err error, id string) {
 	var (
 		notATodo store.NotATodoError
 		refusal  store.DepRefusal
 	)
 	switch {
 	case errors.As(err, &notATodo):
-		writeJSON(w, http.StatusNotFound, errorBody(notATodo.Error()))
+		// This refusal names the id it is about, so the diagnosis needs nothing
+		// from the caller and is safe at every door including the two-id ones:
+		// the id in the sentence is the id that missed. It is the refusal the
+		// claim door gives - see store.readWorkItem - and so the one an agent
+		// pasting a thread id out of a room notification actually receives.
+		writeJSON(w, http.StatusNotFound,
+			errorBody(notATodo.Error()+s.misreadIDNote(r, notATodo.ID)))
 	case errors.Is(err, store.ErrNotFound):
-		writeJSON(w, http.StatusNotFound, errorBody("no such todo"))
+		writeJSON(w, http.StatusNotFound, errorBody("no such todo"+s.misreadIDNote(r, id)))
 	case errors.As(err, &refusal):
 		s.writeRefusal(w, r, http.StatusBadRequest, err, refusal.Error())
 	default:
