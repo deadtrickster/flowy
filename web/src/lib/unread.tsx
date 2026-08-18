@@ -65,6 +65,45 @@ import { useSession } from "@/lib/session";
  */
 export const ROOMS = ["general", "handoffs", "incidents"];
 
+/**
+ * The rooms the node actually has, which is the only place that knows.
+ *
+ * ROOMS above is now a FALLBACK and nothing else: it is what the sidebar shows
+ * before the first answer arrives, and if the node cannot be reached. A room
+ * created through POST /api/rooms was invisible here until somebody edited this
+ * file, and a room with traffic and no entry could not be reached from the
+ * sidebar at all - the operator hit both in one afternoon.
+ *
+ * Keeping the literal as a fallback rather than deleting it is deliberate: an
+ * empty sidebar while a fetch is in flight is a worse answer than a stale one,
+ * and this list is right about the three rooms that have existed all along.
+ */
+export function useRooms(): string[] {
+  const [rooms, setRooms] = useState<string[] | null>(null);
+  useEffect(() => {
+    let live = true;
+    api
+      .rooms()
+      .then((answer) => {
+        if (!live) return;
+        const names = (answer.rooms ?? []).map((room) => room.name);
+        // An empty answer is not an empty sidebar. A node with no rooms table
+        // yet, or a project with nothing in it, should still offer the rooms
+        // this console has always offered rather than nothing at all.
+        setRooms(names.length > 0 ? names : ROOMS);
+      })
+      .catch(() => {
+        // Unreachable is not "no rooms" - it is "we do not know", and the
+        // honest render of that is what we knew before.
+        if (live) setRooms(ROOMS);
+      });
+    return () => {
+      live = false;
+    };
+  }, []);
+  return rooms ?? ROOMS;
+}
+
 /** The reader label this console keeps for one room, per principal. */
 export function consoleReader(room: string): string {
   return `console:${room}`;

@@ -18,7 +18,7 @@ import { NavLink } from "react-router-dom";
 
 import { FreshBanner } from "@/components/FreshBanner";
 import { TokenBar } from "@/components/TokenBar";
-import { ROOMS, useUnread } from "@/lib/unread";
+import { useRooms, useUnread } from "@/lib/unread";
 import { cn } from "@/lib/utils";
 
 function navClass({ isActive }: { isActive: boolean }) {
@@ -53,6 +53,8 @@ export function Shell({ children }: { children: ReactNode }) {
   // clearing both live in lib/unread - the sidebar draws it and does not own
   // it, because the room view is what knows when something has been read.
   const { counts } = useUnread();
+  // The node's rooms, not this file's idea of them. See useRooms.
+  const rooms = useRooms();
   return (
     <div className="flex h-full">
       <aside className="flex w-60 shrink-0 flex-col gap-4 border-border border-r bg-card/40 p-3">
@@ -126,7 +128,7 @@ export function Shell({ children }: { children: ReactNode }) {
           <div className="px-2 pb-1 font-medium text-muted-foreground text-xs uppercase tracking-wide">
             rooms
           </div>
-          {ROOMS.map((room) => (
+          {rooms.map((room) => (
             <NavLink key={room} to={`/chat/${room}`} className={navClass}>
               <Hash className="h-4 w-4" />
               {room}

@@ -1105,7 +1105,37 @@ async function reproText(path: string): Promise<string> {
   return text;
 }
 
+/** A room as the node knows it, which is the only place that knows. */
+export type Room = {
+  project: string;
+  name: string;
+  topic?: string;
+  created_by?: string;
+  created: string;
+  members: number;
+  /** The caller's role here, empty when they are not a member. */
+  role?: string;
+  /**
+   * False for a room that exists only because somebody spoke in it. It has no
+   * owner, so nobody can be invited to it until it is created - the invite door
+   * refuses and says so rather than behaving like a real room until somebody
+   * tries.
+   */
+  declared: boolean;
+};
+
 export const api = {
+  /**
+   * The rooms this node has, rather than the three this file used to name.
+   *
+   * ROOMS in lib/unread.tsx was a literal array, so a room nobody had typed
+   * into it could not appear in the sidebar however much traffic it carried,
+   * and a room created through the API was invisible until somebody edited the
+   * console. A client with a hardcoded list is always eventually wrong; one
+   * that asks cannot be.
+   */
+  rooms: () => request<{ rooms: Room[] }>("/api/rooms"),
+
   whoami: () => request<Whoami>("/api/whoami"),
 
   /**

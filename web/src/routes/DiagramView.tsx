@@ -16,7 +16,7 @@ import {
   xmlOf,
 } from "@/lib/diagrams";
 import { useSession } from "@/lib/session";
-import { ROOMS } from "@/lib/unread";
+import { useRooms } from "@/lib/unread";
 
 /** How long after the last edit the diagram is written. */
 const SAVE_AFTER_MS = 1200;
@@ -35,6 +35,8 @@ const SAVE_AFTER_MS = 1200;
 export function DiagramView() {
   const { id = "" } = useParams();
   const { token } = useSession();
+  // The node's rooms, so a diagram can be filed in one this file never named.
+  const rooms = useRooms();
   const [artifact, setArtifact] = useState<Artifact | null>(null);
   // The title as it is being typed. It is state of its own rather than read
   // off the artifact because the artifact is what the node last accepted, and
@@ -276,7 +278,7 @@ export function DiagramView() {
               >
                 <option value="">add a reference…</option>
                 <optgroup label="rooms">
-                  {ROOMS.map((room) => (
+                  {rooms.map((room) => (
                     <option key={room} value={`room:${room}`}>
                       #{room}
                     </option>
