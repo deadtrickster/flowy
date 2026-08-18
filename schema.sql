@@ -829,6 +829,30 @@ CREATE TABLE IF NOT EXISTS attachment_bytes (
 CREATE INDEX IF NOT EXISTS artifacts_project_type_idx ON artifacts (project, type);
 CREATE INDEX IF NOT EXISTS artifacts_owner_idx        ON artifacts (owner_user);
 CREATE INDEX IF NOT EXISTS artifacts_hlc_idx          ON artifacts (hlc);
+-- WHEN THE WORK STARTED AND WHEN IT LAST LEFT A TRACE.
+--
+-- `updated` moves on ANY write, so a rename, a category change or a tag edit
+-- looks exactly like somebody working. On 2026-08-18 the operator read six
+-- rows as being worked; two of them were mine and had seen nothing for six
+-- hours, and nothing on the board could say so.
+--
+--   started      set when the row is claimed, and never moved by a later write
+--   last_worked  set when something happened that is EVIDENCE of work - a gate
+--                declared or recorded, a land, a note, a change of hands
+--
+-- The pair is what separates a long job from an abandoned claim: "started 06:00,
+-- last worked 06:00" is abandoned, "started 06:00, last worked 12:20" is a run
+-- somebody is still inside. One clock cannot tell those apart and never could.
+--
+-- last_worked is LAST EVIDENCE, not last activity, and the difference is not
+-- pedantry: a session can work for two hours and record nothing, so the honest
+-- reading is "no write since", never "nobody is working it". A nag that claims
+-- the second fires on whoever is doing the most work.
+ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS started     timestamptz;
+ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS last_worked timestamptz;
+
+CREATE INDEX IF NOT EXISTS artifacts_last_worked_idx ON artifacts (last_worked);
+
 CREATE INDEX IF NOT EXISTS artifacts_updated_idx      ON artifacts (updated);
 -- Growth is "how many of these landed in the last day", which is a read by date.
 CREATE INDEX IF NOT EXISTS artifacts_created_idx      ON artifacts (created);

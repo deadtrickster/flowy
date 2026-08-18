@@ -63,9 +63,21 @@ func (d *DB) setArtifactStatus(
 		// the owner signs precisely so that this write carries their signature
 		// forward instead of invalidating it. See
 		// sign.CanonicalArtifactAuthorship.
-		`UPDATE artifacts SET status = $2, hlc = $3, node = $4, sig = $5, updated = now()
+		// started is stamped the FIRST time a row goes active and never again -
+		// `started IS NULL` is what makes it once-only, so re-claiming after a
+		// release does not reset the clock somebody is being measured against.
+		// last_worked moves on every status change, because a status change is
+		// evidence somebody touched the work.
+		//
+		// Both are separate from `updated`, which moves on any write at all: a
+		// rename looked exactly like progress, and that is what left the
+		// operator reading six-hour-old claims as work in flight.
+		`UPDATE artifacts
+		    SET status = $2, hlc = $3, node = $4, sig = $5, updated = now(),
+		        started = CASE WHEN $2 = $6 AND started IS NULL THEN now() ELSE started END,
+		        last_worked = now()
 		  WHERE id = $1 AND coalesce(tombstone, false) = false`,
-		art.ID, art.Status, art.HLC, art.Node, art.Sig)
+		art.ID, art.Status, art.HLC, art.Node, art.Sig, ActiveStatus)
 	if err != nil {
 		return fmt.Errorf("store: set status of %s: %w", art.ID, err)
 	}

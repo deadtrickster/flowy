@@ -569,6 +569,21 @@ type Event struct {
 }
 
 // AppendEvent writes an event, stamping id/seq_hlc/node when unset.
+// workEvidence says which events count as somebody working a row.
+//
+// Deliberately a short list rather than "any event". A read, a delivery or a
+// presence poll is not work, and counting them would make last_worked move
+// whenever anybody LOOKED at a row - which is how `updated` became useless for
+// this question in the first place.
+func workEvidence(kind string) bool {
+	switch kind {
+	case EventMergeGate, EventMergeLand, EventMergeAbandon,
+		EventTodoNote, EventTodoStatus, EventTodoAssign, EventTodoEdit:
+		return true
+	}
+	return false
+}
+
 func (d *DB) AppendEvent(ctx context.Context, e *Event) error {
 	ctx, span := otel.Start(ctx, otel.KindIngest, "event.append")
 	defer span.End()
@@ -619,6 +634,22 @@ func (d *DB) appendEvent(ctx context.Context, q execer, e *Event) error {
 	if err != nil {
 		return fmt.Errorf("store: append event: %w", err)
 	}
+	// AN EVENT ABOUT A ROW IS EVIDENCE SOMEBODY TOUCHED IT.
+	//
+	// last_worked answers "when did this work last leave a trace", and the
+	// traces are these: a gate declared or recorded, a land, a note, a change
+	// of hands. Moving it here rather than at each verb means a new verb that
+	// writes an event cannot forget - and forgetting is what a per-door rule
+	// costs, six times over, on this codebase today.
+	//
+	// Best effort on purpose: a clock that failed to move must never fail the
+	// write it was describing. The worst case is a row that looks staler than
+	// it is, which is the direction a nag should err in anyway.
+	if e.Artifact != "" && workEvidence(e.Type) {
+		_, _ = q.ExecContext(ctx,
+			`UPDATE artifacts SET last_worked = now() WHERE id = $1`, e.Artifact)
+	}
+
 	// The handlers answer with the event they just wrote rather than reading it
 	// back, so the derived flag is set here for the same reason scanEvent sets
 	// it: whatever a caller was handed, it was worked out from the columns.
