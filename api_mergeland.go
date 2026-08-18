@@ -14,20 +14,26 @@ package main
 // here, cannot disagree about what a land needs.
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
 
 	"github.com/deadtrickster/flowy/internal/store"
 )
 
+// mergeLandRequest is the sha master became, as it arrives on the wire. Named
+// for the same reason mergeGateRequest is, and decoded by the same strict
+// decoder: a misspelt `sha` here refuses with a sentence about the sha being
+// too short to name a commit, which is a true refusal for a reason that is not
+// the caller's actual mistake.
+type mergeLandRequest struct {
+	SHA string `json:"sha"`
+}
+
 func (s *server) handleMergeLand(w http.ResponseWriter, r *http.Request) {
 	p := principalOf(r)
 
-	var req struct {
-		SHA string `json:"sha"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	var req mergeLandRequest
+	if err := decodeJSON(r, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, errorBody("body must be json: "+err.Error()))
 		return
 	}
