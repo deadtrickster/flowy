@@ -189,6 +189,96 @@ var findingTools = []tool{
 		InputSchema: object(props{"finding": str("The finding's id.")}, []string{"finding"}),
 		call:        findingRunList,
 	},
+	{
+		Name: "finding_upstream",
+		Description: "Record where a finding stands on SOMEBODY ELSE'S tracker: which " +
+			"tracker, which issue number, and their state. This is a second axis, not a " +
+			"status: our lifecycle says how far we got writing it up, and this says what " +
+			"happened to it over there, so done/unfiled - written up, nobody sent it - is " +
+			"an ordinary combination and is the state most findings are in. A finding " +
+			"nobody filed carries none of this and reads as unfiled, so there is nothing " +
+			"to set for one. An update states what changes: {finding, state} advances the " +
+			"filing already on the row without restating its number. Read permission is " +
+			"the whole bar, the same as a status move or a repro tree - whoever can read " +
+			"the finding may record that it was filed. A thin wrapper over " +
+			"store.SetFindingUpstream, where every refusal lives.",
+		InputSchema: object(props{
+			"finding": str("The finding's id."),
+			"tracker": str("Whose tracker - serenedb, ragflow, or a host. Leave it out on " +
+				"an update to keep the tracker already on the row."),
+			"id": str("Their issue number, as a string - not every tracker numbers with " +
+				"integers. Leave it out on an update to keep the number already recorded."),
+			"url":   str("The link to the issue, so a reader gets there in one click."),
+			"state": enum("Where the filing stands. Empty is unfiled.", store.UpstreamStates),
+			"filed_at": str("When it was filed - 2006-01-02 or full RFC3339. Leave it out " +
+				"and the node stamps now for a new filing, or keeps the day the standing " +
+				"one was made. State it when importing a filing somebody made by hand " +
+				"months ago: the original date rides as data."),
+			"filed_by": str("Who filed it upstream, when that is not this principal - the " +
+				"other half of importing somebody else's filing."),
+		}, []string{"finding"}),
+		call: findingUpstream,
+	},
+	{
+		Name: "finding_upstream_log",
+		Description: "Every filing entry recorded against a finding, oldest first - so a " +
+			"finding filed, turned down and filed somewhere else reads as two numbers and " +
+			"one story rather than only where it ended up. A thin wrapper over " +
+			"store.FindingUpstreamLog.",
+		InputSchema: object(props{"finding": str("The finding's id.")}, []string{"finding"}),
+		call:        findingUpstreamLog,
+	},
+}
+
+// findingUpstream records a filing on somebody else's tracker. Every rule -
+// the vocabulary, the number behind any state but unfiled, the refusal of a
+// second filing over one that still stands - is in store.SetFindingUpstream,
+// and this only carries the arguments across.
+func findingUpstream(ctx context.Context, m *mcpServer, p *store.Principal, raw json.RawMessage) (any, error) {
+	var a struct {
+		Finding string `json:"finding"`
+		Tracker string `json:"tracker"`
+		ID      string `json:"id"`
+		URL     string `json:"url"`
+		State   string `json:"state"`
+		FiledAt string `json:"filed_at"`
+		FiledBy string `json:"filed_by"`
+	}
+	if err := decodeParams(raw, &a); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(a.Finding) == "" {
+		return nil, errors.New("finding is required")
+	}
+	art, entry, err := m.db.SetFindingUpstream(ctx, p, a.Finding, store.UpstreamFiling{
+		Tracker: a.Tracker, ID: a.ID, URL: a.URL, State: a.State,
+		FiledAt: a.FiledAt, FiledBy: a.FiledBy,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"item":     art,
+		"upstream": store.FindingUpstreamOf(art),
+		"entry":    store.UpstreamEntryOf(entry),
+	}, nil
+}
+
+func findingUpstreamLog(ctx context.Context, m *mcpServer, p *store.Principal, raw json.RawMessage) (any, error) {
+	var a struct {
+		Finding string `json:"finding"`
+	}
+	if err := decodeParams(raw, &a); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(a.Finding) == "" {
+		return nil, errors.New("finding is required")
+	}
+	entries, err := m.db.FindingUpstreamLog(ctx, p, a.Finding)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"finding": a.Finding, "count": len(entries), "entries": entries}, nil
 }
 
 // findingWriteArgs is what finding_write takes.
@@ -499,7 +589,11 @@ func findingRead(ctx context.Context, m *mcpServer, p *store.Principal, raw json
 	if art.Type != findingType {
 		return nil, store.NotAFindingError{ID: a.ID}
 	}
-	return map[string]any{"item": art}, nil
+	// Both axes on one read: the lifecycle is on the row already, and the
+	// filing is rendered beside it rather than left as raw keys in fields for
+	// each surface to dig out and spell differently. A finding nobody filed
+	// answers unfiled here, which is a fact and not a blank.
+	return map[string]any{"item": art, "upstream": store.FindingUpstreamOf(art)}, nil
 }
 
 // findingQuery builds the store query every finding read shares.
