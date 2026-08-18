@@ -4611,6 +4611,51 @@ an_assignee_hands_the_named_party_nothing() {
 # The same field over MCP, which is where an agent says it. It rides fields
 # beside the room, an update that does not restate it keeps it, and an empty one
 # is a value rather than a silence.
+# The board answers "whose is this" and "whose is nothing" without anybody
+# pulling three hundred rows and filtering them in a client.
+#
+# The column has existed since tonight - generated from fields->>'assignee', so
+# it is a second reading of one signed fact rather than a second fact - and the
+# door never passed the parameter, so every caller that wanted its own rows
+# fetched the whole board and filtered it in python. That is the JSON extraction
+# the column exists to remove, happening one layer further out.
+#
+# THE UNOWNED ARM IS THE ONE THAT MATTERS. Every nobody-word normalises to the
+# empty assignee, and an empty assignee means "do not filter", so a door that
+# normalised before it asked would answer ?assignee=none with the whole queue -
+# an answer that is wrong and reads exactly like a right one.
+the_board_answers_who_is_carrying_a_row() {
+	recall
+	local mine free
+	api POST "$TOKEN_A" /api/chat/general/todo \
+		'{"title": "the row somebody is carrying"}' || return 1
+	mine="$(jqv .item.id)"
+	api POST "$TOKEN_A" /api/chat/general/todo \
+		'{"title": "the row nobody is carrying"}' || return 1
+	free="$(jqv .item.id)"
+	api POST "$TOKEN_A" "/api/chat/general/todo/$mine/assignee" \
+		"$(jq -nc --arg a "$HANDLE_A" '{assignee: $a, expect: ""}')" || return 1
+	want_eq "the claim landed" "$(jqv .item.fields.assignee)" "$HANDLE_A" || return 1
+
+	api GET "$TOKEN_A" "/api/artifacts?type=memory&kind=todo&assignee=$HANDLE_A&limit=200" || return 1
+	want_eq "the carried row is in the answer" "$(hits ".id == \"$mine\"")" 1 || return 1
+	want_eq "and the unowned one is not" "$(hits ".id == \"$free\"")" 0 || return 1
+
+	api GET "$TOKEN_A" "/api/artifacts?type=memory&kind=todo&assignee=none&limit=200" || return 1
+	want_eq "the unowned row is in the nobody answer" "$(hits ".id == \"$free\"")" 1 || return 1
+	want_eq "and the carried one is not" "$(hits ".id == \"$mine\"")" 0 || return 1
+
+	# The same state under another word, because two words for one state read as
+	# two states and this queue has used both.
+	api GET "$TOKEN_A" "/api/artifacts?type=memory&kind=todo&assignee=unassigned&limit=200" || return 1
+	want_eq "unassigned asks the same question as none" "$(hits ".id == \"$free\"")" 1 || return 1
+
+	# And a name that is not a name is refused rather than answered with
+	# everything.
+	want_status 400 GET "$TOKEN_A" "/api/artifacts?type=memory&assignee=two%0Alines" || return 1
+	printf 'carried %s, unowned %s\n' "$mine" "$free"
+}
+
 mem_write_takes_an_assignee() {
 	recall
 	want_tool mem_write "$TOKEN_A" \
@@ -10876,6 +10921,8 @@ check "the assignee is not a permission axis, in the store" \
 	go test -count=1 -run TestAnAssigneeHandsTheNamedPartyNothing ./internal/store
 check "mem_write carries the assignee, and an empty one means nobody" \
 	mem_write_takes_an_assignee
+check "the board answers who is carrying a row, and who is carrying nothing" \
+	the_board_answers_who_is_carrying_a_row
 
 # And WHO RAISED IT, which is the other party on the row and was not on it at
 # all. owner_user is the signing author and stays that; this is a second, weaker

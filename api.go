@@ -352,6 +352,7 @@ func (req *artifactRequest) fillFrom(old *store.Artifact) {
 var listParams = map[string]bool{
 	"type":     true,
 	"kind":     true,
+	"assignee": true,
 	"project":  true,
 	"status":   true,
 	"room":     true,
@@ -464,16 +465,34 @@ func (s *server) handleListArtifacts(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorBody(err.Error()))
 		return
 	}
+	// WHO IS CARRYING IT, off the generated column rather than out of the fields
+	// blob - see ArtifactQuery.Assignee. The store has answered this since the
+	// column landed; this door never passed it, so every client that wanted
+	// "my rows" pulled three hundred and filtered them itself, which is the
+	// json extraction the column exists to remove happening one layer further
+	// out.
+	//
+	// `nobody` is a STATE and it goes through the queue's own vocabulary rather
+	// than a second list here: ?assignee=none, unassigned, unowned and the rest
+	// all ask the same question, because two words for one state read as two
+	// states. See store.NobodyName.
+	assignee, unassigned, err := assigneeArg(q.Get("assignee"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody(err.Error()))
+		return
+	}
 	list, err := s.db.ListArtifacts(r.Context(), p, store.ArtifactQuery{
-		Type:     q.Get("type"),
-		Kind:     q.Get("kind"),
-		Project:  q.Get("project"),
-		Status:   q.Get("status"),
-		Room:     room,
-		Category: category,
-		Tags:     tagsArg(q["tag"]),
-		ScopeAll: scopeAll(r, p),
-		Limit:    intParam(q.Get("limit")),
+		Type:       q.Get("type"),
+		Kind:       q.Get("kind"),
+		Project:    q.Get("project"),
+		Status:     q.Get("status"),
+		Assignee:   assignee,
+		Unassigned: unassigned,
+		Room:       room,
+		Category:   category,
+		Tags:       tagsArg(q["tag"]),
+		ScopeAll:   scopeAll(r, p),
+		Limit:      intParam(q.Get("limit")),
 	})
 	if err != nil {
 		serverError(w, r, err)
@@ -1092,4 +1111,26 @@ func orZero(s string) string {
 		return "0"
 	}
 	return s
+}
+
+// assigneeArg reads ?assignee=. It answers a name to match, or that the caller
+// asked for the rows nobody is carrying, or a refusal.
+//
+// The order matters: NormalizeAssignee turns every nobody-word into the empty
+// string, and an empty Assignee means "do not filter". Asking that question
+// first is what keeps ?assignee=none from quietly answering with the whole
+// queue - which is the failure this door has made twice in other shapes, an
+// answer that is wrong and looks exactly like a right one.
+func assigneeArg(raw string) (name string, unassigned bool, err error) {
+	if strings.TrimSpace(raw) == "" {
+		return "", false, nil
+	}
+	if store.NobodyName(raw) {
+		return "", true, nil
+	}
+	name, err = store.NormalizeAssignee(raw)
+	if err != nil {
+		return "", false, err
+	}
+	return name, false, nil
 }

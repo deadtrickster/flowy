@@ -910,7 +910,12 @@ type ArtifactQuery struct {
 	// filter that has to dig into JSON is a filter every client writes for
 	// itself and one of them writes wrongly.
 	Assignee string
-	Room     string // the chat room the artifact was raised in - fields->>'room'
+	// Unassigned narrows to the rows NOBODY is carrying, which is a different
+	// question from Assignee being empty: empty means the caller did not ask.
+	// Set from any of the words this queue has used for that state - see
+	// NobodyName - so one state has one answer however it was typed.
+	Unassigned bool
+	Room       string // the chat room the artifact was raised in - fields->>'room'
 	// Category narrows to one kind of work out of the closed set - see
 	// TodoCategories. This is the routing half of what a closed set is FOR: "give
 	// me the bugs" has to be a query the node answers rather than a filter each
@@ -985,6 +990,17 @@ func (q ArtifactQuery) narrow(a *args, alias string) string {
 	}
 	if q.Assignee != "" {
 		where += " AND " + alias + ".assignee = " + a.next(q.Assignee)
+	}
+	// NOBODY IS A STATE, NOT A NAME. "which rows is nobody carrying" is the
+	// question the board is read for, and an absent parameter cannot ask it: an
+	// empty Assignee means "do not filter", so a caller who wanted the unowned
+	// rows and got every row would be reading the whole queue as unclaimed.
+	//
+	// Both halves of empty, because both exist: the column is generated from
+	// fields->>'assignee', so a row with no key at all is NULL and a row saying
+	// out loud that nobody has it is the empty string. One state, one answer.
+	if q.Unassigned {
+		where += " AND (" + alias + ".assignee IS NULL OR " + alias + ".assignee = '')"
 	}
 	if q.Kind != "" {
 		where += " AND " + alias + ".kind = " + a.next(q.Kind)

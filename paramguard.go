@@ -52,7 +52,7 @@ var routeParams = map[string][]string{
 	"GET /api/artifact/{id}":                     {"scope"},
 	"GET /api/artifact/{id}/history":             {"scope"},
 	"GET /api/artifact/{id}/origins":             {},
-	"GET /api/artifacts":                         {"category", "kind", "limit", "project", "room", "scope", "status", "tag", "type"},
+	"GET /api/artifacts":                         {"assignee", "category", "kind", "limit", "project", "room", "scope", "status", "tag", "type"},
 	"GET /api/attachment/{id}":                   {},
 	"GET /api/chat/{room}":                       {"before", "limit", "order", "since", "thread"},
 	"GET /api/chat/{room}/pins":                  {},
