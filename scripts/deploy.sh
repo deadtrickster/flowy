@@ -77,6 +77,10 @@ if [ -n "$(git status --porcelain)" ]; then
 	die "the tree has uncommitted changes - deploy ships whatever is lying around"
 fi
 
+commit=$(git rev-parse --short HEAD)
+branch=$(git rev-parse --abbrev-ref HEAD)
+[ "$branch" = "master" ] || die "on branch '$branch' - master is the only deploy source"
+
 # ---------------------------------------------------------------- the lock
 
 # TWO DEPLOYS AT ONCE ARE TWO BUILDS OVER EACH OTHER.
@@ -116,6 +120,17 @@ lock_answer=$(curl -sS -m 10 -w '\n%{http_code}' -X POST \
 lock_code=$(printf '%s' "$lock_answer" | tail -1)
 case "$lock_code" in
 200) : ;;
+404)
+	# A NODE THAT PREDATES THE DOOR, which is the node this change is deployed
+	# TO the first time. Refusing here would make the deploy that installs the
+	# lock impossible, so this says so loudly and goes on. It is a bootstrap,
+	# not an opt-out: every node deployed after this one answers the route, and
+	# a 404 from a node that should have it is a sentence in the log rather
+	# than a silence.
+	say "    NO LOCK: this node has no /api/lock, so nothing stops a second deploy."
+	say "    That is expected exactly once - the deploy that installs the door."
+	lock_body=""
+	;;
 409)
 	printf '%s\n' "$lock_answer" | head -n -1 >&2
 	die "the target is held - somebody is landing or deploying. Wait for them, do not race"
@@ -130,16 +145,14 @@ esac
 # fails holding the lock freezes landing for the full expiry, and the person
 # who has to wait is not the one who broke it.
 release_lock() {
+	# Nothing to give back when the node had no door to take it from.
+	[ -n "$lock_body" ] || return 0
 	curl -sS -m 10 -o /dev/null -X POST \
 		-H "Authorization: Bearer $lock_token" -H 'Content-Type: application/json' \
 		-d "$lock_body" "$URL/api/lock/release" 2>/dev/null || true
 }
 trap release_lock EXIT
 say "    took the landing lock for \"$lock_item\""
-
-commit=$(git rev-parse --short HEAD)
-branch=$(git rev-parse --abbrev-ref HEAD)
-[ "$branch" = "master" ] || die "on branch '$branch' - master is the only deploy source"
 
 # ------------------------------------------------------- schema comes first
 
