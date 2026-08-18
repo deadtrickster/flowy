@@ -258,3 +258,46 @@ func TestAnMCPClaimThatNamesNobodyIsRefused(t *testing.T) {
 		t.Fatal("a claim that never said who was taking the row was allowed")
 	}
 }
+
+// A claim carrying a raiser is refused whole, and the raiser is the field this
+// check exists for.
+//
+// It was neither in the claim's refusal list nor in memWriteAuthorFields, so a
+// claim that stated one fell through both guards: the claim SUCCEEDED, the
+// raiser was dropped, and the caller got a 200 for half of what it asked for.
+// That is the answer this surface exists to never give - a write that ignores
+// part of a request and reports success is worse than one that refuses, because
+// nothing downstream can tell the difference.
+//
+// The refusal is whole rather than partial for the reason every other field
+// here is: a claim decides ONE thing, and a caller that wanted two should send
+// two writes and find out about each.
+func TestAnMCPClaimCarryingARaiserIsRefusedWhole(t *testing.T) {
+	ctx, db := chatStore(t)
+	project, room := declaredRoom(t, ctx, db, "mcpclaim")
+	me := newSeat(t, ctx, db, project, "author")
+	id := claimRow(t, ctx, db, me.p, room, "who raised this")
+
+	_, err := claimCall(ctx, db, me.p, "mem_write", map[string]any{
+		"id": id, "assignee": "taker", "expect": "", "raiser": "somebody-else",
+	})
+	if err == nil {
+		t.Fatal("a claim that also restated the raiser was allowed, and the raiser was dropped")
+	}
+	if !strings.Contains(err.Error(), "raiser") {
+		t.Errorf("the refusal does not say which field it refused: %v", err)
+	}
+
+	// And nothing moved. A refusal that took the row and then said no would be
+	// the same defect wearing the other face.
+	art, readErr := db.ReadArtifact(ctx, me.p, id, false)
+	if readErr != nil {
+		t.Fatalf("re-read: %v", readErr)
+	}
+	if got := store.AssigneeOf(art); got != "" {
+		t.Errorf("the refused claim still handed the row to %q", got)
+	}
+	if got := store.RaiserOf(art); got == "somebody-else" {
+		t.Error("the refused claim wrote the raiser it was refused for")
+	}
+}

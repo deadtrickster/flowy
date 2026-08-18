@@ -386,11 +386,13 @@ func TestARunLogOutsideTheLogDirectoryIsNotServed(t *testing.T) {
 	}
 }
 
-// TestAnIsolationThePackagerCannotBuildIsRefusedRatherThanDowngraded. store
-// documents "vm" and "container"; the packager builds "dind" or plain. A
-// repro that needs its own daemon, run without one, fails for a reason that
-// has nothing to do with the code under test - and that failure would be
-// recorded as a verdict.
+// TestAnIsolationThePackagerCannotBuildIsRefusedRatherThanDowngraded. The
+// vocabulary is "dind", "plain" or empty, and store.CheckIsolation now
+// refuses anything else at the write - so a finding arriving here with "vm"
+// or "container" was written before that rule. It is still refused at the
+// door: a repro that needs its own daemon, run without one, fails for a
+// reason that has nothing to do with the code under test, and that failure
+// would be recorded as a verdict.
 func TestAnIsolationThePackagerCannotBuildIsRefusedRatherThanDowngraded(t *testing.T) {
 	for _, ok := range []string{"", "dind", "plain"} {
 		if err := checkIsolation(ok); err != nil {

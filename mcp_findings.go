@@ -121,8 +121,12 @@ var findingTools = []tool{
 			"repro_entrypoint": str("REPRO ONLY. Which file in the tree a runner executes."),
 			"repro_interp": str("REPRO ONLY. What runs the entrypoint - bash, python3 - " +
 				"or leave empty to execute it directly."),
-			"isolation": str("REPRO ONLY. What the tree wants to run inside - vm, " +
-				"container - or leave empty for a runner's own default."),
+			"isolation": str("REPRO ONLY. What the tree needs around it - dind if the " +
+				"repro launches its own containers and so needs a Docker daemon of its " +
+				"own, plain if it is a command run directly in an image. Leave empty " +
+				"for the runner's own default. Nothing else is accepted: a word no " +
+				"runner builds would run the repro under the wrong isolation and " +
+				"record that failure as a verdict."),
 			"cmd_override": str("REPRO ONLY. The rare tree whose command line is not " +
 				"\"interp entrypoint\": a full command a runner should use instead."),
 			"id": str("Update the finding with this id instead of creating one. On a " +

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/deadtrickster/flowy/internal/repro"
+	"github.com/deadtrickster/flowy/internal/store"
 )
 
 // Config is the whole of what this binary is allowed to do, read once at
@@ -262,6 +263,14 @@ func (c *Config) check() error {
 		if p.Registry != "" && p.BinaryPath == "" {
 			return fmt.Errorf("project %q resolves releases but names no binary_path, "+
 				"so there is nothing to copy out of a release image", name)
+		}
+		// default_isolation is what every finding that leaves its own
+		// isolation empty runs under, so a word the packager does not build
+		// is refused at load rather than quietly downgrading each of those
+		// runs to plain. Same vocabulary as a manifest's own field, from the
+		// same place.
+		if err := store.CheckIsolation(p.DefaultIsolation); err != nil {
+			return fmt.Errorf("project %q's default_isolation: %w", name, err)
 		}
 	}
 	if c.BuildScript != "" {

@@ -3,6 +3,7 @@ package store
 import (
 	"bytes"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/deadtrickster/flowy/internal/ulid"
@@ -17,13 +18,13 @@ func TestFindingReproParsesFields(t *testing.T) {
 		Fields: []byte(`{"repro_files":[{"path":"repro-01-crash.sh","attachment_id":"a1"},
 			{"path":"evidence/errors.log","attachment_id":"a2"}],
 			"repro_entrypoint":"repro-01-crash.sh","repro_interp":"bash",
-			"isolation":"vm","cmd_override":""}`),
+			"isolation":"dind","cmd_override":""}`),
 	}
 	manifest, files, err := FindingRepro(art)
 	if err != nil {
 		t.Fatalf("FindingRepro: %v", err)
 	}
-	if manifest.Entrypoint != "repro-01-crash.sh" || manifest.Interp != "bash" || manifest.Isolation != "vm" {
+	if manifest.Entrypoint != "repro-01-crash.sh" || manifest.Interp != "bash" || manifest.Isolation != "dind" {
 		t.Errorf("manifest came back as %+v", manifest)
 	}
 	if len(files) != 2 || files[0].Path != "repro-01-crash.sh" || files[0].AttachmentID != "a1" {
@@ -74,7 +75,7 @@ func TestFindingReproRoundTrip(t *testing.T) {
 		{Path: "repro-01-crash.sh", Content: script},
 		{Path: "evidence/errors.log", Content: log},
 	}
-	manifest := ReproManifest{Entrypoint: "repro-01-crash.sh", Interp: "bash", Isolation: "vm"}
+	manifest := ReproManifest{Entrypoint: "repro-01-crash.sh", Interp: "bash", Isolation: "dind"}
 
 	files, err := db.WriteFindingRepro(ctx, p, finding.ID, sources, manifest)
 	if err != nil {
@@ -133,6 +134,60 @@ func TestFindingReproRefusesDuplicatePath(t *testing.T) {
 	}, ReproManifest{})
 	if err == nil {
 		t.Fatal("a repeated path should be refused")
+	}
+}
+
+// TestCheckIsolationIsTheWholeVocabulary: the words a manifest may carry are
+// the two the packager actually builds, plus empty for the runner's default.
+// "vm" and "container" were documented here for a while and never built
+// anywhere, which is what this file's CheckIsolation comment is about.
+func TestCheckIsolationIsTheWholeVocabulary(t *testing.T) {
+	for _, ok := range []string{"", IsolationDind, IsolationPlain} {
+		if err := CheckIsolation(ok); err != nil {
+			t.Errorf("isolation %q should be accepted: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"vm", "container", "podman", "Dind", " dind"} {
+		if err := CheckIsolation(bad); err == nil {
+			t.Errorf("isolation %q should be refused", bad)
+		}
+	}
+}
+
+// TestFindingReproRefusesUnbuildableIsolation: a tree that asks for an
+// isolation no runner can build is refused at the write, before a single
+// attachment is created - so a finding never carries a manifest that would
+// only be discovered to be unrunnable by whoever tried to reproduce it, and
+// a refused call leaves nothing orphaned behind it.
+func TestFindingReproRefusesUnbuildableIsolation(t *testing.T) {
+	ctx, db := open(t)
+	project := declaredProject(t, ctx, db, "fr")
+	owner := &User{Handle: "finder-" + ulid.NewString()}
+	if err := db.InsertUser(ctx, owner); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+	p := &Principal{UserID: owner.ID, Project: project}
+	finding := &Artifact{Type: "finding", Project: &project, OwnerUser: owner.ID, Title: "needs a daemon"}
+	if err := db.UpsertArtifact(ctx, finding); err != nil {
+		t.Fatalf("upsert finding: %v", err)
+	}
+
+	_, err := db.WriteFindingRepro(ctx, p, finding.ID,
+		[]ReproSource{{Path: "repro-01.sh", Content: []byte("#!/bin/bash\ndocker run x\n")}},
+		ReproManifest{Entrypoint: "repro-01.sh", Interp: "bash", Isolation: "container"})
+	if err == nil {
+		t.Fatal("isolation \"container\" should be refused at the write")
+	}
+	if !strings.Contains(err.Error(), "container") || !strings.Contains(err.Error(), IsolationDind) {
+		t.Errorf("the refusal should name the word and what it could have been: %v", err)
+	}
+
+	atts, err := db.ListArtifacts(ctx, p, ArtifactQuery{Type: "attachment", Project: project})
+	if err != nil {
+		t.Fatalf("list attachments: %v", err)
+	}
+	if len(atts) != 0 {
+		t.Errorf("the refused write left %d attachment(s) behind", len(atts))
 	}
 }
 

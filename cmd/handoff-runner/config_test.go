@@ -125,6 +125,11 @@ func TestAConfigRefusesRatherThanGuesses(t *testing.T) {
 			"projects":{"p":{"source":"/s"}}}`, "names no base_image"},
 		{"a registry with no binary path", `{"dsn":"d","cache_dir":"/c",
 			"projects":{"p":{"registry":"o/r"}}}`, "names no binary_path"},
+		// Not caught here, this would downgrade every finding that leaves
+		// its own isolation empty to a run with no inner daemon.
+		{"a default isolation nothing builds", `{"dsn":"d","cache_dir":"/c",
+			"projects":{"p":{"source":"/s","base_image":"i","default_isolation":"vm"}}}`,
+			"default_isolation"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := LoadConfig(write(t, tc.body), noEnv)

@@ -441,9 +441,21 @@ func renderInto(stage string, in RenderInput, bake bool, sutTarPath string) (sut
 			"version first (that builds or pulls it), then package", in.Finding.ID, in.Requested)
 	}
 
+	// The isolation is checked here, at the last point before a package is
+	// rendered, and not only at the doors that fill RenderInput. Everything
+	// below branches on `iso == "dind"` and renders plain otherwise, so an
+	// unknown word does not fail here - it produces a package that runs the
+	// repro with no daemon, and whoever runs it gets a failure about the
+	// code under test. The manifest's own vocabulary decides the answer
+	// (store.CheckIsolation); the project default is checked with it,
+	// because an operator's typo in default_isolation would downgrade every
+	// finding that leaves its own isolation empty.
 	iso := in.Manifest.Isolation
 	if iso == "" {
 		iso = in.Cfg.isolation()
+	}
+	if err := store.CheckIsolation(iso); err != nil {
+		return "", fmt.Errorf("repro: %s: %w", in.Finding.ID, err)
 	}
 	title := in.Finding.Title
 	if title == "" {
