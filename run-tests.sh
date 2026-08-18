@@ -16588,6 +16588,159 @@ shell_scripts_formatted() {
 	done < <(repo_shell_scripts)
 }
 
+# ---------------------------------------------------------------- land guard
+#
+# Every rule this fleet built for landing lives inside the land verb, and on
+# 18 Aug master moved by a plain `git merge` while another agent held the lock
+# for a thirteen-commit batch. Measured after: five merge.gate events on the
+# row, ZERO merge.land, no merge_lands row for the new tip, and the row closed
+# with an empty landed_tip. Nothing was bypassed - nothing had to be used.
+#
+# So the guard sits in a reference-transaction hook, where the ref actually
+# changes, and these checks drive it rather than describe it. The node is a
+# stub: what is under test is the hook's decision, and a stub is the only way
+# to put "the lock is held by somebody else" on the table on demand.
+
+# guard_stub starts a fake node answering one lock and one identity, and prints
+# its pid. Killed by its caller.
+guard_stub() {
+	local port="$1" lock="$2"
+	STUB_LOCK="$lock" python3 -c '
+import json, os, sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+lock = json.loads(os.environ["STUB_LOCK"])
+class H(BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = {"lock": lock} if self.path.startswith("/api/merge-queue") else {"user": "u1", "agent": "a1"}
+        raw = json.dumps(body).encode()
+        self.send_response(200)
+        self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+    def log_message(self, *a):
+        pass
+HTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
+' "$port" >/dev/null 2>&1 &
+	# THE CHILD'S STDOUT IS CLOSED ON PURPOSE. This is called as
+	# pid="$(guard_stub ...)", and a background child that inherits the
+	# substitution's pipe holds it open, so the substitution never returns and
+	# the suite hangs with no output and no failure - which is how it hung the
+	# first time it was run.
+	printf '%s' "$!"
+}
+
+# guard_says runs the hook on one ref update and answers with its exit status.
+guard_says() {
+	local addr="$1" ref="$2" token="${3-}" off="${4:-on}"
+	printf 'aaa bbb %s\n' "$ref" |
+		env FLOWY_ADDR="$addr" FLOWY_TOKEN="$token" FLOWY_LAND_GUARD="$off" \
+			bash "$ROOT/scripts/land-guard.sh" prepared >/dev/null 2>&1
+	printf '%s' "$?"
+}
+
+the_land_guard_refuses_what_it_should() {
+	recall
+	local dead=http://127.0.0.1:9 pid rc
+
+	# A branch nobody shares moves freely. A guard that made every commit ask a
+	# server would be removed within the hour, and then it guards nothing.
+	want_eq "a feature branch is not the guard's business" \
+		"$(guard_says "$dead" refs/heads/feature tok)" 0 || return 1
+
+	# Each of these is a REFUSAL, and each is a way the guard could otherwise
+	# turn itself off exactly when nobody is watching.
+	want_eq "no token is a refusal, not a pass" \
+		"$(guard_says "$dead" refs/heads/master "")" 1 || return 1
+	want_eq "a node that does not answer is a refusal" \
+		"$(guard_says "$dead" refs/heads/master tok)" 1 || return 1
+
+	pid="$(guard_stub 9101 '{"held": false}')"
+	sleep 1
+	rc="$(guard_says http://127.0.0.1:9101 refs/heads/master tok)"
+	kill "$pid" 2>/dev/null || true
+	want_eq "a free lock is a refusal - a landing goes through a declaration" "$rc" 1 || return 1
+
+	pid="$(guard_stub 9102 '{"held": true, "holder": "somebody", "holder_name": "flowy-glm", "item": "01ROW"}')"
+	sleep 1
+	rc="$(guard_says http://127.0.0.1:9102 refs/heads/master tok)"
+	kill "$pid" 2>/dev/null || true
+	want_eq "somebody else's lock is a refusal" "$rc" 1 || return 1
+
+	# The positive control. Without it every line above passes on a guard that
+	# refuses everything, which is not a guard, it is a broken repository.
+	pid="$(guard_stub 9103 '{"held": true, "holder": "a1", "holder_name": "me", "item": "01ROW"}')"
+	sleep 1
+	rc="$(guard_says http://127.0.0.1:9103 refs/heads/master tok)"
+	kill "$pid" 2>/dev/null || true
+	want_eq "the holder may move it" "$rc" 0 || return 1
+
+	# And the way out, which is deliberate: a guard with no override gets
+	# uninstalled the first time it is wrong at three in the morning.
+	want_eq "the override lets it through" \
+		"$(guard_says "$dead" refs/heads/master tok off)" 0 || return 1
+}
+
+# The half that matters: GIT ITSELF refuses. The checks above measure a script;
+# this measures the thing the script was written to stop, in the form it took -
+# a fast-forward of master by somebody holding no lock.
+git_refuses_to_move_master_without_the_lock() {
+	recall
+	local repo pid out before
+	repo="$(mktemp -d)" || return 1
+	(
+		cd "$repo" || exit 1
+		git init -q -b master .
+		git config user.email a@b
+		git config user.name a
+		git config commit.gpgsign false
+		echo one >f
+		git add f
+		git commit -qm one
+		git checkout -qb feature
+		echo two >f
+		git commit -qam two
+		git checkout -q master
+	) || {
+		rm -rf "$repo"
+		return 1
+	}
+	bash "$ROOT/scripts/install-land-guard.sh" "$repo" >/dev/null || {
+		rm -rf "$repo"
+		return 1
+	}
+	before="$(git -C "$repo" rev-parse master)"
+
+	pid="$(guard_stub 9104 '{"held": false}')"
+	sleep 1
+	out="$(cd "$repo" && FLOWY_ADDR=http://127.0.0.1:9104 FLOWY_TOKEN=tok git merge --ff-only feature 2>&1 || true)"
+	kill "$pid" 2>/dev/null || true
+	printf '%s' "$out" | grep -q REFUSED || {
+		printf 'the merge was not refused: %s\n' "$out"
+		rm -rf "$repo"
+		return 1
+	}
+	# THE REF DID NOT MOVE, which is the claim. A hook that prints a refusal and
+	# lets the transaction commit anyway is the shape of every silent success
+	# this suite has had to learn about.
+	want_eq "master stayed where it was" "$(git -C "$repo" rev-parse master)" "$before" || {
+		rm -rf "$repo"
+		return 1
+	}
+
+	# Positive control, same repository: with the lock, the same merge lands.
+	pid="$(guard_stub 9105 '{"held": true, "holder": "a1", "holder_name": "me", "item": "01ROW"}')"
+	sleep 1
+	(cd "$repo" && FLOWY_ADDR=http://127.0.0.1:9105 FLOWY_TOKEN=tok git merge --ff-only feature >/dev/null 2>&1) || true
+	kill "$pid" 2>/dev/null || true
+	if [ "$(git -C "$repo" rev-parse master)" != "$(git -C "$repo" rev-parse feature)" ]; then
+		printf 'the holder could not land - the guard refuses everything\n'
+		rm -rf "$repo"
+		return 1
+	fi
+	rm -rf "$repo"
+}
+
 deploy_refuses_misuse() {
 	local out status
 	out=$(./scripts/deploy.sh --wat 2>&1)
@@ -16750,6 +16903,10 @@ handoff_runner_refuses_without_config() {
 check "the repo's shell scripts parse" shell_scripts_parse
 check "the repo's shell scripts are shellcheck clean" shell_scripts_lint
 check "the repo's shell scripts are shfmt clean" shell_scripts_formatted
+check "the land guard refuses a move by anybody who does not hold the lock" \
+	the_land_guard_refuses_what_it_should
+check "git itself will not move master without the lock" \
+	git_refuses_to_move_master_without_the_lock
 check "deploy.sh refuses an argument it does not know, and says how to call it" \
 	deploy_refuses_misuse
 check "deploy.sh refuses to deploy anything that is not master" \
