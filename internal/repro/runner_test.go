@@ -830,3 +830,52 @@ func TestNewRunnerRefusesAnUnusableConfiguration(t *testing.T) {
 		t.Errorf("defaults not applied: %+v", r.opt)
 	}
 }
+
+// A REPRO THAT NEVER RAN CANNOT HAVE FAILED TO REPRODUCE. Measured in the wild:
+// the tiktoken tree's run.sh calls pip, the SUT image has no pip, the shell
+// exits 127 with "command not found" - and that was recorded as confirmed=false
+// on the finding's log. A finding silently declared fixed on evidence that never
+// existed is the exact outcome this file's header says it exists to prevent.
+func TestAMissingInterpreterIsAHarnessErrorNotAVerdict(t *testing.T) {
+	h := newHarness(t, Options{Workers: 1})
+	h.onCompose(func(_ context.Context, args []string, log io.Writer) (int, error) {
+		if args[0] == "up" {
+			fmt.Fprint(log, "run.sh: line 5: pip: command not found\n")
+			return 127, nil
+		}
+		return 0, nil
+	})
+	run := h.runOnce(t, "latest")
+
+	if run.Status != StatusError {
+		t.Fatalf("status = %q, want error - exit 127 is the shell saying it could not find the command", run.Status)
+	}
+	if run.Confirmed != nil {
+		t.Fatalf("confirmed = %v, want nothing recorded: there is no verdict here", *run.Confirmed)
+	}
+	// The finding's log must stay untouched. A verdict written from a run that
+	// never executed is worse than no run at all, because it looks like evidence.
+	if v := h.store.verdicts(); len(v) != 0 {
+		t.Fatalf("recorded %+v on the finding, want nothing", v)
+	}
+}
+
+// 126 is the neighbouring case: the command was found and could not be run -
+// not executable, or a bad interpreter line. Also not a verdict.
+func TestAnUnexecutableReproIsAHarnessErrorNotAVerdict(t *testing.T) {
+	h := newHarness(t, Options{Workers: 1})
+	h.onCompose(func(_ context.Context, args []string, log io.Writer) (int, error) {
+		if args[0] == "up" {
+			fmt.Fprint(log, "docker: permission denied\n")
+			return 126, nil
+		}
+		return 0, nil
+	})
+	run := h.runOnce(t, "latest")
+	if run.Status != StatusError {
+		t.Fatalf("status = %q, want error", run.Status)
+	}
+	if v := h.store.verdicts(); len(v) != 0 {
+		t.Fatalf("recorded %+v, want nothing", v)
+	}
+}

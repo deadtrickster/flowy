@@ -632,6 +632,11 @@ func (r *Runner) execute(ctx context.Context, id int64, dir, project string, log
 	if err := log.Sync(); err != nil {
 		fmt.Fprintf(log, "\n# could not flush the log before reading it: %v\n", err)
 	}
+	if why, ok := exitMeansHarness[code]; ok {
+		fmt.Fprintf(log, "\n# repro exit %d -> ERROR (%s); not a verdict\n", code, why)
+		r.fail(id, why)
+		return
+	}
 	if herr := harnessError(log.Name()); herr != "" {
 		fmt.Fprintf(log, "\n# repro exit %d -> ERROR (%s); not a verdict\n", code, herr)
 		r.fail(id, herr)
@@ -816,6 +821,32 @@ var harnessSignatures = []string{
 	"manifest unknown",
 	"pull access denied",
 	"no space left on device",
+	// The repro's own interpreter missing from the image. A tree whose run.sh
+	// calls pip, python3 or bash and finds none of them exits 127 with this on
+	// stderr, and without it here the run reads as "the finding no longer
+	// reproduces" - which is the same as declaring it fixed. Measured: the
+	// tiktoken tree, run.sh line 5, `pip: command not found`, recorded
+	// confirmed=false on the finding's log.
+	"command not found",
+	"executable file not found",
+	"no such file or directory",
+}
+
+// exitMeansHarness are exit codes that cannot be a verdict whatever the log
+// says.
+//
+// 127 is the shell's "I could not find the command", and a repro that never
+// ran cannot have failed to reproduce. It is listed as a CODE rather than left
+// to the string match because the message is the shell's and varies - sh, bash
+// and dash word it differently, and a busybox image words it differently again.
+// The code is the fact; the message is one rendering of it.
+//
+// The asymmetry decides the doubt: a false harness error says "we could not
+// tell", which costs a re-run. A false verdict says "this finding is fixed",
+// which closes real work on evidence that never existed.
+var exitMeansHarness = map[int]string{
+	127: "the repro's interpreter or command was not in the image (exit 127)",
+	126: "the repro was found but could not be executed - not executable, or a bad interpreter line (exit 126)",
 }
 
 // harnessErrorTail is how much of the end of a log is searched. The Python
