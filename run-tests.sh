@@ -14214,7 +14214,18 @@ a_moved_date_is_refused_over_the_wire() {
 		return 1
 	want_eq "the delta holds the row" \
 		"$(printf '%s' "$delta" | jq '.artifacts | length')" 1 || return 1
-	dated="$(printf '%s' "$delta" | jq -r '.artifacts[0].created | .[0:10]')" || return 1
+	# THE DATE AS THE DATABASE RENDERS IT, from the node that wrote it, because
+	# that is what the comparison at the end reads on the other side.
+	#
+	# It used to be the first ten characters of the JSON timestamp, which is the
+	# date in whatever offset that string carries - and the check below converts
+	# B's stored value AT TIME ZONE 'UTC'. Those two agree for most of the day
+	# and disagree between local midnight and UTC midnight, so this check reds
+	# once a day for a reason that has nothing to do with what it measures.
+	# Measured: a drain pass that crossed 00:00 reported "the date it crossed
+	# with is 2026-08-18, want 2026-08-19" on a row nothing had touched.
+	dated="$(scalar5 "$N5_DSN_A" "SELECT to_char(created AT TIME ZONE 'UTC', 'YYYY-MM-DD')
+	                                FROM artifacts WHERE id = '$id'")" || return 1
 
 	moved="$(printf '%s' "$delta" |
 		jq -c '.artifacts[0].created = "2026-06-01T00:00:00Z"')" || return 1
