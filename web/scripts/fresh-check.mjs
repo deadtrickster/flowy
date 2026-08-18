@@ -29,8 +29,16 @@ import { chromium } from "playwright";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const dist = resolve(here, "..", "dist");
-const PORT = Number(process.env.FRESH_PORT ?? 8901);
-const base = `http://127.0.0.1:${PORT}`;
+// ASK FOR NOTHING AND BE TOLD. 0 lets the OS pick, and the stand-in prints the
+// port it actually got - so two of these running at once on one box cannot
+// collide. They used to share a hardcoded number, and the loser's EADDRINUSE
+// was reported as a failure of the feature under test rather than of the
+// harness: a red naming something that was fine, on somebody else's branch.
+//
+// FRESH_PORT still overrides, for anybody who needs to point a browser at it by
+// hand. It is an escape hatch, not the default.
+const PORT = Number(process.env.FRESH_PORT ?? 0);
+let base = `http://127.0.0.1:${PORT}`;
 
 // What the shipped index actually loads, so "the same console" is the truth
 // rather than a string typed twice.
@@ -56,7 +64,12 @@ async function run(claims, seconds) {
   await new Promise((ok, no) => {
     const giveUp = setTimeout(() => no(new Error("the stand-in node did not start")), 10_000);
     standin.stdout.on("data", (chunk) => {
-      if (String(chunk).includes("standin on")) {
+      const said = String(chunk).match(/standin on (\d+)/);
+      if (said) {
+        // The port the OS handed out, which is the only one that exists when
+        // PORT is 0 - everything below talks to this rather than to the
+        // number we asked for.
+        base = `http://127.0.0.1:${said[1]}`;
         clearTimeout(giveUp);
         ok();
       }

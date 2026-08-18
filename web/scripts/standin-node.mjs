@@ -28,7 +28,10 @@ import { createServer } from "node:http";
 import { extname, join, normalize } from "node:path";
 
 const DIST = process.argv[2];
-const PORT = Number(process.argv[3] ?? 8899);
+// 0 by default: the OS picks a free port and we print the one it gave. A fixed
+// default is a number two concurrent runs can fight over, and the loser's error
+// surfaces as a failure of whatever the check was measuring.
+const PORT = Number(process.argv[3] ?? 0);
 // The console this stand-in claims to serve. Empty means "whatever the page is
 // running", which the freshness check reads as nothing to do.
 const BUNDLE = process.argv[4] ?? "";
@@ -77,7 +80,7 @@ const json = (res, body) => {
   res.end(JSON.stringify(body));
 };
 
-createServer(async (req, res) => {
+const server = createServer(async (req, res) => {
   const path = new URL(req.url, "http://x").pathname;
 
   if (path === "/__waits") return json(res, { waits });
@@ -134,4 +137,14 @@ createServer(async (req, res) => {
   }
   res.writeHead(200, { "content-type": MIME[extname(file)] ?? "application/octet-stream" });
   res.end(body);
-}).listen(PORT, "127.0.0.1", () => process.stdout.write(`standin on ${PORT}\n`));
+});
+
+// PORT 0 MEANS "ANY FREE ONE", and the line printed is the port the OS actually
+// gave us rather than the one we asked for. Two host-local suites on one box
+// used to race a hardcoded 8901 and the loser reported EADDRINUSE as a failure
+// of whichever feature the check was about - a red naming something that was
+// fine. Binding 0 removes the number there is to collide over, and printing the
+// real one is what lets the caller find us afterwards.
+server.listen(PORT, "127.0.0.1", () => {
+  process.stdout.write(`standin on ${server.address().port}\n`);
+});

@@ -38,10 +38,15 @@ import { chromium } from "playwright";
 const here = dirname(fileURLToPath(import.meta.url));
 const dist = resolve(here, "..", "dist");
 
-const PORT = Number(process.env.SPIN_PORT ?? 8899);
+// 0 asks the OS for a free port and the stand-in prints the one it got. This
+// used to be a hardcoded 8899 shared with fresh-check's 8901, and two suites on
+// one box raced them: the loser's EADDRINUSE was reported as a failure of the
+// feature under test. SPIN_PORT still overrides, as an escape hatch rather than
+// the default.
+const PORT = Number(process.env.SPIN_PORT ?? 0);
 const SECONDS = Number(process.env.SPIN_SECONDS ?? 6);
 const CEILING = Number(process.env.SPIN_CEILING ?? 25);
-const base = `http://127.0.0.1:${PORT}`;
+let base = `http://127.0.0.1:${PORT}`;
 
 const fail = (message) => {
   console.error(message);
@@ -57,7 +62,11 @@ const standin = spawn(process.execPath, [resolve(here, "standin-node.mjs"), dist
 await new Promise((ok, no) => {
   const giveUp = setTimeout(() => no(new Error("the stand-in node did not start")), 10_000);
   standin.stdout.on("data", (chunk) => {
-    if (String(chunk).includes("standin on")) {
+    const said = String(chunk).match(/standin on (\d+)/);
+    if (said) {
+      // The port the OS actually handed out - the only one that exists when
+      // PORT is 0.
+      base = `http://127.0.0.1:${said[1]}`;
       clearTimeout(giveUp);
       ok();
     }

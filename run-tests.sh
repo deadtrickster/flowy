@@ -171,6 +171,25 @@ find_pg_bin() {
 # postgres was exactly that. It came up on 54400 for months and then failed to
 # bind it twice in three runs, taking 40 federation checks down with it and
 # reading, from the failure text, like a leftover cluster from the last run.
+# THE NAME THIS RUN'S WAITERS ANSWER TO, unique per suite.
+#
+# The waiter pidfiles live in XDG_RUNTIME_DIR/flowy, one per NAME, and that
+# directory is HOST-WIDE. Every copy of this suite used the literal
+# "gate-waiter", so nine concurrent runs fought over one pidfile: a run's first
+# waiter was refused by a pid belonging to another run - often one that had
+# already exited - and the check reported "a second waiter for one name is
+# refused" as a failure of the feature it was measuring.
+#
+# It only became visible when the fleet moved to host-local gating, because the
+# collision needs two suites on one machine and there had never been two.
+#
+# THE SUFFIX IS ALSO THE SAFETY RULE. Real agents keep their waiters in the same
+# directory - inbox-claude-host.pid sits beside these - so this suite must only
+# ever create and reap names carrying its own suffix. A bare inbox-NAME.pid is
+# somebody's live listener and is invisible to us by construction.
+GATE_WAITER="gate-waiter-$$"
+readonly GATE_WAITER
+
 free_port() {
 	local port
 	for ((port = $1; port < $1 + 300; port++)); do
@@ -3552,11 +3571,11 @@ inbox_acks() {
 # counts as a session listening.
 an_unknown_waiter_is_refused_with_what_does_exist() {
 	recall
-	inbox_run --token "$TOKEN_A" --as gate-waiter --deadline 5
+	inbox_run --token "$TOKEN_A" --as ${GATE_WAITER} --deadline 5
 	want_eq "exit code for a name nothing declared" "$INBOX_STATUS" 2 || return 1
 	want_eq "and it wrote no messages" "$INBOX_OUT" "" || return 1
 	case "$INBOX_ERR" in
-	*"no inbox reader called gate-waiter"*) ;;
+	*"no inbox reader called ${GATE_WAITER}"*) ;;
 	*)
 		printf 'the refusal does not name the label:\n%s\n' "$INBOX_ERR" >&2
 		return 1
@@ -3574,11 +3593,11 @@ a_declared_waiter_starts_at_the_head_and_a_quiet_deadline_is_exit_1() {
 	local head mark start elapsed
 	head="$(scalar "SELECT coalesce(max(seq_hlc), 0) FROM events WHERE type = 'chat'")" || return 1
 	start=$SECONDS
-	inbox_run --token "$TOKEN_A" --as gate-waiter --new --deadline 3
+	inbox_run --token "$TOKEN_A" --as ${GATE_WAITER} --new --deadline 3
 	elapsed=$((SECONDS - start))
 	want_eq "exit code for a deadline that passed quietly" "$INBOX_STATUS" 1 || return 1
 	want_eq "messages written on a quiet deadline" "$INBOX_OUT" "" || return 1
-	mark="$(inbox_mark gate-waiter)" || return 1
+	mark="$(inbox_mark ${GATE_WAITER})" || return 1
 	if [ "$mark" -lt "$head" ]; then
 		printf 'a new waiter started at %s, below the head at %s\n' "$mark" "$head" >&2
 		return 1
@@ -3601,7 +3620,7 @@ the_waiter_returns_on_the_first_message() {
 	local poster start elapsed lines
 	poster="$(say_in_background "$INBOX_ROOM" "$TOKEN_A_AGENT" "wake up, the build is red")"
 	start=$SECONDS
-	inbox_run --token "$TOKEN_A" --as gate-waiter --deadline 40
+	inbox_run --token "$TOKEN_A" --as ${GATE_WAITER} --deadline 40
 	elapsed=$((SECONDS - start))
 	wait "$poster" 2>/dev/null || true
 
@@ -3641,11 +3660,11 @@ the_waiter_returns_on_the_first_message() {
 the_cursor_is_the_nodes_so_the_next_call_does_not_repeat() {
 	recall
 	local was
-	was="$(inbox_mark gate-waiter)" || return 1
-	inbox_run --token "$TOKEN_A" --as gate-waiter --deadline 3
+	was="$(inbox_mark ${GATE_WAITER})" || return 1
+	inbox_run --token "$TOKEN_A" --as ${GATE_WAITER} --deadline 3
 	want_eq "exit code with nothing new said" "$INBOX_STATUS" 1 || return 1
 	want_eq "messages repeated" "$INBOX_OUT" "" || return 1
-	want_eq "acknowledged after a delivery" "$(inbox_acks gate-waiter acked_delivery)" 1 || return 1
+	want_eq "acknowledged after a delivery" "$(inbox_acks ${GATE_WAITER} acked_delivery)" 1 || return 1
 	printf 'the mark stayed at %s and the message was not handed over twice\n' "$was"
 }
 
@@ -3657,17 +3676,17 @@ the_cursor_is_the_nodes_so_the_next_call_does_not_repeat() {
 its_own_messages_do_not_wake_it_and_the_mark_still_passes_them() {
 	recall
 	local mine seq mark quiet_before quiet_after
-	quiet_before="$(inbox_acks gate-waiter acked_quiet)" || return 1
+	quiet_before="$(inbox_acks ${GATE_WAITER} acked_quiet)" || return 1
 	api POST "$TOKEN_A" "/api/chat/$INBOX_ROOM/say" '{"body": "something I said myself"}' || return 1
 	want_eq "say status" "$API_STATUS" 200 || return 1
 	mine="$(jqv .id)"
 	seq="$(jqv .seq_hlc)"
 
-	inbox_run --token "$TOKEN_A" --as gate-waiter --deadline 3
+	inbox_run --token "$TOKEN_A" --as ${GATE_WAITER} --deadline 3
 	want_eq "exit code for a room holding only my own message" "$INBOX_STATUS" 1 || return 1
 	want_eq "my own message handed back to me" "$INBOX_OUT" "" || return 1
 
-	mark="$(inbox_mark gate-waiter)" || return 1
+	mark="$(inbox_mark ${GATE_WAITER})" || return 1
 	if [ "$mark" -lt "$seq" ]; then
 		printf 'the mark is %s and my own message %s is at %s: it will be read forever\n' \
 			"$mark" "$mine" "$seq" >&2
@@ -3675,7 +3694,7 @@ its_own_messages_do_not_wake_it_and_the_mark_still_passes_them() {
 	fi
 	# And the move was recorded as a quiet one rather than as a delivery, so a
 	# lost acknowledgement and a quiet night are two different rows.
-	quiet_after="$(inbox_acks gate-waiter acked_quiet)" || return 1
+	quiet_after="$(inbox_acks ${GATE_WAITER} acked_quiet)" || return 1
 	if [ "$quiet_after" -le "$quiet_before" ]; then
 		printf 'the quiet ack was not counted: %s then %s\n' "$quiet_before" "$quiet_after" >&2
 		return 1
@@ -3690,13 +3709,13 @@ its_own_messages_do_not_wake_it_and_the_mark_still_passes_them() {
 to_me_wakes_only_for_what_names_this_principal() {
 	recall
 	local poster mark_before mark_after
-	mark_before="$(inbox_mark gate-waiter)" || return 1
+	mark_before="$(inbox_mark ${GATE_WAITER})" || return 1
 	api POST "$TOKEN_A_AGENT" "/api/chat/$INBOX_ROOM/say" \
 		'{"body": "a remark to the room at large"}' || return 1
 	want_eq "say status" "$API_STATUS" 200 || return 1
 
 	poster="$(say_to_in_background "$INBOX_ROOM" "$TOKEN_A_AGENT" "$USER_A" "this one is for you")"
-	inbox_run --token "$TOKEN_A" --as gate-waiter --to-me --deadline 40
+	inbox_run --token "$TOKEN_A" --as ${GATE_WAITER} --to-me --deadline 40
 	wait "$poster" 2>/dev/null || true
 
 	want_eq "exit code" "$INBOX_STATUS" 0 || return 1
@@ -3710,7 +3729,7 @@ to_me_wakes_only_for_what_names_this_principal() {
 		return 1
 		;;
 	esac
-	mark_after="$(inbox_mark gate-waiter)" || return 1
+	mark_after="$(inbox_mark ${GATE_WAITER})" || return 1
 	if [ "$mark_after" -le "$mark_before" ]; then
 		printf 'the mark did not move past what was filtered out\n' >&2
 		return 1
@@ -3737,13 +3756,13 @@ a_mention_wakes_a_to_me_waiter() {
 	want_eq "say status" "$API_STATUS" 200 || return 1
 	want_eq "it was addressed at B by the words" "$(jqv .addressee)" "$USER_B" || return 1
 
-	inbox_run --token "$TOKEN_A" --as gate-waiter --to-me --deadline 6
+	inbox_run --token "$TOKEN_A" --as ${GATE_WAITER} --to-me --deadline 6
 	want_eq "exit code for a room where somebody else was named" "$INBOX_STATUS" 1 || return 1
 	want_eq "and it handed nothing over" "$INBOX_OUT" "" || return 1
 
 	poster="$(say_in_background "$INBOX_ROOM" "$TOKEN_A_AGENT" \
 		"@$HANDLE_A the build is red, can you look")"
-	inbox_run --token "$TOKEN_A" --as gate-waiter --to-me --deadline 40
+	inbox_run --token "$TOKEN_A" --as ${GATE_WAITER} --to-me --deadline 40
 	wait "$poster" 2>/dev/null || true
 
 	want_eq "exit code when its own name was written" "$INBOX_STATUS" 0 || return 1
@@ -3761,13 +3780,13 @@ a_mention_wakes_a_to_me_waiter() {
 a_broken_waiter_is_exit_2_and_not_exit_1() {
 	recall
 	local out
-	inbox_run --token no-such-token --as gate-waiter --deadline 3
+	inbox_run --token no-such-token --as ${GATE_WAITER} --deadline 3
 	want_eq "exit code with a token the node refuses" "$INBOX_STATUS" 2 || return 1
 
 	mkdir -p "$WORK/no-config"
 	INBOX_STATUS=0
 	out="$(env -u FLOWY_TOKEN XDG_CONFIG_HOME="$WORK/no-config" \
-		"$ROOT/flowy" inbox --url "http://127.0.0.1:$HTTP_PORT" --as gate-waiter 2>&1)" ||
+		"$ROOT/flowy" inbox --url "http://127.0.0.1:$HTTP_PORT" --as ${GATE_WAITER} 2>&1)" ||
 		INBOX_STATUS=$?
 	want_eq "exit code with no token anywhere" "$INBOX_STATUS" 2 || return 1
 	case "$out" in
@@ -3780,7 +3799,7 @@ a_broken_waiter_is_exit_2_and_not_exit_1() {
 
 	INBOX_STATUS=0
 	out="$("$ROOT/flowy" inbox --url http://127.0.0.1:1 --token "$TOKEN_A" \
-		--as gate-waiter --deadline 3 2>&1)" || INBOX_STATUS=$?
+		--as ${GATE_WAITER} --deadline 3 2>&1)" || INBOX_STATUS=$?
 	want_eq "exit code when the node is not answering" "$INBOX_STATUS" 2 || return 1
 	printf 'a bad token, no token and a dead node are all 2, never 1\n'
 }
@@ -6346,7 +6365,7 @@ a_second_waiter_for_one_name_is_refused() {
 	# said anywhere, and the earlier checks fill several rooms, so the first
 	# waiter delivered its messages and exited 0 before the second one started.
 	# What this check needs is a waiter that is still holding the name.
-	FLOWY_TOKEN="$TOKEN_A" "$ROOT/flowy" inbox --as gate-waiter --new \
+	FLOWY_TOKEN="$TOKEN_A" "$ROOT/flowy" inbox --as ${GATE_WAITER} --new \
 		--room nothing-is-said-in-this-room \
 		--url "http://127.0.0.1:$HTTP_PORT" --deadline 20 >"$WORK/waiter1.out" 2>&1 &
 	first_pid=$!
@@ -6358,7 +6377,7 @@ a_second_waiter_for_one_name_is_refused() {
 			"$(cat "$WORK/waiter1.out" 2>/dev/null)" >&2
 		return 1
 	fi
-	out="$(FLOWY_TOKEN="$TOKEN_A" "$ROOT/flowy" inbox --as gate-waiter \
+	out="$(FLOWY_TOKEN="$TOKEN_A" "$ROOT/flowy" inbox --as ${GATE_WAITER} \
 		--url "http://127.0.0.1:$HTTP_PORT" --deadline 20 2>&1)"
 	local status=$?
 	kill "$first_pid" 2>/dev/null
