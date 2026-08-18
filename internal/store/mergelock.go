@@ -36,6 +36,10 @@ import (
 // Same trade as GateBelievedFor, one size up.
 const MergeLockBelievedFor = 15 * time.Minute
 
+// lockInterval is MergeLockBelievedFor in the form Postgres takes, so the window
+// is stated once and both halves cannot drift apart.
+var lockInterval = fmt.Sprintf("%d seconds", int(MergeLockBelievedFor.Seconds()))
+
 // MergeLock is one target held by one declarer. HolderName is resolved at read
 // time rather than snapshotted at take: a refusal says who to talk to, and the
 // name a holder answers to now is the name worth saying, exactly as the roster
@@ -102,17 +106,25 @@ func (d *DB) TakeMergeLock(ctx context.Context, p *Principal, target string) (*M
 		return nil, fmt.Errorf("store: this token resolves to nobody, so it cannot hold a landing lock")
 	}
 	target = lockTarget(target)
-	until := time.Now().UTC().Add(MergeLockBelievedFor)
 
+	// ONE CLOCK STAMPS AND JUDGES. `until` used to be computed here, in Go, while
+	// taken_at and the expiry test `until <= now()` are the database's. A deadline
+	// written by one clock and judged by another is wrong in both directions under
+	// skew: a Go clock behind the database writes an `until` already in the past,
+	// so the lock is expired the instant it is taken and holds nothing; a Go clock
+	// ahead lets a dead holder freeze the target for the skew plus the window. Both
+	// are silent - the symptom is collisions coming back, which reads as the lock
+	// not working rather than as a clock. Computing it in SQL makes skew impossible
+	// by construction rather than unlikely by deployment.
 	var got MergeLock
 	err := d.sql.QueryRowContext(ctx,
 		`INSERT INTO merge_locks (target, holder, taken_at, until)
-		 VALUES ($1, $2, now(), $3)
+		 VALUES ($1, $2, now(), now() + $3::interval)
 		 ON CONFLICT (target) DO UPDATE
-		    SET holder = $2, taken_at = now(), until = $3
+		    SET holder = $2, taken_at = now(), until = now() + $3::interval
 		  WHERE merge_locks.holder = $2 OR merge_locks.until <= now()
 		 RETURNING target, holder, taken_at, until`,
-		target, actor, until).
+		target, actor, lockInterval).
 		Scan(&got.Target, &got.Holder, &got.TakenAt, &got.Until)
 	if err == nil {
 		return &got, nil

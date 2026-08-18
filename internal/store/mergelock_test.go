@@ -254,3 +254,31 @@ func marshalFields(t *testing.T, fields map[string]any) json.RawMessage {
 	}
 	return raw
 }
+
+// ONE CLOCK STAMPS AND JUDGES. `until` was computed in Go while taken_at and the
+// expiry test are the database's, so the deadline was written by one clock and
+// judged by another. Under skew that is wrong in both directions and silently:
+// a Go clock behind writes an `until` already past, so the lock is expired the
+// moment it is taken and holds nothing; a Go clock ahead lets a dead holder
+// freeze the target for the skew plus the window. The symptom either way is
+// collisions returning, which reads as the lock not working rather than as a
+// clock, and this is the primitive everything else now trusts.
+//
+// The window is measurable from the row itself: with one clock, until-taken_at
+// is EXACTLY MergeLockBelievedFor. With two it is off by the skew plus a round
+// trip, which is why an exact comparison is the right assertion here and a
+// tolerance would defeat the whole point.
+func TestTheLockWindowIsStampedByOneClock(t *testing.T) {
+	ctx, db, _ := lockCtx(t)
+	target := ownTarget(t)
+
+	got, err := takeBy(t, ctx, db, "one-clock", target)
+	if err != nil {
+		t.Fatalf("take: %v", err)
+	}
+	if window := got.Until.Sub(got.TakenAt); window != MergeLockBelievedFor {
+		t.Fatalf("lock window = %v, want exactly %v - until and taken_at come "+
+			"from different clocks, so the deadline drifts by the skew",
+			window, MergeLockBelievedFor)
+	}
+}
