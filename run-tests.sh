@@ -16187,6 +16187,62 @@ a_diagram_is_created_by_clicking_new() {
 	node scripts/diagram-new-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A"
 }
 
+# WHERE A ROW CAME FROM, over the API, and the refusal that makes it worth
+# having a separate verb at all.
+#
+# The diagram row asked for dep.add between a diagram and a todo. deps.go
+# refuses both ends unless they are queue items, and for a diagram that refusal
+# is doing real work: a diagram never becomes done, so a todo blocked by one
+# would never be ready - the queue would stop on a row that cannot move while
+# the name on the edge promised ordering.
+#
+# So the two doors are driven side by side here: dep.add still refuses the pair,
+# origins takes it, and the todo's DEPENDS-ON log is empty afterwards. That last
+# assertion is the one that catches somebody wiring provenance into the ready
+# query later because it looked like an edge.
+a_row_says_where_it_came_from() {
+	recall
+	local diagram todo
+	api POST "$TOKEN_A" /api/artifacts \
+		'{"type": "memory", "kind": "diagram", "visibility": "project",
+		  "title": "the shape of the thing", "body": "<mxfile></mxfile>"}' || return 1
+	want_eq "the diagram" "$API_STATUS" 200 || return 1
+	diagram="$(jqv .id)"
+	api POST "$TOKEN_A" /api/chat/general/todo \
+		'{"title": "build the thing the drawing shows"}' || return 1
+	want_eq "the todo" "$API_STATUS" 200 || return 1
+	todo="$(jqv .item.id)"
+
+	# The queue verb still refuses it, which is why this door exists - and it
+	# refuses as 404 "no such todo", because readWorkItem answers for anything
+	# that is not a queue item exactly as it answers for an id that is not here.
+	# A diagram is not a todo, and dep.add is not allowed to become a way to
+	# find out what an id is.
+	want_status 404 POST "$TOKEN_A" "/api/todo/$todo/deps" \
+		"$(jq -nc --arg b "$diagram" '{blocker: $b}')" || return 1
+
+	api POST "$TOKEN_A" "/api/artifact/$todo/origins" \
+		"$(jq -nc --arg o "$diagram" '{origin: $o}')" || return 1
+	want_eq "saying where it came from" "$API_STATUS" 200 || return 1
+	want_eq "the row it came out of" \
+		"$(printf '%s' "$API_BODY" | jq -r '.provenance.origins[0]')" "$diagram" || return 1
+
+	# AND THE QUEUE DOES NOT CARE, which is the whole difference from dep.add.
+	api GET "$TOKEN_A" "/api/todo/$todo/deps" || return 1
+	want_eq "blockers after saying where it came from" \
+		"$(printf '%s' "$API_BODY" | jq '.blockers | length')" 0 || return 1
+
+	# Taking it back appends rather than deletes: the log keeps both entries.
+	api DELETE "$TOKEN_A" "/api/artifact/$todo/origins/$diagram" || return 1
+	want_eq "taking it back" "$API_STATUS" 200 || return 1
+	want_eq "nothing stands afterwards" \
+		"$(printf '%s' "$API_BODY" | jq '.provenance.origins | length')" 0 || return 1
+	api GET "$TOKEN_A" "/api/artifact/$todo/origins" || return 1
+	want_eq "and the log kept both" \
+		"$(printf '%s' "$API_BODY" | jq '.log | length')" 2 || return 1
+	printf 'a todo came out of a diagram, the queue is unchanged, and the log keeps the taking-back\n'
+}
+
 # A shape inside a diagram is a place you can send somebody. The reference in
 # this store is (project, type, id) everywhere else; a cell adds the mxCell id,
 # which survives a re-layout - measured in the vendored editor, where moving a
@@ -16254,6 +16310,8 @@ check "a person logs in with a password, and the session survives a reload with 
 	a_person_logs_in_from_the_console
 check "a shape inside a diagram is addressable, and a dead reference says so" \
 	a_shape_inside_a_diagram_is_addressable
+check "a row says where it came from, and the queue does not treat it as a blocker" \
+	a_row_says_where_it_came_from
 
 # The message box beside a document, at two lengths of conversation. Reported as
 # "reports chat has send button but no text area": the textarea was in the DOM

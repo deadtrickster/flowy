@@ -1575,6 +1575,14 @@ var mintedEventTypes = map[string]bool{
 	// that true is the compare-and-set on the verb. An entry handed over here
 	// would be a lost update with a record behind it claiming it was not one.
 	EventTodoEdit: true,
+	// And where a row came from. Minted for the first reason - the relation is
+	// only worth reading if somebody made it through the verb, which is where
+	// both ends are read and the leak rules live - and because the entry IS the
+	// edge: an entry a client could hand over would be provenance nobody
+	// asserted, on a row whose readers cannot check either end. See origin.go,
+	// which explains why this is a relation rather than an ordering.
+	EventOriginAdd:    true,
+	EventOriginRemove: true,
 	// And a note on a row. Minted for the first reason, and for one that bites
 	// harder here than anywhere else on this list: the entry IS its content, so
 	// an entry a client could hand over would be words attributed to a seat that

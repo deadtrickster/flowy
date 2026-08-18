@@ -451,6 +451,12 @@ func (s *server) routes() http.Handler {
 	api.HandleFunc("POST /api/todo/{id}/deps", s.handleAddDep)
 	api.HandleFunc("DELETE /api/todo/{id}/deps/{blocker}", s.handleRemoveDep)
 	api.HandleFunc("GET /api/todo/{id}/deps", s.handleGetDeps)
+	// Where a row came from, which is not what blocks it - on any artifact
+	// rather than on a todo, because either end may be anything readable. See
+	// internal/store/origin.go.
+	api.HandleFunc("POST /api/artifact/{id}/origins", s.handleAddOrigin)
+	api.HandleFunc("DELETE /api/artifact/{id}/origins/{origin}", s.handleRemoveOrigin)
+	api.HandleFunc("GET /api/artifact/{id}/origins", s.handleGetOrigins)
 	api.HandleFunc("GET /api/ready", s.handleReady)
 	// Who is carrying a todo - any todo the caller can read, wherever it was
 	// raised, and whoever wrote it. Read permission is the whole bar: the assignee
