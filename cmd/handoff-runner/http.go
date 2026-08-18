@@ -63,7 +63,11 @@ func (s *service) routes() http.Handler {
 	// nothing but liveness: a health check that needed a credential is a
 	// health check that reports the node down when the credential is wrong.
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
-	return logRequests(mux)
+	// cors goes INSIDE the log so preflights are logged too: a refused
+	// preflight is the shape "the run button does nothing" takes, and it is
+	// only visible here - the browser reports it to its own console and the
+	// page is told nothing but that the fetch failed. See cors.go.
+	return logRequests(s.cors(mux))
 }
 
 // handler is a handler that may refuse. It is given the principal rather

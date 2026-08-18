@@ -52,7 +52,7 @@ const { code } = await transformWithEsbuild(await readFile(source, "utf8"), sour
   format: "esm",
   target: "node20",
 });
-const { api, setReproBase } = await import(
+const { api, setReproBase, setToken } = await import(
   `data:text/javascript;base64,${Buffer.from(code).toString("base64")}`
 );
 
@@ -69,7 +69,11 @@ const asked = [];
 /** answers stands in for fetch with one JSON body, the way the runner sends it. */
 function answers(body, status = 200) {
   globalThis.fetch = async (url, init) => {
-    asked.push({ url: String(url), method: init?.method ?? "GET" });
+    asked.push({
+      url: String(url),
+      method: init?.method ?? "GET",
+      headers: new Headers(init?.headers ?? {}),
+    });
     const text = JSON.stringify(body);
     return {
       ok: status >= 200 && status < 300,
@@ -159,16 +163,40 @@ answers(
   },
   400,
 );
-let refusal = null;
+// THE REASON HAS TO SURVIVE, not merely the failure. This used to assert only
+// that something was thrown, which passed while the panel showed
+// "400 Bad Request" over the runner's actual sentence - the door writes its
+// reasons per finding in `refused` and puts no top-level `error` on that body,
+// so a client that treats the status as the whole answer discards everything
+// worth reading. See api.reproRun.
+let refused = null;
+let threw = null;
+try {
+  refused = await api.reproRun("F1", "latest");
+} catch (err) {
+  threw = err;
+}
+check("a refusal is not thrown away as a status line", threw === null, threw ? String(threw) : "");
+check("a refused run queued nothing", refused?.queued?.length === 0, JSON.stringify(refused));
+check(
+  "and the runner's own reason is what the caller gets",
+  refused?.refused?.[0]?.error === "finding F1 has no repro tree",
+  JSON.stringify(refused),
+);
+
+// THE OTHER ARM: a 400 that is NOT a per-finding refusal still throws, or
+// "carries reasons" would be indistinguishable from "never raises".
+answers({ error: "bad request body: unexpected EOF" }, 400);
+let bad = null;
 try {
   await api.reproRun("F1", "latest");
 } catch (err) {
-  refusal = err;
+  bad = err;
 }
 check(
-  "a refused run comes back as an error rather than a run that never appears",
-  refusal !== null,
-  "the door answers 400 when it queued nothing",
+  "a 400 with no refusals on it is still an error, carrying what it said",
+  bad !== null && String(bad?.message ?? "").includes("unexpected EOF"),
+  String(bad?.message ?? bad),
 );
 
 // GET /version - the project goes with the question, and the answer's two
@@ -201,6 +229,44 @@ check(
   asked.at(-1)?.url,
 );
 check("and so is the version", asked.at(-1)?.url.includes("v=latest"), asked.at(-1)?.url);
+
+// THE READER'S OWN TOKEN GOES TO THE RUNNER, on every route.
+//
+// It used to go to none of them, on the reasoning that the runner is a
+// different service and so a different audience. cmd/handoff-runner/http.go's
+// authed() says the opposite - "THE TOKEN IS THE CALLER'S OWN" - and resolves
+// the bearer against the SAME Postgres this console's node writes to, so that
+// a run is recorded against whoever asked for it. Every route there but
+// /healthz is behind it, and the whole panel was therefore a 401.
+//
+// Two arms: with a token set the header is there and carries it; with the
+// token cleared there is no header at all. One arm could not tell "sends the
+// caller's token" from "sends a constant".
+const authOf = () => asked.at(-1)?.headers?.get("authorization") ?? "";
+setToken("tok-the-reader");
+answers({ runs: [], linked: true });
+await api.reproRuns();
+check("GET /runs carries the reader's own token", authOf() === "Bearer tok-the-reader", authOf());
+answers({ queued: [{ run: "12", finding: "F1" }], version: "latest" }, 202);
+await api.reproRun("F1", "latest");
+check("POST /run carries it too", authOf() === "Bearer tok-the-reader", authOf());
+check(
+  "and still declares its body as JSON",
+  (asked.at(-1)?.headers?.get("content-type") ?? "").includes("application/json"),
+  asked.at(-1)?.headers?.get("content-type") ?? "",
+);
+answers({}, 200);
+await api.reproLog("12").catch(() => {});
+check("and so does the log", authOf() === "Bearer tok-the-reader", authOf());
+
+setToken("");
+answers({ runs: [], linked: true });
+await api.reproRuns();
+check(
+  "a reader with no token sends no bearer, rather than a constant one",
+  authOf() === "",
+  authOf(),
+);
 
 if (failures.length) {
   console.error(`the console does not speak the runner's answers:\n  ${failures.join("\n  ")}`);

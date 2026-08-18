@@ -87,6 +87,11 @@ func TestTheRunnerReadsNoConfigurationOutsideItsOwn(t *testing.T) {
 		"HANDOFF_RUNNER_CONFIG": true, "HANDOFF_RUNNER_ADDR": true,
 		"HANDOFF_RUNNER_CACHE": true, "HANDOFF_RUNNER_WORKERS": true,
 		"HANDOFF_RUNNER_BUILD_SCRIPT": true,
+		// Which browser origins may read this runner's answers - see cors.go.
+		// It names the CONSOLE's origin, which is the node's, and is still
+		// this binary's own configuration: the node has no idea it is being
+		// fetched from and could not set this for it.
+		"HANDOFF_RUNNER_CONSOLE_ORIGINS": true,
 		// The two it shares on purpose: it is the SAME database and the same
 		// node identity, which is the whole reason a verdict written here
 		// lands on the finding's own log.

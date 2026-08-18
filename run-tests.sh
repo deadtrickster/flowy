@@ -16002,6 +16002,28 @@ the_console_speaks_the_runners_answers() {
 	node scripts/repro-contract-check.mjs
 }
 
+# AND THE SAME SEAM WITH A BROWSER AND A SECOND ORIGIN, which is the only
+# place two of these failures exist.
+#
+# The panel had a run button, a version box, a verdict table and a pausable log
+# and none of it could work: the console sent the runner no Authorization at
+# all while every route there but /healthz demands one, and the runner answered
+# no CORS preflight, so a POST /run never left the browser. `go test` has one
+# process, `vite build` only sees types, and the contract check above stands
+# fetch in - so all three were green over a panel that was a 401 in front of an
+# operator. See scripts/run-journey-check.mjs for the six flows, and
+# cmd/handoff-runner/cors_test.go for the runner's own half.
+#
+# The runner it drives is a stand-in on a port of its own, in the check's own
+# process. Nothing is executed and no container is started, so this needs no
+# Docker and runs wherever the rest of the gate does.
+the_run_journey_works_in_a_browser() {
+	recall
+	cd "$ROOT/web" || return 1
+	node scripts/run-journey-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" \
+		"$FINDING_PROJECT" "$FINDING_FILED" "$FINDING_UNFILED"
+}
+
 # THE REFUSAL THE EVIDENCE AXIS EXISTS FOR, over the wire.
 #
 # `verified` is a word PLUS A COMMIT: REPORTABLE-FINDINGS' filing rule is that
@@ -16096,6 +16118,8 @@ check "verified is a word plus a commit, and the door refuses the word alone" \
 	the_evidence_door_requires_a_commit
 check "the console reads the repro runner's own answers - /runs, /run and /version" \
 	the_console_speaks_the_runners_answers
+check "a run can be started, followed, paused and refused from a browser on another origin" \
+	the_run_journey_works_in_a_browser
 check "two states are told apart at a glance - filed from unfiled, reproduced from source-only" \
 	the_console_colours_carry_facts
 

@@ -52,7 +52,10 @@ export function ReproPanel({
 
   if (!runnable) {
     return (
-      <div className="rounded-md border border-border bg-card p-3 text-muted-foreground text-xs">
+      <div
+        data-repro-tree="none"
+        className="rounded-md border border-border bg-card p-3 text-muted-foreground text-xs"
+      >
         this finding has no repro tree - nothing here to run
       </div>
     );
@@ -110,7 +113,10 @@ function RunnerBaseSetup({ onSave }: { onSave: (base: string) => void }) {
           spellCheck={false}
           onChange={(event) => setDraft(event.target.value)}
         />
-        <Button type="submit" size="sm" variant="secondary">
+        {/* Marked, not found by its label: "use" is a one-word button and
+            the sidebar has one too, so a check that asked the page for it by
+            role and name would find two and be unable to say which. */}
+        <Button data-repro-base-save type="submit" size="sm" variant="secondary">
           use
         </Button>
       </div>
@@ -334,6 +340,7 @@ function ReproPanelBody({
               that cannot run - which is exactly when somebody needs the package
               to take elsewhere. */}
           <Button
+            data-repro-package
             size="sm"
             variant="outline"
             disabled={pkgBusy}
@@ -342,6 +349,7 @@ function ReproPanelBody({
             {pkgBusy ? "packaging…" : "⤓ package"}
           </Button>
           <Button
+            data-repro-run
             size="sm"
             variant="secondary"
             disabled={runBusy || cannotRun}
@@ -378,7 +386,14 @@ function ReproPanelBody({
         </div>
       ) : null}
       {versionError ? <div className="text-destructive text-xs">{versionError}</div> : null}
-      {runError ? <div className="text-destructive text-xs">{runError}</div> : null}
+      {/* Marked, because "the run was refused and said why" and "the run
+          silently did nothing" are the same empty table to anybody looking
+          for a row - see run-journey-check.mjs's F3 and F6. */}
+      {runError ? (
+        <div data-repro-error className="text-destructive text-xs">
+          {runError}
+        </div>
+      ) : null}
       {pkgError ? <div className="text-destructive text-xs">{pkgError}</div> : null}
 
       {/* The per-version table: every version this finding has been run
@@ -506,7 +521,15 @@ function VersionRow({
   };
 
   return (
-    <tr className="border-border border-t">
+    // The version and its latest verdict are attributes rather than only
+    // text: "latest" and a status word both appear elsewhere on a finding
+    // page, so a check searching the page for either would pass with this
+    // table absent.
+    <tr
+      className="border-border border-t"
+      data-repro-version={entry.version}
+      data-repro-status={latest?.status ?? ""}
+    >
       <td className="py-1.5 pr-3 font-mono">
         {entry.version}
         {entry.sha ? (
@@ -532,6 +555,7 @@ function VersionRow({
         {latest ? (
           <button
             type="button"
+            data-repro-log
             className="text-muted-foreground underline hover:text-foreground"
             onClick={() => onOpenLog(latest.id)}
           >
@@ -622,6 +646,8 @@ function LogViewer({
         </span>
         <button
           type="button"
+          data-repro-log-pause
+          data-paused={paused ? "yes" : "no"}
           className={cn(
             "rounded border border-border px-1.5 py-0.5",
             paused && "border-primary text-primary",
@@ -641,6 +667,7 @@ function LogViewer({
       {error ? <div className="px-2 pt-1 text-destructive text-xs">{error}</div> : null}
       <pre
         ref={pre}
+        data-repro-log-pane={runId}
         className="max-h-64 overflow-auto whitespace-pre-wrap break-words px-2 py-1.5 font-mono text-xs"
       >
         {text}

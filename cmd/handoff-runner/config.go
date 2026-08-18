@@ -74,6 +74,26 @@ type Config struct {
 	// resolves --project NAME to NAME.env the same way a human running it
 	// does.
 	BuildConfigDir string `json:"build_config_dir"`
+	// ConsoleOrigins is which browser origins may read this runner's answers.
+	//
+	// The console is served by the Flowy node and this process listens
+	// somewhere else, so every call the repro panel makes is cross-origin and
+	// a browser will discard the answer unless the response names the caller.
+	// See cors.go for what that costs when it is missing: the run button
+	// fires and nothing leaves the browser, while this process's own log
+	// shows nothing wrong because nothing reached it.
+	//
+	// "*" IS THE DEFAULT AND IS DELIBERATE. Every route but /healthz needs a
+	// bearer token that resolves to a principal in the shared store, and the
+	// token travels in a header rather than a cookie - so an origin this
+	// runner has never heard of gets a 401, exactly as it would with no CORS
+	// at all. What the default buys is that a deployment nobody configured
+	// works instead of failing in the browser's console where no operator
+	// looks. Addr's own comment says the deployment that exposes this process
+	// should front it with something "that knows where the callers are"; an
+	// origin allowlist belongs to that front door, and narrowing it here is
+	// available for anyone who wants both.
+	ConsoleOrigins []string `json:"console_origins"`
 	// Projects is the whole set of projects whose findings this runner will
 	// resolve, package or run, keyed by the project name a finding carries.
 	Projects map[string]Project `json:"projects"`
@@ -138,6 +158,23 @@ func (d duration) Duration() time.Duration { return time.Duration(d) }
 // is refused at load rather than at the first run that happens to use it.
 var projectNameRE = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
+// originRE is a browser's Origin header: a scheme, a host, an optional port,
+// and nothing after it. See the check that uses it for why a near-miss is
+// worth refusing at load.
+var originRE = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9+.-]*://[A-Za-z0-9._~%!$&'()*+,;=:\[\]-]+$`)
+
+// splitOrigins reads the comma-separated form the environment uses, dropping
+// the empty pieces a trailing comma leaves behind.
+func splitOrigins(v string) []string {
+	out := []string{}
+	for _, part := range strings.Split(v, ",") {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
+}
+
 // Defaults that are only defaults: every one of them is overridable, and
 // none of them decides anything that could be silently wrong.
 const (
@@ -198,6 +235,12 @@ func LoadConfig(path string, env func(string) string) (*Config, error) {
 	if v := env("HANDOFF_RUNNER_BUILD_SCRIPT"); v != "" {
 		cfg.BuildScript = v
 	}
+	// Comma-separated, because this is the one list a deployment moves around
+	// and an env var holding JSON is a quoting problem nobody gets right at
+	// the second attempt.
+	if v := env("HANDOFF_RUNNER_CONSOLE_ORIGINS"); v != "" {
+		cfg.ConsoleOrigins = splitOrigins(v)
+	}
 
 	if cfg.Addr == "" {
 		cfg.Addr = defaultAddr
@@ -213,6 +256,9 @@ func LoadConfig(path string, env func(string) string) (*Config, error) {
 	}
 	if cfg.PackageBuildTimeout == 0 {
 		cfg.PackageBuildTimeout = duration(defaultPackageBuildTimeout)
+	}
+	if len(cfg.ConsoleOrigins) == 0 {
+		cfg.ConsoleOrigins = []string{"*"}
 	}
 	if cfg.BuildScript != "" && cfg.BuildConfigDir == "" {
 		cfg.BuildConfigDir = filepath.Join(filepath.Dir(cfg.BuildScript), "build-sut.d")
@@ -271,6 +317,23 @@ func (c *Config) check() error {
 		// same place.
 		if err := store.CheckIsolation(p.DefaultIsolation); err != nil {
 			return fmt.Errorf("project %q's default_isolation: %w", name, err)
+		}
+	}
+	// An origin is scheme://host[:port] and nothing else - no path, no
+	// trailing slash - because that is the exact string a browser puts in the
+	// Origin header and compares the answer against. Refused at load rather
+	// than at the first click, since a "http://console.local/" that will never
+	// match anything fails in the browser's console with no status, no log
+	// line here, and nothing on the operator's screen.
+	for _, origin := range c.ConsoleOrigins {
+		if origin == "*" {
+			continue
+		}
+		if !originRE.MatchString(origin) {
+			return fmt.Errorf("console_origins entry %q is not an origin: "+
+				"it must be scheme://host or scheme://host:port, with no path and no "+
+				"trailing slash, because that is the exact string a browser sends and "+
+				"compares", origin)
 		}
 	}
 	if c.BuildScript != "" {

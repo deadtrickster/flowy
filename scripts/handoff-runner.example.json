@@ -1,5 +1,5 @@
 {
-  "//": "handoff-runner's configuration, by example. Copy it, edit it, and point the binary at it with -config or $HANDOFF_RUNNER_CONFIG. An unknown key is refused rather than ignored, so a typo here is caught at startup instead of showing up hours later as a strange run verdict - which is why this comment is a key called '//' and not a JSON comment.",
+  "//": "handoff-runner's configuration, by example. Copy it, edit it, and point the binary at it with -config or $HANDOFF_RUNNER_CONFIG. An unknown key is refused rather than ignored, so a typo here is caught at startup instead of showing up hours later as a strange run verdict - which is why this comment is a key called '//' and not a JSON comment. console_origins is the one key a browser cares about: the console is served by the Flowy node and this process listens somewhere else, so every call the repro panel makes is cross-origin and a browser discards the answer unless the response names the caller. It defaults to ['*'], which is safe because every route but /healthz needs a bearer token carried in a header rather than a cookie - an origin nobody configured still gets a 401. Narrow it, as below, when this process is also fronted by something that knows where the callers are. Write each one exactly as a browser sends it: scheme, host, optional port, no path and no trailing slash, or the config is refused at startup.",
 
   "addr": "127.0.0.1:8801",
   "dsn": "postgres://flowy@127.0.0.1:5432/flowy?sslmode=disable",
@@ -15,6 +15,8 @@
 
   "build_script": "/opt/flowy/scripts/build-sut.sh",
   "build_config_dir": "/opt/flowy/scripts/build-sut.d",
+
+  "console_origins": ["http://192.168.1.55:8787"],
 
   "projects": {
     "serenedb": {

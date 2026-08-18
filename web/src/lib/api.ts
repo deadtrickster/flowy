@@ -1085,11 +1085,34 @@ function reproBase(): string {
   return base;
 }
 
-/** reproRequest is `request` for the runner's door: no flowy auth header (the
- * runner is a different service with a different audience for any token),
- * and a base that must be configured or nothing is sent. */
+/**
+ * reproRequest is `request` for the runner's door: an absolute base that must
+ * be configured or nothing is sent, and THE READER'S OWN TOKEN on every call.
+ *
+ * An earlier version of this sent no Authorization at all, reasoning that the
+ * runner is a different service and so a different audience for any token.
+ * cmd/handoff-runner/http.go's authed() says the opposite in its own head
+ * comment - "THE TOKEN IS THE CALLER'S OWN" - and resolves the bearer against
+ * the SAME Postgres this node writes to, precisely so that a run is recorded
+ * against the person or agent who asked for it rather than against a daemon.
+ * Every route there but /healthz is behind it, so the panel's every call was a
+ * 401: run, runs, log, package and version alike.
+ *
+ * Nothing in this repository could see that. `go test` has one process, the
+ * types agree either way so `vite build` is happy, and repro-contract-check
+ * stands fetch in so no header is ever inspected. It took a browser and a
+ * second origin - see web/scripts/run-journey-check.mjs.
+ *
+ * The token is the same one authHeader sends to the node, and deliberately so:
+ * two services, one principal, one credential. If the runner is ever moved
+ * behind a boundary that must not see this token, the answer is a token minted
+ * for that audience - not a call with none.
+ */
 async function reproRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(`${reproBase()}${path}`, init);
+  const response = await fetch(`${reproBase()}${path}`, {
+    ...init,
+    headers: { ...authHeader(), ...(init.headers ?? {}) },
+  });
   const text = await response.text();
   const body = parseBody(text, response);
   if (!response.ok) {
@@ -1101,7 +1124,7 @@ async function reproRequest<T>(path: string, init: RequestInit = {}): Promise<T>
 /** reproText is reproRequest for the one endpoint that answers in plain text
  * rather than JSON - the run log. */
 async function reproText(path: string): Promise<string> {
-  const response = await fetch(`${reproBase()}${path}`);
+  const response = await fetch(`${reproBase()}${path}`, { headers: authHeader() });
   const text = await response.text();
   if (!response.ok) {
     throw new ApiError(response.status, text.trim().slice(0, 200) || statusText(response));
@@ -1659,16 +1682,42 @@ export const api = {
    * decides what to show for it.
    */
 
-  /** Enqueue a repro run of `finding` against `version`. The answer names what
+  /**
+   * Enqueue a repro run of `finding` against `version`. The answer names what
    * was queued and what was refused rather than a bare id - see ReproQueued,
    * and ReproPanel, which shows the refusal instead of a run that never
-   * started. */
-  reproRun: (finding: string, version: string) =>
-    reproRequest<ReproQueued>("/run", {
+   * started.
+   *
+   * A REQUEST THAT QUEUED NOTHING IS A 400 CARRYING THE REASONS, NOT AN
+   * ERROR. cmd/handoff-runner's handleRun answers 202 when it queued
+   * something and 400 when it queued nothing, and in both cases the reason
+   * per finding is in `refused` - there is no top-level `error` key on that
+   * body. So it cannot go through reproRequest, which would raise an ApiError
+   * carrying the status line: the panel would print "400 Bad Request" over
+   * "this runner is not configured for project serenedb", which is the whole
+   * of what the reader needed. Asking for one finding and being told nothing
+   * about why is indistinguishable from the button not working.
+   *
+   * Anything else that fails still throws, including a 400 with no refusals
+   * on it - a malformed request body, say - because there is nothing better
+   * to show for those than the status.
+   */
+  reproRun: async (finding: string, version: string): Promise<ReproQueued> => {
+    const response = await fetch(`${reproBase()}/run`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { ...authHeader(), "Content-Type": "application/json" },
       body: JSON.stringify({ finding, version }),
-    }),
+    });
+    const text = await response.text();
+    const body = parseBody(text, response);
+    if (!response.ok) {
+      if (Array.isArray(body?.refused) && body.refused.length > 0) {
+        return { queued: [], refused: body.refused, version: body?.version ?? version };
+      }
+      throw new ApiError(response.status, body?.error ?? statusText(response));
+    }
+    return body as ReproQueued;
+  },
 
   /**
    * Every run the runner knows about, and whether it can run anything at all.
@@ -1695,7 +1744,10 @@ export const api = {
   reproPackage: async (finding: string, version: string) => {
     const response = await fetch(
       `${reproBase()}/package?finding=${encodeURIComponent(finding)}&version=${encodeURIComponent(version)}`,
-      { cache: "no-store" },
+      // The token here too - a package carries the finding's repro tree
+      // verbatim and a finding can be private, which is why that route is
+      // behind the same door as the rest.
+      { cache: "no-store", headers: authHeader() },
     );
     if (!response.ok) {
       const text = await response.text();
