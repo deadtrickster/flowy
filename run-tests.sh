@@ -4405,10 +4405,12 @@ a_room_that_is_not_one_is_refused() {
 # half a write-once version gets wrong, and it is the ordinary case: work
 # changes hands more often than it is first picked up.
 #
-# The todo this drives was raised with `OWNER: a-bench` as its body, so the
-# first move also asserts the compatibility the whole feature rests on - the
-# node reads that line as the assignee until a field says otherwise, and the
-# sentence the room is told names it as the previous holder.
+# The todo this drives was raised with `OWNER: a-bench` as its body, and that is
+# now the assertion the other way round: the line is authorship from before the
+# field existed, nothing has written one since assignment became an event, and
+# the node does NOT read it as a claim. So the first move says "gave", not
+# "moved from a-bench" - nobody was carrying it, and the sentence the room hears
+# says exactly that.
 a_todo_takes_an_assignee_and_an_override() {
 	recall
 	local at="/api/chat/build/todo/$ROOM_TODO_ID/assignee"
@@ -4426,13 +4428,15 @@ a_todo_takes_an_assignee_and_an_override() {
 		"$(jqv .item.fields.message)" "$ROOM_TODO_MESSAGE" || return 1
 	# And the room heard, as an ordinary message in the thread the todo was
 	# raised out of - the conversation that produced the plan is the one that
-	# says who picked it up. The sentence names the OWNER line as who had it,
-	# which is the compatibility, said out loud.
+	# says who picked it up. The sentence says GAVE: the body's OWNER line is not
+	# a holder, so this is a first pick-up rather than a handover, and a room
+	# told "moved from a-bench" would be told about a handover that never
+	# happened.
 	want_eq "the room heard about it" "$(jqv .event.room)" build || return 1
 	want_eq "as a chat message" "$(jqv .event.type)" chat || return 1
 	want_eq "naming the todo" "$(jqv .event.artifact)" "$ROOM_TODO_ID" || return 1
-	want_eq "and saying it changed hands" \
-		"$(jqv .event.body)" "moved $ROOM_TODO_BUILD from $PLAN_OWNER to $PLAN_TAKER" || return 1
+	want_eq "and saying it was picked up rather than taken from anybody" \
+		"$(jqv .event.body)" "gave $ROOM_TODO_BUILD to $PLAN_TAKER" || return 1
 
 	# The override. A held row moves by naming its holder, so the override is a
 	# handover: it says who it takes the work from.
@@ -4444,8 +4448,9 @@ a_todo_takes_an_assignee_and_an_override() {
 		"$(jqv .event.body)" "moved $ROOM_TODO_BUILD from $PLAN_TAKER to $PLAN_SECOND" || return 1
 
 	# Putting it down. An empty name is a value and not a silence: the key stays
-	# on the item, saying nobody, which is what outranks the OWNER line still in
-	# the body - the next set says "gave", not "moved from a-bench".
+	# on the item, saying nobody - and the next set says "gave", the same as the
+	# first one did, because a row nobody is carrying reads the same whether it
+	# has never been carried or has just been put down.
 	api POST "$TOKEN_A" "$at" "$(jq -nc --arg e "$PLAN_SECOND" '{assignee: "", expect: $e}')" || return 1
 	want_eq "unassign status" "$API_STATUS" 200 || return 1
 	want_eq "nobody has it" "$(jqv .item.fields.assignee)" "" || return 1
@@ -4459,7 +4464,7 @@ a_todo_takes_an_assignee_and_an_override() {
 		"$(jqv .event.body)" "left $ROOM_TODO_BUILD unassigned" || return 1
 
 	api POST "$TOKEN_A" "$at" "$(jq -nc --arg a "$PLAN_TAKER" '{assignee: $a}')" || return 1
-	want_eq "the empty field outranked the OWNER line" \
+	want_eq "picked up again from nobody" \
 		"$(jqv .event.body)" "gave $ROOM_TODO_BUILD to $PLAN_TAKER" || return 1
 
 	# The ROOM hears it, not only whoever said it. An event with no project on
@@ -4468,10 +4473,15 @@ a_todo_takes_an_assignee_and_an_override() {
 	# room never got, which is indistinguishable from the feature working from
 	# everywhere except somebody else's screen.
 	want_eq "the message is the project's" "$(jqv .event.project)" pa || return 1
+	# TWICE, and that is the reading rather than a leak: this row was picked up
+	# from nobody at the top of this check and picked up from nobody again after
+	# being put down, and those are the same fact, so they are the same
+	# sentence. It used to be one because the first pick-up read the body's
+	# OWNER line and said "moved from a-bench" - a handover that never happened.
 	api GET "$TOKEN_OP" /api/chat/build || return 1
-	want_eq "somebody else in the project heard it" \
+	want_eq "somebody else in the project heard both pick-ups" \
 		"$(printf '%s' "$API_BODY" | jq --arg b "gave $ROOM_TODO_BUILD to $PLAN_TAKER" \
-			'[.events[] | select(.body == $b)] | length')" 1 || return 1
+			'[.events[] | select(.body == $b)] | length')" 2 || return 1
 
 	# And it is on the list the panel reads, not only on the item.
 	api GET "$TOKEN_A" "/api/artifacts?type=memory&kind=todo&room=build" || return 1
@@ -5026,8 +5036,13 @@ mem_write_refuses_an_update_it_will_not_make() {
 # again here, which is not a state to leave in a room another check reads.
 ROOM_CLOSE="closing"
 CLOSE_TODO="ship the linear-thread pane"
-CLOSE_BODY="OWNER: a-bench"
-readonly ROOM_CLOSE CLOSE_TODO CLOSE_BODY
+CLOSE_BODY="the pane that reads a thread top to bottom"
+# WHO IS CARRYING IT, in the field, because that is the only place a carrier
+# lives. It used to ride the body as `OWNER: a-bench`, which the node read as a
+# claim until that fallback came out - and a row nobody is carrying cannot be
+# moved to active, so these checks would refuse at the first step.
+CLOSE_CARRIER="a-bench"
+readonly ROOM_CLOSE CLOSE_TODO CLOSE_BODY CLOSE_CARRIER
 
 # THE ONE THAT MATTERS. A principal who did not raise a todo can move it through
 # its lifecycle, at both doors, and the item stays its author's in every other
@@ -5048,6 +5063,13 @@ a_todo_is_closed_by_somebody_who_did_not_write_it() {
 	id="$(jqv .item.id)"
 	remember CLOSE_ID "$id"
 	want_eq "raised open" "$(jqv .item.status)" todo || return 1
+
+	# Somebody has to be carrying it before it can be active - see
+	# queuecoherence.go, which refuses the pair that says work is under way and
+	# nobody is doing it.
+	api POST "$TOKEN_A" "/api/todo/$id/assignee" \
+		"$(jq -nc --arg a "$CLOSE_CARRIER" '{assignee: $a}')" || return 1
+	want_eq "who is carrying it" "$API_STATUS" 200 || return 1
 
 	# The operator: a second person in the project, who wrote none of this and
 	# cannot rewrite a word of it.
@@ -5944,17 +5966,21 @@ browser_draws_the_notes_under_the_body() {
 # and not assumed.
 #
 # Its own room, with two todos of its own: one nobody is carrying, and one
-# written the way the whole queue was before there was a field, with OWNER as
-# the first line of its body.
+# somebody is. The second used to say so with `OWNER:` as the first line of its
+# body, which is how the whole queue said it before the field existed - the node
+# stopped reading that line as a claim, so the fixture says it where a claim
+# lives.
 browser_sets_and_overrides_an_assignee() {
 	recall
 	api POST "$TOKEN_A" "/api/chat/$ROOM_PLAN/todo" \
 		"$(jq -nc --arg t "$PLAN_TODO_FREE" '{title: $t}')" || return 1
 	want_eq "the unowned one" "$API_STATUS" 200 || return 1
 	api POST "$TOKEN_A" "/api/chat/$ROOM_PLAN/todo" \
-		"$(jq -nc --arg t "$PLAN_TODO_OWNED" --arg b "OWNER: $PLAN_OWNER" \
-			'{title: $t, body: $b}')" || return 1
-	want_eq "the one whose body names an owner" "$API_STATUS" 200 || return 1
+		"$(jq -nc --arg t "$PLAN_TODO_OWNED" '{title: $t}')" || return 1
+	want_eq "the one somebody is carrying" "$API_STATUS" 200 || return 1
+	api POST "$TOKEN_A" "/api/todo/$(jqv .item.id)/assignee" \
+		"$(jq -nc --arg a "$PLAN_OWNER" '{assignee: $a}')" || return 1
+	want_eq "who is carrying it" "$API_STATUS" 200 || return 1
 	cd "$ROOT/web" || return 1
 	node scripts/assignee-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" \
 		"$ROOM_PLAN" "$PLAN_TODO_FREE" "$PLAN_TODO_OWNED" \
@@ -5978,14 +6004,20 @@ console_renders_the_rooms_todos() {
 # hand. A string that appears in two places is not evidence about either.
 browser_renders_the_rooms_todos() {
 	recall
-	# One written the way several real ones were - "OWNER: unassigned" - because
-	# the panel falls back to "unowned" when there is no owner, and the two were
-	# on screen together. Raised as a todo through the panel itself: "todo list
-	# has unowned and unassigned - looks identical". Two words for one state
-	# read as two states. Without this row the check cannot tell the fix from
-	# its absence.
+	# One carrying the word several real ones carried - "unassigned" - because
+	# the panel falls back to "unowned" when there is nobody, and the two were on
+	# screen together. Raised as a todo through the panel itself: "todo list has
+	# unowned and unassigned - looks identical". Two words for one state read as
+	# two states. Without this row the check cannot tell the fix from its
+	# absence.
+	#
+	# In the FIELD, where a carrier lives: those words used to arrive on the
+	# body's OWNER line and can arrive here just as easily, which is the case
+	# the normalisation is for.
 	api POST "$TOKEN_A" /api/chat/general/todo \
-		'{"title": "quinceberry the idler pulley", "body": "OWNER: unassigned"}' || return 1
+		'{"title": "quinceberry the idler pulley"}' || return 1
+	api POST "$TOKEN_A" "/api/todo/$(jqv .item.id)/assignee" \
+		'{"assignee": "unassigned"}' || return 1
 	cd "$ROOT/web" || return 1
 	node scripts/browser-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" \
 		"$ROOM_TODO_GENERAL" unassigned
@@ -6476,13 +6508,13 @@ two_projects_hold_a_todo_each() {
 	api POST "$TOKEN_OP" /api/artifacts \
 		"$(jq -nc --arg t "$CROSS_TODO_PA" \
 			'{type: "memory", kind: "todo", status: "todo", visibility: "shared",
-			  title: $t, body: "OWNER: a-millwright"}')" || return 1
+			  title: $t, fields: {assignee: "a-millwright"}}')" || return 1
 	want_eq "the pa todo" "$API_STATUS" 200 || return 1
 	want_eq "written into pa" "$(jqv .project)" pa || return 1
 	api POST "$TOKEN_A_PC" /api/artifacts \
 		"$(jq -nc --arg t "$CROSS_TODO_PC" \
 			'{type: "memory", kind: "todo", status: "active", visibility: "shared",
-			  title: $t, body: "OWNER: c-fitter"}')" || return 1
+			  title: $t, fields: {assignee: "c-fitter"}}')" || return 1
 	want_eq "the pc todo" "$API_STATUS" 200 || return 1
 	want_eq "written into pc" "$(jqv .project)" pc || return 1
 	printf 'a todo in pa and a todo in pc, with pa reading pc\n'
@@ -10016,8 +10048,9 @@ tui_needs_a_token() {
 # What the headless drive looks for: a message in general, a memory to search
 # for, a task in A's own inbox, a report, and a todo.
 #
-# The todo is written active, with the OWNER line the queue's items carry, and
-# it is the only active one here - the earlier todos check left a done one in
+# The todo is written active, with a carrier in the field - a row nobody is
+# carrying cannot be active, see queuecoherence.go - and it is the only active
+# one here - the earlier todos check left a done one in
 # this project, so the two of them together are what the ordering claim rests
 # on: the drive asserts the active one is above the done one in the list the
 # client actually rendered.
@@ -10044,16 +10077,21 @@ tui_seed() {
 	api POST "$TOKEN_A" /api/artifacts \
 		"$(jq -nc --arg t "$TUI_TODO" --arg o "$TUI_TODO_OWNER" \
 			'{type: "memory", kind: "todo", status: "active", visibility: "project",
-			  title: $t, body: ("OWNER: " + $o + "\nDEPENDS ON: nothing")}')" || return 1
+			  title: $t, body: "DEPENDS ON: nothing", fields: {assignee: $o}}')" || return 1
 	want_eq "the seeded todo" "$API_STATUS" 200 || return 1
 	# Raised in the room rather than filed at it: the room field and the message
 	# that raised it are what the room panel reads, so the seed goes in through
 	# the door a person in the room uses.
 	api POST "$TOKEN_A" /api/chat/general/todo \
-		"$(jq -nc --arg t "$TUI_ROOM_TODO" --arg o "$TUI_TODO_OWNER" \
-			'{title: $t, body: ("OWNER: " + $o)}')" || return 1
+		"$(jq -nc --arg t "$TUI_ROOM_TODO" '{title: $t}')" || return 1
 	want_eq "the seeded room todo" "$API_STATUS" 200 || return 1
 	want_eq "raised in general" "$(jqv .item.fields.room)" general || return 1
+	# Who is carrying it, in the field. The raise door takes a title and a body
+	# and no carrier, and the body's OWNER line stopped being read as a claim -
+	# so the seed says it where the queue keeps it.
+	api POST "$TOKEN_A" "/api/todo/$(jqv .item.id)/assignee" \
+		"$(jq -nc --arg o "$TUI_TODO_OWNER" '{assignee: $o}')" || return 1
+	want_eq "who is carrying the seeded room todo" "$API_STATUS" 200 || return 1
 	local artifact
 	artifact="$(new_artifact "$TOKEN_A" bug "$TUI_TASK")" || return 1
 	assign_as "$TOKEN_A" "$artifact" "$USER_A" "for the tui gate" || return 1

@@ -97,9 +97,9 @@ func sortTodos(list []*Artifact) []*Artifact {
 // doing this". Items that say neither render with a dash: an unowned todo is a
 // fact about the queue worth seeing, not a row to hide.
 //
-// The field wins even when it is empty, which is the same order the console and
-// the node read these in. Somebody who unassigned a todo through a panel said
-// so; falling back to the OWNER line still in its body would undo them here and
+// The field wins even when it is empty, which is the same reading the console
+// and the node make. Somebody who unassigned a todo through a panel said so,
+// and a read that went looking for a second source would undo them here and
 // leave the two clients disagreeing about who has the work.
 func todoOwner(a *Artifact) string {
 	if a == nil {
@@ -108,17 +108,12 @@ func todoOwner(a *Artifact) string {
 	if named := todoProvenance(a).Assignee; named != nil {
 		return somebody(*named)
 	}
-	for _, line := range splitLines(a.Body) {
-		line = strings.TrimSpace(line)
-		if rest, ok := strings.CutPrefix(line, "OWNER:"); ok {
-			return somebody(rest)
-		}
-		if line != "" {
-			// The convention is the first line of the body. Scanning the whole
-			// body would find the word in a sentence about somebody else's item.
-			return ""
-		}
-	}
+	// AND NOTHING ELSE. This used to fall back to the body's `OWNER:` line, and
+	// that line is authorship from before the field existed - nothing has
+	// written one since assignment became an event. Reading it as a claim is
+	// how three rows nobody was carrying were read as held. Measured before
+	// removing it, on the live node: 28 todos have no field and an OWNER line
+	// and every one of them is DONE.
 	return ""
 }
 

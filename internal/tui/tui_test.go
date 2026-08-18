@@ -130,13 +130,15 @@ func seed(m *Model) {
 	m.todos = sortTodos([]*Artifact{
 		{
 			ID: "01HTODODONEAAAAAAAAAAAAAAA", Type: "memory", Kind: "todo", Project: &project,
-			Title: "the names on every chat surface", Body: "OWNER: flowy-claude\nDEPENDS ON: nothing",
+			Title: "the names on every chat surface", Body: "DEPENDS ON: nothing",
+			Fields:     json.RawMessage(`{"assignee":"flowy-claude"}`),
 			Visibility: "project", Status: "done", Updated: now,
 		},
 		{
 			ID: "01HTODOTODOAAAAAAAAAAAAAAA", Type: "memory", Kind: "todo", Project: &project,
 			Title:      "the console's own todos panel",
-			Body:       "OWNER: orchestrator\nDEPENDS ON: the tui todos view landing first",
+			Body:       "DEPENDS ON: the tui todos view landing first",
+			Fields:     json.RawMessage(`{"assignee":"orchestrator"}`),
 			Visibility: "project", Status: "todo", Updated: now,
 		},
 		{
@@ -149,14 +151,14 @@ func seed(m *Model) {
 		{
 			ID: "01HTODOACTIVEAAAAAAAAAAAAA", Type: "memory", Kind: "todo", Project: &project,
 			Title:      "a todos view in the terminal client",
-			Body:       "OWNER: todo-view\nDEPENDS ON: the kind filter on /api/artifacts",
+			Body:       "DEPENDS ON: the kind filter on /api/artifacts",
 			Visibility: "project", Status: "active", Updated: now,
 			// The one row that says where the work came from, which is the
 			// shape a row raised out of a conversation has: somebody asked,
 			// somebody else is carrying it. The rest of the queue predates the
 			// field and says nothing, which is what the board really looks
 			// like.
-			Fields: json.RawMessage(`{"raiser":"the-asker"}`),
+			Fields: json.RawMessage(`{"raiser":"the-asker","assignee":"todo-view"}`),
 		},
 	})
 	m.tl = []*ActivityItem{{
@@ -860,13 +862,13 @@ func TestTheTodosListPutsWhatIsInFlightFirst(t *testing.T) {
 	// client's own and not the fixture's.
 	m.Update(todosMsg{artifacts: []*Artifact{
 		{ID: "01HT1", Type: "memory", Kind: "todo", Status: "done",
-			Title: "finished-one", Body: "OWNER: ada"},
+			Title: "finished-one", Fields: json.RawMessage(`{"assignee":"ada"}`)},
 		{ID: "01HT2", Type: "memory", Kind: "todo", Status: "todo",
-			Title: "waiting-one", Body: "OWNER: bob"},
+			Title: "waiting-one", Fields: json.RawMessage(`{"assignee":"bob"}`)},
 		{ID: "01HT3", Type: "memory", Kind: "todo", Status: "blocked",
-			Title: "unheard-of-status-one", Body: "OWNER: cass"},
+			Title: "unheard-of-status-one", Fields: json.RawMessage(`{"assignee":"cass"}`)},
 		{ID: "01HT4", Type: "memory", Kind: "todo", Status: "active",
-			Title: "in-flight-one", Body: "OWNER: dee"},
+			Title: "in-flight-one", Fields: json.RawMessage(`{"assignee":"dee"}`)},
 	}})
 
 	var order []string
@@ -1003,13 +1005,15 @@ func TestATodoWithNoOwnerStillRenders(t *testing.T) {
 		t.Fatal("an unowned todo lost its body")
 	}
 
-	// And the parse, which reads the first line and not the whole body: OWNER in
-	// the middle of a sentence about somebody else's item is not an owner.
-	if got := todoOwner(&Artifact{Body: "DEPENDS ON: x\nOWNER: not-really"}); got != "" {
-		t.Fatalf("an OWNER further down the body was taken as the owner: %q", got)
+	// AND A BODY IS NOT A CLAIM. This used to parse `OWNER:` off the first line,
+	// which is authorship from before the field existed - nothing has written
+	// one since assignment became an event, and reading it as a claim is how
+	// three rows nobody was carrying were read as held.
+	if got := todoOwner(&Artifact{Body: "OWNER:   ada  \nrest"}); got != "" {
+		t.Fatalf("a body's OWNER line was read as the owner: %q", got)
 	}
-	if got := todoOwner(&Artifact{Body: "OWNER:   ada  \nrest"}); got != "ada" {
-		t.Fatalf("the owner parsed as %q", got)
+	if got := todoOwner(&Artifact{Fields: json.RawMessage(`{"assignee":"ada"}`)}); got != "ada" {
+		t.Fatalf("the field reads as %q", got)
 	}
 }
 
@@ -1111,10 +1115,10 @@ func TestALongOwnerDoesNotPushTheTitleOffTheRow(t *testing.T) {
 	m.view = viewTodos
 	m.todos = []*Artifact{
 		{ID: "01HTSHORT", Type: "memory", Kind: "todo", Status: "active",
-			Title: "the short owner's item", Body: "OWNER: ada"},
+			Title: "the short owner's item", Fields: json.RawMessage(`{"assignee":"ada"}`)},
 		{ID: "01HTLONG", Type: "memory", Kind: "todo", Status: "active",
-			Title: "the long owner's item",
-			Body:  "OWNER: " + strings.Repeat("a-very-long-handle-", 5)},
+			Title:  "the long owner's item",
+			Fields: json.RawMessage(`{"assignee":"` + strings.Repeat("a-very-long-handle-", 5) + `"}`)},
 	}
 	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 
@@ -1150,11 +1154,11 @@ func roomWithAPlan(m *Model) {
 	m.thread = m.msgs
 	m.roomTodos = sortTodos([]*Artifact{
 		{ID: "01HRTDONE", Type: "memory", Kind: "todo", Status: "done",
-			Title: "the panel itself", Body: "OWNER: ada"},
+			Title: "the panel itself", Fields: json.RawMessage(`{"assignee":"ada"}`)},
 		{ID: "01HRTTODO", Type: "memory", Kind: "todo", Status: "todo",
-			Title: "the eighty column fit", Body: "OWNER: bob"},
+			Title: "the eighty column fit", Fields: json.RawMessage(`{"assignee":"bob"}`)},
 		{ID: "01HRTACTIVE", Type: "memory", Kind: "todo", Status: "active",
-			Title: "the three states", Body: "OWNER: ignore-me",
+			Title:  "the three states",
 			Fields: json.RawMessage(`{"room":"general","assignee":"cass"}`)},
 	})
 }
@@ -1397,8 +1401,8 @@ func TestTheThreadPaneStillWorksBesideThePlan(t *testing.T) {
 // somebody typed, and this is the terminal's copy of that read.
 func TestTheQueueSaysOneWordForNobody(t *testing.T) {
 	for _, said := range []string{"unassigned", "unowned", "none", "nobody", "TBD", "?", "-", "n/a"} {
-		if got := todoOwner(&Artifact{Body: "OWNER: " + said}); got != "" {
-			t.Fatalf("OWNER: %s came back as %q, which is a second word for nobody", said, got)
+		if got := todoOwner(&Artifact{Fields: json.RawMessage(`{"assignee":"` + said + `"}`)}); got != "" {
+			t.Fatalf("assignee %s came back as %q, which is a second word for nobody", said, got)
 		}
 		if got := todoOwner(&Artifact{
 			Fields: json.RawMessage(`{"assignee":"` + said + `"}`)}); got != "" {
@@ -1406,7 +1410,7 @@ func TestTheQueueSaysOneWordForNobody(t *testing.T) {
 		}
 	}
 	// And a name that merely starts with one of them is a name.
-	if got := todoOwner(&Artifact{Body: "OWNER: nobody-in-particular"}); got != "nobody-in-particular" {
+	if got := todoOwner(&Artifact{Fields: json.RawMessage(`{"assignee":"nobody-in-particular"}`)}); got != "nobody-in-particular" {
 		t.Fatalf("a real handle was collapsed to %q", got)
 	}
 
@@ -1416,9 +1420,9 @@ func TestTheQueueSaysOneWordForNobody(t *testing.T) {
 	m.view = viewTodos
 	m.todos = []*Artifact{
 		{ID: "01HTW1", Type: "memory", Kind: "todo", Status: "todo",
-			Title: "the first one", Body: "OWNER: unowned"},
+			Title: "the first one", Fields: json.RawMessage(`{"assignee":"unowned"}`)},
 		{ID: "01HTW2", Type: "memory", Kind: "todo", Status: "todo",
-			Title: "the second one", Body: "OWNER: unassigned"},
+			Title: "the second one", Fields: json.RawMessage(`{"assignee":"unassigned"}`)},
 	}
 	screen := m.View()
 	for _, title := range []string{"the first one", "the second one"} {

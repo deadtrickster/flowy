@@ -82,9 +82,21 @@ func TestAnAssigneeIsAHandleOrItIsNobody(t *testing.T) {
 	}
 }
 
-// The order the field and the body are read in, which is the whole of the
-// compatibility with a queue written before the field existed.
-func TestTheAssigneeFieldOutranksTheOwnerLine(t *testing.T) {
+// WHO IS CARRYING A TODO IS THE FIELD, AND A BODY'S OWNER LINE IS NOT A CLAIM.
+//
+// This test used to assert the opposite order - field first, body's `OWNER:`
+// line second - which was the compatibility with a queue written before the
+// field existed. The fallback is gone and this is its replacement, because the
+// case worth pinning is no longer "which wins" but "the line is not an answer
+// at all".
+//
+// It was removed on a measurement, not on taste: of 192 todos on the live node,
+// 28 carry no field and an OWNER line, and every one of them is DONE - the
+// single open row with no field carries no line either. What the fallback
+// answered on those 28 is the AUTHOR, which the assign and done events say
+// properly with a seat and a moment attached, and reading it as a claim is how
+// three rows nobody was carrying were read as held.
+func TestAnOwnerLineIsNotAClaim(t *testing.T) {
 	fields := func(m map[string]any) json.RawMessage {
 		raw, err := json.Marshal(m)
 		if err != nil {
@@ -93,32 +105,31 @@ func TestTheAssigneeFieldOutranksTheOwnerLine(t *testing.T) {
 		return raw
 	}
 
-	// No field at all: the body is the answer, as it has always been.
+	// The line, wherever it sits in the body, says nothing about who is
+	// carrying the row.
 	old := &store.Artifact{Body: "OWNER: a-bench\nDEPENDS ON: nothing"}
-	if got := assigneeOf(old); got != "a-bench" {
-		t.Fatalf("a todo written with an OWNER line reads as %q", got)
+	if got := assigneeOf(old); got != "" {
+		t.Fatalf("a body's OWNER line was read as a claim: %q", got)
 	}
-	// Not the first line, so not a claim about this item.
 	if got := assigneeOf(&store.Artifact{Body: "DEPENDS ON: x\nOWNER: not-really"}); got != "" {
 		t.Fatalf("an OWNER further down the body was taken as the assignee: %q", got)
 	}
-	// A room on the item and no assignee is still the body's.
+	// Fields that say nothing about the assignee do not change that.
 	old.Fields = fields(map[string]any{store.RoomField: "build"})
-	if got := assigneeOf(old); got != "a-bench" {
-		t.Fatalf("fields with no assignee in them changed the answer to %q", got)
+	if got := assigneeOf(old); got != "" {
+		t.Fatalf("fields with no assignee in them answered %q", got)
 	}
 
-	// The field wins.
+	// The field is the answer.
 	old.Fields = fields(map[string]any{store.RoomField: "build", store.AssigneeField: "a-writer"})
 	if got := assigneeOf(old); got != "a-writer" {
-		t.Fatalf("the assignee field did not outrank the OWNER line: %q", got)
+		t.Fatalf("the assignee field reads as %q", got)
 	}
-	// And it wins EMPTY, which is the case a truthiness test gets wrong:
-	// somebody put the work down on purpose, and falling back to the OWNER
-	// line still in the body would hand it straight back to them.
+	// Including empty, which is the case a truthiness test gets wrong:
+	// somebody put the work down on purpose and the row says so.
 	old.Fields = fields(map[string]any{store.AssigneeField: ""})
 	if got := assigneeOf(old); got != "" {
-		t.Fatalf("unassigning a todo whose body names an owner left it on %q", got)
+		t.Fatalf("unassigning a todo left it on %q", got)
 	}
 }
 

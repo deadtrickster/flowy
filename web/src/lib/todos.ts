@@ -114,22 +114,6 @@ export function countTodos(list: Artifact[]): { active: number; open: number; do
 }
 
 /**
- * The owner is the first line of the body, not the artifact's owner_user.
- *
- * owner_user is whoever wrote the row, which for most of this queue is the one
- * operator principal that filed all of it - it says "operator" and answers
- * nothing. The body carries `OWNER: <name>` as its first line, which is the
- * claim somebody actually made about who is doing the work, and a literal `?`
- * there means nobody has taken it.
- */
-export function todoOwner(body: string): string {
-  const line = body.split("\n").find((l) => l.startsWith("OWNER:"));
-  const name = line?.slice("OWNER:".length).trim();
-  if (!name || NOBODY.has(name.toLowerCase())) return "";
-  return name;
-}
-
-/**
  * The words that mean nobody is carrying this. They all collapse to the empty
  * owner, so the panel says ONE word for one state.
  *
@@ -146,44 +130,52 @@ export function todoOwner(body: string): string {
 const NOBODY = new Set(["?", "-", "none", "nobody", "tbd", "unassigned", "unowned", "n/a"]);
 
 /**
- * Who is carrying a todo: the `assignee` field if the item has one, and the
- * body's OWNER line if it does not.
+ * Who is carrying a todo: the `assignee` field, and nothing else.
  *
- * The order is the compatibility, and it is the same order the node and the
- * terminal client read these in. The whole queue predates the field, and those
- * items still read the way they always did. But a field that is THERE wins even
- * when it is empty - somebody who unassigned a todo through this panel said so
- * out loud, and falling through to the OWNER line still sitting in the body
- * would quietly put the old name back on the next render.
+ * IT USED TO FALL BACK TO THE BODY'S `OWNER:` LINE and no longer does. That
+ * line is authorship from before the field existed - nothing has written one
+ * since assignment became an event - and reading it as a claim is what made
+ * three rows nobody was carrying read as held. Measured before removing it: of
+ * 192 todos on the live node, 28 have no field and an OWNER line, and every one
+ * of those is DONE; the single open row without a field carries no line at all.
  *
- * So the presence of the key is the question, not its truthiness: `""` is a
- * value here and `undefined` is a silence, which is why this cannot go through
- * fieldOf below.
+ * A field that is THERE wins even when it is empty, which is unchanged and is
+ * the other half of the rule: somebody who unassigned a todo through this panel
+ * said so out loud, and a read that went looking for a second source would put
+ * the old name back on the next render.
+ *
+ * The words for nobody are normalised here, because they can be written INTO
+ * the field as easily as they were written into a body - "unassigned" and
+ * "unowned" are one state and the panel says one word for it.
  */
 export function todoAssignee(artifact: Artifact): string {
   const fields = artifact.fields;
   if (fields && typeof fields === "object") {
     const named = (fields as Record<string, unknown>).assignee;
-    if (typeof named === "string") return named.trim();
+    if (typeof named === "string") {
+      const name = named.trim();
+      return NOBODY.has(name.toLowerCase()) ? "" : name;
+    }
   }
-  return todoOwner(artifact.body ?? "");
+  return "";
 }
 
 /**
- * todoAssigneeClaimed is the FIELD alone, without the OWNER-line fallback, and
- * it is what a claim states it expected. The node's compare-and-set judges the
- * field: a row whose holder lives only on the body's OWNER line holds nothing a
- * claim can race for, and a claim that expected the display's fallback would be
- * refused by the guard for a holder the guard cannot see. The display keeps the
- * compatibility; the claim states the fact.
+ * todoAssigneeClaimed is what a claim states it expected, and it is now the same
+ * reading as the display's - which is the point of this pair collapsing.
+ *
+ * They differed while the display fell back to the body's OWNER line and the
+ * node's compare-and-set judged the field alone: a row whose holder lived only
+ * on that line held nothing a claim could race for, so a claim quoting the
+ * display was refused for a holder the guard could not see. One reading now, so
+ * there is no gap to state a claim against.
+ *
+ * Kept as its own name because the call sites mean different things by it - one
+ * is drawing a row and the other is naming what it expects - and a claim site
+ * reading a display helper is how the two drifted apart in the first place.
  */
 export function todoAssigneeClaimed(artifact: Artifact): string {
-  const fields = artifact.fields;
-  if (fields && typeof fields === "object") {
-    const named = (fields as Record<string, unknown>).assignee;
-    if (typeof named === "string") return named.trim();
-  }
-  return "";
+  return todoAssignee(artifact);
 }
 
 /**

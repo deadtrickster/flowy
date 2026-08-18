@@ -803,14 +803,25 @@ var nobodyWords = map[string]bool{
 // NobodyName reports whether name is one of them.
 func NobodyName(name string) bool { return nobodyWords[strings.ToLower(strings.TrimSpace(name))] }
 
-// AssigneeOf is who a todo says is carrying it: the field if it has one, and the
-// body's OWNER line if it does not.
+// AssigneeOf is who a todo says is carrying it: the field, and nothing else.
 //
-// The order is the compatibility. Every todo in this queue was written before
-// there was a field, with `OWNER: <name>` as the first line of the body, and
-// those still read the way they always did. But a key that is there wins even
-// when it is empty - somebody said out loud that nobody is carrying this, and a
-// read that fell through to a stale OWNER line would quietly undo them.
+// IT USED TO FALL BACK TO THE BODY'S `OWNER:` LINE, and that fallback is gone.
+// The line is authorship from before claims existed - nothing has written one
+// since assignment became an event - and reading it as a claim is a real
+// incident rather than a hypothetical: it is how three rows that nobody was
+// carrying were read as held, and how the seat that then reassigned them
+// believed it was taking free work.
+//
+// Removed on a measurement rather than on the argument. Of 192 todos on the
+// live node, 45 carry no assignee field and 28 of those carry an OWNER line -
+// and ALL 28 ARE DONE. The one open row without a field has no line at all. So
+// the fallback answers for closed rows only, and what it answers there is
+// "the author", which the assign and done events say properly, with a seat and
+// a moment attached.
+//
+// A key that is there wins even when it is empty, which is unchanged and is the
+// other half of the same rule: somebody saying out loud that nobody is carrying
+// this must not be undone by a read that goes looking for another source.
 //
 // This is the current value and nothing else. WHO put it there and WHEN is the
 // log's answer, not the row's - see AssignTodo, which writes the two together so
@@ -819,29 +830,6 @@ func AssigneeOf(a *Artifact) string {
 	if named := artifactField(a, AssigneeField); named != nil {
 		name, _ := named.(string)
 		return strings.TrimSpace(name)
-	}
-	if a == nil {
-		return ""
-	}
-	return ownerLine(a.Body)
-}
-
-// ownerLine reads the convention: `OWNER: <name>` as the FIRST line of the body.
-// Further down it is a sentence about somebody else's item, not a claim about
-// this one, which is the same read the TUI and the console each make.
-func ownerLine(body string) string {
-	for _, line := range strings.Split(body, "\n") {
-		line = strings.TrimSpace(line)
-		if rest, found := strings.CutPrefix(line, "OWNER:"); found {
-			name := strings.TrimSpace(rest)
-			if NobodyName(name) {
-				return ""
-			}
-			return name
-		}
-		if line != "" {
-			return ""
-		}
 	}
 	return ""
 }

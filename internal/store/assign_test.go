@@ -269,8 +269,10 @@ func TestTheVerbRefusesANameThatIsNotOne(t *testing.T) {
 //
 // So a read now answers both from the row itself, resolved the one way -
 // AssigneeOf - rather than each client rolling its own and getting it wrong.
-// The legacy OWNER line still resolves, because most of this queue predates the
-// field.
+//
+// A legacy OWNER line no longer resolves, and the row here that carries one is
+// the assertion of that: the line is authorship from before claims existed, and
+// reading it as a claim is precisely the misread in the paragraph above.
 func TestAReadSaysWhoIsCarryingItWithoutDiggingIntoFields(t *testing.T) {
 	ctx, db := open(t)
 
@@ -285,9 +287,13 @@ func TestAReadSaysWhoIsCarryingItWithoutDiggingIntoFields(t *testing.T) {
 	// Written the way the whole queue was before the field existed: the OWNER
 	// line in the body and NO assignee key, because there was no field to put
 	// one in. The key has to go rather than be left empty - todoIn writes it
-	// either way, and a key that is there wins even when it is empty, so a row
-	// that kept it would be somebody saying nobody is carrying this instead of
-	// the pre-field row it stands in for. See AssigneeOf.
+	// either way, and a key that is there is somebody saying nobody is carrying
+	// this rather than the pre-field row it stands in for.
+	//
+	// IT READS AS UNCARRIED, which is the change: the line says who wrote the
+	// row and nobody has claimed it since. Who did the work on a row like this
+	// is the assign and done events' answer, with a seat and a moment on it -
+	// not a line in prose that any writer could put there. See AssigneeOf.
 	legacy := todoIn(t, ctx, db, author, "rewrite the pruning notes", VisibilityShared, "")
 	legacy.Body = "OWNER: a-gardener\n\nthe notes are stale"
 	legacy.Fields = fieldsWithout(t, legacy.Fields, AssigneeField)
@@ -299,7 +305,7 @@ func TestAReadSaysWhoIsCarryingItWithoutDiggingIntoFields(t *testing.T) {
 
 	want := map[string]string{
 		claimed.ID: "a-welder",
-		legacy.ID:  "a-gardener",
+		legacy.ID:  "",
 		unowned.ID: "",
 	}
 
