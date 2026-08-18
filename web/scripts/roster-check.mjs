@@ -58,6 +58,21 @@ try {
   await page.addInitScript((t) => localStorage.setItem("flowy.token", t), token);
   await page.goto(`${base}/chat/general`, { timeout: 20_000 }).catch(() => {});
 
+  // THE ROSTER IS A TAB NOW, so it is opened rather than assumed. It used to be
+  // a header above the side column's tab strip, permanently drawn, which is why
+  // this check never clicked anything - and why the operator could not see the
+  // queue underneath it once the fleet had a dozen readers.
+  const tab = page.locator('[data-room-pane="listening"]');
+  try {
+    await tab.waitFor({ state: "visible", timeout: 20_000 });
+  } catch {
+    console.error(
+      'the room\'s side column has no listening tab: nothing matches [data-room-pane="listening"]',
+    );
+    process.exit(1);
+  }
+  await tab.click();
+
   // The roster refreshes on its own clock rather than with the room's messages,
   // so the first paint of the room has no listeners on it. Waiting for a LINE
   // and not for the panel is the same lesson browser-check.mjs learned about

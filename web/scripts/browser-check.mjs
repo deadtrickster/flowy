@@ -127,7 +127,12 @@ ${shown}`);
   // lost its count looks right in a click-through - which is why the body says
   // which pane it is on the element, and why every title is read for a number
   // in a colour of its own.
-  const PANES = ["todos", "merges", "thread", "worklog"];
+  // FIVE NOW, and the fifth is the rule this strip exists to enforce. The
+  // roster was a header ABOVE the strip - permanently drawn, taking height from
+  // the queue and taking more of it as the fleet grew, which is the operator's
+  // "listening panel grew so much i cant see todos anymore". A list of rows is
+  // a tab; there is no second place to put one.
+  const PANES = ["todos", "merges", "thread", "worklog", "listening"];
 
   const named = await page
     .locator("aside [data-room-pane]")
@@ -137,6 +142,28 @@ ${shown}`);
       `the room's side column has tabs [${named.join(", ")}], and this check is about
 [${PANES.join(", ")}]`,
     );
+    process.exit(1);
+  }
+
+  // AND NOTHING IS DRAWN ABOVE THE STRIP. This is the rule rather than one more
+  // pane: every feature that shipped into this column appended a panel above or
+  // below the tabs, because appending is the smaller diff, and four features
+  // later the queue the column exists for was off the screen and the operator
+  // had asked for the same thing in five different words. A list of rows is a
+  // tab; there is no second place to put one. Asserted structurally, so the
+  // sixth feature cannot quietly reopen the stack - the strip is the column's
+  // first child, and anything before it is the stack coming back.
+  const first = await page.evaluate(() => {
+    const column = document.querySelector("aside [role=tablist]")?.parentElement;
+    const head = column?.firstElementChild;
+    if (!head) return "the side column has no tab strip at all";
+    return head.getAttribute("role") === "tablist"
+      ? ""
+      : `the side column draws <${head.tagName.toLowerCase()}> above its tab strip: ` +
+          `${(head.textContent || "").trim().slice(0, 80)}`;
+  });
+  if (first) {
+    console.error(first);
     process.exit(1);
   }
 

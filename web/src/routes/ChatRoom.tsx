@@ -56,7 +56,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const CHAT_WINDOW = 60;
 
 /** Pane is which of the side column's four tabs is showing. */
-type Pane = "todos" | "merges" | "thread" | "worklog";
+type Pane = "todos" | "merges" | "thread" | "worklog" | "listening";
 
 /**
  * The colours the tab counts are drawn in, and what each one means.
@@ -73,6 +73,7 @@ const COUNT_LAND = "#4fae7a"; // green - the node says it may land
 const COUNT_REFUSED = "#d1585f"; // red - the node says it may not
 const COUNT_THREAD = "#3fa3c9"; // cyan - how much has been said in the thread
 const COUNT_WORKLOG = "#b07ae0"; // violet - how much the fleet has written down
+const COUNT_LISTENING = "#4fae7a"; // green - somebody has an ear on this room
 
 /**
  * One room: the messages, a box to say something as the person holding the
@@ -115,6 +116,13 @@ export function ChatRoom() {
    * until now was only ever a page away at /worklog - is the fourth.
    */
   const [pane, setPane] = useState<Pane>("todos");
+  // The roster's two numbers, read where the tab is drawn rather than inside
+  // the pane: the strip has to report them without being opened, which is the
+  // whole reason these are tabs. A presence that has not arrived is not zero -
+  // it is unknown - so both read as nothing until it does, and the tab simply
+  // carries no counts rather than claiming an empty room.
+  const listening = presence?.listeners.filter((l) => l.state !== "lost").length ?? 0;
+  const lost = presence?.listeners.filter((l) => l.state === "lost").length ?? 0;
   /** The worklog, for the pane and for the count in its tab. See the read below. */
   const [worklog, setWorklog] = useState<ActivityItem[]>([]);
   const [worklogError, setWorklogError] = useState<string | null>(null);
@@ -587,8 +595,6 @@ export function ChatRoom() {
         which of the four wants them without opening any.
       */}
       <aside className="flex w-[26rem] shrink-0 flex-col border-border border-l">
-        <RoomRoster presence={presence} />
-
         {/*
           Tabs, not a stack. The operator asked four times: the counts belong in
           the tab title so a person can see whether a pane needs them without
@@ -646,6 +652,23 @@ export function ChatRoom() {
             <Count colour={COUNT_WORKLOG}>
               {worklog.length} entr{worklog.length === 1 ? "y" : "ies"}
             </Count>
+          </PaneTab>
+          {/*
+            AND WHO HAS AN EAR ON IS A TAB, not the header it used to be.
+            It was drawn above the strip, permanently, so it took height from
+            the queue the column exists for and took more of it as the fleet
+            grew - "listening panel grew so much i cant see todos anymore". A
+            roster is a list of rows, and the rule this pane now follows is
+            that a list of rows is a tab.
+            Its counts are the two states worth acting on: who is listening,
+            and who was armed and stopped. The second is the one that answers
+            "why is that agent not replying", so it is on the strip rather
+            than a click away, and it stays off the strip entirely when it is
+            zero - a red nought is a thing to check every time you look at it.
+          */}
+          <PaneTab name="listening" on={pane === "listening"} pick={setPane}>
+            <Count colour={COUNT_LISTENING}>{listening} listening</Count>
+            {lost > 0 ? <Count colour={COUNT_REFUSED}>{lost} lost</Count> : null}
           </PaneTab>
         </div>
 
@@ -716,6 +739,11 @@ export function ChatRoom() {
               )}
             </div>
           </section>
+        ) : null}
+        {pane === "listening" ? (
+          <div data-room-pane-body="listening" className="min-h-0 flex-1 overflow-y-auto">
+            <RoomRoster presence={presence} />
+          </div>
         ) : null}
         {pane === "worklog" ? (
           <div data-room-pane-body="worklog" className="flex min-h-0 flex-1 flex-col">
