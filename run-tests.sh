@@ -2599,7 +2599,14 @@ the_cli_says_which_project_this_token_writes_to() {
 		return 1
 		;;
 	esac
-	printf '%s\n' "$out" | head -1
+	# NOT `| head -1`. This script runs under `set -euo pipefail`, and head exits
+	# the moment it has its line - so printf can take EPIPE, die with "write
+	# error: Broken pipe", and pipefail promotes that to the pipeline's status.
+	# The check then fails having proved exactly what it set out to prove.
+	#
+	# It is a race, so it fails rarely and looks like flake. Parameter expansion
+	# takes the first line with no second process to lose to.
+	printf '%s\n' "${out%%$'\n'*}"
 }
 
 # The flag refuses nothing, and says so. The write lands - pa is a real
@@ -6418,7 +6425,14 @@ a_second_waiter_for_one_name_is_refused() {
 		return 1
 		;;
 	esac
-	printf '%s\n' "$out" | head -1
+	# NOT `| head -1`. This script runs under `set -euo pipefail`, and head exits
+	# the moment it has its line - so printf can take EPIPE, die with "write
+	# error: Broken pipe", and pipefail promotes that to the pipeline's status.
+	# The check then fails having proved exactly what it set out to prove.
+	#
+	# It is a race, so it fails rarely and looks like flake. Parameter expansion
+	# takes the first line with no second process to lose to.
+	printf '%s\n' "${out%%$'\n'*}"
 }
 
 # ------------------------------------------------- the queue across projects
