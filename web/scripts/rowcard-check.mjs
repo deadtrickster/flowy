@@ -50,6 +50,15 @@ try {
   const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
   const crashes = [];
   page.on("pageerror", (err) => crashes.push(String(err)));
+
+  // What the row's own fetch answered, kept so the failure below can say which
+  // of three things happened rather than only that the title was absent.
+  const fetches = [];
+  page.on("response", (res) => {
+    if (res.url().includes(`/api/artifact/${rowId}`)) {
+      fetches.push(`${res.status()} ${res.request().method()}`);
+    }
+  });
   await page.addInitScript((t) => localStorage.setItem("flowy.token", t), token);
   await page.goto(`${base}/chat/${room}`, { timeout: 20_000 }).catch(() => {});
 
@@ -121,7 +130,24 @@ try {
     // The URL and not the page text decides which failure this is: the room
     // itself contains the row id - in the chip and in the raise message - so
     // "the id is on the page" is true of the room we may not have left.
-    die(`on ${page.url()}: the page the card links to does not show ${JSON.stringify(rowTitle)}`);
+    // NAME WHICH FAILURE IT WAS. The row's own fetch is the split: a 404 or a
+    // 410 renders an empty page indistinguishable from a slow one, and no
+    // fetch at all says the route never mounted rather than the data never
+    // arriving. This check died in a VM while the same tree was green on the
+    // host, and nothing in its message could separate those three - two seats
+    // spent twenty minutes before anybody could even state a hypothesis.
+    const answered = fetches.length ? fetches.join(", ") : "NO FETCH OF THE ROW AT ALL";
+    // THE TAIL, NOT THE HEAD. Every page here starts with the same nav rail, so
+    // the first 200 characters are identical whatever went wrong - the first
+    // run of this diagnostic returned the sidebar and nothing else. The
+    // document renders after it, so the end of the text is where the evidence
+    // is.
+    const whole = (await pageText()).replace(/\s+/g, " ");
+    const painted = whole.length > 240 ? `...${whole.slice(-240)}` : whole;
+    die(
+      `on ${page.url()}: the page the card links to does not show ${JSON.stringify(rowTitle)}. ` +
+        `the row's fetch answered: ${answered}. the page showed: ${JSON.stringify(painted)}`,
+    );
   }
 
   // 4. DISMISS LEAVES NOTHING BEHIND. Back to the room, open it again, escape.
