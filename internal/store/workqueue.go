@@ -276,6 +276,41 @@ func (d *DB) FinishWork(ctx context.Context, p *Principal, id string) (*Artifact
 		}
 		return nil, nil, err
 	}
+
+	// AND THE LIFECYCLE, because the caller said "done" and meant it.
+	//
+	// This verb wrote `did` and `did_at` and stopped there, so a row finished
+	// through the work queue kept status=todo and every board that reads the
+	// status went on showing it open. Measured on the live node: one row, one
+	// second, POST /api/work/{id}/done answers 200 and leaves todo, while POST
+	// /api/artifact/{id}/status writes done. Two doors, two columns, neither
+	// aware of the other - and three of us spent an hour deciding which was
+	// broken. The answer was that "done" named bookkeeping in one place and
+	// lifecycle in the other.
+	//
+	// THROUGH MoveArtifactStatus, which is the path the status door already
+	// uses, rather than writing the column here. Raised by claude-host and it
+	// is the difference between closing this and making it worse: a second
+	// direct writer would add a TWELFTH hand on artifacts.status and leave the
+	// single-writer work (01M0ABBCD8) with one more caller to unpick. This way
+	// the count does not grow, and the move carries its own entry in the same
+	// transaction - a status with no record behind it is exactly what that verb
+	// exists to prevent.
+	//
+	// THE NAME IS STILL WRONG and the row says so. "done" on this door means
+	// "recorded who did it"; that is defensible, and it cannot go on sharing a
+	// word with the status a board reads. This makes the row honest today and
+	// settles nothing about what the verb should be called.
+	if art.Status != DoneStatus {
+		move := workEvent(art, p, EventWorkDone, actor, actorKind, map[string]string{
+			"from": art.Status,
+			"to":   DoneStatus,
+		})
+		move.Body = "finished " + art.ID + ": " + art.Status + " -> " + DoneStatus
+		if err := d.MoveArtifactStatus(ctx, art, DoneStatus, move); err != nil {
+			return nil, nil, err
+		}
+	}
 	return art, entry, nil
 }
 

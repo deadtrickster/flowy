@@ -194,6 +194,19 @@ func TestFinishingLeavesWhoDidItOnTheRow(t *testing.T) {
 	if _, _, err := db.ClaimWork(ctx, me, id); err == nil {
 		t.Error("a finished item was claimable")
 	}
+
+	// AND THE BOARD AGREES. The row's `did` said finished while artifacts.status
+	// still said todo, so every surface that reads the status went on drawing it
+	// open - measured on the live node as 200 from /api/work/{id}/done with the
+	// row unchanged. Two columns meaning one thing, and the one the board reads
+	// was the one nobody wrote.
+	after, err := db.GetArtifact(ctx, id)
+	if err != nil {
+		t.Fatalf("read the row back: %v", err)
+	}
+	if after.Status != DoneStatus {
+		t.Errorf("finished work reads status %q - the board still shows it open", after.Status)
+	}
 }
 
 // Releasing puts it back for anybody, and only the holder may.
