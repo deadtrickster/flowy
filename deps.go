@@ -74,7 +74,7 @@ func (s *server) handleAddDep(w http.ResponseWriter, r *http.Request) {
 	}
 	e, err := s.db.AddDep(r.Context(), p, r.PathValue("id"), strings.TrimSpace(req.Blocker))
 	if err != nil {
-		writeQueueError(w, r, err)
+		s.writeQueueError(w, r, err)
 		return
 	}
 	// The state the edge leaves the todo in, so a caller sees what it did without
@@ -97,7 +97,7 @@ func (s *server) handleRemoveDep(w http.ResponseWriter, r *http.Request) {
 	p := principalOf(r)
 	e, err := s.db.RemoveDep(r.Context(), p, r.PathValue("id"), r.PathValue("blocker"))
 	if err != nil {
-		writeQueueError(w, r, err)
+		s.writeQueueError(w, r, err)
 		return
 	}
 	view, err := viewDeps(r.Context(), s.db, p, e.Artifact)
@@ -114,7 +114,7 @@ func (s *server) handleRemoveDep(w http.ResponseWriter, r *http.Request) {
 func (s *server) handleGetDeps(w http.ResponseWriter, r *http.Request) {
 	view, err := viewDeps(r.Context(), s.db, principalOf(r), r.PathValue("id"))
 	if err != nil {
-		writeQueueError(w, r, err)
+		s.writeQueueError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, view)
@@ -185,7 +185,13 @@ func (s *server) handleReady(w http.ResponseWriter, r *http.Request) {
 // mistake and say what it was, because each of them is something the caller can
 // fix - the two ends are the same todo, the loop already goes the other way, the
 // edge is already there, the assignee is a paragraph.
-func writeQueueError(w http.ResponseWriter, r *http.Request, err error) {
+// A refusal that carries a code also carries the row explaining it - see
+// knownissue.go. None of the refusals below carries one yet, so this costs a
+// type assertion and no query today; it is here rather than at the merge queue
+// alone because the point of the mechanism is that any door refusing for a
+// reason somebody has already written down cites where it is written, and the
+// next such reason should need a code on the refusal and nothing else.
+func (s *server) writeQueueError(w http.ResponseWriter, r *http.Request, err error) {
 	var (
 		notATodo store.NotATodoError
 		refusal  store.DepRefusal
@@ -196,7 +202,7 @@ func writeQueueError(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, store.ErrNotFound):
 		writeJSON(w, http.StatusNotFound, errorBody("no such todo"))
 	case errors.As(err, &refusal):
-		writeJSON(w, http.StatusBadRequest, errorBody(refusal.Error()))
+		s.writeRefusal(w, r, http.StatusBadRequest, err, refusal.Error())
 	default:
 		serverError(w, r, err)
 	}

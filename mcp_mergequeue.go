@@ -78,6 +78,15 @@ type mergeEntry struct {
 	Status     string          `json:"status"`
 	Admissible *bool           `json:"admissible,omitempty"`
 	Reason     string          `json:"reason,omitempty"`
+	// KnownIssue is the row somebody wrote about this refusal, under the same
+	// key and in the same shape the HTTP door uses - see knownissue.go. An agent
+	// reading a no it did not expect is the reader this exists for: it is the
+	// one that otherwise re-derives the diagnosis from source, correctly, forty
+	// minutes after somebody else already filed it.
+	KnownIssue *store.KnownIssue `json:"known_issue,omitempty"`
+	// code carries the refusal's token as far as the batch lookup below, and no
+	// further.
+	code string
 }
 
 func mergeQueueTool(ctx context.Context, m *mcpServer, p *store.Principal, raw json.RawMessage) (any, error) {
@@ -137,9 +146,25 @@ func mergeQueueTool(ctx context.Context, m *mcpServer, p *store.Principal, raw j
 			e.Admissible = &ok
 			if err != nil {
 				e.Reason = err.Error()
+				e.code = store.RefusalCodeOf(err)
 			}
 		}
 		out = append(out, e)
+	}
+
+	// The rows explaining what was refused, one query for the page. No deployed
+	// tip to consider here: this door never guesses one, so every refusal is
+	// about the item and is explained as itself.
+	codes := make([]string, 0, len(out))
+	for _, e := range out {
+		if e.code != "" {
+			codes = append(codes, e.code)
+		}
+	}
+	if found := knownIssues(ctx, m.db, p, codes, q.ScopeAll); found != nil {
+		for i := range out {
+			out[i].KnownIssue = store.PickKnownIssue(found, out[i].code)
+		}
 	}
 
 	return map[string]any{

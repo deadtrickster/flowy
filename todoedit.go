@@ -53,7 +53,7 @@ func (s *server) handleTodoEdit(w http.ResponseWriter, r *http.Request) {
 	}
 	art, entry, err := s.db.EditTodo(r.Context(), p, r.PathValue("id"), req.Title, req.Body, req.Saw)
 	if err != nil {
-		writeEditError(w, r, err)
+		s.writeEditError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"item": art, "entry": entry})
@@ -68,7 +68,7 @@ func (s *server) handleTodoEdits(w http.ResponseWriter, r *http.Request) {
 
 	art, err := s.db.ReadWorkItem(r.Context(), p, r.PathValue("id"))
 	if err != nil {
-		writeQueueError(w, r, err)
+		s.writeQueueError(w, r, err)
 		return
 	}
 	log, err := s.db.TodoEditLog(r.Context(), p, art.ID)
@@ -87,17 +87,17 @@ func (s *server) handleTodoEdits(w http.ResponseWriter, r *http.Request) {
 // the reader can SEE the item, so pretending it is not there would be a worse
 // lie than saying it is not theirs, and the message names the doors that do
 // work for a principal who only wants the work moved.
-func writeEditError(w http.ResponseWriter, r *http.Request, err error) {
+func (s *server) writeEditError(w http.ResponseWriter, r *http.Request, err error) {
 	var (
 		moved store.ErrTodoMoved
 		mine  store.ErrNotYoursToEdit
 	)
 	switch {
 	case errors.As(err, &moved):
-		writeJSON(w, http.StatusConflict, errorBody(moved.Error()))
+		s.writeRefusal(w, r, http.StatusConflict, err, moved.Error())
 	case errors.As(err, &mine):
-		writeJSON(w, http.StatusForbidden, errorBody(mine.Error()))
+		s.writeRefusal(w, r, http.StatusForbidden, err, mine.Error())
 	default:
-		writeQueueError(w, r, err)
+		s.writeQueueError(w, r, err)
 	}
 }

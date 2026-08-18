@@ -139,6 +139,16 @@ type ErrMergeNotAdmissible struct {
 	GatedTip  string
 	TargetTip string
 	Reason    string
+	// Code names WHICH refusal this is, as a stable token, so a row can be
+	// written against it and handed to the reader who just hit it - see
+	// knownissue.go, which holds the codes, the lookup and the method that
+	// reads this field. Reason stays the sentence for a person; a lookup keyed
+	// on prose would unhook every row the day somebody reworded it.
+	//
+	// A refusal added here should get one. Nothing breaks without it: an empty
+	// code resolves to no row, which is what every door did before this
+	// existed.
+	Code string
 }
 
 func (e *ErrMergeNotAdmissible) Error() string {
@@ -172,6 +182,7 @@ func MergeAdmissible(a *Artifact, targetTip string) error {
 	if a == nil || a.Kind != MergeKind {
 		return &ErrMergeNotAdmissible{
 			Item:   idOf(a),
+			Code:   RefusalMergeNotAnItem,
 			Reason: "it is not a merge queue item",
 		}
 	}
@@ -179,6 +190,7 @@ func MergeAdmissible(a *Artifact, targetTip string) error {
 	if tip == "" {
 		return &ErrMergeNotAdmissible{
 			Item: a.ID, Branch: BranchOf(a), Target: TargetOf(a),
+			Code:   RefusalMergeTipUnstated,
 			Reason: "the tip it would land on was not stated, and a comparison against nothing always passes",
 		}
 	}
@@ -186,6 +198,7 @@ func MergeAdmissible(a *Artifact, targetTip string) error {
 	if gated == "" {
 		return &ErrMergeNotAdmissible{
 			Item: a.ID, Branch: BranchOf(a), Target: TargetOf(a), TargetTip: tip,
+			Code:   RefusalMergeUngated,
 			Reason: "no gate has measured it - there is no verdict to be stale",
 		}
 	}
@@ -193,6 +206,7 @@ func MergeAdmissible(a *Artifact, targetTip string) error {
 		return &ErrMergeNotAdmissible{
 			Item: a.ID, Branch: BranchOf(a), Target: TargetOf(a),
 			GatedTip: gated, TargetTip: tip,
+			Code:   RefusalMergeStaleGate,
 			Reason: "its gate measured a different tip",
 		}
 	}

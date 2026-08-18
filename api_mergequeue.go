@@ -61,6 +61,17 @@ type mergeQueueItem struct {
 	// Recording the verdict afterwards is what made the window invisible; naming
 	// the run when it STARTS is what makes it visible.
 	Gating bool `json:"gating"`
+	// KnownIssue is the row that explains this refusal, when somebody has
+	// written one - see knownissue.go. It rides beside the reason rather than
+	// arriving as a banner over the page, because the whole point is that it
+	// reaches the reader ATTACHED TO THE THING THAT PROVOKED THE QUESTION. A
+	// banner is a second announcement, and announcing is what already failed.
+	KnownIssue *store.KnownIssue `json:"known_issue,omitempty"`
+	// code is the refusal's own token, kept here only to resolve the above in
+	// one query after the page is built. Unexported, so it never reaches the
+	// wire: the client has the code inside known_issue when there is a row, and
+	// no use for it when there is not.
+	code string
 }
 
 func (s *server) handleMergeQueue(w http.ResponseWriter, r *http.Request) {
@@ -163,6 +174,7 @@ func (s *server) handleMergeQueue(w http.ResponseWriter, r *http.Request) {
 			it.Admissible = &ok
 			if err != nil {
 				it.Reason = err.Error()
+				it.code = store.RefusalCodeOf(err)
 			}
 		}
 		// HELD IS NOT NOT-ADMISSIBLE, and the two must never share a boolean.
@@ -181,6 +193,42 @@ func (s *server) handleMergeQueue(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		items = append(items, it)
+	}
+
+	// The rows explaining these refusals, in one query for the whole page, and
+	// only when something was actually refused.
+	//
+	// WHY THE DEPLOY CODE COMES FIRST when the tip is the node's build stamp.
+	// Under that fallback every item is judged against whenever somebody last
+	// deployed, so a page of refusals can be entirely an artefact of the node
+	// being behind - which happened, and cost an agent three gate runs and
+	// another forty minutes of re-derivation. Each item's own reason is true and
+	// is the wrong thing to read first. If nobody has written a row about the
+	// deploy, this falls straight through to the item's own case.
+	codes := make([]string, 0, len(items)+1)
+	for _, it := range items {
+		if it.code != "" {
+			codes = append(codes, it.code)
+		}
+	}
+	// Nothing was refused, so nothing needs explaining, and the query does not
+	// run - a queue where everything may land is the common case and must not
+	// pay for this.
+	if len(codes) > 0 && tipFrom == "deployed" {
+		codes = append([]string{store.RefusalMergeTipDeployed}, codes...)
+	}
+	if found := knownIssues(r.Context(), s.db, p, codes, scopeAll(r, p)); found != nil {
+		for i := range items {
+			if items[i].code == "" {
+				continue
+			}
+			if tipFrom == "deployed" {
+				items[i].KnownIssue = store.PickKnownIssue(found,
+					store.RefusalMergeTipDeployed, items[i].code)
+				continue
+			}
+			items[i].KnownIssue = store.PickKnownIssue(found, items[i].code)
+		}
 	}
 
 	// How many runs are measuring right now. A lander reads this before merging:
