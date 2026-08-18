@@ -121,9 +121,7 @@ try {
     // The URL and not the page text decides which failure this is: the room
     // itself contains the row id - in the chip and in the raise message - so
     // "the id is on the page" is true of the room we may not have left.
-    die(
-      `on ${page.url()}: the page the card links to does not show ${JSON.stringify(rowTitle)}`,
-    );
+    die(`on ${page.url()}: the page the card links to does not show ${JSON.stringify(rowTitle)}`);
   }
 
   // 4. DISMISS LEAVES NOTHING BEHIND. Back to the room, open it again, escape.

@@ -261,8 +261,16 @@ func (s *server) handleMergeQueue(w http.ResponseWriter, r *http.Request) {
 			"held":        lockLive,
 			"holder":      lock.Holder,
 			"holder_name": lock.HolderName,
-			"until":       lock.Until,
-			"taken_at":    lock.TakenAt,
+			// WHICH WORK the target is held for, which is half of why the lock
+			// records it. Every session of a seat shares a principal, so
+			// "held by claude-host" is a sentence a claude-host session reads
+			// as "held by me" - and the seat that wanted to know which of its
+			// three sessions held master had to message two agents and wait to
+			// learn something one read should have answered. The store had it
+			// an hour before this door said it.
+			"item":     lock.Item,
+			"until":    lock.Until,
+			"taken_at": lock.TakenAt,
 		}
 	} else {
 		response["lock"] = map[string]any{"held": false}
