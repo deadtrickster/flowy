@@ -1,6 +1,8 @@
 package store
 
-import "strings"
+import (
+	"strings"
+)
 
 // WHO RAISED A QUEUE ITEM, which is not the same fact as who wrote the row.
 //

@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -230,6 +231,34 @@ func (s *server) handleCreateArtifact(w http.ResponseWriter, r *http.Request) {
 	// nothing keeps what the row has, including empty, because healing a stale
 	// status on an unrelated edit moves other people's work behind their backs.
 	art.Status = defaultWorkStatus(art.Status, art.Kind, update)
+
+	// AND WHO RAISED IT, for the same reason and with the same rule.
+	//
+	// raiser is stamped by POST /api/chat/{room}/todo and by the MCP raise tool
+	// and by nothing else - so a row written through THIS door, which is what
+	// the console's /new page and every one of our scripts uses, carries no
+	// reporter at all. Measured on the live node: the six most recent todos,
+	// raiser on zero of them, and the operator noticing that todos do not show
+	// who reported them.
+	//
+	// The caller is the raiser when nothing else said. That is not a guess: a
+	// direct create IS somebody stating the work, and the principal making the
+	// request is who stated it. What raiser.go refuses to guess is a raiser for
+	// a row written BEFORE the key existed, where nobody stated anything and
+	// owner_user would be this node inventing a fact - those rows still answer
+	// "" and the console should show that rather than a name.
+	//
+	// Create only, and only for a queue kind. An update leaves it alone,
+	// because where work came from is settled when it is raised and does not
+	// happen again.
+	if !update {
+		if raised, err := raiserDefault(art, s.db.SeatHandle(r.Context(), p)); err != nil {
+			writeJSON(w, http.StatusBadRequest, errorBody(err.Error()))
+			return
+		} else if raised != nil {
+			art.Fields = raised
+		}
+	}
 
 	write := s.db.CreateArtifact
 	if update {
@@ -1133,4 +1162,33 @@ func assigneeArg(raw string) (name string, unassigned bool, err error) {
 		return "", false, err
 	}
 	return name, false, nil
+}
+
+// raiserDefault stamps the caller as the raiser of a queue row that names
+// nobody, and answers nil when there is nothing to change.
+//
+// THE HANDLE, NOT THE ID. The first cut of this used chatActor, which is what
+// authorship uses, and wrote 01USER-P into the column - an id, in the one place
+// a person reads a name. store.SeatHandle answers with the handle or with
+// nothing, and nothing is the honest answer for a user who has none: a row
+// showing no reporter is a fact, and a row showing an id is noise.
+//
+// It reads the fields the caller sent rather than replacing them, because a
+// create may carry a room, a category or an assignee and dropping those to add
+// one key would be a worse bug than the one it fixes.
+func raiserDefault(a *store.Artifact, who string) (json.RawMessage, error) {
+	if who == "" || !store.IsWorkKind(a.Kind) {
+		return nil, nil
+	}
+	if store.RaiserOf(a) != "" {
+		return nil, nil
+	}
+	fields := map[string]any{}
+	if len(a.Fields) > 0 {
+		if err := json.Unmarshal(a.Fields, &fields); err != nil {
+			return nil, fmt.Errorf("fields must be a json object: %w", err)
+		}
+	}
+	fields[store.RaiserField] = who
+	return json.Marshal(fields)
 }
