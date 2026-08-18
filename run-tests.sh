@@ -3377,9 +3377,17 @@ a_dm_is_on_none_of_a_third_principals_surfaces() {
 # endpoint that is not a place to read somebody else's conversation from.
 a_dm_is_not_handed_over_by_scope_all() {
 	recall
-	api GET "$TOKEN_OP" '/api/dm?since=0&scope=all' || return 1
-	want_eq "the private log under scope=all" "$(chat_len ".id == \"$DM_ID\"")" 0 || return 1
-	printf 'scope=all is not a way into a private log that is not yours\n'
+	# The door refuses the parameter outright rather than reading it and
+	# declining to widen. Both leave the private log private, but only the
+	# refusal SAYS SO - and this check used to pass because /api/dm ignored
+	# `scope` silently, which is indistinguishable from honouring it and
+	# finding nothing. A caller could not tell those apart, and neither could
+	# this check.
+	want_status 400 GET "$TOKEN_OP" '/api/dm?since=0&scope=all' || return 1
+	# And the log itself is still not the operator's to read.
+	api GET "$TOKEN_OP" '/api/dm?since=0' || return 1
+	want_eq "the private log to the operator" "$(chat_len ".id == \"$DM_ID\"")" 0 || return 1
+	printf 'scope=all is refused on the private log, and the log is not yours either\n'
 }
 
 # A reply stays between the two people the first message was between. The party
