@@ -48,9 +48,7 @@ func TestSomebodyElseCanAttachWhatTheyLearnedAndTheAuthorReadsItOnTheRow(t *test
 	}
 
 	todo := todoIn(t, ctx, db, author, "audit the liveness guards", VisibilityProjectOnly, "")
-	if _, _, err := db.SetTodoStatus(ctx, builder, todo.ID, ActiveStatus); err != nil {
-		t.Fatalf("the builder could not pick the todo up: %v", err)
-	}
+	pickUp(t, ctx, db, builder, todo.ID, builder.AgentID)
 
 	learned := "wait for PRESENCE, then for ABSENCE - two loops, in that order. " +
 		"Boot IS the state the first loop waits out, so the second can never fire during it."
@@ -129,9 +127,7 @@ func TestANoteLandsOnWorkThatIsUnderWayAndOnWorkThatIsFinished(t *testing.T) {
 	if _, _, err := db.AppendTodoNote(ctx, worker, todo.ID, "first: nobody has started it"); err != nil {
 		t.Fatalf("a note on an untouched todo was refused: %v", err)
 	}
-	if _, _, err := db.SetTodoStatus(ctx, worker, todo.ID, ActiveStatus); err != nil {
-		t.Fatalf("the worker could not pick the todo up: %v", err)
-	}
+	pickUp(t, ctx, db, worker, todo.ID, worker.AgentID)
 	if _, _, err := db.AppendTodoNote(ctx, worker, todo.ID, "second: measured 4.2s per gate"); err != nil {
 		t.Fatalf("a note on active work was refused: %v", err)
 	}

@@ -37,6 +37,23 @@ func todoIn(
 	return art
 }
 
+// pickUp is somebody taking a todo up: the claim first, then the status move.
+//
+// The order is the invariant rather than a convention - a row cannot be active
+// with nobody carrying it, and SetTodoStatus refuses to make one that is. See
+// checkQueueRow. It is a helper because "somebody picked this up" is the setup
+// of half the tests in this package and all of them have to say it the same way.
+func pickUp(t *testing.T, ctx context.Context, db *DB, p *Principal, todo, as string) {
+	t.Helper()
+
+	if _, _, err := db.AssignTodo(ctx, p, todo, as, nil); err != nil {
+		t.Fatalf("taking %s: %v", todo, err)
+	}
+	if _, _, err := db.SetTodoStatus(ctx, p, todo, ActiveStatus); err != nil {
+		t.Fatalf("starting %s: %v", todo, err)
+	}
+}
+
 // finish moves an item to done, the way a status move does.
 func finish(t *testing.T, ctx context.Context, db *DB, art *Artifact) {
 	t.Helper()

@@ -4469,7 +4469,11 @@ mem_write_takes_a_raiser_and_settles_it() {
 	want_eq "defaulted from the message speaker" "$(tv .item.fields.raiser)" "$HANDLE_OP" || return 1
 	id="$(tv .item.id)"
 
-	want_tool mem_write "$TOKEN_A" "{\"id\": \"$id\", \"status\": \"active\"}" || return 1
+	# The carrier rides the same write: a row nobody is carrying cannot be
+	# active, and mem_write is the door that can say both in one statement. See
+	# internal/store/queuecoherence.go.
+	want_tool mem_write "$TOKEN_A" \
+		"{\"id\": \"$id\", \"status\": \"active\", \"assignee\": \"a-raisedwork\"}" || return 1
 	want_eq "kept by an update about something else" \
 		"$(tv .item.fields.raiser)" "$HANDLE_OP" || return 1
 
@@ -5009,6 +5013,92 @@ a_stranger_may_close_a_todo_and_may_not_rewrite_it() {
 	printf 'a stranger finished the work and could not rewrite a word of it\n'
 }
 
+# ACTIVE AND UNOWNED IS NOT A STATE A ROW CAN HOLD, at any door.
+#
+# The status moved through POST /api/artifact/{id}/status and the assignee
+# through POST /api/todo/{id}/assignee, and neither door knew the other existed:
+# setting active left the row carried by nobody, releasing a claim left it
+# saying work was in flight. The board drew both, because both were on the row.
+#
+# The refusal is at the write rather than at the read, so the pair is
+# unrepresentable rather than repaired afterwards - see
+# internal/store/queuecoherence.go. This check drives every door that can write
+# a queue row's status: the status route, the room's raise, POST /api/artifacts
+# and mem_write. The discriminating halves are the ones that must still WORK -
+# taking a row and then starting it, and putting one down - because a rule that
+# refused those would be a queue nobody can drain.
+active_and_unowned_is_refused_at_every_door() {
+	recall
+	local id
+	api POST "$TOKEN_A" "/api/chat/$ROOM_CLOSE/todo" \
+		'{"title": "regrind the escapement"}' || return 1
+	want_eq "raise status" "$API_STATUS" 200 || return 1
+	id="$(jqv .item.id)"
+	want_eq "raised carried by nobody" "$(jqv '.item.assignee // ""')" "" || return 1
+
+	# THE DOOR THAT MADE THE BAD PAIR. It is the caller's mistake - 400, not a
+	# node reporting itself broken - and the sentence says what to do instead.
+	want_status 400 POST "$TOKEN_OP" "/api/artifact/$id/status" \
+		'{"status": "active"}' || return 1
+	case "$(jqv .error)" in
+	*"with nobody carrying it"*) ;;
+	*)
+		printf 'the refusal does not say what it refused: %s\n' "$(jqv .error)" >&2
+		return 1
+		;;
+	esac
+	api GET "$TOKEN_A" "/api/artifact/$id" || return 1
+	want_eq "and the row did not move" "$(jqv .status)" todo || return 1
+
+	# Taken, then started. Two writes, and now the pair is true.
+	api POST "$TOKEN_OP" "/api/todo/$id/assignee" '{"assignee": "a-escapement"}' || return 1
+	want_eq "taken" "$API_STATUS" 200 || return 1
+	api POST "$TOKEN_OP" "/api/artifact/$id/status" '{"status": "active"}' || return 1
+	want_eq "and now it may say it is in flight" "$API_STATUS" 200 || return 1
+	want_eq "in flight" "$(jqv .artifact.status)" active || return 1
+
+	# PUTTING IT DOWN MOVES BOTH FACTS. It is not refused - an agent that cannot
+	# hand work back holds it forever - it returns the row to the queue, and the
+	# move is in the trail rather than only on the row.
+	api POST "$TOKEN_OP" "/api/todo/$id/assignee" '{"assignee": ""}' || return 1
+	want_eq "put down" "$API_STATUS" 200 || return 1
+	want_eq "carried by nobody again" "$(jqv .assignee)" "" || return 1
+	api GET "$TOKEN_A" "/api/artifact/$id" || return 1
+	want_eq "and back in the queue" "$(jqv .status)" todo || return 1
+	api GET "$TOKEN_A" "/api/artifact/$id/history" || return 1
+	want_eq "the release is a move somebody can read" \
+		"$(jqv '[.events[] | select(.body == "active->todo")] | length')" 1 || return 1
+
+	# The other two HTTP doors that take a status. The room's raise has never
+	# been able to name a carrier at all; POST /api/artifacts writes both columns
+	# in one statement and so can say both.
+	want_status 400 POST "$TOKEN_A" "/api/chat/$ROOM_CLOSE/todo" \
+		'{"title": "raised as work nobody is doing", "status": "active"}' || return 1
+	want_status 400 POST "$TOKEN_A" /api/artifacts \
+		'{"type": "memory", "kind": "todo", "status": "active", "visibility": "project",
+		  "title": "filed as in flight by nobody"}' || return 1
+	api POST "$TOKEN_A" /api/artifacts \
+		'{"type": "memory", "kind": "todo", "status": "active", "visibility": "project",
+		  "title": "filed as in flight, by a-escapement",
+		  "fields": {"assignee": "a-escapement"}}' || return 1
+	want_eq "with a carrier on it, it lands" "$API_STATUS" 200 || return 1
+
+	# And mem_write, which writes the whole row in one statement: refused when it
+	# states the half that cannot stand alone, taken when it states both.
+	want_tool_fails mem_write "$TOKEN_OP" "{\"id\": \"$id\", \"status\": \"active\"}" \
+		"with nobody carrying it" || return 1
+	want_tool mem_write "$TOKEN_OP" \
+		"{\"id\": \"$id\", \"status\": \"active\", \"assignee\": \"a-escapement\"}" || return 1
+	want_eq "both facts in one write" "$(tv .item.status)" active || return 1
+	want_eq "and it says who" "$(tv .item.fields.assignee)" a-escapement || return 1
+	# The same put-down over MCP, where the caller said nothing about the status:
+	# the queue moves it, rather than refusing a contradiction nobody typed.
+	want_tool mem_write "$TOKEN_OP" "{\"id\": \"$id\", \"assignee\": \"\"}" || return 1
+	want_eq "put down over MCP" "$(tv .item.fields.assignee)" "" || return 1
+	want_eq "and the row came back with it" "$(tv .item.status)" todo || return 1
+	printf 'active with nobody on it is refused at four doors, and putting work down returns the row\n'
+}
+
 # ------------------------------------------------- what kind of work a todo is
 #
 # THE THIRD PIECE OF QUEUE METADATA, on the same terms as the other two, and one
@@ -5324,7 +5414,10 @@ mem_write_takes_a_category_and_tags_take_anything() {
 	local id
 	id="$(tv .item.id)"
 
-	want_tool mem_write "$TOKEN_A" "{\"id\": \"$id\", \"status\": \"active\"}" || return 1
+	# With a carrier beside it, because active says somebody is on it and this
+	# door can say who in the same statement. See queuecoherence.go.
+	want_tool mem_write "$TOKEN_A" \
+		"{\"id\": \"$id\", \"status\": \"active\", \"assignee\": \"a-filer\"}" || return 1
 	want_eq "kept by an update that did not restate it" \
 		"$(tv .item.fields.category)" feature || return 1
 
@@ -5428,6 +5521,11 @@ a_note_lands_on_work_that_has_already_started() {
 	recall
 	local id="$NOTE_ID"
 
+	# Taken first, then started. A row nobody is carrying cannot be active - the
+	# two facts move together now, and the status door cannot say who is on it,
+	# so it refuses rather than guessing. See internal/store/queuecoherence.go.
+	api POST "$TOKEN_OP" "/api/todo/$id/assignee" '{"assignee": "a-noteworker"}' || return 1
+	want_eq "the operator took it" "$API_STATUS" 200 || return 1
 	api POST "$TOKEN_OP" "/api/artifact/$id/status" '{"status": "active"}' || return 1
 	want_eq "somebody picked it up" "$API_STATUS" 200 || return 1
 	# The author's own edit is refused now, naming who took it. That is right, and
@@ -5627,8 +5725,15 @@ browser_colours_the_speakers() {
 	# open todos, the distinctness half of the check has nothing to compare, and
 	# it reports "one state present, distinctness untested" - which is honest
 	# and useless. The states are what the colours are FOR.
+	# The active one is raised and then TAKEN and started, in three calls rather
+	# than one: the raise door has never been able to say who is carrying a row,
+	# and a row nobody is carrying cannot be active. See queuecoherence.go.
+	local flywheel
 	api POST "$TOKEN_A" /api/chat/general/todo \
-		'{"title": "quicklime the flywheel", "status": "active"}' || return 1
+		'{"title": "quicklime the flywheel"}' || return 1
+	flywheel="$(jqv .item.id)"
+	api POST "$TOKEN_A" "/api/todo/$flywheel/assignee" '{"assignee": "a-flywright"}' || return 1
+	api POST "$TOKEN_A" "/api/artifact/$flywheel/status" '{"status": "active"}' || return 1
 	api POST "$TOKEN_A" /api/chat/general/todo \
 		'{"title": "marrowbone the gasket", "status": "done"}' || return 1
 	cd "$ROOT/web" || return 1
@@ -10212,6 +10317,24 @@ check "the queue lifecycle is the queue own, and its vocabulary is one, in the s
 	./internal/store
 check "closing a todo unblocks what waits on it, in the store" \
 	go test -count=1 -run TestClosingATodoUnblocksWhatWaitsOnIt ./internal/store
+
+# And the two facts move TOGETHER. Where the work is and who is carrying it were
+# written through two doors that had never heard of each other, so a row could
+# say work was in flight and that nobody was doing it - and the board drew both,
+# because both were on the row. The pair is refused at the write now rather than
+# tidied at the read, which is the difference between a state that cannot happen
+# and one that keeps happening and gets cleaned up.
+say "active means somebody is on it"
+check "active with nobody carrying it is refused at every door, and putting work down returns the row" \
+	active_and_unowned_is_refused_at_every_door
+check "the pair is refused at every statement that writes a row, in the store" \
+	go test -count=1 \
+	-run 'TestActiveWithNobodyCarryingItIsRefused|TestARowCannotBeRaisedActiveWithNobodyCarryingIt' \
+	./internal/store
+check "putting work down returns the row to the queue and says so in the log, in the store" \
+	go test -count=1 \
+	-run 'TestPuttingWorkDownReturnsTheRowToTheQueue|TestAClaimOfNobodyIsAReleaseAndMovesTheRowWithIt' \
+	./internal/store
 
 # And a todo says WHAT KIND OF WORK IT IS, out of a closed set of four, beside
 # the free-form tags that have always been on it. The two are not variants of

@@ -347,8 +347,13 @@ func (s *server) handleRoomTodoRaise(w http.ResponseWriter, r *http.Request) {
 		}
 		events = append(events, entry)
 	}
+	// Through the queue's error mapper rather than straight to a 500: this door
+	// takes a status and has never taken an assignee, so raising a row as
+	// `active` is a thing a caller can ask for and the store will not hold - and
+	// a refusal the caller can act on must not arrive as a broken node. See
+	// store.ActiveUnownedError.
 	if err := s.db.WriteMemory(r.Context(), art, events...); err != nil {
-		serverError(w, r, err)
+		s.writeQueueError(w, r, err)
 		return
 	}
 	// The row this door just wrote, answered in the shape a READ of it would

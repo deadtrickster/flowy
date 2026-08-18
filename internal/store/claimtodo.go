@@ -105,11 +105,25 @@ func (d *DB) ClaimTodo(
 	if err != nil {
 		return nil, nil, err
 	}
+	events := []*Event{entry}
+	// A CLAIM OF NOBODY IS A RELEASE, and it moves both facts for AssignTodo's
+	// reason: an unowned row cannot be `active`, so this write takes it back to
+	// `todo` and says so in the log. It is here as well as there because a
+	// careful caller - one that states what it expected to find - must not get a
+	// worse outcome than a careless one. See queuecoherence.go.
+	status := putDownStatus(art, name)
+	if status != "" {
+		back, err := statusEntryEvent(art, p, actor, actorKindOf(p), ActiveStatus, status)
+		if err != nil {
+			return nil, nil, err
+		}
+		events = append(events, back)
+	}
 	// THE GUARD IS THE CLAIM, and it compares against what the caller expected
 	// rather than against what this function just read: a row that moved in
 	// between is exactly the case worth refusing.
 	guard := `coalesce(fields->>'` + AssigneeField + `', '') = '` + sqlLiteral(expect) + `'`
-	err = d.SetArtifactFieldsIf(ctx, art, column, guard, entry)
+	err = d.SetArtifactFieldsAndStatusIf(ctx, art, column, status, guard, events...)
 	if errors.Is(err, ErrGuardFailed) {
 		holder := ""
 		if fresh, ferr := d.GetArtifact(ctx, art.ID); ferr == nil {

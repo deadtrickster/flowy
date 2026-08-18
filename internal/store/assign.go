@@ -253,6 +253,23 @@ func (d *DB) AssignTodo(
 		return nil, nil, err
 	}
 	events := []*Event{entry}
+	// PUTTING WORK DOWN MOVES BOTH FACTS. A row nobody is carrying cannot be
+	// `active` - see queuecoherence.go - so a release takes it back to `todo` in
+	// this same write, and leaves the status entry that says it did. The
+	// alternative, refusing the release, would mean an agent that cannot finish
+	// also cannot hand back, and holds the row forever.
+	//
+	// There is no case for leaving it active: the only way a row stays active is
+	// that somebody is on it, and naming that somebody is a handover rather than
+	// a release. It moves nothing on a row that was todo or done.
+	status := putDownStatus(art, name)
+	if status != "" {
+		back, err := statusEntryEvent(art, p, actor, actorKind, ActiveStatus, status)
+		if err != nil {
+			return nil, nil, err
+		}
+		events = append(events, back)
+	}
 	if said != nil {
 		events = append(events, said)
 	}
@@ -260,7 +277,7 @@ func (d *DB) AssignTodo(
 	// with no entry behind it is a handover nobody can trace, and an entry with
 	// no assignment behind it is a log that lies. Nothing here ever comes back to
 	// finish a half-written operation.
-	if err := d.SetArtifactFields(ctx, art, column, events...); err != nil {
+	if err := d.SetArtifactFieldsAndStatusIf(ctx, art, column, status, "", events...); err != nil {
 		return nil, nil, err
 	}
 	span.SetArtifact(art.ID)

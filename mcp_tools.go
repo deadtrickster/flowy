@@ -541,6 +541,20 @@ func memWrite(ctx context.Context, m *mcpServer, p *store.Principal, raw json.Ra
 		}
 		fields[store.AssigneeField] = assignee
 	}
+	// PUTTING WORK DOWN MOVES BOTH FACTS HERE TOO, exactly as it does through
+	// todo_assign - see store.AssignTodo. A row nobody is carrying cannot be
+	// `active`, so a write that takes the name off one and says nothing about
+	// where the work is takes it back to `todo` rather than being refused for a
+	// contradiction the caller did not state.
+	//
+	// Only when the caller said nothing about the status. A write that states
+	// active AND nobody in one breath is a contradiction its author typed, and
+	// the store refuses it rather than picking which half to honour.
+	putDown := a.Assignee != nil && assignee == "" && a.Status == "" &&
+		isWorkKind(art.Kind) && store.TodoStatusOf(art) == store.ActiveStatus
+	if putDown {
+		art.Status = store.TodoStatus
+	}
 	// Same rule for the category: written when it was stated, including empty,
 	// and an update that says nothing about it keeps what the item is filed as.
 	if a.Category != nil {
@@ -664,7 +678,12 @@ func memWrite(ctx context.Context, m *mcpServer, p *store.Principal, raw json.Ra
 	// Only for the kinds the queue holds. A note's status is a word on a row that
 	// nothing acts on - it is not in a lifecycle, and giving it a trail would be
 	// inventing one here rather than in the store where it belongs.
-	if a.Status != "" && isWorkKind(art.Kind) {
+	// putDown is in the condition because a status this write MOVED without
+	// being asked to is still a move: the row went active->todo, and a trail
+	// that recorded only the moves somebody typed would be missing the ones the
+	// queue made on their behalf - which is the half that is hardest to explain
+	// afterwards.
+	if (a.Status != "" || putDown) && isWorkKind(art.Kind) {
 		// Where it came from. Empty on a create - there was no previous state,
 		// and the entry says so rather than inventing one - and the word the
 		// queue reads a blank column as on an update of a row that never had a

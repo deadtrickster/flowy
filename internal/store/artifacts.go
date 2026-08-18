@@ -134,6 +134,14 @@ func (d *DB) upsertArtifact(ctx context.Context, q execer, a *Artifact) error {
 	if err := requireProjectPtr(ctx, q, a.Project); err != nil {
 		return err
 	}
+	// And a queue row lands holding a pair that can be true. Asked here for the
+	// reason the project is asked here: every local write of a row goes through
+	// one of four statements, and a rule kept per surface is a rule the next
+	// surface forgets - this one was forgotten by every door that could set a
+	// status without being able to set an assignee. See checkQueueRow.
+	if err := checkQueueRow(a); err != nil {
+		return err
+	}
 	// The date the row will carry, decided before it is signed rather than by
 	// the column's default afterwards - see createdNow. An update keeps the date
 	// the row already has: an edit is not a new artifact, and the value has to
@@ -272,42 +280,7 @@ func (d *DB) WriteMemory(ctx context.Context, a *Artifact, events ...*Event) err
 func (d *DB) SetArtifactFields(
 	ctx context.Context, a *Artifact, fields json.RawMessage, events ...*Event,
 ) error {
-	ctx, span := otel.Start(ctx, otel.KindIngest, "artifact.fields")
-	defer func() {
-		span.SetArtifact(a.ID)
-		span.End()
-	}()
-	at, err := d.clock.Pack()
-	if err != nil {
-		return fmt.Errorf("store: set fields of %s: %w", a.ID, err)
-	}
-	a.Fields = fields
-	a.HLC = at
-	a.Node = d.node
-	if err := d.signArtifact(ctx, d.sql, a); err != nil {
-		return err
-	}
-	// Each event's artifact and project are taken from the item rather than from
-	// the caller, as WriteMemory takes them: an entry naming anything else
-	// would not be a record of this write, and a projectless event is readable
-	// by its own actor and nobody else (see EventFilterSQL) - which for a
-	// message announcing a change to a room's plan is the room never hearing.
-	//
-	// The FIRST event shares the row's reading, because it is the record OF this
-	// write and the two are one point in the order. Any event after it is left
-	// unstamped and takes the next reading in appendEvent, deliberately: a log
-	// cursor is a seq_hlc and it is exclusive, so two events sharing one reading
-	// are two events a page boundary can fall between - and the second of them
-	// would then be skipped by every reader paging forwards, silently and
-	// permanently.
-	for i, e := range events {
-		if i == 0 {
-			e.SeqHLC = at
-		}
-		e.Artifact, e.Project = a.ID, a.Project
-	}
-
-	return d.setArtifactFields(ctx, a, "", events...)
+	return d.writeArtifactFields(ctx, a, fields, "", "", events...)
 }
 
 // ErrGuardFailed is a conditional write whose condition did not hold: the row is
@@ -332,7 +305,44 @@ var ErrGuardFailed = errors.New("store: the row was not in the state this write 
 func (d *DB) SetArtifactFieldsIf(
 	ctx context.Context, a *Artifact, fields json.RawMessage, guard string, events ...*Event,
 ) error {
-	ctx, span := otel.Start(ctx, otel.KindIngest, "artifact.fields.cas")
+	return d.writeArtifactFields(ctx, a, fields, "", guard, events...)
+}
+
+// SetArtifactFieldsAndStatusIf writes the fields column AND the status column as
+// one statement, under one guard and one clock reading.
+//
+// It exists because the queue has one fact that lives in both: `active` means
+// somebody is on it, so a write that says nobody is on it any more has to move
+// where the work is in the same breath - see queuecoherence.go. Two writes could
+// not do it. The gap between them is a row that is active and unowned, which is
+// the state this whole change exists to make unreachable, and a node that
+// stopped in the gap would leave one there permanently.
+//
+// status empty leaves the column alone, which is what every other caller of the
+// fields writers wants: a handover changes who is carrying the work and says
+// nothing about where the work is.
+func (d *DB) SetArtifactFieldsAndStatusIf(
+	ctx context.Context, a *Artifact, fields json.RawMessage, status, guard string,
+	events ...*Event,
+) error {
+	return d.writeArtifactFields(ctx, a, fields, status, guard, events...)
+}
+
+// writeArtifactFields is the one path all three take: stamp the row, sign it,
+// stamp the events, write.
+//
+// The span is named by whether there is a guard, because that is the difference
+// a reader of a trace is telling apart - a fields write and a compare-and-set
+// are two things that fail for two reasons.
+func (d *DB) writeArtifactFields(
+	ctx context.Context, a *Artifact, fields json.RawMessage, status, guard string,
+	events ...*Event,
+) error {
+	name := "artifact.fields"
+	if guard != "" {
+		name = "artifact.fields.cas"
+	}
+	ctx, span := otel.Start(ctx, otel.KindIngest, name)
 	defer func() {
 		span.SetArtifact(a.ID)
 		span.End()
@@ -342,24 +352,51 @@ func (d *DB) SetArtifactFieldsIf(
 		return fmt.Errorf("store: set fields of %s: %w", a.ID, err)
 	}
 	a.Fields = fields
+	if status != "" {
+		a.Status = status
+	}
 	a.HLC = at
 	a.Node = d.node
+	// The pair the row will hold, asked before it is signed: the signature is
+	// over the row, and a row that must not exist must not be signed into
+	// existence. See checkQueueRow.
+	if err := checkQueueRow(a); err != nil {
+		return err
+	}
 	if err := d.signArtifact(ctx, d.sql, a); err != nil {
 		return err
 	}
+	// Each event's artifact and project are taken from the item rather than from
+	// the caller, as WriteMemory takes them: an entry naming anything else
+	// would not be a record of this write, and a projectless event is readable
+	// by its own actor and nobody else (see EventFilterSQL) - which for a
+	// message announcing a change to a room's plan is the room never hearing.
+	//
+	// The FIRST event shares the row's reading, because it is the record OF this
+	// write and the two are one point in the order. Any event after it is left
+	// unstamped and takes the next reading in appendEvent, deliberately: a log
+	// cursor is a seq_hlc and it is exclusive, so two events sharing one reading
+	// are two events a page boundary can fall between - and the second of them
+	// would then be skipped by every reader paging forwards, silently and
+	// permanently.
 	for i, e := range events {
 		if i == 0 {
 			e.SeqHLC = at
 		}
 		e.Artifact, e.Project = a.ID, a.Project
 	}
-	return d.setArtifactFields(ctx, a, guard, events...)
+	return d.setArtifactFields(ctx, a, status != "", guard, events...)
 }
 
-// setArtifactFields is the one write both doors make. The row has already been
-// stamped and signed by the caller.
+// setArtifactFields is the one write all three doors make. The row has already
+// been stamped and signed by the caller.
+//
+// withStatus says whether the status column is part of this write. It is a flag
+// rather than a value because the value is already on the row - the caller put
+// it there before signing, and reading it from two places is two chances for the
+// signature to be over a row the database does not have.
 func (d *DB) setArtifactFields(
-	ctx context.Context, a *Artifact, guard string, events ...*Event,
+	ctx context.Context, a *Artifact, withStatus bool, guard string, events ...*Event,
 ) error {
 	return d.inTx(ctx, "set fields of "+a.ID, func(tx *sql.Tx) error {
 		var column any
@@ -370,10 +407,13 @@ func (d *DB) setArtifactFields(
 		if guard != "" {
 			where += " AND " + guard
 		}
-		res, err := tx.ExecContext(ctx,
-			`UPDATE artifacts SET fields = $2, hlc = $3, node = $4, sig = $5, updated = now()
-			  WHERE `+where,
-			a.ID, column, a.HLC, a.Node, a.Sig)
+		set := `fields = $2, hlc = $3, node = $4, sig = $5, updated = now()`
+		args := []any{a.ID, column, a.HLC, a.Node, a.Sig}
+		if withStatus {
+			set = `fields = $2, hlc = $3, node = $4, sig = $5, status = $6, updated = now()`
+			args = append(args, a.Status)
+		}
+		res, err := tx.ExecContext(ctx, `UPDATE artifacts SET `+set+` WHERE `+where, args...)
 		if err != nil {
 			return fmt.Errorf("store: set fields of %s: %w", a.ID, err)
 		}
@@ -533,6 +573,12 @@ func (d *DB) CreateArtifact(ctx context.Context, a *Artifact) error {
 // the same tx, and the alternative is a second copy of this INSERT.
 func (d *DB) createArtifact(ctx context.Context, q execer, a *Artifact) error {
 	if err := requireProjectPtr(ctx, q, a.Project); err != nil {
+		return err
+	}
+	// A queue row is raised holding a pair that can be true, exactly as one is
+	// updated holding one. See checkQueueRow: a row created active with nobody
+	// on it is the same lie whether it arrived that way or got there later.
+	if err := checkQueueRow(a); err != nil {
 		return err
 	}
 	// Minted here and signed with the row, not left to the column - see

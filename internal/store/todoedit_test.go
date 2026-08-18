@@ -50,10 +50,9 @@ func TestAnEditLosesToWhoeverPickedTheTodoUpAndIsToldWho(t *testing.T) {
 		t.Fatalf("a fresh todo reads as %q", saw)
 	}
 
-	// And then somebody picked it up.
-	if _, _, err := db.SetTodoStatus(ctx, builder, todo.ID, ActiveStatus); err != nil {
-		t.Fatalf("the builder could not take the todo: %v", err)
-	}
+	// And then somebody picked it up - took it, and said it was in flight, which
+	// is two facts and one act. See pickUp.
+	pickUp(t, ctx, db, builder, todo.ID, builder.AgentID)
 
 	_, _, err := db.EditTodo(ctx, author, todo.ID, ptr("fix the relay's xAI path"), nil, saw)
 	var moved ErrTodoMoved
@@ -114,9 +113,7 @@ func TestTheGuardRefusesAWriteAgainstAStatusTheRowHasLeft(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read %s: %v", todo.ID, err)
 	}
-	if _, _, err := db.SetTodoStatus(ctx, mover, todo.ID, ActiveStatus); err != nil {
-		t.Fatalf("the mover could not take the todo: %v", err)
-	}
+	pickUp(t, ctx, db, mover, todo.ID, mover.AgentID)
 
 	guard := `coalesce(nullif(lower(btrim(status)), ''), '` + TodoStatus + `') = '` +
 		TodoStatus + `'`
@@ -183,7 +180,12 @@ func TestAnEditAndATakeRacingLeaveNoQuietOverwrite(t *testing.T) {
 
 	const rounds = 16
 	for round := 0; round < rounds; round++ {
-		todo := todoIn(t, ctx, db, author, "before", VisibilityProjectOnly, "")
+		// Carried by the taker from the start, so the round is the race it is
+		// about - an edit against a status move - and not a claim as well. A row
+		// nobody is carrying cannot go active at all now (see checkQueueRow), and
+		// putting the claim inside the goroutine would race the two writes of one
+		// side against each other.
+		todo := todoIn(t, ctx, db, author, "before", VisibilityProjectOnly, taker.AgentID)
 
 		var (
 			wg      sync.WaitGroup

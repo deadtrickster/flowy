@@ -34,6 +34,21 @@ func (d *DB) SetArtifactStatus(ctx context.Context, art *Artifact, status string
 func (d *DB) setArtifactStatus(
 	ctx context.Context, q execer, art *Artifact, status string, at int64,
 ) error {
+	// A queue row cannot move somewhere its other half contradicts. `active`
+	// says somebody is on it, and this door has never been able to say who -
+	// which is how a row came to be active and unowned in the first place. See
+	// checkQueueRow, and note the answer is a refusal rather than a silent
+	// claim: a status move that took the row for whoever made it would be a
+	// last-write-wins claim, and ClaimTodo exists because those are not claims.
+	//
+	// Asked of a COPY carrying the new status, so a refused move leaves the
+	// caller's artifact holding the state it actually has rather than the one
+	// this write was talked out of.
+	next := *art
+	next.Status = status
+	if err := checkQueueRow(&next); err != nil {
+		return err
+	}
 	art.Status = status
 	art.HLC = at
 	art.Node = d.node

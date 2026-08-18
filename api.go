@@ -220,6 +220,16 @@ func (s *server) handleCreateArtifact(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusNotFound, errorBody("no such artifact"))
 			return
 		}
+		var refusal store.DepRefusal
+		if errors.As(err, &refusal) {
+			// A row the store will not hold, and the caller can fix it: a queue
+			// item written active with nobody carrying it is the one this door
+			// can produce - it takes a status and has never taken an assignee.
+			// It is the caller's mistake, so it is 400 rather than the node
+			// reporting itself as broken. See store.ActiveUnownedError.
+			writeJSON(w, http.StatusBadRequest, errorBody(refusal.Error()))
+			return
+		}
 		serverError(w, r, err)
 		return
 	}
