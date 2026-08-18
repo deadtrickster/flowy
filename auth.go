@@ -97,7 +97,28 @@ func (s *server) isOperator(ctx context.Context, r *http.Request) bool {
 	if err != nil {
 		return false
 	}
-	return p.UserID != "" && p.UserID == s.operator
+	if p.UserID == "" {
+		return false
+	}
+	// THE STORE DECIDES, and the env var only bootstraps.
+	//
+	// This used to be `p.UserID == s.operator` - one id from $FLOWY_OPERATOR,
+	// fixed at boot. A second human could then only be given the operator's own
+	// token, which is not a second operator: it is the same principal twice, so
+	// nothing attributes anything and nothing is revocable separately. That
+	// stopped being hypothetical on 2026-08-18, when an agent fell through to
+	// the operator's token and its messages were recorded as the operator's,
+	// indistinguishable in the store.
+	//
+	// So the role is a fact about a person. s.operator survives as the
+	// BOOTSTRAP only: it names who is operator on a node whose store holds none
+	// yet, which is how the first one exists at all. A node with neither has no
+	// operator, and the join door is the only way in - which is the correct
+	// state for a fresh node.
+	if role, err := s.db.RoleOf(ctx, p.UserID); err == nil && role != "" {
+		return role == store.RoleOperator
+	}
+	return p.UserID == s.operator
 }
 
 // operatorOnly wraps a handler so that nobody but this node's operator reaches

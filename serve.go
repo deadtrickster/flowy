@@ -382,6 +382,8 @@ func (s *server) routes() http.Handler {
 	api := http.NewServeMux()
 	api.HandleFunc("POST /api/artifacts", s.handleCreateArtifact)
 	api.HandleFunc("GET /api/artifacts", s.handleListArtifacts)
+	// Who may do what here, and only an operator may say. See internal/store/role.go.
+	api.HandleFunc("POST /api/user/{id}/role", s.operatorOnly(s.handleSetRole))
 	api.HandleFunc("POST /api/rooms", s.handleCreateRoom)
 	api.HandleFunc("GET /api/rooms", s.handleListRooms)
 	api.HandleFunc("POST /api/rooms/{room}/invite", s.handleInviteRoom)

@@ -32,8 +32,29 @@ CREATE TABLE IF NOT EXISTS users (
     display       text,
     auto_delegate boolean DEFAULT true,
     hlc           bigint,
-    node          text
+    node          text,
+    -- WHAT THIS PERSON MAY DO, as a fact in the store rather than a string in
+    -- the environment.
+    --
+    -- The operator used to be one id compared against $FLOWY_OPERATOR at boot.
+    -- One string, one person, decided before the node started. A second human
+    -- could only be given the operator's own token, which is not a second
+    -- operator - it is the same principal twice, so nothing can attribute
+    -- anything and nothing can be revoked separately. On 2026-08-18 exactly
+    -- that happened by accident: an agent fell through to the operator's token
+    -- and its messages were recorded as the operator's, indistinguishable in
+    -- the store, because the token IS the identity.
+    --
+    -- 'member' or 'operator'. Two roles, because two answer every question this
+    -- node actually asks - ?scope=all, minting, join approval, the mock forge -
+    -- and a matrix invented before the third question arrives will be wrong
+    -- when it does.
+    role          text NOT NULL DEFAULT 'member'
 );
+
+-- Nodes that predate the column get it, defaulting everybody to member. The
+-- bootstrap below is what makes the first operator exist.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS role text NOT NULL DEFAULT 'member';
 
 -- Agents acting for a user.
 --
