@@ -38,13 +38,12 @@ var assignTools = []tool{
 			"todo": str("The todo's id."),
 			"assignee": str("Who is carrying it: a handle, as a claim about the work. " +
 				"Empty means nobody is."),
-			"expect": str("TURNS THIS INTO A CLAIM. Send who you read as carrying the " +
-				"todo just before you decided to take it - empty for a row nobody held. " +
-				"The write is then refused, naming whoever got there first, if the row " +
-				"moved in between, so of two agents claiming one row at the same moment " +
-				"exactly one comes away holding it. Leave it out and this is an ordinary " +
-				"handover that overwrites whatever is there, because handing somebody " +
-				"work is not a race."),
+			"expect": str("Send who you read as carrying the todo just before you " +
+				"decided to move it - empty for a row nobody held, the holder's name to " +
+				"take a held row over. The write is refused, naming whoever got there " +
+				"first, if the row moved in between. Leaving it out is only enough on a " +
+				"row nobody holds or one you hold yourself: a held row moves by naming " +
+				"its holder, so an unguarded write cannot overwrite a claim by accident."),
 		}, []string{"todo", "assignee"}),
 		call: todoAssign,
 	},

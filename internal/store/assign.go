@@ -260,11 +260,22 @@ func (d *DB) AssignTodo(
 	// expect:that-holder, which is the handover. Every path that worked still
 	// works; what stops working is moving a row whose holder you could not be
 	// bothered to read.
+	//
+	// THE GUARD READS THE FIELD, not AssigneeOf, and the difference is the
+	// compatibility just below: an absent field falls back to the OWNER line in
+	// the body, which is authorship from before claims existed and not a claim
+	// anybody made. Guarding that line would refuse the first assignment on
+	// every legacy row on behalf of a holder who never claimed anything -
+	// measured as this change's first cut refusing a fresh todo named by its
+	// author. The EVENT keeps the fallback ("moved it from a-bench"), because a
+	// narrative that names the author is right; a refusal guarding the author
+	// is not.
 	held := strings.TrimSpace(AssigneeOf(art))
-	if held != "" && held != name && d.seatHandle(ctx, p) != held {
+	claimed := strings.TrimSpace(artifactString(art, AssigneeField))
+	if claimed != "" && claimed != name && d.seatHandle(ctx, p) != claimed {
 		return nil, nil, refuseAssign(fmt.Sprintf(
 			"todo %s is carried by %s - a held row moves by naming its holder: pass expect:%s to take it over",
-			art.ID, held, held))
+			art.ID, claimed, claimed))
 	}
 	// Written whenever it was asked for, including empty: the key being there at
 	// all is what says somebody decided, and what outranks a stale OWNER line in

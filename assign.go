@@ -251,7 +251,16 @@ func (s *server) handleRoomTodoAssign(w http.ResponseWriter, r *http.Request) {
 		serverError(w, r, err)
 		return
 	}
-	art, _, err = s.db.AssignTodo(r.Context(), p, id, name, said)
+	// The same two verbs as the door without a room, told apart the same way:
+	// expect stated is a claim, expect absent is a plain assignment that a held
+	// row refuses. The room hears either way - `said` is the message - because
+	// the room this todo was raised in is the room its plan changes hands in
+	// front of, whichever verb moved it.
+	if req.Expect != nil {
+		art, _, err = s.db.ClaimTodo(r.Context(), p, id, name, *req.Expect, said)
+	} else {
+		art, _, err = s.db.AssignTodo(r.Context(), p, id, name, said)
+	}
 	if err != nil {
 		s.writeQueueError(w, r, err)
 		return
