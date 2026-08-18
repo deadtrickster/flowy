@@ -71,6 +71,26 @@ func roomName(name string) (string, error) {
 	return name, nil
 }
 
+// roomPrincipal is WHO a membership is about, and it is a person rather than a
+// seat.
+//
+// voteActor returns the agent id when a token has one, which is right for
+// authorship - a message is said by a seat. It is wrong here. On 2026-08-18 an
+// invite stored the user id it was handed while RoomsFor matched the caller's
+// agent id, so an invited member was in the room and could not see it: written
+// in one identity space, read in another, no error anywhere.
+//
+// A room is joined by a PERSON. Keying on the agent would mean every seat one
+// human runs needs its own invitation, and a human who starts a new seat
+// silently drops out of every room they were invited to. So an agent inherits
+// its user's rooms, and this is the single place that decides it.
+func roomPrincipal(p *Principal) string {
+	if p == nil {
+		return ""
+	}
+	return strings.TrimSpace(p.UserID)
+}
+
 // CreateRoom makes a room and puts its creator in it as owner.
 //
 // Both writes or neither: a room with no owner cannot be invited into by
@@ -111,9 +131,9 @@ func (d *DB) CreateRoom(ctx context.Context, p *Principal, name, topic string) (
 	}
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO room_members (project, room, principal, role, added_by)
-		      VALUES ($1, $2, $3, $4, $3)
+		      VALUES ($1, $2, $3, $4, $5)
 		 ON CONFLICT (project, room, principal) DO NOTHING`,
-		project, name, actor, RoleOwner); err != nil {
+		project, name, roomPrincipal(p), RoleOwner, actor); err != nil {
 		return nil, fmt.Errorf("store: create room %q: %w", name, err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -161,7 +181,7 @@ func (d *DB) RoomsFor(ctx context.Context, p *Principal) ([]Room, error) {
 		   FROM named n
 		   LEFT JOIN rooms r ON r.project = n.project AND r.name = n.name
 		  ORDER BY r.created NULLS LAST, n.name`,
-		strings.TrimSpace(p.Project), actor)
+		strings.TrimSpace(p.Project), roomPrincipal(p))
 	if err != nil {
 		return nil, fmt.Errorf("store: list rooms: %w", err)
 	}
@@ -218,7 +238,7 @@ func (d *DB) InviteToRoom(ctx context.Context, p *Principal, room, principal str
 		   LEFT JOIN room_members m
 		     ON m.project = r.project AND m.room = r.name AND m.principal = $3
 		  WHERE r.project = $1 AND r.name = $2`,
-		project, room, actor).Scan(&role)
+		project, room, roomPrincipal(p)).Scan(&role)
 	if errors.Is(err, sql.ErrNoRows) {
 		// A room somebody has spoken in but nobody declared is not a room you
 		// can be invited to: it has no owner, so there is nobody whose
@@ -261,7 +281,7 @@ func (d *DB) LeaveRoom(ctx context.Context, p *Principal, room string) (bool, er
 	}
 	res, err := d.sql.ExecContext(ctx,
 		`DELETE FROM room_members WHERE project = $1 AND room = $2 AND principal = $3`,
-		strings.TrimSpace(p.Project), room, actor)
+		strings.TrimSpace(p.Project), room, roomPrincipal(p))
 	if err != nil {
 		return false, fmt.Errorf("store: leave %q: %w", room, err)
 	}

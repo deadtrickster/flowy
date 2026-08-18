@@ -65,3 +65,40 @@ func TestNotAMemberAndNotAnOwnerReadDifferently(t *testing.T) {
 		t.Errorf("an empty role reads %q", orDash(""))
 	}
 }
+
+// The defect this file exists to prevent: a membership written under one
+// identity and read under another. An invite named a user id while the list
+// matched the caller's agent id, so an invited member was in the room and could
+// not see it - no error, no empty result, just a role that never matched.
+func TestAMembershipIsAPersonNotASeat(t *testing.T) {
+	person := &Principal{UserID: "01USER", AgentID: "01AGENT"}
+	if got := roomPrincipal(person); got != "01USER" {
+		t.Fatalf("roomPrincipal = %q, want the user - a seat is not who was invited", got)
+	}
+
+	// The half that makes it worth having: voteActor and roomPrincipal answer
+	// DIFFERENTLY for the same token, which is exactly the gap that opened.
+	// A test that used a principal with no agent would pass either way.
+	if actor, _ := voteActor(person); actor == roomPrincipal(person) {
+		t.Fatal("this principal cannot show the bug - it needs an agent id that differs from its user id")
+	}
+}
+
+// A second seat of the same person is the same member. Keying on the agent
+// would mean every seat one human runs needs its own invitation, and starting a
+// new seat would silently drop them from every room.
+func TestEverySeatOfOnePersonIsOneMember(t *testing.T) {
+	first := &Principal{UserID: "01USER", AgentID: "01SEAT-A"}
+	second := &Principal{UserID: "01USER", AgentID: "01SEAT-B"}
+	if roomPrincipal(first) != roomPrincipal(second) {
+		t.Fatal("two seats of one person must be one member")
+	}
+}
+
+// A token with no agent behind it - a person acting directly - is still a
+// person, and reads the same rooms.
+func TestAPersonWithNoSeatIsStillAMember(t *testing.T) {
+	if got := roomPrincipal(&Principal{UserID: "01USER"}); got != "01USER" {
+		t.Fatalf("roomPrincipal = %q, want the user", got)
+	}
+}
