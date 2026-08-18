@@ -16341,6 +16341,20 @@ a_person_logs_in_from_the_console() {
 	node scripts/login-check.mjs "http://127.0.0.1:$HTTP_PORT" "$HANDLE_A" "$pw"
 }
 
+# And they change it from the console, which is where the operator asked for it:
+# "not doing that cli commands - im logged in via token - give me profile panel
+# - i will change my password here."
+#
+# HANDLE_B is passed as the taken one because it belongs to another user in this
+# same gate, so the refusal arm is about the store's UNIQUE constraint rather
+# than about a name this check invented.
+a_person_sets_their_own_handle_and_password() {
+	recall
+	cd "$ROOT/web" || return 1
+	node scripts/profile-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" \
+		"renamed-$$" "$HANDLE_B" "a-password-the-panel-set"
+}
+
 # The one door a person makes a row through, driven as the journey rather than
 # the handler. The operator's ask was "make all entity types user creatable",
 # and this console could make two of the nine things this store holds - a
@@ -16368,6 +16382,8 @@ check "a person logs in with a password, and the session survives a reload with 
 	a_person_logs_in_from_the_console
 check "the author of a row can fix its words, and the node holds the new ones" \
 	a_person_fixes_the_words_they_wrote
+check "a person sets their own handle and password from the console" \
+	a_person_sets_their_own_handle_and_password
 check "a shape inside a diagram is addressable, and a dead reference says so" \
 	a_shape_inside_a_diagram_is_addressable
 check "the diagram editor is dark, like the console around it" \
