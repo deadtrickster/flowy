@@ -5341,6 +5341,162 @@ mem_write_takes_a_category_and_tags_take_anything() {
 	printf 'the kind rode a write, survived an update, came off, and rode a raise\n'
 }
 
+# --------------------------------------------- what was learned about a row
+#
+# A row was fixed at the moment it was filed: the words are its author's, and
+# only while nobody had started the work. Everything learned about it afterwards
+# went into a room, scrolled away, and was rediscovered by whoever picked the row
+# up next. The append door is the fix, and it is deliberately the opposite of the
+# edit door beside it - nothing already written changes, read permission is the
+# whole bar, and it is NOT refused once the work has started, which is when a
+# note is worth the most.
+#
+# The checks below drive principals who did not raise the row, for the reason the
+# classification checks do: what is LEARNED about a row is not authorship of it.
+NOTE_TODO="the console loses the room on a reload"
+NOTE_ONE="the reload lands before the token is read, so the first fetch is unauthenticated"
+NOTE_TWO="tried moving the fetch into the effect - same race, one tick later"
+readonly NOTE_TODO NOTE_ONE NOTE_TWO
+
+# THE ONE THAT MATTERS. Two seats, neither of which wrote the row, attach what
+# they learned to it - and the AUTHOR reads both off the row itself rather than
+# out of a log door they have to know exists.
+#
+# The operator goes first over HTTP, then A's own agent over MCP, so the two
+# doors are shown writing one answer that the other reads back. The author's
+# words are asserted untouched afterwards, because that is the whole difference
+# between this and an edit.
+a_note_is_added_by_somebody_who_did_not_raise_the_row() {
+	recall
+	api POST "$TOKEN_A" "/api/chat/$ROOM_KIND/todo" \
+		"$(jq -nc --arg t "$NOTE_TODO" '{title: $t, body: "as filed, by whoever filed it"}')" || return 1
+	want_eq "raise status" "$API_STATUS" 200 || return 1
+	local id
+	id="$(jqv .item.id)"
+	remember NOTE_ID "$id"
+	want_eq "nothing learned about it yet" "$(jqv '(.item.notes // []) | length')" 0 || return 1
+
+	api POST "$TOKEN_OP" "/api/todo/$id/note" "$(jq -nc --arg n "$NOTE_ONE" '{note: $n}')" || return 1
+	want_eq "note status" "$API_STATUS" 200 || return 1
+	want_eq "one note back" "$(jqv '.notes | length')" 1 || return 1
+	want_eq "in the words it was written in" "$(jqv .notes[0].note)" "$NOTE_ONE" || return 1
+	want_eq "attributed to the seat that wrote it" "$(jqv .notes[0].actor)" "$USER_OP" || return 1
+	want_eq "as a person" "$(jqv .notes[0].actor_kind)" user || return 1
+	# On the row in the same answer as well as at the top level: a client that
+	# reads rows must not have to know this door exists to see what was learned.
+	want_eq "and on the row in the same answer" "$(jqv .item.notes[0].note)" "$NOTE_ONE" || return 1
+	said_when "the note" "$(jqv .notes[0].created)" || return 1
+
+	# WHAT THE AUTHOR READS, which is the half that fails when the entry hangs off
+	# the wrong row or lands where only its writer can see it.
+	api GET "$TOKEN_A" "/api/artifact/$id" || return 1
+	want_eq "the author reads it on the row itself" "$(jqv .notes[0].note)" "$NOTE_ONE" || return 1
+	want_eq "with the body they wrote untouched" "$(jqv .body)" "as filed, by whoever filed it" || return 1
+	want_eq "and the title" "$(jqv .title)" "$NOTE_TODO" || return 1
+
+	# The second door, and a third seat: A's agent adds what it tried.
+	want_tool todo_note "$TOKEN_A_AGENT" \
+		"$(jq -nc --arg i "$id" --arg n "$NOTE_TWO" '{todo: $i, note: $n}')" || return 1
+	want_eq "two notes now" "$(tv '.notes | length')" 2 || return 1
+	want_eq "the operator's is still there" \
+		"$(tv "[.notes[] | select(.note == \"$NOTE_ONE\")] | length")" 1 || return 1
+	want_eq "the agent's is beside it, as an agent" \
+		"$(tv "[.notes[] | select(.actor == \"$AGENT_A\" and .actor_kind == \"agent\")] | length")" \
+		1 || return 1
+	want_eq "acting for its person" \
+		"$(tv "first(.notes[] | select(.actor == \"$AGENT_A\")).actor_user")" "$USER_A" || return 1
+	# WHICH of the two sorts first is deliberately not asserted, and asserting it
+	# is why this check failed the first time it ran. The two notes were written
+	# through two PROCESSES - `flowy serve` and `flowy mcp`, each holding a clock
+	# of its own - so their order is those clocks' business, exactly as it is for a
+	# classification and for a status move. That notes come back oldest first is
+	# asked where it is one clock's question and has one answer: see the store
+	# check beside this one, TestANoteLandsOnWorkThatIsUnderWayAndOnWorkThatIsFinished.
+	printf 'two seats that did not write the row added to it; the author reads both\n'
+}
+
+# A NOTE IS NOT WRITTEN AGAINST A STATE, so nothing refuses one because somebody
+# picked the row up - and the edit door beside it refuses exactly that, in the
+# same check, because the contrast is the design.
+#
+# Rewording a row under whoever is working from it changes the job. Adding to it
+# does not, and active and done are the states a measurement or a landing note is
+# worth the most in.
+a_note_lands_on_work_that_has_already_started() {
+	recall
+	local id="$NOTE_ID"
+
+	api POST "$TOKEN_OP" "/api/artifact/$id/status" '{"status": "active"}' || return 1
+	want_eq "somebody picked it up" "$API_STATUS" 200 || return 1
+	# The author's own edit is refused now, naming who took it. That is right, and
+	# it is what left an agent with nowhere to put what it had just worked out.
+	want_status 409 POST "$TOKEN_A" "/api/todo/$id/edit" \
+		'{"saw": "todo", "title": "reworded under whoever took it"}' || return 1
+
+	api POST "$TOKEN_OP" "/api/todo/$id/note" \
+		'{"note": "measured: the unauthenticated fetch is 40ms before the token lands"}' || return 1
+	want_eq "and the note lands anyway" "$API_STATUS" 200 || return 1
+	want_eq "three notes now" "$(jqv '.notes | length')" 3 || return 1
+
+	api POST "$TOKEN_OP" "/api/artifact/$id/status" '{"status": "done"}' || return 1
+	want_eq "and then it was finished" "$API_STATUS" 200 || return 1
+	api POST "$TOKEN_A" "/api/todo/$id/note" \
+		'{"note": "landed - the follow-up is the console rendering these under the body"}' || return 1
+	want_eq "a note on finished work" "$API_STATUS" 200 || return 1
+
+	api GET "$TOKEN_A" "/api/todo/$id/notes" || return 1
+	want_eq "four of them now" "$(jqv '.notes | length')" 4 || return 1
+	# Every earlier one is still there, word for word. An append that quietly
+	# replaced what was already learned would be the edit this is not.
+	want_eq "the first one still says what it said" \
+		"$(printf '%s' "$API_BODY" | jq --arg n "$NOTE_ONE" \
+			'[.notes[] | select(.note == $n)] | length')" 1 || return 1
+	want_eq "and so does the second" \
+		"$(printf '%s' "$API_BODY" | jq --arg n "$NOTE_TWO" \
+			'[.notes[] | select(.note == $n)] | length')" 1 || return 1
+	want_eq "and nothing rewrote the title" "$(jqv .item.title)" "$NOTE_TODO" || return 1
+	printf 'notes on active and on finished work, where an edit is refused\n'
+}
+
+# Read permission is a real bar, and a note with nothing to say is not one.
+#
+# B is refused at both doors and told what a read of the id would have told them
+# - nothing about the row - and the row is left exactly as it was.
+an_empty_note_and_a_row_you_cannot_read_are_refused() {
+	recall
+	local id="$NOTE_ID"
+
+	want_status 400 POST "$TOKEN_A" "/api/todo/$id/note" '{"note": "   "}' || return 1
+	want_status 404 POST "$TOKEN_B" "/api/todo/$id/note" '{"note": "I can see this row"}' || return 1
+	want_status 404 GET "$TOKEN_B" "/api/todo/$id/notes" || return 1
+	want_tool_fails todo_note "$TOKEN_B" \
+		"$(jq -nc --arg i "$id" '{todo: $i, note: "over the other door"}')" "no such todo" || return 1
+
+	api GET "$TOKEN_A" "/api/todo/$id/notes" || return 1
+	want_eq "still four" "$(jqv '.notes | length')" 4 || return 1
+	want_eq "and none of them B's" \
+		"$(printf '%s' "$API_BODY" | jq --arg b "$USER_B" \
+			'[.notes[] | select(.actor == $b)] | length')" 0 || return 1
+	printf 'B was refused at both doors and the row says what it said\n'
+}
+
+# A note is MINTED, and this is the door that would otherwise be the way round
+# the verb. An entry handed in here is worse than a forged status move: for this
+# type the entry IS the content, so it would be a paragraph attributed to a seat
+# that never wrote it, sitting under the author's own body as what somebody
+# learned about the work.
+a_note_cannot_be_written_by_hand() {
+	recall
+	want_status 403 POST "$TOKEN_A" /api/events \
+		"$(jq -nc --arg i "$NOTE_ID" --arg r "$ROOM_KIND" '{type: "todo.note", room: $r,
+		   artifact: $i, body: "measured by nobody"}')" || return 1
+	local refused
+	refused="$(jqv .error)"
+	api GET "$TOKEN_A" "/api/todo/$NOTE_ID/notes" || return 1
+	want_eq "so the forged note is not on the row" "$(jqv '.notes | length')" 4 || return 1
+	printf 'a hand-written note: %s\n' "$refused"
+}
+
 # The panel SETS one, OVERRIDES one, and a poll of the room does not wipe it -
 # in a real browser, driving the control a person drives.
 #
@@ -10065,6 +10221,24 @@ check "an unclassified todo reads, lists, and drops out of a narrowed list, in t
 	go test -count=1 -run TestATodoWithNoCategoryReadsAndListsFine ./internal/store
 check "the console draws the kind and filters by it and by a tag, in a browser" \
 	console_filters_the_queue_by_kind_and_tag
+
+say "what was learned about a row"
+check "somebody who did not raise a row attaches what they learned, at both doors" \
+	a_note_is_added_by_somebody_who_did_not_raise_the_row
+check "a note lands on work that has started, where an edit is refused" \
+	a_note_lands_on_work_that_has_already_started
+check "an empty note, and a row you cannot read, are refused at both doors" \
+	an_empty_note_and_a_row_you_cannot_read_are_refused
+check "a note is written by the verb that appends it, not by hand" \
+	a_note_cannot_be_written_by_hand
+check "read permission is the bar and the author reads what somebody else learned, in the store" \
+	go test -count=1 \
+	-run 'TestSomebodyElseCanAttachWhatTheyLearnedAndTheAuthorReadsItOnTheRow|TestANoteLandsOnWorkThatIsUnderWayAndOnWorkThatIsFinished' \
+	./internal/store
+check "a note on a row only its writer could read is refused, in the store" \
+	go test -count=1 \
+	-run 'TestANoteOnAProjectlessRowIsRefusedRatherThanWrittenWhereNobodyReadsIt|TestTheAppendRefusesNothingToSayAndARowTheWriterCannotRead|TestANoteCannotBeHandedOver' \
+	./internal/store
 
 check "the console paints the room's todos on the room page" \
 	console_renders_the_rooms_todos

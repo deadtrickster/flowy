@@ -403,6 +403,24 @@ type Artifact struct {
 	// row that does not say where its work came from - every queue item written
 	// before this field, and nothing here guesses one. See RaiserField.
 	Raiser string `json:"raiser,omitempty"`
+	// Notes is what has been LEARNED about this row since it was filed, oldest
+	// first: measurements, the fix shape somebody worked out, what it turned out
+	// to be blocked on. Each one is attributed to the seat that wrote it and
+	// nothing already on the row changes when one is added - see
+	// internal/store/todonote.go, which is where an append differs from an edit
+	// and why.
+	//
+	// It is here rather than only behind GET /api/todo/{id}/notes for the reason
+	// Assignee, Category and Raiser are here: a queue is read by these facts
+	// together, and a client that has to make a second call for one of them is a
+	// client that mostly does not. Unlike those three this one is a QUERY, so it
+	// is filled on the single-row read paths only - a list of 200 rows carrying
+	// every note on each of them is a different endpoint's answer.
+	//
+	// Derived at read time and permission-filtered on the entries themselves, so
+	// like ReplacedBy it is not stored, not signed and does not replicate. Empty
+	// is a row nobody has learned anything about yet, which is most of them.
+	Notes []NoteEntry `json:"notes,omitempty"`
 	// Reported and External are the forge link: whether this artifact has been
 	// filed as an issue somewhere, and where. Both are written only by the
 	// forge endpoints - see SetArtifactExternal - so an ordinary update of the
