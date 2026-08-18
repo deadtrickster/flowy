@@ -35,7 +35,13 @@ const die = (why, shown) => {
   process.exit(1);
 };
 
-const write = async (title, fields) => {
+// severity is a COLUMN on the artifact and repro_files is a field inside it -
+// the console reads f.severity for its filter options and fields.repro_files
+// for the tree, so seeding either in the wrong place produces a page that is
+// missing exactly the control this check is about. Both were seeded into
+// `fields` first, and the failure looked like a broken filter rather than a
+// broken fixture.
+const write = async (title, severity, fields) => {
   const res = await fetch(`${base}/api/artifacts`, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
@@ -45,6 +51,7 @@ const write = async (title, fields) => {
       title,
       body: "seeded by the selection check",
       visibility: "project",
+      severity,
       fields,
     }),
   });
@@ -55,13 +62,12 @@ const write = async (title, fields) => {
 // One of each, because the run control's whole job is telling them apart. The
 // runnable one carries a manifest shaped the way the store writes one; nothing
 // here runs it, so the tree's contents are not the point.
-const runnable = await write("selection: this one has a repro tree", {
-  repro_files: JSON.stringify([{ path: "repro.sh", attachment_id: "01SEEDED" }]),
+const runnable = await write("selection: this one has a repro tree", "high", {
+  repro_files: [{ path: "repro.sh", attachment_id: "01SEEDED" }],
   repro_entrypoint: "repro.sh",
   repro_interp: "bash",
-  severity: "high",
 });
-const bare = await write("selection: this one has no repro tree", { severity: "low" });
+const bare = await write("selection: this one has no repro tree", "low", {});
 
 const browser = await chromium.launch();
 try {
@@ -105,7 +111,7 @@ skip one silently, and one that said "run 2" would be lying about what it did`,
   }
 
   // 3. A FILTER DOES NOT SILENTLY DROP A SELECTED ROW.
-  await page.selectOption('select[aria-label="severity"]', "high").catch(() => {});
+  await page.selectOption("#finding-filter-severity", "high");
   await page.waitForTimeout(300);
   const afterFilter = await page
     .locator("[data-finding-selected-count]")
