@@ -6245,6 +6245,23 @@ browser_renders_the_rooms_todos() {
 		"$ROOM_TODO_GENERAL" unassigned
 }
 
+# THE SIDEBAR SCROLLS, THE PAGE DOES NOT.
+#
+# Reported by the operator with 26 rooms on the node: "rooms list renders whole
+# list way down - without its own scrollbar - the whole page strats scrolling".
+# The aside had no height bound and no overflow, so the sidebar simply grew past
+# the viewport and took the document with it, carrying the token bar off the
+# bottom.
+#
+# The check asserts GEOMETRY rather than class names: a flex child whose
+# min-height is its content never gets a box smaller than its list, so
+# overflow-y-auto can be set and do nothing. It makes its own rooms, because a
+# room exists here as soon as somebody speaks in one.
+rooms_scroll_inside_themselves() {
+	cd "$ROOT/web" || return 1
+	node scripts/rooms-scroll-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A"
+}
+
 # The panel puts the finished work away, says how much of it there is, and
 # remembers the answer - in a browser, driving the checkbox a person drives.
 #
@@ -11226,6 +11243,8 @@ check "the console paints the room's todos on the room page" \
 	console_renders_the_rooms_todos
 check "the room's todo panel is on the screen in a browser, as an element" \
 	browser_renders_the_rooms_todos
+check "the rooms list scrolls inside itself and the page does not" \
+	rooms_scroll_inside_themselves
 check "the panel sets and overrides one, in a browser, and a poll does not wipe it" \
 	browser_sets_and_overrides_an_assignee
 check "the panel hides the finished ones, counts them, and remembers it, in a browser" \

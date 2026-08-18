@@ -140,7 +140,26 @@ export function Shell({ children }: { children: ReactNode }) {
           </NavLink>
         </nav>
 
-        <div className="flex flex-col gap-0.5">
+        {/*
+          THE ROOMS SCROLL, NOT THE PAGE.
+
+          The aside had no height bound and no overflow, so a node with more
+          rooms than fit simply made the sidebar taller than the viewport and
+          the whole page scrolled - reported by the operator at 26 rooms, with
+          the token bar pushed off the bottom.
+
+          min-h-0 is the half that is easy to leave out and does nothing
+          without: a flex child's default min-height is its content, so
+          overflow-y-auto on its own never gets a box smaller than the list and
+          never scrolls. flex-1 gives it the leftover height, min-h-0 lets it be
+          smaller than its contents, and only then does the overflow do
+          anything.
+
+          It sits on the rooms block rather than the aside so the nav above and
+          the token bar below stay where they are - a sidebar that scrolls as
+          one takes the way out with it.
+        */}
+        <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto">
           <div className="px-2 pb-1 font-medium text-muted-foreground text-xs uppercase tracking-wide">
             rooms
           </div>
@@ -153,7 +172,10 @@ export function Shell({ children }: { children: ReactNode }) {
           ))}
         </div>
 
-        <div className="mt-auto">
+        {/* shrink-0 so the rooms list cannot squeeze it away; mt-auto is gone
+            because the rooms block now takes the slack that used to push this
+            down. */}
+        <div className="shrink-0">
           <TokenBar />
         </div>
       </aside>

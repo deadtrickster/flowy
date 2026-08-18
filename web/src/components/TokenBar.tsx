@@ -17,6 +17,10 @@ export function TokenBar() {
 
   return (
     <form
+      // Named so a check can ask where it IS, not only that it exists. The
+      // rooms list pushed this off the bottom of the page before it scrolled
+      // inside itself, and "the token bar is in the DOM" was true throughout.
+      data-token-bar=""
       className="flex flex-col gap-2 rounded-md border border-border bg-card p-2"
       autoComplete="off"
       onSubmit={(event) => {
