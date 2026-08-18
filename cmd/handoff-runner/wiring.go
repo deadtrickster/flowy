@@ -10,7 +10,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/deadtrickster/flowy/internal/repro"
@@ -70,7 +69,7 @@ func newRunQueue(cfg *Config, db *store.DB) (runQueue, error) {
 	log.Printf("run queue: linked, %d worker(s), logs in %s", cfg.Workers, cfg.LogDir)
 	return &linkedQueue{
 		runner: runner, enqueue: runner.Enqueue,
-		db: db, cfg: cfg, projects: map[int64]string{},
+		db: db, cfg: cfg,
 	}, nil
 }
 
@@ -121,13 +120,7 @@ type linkedQueue struct {
 	// makes its own four steps fields: the checks above are the interesting
 	// half of this type and a test that had to stand up a worker pool and a
 	// Docker daemon to reach them would not be run.
-	enqueue func(p *store.Principal, findingIDs []string, version string) ([]int64, error)
-
-	// projects remembers which project each accepted run belongs to, because
-	// repro.Run does not carry one and this binary's Run does. It is written
-	// once at Enqueue, from the finding that was just read.
-	mu       sync.Mutex
-	projects map[int64]string
+	enqueue func(p *store.Principal, project string, findingIDs []string, version string) ([]int64, error)
 }
 
 // Enqueue accepts one finding to run at one version, on behalf of p.
@@ -179,16 +172,13 @@ func (q *linkedQueue) Enqueue(
 		return "", err
 	}
 
-	ids, err := q.enqueue(p, []string{finding}, version)
+	ids, err := q.enqueue(p, project, []string{finding}, version)
 	if err != nil {
 		return "", err
 	}
 	if len(ids) == 0 {
 		return "", errors.New("the run queue accepted the finding and named no run")
 	}
-	q.mu.Lock()
-	q.projects[ids[0]] = project
-	q.mu.Unlock()
 	return strconv.FormatInt(ids[0], 10), nil
 }
 
@@ -219,6 +209,11 @@ func (q *linkedQueue) Runs() []Run {
 	return out
 }
 
+// indexError is the runner's last failure to write its run index - see
+// internal/repro/index.go. It rides out beside the runs, where somebody
+// reading the list can see that this is the last time they will see it.
+func (q *linkedQueue) indexError() error { return q.runner.IndexError() }
+
 // Close stops the workers and waits for the run in flight.
 func (q *linkedQueue) Close() error {
 	q.runner.Stop()
@@ -227,18 +222,21 @@ func (q *linkedQueue) Close() error {
 
 // record translates one repro.Run into what this binary reports.
 //
+// The project used to come from a map kept here, written at Enqueue. It is a
+// field on the run record now: the map was a second index of the same runs,
+// in the same memory, with the same defect - it did not survive a restart
+// either, so a restored run would have come back knowing everything except
+// which project it was for.
+//
 // The three times go out as unix SECONDS because that is what the console
 // reads (web/src/lib/api.ts, ReproRun) - and a zero time goes out as zero
 // rather than as the start of the epoch, so `omitempty` drops it and a
 // queued run reads as having no start rather than as having started in 1970.
 func (q *linkedQueue) record(run repro.Run) Run {
-	q.mu.Lock()
-	project := q.projects[run.ID]
-	q.mu.Unlock()
 	return Run{
 		ID:        strconv.FormatInt(run.ID, 10),
 		Finding:   run.Finding,
-		Project:   project,
+		Project:   run.Project,
 		Version:   run.Version,
 		SHA:       run.SHA,
 		Status:    string(run.Status),

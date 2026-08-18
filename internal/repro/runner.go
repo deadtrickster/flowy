@@ -106,8 +106,15 @@ func (s Status) Terminal() bool {
 // a reader that flattened nil to false would be making the mistake this file
 // is about.
 type Run struct {
-	ID        int64      `json:"id"`
-	Finding   string     `json:"finding"`
+	ID      int64  `json:"id"`
+	Finding string `json:"finding"`
+	// Project is which project's checkout, image and cache this run is
+	// against, named by the caller that asked for it. It is on the record
+	// rather than in a map beside it because a map beside it is a second
+	// index with the same failure as the first: it did not survive a
+	// restart either, and a run that comes back knowing everything except
+	// which project it was for is not a run that came back.
+	Project   string     `json:"project,omitempty"`
 	Version   string     `json:"version"`
 	Status    Status     `json:"status"`
 	SHA       string     `json:"sha,omitempty"`
@@ -284,6 +291,9 @@ type Runner struct {
 	mu   sync.Mutex
 	runs map[int64]*Run
 	next int64
+	// indexErr is the last failure to write the run index beside the logs -
+	// see index.go, which is where every word about it lives.
+	indexErr error
 
 	queue   chan int64
 	wg      sync.WaitGroup
@@ -318,7 +328,7 @@ func NewRunner(findings Findings, projects Projects, opt Options) (*Runner, erro
 	if err := os.MkdirAll(opt.CacheDir, 0o755); err != nil {
 		return nil, fmt.Errorf("repro: package cache directory: %w", err)
 	}
-	return &Runner{
+	r := &Runner{
 		findings: findings,
 		projects: projects,
 		opt:      opt,
@@ -328,7 +338,14 @@ func NewRunner(findings Findings, projects Projects, opt Options) (*Runner, erro
 		compose:  dockerCompose,
 		runs:     map[int64]*Run{},
 		queue:    make(chan int64, opt.QueueDepth),
-	}, nil
+	}
+	// The runs this binary did before it was restarted, so that GET /runs
+	// answers the same thing after a restart that it answered before one.
+	// See index.go on why an unreadable index refuses the runner.
+	if err := r.loadIndex(); err != nil {
+		return nil, err
+	}
+	return r, nil
 }
 
 // Start brings the worker pool up. Calling it twice is a no-op rather than a
@@ -405,7 +422,9 @@ var ErrStopped = errors.New("repro: the runner is stopped")
 // has no repro tree, is a fact about the run, discovered by the worker and
 // reported on the run record - not a reason to refuse the whole batch and
 // leave the caller unable to see why.
-func (r *Runner) Enqueue(p *store.Principal, findingIDs []string, version string) ([]int64, error) {
+func (r *Runner) Enqueue(
+	p *store.Principal, project string, findingIDs []string, version string,
+) ([]int64, error) {
 	version = strings.TrimSpace(version)
 	if version == "" {
 		version = "latest"
@@ -424,7 +443,7 @@ func (r *Runner) Enqueue(p *store.Principal, findingIDs []string, version string
 		if fid == "" {
 			return ids, errors.New("repro: a run names a finding")
 		}
-		id, err := r.accept(p, fid, version)
+		id, err := r.accept(p, project, fid, version)
 		if err != nil {
 			return ids, err
 		}
@@ -440,7 +459,7 @@ func (r *Runner) Enqueue(p *store.Principal, findingIDs []string, version string
 // is a panic rather than an error. The send never blocks - the queue is
 // buffered and the send is a non-blocking select - so holding the lock
 // across it cannot deadlock.
-func (r *Runner) accept(p *store.Principal, findingID, version string) (int64, error) {
+func (r *Runner) accept(p *store.Principal, project, findingID, version string) (int64, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.stopped {
@@ -449,7 +468,7 @@ func (r *Runner) accept(p *store.Principal, findingID, version string) (int64, e
 	r.next++
 	id := r.next
 	run := &Run{
-		ID: id, Finding: findingID, Version: version, Status: StatusQueued,
+		ID: id, Finding: findingID, Project: project, Version: version, Status: StatusQueued,
 		QueuedAt:  time.Now().UTC(),
 		Log:       filepath.Join(r.opt.LogDir, fmt.Sprintf("run-%d.log", id)),
 		principal: p,
@@ -458,6 +477,7 @@ func (r *Runner) accept(p *store.Principal, findingID, version string) (int64, e
 
 	select {
 	case r.queue <- id:
+		r.saveIndex()
 		return id, nil
 	default:
 		// The record stays, saying why: a caller who got ids back for the
@@ -466,6 +486,7 @@ func (r *Runner) accept(p *store.Principal, findingID, version string) (int64, e
 		run.Status = StatusError
 		run.Note = fmt.Sprintf("the run queue is full (%d waiting)", r.opt.QueueDepth)
 		run.EndedAt = nowPtr()
+		r.saveIndex()
 		return 0, ErrQueueFull
 	}
 }
@@ -504,6 +525,7 @@ func (r *Runner) update(id int64, fn func(*Run)) {
 	defer r.mu.Unlock()
 	if run, ok := r.runs[id]; ok {
 		fn(run)
+		r.saveIndex()
 	}
 }
 
@@ -535,8 +557,10 @@ func (r *Runner) runOne(ctx context.Context, id int64) {
 		run.StartedAt = nowPtr()
 	})
 
-	// Truncate rather than append: run ids start again in a new process, so
-	// appending would grow one file holding two unrelated runs.
+	// Truncate rather than append. Run ids no longer start again in a new
+	// process - the index carries the counter - so this is no longer about
+	// two runs sharing a file; it is that a run writes its log from its own
+	// first line, and a retry of an id would otherwise read as one long run.
 	log, err := os.Create(run.Log)
 	if err != nil {
 		r.failNow(id, fmt.Sprintf("could not open the run log: %v", err))

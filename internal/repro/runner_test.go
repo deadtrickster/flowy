@@ -240,7 +240,7 @@ func (h *harness) await(t *testing.T, id int64) Run {
 
 func (h *harness) runOnce(t *testing.T, version string) Run {
 	t.Helper()
-	ids, err := h.Enqueue(testAsker, []string{"01M08YNY9ZFD7089CKAGM6HMA3"}, version)
+	ids, err := h.Enqueue(testAsker, "flowy", []string{"01M08YNY9ZFD7089CKAGM6HMA3"}, version)
 	if err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
@@ -666,7 +666,7 @@ func TestPoolRunsInParallel(t *testing.T) {
 		return 0, nil
 	})
 
-	ids, err := h.Enqueue(testAsker, []string{"finding-a", "finding-b"}, "latest")
+	ids, err := h.Enqueue(testAsker, "flowy", []string{"finding-a", "finding-b"}, "latest")
 	if err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
@@ -695,7 +695,7 @@ func TestQueueFullIsRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Never started, so nothing drains the queue.
-	ids, err := r.Enqueue(testAsker, []string{"a", "b"}, "latest")
+	ids, err := r.Enqueue(testAsker, "flowy", []string{"a", "b"}, "latest")
 	if !errors.Is(err, ErrQueueFull) {
 		t.Fatalf("err = %v, want ErrQueueFull", err)
 	}
@@ -724,7 +724,7 @@ func TestStopMarksQueuedRunsError(t *testing.T) {
 		}
 		return 0, nil
 	})
-	ids, err := h.Enqueue(testAsker, []string{"a", "b", "c"}, "latest")
+	ids, err := h.Enqueue(testAsker, "flowy", []string{"a", "b", "c"}, "latest")
 	if err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
@@ -764,7 +764,7 @@ func TestStopMarksQueuedRunsError(t *testing.T) {
 			t.Errorf("run %d has a verdict after a shutdown: %v", id, *run.Confirmed)
 		}
 	}
-	if _, err := h.Enqueue(testAsker, []string{"d"}, "latest"); !errors.Is(err, ErrStopped) {
+	if _, err := h.Enqueue(testAsker, "flowy", []string{"d"}, "latest"); !errors.Is(err, ErrStopped) {
 		t.Fatalf("enqueue after stop = %v, want ErrStopped", err)
 	}
 	h.Stop() // idempotent
@@ -773,7 +773,7 @@ func TestStopMarksQueuedRunsError(t *testing.T) {
 // TestEnqueueDefaultsAndRefusals.
 func TestEnqueueDefaultsAndRefusals(t *testing.T) {
 	h := newHarness(t, Options{Workers: 1})
-	ids, err := h.Enqueue(testAsker, []string{"a"}, "  ")
+	ids, err := h.Enqueue(testAsker, "flowy", []string{"a"}, "  ")
 	if err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
@@ -781,10 +781,10 @@ func TestEnqueueDefaultsAndRefusals(t *testing.T) {
 	if run.Version != "latest" {
 		t.Errorf("version = %q, want the latest default", run.Version)
 	}
-	if _, err := h.Enqueue(testAsker, nil, "latest"); err == nil {
+	if _, err := h.Enqueue(testAsker, "flowy", nil, "latest"); err == nil {
 		t.Error("enqueued a batch naming no finding")
 	}
-	if _, err := h.Enqueue(testAsker, []string{" "}, "latest"); err == nil {
+	if _, err := h.Enqueue(testAsker, "flowy", []string{" "}, "latest"); err == nil {
 		t.Error("enqueued a run naming no finding")
 	}
 }
@@ -854,12 +854,12 @@ func TestVerdictIsSignedByWhoeverAsked(t *testing.T) {
 	h := newHarness(t, Options{Workers: 1})
 	one, two := asker("agent-one"), asker("agent-two")
 
-	first, err := h.Enqueue(one, []string{"01M08YNY9ZFD7089CKAGM6HMA3"}, "26.07.5")
+	first, err := h.Enqueue(one, "flowy", []string{"01M08YNY9ZFD7089CKAGM6HMA3"}, "26.07.5")
 	if err != nil {
 		t.Fatalf("Enqueue as one: %v", err)
 	}
 	h.await(t, first[0])
-	second, err := h.Enqueue(two, []string{"01M08YNY9ZFD7089CKAGM6HMA3"}, "26.07.5")
+	second, err := h.Enqueue(two, "flowy", []string{"01M08YNY9ZFD7089CKAGM6HMA3"}, "26.07.5")
 	if err != nil {
 		t.Fatalf("Enqueue as two: %v", err)
 	}
@@ -879,7 +879,7 @@ func TestVerdictIsSignedByWhoeverAsked(t *testing.T) {
 // under some other name.
 func TestEnqueueRefusesWithNoPrincipal(t *testing.T) {
 	h := newHarness(t, Options{Workers: 1})
-	if _, err := h.Enqueue(nil, []string{"01M08YNY9ZFD7089CKAGM6HMA3"}, "latest"); err == nil {
+	if _, err := h.Enqueue(nil, "flowy", []string{"01M08YNY9ZFD7089CKAGM6HMA3"}, "latest"); err == nil {
 		t.Fatal("enqueued a run on behalf of nobody")
 	}
 	if runs := h.Runs(); len(runs) != 0 {

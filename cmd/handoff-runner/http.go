@@ -256,7 +256,11 @@ func (s *service) handleRuns(w http.ResponseWriter, r *http.Request, p *store.Pr
 			visible = append(visible, run)
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"runs": visible, "linked": linked(s.queue)})
+	body := map[string]any{"runs": visible, "linked": linked(s.queue)}
+	if err := indexError(s.queue); err != nil {
+		body["index_error"] = err.Error()
+	}
+	writeJSON(w, http.StatusOK, body)
 	return nil
 }
 

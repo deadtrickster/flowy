@@ -10488,6 +10488,11 @@ check "an SSE stream outlives the server's WriteTimeout, and only because it is 
 # see. Three merge requests sat that way for hours tonight.
 check "a work item filed over MCP defaults to the project, and a memory does not" \
 	go test -count=1 -run TestAWorkItemDefaultsToTheProjectAndAMemoryDoesNot .
+# Named for the same reason: a runner that forgets its runs answers the empty
+# list a runner that has never run anything answers, so a finding that HAS been
+# reproduced reads as never reproduced in the console's drawer.
+check "a run survives the runner being restarted" \
+	go test -count=1 -run 'TestRunsSurviveARestart' ./internal/repro
 
 # ------------------------------------------ an older database meets this binary
 #

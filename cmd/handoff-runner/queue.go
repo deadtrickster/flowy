@@ -115,6 +115,24 @@ func linked(q runQueue) bool {
 	return !unlinked
 }
 
+// indexKeeper is implemented by a queue that writes its run list somewhere
+// that survives a restart, and answers whether the last write worked. It is
+// optional, like unlinkedReason: a queue that cannot run anything has no run
+// list to keep, and answers nothing here.
+type indexKeeper interface{ indexError() error }
+
+// indexError is the last failure to persist the run list, or nil. It is
+// reported beside the runs rather than logged, because the moment it matters
+// is the restart AFTER it happens, and by then the runs it would have named
+// are gone. A reader seeing runs and this together is being told that what
+// it is looking at is the last time anybody will see it.
+func indexError(q runQueue) error {
+	if k, ok := q.(indexKeeper); ok {
+		return k.indexError()
+	}
+	return nil
+}
+
 // unlinkedError is the reason this queue cannot run anything, or nil when it
 // can. Callers turn it into a 503 that quotes it, so the sentence an
 // operator reads is the queue's own and not a second copy of it here.

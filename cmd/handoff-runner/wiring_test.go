@@ -20,13 +20,13 @@ import (
 func linkedFor(f *fixture) (*linkedQueue, *[]string) {
 	var asked []string
 	q := &linkedQueue{
-		db: f.svc.db, cfg: f.svc.cfg, projects: map[int64]string{},
-		enqueue: func(p *store.Principal, findings []string, version string) ([]int64, error) {
+		db: f.svc.db, cfg: f.svc.cfg,
+		enqueue: func(p *store.Principal, project string, findings []string, version string) ([]int64, error) {
 			who := "<nil>"
 			if p != nil {
 				who = p.UserID + p.AgentID
 			}
-			asked = append(asked, strings.Join(findings, ",")+"@"+version+" as "+who)
+			asked = append(asked, strings.Join(findings, ",")+"@"+version+" for "+project+" as "+who)
 			return []int64{7}, nil
 		},
 	}
@@ -52,12 +52,9 @@ func TestQueueEnqueuesOnBehalfOfTheCaller(t *testing.T) {
 	if id != "7" {
 		t.Errorf("run id %q, want the queue's own id", id)
 	}
-	want := f.finding + "@latest as " + p.UserID
+	want := f.finding + "@latest for " + f.project + " as " + p.UserID
 	if len(*asked) != 1 || (*asked)[0] != want {
 		t.Errorf("runner asked %v, want [%q] - a run is performed on behalf of the caller", *asked, want)
-	}
-	if got := q.projects[7]; got != f.project {
-		t.Errorf("run filed under project %q, want %q", got, f.project)
 	}
 }
 
@@ -183,14 +180,14 @@ func TestUnrunnableQueueRefusesByName(t *testing.T) {
 
 // TestRunRecordsCarryTheirProjectAndUnixTimes checks the two
 // translations the adapter exists for and that nothing else does: the
-// project a repro.Run does not carry, and unix seconds rather than a zero
-// time for a run that has not started.
+// project, which now rides on the run record itself, and unix seconds rather
+// than a zero time for a run that has not started.
 func TestRunRecordsCarryTheirProjectAndUnixTimes(t *testing.T) {
 	queued := time.Date(2026, 8, 18, 9, 0, 0, 0, time.UTC)
-	q := &linkedQueue{projects: map[int64]string{1: "serenedb", 2: "ragflow"}}
+	q := &linkedQueue{}
 	got := []Run{
-		q.record(repro.Run{ID: 1, Finding: "f1", Status: repro.StatusQueued, QueuedAt: queued}),
-		q.record(repro.Run{ID: 2, Finding: "f2", Status: repro.StatusRunning, QueuedAt: queued}),
+		q.record(repro.Run{ID: 1, Finding: "f1", Project: "serenedb", Status: repro.StatusQueued, QueuedAt: queued}),
+		q.record(repro.Run{ID: 2, Finding: "f2", Project: "ragflow", Status: repro.StatusRunning, QueuedAt: queued}),
 	}
 	if got[0].Project != "serenedb" || got[1].Project != "ragflow" {
 		t.Errorf("projects lost in translation: %q, %q", got[0].Project, got[1].Project)
