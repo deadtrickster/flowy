@@ -31,6 +31,10 @@ const defaultAddr = "127.0.0.1:8787"
 type server struct {
 	db   *store.DB
 	node string
+	// joins rate-limits the one unauthenticated door. It is per-process and
+	// deliberately simple: the endpoint grants nothing, so the limit is about
+	// keeping the board tidy rather than about security.
+	joins *joinLimiter
 	// operator is the user id that runs this node. It is the only principal
 	// ?scope=all obeys. It is local configuration on purpose: operator-ness is
 	// a fact about this machine, not a row that could ever replicate to another
@@ -167,6 +171,7 @@ func serve(args []string) error {
 		forgeRepos: commaSet(*forgeRepos),
 		started:    time.Now(),
 		tracer:     newTracer(*node, db),
+		joins:      newJoinLimiter(),
 	}
 	defer srv.tracer.Close()
 	if len(srv.peers) > 0 {
@@ -339,6 +344,10 @@ func (s *server) routes() http.Handler {
 	// a credential is a health check that stops working at the worst moment.
 	// None of these read a row of fabric data.
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
+	// The one door that takes no token, because the thing knocking does not
+	// have one yet and cannot be given one without asking. It writes a request
+	// row and grants nothing - see handleJoin.
+	mux.HandleFunc("POST /api/join", s.handleJoin)
 	mux.HandleFunc("GET /version", s.handleVersion)
 	// The Prometheus text endpoint. It is at /metrics because that is where a
 	// scraper looks, and it is behind the same token and the same scope filter
@@ -372,6 +381,7 @@ func (s *server) routes() http.Handler {
 	api.HandleFunc("GET /api/merge-queue", s.handleMergeQueue)
 	api.HandleFunc("POST /api/merge/{id}/gate", s.handleMergeGate)
 	api.HandleFunc("POST /api/merge/{id}/land", s.handleMergeLand)
+	api.HandleFunc("POST /api/merge/{id}/abandon", s.handleMergeAbandon)
 	api.HandleFunc("GET /api/artifact/{id}", s.handleGetArtifact)
 	api.HandleFunc("POST /api/artifact/{id}/delete", s.handleDeleteArtifact)
 	api.HandleFunc("POST /api/artifact/{id}/status", s.handleArtifactStatus)
@@ -487,6 +497,10 @@ func (s *server) routes() http.Handler {
 	// neither decides what anybody may read.
 	api.HandleFunc("GET /api/projects", s.handleListProjects)
 	api.HandleFunc("POST /api/projects", s.handleCreateProject)
+	// Approving is authenticated and operator-only: asking takes no token,
+	// admitting is the operator's alone.
+	api.HandleFunc("POST /api/join/{id}/approve", s.handleJoinApprove)
+	api.HandleFunc("POST /api/join/{id}/refuse", s.handleJoinRefuse)
 	// Phase 9. Announcements, and the quiesce a maintenance one can hold.
 	// Posting is capability-gated on the agent kind rather than on the route,
 	// because the gate is per scope and not per endpoint: anybody may say

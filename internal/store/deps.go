@@ -111,7 +111,7 @@ const MemoryType = "memory"
 // graph with a second ready query, which means two answers to what can start now
 // and no way to tell which one is lying. See mergequeue.go, which adds one
 // opinion to a merge item and no new machinery underneath it.
-var WorkKinds = []string{"todo", "feature", "handoff", MergeKind, WorkKind}
+var WorkKinds = []string{"todo", "feature", "handoff", MergeKind, WorkKind, JoinKind}
 
 // DoneStatus is the status that takes an item out of the queue, and - read from
 // the other side - the only status that satisfies a dependency.

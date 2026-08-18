@@ -847,7 +847,20 @@ type ArtifactQuery struct {
 	// TodoCategories. This is the routing half of what a closed set is FOR: "give
 	// me the bugs" has to be a query the node answers rather than a filter each
 	// client writes over a free-text column, or the ontology is decoration.
-	Category   string
+	Category string
+	// Tags narrows to the artifacts carrying EVERY one of these labels. Two
+	// tags mean AND rather than OR, because that is what stacked filters mean
+	// to the person clicking them: picking `serenedb` and then `ragflow` asks
+	// for the rows that are both, and a second click that WIDENED the answer
+	// would be the same wrong-answer-shaped-like-a-right-one this filter exists
+	// to stop.
+	//
+	// A tag matches either column of labels - tags and user_tags - because
+	// every reader here already draws them as one list (todoTags in the console,
+	// the TUI's artifact line), so the chip somebody clicked may have come from
+	// either. A filter that knew only about `tags` would answer nothing for half
+	// the chips it was offered, and an empty page reads as "there are none".
+	Tags       []string
 	Visibility string // personal|project|shared - the memory scopes
 	Query      string // free text; SearchArtifacts only
 	ScopeAll   bool   // ?scope=all - honoured only for the operator principal
@@ -934,6 +947,14 @@ func (q ArtifactQuery) narrow(a *args, alias string) string {
 		// same reason the supersedes one is - the rows carrying the key are the
 		// minority while the queue catches up.
 		where += " AND " + alias + ".fields->>'" + CategoryField + "' = " + a.next(q.Category)
+	}
+	for _, tag := range q.Tags {
+		// One clause per tag, so several are ANDed - see the field. The two
+		// label columns are concatenated rather than tested separately because
+		// they are one list to every reader, and coalesce because a row with no
+		// tags at all has NULL there, and NULL || anything is NULL.
+		where += " AND " + a.next(tag) + " = ANY(coalesce(" + alias + ".tags, '{}'::text[])" +
+			" || coalesce(" + alias + ".user_tags, '{}'::text[]))"
 	}
 	return where
 }

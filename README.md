@@ -1066,7 +1066,7 @@ and deletes are tombstones.
 | route | what it does |
 | --- | --- |
 | `POST /api/artifacts` | create, or replace one you own **and can read**. Body: `type` (required), `kind`, `title`, `body`, `discovery`, `status`, `severity`, `tags`, `user_tags`, `related`, `visibility`, `project`, `file_path`, `fields`, `id?`. A new `id` is a ULID; `hlc` and `node` are stamped. An `id` that names a row you cannot read - another project's, a deleted one - is `404` and writes nothing |
-| `GET /api/artifacts?type=&kind=&project=&status=&room=&category=` | `{"artifacts":[...]}`, permission-filtered, newest first, tombstones omitted. `room` narrows to what was raised in one chat room, beside `type` and `kind` and inside the same permission filter. `category` narrows to one kind of work out of the closed set - `bug`, `feature`, `chore`, `question` - and a word outside it is `400` naming the set rather than an empty page |
+| `GET /api/artifacts?type=&kind=&project=&status=&room=&category=&tag=&limit=` | `{"artifacts":[...]}`, permission-filtered, newest first, tombstones omitted. `room` narrows to what was raised in one chat room, beside `type` and `kind` and inside the same permission filter. `category` narrows to one kind of work out of the closed set - `bug`, `feature`, `chore`, `question` - and a word outside it is `400` naming the set rather than an empty page. `tag` narrows to the rows carrying that label in either `tags` or `user_tags`, and repeated it means AND: `?tag=a&tag=b` is the rows carrying both. It narrows in the query, so it composes with `limit` rather than cutting the page first. **Any other parameter is `400` naming it** - see below |
 | `GET /api/artifact/{id}` | the artifact, or `404` if it is missing **or** out of reach |
 | `POST /api/artifact/{id}/delete` | tombstone it and bump the clock past the write it removes |
 | `POST /api/artifact/{id}/status` | move it through the lifecycle. Body: `status`. Returns `{artifact, event}`. `409` on a move the workflow does not allow, `404` on one you cannot read |
@@ -2926,6 +2926,59 @@ possible - `array_to_string` is `STABLE`, so Postgres refuses the expression -
 and a trigger would drag PL/pgSQL into a schema that promises none. The cost is
 that a row written by something other than the node has no search vector; every
 write path in the node goes through `store.UpsertArtifact`.
+
+## Narrowing by tag, and the parameter a door will not take
+
+`GET /api/artifacts?tag=` narrows to the artifacts carrying that label. It was
+measured missing on 0.8.0+980a537, and the measurement is the whole argument:
+
+```
+GET /api/artifacts?type=finding             -> 40 artifacts
+GET /api/artifacts?type=finding&tag=ragflow -> 40 artifacts
+```
+
+with 24 of those findings carrying `serenedb` and 16 carrying `ragflow`. The
+data was right and the query was ignored. An ignored filter does not fail - it
+answers `200` with MORE than was asked for, which is a wrong answer in the shape
+of a right one, and no client can tell: there is no field to check and no count
+to compare against. A console stacking that filter draws every ragflow row under
+a serenedb heading and reports nothing wrong. It was filed twice as "I still
+don't see serenedb and ragflow findings", and both times the findings were
+there.
+
+Three decisions, in `store.ArtifactQuery.Tags` and `handleListArtifacts`:
+
+**Repeated `tag` is AND.** `?tag=a&tag=b` is the artifacts carrying both,
+because that is what stacked filters mean to the person clicking them - a
+second click narrows. A repeated parameter that widened the answer would be the
+same wrong-answer-shaped-like-a-right-one one step along.
+
+**A tag matches either column of labels**, `tags` or `user_tags`. They are two
+columns and one list to every reader here - the console merges them in
+`todoTags`, the TUI prints both - so the chip somebody clicked may have come
+from either, and a filter that knew only about `tags` would answer nothing for
+half the chips it was offered. An empty page reads as "there are none".
+
+**It narrows in the query, before the limit.** A filter applied after the page
+is cut is the same defect in different clothes: it returns fewer rows and still
+lies about the set. It is a clause in `ArtifactQuery.narrow` beside `type`,
+`room` and `category`, so it composes with all of them and with `LIMIT` without
+a second query shape.
+
+The general rule the tag case is one instance of: **a filter parameter this door
+does not honour is refused by name, not dropped.** `listParams` in `api.go` is
+the whole of what `GET /api/artifacts` takes - `type`, `kind`, `project`,
+`status`, `room`, `category`, `tag`, `limit`, `scope` - and anything else is a
+`400` naming it and listing what is accepted. `?tags=node-wide`, the plural the
+defect was filed with, is now a refusal rather than five rows that look like an
+answer. Adding a parameter to that map is the second half of implementing it,
+and forgetting to is a refusal rather than a lie. This is the same rule
+`decodeJSON` keeps on the way in with `DisallowUnknownFields`, for the same
+reason: silently dropped input is how a caller comes to believe something ran.
+
+`GET /api/search` still takes what it takes and drops the rest - it is a
+different door with its own set, and narrowing a ranked search by tag is not
+this fix.
 
 ## Schema spine
 

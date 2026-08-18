@@ -4041,6 +4041,16 @@ HIDE_TODO_DONE="rebush the crank pin"
 HIDE_TODO_OPEN="reseat the intake valve"
 readonly ROOM_HIDE HIDE_TODO_DONE HIDE_TODO_OPEN
 
+# And a room of its own for the autofill flow, because that check RAISES a todo
+# by typing into the panel and then names its carrier: it is the only console
+# check that writes through the panel rather than seeding over the API, so it
+# would otherwise leave a row in whatever room it was pointed at and move the
+# counts the two checks above assert on.
+ROOM_AUTOFILL="autofill"
+AUTOFILL_TODO="regrind the pinion shoulder"
+AUTOFILL_CARRIER="clarke"
+readonly ROOM_AUTOFILL AUTOFILL_TODO AUTOFILL_CARRIER
+
 # And a room of its own for the reply check, for a reason of its own: it asserts
 # on the LAST two messages in the room and tabs from one to the next, so a room
 # the rest of the run is still writing into would move the rows out from under
@@ -5594,6 +5604,82 @@ mem_write_takes_a_category_and_tags_take_anything() {
 	printf 'the kind rode a write, survived an update, came off, and rode a raise\n'
 }
 
+# A TAG NARROWS THE LIST, AND A PARAMETER THIS DOOR DOES NOT HONOUR IS REFUSED
+# BY NAME.
+#
+# The measurement this is for, on 0.8.0+980a537:
+#
+#   GET /api/artifacts?type=finding             -> 40 artifacts
+#   GET /api/artifacts?type=finding&tag=ragflow -> 40 artifacts
+#
+# with 16 of those findings carrying the tag. The filter was dropped, and a
+# dropped filter answers 200 with MORE than was asked for - which no caller can
+# detect, because there is no field to check and no count to compare. It is over
+# the wire and not in a Go test on purpose: that is where it was measured, and a
+# handler test would not see a route or a middleware losing the parameter.
+a_tag_narrows_the_list_and_an_unhonoured_parameter_is_refused() {
+	recall
+	local both="tagfilter both" xonly="tagfilter x" yonly="tagfilter y by its author"
+	local plain="tagfilter none"
+
+	api POST "$TOKEN_A" /api/artifacts \
+		"$(jq -nc --arg t "$both" '{type: "memory", kind: "note", title: $t,
+		   tags: ["tagfilter-x", "tagfilter-y"]}')" || return 1
+	want_eq "the row carrying both" "$API_STATUS" 200 || return 1
+	api POST "$TOKEN_A" /api/artifacts \
+		"$(jq -nc --arg t "$xonly" '{type: "memory", kind: "note", title: $t,
+		   tags: ["tagfilter-x"]}')" || return 1
+	want_eq "the row carrying one" "$API_STATUS" 200 || return 1
+	# On the other column of labels, which is the one a reader cannot tell apart:
+	# the console draws tags and user_tags as one list, so the chip somebody
+	# clicked may have come from either.
+	api POST "$TOKEN_A" /api/artifacts \
+		"$(jq -nc --arg t "$yonly" '{type: "memory", kind: "note", title: $t,
+		   user_tags: ["tagfilter-y"]}')" || return 1
+	want_eq "the row labelled by its author" "$API_STATUS" 200 || return 1
+	api POST "$TOKEN_A" /api/artifacts \
+		"$(jq -nc --arg t "$plain" '{type: "memory", kind: "note", title: $t}')" || return 1
+	want_eq "the row carrying nothing" "$API_STATUS" 200 || return 1
+
+	# One tag: the two rows that carry it and nothing else at all.
+	api GET "$TOKEN_A" "/api/artifacts?type=memory&kind=note&tag=tagfilter-x" || return 1
+	want_eq "narrowed status" "$API_STATUS" 200 || return 1
+	want_todos "the rows tagged x" "$both" "$xonly" -- "$yonly" "$plain" || return 1
+	want_eq "and nothing came with them" "$(hits)" 2 || return 1
+
+	# Two tags mean AND, because that is what a second click on a stacked filter
+	# means to the person clicking it.
+	api GET "$TOKEN_A" "/api/artifacts?tag=tagfilter-x&tag=tagfilter-y" || return 1
+	want_todos "the rows carrying both" "$both" -- "$xonly" "$yonly" "$plain" || return 1
+	want_eq "and only that one" "$(hits)" 1 || return 1
+
+	# Either column of labels answers a tag.
+	api GET "$TOKEN_A" "/api/artifacts?tag=tagfilter-y" || return 1
+	want_todos "the rows tagged y in either column" "$both" "$yonly" -- "$xonly" "$plain" || return 1
+
+	# Filter first, then cut the page. A filter applied after the limit is the
+	# same defect in different clothes: short AND wrong.
+	api GET "$TOKEN_A" "/api/artifacts?type=memory&kind=note&tag=tagfilter-x&limit=1" || return 1
+	want_eq "one row on the page" "$(hits)" 1 || return 1
+	want_eq "and it is one of the tagged ones" \
+		"$(hits '((.tags // []) + (.user_tags // [])) | index("tagfilter-x")')" 1 || return 1
+
+	# The unnarrowed list still holds all four: a tag is a filter, not a
+	# permission axis, and an untagged row is on every page it was on before.
+	api GET "$TOKEN_A" "/api/artifacts?type=memory&kind=note" || return 1
+	want_todos "the unnarrowed list" "$both" "$xonly" "$yonly" "$plain" || return 1
+
+	# And the plural the defect was filed with is a refusal naming it, rather
+	# than an answer that looks right.
+	want_status 400 GET "$TOKEN_A" "/api/artifacts?tags=tagfilter-x" || return 1
+	printf '%s' "$API_BODY" | grep -q 'tags' || {
+		printf 'the refusal does not name the parameter:\n%s\n' "$API_BODY" >&2
+		return 1
+	}
+	want_status 400 GET "$TOKEN_A" "/api/artifacts?type=memory&q=gearbox" || return 1
+	printf 'a tag narrowed the list, two meant both, the limit came after it, and the plural was refused\n'
+}
+
 # --------------------------------------------- what was learned about a row
 #
 # A row was fixed at the moment it was filed: the words are its author's, and
@@ -5857,6 +5943,36 @@ browser_hides_the_finished_todos() {
 	cd "$ROOT/web" || return 1
 	node scripts/hidedone-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" \
 		"$ROOM_HIDE" "$HIDE_TODO_DONE" "$HIDE_TODO_OPEN"
+}
+
+# Raising a todo does not make the browser offer a saved password or a stored
+# card, driven as the journey rather than read off the source.
+#
+# The operator reported it in their own words: "raise todo input makes my
+# browser show password and credit card suggestion. chat input doesn't". The
+# raise box was one unnamed text input with no type and no autocomplete, alone
+# in a form with a submit button, which is the shape a browser reads as a
+# sign-in. The message box beside it was never affected because what you type
+# into it is a textarea.
+#
+# It is a FLOW - open the room, click the box, type, submit, see the row, then
+# name the carrier - because a field that is annotated perfectly and cannot be
+# typed into is not fixed. That is the New-button failure two features over,
+# where the control was disabled until another box had text, so no click ever
+# reached a handler and every test still passed.
+#
+# The sweep at the end is the other half. The operator hit one field; the next
+# one they hit will be in another file, so every text box on the pages a person
+# actually opens has to say the same thing. It goes red on the raise box alone
+# against the console as it was, which was checked by hand against a stand-in
+# serving the previous bundle before this was wired in.
+browser_does_not_offer_a_password_over_a_todo() {
+	recall
+	cd "$ROOT/web" || return 1
+	node scripts/autofill-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" \
+		"$ROOM_AUTOFILL" "$AUTOFILL_TODO" "$AUTOFILL_CARRIER" \
+		--page=/ --page=/todos --page=/findings --page=/reports \
+		--page=/diagrams --page=/activity --page=/direct
 }
 
 # The roster, in a browser, on the ELEMENT: each listener's line says what that
@@ -10542,6 +10658,15 @@ check "an unclassified todo reads, lists, and drops out of a narrowed list, in t
 	go test -count=1 -run TestATodoWithNoCategoryReadsAndListsFine ./internal/store
 check "the console draws the kind and filters by it and by a tag, in a browser" \
 	console_filters_the_queue_by_kind_and_tag
+# And the tags beside the kind are a filter the NODE applies, which is the half
+# that was missing: the console could narrow a page it had already been handed,
+# and the door handed it every row whatever it asked for.
+check "A TAG NARROWS THE LIST AT THE DOOR, and a parameter it does not honour is refused" \
+	a_tag_narrows_the_list_and_an_unhonoured_parameter_is_refused
+check "the list door's tag filter, composition and refusal, in the handler" \
+	go test -count=1 \
+	-run 'TestATagNarrowsTheListAndTwoTagsMeanBoth|TestATagMatchesEitherColumnOfLabels|TestATagComposesWithTheOtherNarrowingsAndIsAppliedBeforeTheLimit|TestTheListRefusesAParameterItDoesNotHonour|TestTheListStillTakesTheParametersItDocuments' \
+	.
 
 say "what was learned about a row"
 check "somebody who did not raise a row attaches what they learned, at both doors" \
@@ -10571,6 +10696,8 @@ check "the panel sets and overrides one, in a browser, and a poll does not wipe 
 	browser_sets_and_overrides_an_assignee
 check "the panel hides the finished ones, counts them, and remembers it, in a browser" \
 	browser_hides_the_finished_todos
+check "raising a todo offers nobody a saved password or a stored card, in a browser" \
+	browser_does_not_offer_a_password_over_a_todo
 check "each speaker is drawn in their own colour, in a browser" \
 	browser_colours_the_speakers
 check "the roster draws what each listener can do, distinctly, in a browser" \
@@ -16318,8 +16445,14 @@ shell_scripts_lint() {
 	# 0 because the thing it checks with is absent reads as a pass, which is
 	# how "the suite is green" and "the suite ran" came apart here before.
 	if ! command -v shellcheck >/dev/null 2>&1; then
-		printf 'shellcheck is not installed in this image - NOT CHECKED\n'
-		return 0
+		# A NAMED FAILURE, NOT A QUIET PASS. The comment above said absent
+		# tooling must not read as a pass and the code returned 0 anyway,
+		# which is the same defect it was warning about - and the suite's own
+		# convention elsewhere is that a skip IS a failure. Both tools are in
+		# the gate image today, so this changes no verdict; it removes the
+		# path where losing them turns two checks into silence.
+		printf 'shellcheck is not installed, so the scripts were NOT CHECKED - install it (mise) or this suite is lying about them\n'
+		return 1
 	fi
 	# --severity=warning, not the default. The default reports info-level
 	# style notes too, and this suite is not the place to hold anybody's
@@ -16335,8 +16468,8 @@ shell_scripts_lint() {
 
 shell_scripts_formatted() {
 	if ! command -v shfmt >/dev/null 2>&1; then
-		printf 'shfmt is not installed in this image - NOT CHECKED\n'
-		return 0
+		printf 'shfmt is not installed, so the scripts were NOT CHECKED - install it (mise) or this suite is lying about them\n'
+		return 1
 	fi
 	# -d prints the diff and exits non-zero, so a script somebody hand-edited
 	# out of shape fails with the change it needs attached rather than with a

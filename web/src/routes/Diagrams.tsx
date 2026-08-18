@@ -90,6 +90,7 @@ export function Diagrams() {
         </span>
         <form
           className="ml-auto flex items-center gap-2"
+          autoComplete="off"
           onSubmit={(event) => {
             event.preventDefault();
             void create();

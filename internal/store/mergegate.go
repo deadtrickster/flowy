@@ -174,7 +174,7 @@ func (d *DB) SetMergeGate(
 	// would let a verdict from a principal who never declared steal the target
 	// from whoever is actually measuring.
 	if ref = strings.TrimSpace(ref); strings.TrimSpace(tip) == "" {
-		if _, err := d.TakeMergeLock(ctx, p, TargetOf(art)); err != nil {
+		if _, err := d.TakeMergeLock(ctx, p, TargetOf(art), art.ID); err != nil {
 			return nil, nil, err
 		}
 	}

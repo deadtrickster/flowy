@@ -5,6 +5,8 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -303,9 +305,101 @@ func (req *artifactRequest) fillFrom(old *store.Artifact) {
 	}
 }
 
+// listParams are the query parameters this list honours, and the whole of them.
+//
+// It is a list rather than a comment because of what the alternative did: a
+// parameter the handler did not read was DROPPED, and the answer came back 200
+// with every row in it. `?type=finding&tag=ragflow` returned all 40 findings on
+// a node where 16 carried that tag, and nothing in the response said the filter
+// had not run. That is worse than a refusal and worse than an empty list -
+// both of those are answers a caller can act on, while an unapplied filter is a
+// wrong answer in the shape of a right one, and no client can detect it.
+//
+// So a parameter that is not here is refused by name. Adding one to this map is
+// the second half of implementing it, and forgetting to is a 400 rather than a
+// lie.
+var listParams = map[string]bool{
+	"type":     true,
+	"kind":     true,
+	"project":  true,
+	"status":   true,
+	"room":     true,
+	"category": true,
+	"tag":      true,
+	"limit":    true,
+	"scope":    true,
+}
+
+// refuseUnknownParams turns any parameter outside known into a sentence naming
+// it, or "" when there is nothing to refuse.
+//
+// Naming it is most of the value: "bad request" leaves the caller re-reading
+// their own URL for the typo, and the typo this was filed for - `tags` for
+// `tag` - is one letter.
+func refuseUnknownParams(q url.Values, known map[string]bool) string {
+	unknown := []string{}
+	for name := range q {
+		if !known[name] {
+			unknown = append(unknown, name)
+		}
+	}
+	if len(unknown) == 0 {
+		return ""
+	}
+	sort.Strings(unknown)
+	accepted := make([]string, 0, len(known))
+	for name := range known {
+		accepted = append(accepted, name)
+	}
+	sort.Strings(accepted)
+	what := "query parameter"
+	if len(unknown) > 1 {
+		what = "query parameters"
+	}
+	return "this list does not honour the " + what + " " +
+		strings.Join(quoted(unknown), ", ") +
+		", and a filter that is not applied would answer with more than was asked for. " +
+		"It takes " + strings.Join(quoted(accepted), ", ")
+}
+
+// quoted puts each name in double quotes, so a refusal reads as a list of
+// parameters rather than as a sentence with words in it.
+func quoted(names []string) []string {
+	out := make([]string, 0, len(names))
+	for _, name := range names {
+		out = append(out, strconv.Quote(name))
+	}
+	return out
+}
+
+// tagsArg is the tags a list is narrowed by: every ?tag= on the URL, trimmed,
+// with the empty ones dropped.
+//
+// Empty means absent here, as it does for every other parameter on this door -
+// `?tag=` is a filter nobody typed, usually a console rendering a cleared box,
+// and narrowing to the artifacts labelled with the empty string would answer
+// nothing for a query that asked for no narrowing.
+func tagsArg(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, tag := range values {
+		if tag = strings.TrimSpace(tag); tag != "" {
+			out = append(out, tag)
+		}
+	}
+	return out
+}
+
 // handleListArtifacts lists what the principal may read.
 //
-// GET /api/artifacts?type=&project=&status=&room=&category=
+// GET /api/artifacts?type=&kind=&project=&status=&room=&category=&tag=&limit=
+//
+// tag narrows to the artifacts carrying that label, in the query rather than
+// over the page - so it composes with limit, and a short page still means "that
+// was all of them". Repeated, it means AND: ?tag=a&tag=b is the artifacts
+// carrying both. See store.ArtifactQuery.Tags for which columns it reads and
+// why AND is the reading a console's stacked filters need.
+//
+// Anything outside listParams is refused by name rather than dropped.
 //
 // room narrows to what was raised in one chat room, and is a narrowing like
 // type and kind beside it: the permission filter is the same clause it always
@@ -319,6 +413,12 @@ func (s *server) handleListArtifacts(w http.ResponseWriter, r *http.Request) {
 	p := principalOf(r)
 	q := r.URL.Query()
 
+	// Before anything is read, because a request this door cannot honour must
+	// not be answered as though it had been.
+	if why := refuseUnknownParams(q, listParams); why != "" {
+		writeJSON(w, http.StatusBadRequest, errorBody(why))
+		return
+	}
 	room, err := roomArg(q.Get("room"))
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, errorBody(err.Error()))
@@ -340,6 +440,7 @@ func (s *server) handleListArtifacts(w http.ResponseWriter, r *http.Request) {
 		Status:   q.Get("status"),
 		Room:     room,
 		Category: category,
+		Tags:     tagsArg(q["tag"]),
 		ScopeAll: scopeAll(r, p),
 		Limit:    intParam(q.Get("limit")),
 	})

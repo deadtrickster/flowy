@@ -46,7 +46,13 @@ export function RoomSearch() {
 
   return (
     <div ref={box} className="relative ml-auto">
+      {/* A raw input rather than the shared one, so it says for itself what it
+          is: a search box, not something the browser has a saved value for. */}
       <input
+        type="search"
+        name="room-search"
+        autoComplete="off"
+        aria-label="search what was said in this room"
         value={q}
         onChange={(e) => {
           setQ(e.target.value);

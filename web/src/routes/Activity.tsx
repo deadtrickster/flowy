@@ -77,6 +77,7 @@ export function Activity() {
         <h1 className="font-semibold text-base">activity</h1>
         <form
           className="flex items-center gap-2"
+          autoComplete="off"
           onSubmit={(event) => {
             event.preventDefault();
             search({ q: draft });
@@ -260,6 +261,7 @@ function PostBox({
   return (
     <form
       className="flex flex-col gap-2 border-border border-t bg-card/40 p-3"
+      autoComplete="off"
       onSubmit={(event) => {
         event.preventDefault();
         void send();

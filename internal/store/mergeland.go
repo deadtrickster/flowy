@@ -86,9 +86,34 @@ func (d *DB) LandMerge(ctx context.Context, p *Principal, id, sha string) (*Arti
 		return nil, nil, fmt.Errorf(
 			"store: land refused: the sha master became is too short to name a commit - pass the full or 7-character tip, not %q", sha)
 	}
-	if gated := GatedTipOf(art); gated == "" {
+	gated := GatedTipOf(art)
+	if gated == "" {
 		return nil, nil, &ErrLandRefused{
 			Reason: "no gate has measured it - there is no verdict to land. Declare a run, wait for green, then land",
+		}
+	}
+
+	// FAST-FORWARD ONLY, ENFORCED HERE RATHER THAN AGREED IN THE ROOM.
+	//
+	// If the landing is a fast-forward then the sha master became IS the tip the
+	// gate measured - not a descendant of it, not a merge of it with something
+	// else, the same commit. So the two disagreeing is not a detail to record,
+	// it is the statement that something other than the measured tree is now on
+	// master, and it is the whole of tonight's partial land: the row said
+	// branch feat-x, the lander fast-forwarded one commit of sixteen, and the
+	// queue wrote down both numbers without ever comparing them.
+	//
+	// The node has no git and needs none for this. It is not asking whether the
+	// gated tip is reachable from what landed - that question needs the
+	// repository and stays with the lander - it is asking whether the lander's
+	// own two readings agree, which is arithmetic on what they just told us.
+	// A merge commit fails it because a merge is by definition not either
+	// parent, which is the ff-only rule falling out rather than being restated.
+	if !sameCommit(sha, gated) {
+		return nil, nil, &ErrLandRefused{
+			Reason: fmt.Sprintf(
+				"master became %s but the gate measured %s. A fast-forward lands the tip that was measured, so those two are the same commit or the landing was not one - re-gate the tip you actually landed, or land the tip you actually gated",
+				sha, gated),
 		}
 	}
 
@@ -107,6 +132,16 @@ func (d *DB) LandMerge(ctx context.Context, p *Principal, id, sha string) (*Arti
 	}
 	if lock.Holder != actor {
 		return nil, nil, &ErrLandRefused{Reason: "the target is held by another declarer", Held: lock, Now: now}
+	}
+	// HELD FOR WHICH WORK, not merely by whom. Two agents of one seat share a
+	// principal, so holder alone let a sibling land through a lock it never
+	// took. An empty item is a lock from before the column and is not refused -
+	// nothing took it under the new rule, so nothing may be concluded from it.
+	if lock.Item != "" && lock.Item != art.ID {
+		return nil, nil, &ErrLandRefused{
+			Reason: "the target is held for a different merge request",
+			Held:   lock, Now: now,
+		}
 	}
 
 	fields, err := ArtifactFields(art)
@@ -173,7 +208,7 @@ func (d *DB) LandMerge(ctx context.Context, p *Principal, id, sha string) (*Arti
 	// a release that preceded the write would open the target while the landed
 	// tip was still unsaid, and the next declarer would measure a tip nobody
 	// had announced.
-	if _, err := d.ReleaseMergeLock(ctx, p, target); err != nil {
+	if _, err := d.ReleaseMergeLock(ctx, p, target, art.ID); err != nil {
 		// Not fatal to the land - the tip is recorded and the row is closed.
 		// The lock expires on its own, and saying so beats failing a land that
 		// already happened.

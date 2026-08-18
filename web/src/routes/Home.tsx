@@ -67,15 +67,24 @@ export function Home() {
             </CardDescription>
           </CardHeader>
           <CardContent>
+            {/* One text box and a submit button is the shape a browser reads as
+                a sign-in, so the form and the field both say what they are. */}
             <form
               className="flex gap-2"
+              autoComplete="off"
               onSubmit={(event) => {
                 event.preventDefault();
                 const name = room.trim();
                 if (name) navigate(`/chat/${encodeURIComponent(name)}`);
               }}
             >
-              <Input value={room} onChange={(event) => setRoom(event.target.value)} />
+              <Input
+                name="room-name"
+                aria-label="room to open"
+                placeholder="a room name"
+                value={room}
+                onChange={(event) => setRoom(event.target.value)}
+              />
               <Button type="submit" variant="secondary">
                 open
               </Button>
