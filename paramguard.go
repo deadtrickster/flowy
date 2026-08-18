@@ -61,6 +61,7 @@ var routeParams = map[string][]string{
 	"GET /api/dm/wait":                           {"cursor", "limit", "thread", "window"},
 	"GET /api/events":                            {"limit", "room", "scope", "since", "thread", "type"},
 	"GET /api/finding/{id}/evidence":             {},
+	"GET /api/finding/{id}/runs":                 {},
 	"GET /api/forge":                             {},
 	"GET /api/forge/mock/issue":                  {"number", "repo"},
 	"GET /api/forge/status":                      {"artifact"},

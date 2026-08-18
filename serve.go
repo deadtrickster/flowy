@@ -300,6 +300,12 @@ var apiRoutes = []string{
 	"GET /api/proposals",
 	"GET /api/proposal/{id}",
 	"GET /api/attachment/{id}",
+	// A finding's run history. It is on this list for the reason the queue doors
+	// are, with a measurement behind it: the repro path ran end to end on
+	// 2026-08-18, recorded a correct verdict, and no browser could reach it. The
+	// evidence doors two lines below this one in serve.go are still missing from
+	// here, which is the same omission one axis over.
+	"GET /api/finding/{id}/runs",
 	"POST /api/dm/{to}",
 	"GET /api/dm",
 	"GET /api/dm/wait",
@@ -424,6 +430,10 @@ func (s *server) routes() http.Handler {
 	// on is half a door - see findingevidence.go.
 	api.HandleFunc("POST /api/finding/{id}/evidence", s.handleFindingEvidence)
 	api.HandleFunc("GET /api/finding/{id}/evidence", s.handleFindingEvidenceLog)
+	// And the run history behind it, for findingevidence.go's own reason: the
+	// verdict a repro run records is the console's red/green line, and the
+	// console speaks HTTP - see findingruns.go.
+	api.HandleFunc("GET /api/finding/{id}/runs", s.handleFindingRuns)
 	api.HandleFunc("GET /api/search", s.handleSearch)
 	api.HandleFunc("POST /api/events", s.handleAppendEvent)
 	api.HandleFunc("GET /api/events", s.handleListEvents)
