@@ -461,6 +461,26 @@ func (d *DB) setMergeGate(
 	if err := d.SetArtifactFields(ctx, art, column, entry); err != nil {
 		return nil, nil, err
 	}
+	// A RED GIVES THE TARGET BACK, and it is the record that decides that rather
+	// than politeness. A green holds the lock because the land follows it
+	// immediately and needs it; a red is the end of the run, and a target held
+	// after the run reporting failure blocks every other row in the queue until
+	// the lease expires. That is the outage shape rather than the defect shape.
+	//
+	// Until now the only thing giving it back was the drainer's exit trap
+	// calling abandon - so a pass that was killed, or crashed, or ran on a box
+	// that went away, left master held by a run that had already finished. The
+	// verb that knows the run is over is the one that should release it.
+	//
+	// After the write, for the reason abandon releases after its write: a
+	// release that preceded it would open the target while the log still said
+	// nothing, and the next declarer would take a lock that looks like it was
+	// never held.
+	if g.Red {
+		if _, err := d.ReleaseMergeLock(ctx, p, TargetOf(art), art.ID); err != nil {
+			return nil, nil, err
+		}
+	}
 	art.Status = status
 	span.SetArtifact(art.ID)
 	return art, entry, nil

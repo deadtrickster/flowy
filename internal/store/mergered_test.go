@@ -147,6 +147,32 @@ func TestARedIsRecordedByTheHolderAndRefusedFromAnybodyElse(t *testing.T) {
 		t.Errorf("the entry body reads %q", entry.Body)
 	}
 
+	// THE TARGET IS GIVEN BACK. A green holds the lock because the land follows
+	// it; a red is the end of the run, and a target still held after a failure
+	// blocks every other row until the lease expires - one failed pass stalling
+	// a whole queue is the outage shape rather than the defect shape.
+	lock, err := db.MergeLockOf(ctx, target)
+	if err != nil {
+		t.Fatalf("read the lock: %v", err)
+	}
+	if lock != nil && lock.Live(time.Now().UTC()) {
+		t.Errorf("the target is still held by %s after the run reported red - "+
+			"every other row waits for a lease nobody is using", lock.Holder)
+	}
+	// And it is takeable, which is the property that matters to the next row
+	// rather than the absence of a struct.
+	rivalRow := &Artifact{
+		ID: ulid.NewString(), Type: MemoryType, Kind: MergeKind, Project: &project,
+		OwnerUser: rival.UserID, Title: "the row behind it", Visibility: "project",
+		Fields: marshalFields(t, map[string]any{BranchField: "feat-next", TargetField: target}),
+	}
+	if err := db.UpsertArtifact(ctx, rivalRow); err != nil {
+		t.Fatalf("file the next request: %v", err)
+	}
+	if _, _, err := db.SetMergeGate(ctx, rival, rivalRow.ID, "run3", "", ""); err != nil {
+		t.Fatalf("the next row could not declare after a red: %v", err)
+	}
+
 	// And the land door still refuses it, which is the property MergeAdmissible
 	// needed no change to keep.
 	if _, _, err := db.LandMerge(ctx, holder, row.ID, "abc1234def5678"); err == nil {
