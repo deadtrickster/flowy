@@ -133,12 +133,29 @@ print(json.dumps({
 			recorded=yes
 		fi
 	fi
+	# AND A LOCAL TRACE, always, node or no node. The announcement is the half
+	# that needs a working network; this half needs nothing, and it is what is
+	# still here tomorrow for whoever finds master somewhere they did not put
+	# it. It goes in $GIT_DIR rather than the working tree on purpose: a
+	# tracked file would turn every bypass into a dirty tree and eventually
+	# into a merge conflict, and a bypass log that makes the next landing
+	# harder is a log people delete.
+	hatch_log="${GIT_DIR:-$(git rev-parse --git-dir 2>/dev/null || echo .git)}/flowy-bypass.log"
+	{
+		printf '%s\tFLOWY_LAND_GUARD=off\twho=%s\treason=%s\n' \
+			"$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+			"${FLOWY_AGENT:-$(id -un)}@$(hostname)" \
+			"$hatch_reason"
+		printf '%s' "$moves" | sed 's/^/\t/'
+	} >>"$hatch_log" 2>/dev/null || true
+
 	if [ "$recorded" = yes ]; then
 		printf '  announced to the node - the fleet can see this happened\n' >&2
 	else
-		printf '  THIS BYPASS WAS NOT RECORDED - no token, or the node did not answer.\n' >&2
+		printf '  THIS BYPASS WAS NOT RECORDED ON THE NODE - no token, or it did not answer.\n' >&2
 		printf '  Say it in the room yourself, or master moved and only this terminal knows.\n' >&2
 	fi
+	printf '  written to %s\n' "$hatch_log" >&2
 	exit 0
 fi
 
