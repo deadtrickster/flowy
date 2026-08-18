@@ -41,6 +41,9 @@
 set -uo pipefail
 
 REPO=${FLOWY_REPO:-$HOME/Projects/flowy}
+# WHAT IS DEPLOYED, as a ref rather than as whatever the checkout happens to
+# have out. Everything below is resolved from this once and never re-read.
+DEPLOY_REF=${FLOWY_DEPLOY_REF:-master}
 LIVE_DIR=${FLOWY_LIVE_DIR:-$HOME/Projects/flowy-dogfood}
 LIVE_BIN="$LIVE_DIR/flowy"
 UNIT=${FLOWY_UNIT:-flowy-dogfood}
@@ -65,21 +68,37 @@ die() {
 	exit 1
 }
 
-cd "$REPO" || die "no repo at $REPO"
+[ -d "$REPO/.git" ] || [ -f "$REPO/.git" ] || die "no repo at $REPO"
 
-# ---------------------------------------------------------------- refusals
-
-# A dirty tree is somebody else's work in progress. Four agents share this
-# checkout, so deploying it ships whatever anybody happens to be mid-edit on -
-# the same reason a spawned VM gates "master plus whoever is typing".
-if [ -n "$(git status --porcelain)" ]; then
-	git status --short >&2
-	die "the tree has uncommitted changes - deploy ships whatever is lying around"
-fi
-
-commit=$(git rev-parse --short HEAD)
-branch=$(git rev-parse --abbrev-ref HEAD)
-[ "$branch" = "master" ] || die "on branch '$branch' - master is the only deploy source"
+# --------------------------------------------------- the tree that is built
+#
+# THE SHARED CHECKOUT IS NOT A BUILD DIRECTORY. It used to be: this script cd'd
+# into $REPO and refused when `git status` was dirty, because deploying somebody
+# else's half-finished edit ships whatever they happen to be typing. The refusal
+# was right and the premise was wrong. Four agents edit that checkout, so ONE
+# agent mid-edit refused every deploy in the fleet, including the drainer's -
+# measured at 20:52 on 18 Aug, from three modified files that belonged to a seat
+# who had nothing to do with the deploy that failed. It cleared itself when they
+# committed, which is what made it dangerous: intermittent, named after files
+# rather than a person, and the deploy it broke was somebody else's.
+#
+# It is the same lesson the gate learned when it stopped measuring the shared
+# checkout and moved to worktrees. A build reads a COMMIT, so it should be given
+# one.
+#
+# DETACHED, NOT ON A BRANCH. A worktree holding a branch locks its owner out of
+# their own branch - wt-drain did exactly that to a seat an hour before this was
+# written, and the next drain pass skipped their row saying it was checked out
+# elsewhere. Detached at a sha pins nothing.
+#
+# CREATED AND REMOVED IN ONE RUN, with the removal on the exit handler, and the
+# path carries the sha so two runs cannot land in one directory. A worktree left
+# behind is the same defect one level up: a directory nobody owns, pinning
+# something, that the next tool trips over.
+commit=$(git -C "$REPO" rev-parse --short "$DEPLOY_REF" 2>/dev/null) ||
+	die "no ref '$DEPLOY_REF' in $REPO - that is what would be deployed"
+full=$(git -C "$REPO" rev-parse "$DEPLOY_REF")
+TREE=${FLOWY_DEPLOY_TREE:-$HOME/Projects/flowy-deploy-$commit}
 
 # ---------------------------------------------------------------- the lock
 
@@ -100,6 +119,14 @@ branch=$(git rev-parse --abbrev-ref HEAD)
 # removing: it protects the careful path and leaves the default one as it was.
 find_token() {
 	local candidate
+	# NAMED FIRST, like the URL and the database are. A deploy is run against a
+	# node, and which credential it uses is part of that - a script whose only
+	# credential is a fixed path in $HOME cannot be exercised against a scratch
+	# node without borrowing the operator's own token, so it was not exercised.
+	if [ -n "${FLOWY_LOCK_TOKEN:-}" ]; then
+		printf '%s\n' "$FLOWY_LOCK_TOKEN"
+		return 0
+	fi
 	for candidate in "$HOME/.config/flowy/token-flowy" "$HOME/.config/flowy/token"; do
 		if [ -r "$candidate" ]; then
 			cat "$candidate"
@@ -112,7 +139,7 @@ find_token() {
 lock_token=$(find_token) || die "no token in ~/.config/flowy/token-flowy or ~/.config/flowy/token -
 deploy takes the landing lock, and it cannot ask for one without a credential"
 
-lock_item="deploy $(git rev-parse --short HEAD)"
+lock_item="deploy $commit"
 lock_body=$(printf '{"item":"%s"}' "$lock_item")
 lock_answer=$(curl -sS -m 10 -w '\n%{http_code}' -X POST \
 	-H "Authorization: Bearer $lock_token" -H 'Content-Type: application/json' \
@@ -168,13 +195,40 @@ release_lock() {
 # on_exit is defined before anything registers work with it, and $tmp is empty
 # until the build step makes one.
 tmp=""
+tree_made=""
 on_exit() {
 	release_lock
 	[ -n "$tmp" ] && rm -f "$tmp"
+	# THE WORKTREE GOES BACK, always, including on a die four steps down. One
+	# left behind is a directory nobody owns that the next tool trips over -
+	# and `git worktree list` on this repository is already long enough that
+	# nobody reads it.
+	if [ -n "$tree_made" ]; then
+		git -C "$REPO" worktree remove --force "$TREE" >/dev/null 2>&1 ||
+			rm -rf "$TREE"
+		git -C "$REPO" worktree prune >/dev/null 2>&1 || true
+	fi
 	return 0
 }
 trap on_exit EXIT
 say "    took the landing lock for \"$lock_item\""
+
+# THE TREE, now that the lock says nobody else is building.
+[ -e "$TREE" ] && die "$TREE is already there - a deploy of $commit is either running or left it behind"
+git -C "$REPO" worktree add --detach --quiet "$TREE" "$full" ||
+	die "could not check $commit out into $TREE"
+tree_made=yes
+cd "$TREE" || die "could not enter $TREE"
+say "    building $commit in $TREE, detached, and it is removed on exit"
+
+# BY CONSTRUCTION, not by hope. A fresh worktree at a commit cannot be dirty,
+# so this says nothing on any ordinary run - it is here because the whole point
+# of the change is WHICH tree gets built, and a check that never fires is the
+# cheapest way to notice the day that stops being true.
+if [ -n "$(git status --porcelain)" ]; then
+	git status --short >&2
+	die "the fresh worktree is dirty, which should be impossible"
+fi
 
 # ------------------------------------------------------- schema comes first
 
@@ -236,6 +290,15 @@ say "database: $(printf '%s' "$dsn" | sed -E 's#^[^:]*://([^@/]*@)?#\1#; s#^[^@]
 
 # ------------------------------------------------------------------- build
 
+# THE MODULES ARE THIS TREE'S OWN. A fresh worktree has no node_modules, and
+# the one thing that must not happen is borrowing another worktree's: eight
+# symlinks into one directory cost this fleet an hour when somebody emptied it.
+# `npm ci` from the lockfile, against the shared npm CACHE, which is what that
+# cache is for.
+say "==> installing the console's modules (a fresh tree has none)"
+(cd web && npm ci --prefer-offline --no-audit --no-fund) >/dev/null 2>&1 ||
+	die "npm ci failed in $TREE/web"
+
 say "==> building the console (this is the step that gets skipped)"
 (cd web && npm run build) >/dev/null 2>&1 || die "npm run build failed"
 
@@ -286,7 +349,10 @@ fi
 # 500s. So the schema goes first within the deploy, and the deploy only starts
 # once there is a verified binary to install.
 
-if ! "$REPO/scripts/migrate.sh" "$dsn"; then
+# From the TREE, not from $REPO: the schema that is applied has to be the one
+# the binary was built against, and $REPO's copy is whatever anybody has edited
+# into it since.
+if ! "$TREE/scripts/migrate.sh" "$dsn"; then
 	die "the migration failed - nothing was installed and the node is still serving the old binary"
 fi
 
