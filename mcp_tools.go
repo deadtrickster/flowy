@@ -70,9 +70,12 @@ var tools = []tool{
 		InputSchema: object(props{
 			"title": str("One line, phrased as the claim being remembered."),
 			"body":  str("The fact itself, and enough context for someone who was not here."),
-			"scope": enum("Who may read it. Default personal.", memScopes),
-			"kind":  enum("What the item is for. Default note.", memKinds),
-			"tags":  strArray("Free-form subject labels; searched with the title and the body."),
+			"scope": enum("Who may read it. A memory is personal by default; a work "+
+				"item - todo, merge, handoff - defaults to the project you write in, "+
+				"because a queue row only its author can read is not on the queue.",
+				memScopes),
+			"kind": enum("What the item is for. Default note.", memKinds),
+			"tags": strArray("Free-form subject labels; searched with the title and the body."),
 			"status": str("Where a queue item is: todo, active or done. Set \"done\" to take " +
 				"a todo off the todo list, and \"todo\" to reopen one that was not finished " +
 				"after all. Any principal who can READ a todo may move it - saying work is " +
@@ -340,11 +343,13 @@ func memWrite(ctx context.Context, m *mcpServer, p *store.Principal, raw json.Ra
 		return nil, errors.New("this token resolves to no user, so it cannot own a memory item")
 	}
 
-	scope, err := oneOf("scope", a.Scope, memScopes, "personal")
+	// The kind first, because what is being written decides what an unstated
+	// scope means - see defaultMemScope.
+	kind, err := oneOf("kind", a.Kind, memKinds, "note")
 	if err != nil {
 		return nil, err
 	}
-	kind, err := oneOf("kind", a.Kind, memKinds, "note")
+	scope, err := oneOf("scope", a.Scope, memScopes, defaultMemScope(kind, p))
 	if err != nil {
 		return nil, err
 	}

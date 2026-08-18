@@ -70,3 +70,33 @@ func mergeFields(art *store.Artifact, fields *map[string]any, a memWriteArgs) er
 	}
 	return fmt.Errorf("a merge request has to say which branch it would land: send branch")
 }
+
+// defaultMemScope is what an UNSTATED scope means on a create, and it depends
+// on what is being written.
+//
+// A memory is personal by default and that is right: it is one agent's note to
+// itself, and widening it silently would publish what nobody offered.
+//
+// A WORK ITEM IS NOT A MEMORY. store.WorkKinds is the queue, and a queue row
+// only its author can read is not on the queue. Measured tonight, and it is
+// invisible by construction: three merge requests filed at the default sat in
+// the queue where the drainer meant to land them could not see them, and every
+// symptom of that reads as "the queue is empty". The same default put two todos
+// out of the operator's reach after I had told them the ids in the room.
+//
+// A token with no project keeps personal, because a row cannot live in a
+// project this principal does not write to. The alternative is refusing a
+// create that used to work, over a default the caller never chose.
+//
+// An UPDATE is untouched: memWrite keeps the item's own visibility when the
+// call says nothing about scope, and healing an old row's scope on an unrelated
+// edit would move somebody's work into view behind their back.
+func defaultMemScope(kind string, p *store.Principal) string {
+	if p == nil || p.Project == "" {
+		return "personal"
+	}
+	if !store.IsWorkKind(kind) {
+		return "personal"
+	}
+	return "project"
+}

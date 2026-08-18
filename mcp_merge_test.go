@@ -108,3 +108,38 @@ func TestMergeFieldsAreRefusedOnATodo(t *testing.T) {
 		t.Errorf("nothing was stated, so nothing is written, got %v", fields)
 	}
 }
+
+// A QUEUE ROW ONLY ITS AUTHOR CAN READ IS NOT ON THE QUEUE, which is what an
+// unstated scope used to make one.
+//
+// Measured on the live node before this default changed: three merge requests
+// filed at the old default sat in the queue at personal scope for hours, where
+// the drainer meant to land them could not see them. Every symptom of that
+// reads as "the queue is short tonight".
+//
+// Pure, because the decision is: a memory stays personal, a work item goes to
+// the project, and a token with no project cannot widen anything.
+func TestAWorkItemDefaultsToTheProjectAndAMemoryDoesNot(t *testing.T) {
+	in := &store.Principal{UserID: "u-1", Project: "flowy"}
+	nowhere := &store.Principal{UserID: "u-1"}
+
+	for _, kind := range []string{store.MergeKind, "todo", "handoff"} {
+		if got := defaultMemScope(kind, in); got != "project" {
+			t.Errorf("a %s defaults to %q - a queue row only its author can read "+
+				"is not on the queue", kind, got)
+		}
+		if got := defaultMemScope(kind, nowhere); got != "personal" {
+			t.Errorf("a %s from a token with no project defaults to %q, and there is "+
+				"no project for it to live in", kind, got)
+		}
+	}
+	for _, kind := range []string{"note", "fact", "report"} {
+		if got := defaultMemScope(kind, in); got != "personal" {
+			t.Errorf("a %s defaults to %q - a memory is one agent's note to itself "+
+				"and widening it silently publishes what nobody offered", kind, got)
+		}
+	}
+	if got := defaultMemScope(store.MergeKind, nil); got != "personal" {
+		t.Errorf("no principal at all defaults to %q", got)
+	}
+}

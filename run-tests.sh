@@ -10291,6 +10291,13 @@ check "an SSE stream outlives the server's WriteTimeout, and only because it is 
 	go test -count=1 \
 	-run 'TestAStreamOutlivesTheServersWriteTimeoutOnlyWhenTheDeadlineIsCleared' .
 
+# Named because the failure is invisible from the outside: a queue row filed at
+# personal scope IS in the queue table and IS NOT in anybody else's read of it,
+# so a drainer reporting an empty queue is telling the truth about what it can
+# see. Three merge requests sat that way for hours tonight.
+check "a work item filed over MCP defaults to the project, and a memory does not" \
+	go test -count=1 -run TestAWorkItemDefaultsToTheProjectAndAMemoryDoesNot .
+
 # ------------------------------------------ an older database meets this binary
 #
 # Here, early, because a schema that does not migrate is a broken deploy and

@@ -431,6 +431,12 @@ func (d *DB) readWorkItem(ctx context.Context, p *Principal, id string) (*Artifa
 	return art, nil
 }
 
+// IsWorkKind reports whether a kind is one the queue holds. It is the exported
+// half of isWorkKind, for the doors that have a kind in hand and no row yet -
+// a create has to know what it is writing before there is an artifact to ask
+// IsQueueItem about.
+func IsWorkKind(kind string) bool { return isWorkKind(kind) }
+
 func isWorkKind(kind string) bool {
 	for _, k := range WorkKinds {
 		if kind == k {
