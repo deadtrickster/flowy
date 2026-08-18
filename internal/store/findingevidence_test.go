@@ -17,6 +17,11 @@ func TestEvidenceVocabularyAndRendering(t *testing.T) {
 		// The way the axis is NAMED in prose, which is what somebody who has
 		// just read that sentence types. One stored word, several accepted.
 		{"verified-on-a-commit", EvidenceVerified},
+		{"refuted", EvidenceRefuted},
+		// And the corpus's own spellings of a refutation: RESULT.md writes it
+		// as `polarity: absent`, REPORT.md as "not reproduced on main".
+		{"absent", EvidenceRefuted},
+		{"not-reproduced", EvidenceRefuted},
 	} {
 		got, err := NormalizeEvidenceState(tc.asked)
 		if err != nil || got != tc.want {
@@ -55,6 +60,20 @@ func TestEvidenceVocabularyAndRendering(t *testing.T) {
 	if got := FindingEvidenceOf(&Artifact{ID: "f1", Fields: []byte(
 		`{"evidence_state":"source"}`)}); !got.Stated() || got.Ran() {
 		t.Errorf("a source row read as %+v; want stated and not run", got)
+	}
+	// REFUTED IS A RUN THAT FOUND NOTHING, not an absence of one - and it must
+	// never fall into the bucket anything counts as "verified".
+	refuted := FindingEvidenceOf(&Artifact{ID: "f1", Fields: []byte(
+		`{"evidence_state":"refuted","verified_on":"bc07c51d"}`)})
+	if !refuted.Stated() || !refuted.Ran() {
+		t.Errorf("a refuted row read as %+v; want a claim somebody ran", refuted)
+	}
+	if refuted.Reproduces() {
+		t.Error("a refuted finding was counted as one that reproduces, which is the " +
+			"count that sends somebody upstream with a defect that is not there")
+	}
+	if !read.Reproduces() {
+		t.Errorf("a verified row does not read as reproducing: %+v", read)
 	}
 
 	// verified_at is normalised, never stored as free text: a console sorts it
@@ -116,6 +135,13 @@ func TestFindingEvidenceRoundTrip(t *testing.T) {
 		t.Fatal("verified with no commit was accepted; the sha is the content of the word")
 	} else if _, ok := err.(DepRefusal); !ok {
 		t.Errorf("a verified claim with no commit is the caller's mistake: %T", err)
+	}
+	// And the same for a refutation, where it matters more: "it does not
+	// reproduce" with nothing saying WHERE is how a real defect gets closed.
+	if _, _, err := db.SetFindingEvidence(ctx, p, finding.ID, Evidence{
+		State: EvidenceRefuted,
+	}); err == nil {
+		t.Fatal("refuted with no commit was accepted; a refutation names what it was run on")
 	}
 	// And a commit under source, which is nobody having run it, so there is no
 	// run for the commit to be the commit OF.

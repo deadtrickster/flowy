@@ -264,7 +264,11 @@ var findingTools = []tool{
 			"this is wrong; reproduced is somebody ran it and watched it happen; verified " +
 			"is IT WAS RUN AGAINST A NAMED COMMIT, and that commit is required - the sha " +
 			"is the content of the word, and a report whose repro was never run against " +
-			"current main is closed upstream as already-fixed. AN UNSTATED EVIDENCE IS " +
+			"current main is closed upstream as already-fixed. refuted is the same run " +
+			"with the opposite answer - it was tried on a named commit and DID NOT happen - " +
+			"which is the STRONGEST thing anybody can say and the one that stops a filing, " +
+			"so it is its own word rather than an absence and never counts as verified. " +
+			"AN UNSTATED EVIDENCE IS " +
 			"'nobody has said', which is NOT source: source is a claim somebody made, so " +
 			"there is nothing to set for a finding nobody has judged, and an empty state " +
 			"is refused rather than being a way to write one. An update states what " +
@@ -272,12 +276,12 @@ var findingTools = []tool{
 			"over store.SetFindingEvidence, where every refusal lives.",
 		InputSchema: object(props{
 			"finding": str("The finding's id."),
-			"state": enum("How strong the evidence is. verified requires verified_on.",
-				store.EvidenceStates),
+			"state": enum("How strong the evidence is. verified and refuted both require "+
+				"verified_on.", store.EvidenceStates),
 			"verified_on": str("The commit the reproduction was run against - a sha, or a " +
-				"tag when that is genuinely what ran. Required for verified, allowed for " +
-				"reproduced, refused for source, which is nobody having run it. Leave it " +
-				"out on an update to keep the commit already on the row."),
+				"tag when that is genuinely what ran. Required for verified AND for refuted, " +
+				"allowed for reproduced, refused for source, which is nobody having run it. " +
+				"Leave it out on an update to keep the commit already on the row."),
 			"verified_at": str("When that run happened - 2006-01-02 or full RFC3339. Leave " +
 				"it out and the node stamps now for a run against a new commit, or keeps " +
 				"the day the standing one was made. State it when importing a claim " +

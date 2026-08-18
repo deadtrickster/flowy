@@ -8,7 +8,7 @@ package store
 //
 //	OUR LIFECYCLE     open, triaged, in-progress, done...   how far WE got
 //	UPSTREAM FILING   unfiled, referenced, filed...         what THEIR tracker says
-//	EVIDENCE          source, reproduced, verified on <sha> HOW SURE, and on what
+//	EVIDENCE          source, reproduced, verified/refuted on <sha>   HOW SURE
 //
 // None of the three answers either of the others, and the corpus proves it in
 // both directions. Seven RAGFlow findings cite a pull request while their
@@ -28,6 +28,15 @@ package store
 // stronger word than `reproduced` carrying strictly less information, and the
 // list an operator works from before filing - "reproduced, but not against
 // current main" - would silently lose rows to it.
+//
+// A RUN THAT FOUND NOTHING IS EVIDENCE, AND IT IS NOT `source`. `refuted` is
+// the same act as `verified` with the opposite answer: the reproduction was run
+// against a named commit and the defect did not appear. It is the strongest
+// thing anybody can say about a finding and the one that STOPS a filing, so
+// flattening it into "no evidence" would hide exactly the rows nobody may send
+// upstream. Two of the twenty-four SereneDB reproductions are this, and both say
+// so in three places - `polarity: absent`, a retitled report, and a summary
+// beginning "REFUTED".
 //
 // A COMMIT UNDER `source` IS REFUSED TOO, for the mirror of the reason
 // findingupstream.go refuses a filing's number under `referenced`: source means
@@ -95,8 +104,25 @@ const (
 	LastRunField = "last_run"
 )
 
-// The evidence vocabulary, weakest first. Three words, and the distance between
-// each pair is a thing somebody actually did.
+// The evidence vocabulary. THREE OF THESE ARE A LADDER AND THE FOURTH IS NOT,
+// which is the shape of the thing rather than an untidiness in it: source,
+// reproduced and verified get stronger in that order, and `refuted` is the
+// NEGATIVE RESULT of the same act that produces `verified` - somebody ran the
+// reproduction against a named commit and the defect did not appear.
+//
+// WHY REFUTED IS A WORD AND NOT A FLAG BESIDE VERIFIED. A boolean would make
+// "how many have we verified" count the refutations as verifications unless
+// every caller remembered to exclude them - which is findingupstream.go's
+// one-filing-counted-as-eight, rebuilt on this axis. The count has to be right
+// by construction, so the refutation gets its own word and falls out of the
+// verified bucket without anybody remembering anything.
+//
+// It is also the corpus's OWN word, not one invented here: serenedb-0018's
+// RESULT.md reads `status: refuted`, `polarity: absent`, and its summary says
+// "REFUTED: the audit's exponential-parse inference was wrong ... Do not file."
+// A vocabulary that had no word for that would have had to record the strongest
+// evidence in the corpus as `source`, which is the flattening this file exists
+// to prevent.
 const (
 	// EvidenceSource is somebody read the code and believes this is wrong. It is
 	// a claim, which is why it is never defaulted to.
@@ -111,11 +137,27 @@ const (
 	// beside it. The commit is not decoration on this word, it is the content of
 	// it, so this file refuses the word without one.
 	EvidenceVerified = "verified"
+	// EvidenceRefuted is it was run against a named commit and DID NOT
+	// reproduce. Not an absence of evidence - it is the strongest kind, and it
+	// is the one that stops a filing: a report of a defect that does not appear
+	// on the commit their maintainers will check is worse than no report.
+	EvidenceRefuted = "refuted"
 )
 
-// EvidenceStates is the whole vocabulary, weakest first, so a refusal listing
-// them reads in the order the evidence gets stronger.
-var EvidenceStates = []string{EvidenceSource, EvidenceReproduced, EvidenceVerified}
+// EvidenceStates is the whole vocabulary, the ladder in order and the negative
+// result last, so a refusal listing them reads the way the words relate.
+var EvidenceStates = []string{
+	EvidenceSource, EvidenceReproduced, EvidenceVerified, EvidenceRefuted,
+}
+
+// EvidenceNeedsCommit reports whether a word is one that names the commit it was
+// measured on. Both outcomes of a run against a named commit do: the sha is what
+// makes either of them checkable by somebody else, and a refutation with no
+// commit is the more dangerous of the two - "it does not reproduce" with nothing
+// saying WHERE closes a real defect.
+func EvidenceNeedsCommit(state string) bool {
+	return state == EvidenceVerified || state == EvidenceRefuted
+}
 
 // evidenceSpellings are the other ways the one word `verified` gets written in a
 // brief or a handoff, mapped to what the node stores.
@@ -127,10 +169,17 @@ var EvidenceStates = []string{EvidenceSource, EvidenceReproduced, EvidenceVerifi
 // is a backfill that silently leaves rows unset. One stored word, several
 // accepted ones: the vocabulary is still closed, the row still reads `verified`,
 // and nothing downstream learns a second spelling.
+
 var evidenceSpellings = map[string]string{
 	"verified-on-a-commit": EvidenceVerified,
 	"verified-on-commit":   EvidenceVerified,
 	"verified_on_a_commit": EvidenceVerified,
+	// The corpus writes a refutation as a polarity beside a status
+	// (`polarity: absent`) and as prose in a title ("not reproduced on main"),
+	// so an importer reaching for either phrase means this one word.
+	"not-reproduced": EvidenceRefuted,
+	"not_reproduced": EvidenceRefuted,
+	"absent":         EvidenceRefuted,
 }
 
 // EventFindingEvidence is what recording an evidence claim is in the log.
@@ -166,10 +215,21 @@ type Evidence struct {
 // site gets subtly wrong the day a fourth word is added.
 func (e Evidence) Stated() bool { return e.State != "" }
 
-// Ran reports whether somebody actually made this happen, as opposed to having
-// read the code. Both of the words above source mean a run happened; the
-// difference between them is what the run was measured against.
+// Ran reports whether somebody actually ran the reproduction, as opposed to
+// having read the code. Every word but source means a run happened - INCLUDING
+// refuted, which is a run that produced the opposite answer and is not a weaker
+// kind of having-not-run.
 func (e Evidence) Ran() bool {
+	return e.State != "" && e.State != EvidenceSource
+}
+
+// Reproduces reports whether the defect ACTUALLY APPEARED the last time anybody
+// looked. This is the question a filing asks, and it is not "is the evidence
+// strong": refuted is strong evidence that there is nothing to file.
+//
+// source answers false, and that is right for this question rather than a
+// rounding of it - nobody has made it happen, so nobody can say it happens.
+func (e Evidence) Reproduces() bool {
 	return e.State == EvidenceReproduced || e.State == EvidenceVerified
 }
 
@@ -211,9 +271,11 @@ func NormalizeEvidenceState(asked string) (string, error) {
 			return state, nil
 		}
 	}
-	return "", refuseEvidence("%q is not how strong evidence gets: one of %s. %q is a word "+
-		"AND a commit - see internal/store/findingevidence.go",
-		asked, strings.Join(EvidenceStates, ", "), EvidenceVerified)
+	return "", refuseEvidence("%q is not one of the words evidence comes in: %s. %q and %q are "+
+		"each a word AND a commit, and %q is the run that found nothing rather than the "+
+		"absence of one - see internal/store/findingevidence.go",
+		asked, strings.Join(EvidenceStates, ", "), EvidenceVerified, EvidenceRefuted,
+		EvidenceRefuted)
 }
 
 // FindingEvidenceOf is how strong a finding's evidence is, read off the row and
@@ -367,12 +429,13 @@ func (d *DB) SetFindingEvidence(
 		if next.LastRun == "" {
 			next.LastRun = stood.LastRun
 		}
-		if state == EvidenceVerified && next.VerifiedOn == "" {
+		if EvidenceNeedsCommit(state) && next.VerifiedOn == "" {
 			return nil, nil, refuseEvidence("finding %s: %q names the commit the reproduction was "+
-				"run against - without it the word is %q written more confidently, and a report "+
-				"whose repro was never run against current main is closed upstream as "+
-				"already-fixed. State verified_on, or say %q",
-				finding.ID, EvidenceVerified, EvidenceReproduced, EvidenceReproduced)
+				"run against - without it %q is %q written more confidently, and %q is "+
+				"\"it does not happen\" with nothing saying where, which is how a real defect "+
+				"gets closed. State verified_on, or say %q",
+				finding.ID, state, EvidenceVerified, EvidenceReproduced, EvidenceRefuted,
+				EvidenceReproduced)
 		}
 		switch {
 		case next.VerifiedOn == "":

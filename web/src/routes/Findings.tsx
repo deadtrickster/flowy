@@ -551,9 +551,12 @@ function EvidenceBadge({
   runnable: boolean;
   isolation?: string;
 }) {
+  // Both outcomes of a run name the commit they were measured on, because
+  // "refuted" with nothing saying WHERE is how a real defect gets closed - see
+  // EvidenceState in lib/findings.ts.
   const evidence =
-    state === "verified" && verifiedOn
-      ? `verified on ${verifiedOn.slice(0, 12)}`
+    (state === "verified" || state === "refuted") && verifiedOn
+      ? `${state} on ${verifiedOn.slice(0, 12)}`
       : (state ?? "evidence not stated");
   return (
     <>

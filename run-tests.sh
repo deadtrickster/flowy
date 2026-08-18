@@ -15844,10 +15844,28 @@ the_evidence_door_requires_a_commit() {
 	want_eq "and the refused write left the claim where it stood" \
 		"$(printf '%s' "$API_BODY" | jq -r .evidence.evidence_state)" reproduced || return 1
 
+	# A refutation names its commit too, and this is the one that matters more:
+	# "it does not reproduce" with nothing saying WHERE is how a real defect
+	# gets closed.
+	want_status 400 POST "$TOKEN_A" "/api/finding/$FINDING_FILED/evidence" \
+		'{"state": "refuted"}' || return 1
+
 	# A commit under `source` is the mirror refusal: source is nobody having run
 	# it, so there is no run for a commit to be the commit OF.
 	want_status 400 POST "$TOKEN_A" "/api/finding/$FINDING_UNFILED/evidence" \
 		'{"state": "source", "verified_on": "67adbe04"}' || return 1
+
+	# REFUTED IS NOT VERIFIED, recorded and read back as its own word. Two of the
+	# twenty-four SereneDB reproductions are this - tried on a named commit, the
+	# defect was not there - and a build that folded them into verified would
+	# send somebody upstream with a defect that does not exist.
+	api POST "$TOKEN_A" "/api/finding/$FINDING_UNFILED/evidence" \
+		'{"state": "refuted", "verified_on": "bc07c51d4b8d9f0c6f4e3ad6a3a8952decd6d032"}' || return 1
+	want_eq "a refutation is its own word" \
+		"$(printf '%s' "$API_BODY" | jq -r .evidence.evidence_state)" refuted || return 1
+	want_eq "and it names what it was run against" \
+		"$(printf '%s' "$API_BODY" | jq -r .evidence.verified_on)" \
+		bc07c51d4b8d9f0c6f4e3ad6a3a8952decd6d032 || return 1
 
 	# And the accepted shape, on the row that carries no claim yet: the word and
 	# the commit land together and read back off the row.
@@ -15861,7 +15879,7 @@ the_evidence_door_requires_a_commit() {
 	# has said" reads as - and is not the word `source`.
 	want_eq "and the log says it came from nobody having said" \
 		"$(printf '%s' "$API_BODY" | jq -r '.log[0].from')" "" || return 1
-	printf 'verified is refused without a commit, refused under source, and recorded with one\n'
+	printf 'verified and refuted both refused without a commit; refuted recorded as its own word\n'
 }
 
 say "findings: our lifecycle, their filing, and the evidence - three axes"
