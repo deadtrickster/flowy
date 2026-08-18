@@ -462,6 +462,15 @@ function FindingCard({ finding }: { finding: Artifact }) {
         </CardHeader>
         <CardContent className="text-muted-foreground text-xs">
           updated {finding.updated} · {finding.visibility}
+          {/* When the repro last ran, WHEN THE ROW SAYS SO. A run's verdict is
+              an append-only event on the finding (internal/store/findingruns.go)
+              and a list read carries no events, so this is what the evidence
+              claim on the row states about its own last run - and nothing at
+              all when it states none. A list that fetched the run log per row
+              would be forty reads to draw one page, and one that printed
+              "never run" from their absence would be saying something it did
+              not check. */}
+          {evidence.verified_at ? ` · last run ${evidence.verified_at}` : ""}
         </CardContent>
       </Card>
     </li>
