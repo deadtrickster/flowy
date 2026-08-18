@@ -208,11 +208,19 @@ func TestLandRefusesAndThenLands(t *testing.T) {
 	if _, _, err := db.SetMergeGate(ctx, holder, row.ID, "run1", "", ""); err != nil {
 		t.Fatalf("declare the run: %v", err)
 	}
-	if _, _, err := db.SetMergeGate(ctx, holder, row.ID, "run1", "1111111", ""); err != nil {
+	if _, _, err := db.SetMergeGate(ctx, holder, row.ID, "run1", "abc1234def5678", ""); err != nil {
 		t.Fatalf("record the verdict: %v", err)
 	}
-	if _, _, err := db.LandMerge(ctx, other, row.ID, "abc1234"); err == nil {
+	if _, _, err := db.LandMerge(ctx, other, row.ID, "abc1234def5678"); err == nil {
 		t.Fatal("a land by a principal who holds no lock succeeded")
+	}
+
+	// The holder, landing a sha that is not the one measured. Refused: a
+	// fast-forward puts the MEASURED tip on the target, so a different sha
+	// means something else landed - which is exactly what a partial land looks
+	// like from the node's side.
+	if _, _, err := db.LandMerge(ctx, holder, row.ID, "9999999abcdef"); err == nil {
+		t.Fatal("a land of a sha the gate never measured succeeded")
 	}
 
 	// The holder lands: the row carries what master became, the chain knows
