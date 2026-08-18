@@ -524,3 +524,14 @@ func assignBody(name string) string {
 	}
 	return "assigned to " + name
 }
+
+// SeatHandle is seatHandle for callers outside this package: the handle this
+// principal speaks under, or "" when it has none.
+//
+// Exported for the nag door, which has to answer "how many of these are the
+// CALLER'S" - and the assignee field holds a handle, not an id, so that
+// question is a handle comparison. A door that compared ids would report zero
+// rows for everybody, which is the quiet kind of wrong.
+func (d *DB) SeatHandle(ctx context.Context, p *Principal) string {
+	return d.seatHandle(ctx, p)
+}

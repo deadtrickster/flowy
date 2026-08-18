@@ -363,6 +363,11 @@ var apiRoutes = []string{
 	"GET /api/sync/pull",
 	"POST /api/sync/push",
 	"GET /api/peers",
+	// The nag, whole, in one read. It is on this list because it exists to
+	// REPLACE a script that four seats each carried a copy of - a door nobody
+	// can find is a door everybody reimplements in jq, which is what it is
+	// being built out of.
+	"GET /api/nag",
 	"GET /api/whoami",
 	"GET /api/node",
 	"GET /api/metrics",
@@ -507,6 +512,10 @@ func (s *server) routes() http.Handler {
 	api.HandleFunc("DELETE /api/artifact/{id}/origins/{origin}", s.handleRemoveOrigin)
 	api.HandleFunc("GET /api/artifact/{id}/origins", s.handleGetOrigins)
 	api.HandleFunc("GET /api/ready", s.handleReady)
+	// The whole nag in one read - see api_nag.go, and the operator: "move the
+	// logic of the work nagger to the go side and the nagger then will be a
+	// simple http call".
+	api.HandleFunc("GET /api/nag", s.handleNag)
 	// Who is carrying a todo - any todo the caller can read, wherever it was
 	// raised, and whoever wrote it. Read permission is the whole bar: the assignee
 	// is a name in fields and grants nobody anything, so a queue one agent filed
