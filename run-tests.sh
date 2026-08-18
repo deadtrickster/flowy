@@ -15417,9 +15417,17 @@ seeds_two_findings_on_three_axes() {
 	want_eq "which the body does not carry" \
 		"$(tv '.item.body | contains("'"$FINDING_DRAFT_WORD"'")')" false || return 1
 
-	# Our lifecycle, moved through the door that leaves the trail event.
-	api POST "$TOKEN_A" "/api/artifact/$filed/status" '{"status": "done"}' || return 1
-	want_eq "our work on it is done" "$(printf '%s' "$API_BODY" | jq -r .artifact.status)" "done" || return 1
+	# Our lifecycle, walked through the door that leaves the trail event. It is
+	# walked rather than jumped because the issue workflow is a LINE - open,
+	# triaged, in-progress, in-review, done - and a jump straight to the end is
+	# refused (lifecycle.go's canTransition). That refusal is the right one and
+	# it is also why this is four calls: a finding reaches done by somebody
+	# having worked it, and the trail says so.
+	local step
+	for step in triaged in-progress in-review "done"; do
+		api POST "$TOKEN_A" "/api/artifact/$filed/status" "{\"status\": \"$step\"}" || return 1
+		want_eq "moved to $step" "$(printf '%s' "$API_BODY" | jq -r .artifact.status)" "$step" || return 1
+	done
 
 	# Their tracker, which our status says nothing about. See the head of this
 	# block on why this is SQL.
