@@ -121,3 +121,70 @@ func clientKey(r *http.Request) string {
 	}
 	return host
 }
+
+// handleJoinApprove grants a request: mints the seat and hands the token back
+// once.
+//
+// OPERATOR ONLY. The check is here rather than in the store because who may
+// approve is an authorisation question about this node, and what approval MEANS
+// - mint, record, close - is the store's. Putting the check at the door also
+// means it reads the same as every other privileged act here.
+//
+// POST /api/join/{id}/approve
+func (s *server) handleJoinApprove(w http.ResponseWriter, r *http.Request) {
+	p := principalOf(r)
+	if !p.Operator {
+		writeJSON(w, http.StatusForbidden,
+			errorBody("only this node's operator admits a new seat - that is what minting is"))
+		return
+	}
+	art, minted, err := s.db.ApproveJoin(r.Context(), p, r.PathValue("id"))
+	switch {
+	case errors.Is(err, store.ErrNotFound), errors.Is(err, store.ErrNotAJoinRequest):
+		writeJSON(w, http.StatusNotFound, errorBody("no such join request"))
+		return
+	case err != nil:
+		writeJSON(w, http.StatusConflict, errorBody(err.Error()))
+		return
+	}
+	// THE TOKEN IS HERE AND NOWHERE ELSE. Not on the row, not in the log: a
+	// credential written into an artifact is a credential in every replica of
+	// it. This response is the one place it exists outside the asker's hands.
+	writeJSON(w, http.StatusOK, map[string]any{
+		"request": art.ID,
+		"handle":  store.JoinHandleOf(art),
+		"user":    minted.User,
+		"agent":   minted.Agent,
+		"token":   minted.Token,
+		"message": "minted. This token is shown once - it is not stored on the row.",
+	})
+}
+
+// handleJoinRefuse says no, with a reason.
+//
+// POST /api/join/{id}/refuse {reason}
+func (s *server) handleJoinRefuse(w http.ResponseWriter, r *http.Request) {
+	p := principalOf(r)
+	if !p.Operator {
+		writeJSON(w, http.StatusForbidden,
+			errorBody("only this node's operator decides who joins"))
+		return
+	}
+	var req struct {
+		Reason string `json:"reason"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody("bad request body: "+err.Error()))
+		return
+	}
+	art, err := s.db.RefuseJoin(r.Context(), p, r.PathValue("id"), req.Reason)
+	switch {
+	case errors.Is(err, store.ErrNotFound), errors.Is(err, store.ErrNotAJoinRequest):
+		writeJSON(w, http.StatusNotFound, errorBody("no such join request"))
+		return
+	case err != nil:
+		writeJSON(w, http.StatusBadRequest, errorBody(err.Error()))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"request": art.ID, "state": "refused"})
+}

@@ -497,6 +497,10 @@ func (s *server) routes() http.Handler {
 	// neither decides what anybody may read.
 	api.HandleFunc("GET /api/projects", s.handleListProjects)
 	api.HandleFunc("POST /api/projects", s.handleCreateProject)
+	// Approving is authenticated and operator-only: asking takes no token,
+	// admitting is the operator's alone.
+	api.HandleFunc("POST /api/join/{id}/approve", s.handleJoinApprove)
+	api.HandleFunc("POST /api/join/{id}/refuse", s.handleJoinRefuse)
 	// Phase 9. Announcements, and the quiesce a maintenance one can hold.
 	// Posting is capability-gated on the agent kind rather than on the route,
 	// because the gate is per scope and not per endpoint: anybody may say

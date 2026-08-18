@@ -181,5 +181,149 @@ func JoinKindOf(a *Artifact) string { return artifactString(a, "join_kind") }
 // JoinStateOf is pending, approved or refused.
 func JoinStateOf(a *Artifact) string { return artifactString(a, "join_state") }
 
+// joinPendingGuard is the compare-and-set: the row must still be the one that
+// was read. `guard` is a SQL fragment appended to the WHERE, so it is written
+// here from a constant rather than assembled from anything a caller sends.
+const joinPendingGuard = "status = '" + TodoStatus + "'"
+
 // ErrNotAJoinRequest is the answer for an id that is not one.
 var ErrNotAJoinRequest = errors.New("store: that is not a join request")
+
+// ApproveJoin grants a pending request: it mints the seat and records who said
+// yes, in one act.
+//
+// OPERATOR ONLY, and the check is the caller's to make - this verb takes the
+// decision as already made and does the two things that follow from it. That
+// split is deliberate: who may approve is an authorisation question that belongs
+// at the door, and what approval MEANS is this.
+//
+// The token comes back exactly once, in the return. It is not written to the row
+// and not put in the log: a credential in an artifact is a credential in every
+// replica of it, and the whole point of minting on approval is that the secret
+// travels from the operator to the asker and stops.
+func (d *DB) ApproveJoin(ctx context.Context, p *Principal, id string) (*Artifact, *Minted, error) {
+	ctx, span := otel.Start(ctx, otel.KindIngest, "join.approve")
+	defer span.End()
+
+	actor, _ := voteActor(p)
+	if actor == "" {
+		return nil, nil, fmt.Errorf("store: this token resolves to nobody, so it cannot approve a join")
+	}
+	art, err := d.readWorkItem(ctx, p, strings.TrimSpace(id))
+	if err != nil {
+		return nil, nil, err
+	}
+	if art.Kind != JoinKind {
+		return nil, nil, ErrNotAJoinRequest
+	}
+	if state := JoinStateOf(art); state != "pending" {
+		// Approving twice would mint a second seat for one request and hand out
+		// a second token, which is the shape a replay attack wants. The state is
+		// the guard and it says what happened instead.
+		return nil, nil, fmt.Errorf("store: join request %s is already %s", art.ID, state)
+	}
+
+	handle := JoinHandleOf(art)
+	project := ""
+	if art.Project != nil {
+		project = *art.Project
+	}
+	minted, err := d.MintAgent(ctx, MintSpec{
+		Handle:  handle,
+		Kind:    "agent",
+		Project: project,
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("store: mint %s on approval: %w", handle, err)
+	}
+
+	fields, err := ArtifactFields(art)
+	if err != nil {
+		return nil, nil, err
+	}
+	fields["join_state"] = "approved"
+	fields["join_user"] = minted.User
+	fields["join_agent"] = minted.Agent
+	fields["join_approved_by"] = actor
+	column, err := json.Marshal(fields)
+	if err != nil {
+		return nil, nil, fmt.Errorf("store: approve join %s: %w", art.ID, err)
+	}
+
+	meta, _ := json.Marshal(map[string]string{
+		"join_handle": handle,
+		"join_user":   minted.User,
+		"join_agent":  minted.Agent,
+		"actor_user":  p.UserID,
+	})
+	entry := &Event{
+		Type:     EventJoinRequest,
+		Project:  art.Project,
+		Room:     JoinRoom,
+		Thread:   art.ID,
+		Artifact: art.ID,
+		Actor:    actor,
+		Body:     fmt.Sprintf("%s approved: %s exists now", handle, handle),
+		Meta:     meta,
+	}
+	// GUARDED ON THE STATUS IT CAME IN WITH. The state check above is a
+	// courtesy that reads before it writes; this is the one that holds when two
+	// operators approve the same request in the same second. Exactly one wins,
+	// and the loser is told rather than minting a second seat and handing out a
+	// second token.
+	if err := d.SetArtifactFieldsAndStatusIf(ctx, art, column, DoneStatus, joinPendingGuard, entry); err != nil {
+		return nil, nil, err
+	}
+	art.Status = DoneStatus
+	span.SetArtifact(art.ID)
+	return art, minted, nil
+}
+
+// RefuseJoin says no, with a reason, and closes the request.
+//
+// A refusal is worth as much as an approval and for the same reason every
+// refusal here is: an asker told no can stop, and an asker told nothing retries
+// forever. The reason is required for that - "refused" alone leaves them to
+// guess whether to try again with a different handle.
+func (d *DB) RefuseJoin(ctx context.Context, p *Principal, id, reason string) (*Artifact, error) {
+	actor, _ := voteActor(p)
+	if actor == "" {
+		return nil, fmt.Errorf("store: this token resolves to nobody, so it cannot refuse a join")
+	}
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return nil, fmt.Errorf("store: a refusal says why, so the asker knows whether to ask again")
+	}
+	art, err := d.readWorkItem(ctx, p, strings.TrimSpace(id))
+	if err != nil {
+		return nil, err
+	}
+	if art.Kind != JoinKind {
+		return nil, ErrNotAJoinRequest
+	}
+	if state := JoinStateOf(art); state != "pending" {
+		return nil, fmt.Errorf("store: join request %s is already %s", art.ID, state)
+	}
+
+	fields, err := ArtifactFields(art)
+	if err != nil {
+		return nil, err
+	}
+	fields["join_state"] = "refused"
+	fields["join_refused_by"] = actor
+	fields["join_refused_because"] = reason
+	column, err := json.Marshal(fields)
+	if err != nil {
+		return nil, fmt.Errorf("store: refuse join %s: %w", art.ID, err)
+	}
+	entry := &Event{
+		Type: EventJoinRequest, Project: art.Project, Room: JoinRoom,
+		Thread: art.ID, Artifact: art.ID, Actor: actor,
+		Body: fmt.Sprintf("%s refused: %s", JoinHandleOf(art), reason),
+	}
+	if err := d.SetArtifactFieldsAndStatusIf(ctx, art, column, DoneStatus, joinPendingGuard, entry); err != nil {
+		return nil, err
+	}
+	art.Status = DoneStatus
+	return art, nil
+}
