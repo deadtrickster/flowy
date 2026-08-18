@@ -16360,6 +16360,35 @@ a_diagram_is_created_by_clicking_new() {
 # origins takes it, and the todo's DEPENDS-ON log is empty afterwards. That last
 # assertion is the one that catches somebody wiring provenance into the ready
 # query later because it looked like an edge.
+# A merge request with no branch is refused at the HTTP door, not only at the
+# memory door where the rule was written.
+#
+# The refusal has to come from the STORE for this to mean anything: the same
+# rule stated at a second door is a second copy to forget. So the positive
+# control is the same body with a branch on it, through the same door, and the
+# difference between the two answers is the whole check.
+#
+# A branchless merge row is not a cosmetic defect. BranchOf reads empty, so
+# nothing can rebase it, gate it or fast-forward it, and it sits in the queue
+# looking exactly like work somebody could pick up.
+a_branchless_merge_request_is_refused_at_the_http_door() {
+	recall
+	want_status 400 POST "$TOKEN_A" /api/artifacts \
+		'{"type": "memory", "kind": "merge", "visibility": "project",
+		  "title": "land something", "body": "no branch on this one"}' || return 1
+	printf '%s' "$API_BODY" | grep -q 'branch' || {
+		printf 'refused, and did not say what is missing:\n%s\n' "$API_BODY" >&2
+		return 1
+	}
+
+	# The control: the same row, with a branch, through the same door.
+	api POST "$TOKEN_A" /api/artifacts \
+		'{"type": "memory", "kind": "merge", "visibility": "project",
+		  "title": "land something", "body": "with a branch",
+		  "fields": {"branch": "feat/somewhere", "target": "master"}}' || return 1
+	want_eq "a merge request that says its branch" "$API_STATUS" 200 || return 1
+}
+
 a_row_says_where_it_came_from() {
 	recall
 	local diagram todo
@@ -16548,6 +16577,8 @@ check "a shape inside a diagram is addressable, and a dead reference says so" \
 	a_shape_inside_a_diagram_is_addressable
 check "the diagram editor is dark, like the console around it" \
 	the_diagram_editor_matches_the_console
+check "a merge request with no branch is refused at the http door, and one with a branch lands" \
+	a_branchless_merge_request_is_refused_at_the_http_door
 check "a row says where it came from, and the queue does not treat it as a blocker" \
 	a_row_says_where_it_came_from
 check "the artifact page says where the row came from" \

@@ -161,6 +161,12 @@ func (d *DB) upsertArtifact(ctx context.Context, q execer, a *Artifact) error {
 	if err := checkQueueRow(a); err != nil {
 		return err
 	}
+	// And a merge request says which branch it would land, asked here for that
+	// same reason - the rule used to live at the memory door alone, and the
+	// HTTP door wrote rows the queue could never drain. See checkMergeRow.
+	if err := checkMergeRow(a); err != nil {
+		return err
+	}
 	// The date the row will carry, decided before it is signed rather than by
 	// the column's default afterwards - see createdNow. An update keeps the date
 	// the row already has: an edit is not a new artifact, and the value has to
@@ -419,6 +425,12 @@ func (d *DB) writeArtifactFields(
 	if err := checkQueueRow(a); err != nil {
 		return err
 	}
+	// And a merge request says which branch it would land, asked here for that
+	// same reason - the rule used to live at the memory door alone, and the
+	// HTTP door wrote rows the queue could never drain. See checkMergeRow.
+	if err := checkMergeRow(a); err != nil {
+		return err
+	}
 	if err := d.signArtifact(ctx, d.sql, a); err != nil {
 		return err
 	}
@@ -641,6 +653,12 @@ func (d *DB) createArtifact(ctx context.Context, q execer, a *Artifact) error {
 	// updated holding one. See checkQueueRow: a row created active with nobody
 	// on it is the same lie whether it arrived that way or got there later.
 	if err := checkQueueRow(a); err != nil {
+		return err
+	}
+	// And a merge request says which branch it would land, asked here for that
+	// same reason - the rule used to live at the memory door alone, and the
+	// HTTP door wrote rows the queue could never drain. See checkMergeRow.
+	if err := checkMergeRow(a); err != nil {
 		return err
 	}
 	// Minted here and signed with the row, not left to the column - see
