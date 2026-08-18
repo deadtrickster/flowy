@@ -9,7 +9,21 @@
 #
 #   eval "$(scripts/dev-db.sh start)"     # exports DATABASE_URL
 #   go test ./internal/store/ -run Clocks # about 30 seconds
+#   scripts/dev-db.sh reset               # empty it again, keep the server up
 #   scripts/dev-db.sh stop
+#
+# THE SAME DATABASE TWICE IS NOT A FRESH ONE, which is the caveat that costs the
+# most if you learn it by accident. This keeps the database between runs, and
+# some checks in the store package read counts that another test's rows change:
+# measured, a second full-package run against a reused database failed
+# TestPresenceTracksPollsNotAcks and TestRoomMembersNamesSpeakers - "two
+# messages from one actor gave 4 members" - and both were green against a clean
+# one. The rows were residue and the tree was innocent.
+#
+# So: `-run` a subset as often as you like, and `reset` before running the whole
+# package or before believing a failure you did not expect. The gate builds a
+# database per run and never has this problem, which is also why a failure here
+# that the gate does not reproduce is this, until proven otherwise.
 #
 # IT IS NOT THE GATE AND MUST NOT BE MISTAKEN FOR IT. This starts one database
 # and loads schema.sql. The gate builds the console, runs the browser checks,
@@ -36,7 +50,7 @@ dsn="postgres://postgres@127.0.0.1:$port/flowy?sslmode=disable"
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 
 usage() {
-	printf 'usage: %s start|stop|dsn\n' "$0" >&2
+	printf 'usage: %s start|reset|stop|dsn\n' "$0" >&2
 	exit 2
 }
 
@@ -85,8 +99,26 @@ stop() {
 	rm -rf "$work"
 }
 
+# reset drops the database and builds it again, leaving the server up.
+#
+# Dropping beats TRUNCATE-everything: a table added since the last reset would
+# be missed by a list of tables written today, and the failure of that is a
+# stale row in a table nobody remembered - which is the thing this verb exists
+# to remove.
+reset() {
+	if ! "$PG_BIN/pg_ctl" -D "$data" status >/dev/null 2>&1; then
+		printf 'nothing is running at %s - use start\n' "$work" >&2
+		exit 1
+	fi
+	"$PG_BIN/dropdb" -h 127.0.0.1 -p "$port" -U postgres --if-exists flowy
+	"$PG_BIN/createdb" -h 127.0.0.1 -p "$port" -U postgres flowy
+	load_schema
+	printf 'export DATABASE_URL=%q\n' "$dsn"
+}
+
 case "${1:-}" in
 start) start ;;
+reset) reset ;;
 stop) stop ;;
 dsn) printf '%s\n' "$dsn" ;;
 *) usage ;;
