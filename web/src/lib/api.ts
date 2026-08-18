@@ -1404,6 +1404,35 @@ export const api = {
    * stopped there, and two copies of it would drift into a list that hits the
    * cap silently - which is the failure the number exists to report.
    */
+  /**
+   * WRITE ONE ROW, from the one place a person can make one.
+   *
+   * The type is the RESOLVED type - what the row is - and this is the door that
+   * decides how that is spelled: the memory bucket plus a kind, which is what
+   * 194 of 195 todos, 50 of 52 notes and 9 of 25 reports on this node are
+   * already written as. The other spelling exists on five stray rows that
+   * nothing refused, and the ruling behind this door (01M0ANFYWY) is that a
+   * create surface must not offer both - the day somebody picks the second one
+   * out of a dropdown, "todo as a type" stops being five strays and becomes
+   * something this project supports.
+   *
+   * scope=project, because a row nobody else can read is not what somebody
+   * making one from the console means by it, and the store's own default here
+   * is personal.
+   */
+  writeEntity: (opts: { type: string; title: string; body?: string }) =>
+    request<Artifact>("/api/artifacts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        type: "memory",
+        kind: opts.type,
+        title: opts.title,
+        body: opts.body ?? "",
+        visibility: "project",
+      }),
+    }),
+
   todos: () =>
     request<{ artifacts: Artifact[]; withheld?: Withheld; refused?: Refused }>(
       `/api/artifacts?type=memory&kind=todo&limit=${TODO_PAGE}`,

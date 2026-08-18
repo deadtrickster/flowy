@@ -16211,11 +16211,29 @@ the_diagrams_page_says_it_is_signed_out() {
 	node scripts/render-check.mjs "" "" "paste a token to see the diagrams" /diagrams
 }
 
+# The one door a person makes a row through, driven as the journey rather than
+# the handler. The operator's ask was "make all entity types user creatable",
+# and this console could make two of the nine things this store holds - a
+# diagram, and a todo from inside a room.
+#
+# The discriminating assertion is that the row lands in the list of its own
+# type, read through the node's own query. Identity is written two ways here -
+# kind under type=memory for 344 rows, type itself for a handful - so a door
+# that picked the wrong level would write rows every existing list quietly fails
+# to show, and "it wrote something" would pass while "anybody will see it"
+# fails.
+a_person_writes_a_row_from_the_console() {
+	cd "$ROOT/web" || return 1
+	node scripts/newentity-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A"
+}
+
 say "diagrams: the new button, clicked"
 check "new with an empty name makes a diagram, opens the editor and can be renamed" \
 	a_diagram_is_created_by_clicking_new
 check "signed out, the diagrams page says so rather than looking empty" \
 	the_diagrams_page_says_it_is_signed_out
+check "a person writes a row from the console, and it lands where its list reads it" \
+	a_person_writes_a_row_from_the_console
 check "a shape inside a diagram is addressable, and a dead reference says so" \
 	a_shape_inside_a_diagram_is_addressable
 

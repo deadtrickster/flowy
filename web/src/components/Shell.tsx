@@ -2,6 +2,7 @@ import {
   Activity as ActivityIcon,
   Brain,
   Bug,
+  FilePlus,
   FileText,
   GitBranch,
   Hash,
@@ -86,6 +87,16 @@ export function Shell({ children }: { children: ReactNode }) {
             One row, not one per project: the page is the queue across every
             project this token reads, and it says so on itself.
           */}
+          {/*
+            WRITING IS A PLACE, not a button hidden on a list page. Every list
+            in this console is read-only by design - the store owns the scope
+            rules and a second write door on each page would be several - so
+            the one door gets a name in the rail.
+          */}
+          <NavLink to="/new" className={navClass}>
+            <FilePlus className="h-4 w-4" />
+            new
+          </NavLink>
           <NavLink to="/todos" className={navClass}>
             <ListChecks className="h-4 w-4" />
             todos

@@ -13,6 +13,7 @@ import { Home } from "@/routes/Home";
 import { Inbox } from "@/routes/Inbox";
 import { Memory } from "@/routes/Memory";
 import { Metrics } from "@/routes/Metrics";
+import { NewEntity } from "@/routes/NewEntity";
 import { NotFound } from "@/routes/NotFound";
 import { Reports } from "@/routes/Reports";
 import { TaskView } from "@/routes/TaskView";
@@ -68,6 +69,12 @@ export default function App() {
           queue ACROSS projects, and it says which reader's union it is. A
           project-scoped list here would be the old mistake with a new route.
         */}
+          {/*
+          The one place a person makes a row. One list, closed, the resolved
+          types - see NewEntity for why offering both spellings of identity
+          would make the ambiguity permanent.
+        */}
+          <Route path="/new" element={<NewEntity />} />
           <Route path="/todos" element={<Todos />} />
           {/*
           The merge tab was a useState in Todos.tsx until now, which made
