@@ -37,6 +37,18 @@ export default function App() {
           <Route path="/" element={<Home />} />
           <Route path="/chat/:room" element={<ChatRoom />} />
           {/*
+          THE SIDE COLUMN'S TAB IS IN THE PATH, so a pane is a place. It was
+          component state, which meant the back button did nothing after
+          choosing one and a person could not send anybody the pane they were
+          looking at - the same gap /todos/merge already closed for the queue
+          page, and the same one the diagram row needs one level deeper before
+          a shape can be cited.
+
+          A segment rather than a query string: this is which of five things
+          the column is showing, not a filter over one of them.
+        */}
+          <Route path="/chat/:room/:pane" element={<ChatRoom />} />
+          {/*
           Not /chat/dm. A direct message is not in a room, so there is no room
           name to put in the path - and a path that looked like a room's would
           be the first place somebody assumed a room could be private.

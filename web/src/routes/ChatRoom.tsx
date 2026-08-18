@@ -1,5 +1,5 @@
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 
 import { AnnouncementBanner } from "@/components/AnnouncementBanner";
 import { MergeQueue } from "@/components/MergeQueue";
@@ -59,6 +59,14 @@ const CHAT_WINDOW = 60;
 type Pane = "todos" | "merges" | "thread" | "worklog" | "listening";
 
 /**
+ * Every pane there is, in the order the strip draws them, and the list the path
+ * is checked against. One place rather than two: a name in the union and not in
+ * this list would be a tab nobody could link to, and the failure would be a
+ * link that silently opens the queue instead.
+ */
+const PANES: Pane[] = ["todos", "merges", "thread", "worklog", "listening"];
+
+/**
  * The colours the tab counts are drawn in, and what each one means.
  *
  * They are the same values the panes below them use - the todo statuses come
@@ -86,7 +94,8 @@ const COUNT_LISTENING = "#4fae7a"; // green - somebody has an ear on this room
  * the console has to keep alive itself.
  */
 export function ChatRoom() {
-  const { room = "general" } = useParams();
+  const { room = "general", pane: asked } = useParams();
+  const navigate = useNavigate();
   const { token, whoami } = useSession();
   const { markRead } = useUnread();
   const [events, setEvents] = useState<FlowyEvent[]>([]);
@@ -108,14 +117,29 @@ export function ChatRoom() {
   const [mergesDecided, setMergesDecided] = useState(false);
   const [mergeTip, setMergeTip] = useState("");
   /**
-   * WHICH PANE THE SIDE COLUMN IS SHOWING - four of them now, in one bar.
+   * WHICH PANE THE SIDE COLUMN IS SHOWING - five of them now, in one bar.
    *
    * The thread used to sit BELOW the todos and the merges permanently, so the
    * column was two tabs and two stacked panes and everything in it had half the
-   * height it wanted. It is a tab like the rest now, and the worklog - which
-   * until now was only ever a page away at /worklog - is the fourth.
+   * height it wanted. It is a tab like the rest now; the worklog - which until
+   * recently was only ever a page away at /worklog - is the fourth, and who has
+   * an ear on is the fifth.
+   *
+   * IN THE PATH, NOT IN STATE. A pane is a place: choosing one is somewhere a
+   * person can go back from, and somewhere they can send somebody else. Held as
+   * component state it was neither - the back button left the room entirely,
+   * and "look at the listening tab in #general" was a sentence rather than a
+   * link. /todos/merge already worked this way for the queue page; this is the
+   * same shape for the room, and the diagram row needs one more level of it
+   * before a shape inside a document can be cited at all.
+   *
+   * An unknown segment falls back to the queue rather than to a 404. A stale
+   * link to a pane that has been renamed should land somebody in the room -
+   * the room is what the URL is mostly about - and the strip then says what is
+   * actually there.
    */
-  const [pane, setPane] = useState<Pane>("todos");
+  const pane: Pane = PANES.includes(asked as Pane) ? (asked as Pane) : "todos";
+  const setPane = (next: Pane) => navigate(`/chat/${encodeURIComponent(room)}/${next}`);
   // The roster's two numbers, read where the tab is drawn rather than inside
   // the pane: the strip has to report them without being opened, which is the
   // whole reason these are tabs. A presence that has not arrived is not zero -

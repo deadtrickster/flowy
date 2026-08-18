@@ -272,6 +272,60 @@ exactly one body and it must be the ${name} one`,
       console.error(`the ${name} tab draws its body without marking itself selected`);
       process.exit(1);
     }
+
+    // AND THE PANE IS A PLACE. Choosing one has to be somewhere a person can
+    // come back from and somewhere they can send somebody else - held as
+    // component state it was neither, and "look at the listening tab in
+    // #general" was a sentence rather than a link.
+    const where = new URL(page.url()).pathname;
+    if (!where.endsWith(`/${name}`)) {
+      console.error(
+        `clicking the ${name} tab left the address at ${where}, so the pane is not in the URL
+and neither the back button nor a link can reach it`,
+      );
+      process.exit(1);
+    }
+  }
+
+  // BACK GOES BACK ONE PANE, not out of the room. Each tab above pushed an
+  // entry, so the previous one is the pane chosen before it - which is the
+  // operator's actual complaint about this console: the button leaves.
+  await page.goBack();
+  await page
+    .locator(`aside [data-room-pane-body="${PANES[PANES.length - 2]}"]`)
+    .waitFor({ state: "visible", timeout: 15_000 })
+    .catch(() => {});
+  const back = new URL(page.url()).pathname;
+  if (!back.endsWith(`/${PANES[PANES.length - 2]}`)) {
+    console.error(
+      `going back from the ${PANES[PANES.length - 1]} pane landed at ${back}, want the
+${PANES[PANES.length - 2]} pane - the back button leaves the room instead of undoing the tab`,
+    );
+    process.exit(1);
+  }
+
+  // AND A LINK OPENS IT COLD. Loaded fresh rather than navigated to, because
+  // the two fail differently: a route the app knows and the node does not is a
+  // 404 for everybody the link is sent to, and clicking through this console
+  // would never show it.
+  const deep = `${base}/chat/general/${PANES[PANES.length - 1]}`;
+  const landed = await page.goto(deep, { timeout: 20_000 }).catch(() => null);
+  if (!landed || !landed.ok()) {
+    console.error(`${deep} answers ${landed ? landed.status() : "nothing"} - a pane somebody
+links to has to be a page the node serves`);
+    process.exit(1);
+  }
+  const opened = page.locator(`aside [data-room-pane-body="${PANES[PANES.length - 1]}"]`);
+  try {
+    await opened.waitFor({ state: "visible", timeout: 20_000 });
+  } catch {
+    const drawn = await page
+      .locator("aside [data-room-pane-body]")
+      .evaluateAll((nodes) => nodes.map((n) => n.getAttribute("data-room-pane-body")));
+    console.error(
+      `${deep} loaded and drew [${drawn.join(", ")}] - a link to a pane opens a different one`,
+    );
+    process.exit(1);
   }
 
   // ------------------------------------------ the thread, inside its own tab
