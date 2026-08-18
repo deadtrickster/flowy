@@ -116,9 +116,10 @@ the subject and a look at the open handoffs.
 
 ## Tools
 
-- `mem_write {title, body, scope?, kind?, tags?, status?, room?, message?, assignee?, category?, id?}` -
+- `mem_write {title, body, scope?, kind?, tags?, status?, room?, message?, assignee?, expect?, category?, id?}` -
   create an item, or update one by passing its `id`. Fields you leave out keep
-  their old values. Set `status: "done"` to close a todo.
+  their old values. Set `status: "done"` to close a todo. `expect` makes the
+  write a claim and is refused if somebody got there first - see below.
 - `mem_read {id}` - one item. An item you may not read is reported the same way
   as an item that does not exist.
 - `mem_search {q, scope?, kind?, limit?}` - ranked full-text search over title,
@@ -177,11 +178,28 @@ body, and every surface still reads that when there is no `assignee` on the
 item. The field wins even when it is empty: putting a todo down is something
 somebody said, and a stale `OWNER:` line must not undo them.
 
+### Taking one, when somebody else might be taking it too
+
+Handing work over is not a race and stays last-write-wins. TAKING work is a race
+every time, and two agents that both take one row both come away believing they
+hold it - which is worse than neither of them holding it, because it is what
+makes both of them act.
+
+So say what you read. `todo_assign {todo, assignee: "<you>", expect: "<who had
+it>"}` - or `mem_write {id, assignee: "<you>", expect: "<who had it>"}`, which
+takes those three and nothing else - is refused if the row moved between your
+read and your write, and the refusal names whoever got there first. `expect: ""`
+is the usual one: you read the row as carried by nobody. Then either ask the
+winner or take the next row; do not retry the same claim, it will keep losing.
+
+Leave `expect` out and both doors behave exactly as they always have. That is
+right for handing somebody work and wrong for taking it.
+
 ### Asking for it, when somebody else has it
 
 `todos {assignee: "<you>"}` is your share of the board, and an empty answer comes
 back with a `rebalance` block rather than nothing: the rows nobody is carrying -
-take those with `todo_assign`, they need no negotiation - and the rows somebody
+claim those with `expect: ""`, they need no negotiation - and the rows somebody
 else has, each with whether that party still has a live tracked waiter. A holder
 with no waiter is a holder nobody is coming back for, and those are listed first.
 
