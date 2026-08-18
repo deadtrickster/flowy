@@ -3,6 +3,7 @@ import { Link, useParams } from "react-router-dom";
 
 import { DocumentPanes, documentRoom } from "@/components/DocumentPanes";
 import { ReproPanel } from "@/components/ReproPanel";
+import { RowNotes } from "@/components/RowNotes";
 import { StatusControl } from "@/components/StatusControl";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -11,7 +12,7 @@ import { marked } from "marked";
 
 import { type Artifact, LIFECYCLE_TYPES, api, refPath } from "@/lib/api";
 import { useSession } from "@/lib/session";
-import { todoAssignee, todoRaiser } from "@/lib/todos";
+import { isQueueItem, todoAssignee, todoRaiser } from "@/lib/todos";
 import { shortId } from "@/lib/utils";
 
 /**
@@ -182,6 +183,7 @@ export function ArtifactView() {
                   // the rule cannot see through DOMPurify, and the comment cannot
                   // sit inside the tag where the rule fires.
                   <div
+                    data-artifact-body=""
                     className="report-body text-sm"
                     dangerouslySetInnerHTML={{
                       __html: DOMPurify.sanitize(
@@ -190,7 +192,10 @@ export function ArtifactView() {
                     }}
                   />
                 ) : (
-                  <pre className="whitespace-pre-wrap break-words font-sans text-sm">
+                  <pre
+                    data-artifact-body=""
+                    className="whitespace-pre-wrap break-words font-sans text-sm"
+                  >
                     {artifact.body}
                   </pre>
                 )}
@@ -203,6 +208,25 @@ export function ArtifactView() {
                   </div>
                 ) : null}
                 {artifact.type === "finding" ? <FindingSection artifact={artifact} /> : null}
+
+                {/*
+                 * WHAT WAS LEARNED ABOUT THE ROW, under the words it was filed
+                 * with, which is the order somebody reading it needs: the
+                 * author's statement of the work first, then what everybody
+                 * else found out about it.
+                 *
+                 * Only for the rows that have a note door - see isQueueItem,
+                 * which mirrors the node's own list. A report or a proposal
+                 * gets no section rather than a box whose write comes back a
+                 * 404.
+                 *
+                 * The notes ride the artifact this page already read; nothing
+                 * here fetches them. See RowNotes for why there is no second
+                 * read of the log door beside it.
+                 */}
+                {isQueueItem(artifact) ? (
+                  <RowNotes artifact={artifact} onAppended={setArtifact} />
+                ) : null}
 
                 {/*
                  * WHERE THE WORK CAME FROM AND WHO HAS IT, for the items that

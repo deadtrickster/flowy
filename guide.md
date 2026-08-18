@@ -296,6 +296,10 @@ oldest first, so the next reader gets the author's statement and then what was
 learned, without knowing this tool exists. `GET /api/todo/{id}/notes` reads them
 on their own.
 
+The console draws them on the row's own page, under the body, in that order and
+with the seat that wrote each one - so a note is read by the people looking at
+the work as well as by whoever calls the door.
+
 Write the reasoning, not the conclusion. A note that says only "blocked" costs
 the next reader the investigation you just did.
 

@@ -5354,9 +5354,11 @@ mem_write_takes_a_category_and_tags_take_anything() {
 # The checks below drive principals who did not raise the row, for the reason the
 # classification checks do: what is LEARNED about a row is not authorship of it.
 NOTE_TODO="the console loses the room on a reload"
+NOTE_BODY="as filed, by whoever filed it"
 NOTE_ONE="the reload lands before the token is read, so the first fetch is unauthenticated"
 NOTE_TWO="tried moving the fetch into the effect - same race, one tick later"
-readonly NOTE_TODO NOTE_ONE NOTE_TWO
+NOTE_TYPED="written from the console, under the body, by whoever was reading it"
+readonly NOTE_TODO NOTE_BODY NOTE_ONE NOTE_TWO NOTE_TYPED
 
 # THE ONE THAT MATTERS. Two seats, neither of which wrote the row, attach what
 # they learned to it - and the AUTHOR reads both off the row itself rather than
@@ -5369,7 +5371,7 @@ readonly NOTE_TODO NOTE_ONE NOTE_TWO
 a_note_is_added_by_somebody_who_did_not_raise_the_row() {
 	recall
 	api POST "$TOKEN_A" "/api/chat/$ROOM_KIND/todo" \
-		"$(jq -nc --arg t "$NOTE_TODO" '{title: $t, body: "as filed, by whoever filed it"}')" || return 1
+		"$(jq -nc --arg t "$NOTE_TODO" --arg b "$NOTE_BODY" '{title: $t, body: $b}')" || return 1
 	want_eq "raise status" "$API_STATUS" 200 || return 1
 	local id
 	id="$(jqv .item.id)"
@@ -5391,7 +5393,7 @@ a_note_is_added_by_somebody_who_did_not_raise_the_row() {
 	# the wrong row or lands where only its writer can see it.
 	api GET "$TOKEN_A" "/api/artifact/$id" || return 1
 	want_eq "the author reads it on the row itself" "$(jqv .notes[0].note)" "$NOTE_ONE" || return 1
-	want_eq "with the body they wrote untouched" "$(jqv .body)" "as filed, by whoever filed it" || return 1
+	want_eq "with the body they wrote untouched" "$(jqv .body)" "$NOTE_BODY" || return 1
 	want_eq "and the title" "$(jqv .title)" "$NOTE_TODO" || return 1
 
 	# The second door, and a third seat: A's agent adds what it tried.
@@ -5495,6 +5497,25 @@ a_note_cannot_be_written_by_hand() {
 	api GET "$TOKEN_A" "/api/todo/$NOTE_ID/notes" || return 1
 	want_eq "so the forged note is not on the row" "$(jqv '.notes | length')" 4 || return 1
 	printf 'a hand-written note: %s\n' "$refused"
+}
+
+# AND THE HALF A READER ACTUALLY HAS: the row's page draws them, under the body,
+# attributed, and a person can add one without knowing a door exists.
+#
+# Everything above this is true of a store nobody can see. What the doors fixed
+# is only fixed once the console shows it - the defect that produced this feature
+# was diagnosed four times by four agents because what had been learned lived in
+# a room and scrolled away, and a note in a log the console does not draw is in
+# the same place.
+#
+# The row is the one the checks above built, with the four notes they wrote on
+# it: two seats, two doors, and one of them an agent, which is the attribution
+# the page has to keep apart. The console adds a fifth through its own box.
+browser_draws_the_notes_under_the_body() {
+	recall
+	cd "$ROOT/web" || return 1
+	node scripts/notes-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" \
+		"$NOTE_ID" "$NOTE_BODY" "$NOTE_TYPED"
 }
 
 # The panel SETS one, OVERRIDES one, and a poll of the room does not wipe it -
@@ -10239,6 +10260,8 @@ check "a note on a row only its writer could read is refused, in the store" \
 	go test -count=1 \
 	-run 'TestANoteOnAProjectlessRowIsRefusedRatherThanWrittenWhereNobodyReadsIt|TestTheAppendRefusesNothingToSayAndARowTheWriterCannotRead|TestANoteCannotBeHandedOver' \
 	./internal/store
+check "the row's page draws its notes under the body and takes a new one, in a browser" \
+	browser_draws_the_notes_under_the_body
 
 check "the console paints the room's todos on the room page" \
 	console_renders_the_rooms_todos

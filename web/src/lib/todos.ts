@@ -28,6 +28,30 @@ export function sortTodos(list: Artifact[]): Artifact[] {
   return [...list].sort((a, b) => todoRank(a.status) - todoRank(b.status));
 }
 
+/**
+ * The kinds of memory the node treats as WORK: the ones with a status, a
+ * dependency edge and a note door. It mirrors store.WorkKinds, which is the
+ * list the node refuses everything else against.
+ *
+ * Mirrored rather than asked for, on the same terms as TODO_KINDS below: the
+ * set is closed and changes about once a year, and the alternative is a fetch
+ * before the page can decide whether to draw a box. What the mirror must never
+ * do is decide anything the node then contradicts, which is why it is used only
+ * to choose whether to OFFER the note box - a row this list gets wrong shows a
+ * box whose write the node refuses in words, rather than a refusal invented
+ * over here.
+ */
+const WORK_KINDS = ["todo", "feature", "handoff", "merge", "work"];
+
+/**
+ * isQueueItem says a row is one of those: a memory of a work kind. It is what
+ * the notes section is drawn for, because a report or a proposal has no note
+ * door and offering one on it would be a control the node answers with a 404.
+ */
+export function isQueueItem(artifact: Artifact): boolean {
+  return artifact.type === "memory" && WORK_KINDS.includes((artifact.kind ?? "").trim());
+}
+
 /** isTodoDone says a piece of work is finished, by the same ranking the list sorts by. */
 export function isTodoDone(todo: Artifact): boolean {
   return todoRank(todo.status) === RANK.done;

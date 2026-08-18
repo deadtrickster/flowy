@@ -334,6 +334,34 @@ export interface KnownIssue {
   ref?: string;
 }
 
+/**
+ * NoteEntry is one thing that was LEARNED about a row after it was filed: the
+ * text, who wrote it and when.
+ *
+ * A note is not an edit and this type is where that shows up on the wire. The
+ * words are somebody else's, sitting beside the author's body rather than
+ * replacing it, and nothing here can be rewritten or deleted - the node has no
+ * verb for either, so a note that turned out to be wrong is answered by a
+ * further note saying so. See internal/store/todonote.go, which is where the
+ * rule lives and is not repeated over here.
+ *
+ * actor_kind and actor_user are both carried because "the agent that did the
+ * work measured this" and "the operator says this" are the two things a reader
+ * of a note is telling apart, and the seat alone does not separate them.
+ */
+export interface NoteEntry {
+  id: string;
+  type: string;
+  todo: string;
+  note: string;
+  actor: string;
+  actor_kind?: string;
+  actor_user?: string;
+  seq_hlc: number;
+  node: string;
+  created: string;
+}
+
 export interface Artifact {
   id: string;
   type: string;
@@ -387,6 +415,15 @@ export interface Artifact {
    * (title, body, project, tags), so a party's status move does not disturb it.
    */
   authorship?: "authored" | "attributed";
+  /**
+   * notes is what has been learned about this row since it was filed, oldest
+   * first, and it arrives from a SINGLE-ROW read only. The list reads do not
+   * carry it on purpose - a queue of 200 rows with every note on each is a
+   * different endpoint's answer - so absent here means "this read does not
+   * carry notes" as often as it means "there are none". Only a page that read
+   * one row may treat an absent list as an empty one.
+   */
+  notes?: NoteEntry[];
 }
 
 /**
@@ -1413,6 +1450,24 @@ export const api = {
     }),
 
   history: (id: string) => request<History>(`/api/artifact/${encodeURIComponent(id)}/history`),
+
+  /**
+   * noteTodo attaches what somebody learned to a row: an append, not an edit,
+   * so it takes no `saw` and is not refused because the work has started.
+   *
+   * The answer carries the row with every note on it, the one just written
+   * included, which is why there is no read door beside this one. The page got
+   * its notes from the single-row read it already does and gets them again from
+   * here, out of the same permission-filtered read the node made - a second
+   * fetch would be the same rows asked twice, with a window in between where
+   * the two answers disagree. See todonote.go's viewNotes.
+   */
+  noteTodo: (id: string, note: string) =>
+    request<{ item: Artifact; notes: NoteEntry[] }>(`/api/todo/${encodeURIComponent(id)}/note`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ note }),
+    }),
 
   /**
    * health needs no token: it is the one thing the console can show logged out.
