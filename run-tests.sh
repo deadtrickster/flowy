@@ -6725,6 +6725,16 @@ a_stale_tab_reloads_itself_once() {
 	node scripts/fresh-check.mjs
 }
 
+# The stream's liveness, which is the one property the transport change made
+# HARDER rather than easier. A poll that stops produces failed requests; a
+# stream that stops produces nothing, which is what a stream with nothing to say
+# also produces. Two arms against a stand-in - heartbeating, and open-but-silent
+# - and the assertion is the difference between them.
+the_stream_tells_quiet_from_dead() {
+	cd "$ROOT/web" || return 1
+	node scripts/stream-liveness-check.mjs
+}
+
 # The regression check for a console that flooded its own node at 567 requests a
 # second while every other check passed. It needs a node whose cursor never
 # moves, because a correctly long-polling one paces a client that has no pacing
@@ -6733,6 +6743,19 @@ a_stale_tab_reloads_itself_once() {
 poll_does_not_spin() {
 	cd "$ROOT/web" || return 1
 	node scripts/poll-spin-check.mjs
+}
+
+# The operator's report, as a check: "why todo panel didnt reload itself on your
+# reassignments - I have to reload the whole page, this sucks".
+#
+# It claims a row on the NODE with nothing touching the browser and asserts the
+# OPEN page follows, with a control arm proving the page does not simply repaint
+# on a clock, and an arm proving the filter, focus and scroll the operator set
+# all survive the change landing.
+console_queue_follows_the_node() {
+	recall
+	cd "$ROOT/web" || return 1
+	node scripts/stream-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A"
 }
 
 # The same mount, signed in, against the live node: the console fetches the room
@@ -10127,6 +10150,12 @@ check "a browser to run the browser checks in" browser_is_installed
 check "the room poll does not flood a node whose cursor never moves" poll_does_not_spin
 check "a tab open across a deploy reloads itself once, and only once" \
 	a_stale_tab_reloads_itself_once
+# A silent connection and a dead one are the same bytes. It runs against a
+# stand-in told to greet and then stop talking without hanging up, because a
+# correct node cannot produce that case - see the fixture for why the node is
+# the fixture.
+check "an open but silent stream is called stale, and a heartbeating one is not" \
+	the_stream_tells_quiet_from_dead
 
 # ------------------------------------------------------------------- postgres
 
@@ -10178,6 +10207,12 @@ say "unit tests"
 # -count=1 so the live store tests really talk to the database this run rather
 # than replaying a cached result from an earlier one.
 check "go test ./..." go test -count=1 ./...
+# Named as well as covered by `go test ./...` above, because this one failing
+# means every console on this node loses its stream on a sixty-second clock -
+# and a stream that dies looks exactly like a room where nothing is happening.
+check "an SSE stream outlives the server's WriteTimeout, and only because it is cleared" \
+	go test -count=1 \
+	-run 'TestAStreamOutlivesTheServersWriteTimeoutOnlyWhenTheDeadlineIsCleared' .
 
 # ------------------------------------------ an older database meets this binary
 #
@@ -10905,6 +10940,8 @@ check "the hashed bundle is served next to it" console_bundle_is_served
 check "any non-api path falls back to the same index" spa_fallback_serves_the_same_index
 check "unknown api paths are still 404" unknown_api_paths_still_404
 check "the console reads the room over the api and renders it" console_renders_the_room
+check "a row claimed on the node reaches the open queue, with no interaction" \
+	console_queue_follows_the_node
 check "GET /inbox is the app, and so is a task link" serves_the_inbox_route
 check "the console renders B's inbox with the task in it" console_renders_the_inbox
 check "the console shows a direct message to its addressee and not to a third principal" \

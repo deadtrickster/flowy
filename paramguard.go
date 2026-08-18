@@ -56,6 +56,7 @@ var routeParams = map[string][]string{
 	"GET /api/proposals":             {"limit", "room", "scope", "status"},
 	"GET /api/ready":                 {"limit", "ready", "room", "scope"},
 	"GET /api/search":                {"kind", "limit", "project", "q", "scope", "status", "type"},
+	"GET /api/stream":                {"since", "topics"},
 	"GET /api/sync/pull":             {"limit", "since"},
 	"GET /api/trace/{id}":            {"scope"},
 	"GET /api/traces":                {"limit", "scope", "since"},

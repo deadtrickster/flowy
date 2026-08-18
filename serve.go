@@ -258,6 +258,10 @@ var apiRoutes = []string{
 	"GET /api/search",
 	"POST /api/events",
 	"GET /api/events",
+	// The event stream. It is on this list for the reason the queue doors are: a
+	// client asks /api/node what this node can do, and a door nobody finds is a
+	// door everybody works around with another poll.
+	"GET /api/stream",
 	"POST /api/chat/{room}/say",
 	"GET /api/chat/{room}",
 	"GET /api/chat/{room}/wait",
@@ -399,6 +403,9 @@ func (s *server) routes() http.Handler {
 	api.HandleFunc("GET /api/search", s.handleSearch)
 	api.HandleFunc("POST /api/events", s.handleAppendEvent)
 	api.HandleFunc("GET /api/events", s.handleListEvents)
+	// One connection per tab, carrying envelopes for the topics it asks for.
+	// See stream.go: it is the door that replaces a poll per panel.
+	api.HandleFunc("GET /api/stream", s.handleStream)
 	api.HandleFunc("POST /api/chat/{room}/say", s.handleChatSay)
 	api.HandleFunc("GET /api/chat/{room}", s.handleChatRead)
 	api.HandleFunc("GET /api/chat/{room}/wait", s.handleChatWait)

@@ -1,12 +1,14 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 
 import { MergeQueue } from "@/components/MergeQueue";
+import { StreamAsOf } from "@/components/StreamAsOf";
 import { Badge } from "@/components/ui/badge";
 import type { Artifact, MergeRequest, Refused, Withheld } from "@/lib/api";
 import { TODO_PAGE, api } from "@/lib/api";
 import { useSession } from "@/lib/session";
 import { speakerStyle } from "@/lib/speakercolour";
+import { watch } from "@/lib/stream";
 import {
   TODO_KINDS,
   countTodos,
@@ -21,6 +23,21 @@ import {
   todoTags,
 } from "@/lib/todos";
 
+/**
+ * How long to let a burst of envelopes settle before re-reading.
+ *
+ * A batch landing writes one event per row, and twenty envelopes are one answer
+ * to the same question: "what does the queue look like now". Short enough that
+ * a single claim still feels immediate, long enough that a fifteen-row batch is
+ * one read rather than fifteen.
+ */
+const STREAM_SETTLE_MS = 250;
+
+/**
+ * The slow backstop, and it is a stated compromise rather than a second
+ * mechanism - see the effect below for what emits no event and why.
+ */
+const BACKSTOP_MS = 60_000;
 /**
  * The queue across projects: every todo this token can read, wherever it is.
  *
@@ -124,6 +141,26 @@ export function Todos() {
   const [mergeDecided, setMergeDecided] = useState(false);
   const [mergesLoaded, setMergesLoaded] = useState(false);
 
+  /**
+   * WHICH READ IS THE NEWEST, so a slow answer never paints over a fast one.
+   *
+   * Two reads are in flight whenever a change lands while one is running - the
+   * stream fires on the change, and the backstop may be mid-flight - and they
+   * can answer out of order. The older answer is a picture of the queue from
+   * before the change, and letting it land shows the board reverting for as
+   * long as it takes the next read to correct it. RoomTodos learned this the
+   * hard way and says so; this is the same device.
+   */
+  const read = useRef(0);
+  /** Whether a read is in flight. The stream can fire several times in a burst
+   * and a slow node must not end up with a queue of stacked requests behind a
+   * console that has already flooded a node once. */
+  const inFlight = useRef(false);
+  /** Whether anything has ever landed. It decides whether a failure is "this
+   * page could not be read" or "the board is a few seconds old", which are
+   * different sentences and only the second one keeps the rows. */
+  const everHeard = useRef(false);
+
   useEffect(() => {
     if (!token) {
       setTodos([]);
@@ -131,52 +168,113 @@ export function Todos() {
       setWithheld(null);
       setRefused(null);
       setLoaded(false);
+      everHeard.current = false;
       return;
     }
     let stopped = false;
-    // Both reads together: a count with no scope beside it is the sentence this
-    // page exists to avoid, so neither half is rendered until both have landed.
-    api
-      .mergeQueue()
-      .then((q) => {
-        if (stopped) return;
-        setMerges(q.items ?? []);
-        setMergeTip(q.target_tip ?? "");
-        setMergeTipFrom(q.tip_from ?? "none");
-        setMergeDecided(Boolean(q.decided));
-      })
-      .catch(() => {
-        // A node without this endpoint is an older node, not a broken page.
-        // The tab says zero and the todos half is unaffected.
-        if (!stopped) setMerges([]);
-      })
-      .finally(() => {
-        if (!stopped) setMergesLoaded(true);
-      });
-    Promise.all([api.todos(), api.projects()])
-      .then(([queue, registry]) => {
-        if (stopped) return;
+
+    const look = async () => {
+      if (stopped || inFlight.current) return;
+      inFlight.current = true;
+      const mine = ++read.current;
+      try {
+        // Both reads together: a count with no scope beside it is the sentence
+        // this page exists to avoid, so neither half is rendered until both
+        // have landed. The merge queue rides along because the two tabs are
+        // two views of one queue, and a tab that refreshed only when it was
+        // open would be stale for exactly as long as somebody was reading the
+        // other one.
+        const [queue, registry, merge] = await Promise.all([
+          api.todos(),
+          api.projects(),
+          // A node without this endpoint is an older node, not a broken page.
+          // Its own tab says so; the todos half is unaffected.
+          api
+            .mergeQueue()
+            .catch(() => null),
+        ]);
+        if (stopped || mine !== read.current) return;
         setTodos(queue.artifacts);
         setReach(registry.reads ?? []);
         setWithheld(queue.withheld ?? null);
         setRefused(queue.refused ?? null);
+        if (merge) {
+          setMerges(merge.items ?? []);
+          setMergeTip(merge.target_tip ?? "");
+          setMergeTipFrom(merge.tip_from ?? "none");
+          setMergeDecided(Boolean(merge.decided));
+        } else if (!everHeard.current) {
+          setMerges([]);
+        }
         setError(null);
-      })
-      .catch((err: Error) => {
-        if (!stopped) setError(err.message);
-      })
-      .finally(() => {
-        if (!stopped) setLoaded(true);
-      });
+        everHeard.current = true;
+      } catch (err: unknown) {
+        if (stopped || mine !== read.current) return;
+        const why = err instanceof Error ? err.message : String(err);
+        // KEPT, NOT EMPTIED, once anything has ever landed. A queue that
+        // vanishes on one bad request looks like a fleet that finished its
+        // work, which is a worse lie than a board a few seconds out of date -
+        // and the "as of" beside it is what stops the stale rows reading as
+        // current. Only a page that never had an answer says it has none.
+        if (!everHeard.current) setError(why);
+      } finally {
+        inFlight.current = false;
+        if (!stopped && mine === read.current) {
+          setLoaded(true);
+          setMergesLoaded(true);
+        }
+      }
+    };
+
+    void look();
+
+    /**
+     * THE STREAM IS THE MECHANISM. One connection per tab, shared with every
+     * other panel that wants one, carrying envelopes that say a topic moved and
+     * never what it now holds - so this re-reads the list it already knows how
+     * to read, and no half-row is ever applied over what somebody is doing.
+     *
+     * Debounced, because a batch landing writes an envelope per row and twenty
+     * of them are one answer to the same question.
+     */
+    let soon: ReturnType<typeof setTimeout> | undefined;
+    const stopWatching = watch(["todos", "queue"], () => {
+      clearTimeout(soon);
+      soon = setTimeout(look, STREAM_SETTLE_MS);
+    });
+
+    /**
+     * And one slow backstop, which is a stated compromise rather than a second
+     * mechanism.
+     *
+     * POST /api/artifacts emits no event at all - handleCreateArtifact writes
+     * the row with no events argument - so a todo filed through the raw create
+     * door produces nothing for any stream to carry. The doors people actually
+     * use do emit (the room raise writes a chat event naming the artifact, and
+     * mem_write writes a todo.status entry), so the gap is narrow and silent.
+     * A minute is slow enough not to be the mechanism and fast enough that such
+     * a row is late rather than invisible. The fix is a create event, which is
+     * a minted-type decision and belongs in its own row.
+     */
+    const backstop = setInterval(look, BACKSTOP_MS);
+
     return () => {
       stopped = true;
+      clearTimeout(soon);
+      stopWatching();
+      clearInterval(backstop);
     };
   }, [token]);
 
   const shown = narrow(todos, kind, tag);
   const sorted = sortTodos(shown);
   const counts = countTodos(todos);
-  const tags = tagsIn(todos);
+  // The tags on offer, PLUS whatever is currently selected even when the last
+  // row carrying it has left the queue. A poll that removed the option out from
+  // under the control would leave the select drawn blank while the filter it
+  // set was still narrowing the list - a control saying one thing and doing
+  // another, which is the class of defect this whole row is about.
+  const tags = withSelected(tagsIn(todos), tag);
   const filtered = kind !== "" || tag !== "";
   const { projects, personal } = scopeOf(todos, reach);
   const capped = todos.length >= TODO_PAGE;
@@ -243,6 +341,16 @@ export function Todos() {
             ) : null
           }
         />
+        {/*
+          When the panel last heard from the node, on the tab bar so it is on
+          screen for BOTH views - the merge queue goes stale the same way the
+          todo list does, and a freshness mark that only one tab carried would
+          leave the other one claiming to be current with nothing to check it
+          against. It is the one thing here that must never be behind a click.
+        */}
+        <span className="ml-auto pr-2">
+          <StreamAsOf />
+        </span>
       </div>
       {tab === "merge" ? (
         <MergeQueue
@@ -777,4 +885,12 @@ function describe(kind: string, tag: string): string {
   else if (kind !== "") parts.push(kind);
   if (tag !== "") parts.push(`tagged ${tag}`);
   return parts.join(" and ");
+}
+
+/** withSelected keeps a chosen tag on the list of offered ones. See the call
+ * site: an arriving list must never silently un-draw the control the operator
+ * is filtering with. */
+function withSelected(tags: string[], selected: string): string[] {
+  if (!selected || tags.includes(selected)) return tags;
+  return [...tags, selected].sort((a, b) => a.localeCompare(b));
 }

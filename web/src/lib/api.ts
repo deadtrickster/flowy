@@ -971,7 +971,11 @@ export function setToken(token: string) {
 
 let memoryToken = "";
 
-function authHeader(): HeadersInit {
+// Exported for lib/stream, which cannot go through `request` above: an SSE
+// connection is a long-lived fetch the browser reconnects by itself, so it
+// needs the header rather than the wrapper around it. One place decides what a
+// flowy request carries, here, whichever door opens it.
+export function authHeader(): HeadersInit {
   const token = getToken() || memoryToken;
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
