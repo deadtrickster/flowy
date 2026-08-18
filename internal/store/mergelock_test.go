@@ -292,3 +292,89 @@ func TestTheLockWindowIsStampedByOneClock(t *testing.T) {
 			window, MergeLockBelievedFor)
 	}
 }
+
+// A VERDICT THAT NAMES THE BASE IS A DIFFERENT MISTAKE FROM A RACE, AND THE ROW
+// CAN TELL THEM APART.
+//
+// Both arrive at the land door as "the sha you are landing is not the tip the
+// gate measured", and the two want opposite work: a lander who copied the base
+// out of their own shell has a green run in hand and needs to re-record, while
+// a lander whose target moved has no verdict for what is on it now and needs to
+// re-gate. The refusal that says "one or the other" is correct and costs the
+// reader a diagnosis - measured on a landing of my own, which is what sent this
+// here.
+//
+// It is decidable without git: gated_base is what the target was when the run
+// started, and the tip equalling the base means the verdict named the ground
+// the run stood on rather than the tree it measured. Ancestry in general is
+// not decidable here and does not need to be - that stays with the lander, who
+// has the repository.
+func TestAVerdictNamingTheBaseIsToldSo(t *testing.T) {
+	ctx, db, project := lockCtx(t)
+	target := ownTarget(t)
+	holder := &Principal{UserID: "u-holder", Project: project}
+
+	// A first landing, so the target has a base for the second run to be
+	// declared from. A target nothing has landed on stamps no base, and this
+	// refusal is only available to a row that carries one.
+	first := &Artifact{
+		ID: ulid.NewString(), Type: MemoryType, Kind: MergeKind, Project: &project,
+		OwnerUser: holder.UserID, Title: "the ground", Visibility: "project",
+		Fields: marshalFields(t, map[string]any{BranchField: "feat-ground", TargetField: target}),
+	}
+	if err := db.UpsertArtifact(ctx, first); err != nil {
+		t.Fatalf("file the first request: %v", err)
+	}
+	if _, _, err := db.SetMergeGate(ctx, holder, first.ID, "run0", "", ""); err != nil {
+		t.Fatalf("declare the first run: %v", err)
+	}
+	if _, _, err := db.SetMergeGate(ctx, holder, first.ID, "run0", "1111111aaaaaa", ""); err != nil {
+		t.Fatalf("record the first verdict: %v", err)
+	}
+	if _, _, err := db.LandMerge(ctx, holder, first.ID, "1111111aaaaaa"); err != nil {
+		t.Fatalf("the first land: %v", err)
+	}
+
+	second := &Artifact{
+		ID: ulid.NewString(), Type: MemoryType, Kind: MergeKind, Project: &project,
+		OwnerUser: holder.UserID, Title: "the tree", Visibility: "project",
+		Fields: marshalFields(t, map[string]any{BranchField: "feat-tree", TargetField: target}),
+	}
+	if err := db.UpsertArtifact(ctx, second); err != nil {
+		t.Fatalf("file the second request: %v", err)
+	}
+	declared, _, err := db.SetMergeGate(ctx, holder, second.ID, "run1", "", "")
+	if err != nil {
+		t.Fatalf("declare the second run: %v", err)
+	}
+	if base := GatedBaseOf(declared); base != "1111111aaaaaa" {
+		t.Fatalf("gated_base = %q, want the tip the first land put on the target", base)
+	}
+
+	// The verdict names the base. The run measured 2222222bbbbbb and the
+	// lander wrote down where it started from.
+	if _, _, err := db.SetMergeGate(ctx, holder, second.ID, "run1", "1111111aaaaaa", ""); err != nil {
+		t.Fatalf("record the second verdict: %v", err)
+	}
+	_, _, err = db.LandMerge(ctx, holder, second.ID, "2222222bbbbbb")
+	if err == nil {
+		t.Fatal("landing a tip the verdict never named succeeded")
+	}
+	if !strings.Contains(err.Error(), "the base this run started from") {
+		t.Fatalf("the refusal does not name the mistake: %v", err)
+	}
+
+	// AND THE OTHER SHAPE STILL READS AS THE OTHER SHAPE. A verdict naming
+	// neither the base nor what landed is a race, and must not be described as
+	// somebody's typo - the two ask for opposite work.
+	if _, _, err := db.SetMergeGate(ctx, holder, second.ID, "run1", "3333333ccccc", ""); err != nil {
+		t.Fatalf("re-record the second verdict: %v", err)
+	}
+	_, _, err = db.LandMerge(ctx, holder, second.ID, "2222222bbbbbb")
+	if err == nil {
+		t.Fatal("landing a tip the verdict never named succeeded")
+	}
+	if strings.Contains(err.Error(), "the base this run started from") {
+		t.Fatalf("a race was described as a mis-recorded verdict: %v", err)
+	}
+}

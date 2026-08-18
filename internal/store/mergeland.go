@@ -110,6 +110,27 @@ func (d *DB) LandMerge(ctx context.Context, p *Principal, id, sha string) (*Arti
 	// A merge commit fails it because a merge is by definition not either
 	// parent, which is the ff-only rule falling out rather than being restated.
 	if !sameCommit(sha, gated) {
+		// WHICH OF THE TWO, WHEN THE ROW CAN SAY. A verdict that names the
+		// BASE the run started from is a different mistake from a landing that
+		// raced: the first is a lander who copied the wrong number out of
+		// their own shell and has a green run in hand, the second is a target
+		// that moved and has no verdict for what is on it now. One re-records,
+		// the other re-gates, and the refusal above tells them to consider
+		// both because it cannot tell which.
+		//
+		// It can when the row carries gated_base. The tip equalling the base
+		// means the run measured a tree and the verdict named the ground it
+		// stood on - decidable here, with a string compare, because the node
+		// holds both numbers. Ancestry in general is not: that needs the git
+		// graph, which the node does not have and does not want. Measured on
+		// my own landing, which is what this refusal was written for.
+		if base := GatedBaseOf(art); base != "" && sameCommit(gated, base) {
+			return nil, nil, &ErrLandRefused{
+				Reason: fmt.Sprintf(
+					"the verdict names %s, which is the base this run started from rather than the tip it measured - master became %s. The run is not in question: record the verdict again naming the tip, then land",
+					gated, sha),
+			}
+		}
 		return nil, nil, &ErrLandRefused{
 			Reason: fmt.Sprintf(
 				"master became %s but the gate measured %s. A fast-forward lands the tip that was measured, so those two are the same commit or the landing was not one - re-gate the tip you actually landed, or land the tip you actually gated",
