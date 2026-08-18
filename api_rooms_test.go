@@ -38,10 +38,16 @@ func TestRoomRoutesAreRegistered(t *testing.T) {
 	}
 }
 
-// Deny-by-default from the parameter guard covers the new doors: none of them
-// reads a query parameter, so none of them may accept one. This asserts the
-// absence deliberately - a route quietly gaining a parameter without declaring
-// it is the exact drift routeParams exists to stop.
+// None of the room doors reads a query parameter, so none of them may accept
+// one - a route quietly gaining a parameter without declaring it is the drift
+// routeParams exists to stop.
+//
+// This asked for the entry to be ABSENT when it was written, because absence
+// was then the only way to say "takes nothing". It is now an entry that is
+// EMPTY, and the difference is the point: absent meant nobody had looked, and
+// these four had been looked at. The assertion is the same one either way -
+// these routes accept no parameters - and it now fails if somebody deletes the
+// entry as well as if somebody fills it in.
 func TestRoomRoutesDeclareNoQueryParameters(t *testing.T) {
 	for _, pattern := range []string{
 		"POST /api/rooms",
@@ -49,7 +55,13 @@ func TestRoomRoutesDeclareNoQueryParameters(t *testing.T) {
 		"POST /api/rooms/{room}/invite",
 		"POST /api/rooms/{room}/leave",
 	} {
-		if params, ok := routeParams[pattern]; ok {
+		params, ok := routeParams[pattern]
+		if !ok {
+			t.Errorf("%s is not in routeParams - it is guarded, so it must say what it takes, "+
+				"and {} is how it says none", pattern)
+			continue
+		}
+		if len(params) != 0 {
 			t.Errorf("%s declares %v - if that is deliberate, say why here", pattern, params)
 		}
 	}

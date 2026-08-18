@@ -52,6 +52,10 @@ type server struct {
 	// choice rather than a field in a request body.
 	forgeRepos map[string]bool
 	started    time.Time
+	// apiPatterns is every route registered on the guarded mux, filled in by
+	// routes(). It is here so a check can read the router instead of reading
+	// this file - see recordingMux.
+	apiPatterns []string
 	// console is the embedded single-page app, opened once by routes().
 	console *console
 	// forge is the issue tracker this node speaks to, chosen once at startup by
@@ -379,7 +383,7 @@ func (s *server) routes() http.Handler {
 	// answers its own 404s by rendering a route that does not exist.
 	mux.Handle("/", s.consoleHandler())
 
-	api := http.NewServeMux()
+	api := &recordingMux{ServeMux: http.NewServeMux()}
 	api.HandleFunc("POST /api/artifacts", s.handleCreateArtifact)
 	api.HandleFunc("GET /api/artifacts", s.handleListArtifacts)
 	// Who may do what here, and only an operator may say. See internal/store/role.go.
@@ -593,7 +597,12 @@ func (s *server) routes() http.Handler {
 	// observed is outside authenticate, so that resolving the token is a span
 	// inside the request's rather than something that happened before it, and so
 	// that a 401 is counted like every other refusal.
-	mux.Handle("/api/", s.observed(s.authenticate(paramGuard(api, api))))
+	// What was registered, kept so a test can ask the router rather than read
+	// this file. The parameter table is only deny-by-default if every route it
+	// governs is IN it, and a route that is absent is indistinguishable from one
+	// declared to take nothing - see TestEveryGuardedRouteDeclaresItsParams.
+	s.apiPatterns = api.patterns
+	mux.Handle("/api/", s.observed(s.authenticate(paramGuard(api.ServeMux, api))))
 
 	return logRequests(mux)
 }
