@@ -46,9 +46,16 @@ state="${1:-}"
 # Read the whole transaction first: refusing needs to name the ref, and stdin
 # is gone once it is consumed.
 refs=""
-while read -r _old _new ref; do
+# The shas as well as the ref: a bypass that says only "master moved" is a
+# report nobody can check afterwards. From-and-to is what makes it auditable.
+moves=""
+while read -r old new ref; do
 	for want in $protected; do
-		[ "$ref" = "$want" ] && refs="$refs $ref"
+		if [ "$ref" = "$want" ]; then
+			refs="$refs $ref"
+			moves="$moves$ref ${old:0:12} -> ${new:0:12}
+"
+		fi
 	done
 done
 [ -n "$refs" ] || exit 0
@@ -72,6 +79,66 @@ deny() {
 # environment variable, which is not something anybody types by accident.
 if [ "${FLOWY_LAND_GUARD:-on}" = "off" ]; then
 	printf 'flowy: land guard OFF for%s - moving it without the lock\n' "$refs" >&2
+
+	# AND THE FLEET IS TOLD, not just the person who typed it. stderr reaches
+	# one terminal; everybody else's next measurement is against a master that
+	# moved for a reason they cannot see, which is the same silent-success
+	# shape this guard was built to end.
+	#
+	# Two rules here are the OPPOSITE of the ones below, deliberately:
+	#
+	# THE RECORD GOES FIRST. Announce, then allow. A bypass that dies mid-merge
+	# is still on the board; the other order loses exactly the case worth
+	# keeping.
+	#
+	# UNREACHABLE IS NOT A REFUSAL. Below, a node that will not answer means
+	# refuse - nothing can say whether you hold the lock. Here it must mean
+	# proceed: the hatch exists for when things are broken and a node that is
+	# down is one of those things. Blocking an emergency because the emergency
+	# is in progress is how a guard gets ripped out for good. So it says
+	# loudly that the bypass went unrecorded and gets out of the way.
+	hatch_token="${FLOWY_TOKEN:-}"
+	if [ -z "$hatch_token" ] && [ -n "${FLOWY_AGENT:-}" ] &&
+		[ -r "$HOME/.config/flowy/agents/$FLOWY_AGENT" ]; then
+		hatch_token="$(cat "$HOME/.config/flowy/agents/$FLOWY_AGENT")"
+	fi
+	hatch_reason="${FLOWY_LAND_GUARD_REASON:-no reason given - FLOWY_LAND_GUARD_REASON was not set}"
+	recorded=no
+	if [ -n "$hatch_token" ]; then
+		hatch_body="$(
+			FLOWY_HATCH_WHO="${FLOWY_AGENT:-$(id -un)}@$(hostname)" \
+			FLOWY_HATCH_MOVES="$moves" \
+			FLOWY_HATCH_REASON="$hatch_reason" \
+				python3 -c '
+import json, os
+print(json.dumps({
+    "scope": "node",
+    "severity": "warning",
+    "title": "land guard bypassed: master moved without the lock",
+    "body": (
+        "FLOWY_LAND_GUARD=off was set, so the reference-transaction hook allowed a "
+        "protected branch to move without the landing lock.\n\n"
+        "who    " + os.environ["FLOWY_HATCH_WHO"] + "\n"
+        "moves  " + os.environ["FLOWY_HATCH_MOVES"].strip() + "\n"
+        "reason " + os.environ["FLOWY_HATCH_REASON"] + "\n\n"
+        "Anything gated against the previous tip was measured on a tree that is no "
+        "longer master. Re-gate before landing on it."
+    ),
+})) '
+		)"
+		if curl -sS --max-time 5 -o /dev/null \
+			-H "Authorization: Bearer $hatch_token" \
+			-H "Content-Type: application/json" \
+			-d "$hatch_body" "$node/api/announcements" 2>/dev/null; then
+			recorded=yes
+		fi
+	fi
+	if [ "$recorded" = yes ]; then
+		printf '  announced to the node - the fleet can see this happened\n' >&2
+	else
+		printf '  THIS BYPASS WAS NOT RECORDED - no token, or the node did not answer.\n' >&2
+		printf '  Say it in the room yourself, or master moved and only this terminal knows.\n' >&2
+	fi
 	exit 0
 fi
 
