@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 
+import { SeverityBar, SeverityDot, StateChip } from "@/components/StateMarks";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -18,6 +19,7 @@ import {
   upstreamOf,
 } from "@/lib/findings";
 import { useSession } from "@/lib/session";
+import { evidenceTone, reproTone, severityTone, upstreamTone } from "@/lib/statecolour";
 
 /**
  * The findings: what the fleet's own bug hunting turned up, one artifact of
@@ -123,6 +125,7 @@ export function Findings() {
   const shown = narrow(findings, filters);
   const filtered = Object.values(filters).some((value) => value !== "");
   const counts = countAxes(findings);
+  const groups = groupByUpstream(shown);
 
   return (
     // Same full-height-flex-column shape as Reports.tsx and Todos.tsx: the
@@ -178,15 +181,53 @@ export function Findings() {
           data-repro={counts.repro}
           className="flex flex-wrap items-center gap-2 text-muted-foreground text-xs"
         >
-          <span>{counts.unfiled} unfiled</span>
-          <span>·</span>
-          <span title="these name something over there and nobody claims to have sent them">
-            {counts.referenced} referenced
-          </span>
-          <span>·</span>
-          <span>{counts.filed} filed upstream</span>
-          <span>·</span>
-          <span>{counts.repro} with a repro tree</span>
+          {/* Each number is drawn in the tone of the rows it counts, so the
+              header and the list speak ONE language: the colour beside "3
+              unfiled" is the colour those three rows are wearing further down.
+              A header in its own palette would be a second vocabulary for the
+              same three facts. The numerals are mono and tabular so the counts
+              line up as they change under a filter. */}
+          <StateChip
+            axis="upstream"
+            state="unfiled"
+            tone={upstreamTone("unfiled")}
+            title="written up, and nobody has sent them anywhere"
+          >
+            <span className="font-mono tabular-nums">{counts.unfiled}</span>
+            <span className="ml-1">unfiled</span>
+          </StateChip>
+          <StateChip
+            axis="upstream"
+            state="referenced"
+            tone={upstreamTone("referenced")}
+            title="these name something over there and nobody claims to have sent them"
+          >
+            <span className="font-mono tabular-nums">{counts.referenced}</span>
+            <span className="ml-1">referenced</span>
+          </StateChip>
+          <StateChip
+            axis="upstream"
+            state="filed"
+            tone={upstreamTone("filed")}
+            title="sent to somebody else's tracker, and the filing still stands"
+          >
+            <span className="font-mono tabular-nums">{counts.filed}</span>
+            <span className="ml-1">filed upstream</span>
+          </StateChip>
+          <StateChip
+            axis="repro"
+            state="yes"
+            tone={reproTone(true)}
+            title="these ship something that can actually be re-run"
+          >
+            <span className="font-mono tabular-nums">{counts.repro}</span>
+            <span className="ml-1">with a repro tree</span>
+          </StateChip>
+          {/* The shape of the corpus, which no amount of per-row colour gives:
+              forty dots down a page do not add up to a proportion by eye. It
+              measures what is ON the page, so it narrows with the filters and
+              answers "what did that filter actually select" as well. */}
+          <SeverityBar items={shown} label="severity of the findings shown" />
         </div>
       ) : null}
 
@@ -234,9 +275,35 @@ export function Findings() {
             })}
           </li>
         ) : null}
-        {shown.map((f) => (
-          <FindingCard key={f.id} finding={f} />
-        ))}
+        {/* Grouped by whose code it is about, with the heading sticky so the
+            corpus you are reading stays named while you scroll through forty of
+            them. Grouping only happens when there is more than one corpus on the
+            page: a single sticky heading over the whole list is a label, not a
+            grouping, and it would push the first row down for nothing. */}
+        {groups.length > 1
+          ? groups.map((group) => (
+              <li key={group.name} data-finding-group={group.name}>
+                <div className="sticky top-0 z-10 flex flex-wrap items-center gap-2 bg-background py-1 font-semibold text-muted-foreground text-xs uppercase tracking-wide">
+                  <span>{group.name}</span>
+                  <span
+                    className="font-mono tabular-nums"
+                    data-finding-group-count={group.items.length}
+                  >
+                    {group.items.length}
+                  </span>
+                  {/* Each corpus gets its own shape, which is the question the
+                      grouping is really for: is ragflow mostly high and serenedb
+                      mostly low, or the other way round. */}
+                  <SeverityBar items={group.items} label={`severity across ${group.name}`} />
+                </div>
+                <ol className="flex flex-col gap-3 pt-2">
+                  {group.items.map((f) => (
+                    <FindingCard key={f.id} finding={f} />
+                  ))}
+                </ol>
+              </li>
+            ))
+          : shown.map((f) => <FindingCard key={f.id} finding={f} />)}
       </ol>
     </div>
   );
@@ -269,6 +336,89 @@ function tagsIn(list: Artifact[]): string[] {
     for (const tag of item.tags ?? []) seen.add(tag);
   }
   return [...seen].sort((a, b) => a.localeCompare(b));
+}
+
+/**
+ * WHOSE CODE IS THIS ABOUT - the grouping the operator asked for twice: "I
+ * still dont see serenedb and ragflow findings".
+ *
+ * A finding names its upstream project in two places and neither is a column.
+ * upstream_tracker is the authoritative one when a filing exists, and the rest
+ * of the corpus carries it as a TAG - the importers put `serenedb` and
+ * `ragflow` on the rows they wrote. So the vocabulary is derived from the
+ * trackers actually present, and then a row is matched to one of THOSE names
+ * rather than to any word that happens to be a tag: without that, "flaky" and
+ * "parser" would each become a corpus of their own and the page would group by
+ * noise.
+ *
+ * DONE OVER THE ROWS ALREADY FETCHED, on the same terms as the severity and tag
+ * filters above. This is GROUPING, not filtering: the page shows every finding
+ * the read returned and sorts them under headings, so it needs all of them in
+ * hand at once and has nothing to ask the node for.
+ *
+ * The node CAN narrow by tag now - `?tag=` was ignored and answered with the
+ * whole corpus until 2b0fe67 fixed it, and an ignored filter is the worst kind
+ * because it answers 200 with more than was asked for and no client can tell.
+ * That is why the grouping was built to key off the ROW rather than off the
+ * request, and why it needed no change when the door was fixed: a heading here
+ * is a fact about the finding under it, not a claim about what was queried.
+ */
+function trackersIn(list: Artifact[]): Set<string> {
+  const seen = new Set<string>();
+  for (const item of list) {
+    const filing = upstreamOf(item);
+    if (filing.tracker) seen.add(filing.tracker.toLowerCase());
+    for (const ref of filing.refs) {
+      if (ref.tracker) seen.add(ref.tracker.toLowerCase());
+    }
+  }
+  return seen;
+}
+
+/** Which upstream project one finding belongs to. Its own tracker first,
+ * because that is a filing somebody made; then a tag that names one of the
+ * trackers this corpus knows about. A row matching neither is not forced into
+ * somebody's project - it goes under its own heading, which is a fact about the
+ * import rather than a gap to hide. */
+const NO_UPSTREAM_PROJECT = "no upstream project";
+
+function upstreamProjectOf(finding: Artifact, trackers: Set<string>): string {
+  const filing = upstreamOf(finding);
+  if (filing.tracker) return filing.tracker.toLowerCase();
+  for (const tag of finding.tags ?? []) {
+    const name = tag.trim().toLowerCase();
+    if (trackers.has(name)) return name;
+  }
+  // THE ROW'S OWN PROJECT, which is where this answer actually lives now. The
+  // corpus was re-filed into real projects, so a finding about their code says
+  // project=ragflow or project=serenedb and carries NO upstream_tracker at all -
+  // a filing is a thing somebody did later, and most of the corpus is unfiled.
+  // Without this the two clauses above find nothing on live data, every row
+  // falls to the last line, and the grouping silently collapses to one heap,
+  // which is the exact complaint it was built to answer.
+  if (finding.project) return finding.project.trim().toLowerCase();
+  return NO_UPSTREAM_PROJECT;
+}
+
+/** The list broken into corpora, biggest first so the page opens on the one
+ * with the most in it, and the unattributed rows last because they are the
+ * remainder rather than a project. */
+function groupByUpstream(list: Artifact[]): { name: string; items: Artifact[] }[] {
+  const trackers = trackersIn(list);
+  const groups = new Map<string, Artifact[]>();
+  for (const finding of list) {
+    const name = upstreamProjectOf(finding, trackers);
+    const group = groups.get(name);
+    if (group) group.push(finding);
+    else groups.set(name, [finding]);
+  }
+  return [...groups]
+    .map(([name, items]) => ({ name, items }))
+    .sort((a, b) => {
+      if (a.name === NO_UPSTREAM_PROJECT) return 1;
+      if (b.name === NO_UPSTREAM_PROJECT) return -1;
+      return b.items.length - a.items.length || a.name.localeCompare(b.name);
+    });
 }
 
 /**
@@ -445,7 +595,12 @@ function FindingCard({ finding }: { finding: Artifact }) {
     >
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">
+          <CardTitle className="flex items-center gap-2 text-base">
+            {/* The severity dot, before the title, so how bad this is arrives
+                before the sentence does. A row with no severity gets no dot -
+                see SeverityDot on why an unrated row is not painted as a mild
+                one. */}
+            <SeverityDot severity={finding.severity} />
             <Link className="hover:underline" to={`/p/${project}/finding/${finding.id}`}>
               {finding.title || finding.id}
             </Link>
@@ -469,7 +624,19 @@ function FindingCard({ finding }: { finding: Artifact }) {
               isolation={tree.isolation}
             />
             {finding.kind ? <Badge variant="outline">{finding.kind}</Badge> : null}
-            {finding.severity ? <Badge variant="outline">{finding.severity}</Badge> : null}
+            {/* The severity as a word too, in the same tone as its dot. The dot
+                is what the eye finds; the word is what a reader can quote, and
+                anybody who cannot separate rust from amber reads this one. */}
+            {finding.severity ? (
+              <StateChip
+                axis="severity"
+                state={finding.severity}
+                tone={severityTone(finding.severity)}
+                title="how bad this finding is"
+              >
+                {finding.severity}
+              </StateChip>
+            ) : null}
             {(finding.tags ?? []).map((tag) => (
               <Badge key={tag} variant="outline">
                 {tag}
@@ -514,11 +681,16 @@ function UpstreamBadge({
       ? `filed with ${tracker}`
       : "where this stands on their tracker"
     : UNKNOWN_UPSTREAM;
+  // Tinted, not outlined, and the tint is the state's own. Every one of these
+  // was `variant="outline"` before, which drew filed, unfiled and referenced in
+  // ONE grey - three facts the whole page is built to keep apart, rendered
+  // identically. An unknown word draws the warn pair rather than the quiet one:
+  // see upstreamTone.
   const body = (
-    <Badge variant="outline" title={title}>
+    <StateChip axis="upstream" state={state} tone={upstreamTone(state)} title={title}>
       upstream: {label}
       {known ? null : " (?)"}
-    </Badge>
+    </StateChip>
   );
   if (!url) return body;
   return (
@@ -551,28 +723,41 @@ function EvidenceBadge({
   runnable: boolean;
   isolation?: string;
 }) {
-  // Both outcomes of a run name the commit they were measured on, because
+  // BOTH OUTCOMES OF A RUN NAME THE COMMIT THEY WERE MEASURED ON, because
   // "refuted" with nothing saying WHERE is how a real defect gets closed - see
-  // EvidenceState in lib/findings.ts.
+  // EvidenceState in lib/findings.ts. verified and refuted are the two ends of
+  // this axis rather than two steps along it, and each carries its sha.
   const evidence =
     (state === "verified" || state === "refuted") && verifiedOn
       ? `${state} on ${verifiedOn.slice(0, 12)}`
       : (state ?? "evidence not stated");
+  // "not stated" is drawn in the WARN pair rather than the quiet one, which is
+  // the single most load-bearing colour choice on this page. Unstated evidence
+  // is what stops a finding being filed, it is the commonest state in the
+  // corpus, and in grey it reads as "fine, nothing to see" - which is the exact
+  // opposite of what it means. See evidenceTone.
   return (
     <>
-      <Badge
-        variant="outline"
+      <StateChip
+        axis="evidence"
+        state={state ?? "not stated"}
+        tone={evidenceTone(state)}
         title={
           state
             ? "how strong the evidence is, and what it was run against"
-            : "nobody has said how strong the evidence for this finding is"
+            : "nobody has said how strong the evidence for this finding is, so this cannot be filed yet"
         }
       >
         {evidence}
-      </Badge>
-      <Badge variant="outline" title="whether this finding ships something that can be run">
+      </StateChip>
+      <StateChip
+        axis="repro"
+        state={runnable ? "yes" : "no"}
+        tone={reproTone(runnable)}
+        title="whether this finding ships something that can be run"
+      >
         {runnable ? `repro: ${isolation || "plain"}` : "no repro tree"}
-      </Badge>
+      </StateChip>
     </>
   );
 }

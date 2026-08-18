@@ -4,6 +4,7 @@ import { Link, useParams } from "react-router-dom";
 import { DocumentPanes, documentRoom } from "@/components/DocumentPanes";
 import { ReproPanel } from "@/components/ReproPanel";
 import { RowNotes } from "@/components/RowNotes";
+import { SeverityDot, StateChip } from "@/components/StateMarks";
 import { StatusControl } from "@/components/StatusControl";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -22,6 +23,7 @@ import {
   upstreamOf,
 } from "@/lib/findings";
 import { useSession } from "@/lib/session";
+import { evidenceTone, reproTone, severityTone, upstreamTone } from "@/lib/statecolour";
 import { isQueueItem, todoAssignee, todoRaiser } from "@/lib/todos";
 import { shortId } from "@/lib/utils";
 
@@ -390,14 +392,33 @@ function FindingSection({ artifact }: { artifact: Artifact }) {
   const draft = reportDraftOf(artifact);
 
   return (
-    <div className="flex flex-col gap-3 rounded-lg border border-border p-3">
+    <div className="flex flex-col gap-3 rounded-lg border border-border-soft p-3">
       <div className="flex flex-wrap items-center gap-2">
         <span className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
           finding
         </span>
-        {artifact.severity ? <Badge variant="outline">severity: {artifact.severity}</Badge> : null}
+        {/* The same dot the list draws, so the row somebody clicked and the page
+            they land on agree about how bad this is at a glance. */}
+        <SeverityDot severity={artifact.severity} />
+        {artifact.severity ? (
+          <StateChip
+            axis="severity"
+            state={artifact.severity}
+            tone={severityTone(artifact.severity)}
+            title="how bad this finding is"
+          >
+            severity: {artifact.severity}
+          </StateChip>
+        ) : null}
         {artifact.kind ? <Badge variant="outline">{artifact.kind}</Badge> : null}
-        <Badge variant="outline">{runnable ? `repro: ${isolation}` : "no repro tree"}</Badge>
+        <StateChip
+          axis="repro"
+          state={runnable ? "yes" : "no"}
+          tone={reproTone(runnable)}
+          title="whether this finding ships something that can be run"
+        >
+          {runnable ? `repro: ${isolation}` : "no repro tree"}
+        </StateChip>
         {(artifact.tags ?? []).map((tag) => (
           <Badge key={tag} variant="outline">
             {tag}
@@ -414,23 +435,35 @@ function FindingSection({ artifact }: { artifact: Artifact }) {
         data-finding-evidence={evidence.state ?? ""}
       >
         <span className="text-muted-foreground">upstream</span>
+        {/* Drawn through the same StateChip and the same upstreamTone the list
+            uses, rather than being re-picked here. That is what makes "filed is
+            teal" one fact about this console instead of two coincidences, and it
+            is why a check can compare the colour on the row to the colour on the
+            page and expect them to be equal. */}
         {filing.url ? (
           <a href={filing.url} target="_blank" rel="noreferrer" className="hover:underline">
-            <Badge variant="outline">
+            <StateChip
+              axis="upstream"
+              state={filing.state}
+              tone={upstreamTone(filing.state)}
+              title={filing.tracker ? `filed with ${filing.tracker}` : undefined}
+            >
               {filing.state}
               {filing.id ? ` #${filing.id}` : ""}
               {filing.tracker ? ` · ${filing.tracker}` : ""}
-            </Badge>
+            </StateChip>
           </a>
         ) : (
-          <Badge
-            variant="outline"
+          <StateChip
+            axis="upstream"
+            state={filing.state}
+            tone={upstreamTone(filing.state)}
             title={knownUpstream(filing.state) ? undefined : UNKNOWN_UPSTREAM}
           >
             {filing.state}
             {filing.id ? ` #${filing.id}` : ""}
             {filing.tracker ? ` · ${filing.tracker}` : ""}
-          </Badge>
+          </StateChip>
         )}
         {filing.filed_at ? (
           <span className="text-muted-foreground">
@@ -467,7 +500,18 @@ function FindingSection({ artifact }: { artifact: Artifact }) {
           </>
         ) : null}
         <span className="text-muted-foreground">evidence</span>
-        <Badge variant="outline">{evidence.state ?? "not stated"}</Badge>
+        <StateChip
+          axis="evidence"
+          state={evidence.state ?? "not stated"}
+          tone={evidenceTone(evidence.state)}
+          title={
+            evidence.state
+              ? "how strong the evidence is, and what it was run against"
+              : "nobody has said how strong the evidence for this finding is, so this cannot be filed yet"
+          }
+        >
+          {evidence.state ?? "not stated"}
+        </StateChip>
         {evidence.verified_on ? (
           <span className="font-mono text-muted-foreground">
             on {evidence.verified_on.slice(0, 12)}

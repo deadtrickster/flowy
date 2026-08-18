@@ -2,23 +2,24 @@ import { Link } from "react-router-dom";
 
 import { Badge } from "@/components/ui/badge";
 import type { KnownIssue, MergeRequest } from "@/lib/api";
+import { toneStyle, verdictTone } from "@/lib/statecolour";
 import { statusStyle } from "@/lib/todos";
 
 /**
- * The verdict colours, defined here rather than borrowed from the status scale.
+ * The verdict colours now come from lib/statecolour.ts rather than from a
+ * GREEN and a RED defined in this file.
  *
- * The first version of this passed statusStyle("blocked"), which reads as
- * correct and is not: there is no "blocked" rank, so it fell through to the same
- * grey as "waiting" and drew a refusal as a shrug. A colour that silently falls
- * back to the wrong meaning is worse than no colour, and the word in the badge
- * is always the real signal - these only make it faster to scan.
+ * The argument that put them here is still the right one and is why they are
+ * not statusStyle's: the first version passed statusStyle("blocked"), there is
+ * no "blocked" rank, and it fell through to the same grey as "waiting" - so a
+ * refusal was drawn as a shrug. A colour that silently falls back to the wrong
+ * meaning is worse than no colour.
+ *
+ * What changed is where the answer lives. A verdict is a state, the console now
+ * has one vocabulary for states, and a local pair here was a second definition
+ * of "this failed" that nothing kept equal to the others. The word in the badge
+ * is still the real signal; the colour only makes it faster to scan.
  */
-const GREEN = "#4fae7a";
-const RED = "#d1585f";
-
-function verdictStyle(colour: string) {
-  return { color: colour, backgroundColor: `color-mix(in srgb, ${colour} 18%, transparent)` };
-}
 
 /**
  * The merge queue, flattened: every merge request this reader can see, and
@@ -85,7 +86,7 @@ export function MergeQueue({
       </p>
       <ul className="flex flex-col">
         {items.map((m) => (
-          <li key={m.id} className="flex flex-col gap-1 border-border border-b px-4 py-3">
+          <li key={m.id} className="flex flex-col gap-1 border-border-soft border-b px-4 py-3">
             <div className="flex flex-wrap items-center gap-2">
               <Link
                 className="font-medium text-sm hover:underline"
@@ -99,9 +100,19 @@ export function MergeQueue({
               <Verdict item={m} decided={decided} />
               {/* A run is measuring this right now. Landing anything else on the
                   target while this is up invalidates its evidence - which is the
-                  thing nobody could see before, and cost two rebuilds in an hour. */}
+                  thing nobody could see before, and cost two rebuilds in an hour.
+                  Drawn in the LIVE tone rather than in the outline grey it used
+                  to share with "not judged": a run measuring this branch and
+                  nobody having looked at it are opposite facts, and they were the
+                  same colour. */}
               {m.gating ? (
-                <Badge variant="outline" data-merge-gating="">
+                <Badge
+                  variant="secondary"
+                  data-merge-gating=""
+                  data-tone="accent"
+                  style={toneStyle(verdictTone("gating"))}
+                  title="a run is measuring this branch right now - landing anything else on the target invalidates it"
+                >
                   gating
                 </Badge>
               ) : null}
@@ -196,20 +207,35 @@ function KnownIssueLink({ issue }: { issue: KnownIssue }) {
 function Verdict({ item, decided }: { item: MergeRequest; decided: boolean }) {
   if (!decided || item.admissible === undefined) {
     return (
-      <Badge variant="outline" data-merge-verdict="undecided">
+      <Badge
+        variant="secondary"
+        data-merge-verdict="undecided"
+        data-tone="mute"
+        style={toneStyle(verdictTone("undecided"))}
+      >
         not judged
       </Badge>
     );
   }
   if (item.admissible) {
     return (
-      <Badge variant="secondary" data-merge-verdict="admissible" style={verdictStyle(GREEN)}>
+      <Badge
+        variant="secondary"
+        data-merge-verdict="admissible"
+        data-tone="ok"
+        style={toneStyle(verdictTone("admissible"))}
+      >
         may land
       </Badge>
     );
   }
   return (
-    <Badge variant="secondary" data-merge-verdict="refused" style={verdictStyle(RED)}>
+    <Badge
+      variant="secondary"
+      data-merge-verdict="refused"
+      data-tone="bad"
+      style={toneStyle(verdictTone("refused"))}
+    >
       refused
     </Badge>
   );

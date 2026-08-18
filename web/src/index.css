@@ -23,6 +23,14 @@
   --color-destructive: oklch(0.62 0.19 25);
   --color-destructive-foreground: oklch(0.97 0.01 25);
   --color-border: oklch(0.3 0.016 265);
+  /* TWO BORDER WEIGHTS, which is most of why a dense page reads as a wall when
+     it has one. `border` is STRUCTURE - the edge of a card, a panel, a pane -
+     and `border-soft` is GROUPING INSIDE it: the line between two rows of one
+     list, the box around one section of a page that is already in a card. One
+     weight everywhere makes every line a boundary of equal importance, so the
+     eye gets no hierarchy from them and has to get it all from whitespace.
+     Taken off the python handoff console's line/line-soft pair. */
+  --color-border-soft: oklch(0.25 0.014 265);
   --color-input: oklch(0.3 0.016 265);
   --color-ring: oklch(0.72 0.15 250);
   --color-agent: oklch(0.78 0.14 155);

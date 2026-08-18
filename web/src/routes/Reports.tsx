@@ -1,11 +1,13 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 
+import { StateChip } from "@/components/StateMarks";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { type Artifact, api, refPath } from "@/lib/api";
 import { useSession } from "@/lib/session";
+import { reportTone } from "@/lib/statecolour";
 import { shortId } from "@/lib/utils";
 
 /**
@@ -168,9 +170,14 @@ function emptyReads({
  */
 function ReplacedByBadge({ id, path }: { id: string; path?: string }) {
   const badge = (
-    <Badge variant="outline" className="border-destructive/40 bg-destructive/10 text-destructive">
-      replaced by {shortId(id)}
-    </Badge>
+    <StateChip
+      axis="currency"
+      state="replaced"
+      tone={reportTone(true)}
+      title="this report has been overtaken - read the replacement instead"
+    >
+      replaced by <span className="font-mono">{shortId(id)}</span>
+    </StateChip>
   );
   if (!path) return badge;
   return (
@@ -214,9 +221,33 @@ function ReportCard({ report }: { report: Artifact }) {
           </CardTitle>
           <div className="flex flex-wrap gap-1 pt-1">
             <Badge variant="secondary">report</Badge>
-            {asOf ? <Badge variant="outline">as of {asOf}</Badge> : null}
-            {supersedes ? <Badge variant="outline">supersedes {shortId(supersedes)}</Badge> : null}
-            {replacedBy ? <ReplacedByBadge id={replacedBy} path={replacedPath} /> : null}
+            {asOf ? (
+              <Badge variant="outline">
+                as of <span className="font-mono">{asOf}</span>
+              </Badge>
+            ) : null}
+            {supersedes ? (
+              <Badge variant="outline">
+                supersedes <span className="font-mono">{shortId(supersedes)}</span>
+              </Badge>
+            ) : null}
+            {/* IS THIS STILL THE ONE TO READ, said out loud in both directions.
+                Marking only the replaced ones states "current" with an absence,
+                and an absence is also what a row looks like when the mark failed
+                to render - so a reader cannot tell a current report from a
+                broken page. Two states, one row shape, both drawn. */}
+            {replacedBy ? (
+              <ReplacedByBadge id={replacedBy} path={replacedPath} />
+            ) : (
+              <StateChip
+                axis="currency"
+                state="current"
+                tone={reportTone(false)}
+                title="nothing has replaced this one - it is the report to read"
+              >
+                current
+              </StateChip>
+            )}
             {(report.tags ?? []).map((tag) => (
               <Badge key={tag} variant="outline">
                 {tag}

@@ -15889,6 +15889,26 @@ the_evidence_door_requires_a_commit() {
 	printf 'verified and refuted both refused without a commit; refuted recorded as its own word\n'
 }
 
+# CAN A PERSON TELL TWO STATES APART WITHOUT READING A WORD. The operator's
+# report was that everything except chat looks bland, and the diagnosis off the
+# python console's stylesheet was not that we lack colours - it is that ours
+# carry no facts. Every axis on a finding was drawn in one grey, so filed,
+# unfiled and referenced, and reproduced and nobody-has-said, were all the same
+# chip with a different word in it.
+#
+# So this asserts DISCRIMINATION and never presence. Tinting everything would
+# satisfy "is it coloured" and would be worse than the grey it replaced, because
+# a page whose colours mean nothing teaches people to stop reading them. See
+# scripts/statecolour-check.mjs for the three questions it asks of every pair,
+# and web/src/lib/statecolour.ts for which fact gets which tone.
+the_console_colours_carry_facts() {
+	recall
+	cd "$ROOT/web" || return 1
+	node scripts/statecolour-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" \
+		"$FINDING_PROJECT" "$FINDING_FILED" "$FINDING_UNFILED" "$FINDING_REFERENCED" \
+		"$REPORT_OLD" "$REPORT_NEW"
+}
+
 say "findings: our lifecycle, their filing, and the evidence - three axes"
 check "two findings, one done and filed as #4471, one open and unfiled" \
 	seeds_two_findings_on_three_axes
@@ -15900,6 +15920,8 @@ check "verified is a word plus a commit, and the door refuses the word alone" \
 	the_evidence_door_requires_a_commit
 check "the console reads the repro runner's own answers - /runs, /run and /version" \
 	the_console_speaks_the_runners_answers
+check "two states are told apart at a glance - filed from unfiled, reproduced from source-only" \
+	the_console_colours_carry_facts
 
 # The new button on /diagrams, clicked in a real browser with the name box
 # EMPTY - the state an operator reported as "cant create a diagram". Every unit

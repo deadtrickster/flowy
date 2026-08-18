@@ -589,7 +589,15 @@ function Row({ todo, onTag }: { todo: Artifact; onTag: (tag: string) => void }) 
       data-todo-kind={kind}
       className="flex flex-wrap items-baseline gap-2 border-border/60 border-b px-4 py-2 text-sm"
     >
-      <Badge variant="secondary" style={statusStyle(todo.status)}>
+      {/* The state on the element as well as in the badge, on the same terms as
+          data-todo-kind beside it: a check that had to read the word back out of
+          the label would be asserting against a sentence, and the whole point of
+          the colour is that it is legible before the word is. */}
+      <Badge
+        variant="secondary"
+        data-todo-status={todo.status || "todo"}
+        style={statusStyle(todo.status)}
+      >
         {todo.status || "todo"}
       </Badge>
       {/* What kind of work it is, beside what state it is in, because those are
