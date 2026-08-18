@@ -99,7 +99,7 @@ It is reading the last EVENT rather than the heartbeat. Nothing changed on this
 stand-in and nothing was ever going to - a clock that needs a change to move
 cannot tell a quiet node from a dead one.`);
 } else {
-  console.log(`a heartbeating stream keeps the panel live and its clock moving`);
+  console.log("a heartbeating stream keeps the panel live and its clock moving");
 }
 
 // And the byte-identical case: greeted, open, and silent ever since. Long
@@ -121,7 +121,7 @@ The rows must stay: an empty queue under a heading that says what is outstanding
 reads as "the work is done", which is a worse lie than a board a few seconds out
 of date. Stale is a mark on the answer, not the removal of it.`);
 } else {
-  console.log(`an open, silent stream is called stale within the window, with the rows kept`);
+  console.log("an open, silent stream is called stale within the window, with the rows kept");
 }
 
 process.exit(failed ? 1 : 0);

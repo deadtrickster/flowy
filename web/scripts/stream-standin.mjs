@@ -87,8 +87,10 @@ createServer(async (req, res) => {
 
   if (path === "/api/artifacts") return json(res, { artifacts: [TODO] });
   if (path === "/api/projects") return json(res, { projects: ["flowy"], reads: ["flowy"] });
-  if (path === "/api/merge-queue") return json(res, { items: [], target_tip: "", tip_from: "none" });
-  if (path === "/api/node") return json(res, { node: "standin", version: "standin", console: true });
+  if (path === "/api/merge-queue")
+    return json(res, { items: [], target_tip: "", tip_from: "none" });
+  if (path === "/api/node")
+    return json(res, { node: "standin", version: "standin", console: true });
   if (path === "/api/whoami") {
     return json(res, {
       user: "01M0000000000000000000000A",

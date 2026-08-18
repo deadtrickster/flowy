@@ -292,3 +292,18 @@ func recordDelivery(ctx context.Context, db *store.DB, node string, d store.Deli
 		log.Printf("traces: delivery of %s was not recorded: %v", d.EventID, err)
 	}
 }
+
+// Unwrap hands back the ResponseWriter underneath, which is how
+// http.ResponseController reaches the real connection through this wrapper.
+//
+// WITHOUT IT EVERY STREAMING RESPONSE ON THIS NODE IS BROKEN, and silently: a
+// controller that cannot find the writer answers http.ErrNotSupported, so
+// Flush() does nothing and SetWriteDeadline() fails. /api/stream refuses to
+// start rather than serving a stream it knows will be cut - see stream.go - and
+// before this method it refused every time, on a node whose handler was
+// correct. A wrapper is invisible to the handler it wraps, which is exactly why
+// this is the sort of thing that gets found in a browser rather than in a test.
+//
+// It is the contract Go added in 1.20 for precisely this: a middleware that
+// wraps the writer must say what it wrapped.
+func (w *traceWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }

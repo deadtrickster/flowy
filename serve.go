@@ -796,3 +796,13 @@ func defaultNode() string {
 	}
 	return "flowy-node"
 }
+
+// Unwrap hands back the ResponseWriter underneath, for the reason
+// traceWriter.Unwrap does: http.ResponseController finds the real connection by
+// walking Unwrap, and a wrapper without one is a wall it cannot see past.
+//
+// This is the OUTERMOST wrapper on every response this node writes, so without
+// it no handler anywhere can flush or set a deadline - and both wrappers had to
+// be fixed before /api/stream would open, which is the shape of this class of
+// bug: the second one is invisible while the first one is still broken.
+func (r *statusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }

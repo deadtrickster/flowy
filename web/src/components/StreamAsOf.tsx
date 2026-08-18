@@ -35,11 +35,7 @@ export function StreamAsOf() {
   // true statement and "as of never" is not.
   if (health.lastHeard === null) {
     return (
-      <span
-        data-stream-asof=""
-        data-stream-state="connecting"
-        className="text-muted-foreground text-xs"
-      >
+      <span data-stream-state="connecting" className="text-muted-foreground text-xs">
         connecting to the node…
       </span>
     );
