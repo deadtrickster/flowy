@@ -9,6 +9,7 @@ import { Select } from "@/components/ui/select";
 import { type Artifact, api } from "@/lib/api";
 import {
   type EntityRef,
+  diagramCells,
   diagrams,
   entityRefs,
   entityShape,
@@ -33,7 +34,7 @@ const SAVE_AFTER_MS = 1200;
  * deleting a shape removes its row and there is no second copy to disagree.
  */
 export function DiagramView() {
-  const { id = "" } = useParams();
+  const { id = "", cell = "" } = useParams();
   const { token } = useSession();
   // The node's rooms, so a diagram can be filed in one this file never named.
   const rooms = useRooms();
@@ -44,6 +45,10 @@ export function DiagramView() {
   const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [refs, setRefs] = useState<EntityRef[]>([]);
+  // The shapes the document holds right now, so the banner below answers about
+  // what is on screen rather than about what was loaded. Kept in state and not
+  // read off a ref, because a ref does not re-render the thing that reads it.
+  const [cells, setCells] = useState<Map<string, string>>(new Map());
   const [saving, setSaving] = useState<"clean" | "pending" | "saving" | "failed">("clean");
 
   const timer = useRef<number | null>(null);
@@ -66,6 +71,7 @@ export function DiagramView() {
         setArtifact(found);
         setName(found.title);
         setRefs(entityRefs(xmlOf(found)));
+        setCells(diagramCells(xmlOf(found)));
       })
       .catch((err: Error) => {
         if (!stopped) setError(err.message);
@@ -156,6 +162,7 @@ export function DiagramView() {
     (xml: string) => {
       latest.current = xml;
       setRefs(entityRefs(xml));
+      setCells(diagramCells(xml));
       setSaving("pending");
       if (timer.current !== null) window.clearTimeout(timer.current);
       timer.current = window.setTimeout(() => void save(), SAVE_AFTER_MS);
@@ -199,6 +206,7 @@ export function DiagramView() {
     latest.current = next;
     setArtifact({ ...artifact, body: next });
     setRefs(entityRefs(next));
+    setCells(diagramCells(next));
     setRevision((r) => r + 1);
     setSaving("pending");
     if (timer.current !== null) window.clearTimeout(timer.current);
@@ -255,6 +263,46 @@ export function DiagramView() {
 
       {error ? (
         <p className="border-border border-b px-4 py-2 text-destructive text-xs">{error}</p>
+      ) : null}
+
+      {/*
+        THE SHAPE THE PATH POINTS AT, and loudly when it points at nothing.
+        /diagrams/:id/:cell is the fourth segment of a reference - (project,
+        type, id) is how everything else in this store is addressed and a shape
+        inside a diagram is that plus the mxCell id. drawio hands out ids that
+        survive a re-layout, which is what makes them worth citing.
+        A CITATION THAT NO LONGER LANDS HAS TO SAY SO. A shape can be deleted
+        after somebody points at it, and the failure that costs a reader is the
+        silent one - a diagram that opens looking perfectly ordinary while the
+        thing they were sent to look at is not in it. So the two answers are
+        different sentences and neither is nothing.
+        The banner is the whole affordance today: drawio's embed protocol has
+        no "select this cell" action, so the console can say WHICH shape is
+        meant and cannot make the editor highlight it. Said plainly rather than
+        left as a gap somebody rediscovers.
+      */}
+      {cell ? (
+        cells.has(cell) ? (
+          <p
+            data-diagram-cell={cell}
+            className="flex items-center gap-2 border-border border-b px-4 py-2 text-xs"
+          >
+            <span className="text-muted-foreground">this link points at shape</span>
+            <span className="font-mono">{cell}</span>
+            {cells.get(cell) ? <span className="font-medium">{cells.get(cell)}</span> : null}
+            <Link className="ml-auto text-muted-foreground hover:underline" to={`/diagrams/${id}`}>
+              show the whole diagram
+            </Link>
+          </p>
+        ) : (
+          <p
+            data-diagram-cell-missing={cell}
+            className="border-border border-b bg-destructive/10 px-4 py-2 text-destructive text-xs"
+          >
+            this link points at shape <span className="font-mono">{cell}</span>, which is not in
+            this diagram - it has been deleted, or the link was to another one
+          </p>
+        )
       ) : null}
 
       <div className="flex min-h-0 flex-1">
@@ -316,6 +364,22 @@ export function DiagramView() {
                   <div className="flex flex-wrap items-center gap-1 pt-1">
                     <Badge variant="secondary">{r.type}</Badge>
                     <span className="text-muted-foreground text-xs">{r.id}</span>
+                    {/*
+                      And a link to the SHAPE, which is the other half of what
+                      this panel is for: the row already goes to the entity the
+                      shape names, and this goes to the shape itself, so a
+                      reference into the drawing is something somebody can
+                      produce by clicking rather than by composing a URL.
+                    */}
+                    {r.cell ? (
+                      <Link
+                        className="ml-auto text-muted-foreground text-xs hover:underline"
+                        data-shape-link={r.cell}
+                        to={`/diagrams/${id}/${encodeURIComponent(r.cell)}`}
+                      >
+                        this shape
+                      </Link>
+                    ) : null}
                   </div>
                 </li>
               ))}

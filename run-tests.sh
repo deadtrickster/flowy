@@ -16149,6 +16149,22 @@ a_diagram_is_created_by_clicking_new() {
 	node scripts/diagram-new-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A"
 }
 
+# A shape inside a diagram is a place you can send somebody. The reference in
+# this store is (project, type, id) everywhere else; a cell adds the mxCell id,
+# which survives a re-layout - measured in the vendored editor, where moving a
+# shape and adding another left the existing id untouched.
+#
+# The arm that decides whether this is worth anything is the SECOND one: a link
+# to a shape that has been deleted has to say so. A diagram that opens looking
+# perfectly ordinary while the thing somebody was sent to look at is missing is
+# the silent failure the reference exists to avoid, and from the page both
+# cases render a diagram.
+a_shape_inside_a_diagram_is_addressable() {
+	recall
+	cd "$ROOT/web" || return 1
+	node scripts/diagram-cell-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" "$PROJECT_A"
+}
+
 # Signed out, the page says what to do about it rather than reading as "there
 # are no diagrams". No node and no token on purpose: this is the state a
 # browser is in when somebody opens the link for the first time.
@@ -16162,6 +16178,8 @@ check "new with an empty name makes a diagram, opens the editor and can be renam
 	a_diagram_is_created_by_clicking_new
 check "signed out, the diagrams page says so rather than looking empty" \
 	the_diagrams_page_says_it_is_signed_out
+check "a shape inside a diagram is addressable, and a dead reference says so" \
+	a_shape_inside_a_diagram_is_addressable
 
 # The message box beside a document, at two lengths of conversation. Reported as
 # "reports chat has send button but no text area": the textarea was in the DOM

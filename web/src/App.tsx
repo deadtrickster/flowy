@@ -87,6 +87,13 @@ export default function App() {
           */}
           <Route path="/diagrams" element={<Diagrams />} />
           <Route path="/diagrams/:id" element={<DiagramView />} />
+          {/*
+          A shape inside one. (project, type, id) addresses every artifact in
+          this store; a cell is that plus the mxCell id, which is the id that
+          survives a re-layout - a coordinate does not. The view says which
+          shape is meant, and says so loudly when the shape is gone.
+        */}
+          <Route path="/diagrams/:id/:cell" element={<DiagramView />} />
           <Route path="/worklog" element={<Worklog />} />
           <Route path="/task/:id" element={<TaskView />} />
           <Route path="/p/:project/:type/:id" element={<ArtifactView />} />

@@ -140,6 +140,45 @@ export function entityRefs(xml: string): EntityRef[] {
 }
 
 /**
+ * Every shape id the diagram contains, with whatever it is labelled.
+ *
+ * A CELL IS THE THING A CITATION POINTS AT, and this is the console's half of
+ * deciding whether a pointer still lands: the store's ParseDiagramCells reads
+ * the same ids for the same reason, and the two must agree about what counts,
+ * so both read the id attribute off the elements drawio writes and nothing
+ * else. Ids from draw.io survive a re-layout - measured in the vendored
+ * editor: moving a shape and adding another left the existing id untouched -
+ * which is the property that makes them worth citing and a coordinate not.
+ *
+ * The label rides along because a reference that can only say "n1" is a
+ * pointer somebody has to follow to understand; one that says "n1 - general"
+ * is a reference.
+ */
+export function diagramCells(xml: string): Map<string, string> {
+  const cells = new Map<string, string>();
+  if (!xml.trim()) return cells;
+  let doc: Document;
+  try {
+    doc = new DOMParser().parseFromString(xml, "text/xml");
+  } catch {
+    return cells;
+  }
+  if (doc.querySelector("parsererror")) return cells;
+  for (const node of Array.from(doc.querySelectorAll("mxCell, UserObject, object"))) {
+    const id = node.getAttribute("id");
+    if (!id) continue;
+    // A UserObject wraps its mxCell, and the id that matters is the outer
+    // one - drawio moves the id onto the wrapper and leaves the inner cell
+    // without one, so reading both and keeping the first non-empty is what
+    // makes a wrapped shape and a bare one answer the same way.
+    if (cells.has(id)) continue;
+    const label = node.getAttribute("label") || node.getAttribute("value") || "";
+    cells.set(id, label);
+  }
+  return cells;
+}
+
+/**
  * A shape that refers to a flowy entity, as drawio xml.
  *
  * It is a UserObject rather than a plain mxCell because only a UserObject can
