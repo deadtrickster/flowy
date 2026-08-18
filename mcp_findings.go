@@ -98,6 +98,13 @@ var findingTools = []tool{
 			"discovery": str("The investigation write-up: how this was found, what was " +
 				"tried, what the evidence shows. Searched with the title and the body. " +
 				"Same 100KB ceiling as body, same fix over it."),
+			"report": str("The draft that goes UPSTREAM: this defect written for a " +
+				"maintainer who has never seen our setup, which is a different document " +
+				"from body (for whoever here has to fix it) and from discovery (how it " +
+				"was found, and never packaged). Kept on the row so it can be reviewed " +
+				"before it is sent and read after. It says nothing about whether it HAS " +
+				"been sent - that is finding_upstream's axis. Same 100KB ceiling as " +
+				"body. Leaving it out on an update keeps the draft already there."),
 			"severity": str("Free text, e.g. low, medium, high, critical. Leaving it out " +
 				"on an update keeps what the finding already says."),
 			"kind": str("What kind of finding this is, e.g. crash, race, correctness, " +
@@ -189,6 +196,118 @@ var findingTools = []tool{
 		InputSchema: object(props{"finding": str("The finding's id.")}, []string{"finding"}),
 		call:        findingRunList,
 	},
+	{
+		Name: "finding_upstream",
+		Description: "Record where a finding stands on SOMEBODY ELSE'S tracker, and what " +
+			"it cites over there. This is a second axis, not a status: our lifecycle says " +
+			"how far we got writing it up, and this says what happened to it over there, " +
+			"so done/unfiled - written up, nobody sent it - is an ordinary combination and " +
+			"is the state most findings are in. A finding nobody filed carries none of " +
+			"this and reads as unfiled, so there is nothing to set for one. A NUMBER IS " +
+			"NOT A FILING: refs are what this finding cites and assert nothing about who " +
+			"sent what, state is the only thing that says we filed it, and 'referenced' is " +
+			"the common case where issues are cited and nobody claims to have submitted " +
+			"anything. An update states what changes: {finding, state} advances the filing " +
+			"already on the row without restating its number, and refs left out leaves the " +
+			"citations alone. Read permission is the whole bar, the same as a status move " +
+			"or a repro tree. A thin wrapper over store.SetFindingUpstream, where every " +
+			"refusal lives.",
+		InputSchema: object(props{
+			"finding": str("The finding's id."),
+			"tracker": str("THE FILING's tracker - serenedb, ragflow, or a host. Only for a " +
+				"state that says we sent it; a citation goes in refs. Leave it out on an " +
+				"update to keep the tracker already on the row."),
+			"kind": enum("Whether the thing we filed is an issue or a pull request - told "+
+				"them and sent a fix are different claims.", store.UpstreamKinds),
+			"id": str("Their number for THE FILING, as a string - not every tracker numbers " +
+				"with integers. Leave it out on an update to keep the number recorded."),
+			"url":   str("The link to it, so a reader gets there in one click."),
+			"state": enum("Where the filing stands. Empty is unfiled.", store.UpstreamStates),
+			"refs": map[string]any{
+				"type": "array",
+				"description": "Everything upstream this finding TOUCHES - issues and pull " +
+					"requests, many per finding, and the same one repeated on every finding " +
+					"it covers, which is how 'these three went in one PR' is answerable. It " +
+					"claims nothing about whether anybody filed this. Stating the list " +
+					"replaces it whole; leaving it out leaves it alone.",
+				"items": object(props{
+					"tracker": str("Whose tracker it is in - serenedb, ragflow, a host."),
+					"kind":    enum("issue or pr.", store.UpstreamKinds),
+					"id":      str("Their number for it, as a string."),
+					"url":     str("The link, when there is one."),
+				}, []string{"tracker", "kind", "id"}),
+			},
+			"filed_at": str("When it was filed - 2006-01-02 or full RFC3339. Leave it out " +
+				"and the node stamps now for a new filing, or keeps the day the standing " +
+				"one was made. State it when importing a filing somebody made by hand " +
+				"months ago: the original date rides as data."),
+			"filed_by": str("Who filed it upstream, when that is not this principal - the " +
+				"other half of importing somebody else's filing."),
+		}, []string{"finding"}),
+		call: findingUpstream,
+	},
+	{
+		Name: "finding_upstream_log",
+		Description: "Every filing entry recorded against a finding, oldest first - so a " +
+			"finding filed, turned down and filed somewhere else reads as two numbers and " +
+			"one story rather than only where it ended up. A thin wrapper over " +
+			"store.FindingUpstreamLog.",
+		InputSchema: object(props{"finding": str("The finding's id.")}, []string{"finding"}),
+		call:        findingUpstreamLog,
+	},
+}
+
+// findingUpstream records a filing on somebody else's tracker. Every rule -
+// the vocabulary, the number behind any state but unfiled, the refusal of a
+// second filing over one that still stands - is in store.SetFindingUpstream,
+// and this only carries the arguments across.
+func findingUpstream(ctx context.Context, m *mcpServer, p *store.Principal, raw json.RawMessage) (any, error) {
+	var a struct {
+		Finding string              `json:"finding"`
+		Tracker string              `json:"tracker"`
+		Kind    string              `json:"kind"`
+		ID      string              `json:"id"`
+		URL     string              `json:"url"`
+		State   string              `json:"state"`
+		Refs    []store.UpstreamRef `json:"refs"`
+		FiledAt string              `json:"filed_at"`
+		FiledBy string              `json:"filed_by"`
+	}
+	if err := decodeParams(raw, &a); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(a.Finding) == "" {
+		return nil, errors.New("finding is required")
+	}
+	art, entry, err := m.db.SetFindingUpstream(ctx, p, a.Finding, store.UpstreamFiling{
+		Tracker: a.Tracker, Kind: a.Kind, ID: a.ID, URL: a.URL, State: a.State,
+		Refs: a.Refs, FiledAt: a.FiledAt, FiledBy: a.FiledBy,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"item":     art,
+		"upstream": store.FindingUpstreamOf(art),
+		"entry":    store.UpstreamEntryOf(entry),
+	}, nil
+}
+
+func findingUpstreamLog(ctx context.Context, m *mcpServer, p *store.Principal, raw json.RawMessage) (any, error) {
+	var a struct {
+		Finding string `json:"finding"`
+	}
+	if err := decodeParams(raw, &a); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(a.Finding) == "" {
+		return nil, errors.New("finding is required")
+	}
+	entries, err := m.db.FindingUpstreamLog(ctx, p, a.Finding)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"finding": a.Finding, "count": len(entries), "entries": entries}, nil
 }
 
 // findingWriteArgs is what finding_write takes.
@@ -197,6 +316,7 @@ type findingWriteArgs struct {
 	Title           string         `json:"title"`
 	Body            string         `json:"body"`
 	Discovery       string         `json:"discovery"`
+	Report          string         `json:"report"`
 	Severity        string         `json:"severity"`
 	Kind            string         `json:"kind"`
 	Scope           string         `json:"scope"`
@@ -266,6 +386,12 @@ func findingWrite(ctx context.Context, m *mcpServer, p *store.Principal, raw jso
 			"the same ceiling body carries, and the same fix: attachment_write the "+
 			"full write-up and reference the id here", len(a.Discovery), maxFindingBody)
 	}
+	if len(a.Report) > store.MaxReportDraft {
+		return nil, fmt.Errorf("finding report draft is %d bytes, over the %d ceiling - "+
+			"the same ceiling body and discovery carry, and the same fix: "+
+			"attachment_write the full draft and reference the id here",
+			len(a.Report), store.MaxReportDraft)
+	}
 
 	art := &store.Artifact{
 		ID:        a.ID,
@@ -328,6 +454,20 @@ func findingWrite(ctx context.Context, m *mcpServer, p *store.Principal, raw jso
 		// for todos, see the head of mcp_tools.go. A finding starts the issue
 		// workflow the same way a bug does.
 		art.Status = statusOpen
+	}
+
+	// The upstream draft is stated fresh or left alone, which is why it is
+	// folded in HERE - after the update branch has read the old row's fields
+	// back - rather than beside title and body above. A call that leaves report
+	// out keeps the draft that is there, the same way it keeps the repro
+	// manifest and every other key riding in fields, and a call that states one
+	// replaces it whole: a report is a document, and half of a new draft over
+	// half of an old one is not one.
+	if strings.TrimSpace(a.Report) != "" {
+		if fields == nil {
+			fields = map[string]any{}
+		}
+		fields[store.ReportDraftField] = a.Report
 	}
 
 	if len(fields) > 0 {
@@ -410,6 +550,7 @@ func findingWriteReproOnly(
 		{"title", strings.TrimSpace(a.Title) != ""},
 		{"body", a.Body != ""},
 		{"discovery", a.Discovery != ""},
+		{"report", a.Report != ""},
 		{"severity", a.Severity != ""},
 		{"kind", a.Kind != ""},
 		{"tags", a.Tags != nil},
@@ -499,7 +640,11 @@ func findingRead(ctx context.Context, m *mcpServer, p *store.Principal, raw json
 	if art.Type != findingType {
 		return nil, store.NotAFindingError{ID: a.ID}
 	}
-	return map[string]any{"item": art}, nil
+	// Both axes on one read: the lifecycle is on the row already, and the
+	// filing is rendered beside it rather than left as raw keys in fields for
+	// each surface to dig out and spell differently. A finding nobody filed
+	// answers unfiled here, which is a fact and not a blank.
+	return map[string]any{"item": art, "upstream": store.FindingUpstreamOf(art)}, nil
 }
 
 // findingQuery builds the store query every finding read shares.

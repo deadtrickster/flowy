@@ -370,3 +370,74 @@ func ObserveProjectsForTest(ctx context.Context, db *DB, names ...string) error 
 	}
 	return tx.Commit()
 }
+
+// TestScopeAllShowsTheWholeRegistryToAnybody is the discoverability claim, and
+// it is the one that was false: a project that was just declared has to be
+// findable by a principal that is not this node's operator, or a declaration
+// that SUCCEEDED reads back exactly like one that did nothing.
+//
+// The three assertions are one rule each, and the middle one is the fix:
+//
+//   - without scope=all the narrow filter is untouched, so an enumeration that
+//     did not ask for the whole registry still shows the caller their own
+//     project and the ones a grant edge reaches, and nothing else.
+//   - with scope=all a non-operator is shown the whole table. scope=all exists
+//     to mean all, and a project name is not a secret that the operator gate was
+//     protecting: Project() reads one by name for anybody, and every artifact,
+//     event and grant carries the name inside its signature.
+//   - what the caller may READ is not widened by any of it. scope=all is
+//     operator-only in ArtifactFilterSQL, where it is an escape hatch over rows,
+//     and ReadableProjects asks that filter rather than this one. A fix that
+//     moved the gate there instead would show up here as a project the stranger
+//     was told it could read.
+func TestScopeAllShowsTheWholeRegistryToAnybody(t *testing.T) {
+	ctx, db := open(t)
+
+	mine := declaredProject(t, ctx, db, "pscopemine")
+	fresh := declaredProject(t, ctx, db, "pscopefresh")
+
+	// A worker, in its own project, with no grant to the new one and no claim
+	// on this node's operator seat.
+	stranger := &Principal{UserID: "u-" + ulid.NewString(), Project: mine}
+
+	narrow, err := db.ListProjects(ctx, stranger, false)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if listedProject(narrow, fresh) {
+		t.Fatal("the narrow enumeration listed a project with no edge to the caller")
+	}
+	if !listedProject(narrow, mine) {
+		t.Fatal("the narrow enumeration dropped the caller's own project")
+	}
+
+	all, err := db.ListProjects(ctx, stranger, true)
+	if err != nil {
+		t.Fatalf("list scope=all: %v", err)
+	}
+	if !listedProject(all, fresh) {
+		t.Fatalf("scope=all did not show %s to a non-operator: a declared project "+
+			"is invisible to the principal that would file into it", fresh)
+	}
+
+	reads, err := db.ReadableProjects(ctx, stranger, true)
+	if err != nil {
+		t.Fatalf("readable projects: %v", err)
+	}
+	for _, id := range reads {
+		if id == fresh {
+			t.Fatal("scope=all widened what a non-operator may read, and it must " +
+				"only widen the list of names")
+		}
+	}
+}
+
+// listedProject reports whether an enumeration carried a name.
+func listedProject(list []*Project, id string) bool {
+	for _, project := range list {
+		if project.ID == id {
+			return true
+		}
+	}
+	return false
+}

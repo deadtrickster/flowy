@@ -36,7 +36,15 @@ import { cn } from "@/lib/utils";
  * read as the runner having tried and failed to reproduce a live bug, when
  * what actually happened is nobody managed to ask the question.
  */
-export function ReproPanel({ finding, runnable }: { finding: string; runnable: boolean }) {
+export function ReproPanel({
+  finding,
+  project,
+  runnable,
+}: {
+  finding: string;
+  project?: string | null;
+  runnable: boolean;
+}) {
   // Read once per mount rather than subscribed: this is the only place the
   // setting is edited, so a change here is a call to setReproBase followed
   // by re-reading it, not a value anything else could move out from under.
@@ -61,7 +69,13 @@ export function ReproPanel({ finding, runnable }: { finding: string; runnable: b
     );
   }
 
-  return <ReproPanelBody finding={finding} onBaseCleared={() => setBase(getReproBase())} />;
+  return (
+    <ReproPanelBody
+      finding={finding}
+      project={project}
+      onBaseCleared={() => setBase(getReproBase())}
+    />
+  );
 }
 
 /**
@@ -103,7 +117,15 @@ function RunnerBaseSetup({ onSave }: { onSave: (base: string) => void }) {
   );
 }
 
-const ACTIVE: ReproStatus[] = ["queued", "running"];
+const ACTIVE: ReproStatus[] = ["queued", "building", "running"];
+
+/** What a runner that cannot run says about itself, in one sentence a reader
+ * can act on. Packaging and version resolution need nothing from the run queue,
+ * so they keep working and this says so rather than reading as "the runner is
+ * down". */
+const PACKAGES_ONLY =
+  "this runner packages and resolves versions but cannot run: its run queue is not linked in " +
+  "(cmd/handoff-runner/wiring.go). Download the package and run it where Docker is.";
 
 /** The colour a run's status is drawn in. Deliberately not shared with any
  * queue/lifecycle status style already in the console: those are about work
@@ -118,6 +140,9 @@ function statusClasses(status: ReproStatus): string {
     case "error":
       return "border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400";
     case "running":
+    case "building":
+      // A cold build of a system under test is measured in hours, so it gets
+      // the same in-flight colour rather than looking like a hung run.
       return "border-sky-500/40 bg-sky-500/10 text-sky-600 dark:text-sky-400";
     default:
       return "";
@@ -134,9 +159,11 @@ function StatusBadge({ status }: { status: ReproStatus }) {
 
 function ReproPanelBody({
   finding,
+  project,
   onBaseCleared,
 }: {
   finding: string;
+  project?: string | null;
   onBaseCleared: () => void;
 }) {
   const [version, setVersion] = useState("latest");
@@ -145,20 +172,45 @@ function ReproPanelBody({
 
   const [runs, setRuns] = useState<ReproRun[]>([]);
   const [runsError, setRunsError] = useState<string | null>(null);
+  // Whether the runner behind this base can run anything at all, as IT says -
+  // null until the first answer arrives, which is not the same as false. A
+  // panel that assumed either way before asking would spend its first seconds
+  // either offering a button that refuses or hiding one that works.
+  const [linked, setLinked] = useState<boolean | null>(null);
 
   const [runBusy, setRunBusy] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
 
+  const [pkgBusy, setPkgBusy] = useState(false);
+  const [pkgError, setPkgError] = useState<string | null>(null);
+
   const [openLog, setOpenLog] = useState<string | null>(null);
+
+  const downloadPackage = async () => {
+    const asked = version.trim() || "latest";
+    if (pkgBusy) return;
+    setPkgBusy(true);
+    setPkgError(null);
+    try {
+      await savePackage(finding, asked);
+    } catch (err) {
+      setPkgError(packageError(err));
+    } finally {
+      setPkgBusy(false);
+    }
+  };
 
   // Runs, on the same 2.5s beat console.html's pollRuns used. Stops on
   // unmount - the interval outliving the component is what leaves a poll
   // running against a finding nobody is looking at anymore.
   const loadRuns = useCallback(() => {
     api
-      .reproRuns(finding)
+      .reproRuns()
       .then((page) => {
-        setRuns(page);
+        // Narrowed HERE, because the door does not narrow: GET /runs answers
+        // with every run whose finding the caller may read. See api.reproRuns.
+        setRuns((page.runs ?? []).filter((run) => run.finding === finding));
+        setLinked(page.linked);
         setRunsError(null);
       })
       .catch((err: Error) => {
@@ -192,7 +244,7 @@ function ReproPanelBody({
     let stopped = false;
     const timer = setTimeout(() => {
       api
-        .reproVersion(asked)
+        .reproVersion(project, asked)
         .then((info) => {
           if (stopped) return;
           setVersionInfo(info);
@@ -208,8 +260,17 @@ function ReproPanelBody({
       stopped = true;
       clearTimeout(timer);
     };
-  }, [version]);
+  }, [version, project]);
 
+  /**
+   * Ask for a run, and say what came back.
+   *
+   * POST /run answers with what it QUEUED and what it REFUSED, per finding -
+   * so a call that was turned down comes back 400 with a reason on the row
+   * rather than as a run that never appears. Both halves are handled: without
+   * the refused one, a finding whose project this runner does not hold would
+   * leave the panel looking like it had started something.
+   */
   const run = async () => {
     const asked = version.trim();
     if (!asked || runBusy) return;
@@ -218,7 +279,13 @@ function ReproPanelBody({
     try {
       const started = await api.reproRun(finding, asked);
       loadRuns();
-      setOpenLog(started.id);
+      const queued = started.queued?.[0];
+      if (queued) {
+        setOpenLog(queued.run);
+      } else {
+        const refusal = started.refused?.[0];
+        setRunError(refusal ? refusal.error : "the runner queued nothing and said why not");
+      }
     } catch (err) {
       setRunError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -228,6 +295,16 @@ function ReproPanelBody({
 
   const versions = byVersion(runs);
   const activeCount = runs.filter((r) => ACTIVE.includes(r.status)).length;
+
+  // THE RUN DOOR REFUSES BY NAME UNTIL ITS QUEUE IS WIRED IN, and a button that
+  // can only produce that refusal is worse than no button: the reader clicks
+  // it, gets a sentence about a build of a binary they do not run, and learns
+  // nothing about their finding. Both doors report the same fact - /runs as
+  // `linked`, /version as `runnable` - and either saying no is enough to
+  // withhold the control. Undecided (nothing answered yet) is not no: the
+  // button stays until something says otherwise, which is also what a runner
+  // too old to report either word gets.
+  const cannotRun = linked === false || versionInfo?.runnable === false;
 
   return (
     <div className="flex flex-col gap-3 rounded-lg border border-border p-3">
@@ -250,7 +327,26 @@ function ReproPanelBody({
             spellCheck={false}
             onChange={(event) => setVersion(event.target.value)}
           />
-          <Button size="sm" variant="secondary" disabled={runBusy} onClick={() => void run()}>
+          {/* PACKAGING IS NOT RUNNING, and it is offered on its own here rather
+              than only beside a confirmed run: /package needs nothing from the
+              run queue, so it is the one thing that still works on a runner
+              that cannot run - which is exactly when somebody needs the package
+              to take elsewhere. */}
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={pkgBusy}
+            onClick={() => void downloadPackage()}
+          >
+            {pkgBusy ? "packaging…" : "⤓ package"}
+          </Button>
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={runBusy || cannotRun}
+            title={cannotRun ? PACKAGES_ONLY : undefined}
+            onClick={() => void run()}
+          >
             {runBusy ? "starting…" : "run"}
           </Button>
         </div>
@@ -265,15 +361,24 @@ function ReproPanelBody({
           <span>{versionInfo.sha.slice(0, 12)}</span>
           {versionInfo.source_build ? (
             <Badge variant="outline">
-              {versionInfo.binary ? "builds from source (cached)" : "builds from source"}
+              {versionInfo.binary_ready ? "builds from source (cached)" : "builds from source"}
             </Badge>
           ) : null}
           {!versionInfo.buildable ? <Badge variant="outline">not buildable</Badge> : null}
           <span className="font-sans">{versionInfo.note}</span>
         </div>
       ) : null}
+      {/* Said in the panel and not only in a tooltip: this is a property of the
+          deployment, not of this finding, and the reader's next move - package
+          it and run it somewhere that can - depends on knowing which. */}
+      {cannotRun ? (
+        <div data-repro-runnable="no" className="text-muted-foreground text-xs">
+          {PACKAGES_ONLY}
+        </div>
+      ) : null}
       {versionError ? <div className="text-destructive text-xs">{versionError}</div> : null}
       {runError ? <div className="text-destructive text-xs">{runError}</div> : null}
+      {pkgError ? <div className="text-destructive text-xs">{pkgError}</div> : null}
 
       {/* The per-version table: every version this finding has been run
           against, its latest verdict, and the history behind it - a version
@@ -299,6 +404,31 @@ function ReproPanelBody({
   );
 }
 
+/** savePackage fetches the tgz and hands it to the browser's own download,
+ * which is the only way a page can put a file where a person can find it. One
+ * copy for the two buttons that do it - the header's, for a finding nobody has
+ * run, and the per-version one beside a confirmed verdict. */
+async function savePackage(finding: string, version: string) {
+  const { blob, filename } = await api.reproPackage(finding, version);
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+/** packageError keeps the runner's status on the message: a 404 from /package
+ * means this runner does not hold that project, and a 409 means the tree's
+ * isolation is one it cannot build. Dropping the number would make those two
+ * read alike. */
+function packageError(err: unknown): string {
+  if (err instanceof ApiError) return `${err.status} ${err.message}`;
+  return err instanceof Error ? err.message : String(err);
+}
+
 interface VersionEntry {
   version: string;
   sha?: string;
@@ -319,9 +449,33 @@ function byVersion(runs: ReproRun[]): VersionEntry[] {
     groups.get(r.version)?.push(r);
   }
   return order.map((version) => {
-    const list = [...(groups.get(version) ?? [])].sort((a, b) => b.at.localeCompare(a.at));
+    const list = [...(groups.get(version) ?? [])].sort((a, b) => runAt(b) - runAt(a));
     return { version, sha: list.find((r) => r.sha)?.sha, runs: list };
   });
+}
+
+/**
+ * When a run last did something, as one number to order by.
+ *
+ * The runner stamps three moments and a run has reached however many of them it
+ * has reached, so the latest one that exists is the one that says where this
+ * run is in time - a queued run has only queued_at, and ordering it by an
+ * absent ended_at would file every waiting run at the beginning of time,
+ * underneath verdicts from last week.
+ *
+ * They are unix SECONDS on the wire (cmd/handoff-runner's Run: int64), which
+ * matters only here and in whenRan below.
+ */
+function runAt(run: ReproRun): number {
+  return run.ended_at ?? run.started_at ?? run.queued_at ?? 0;
+}
+
+/** whenRan is that moment as something to read, and "not yet" when the runner
+ * stamped none - which is what a run has just been accepted looks like. */
+function whenRan(run: ReproRun): string {
+  const at = runAt(run);
+  if (!at) return "not yet stamped";
+  return new Date(at * 1000).toISOString().replace("T", " ").slice(0, 19);
 }
 
 function VersionRow({
@@ -342,19 +496,9 @@ function VersionRow({
     setPkgBusy(true);
     setPkgError(null);
     try {
-      const { blob, filename } = await api.reproPackage(finding, entry.version);
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      await savePackage(finding, entry.version);
     } catch (err) {
-      setPkgError(
-        err instanceof ApiError ? `${err.status} ${err.message}` : String((err as Error).message),
-      );
+      setPkgError(packageError(err));
     } finally {
       setPkgBusy(false);
     }
@@ -377,7 +521,7 @@ function VersionRow({
           {[...entry.runs].reverse().map((r) => (
             <span
               key={r.id}
-              title={`${r.status} · ${r.at}`}
+              title={`${r.status} · ${whenRan(r)}`}
               className={cn("h-2.5 w-2.5 rounded-full border", statusClasses(r.status))}
             />
           ))}

@@ -194,6 +194,13 @@ export interface InboxReader {
  * it hears, "forked" hears and wakes nobody, "unknown" has not said. It is the
  * only field here that answers the question a roster is actually read for, and
  * the node reports "unknown" rather than assuming, so it is never absent.
+ *
+ * state is what the seat is DOING, which is not the same question: "listening"
+ * polled inside the window, "starting" has never polled and was declared a
+ * moment ago, and "lost" is holding a poll that never ended and is older than
+ * any poll can be - something armed a waiter there and it stopped. A lost row
+ * is deliberately still on this list: the panel's job is to say a seat has gone
+ * deaf, and dropping the row would have deleted the only record that it had.
  */
 export interface Presence {
   members: { actor: string; name: string; kind: string }[];
@@ -204,6 +211,7 @@ export interface Presence {
     user_name: string;
     attached: boolean;
     waiter_kind: string;
+    state: string;
     last_poll_at?: string | null;
     updated: string;
   }[];
@@ -457,22 +465,73 @@ export function refPath(ref: string | undefined): string | undefined {
  * and drawing it the same way as not-confirmed is a finding silently declared
  * fixed because its own reproduction environment fell over.
  */
-export type ReproStatus = "queued" | "running" | "confirmed" | "not-confirmed" | "error";
+export type ReproStatus =
+  | "queued"
+  | "building"
+  | "running"
+  | "confirmed"
+  | "not-confirmed"
+  | "error";
 
 /**
- * ReproRun is one row of a finding's repro history: GET /runs?finding=. The
- * runner keeps every attempt rather than the latest verdict, which is what
- * lets the per-version table in ReproPanel show a version going red after it
- * was once green - see internal/store/findingruns.go's own head comment for
- * why that history is the point.
+ * ReproRun is one row of a finding's repro history, as cmd/handoff-runner's Run
+ * is written on the wire: GET /runs. The runner keeps every attempt rather than
+ * the latest verdict, which is what lets the per-version table in ReproPanel
+ * show a version going red after it was once green - see
+ * internal/store/findingruns.go's own head comment for why that history is the
+ * point.
+ *
+ * THE FIELDS ARE THE DOOR'S, not a shape this console would have chosen. It
+ * carries `finding` because /runs answers with every run the process knows
+ * about and the filtering is the caller's (see api.reproRuns), and its three
+ * timestamps are unix seconds off that binary's own record rather than an `at`
+ * string - a run has three interesting moments and which one matters depends on
+ * where the run got to.
+ *
+ * confirmed is THREE-VALUED and must stay that way: true, false, and absent for
+ * a run that has no verdict - queued, running, or ended in error. A reader that
+ * flattened absent to false would be reporting a broken sandbox as a finding
+ * that did not reproduce.
  */
 export interface ReproRun {
   id: string;
+  finding: string;
+  project?: string;
   version: string;
   sha?: string;
   status: ReproStatus;
-  confirmed?: boolean;
-  at: string;
+  confirmed?: boolean | null;
+  note?: string;
+  queued_at?: number;
+  started_at?: number;
+  ended_at?: number;
+}
+
+/**
+ * ReproRuns is GET /runs' whole answer, and `linked` is the half that matters
+ * as much as the list.
+ *
+ * A runner built without its run queue linked in answers every run route with a
+ * refusal that names what is missing, and an empty `runs` from one of those is
+ * indistinguishable from a runner nobody has asked to do anything yet. So the
+ * door states which it is, and the panel draws a run button only when the
+ * answer is yes - see cmd/handoff-runner/queue.go, which is where that word
+ * comes from.
+ */
+export interface ReproRuns {
+  runs: ReproRun[];
+  linked: boolean;
+}
+
+/**
+ * ReproQueued is POST /run's answer: what it accepted and what it turned down,
+ * because a call naming several findings must not fail all of them over one,
+ * nor drop the one silently. One finding queued reads as a one-entry list.
+ */
+export interface ReproQueued {
+  queued: { run: string; finding: string }[];
+  refused?: { finding: string; error: string }[];
+  version: string;
 }
 
 /**
@@ -481,14 +540,23 @@ export interface ReproRun {
  * buildable/source_build say whether asking for a run would need a build
  * first, so the panel can show that rather than let the reader find out from
  * a run that sits in "queued" for minutes.
+ *
+ * binary_ready is a BOOLEAN and not a path, deliberately, on the door's side:
+ * whether a binary for this commit is already built is the caller's business,
+ * and where it sits on that host is not. `runnable` is the same fact /runs
+ * carries as `linked` - whether this deployment can run what it just resolved,
+ * or only describe and package it.
  */
 export interface ReproVersion {
+  project: string;
+  requested: string;
   sha: string;
   image: string;
-  binary: string | null;
+  binary_ready: boolean;
   buildable: boolean;
   source_build: boolean;
   note: string;
+  runnable: boolean;
 }
 
 /**
@@ -1557,17 +1625,28 @@ export const api = {
    * decides what to show for it.
    */
 
-  /** Enqueue a repro run of `finding` against `version`. */
+  /** Enqueue a repro run of `finding` against `version`. The answer names what
+   * was queued and what was refused rather than a bare id - see ReproQueued,
+   * and ReproPanel, which shows the refusal instead of a run that never
+   * started. */
   reproRun: (finding: string, version: string) =>
-    reproRequest<{ id: string }>("/run", {
+    reproRequest<ReproQueued>("/run", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ finding, version }),
     }),
 
-  /** A finding's repro history, newest call first as the runner orders it. */
-  reproRuns: (finding: string) =>
-    reproRequest<ReproRun[]>(`/runs?finding=${encodeURIComponent(finding)}`),
+  /**
+   * Every run the runner knows about, and whether it can run anything at all.
+   *
+   * THERE IS NO PER-FINDING DOOR: GET /runs takes no filter and answers with
+   * every run whose finding the caller may read, so narrowing to one finding is
+   * this side's job and ReproPanel does it on `run.finding`. Asking for it in
+   * the query string instead - which this call used to do - got every other
+   * finding's runs back and drew them under whichever finding was open, because
+   * an ignored query parameter looks exactly like an honoured one.
+   */
+  reproRuns: () => reproRequest<ReproRuns>("/runs"),
 
   /** One run's log, plain text. Polled, not streamed - see ReproPanel. */
   reproLog: (id: string) => reproText(`/run/${encodeURIComponent(id)}/log`),
@@ -1600,8 +1679,21 @@ export const api = {
     return { blob, filename: named ?? `repro-${finding}-${version}.tgz` };
   },
 
-  /** What the runner can say about a version label without running anything. */
-  reproVersion: (v: string) => reproRequest<ReproVersion>(`/version?v=${encodeURIComponent(v)}`),
+  /**
+   * What the runner can say about a version label without running anything.
+   *
+   * The project is named because a runner holds several - one checkout, one
+   * base image and one cache each - and it can only guess when it happens to
+   * hold exactly one. A finding knows whose code it is about, so the caller
+   * passes it and gets "this runner is not configured for project X" instead of
+   * "name a project" from a deployment that holds two.
+   */
+  reproVersion: (project: string | null | undefined, v: string) =>
+    reproRequest<ReproVersion>(
+      `/version?v=${encodeURIComponent(v)}${
+        project ? `&project=${encodeURIComponent(project)}` : ""
+      }`,
+    ),
 };
 
 /** isAgent reads the speaker's kind off the message the node stamped it with. */

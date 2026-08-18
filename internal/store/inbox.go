@@ -231,6 +231,29 @@ func WaiterKindOf(s string) string {
 	return WaiterUnknown
 }
 
+// The three things a row on the roster can be. They answer "what is this seat
+// doing", which is a different question from Kind's "what could it do if it
+// heard something", and both are needed: a tracked waiter that stopped polling
+// six hours ago is still tracked and is not listening to anything.
+//
+// PresenceListening is a reader whose last poll is inside PresenceWindow -
+// polling now, or between two polls of a waiter that is coming straight back.
+//
+// PresenceStarting is a reader that EXISTS and has never polled, young enough
+// that a waiter arming itself is the honest reading. The roster is where
+// somebody watches a waiter start, so this is a real state and not a ghost.
+//
+// PresenceLost is the one this fleet keeps paying for: the node is holding a
+// poll it never saw end, and the poll is older than any poll can be. Something
+// armed a waiter here and it stopped. It is NOT attached and it is NOT dropped
+// from the roster - see PresenceLostWindow for why saying so out loud is the
+// whole point.
+const (
+	PresenceListening = "listening"
+	PresenceStarting  = "starting"
+	PresenceLost      = "lost"
+)
+
 // PresenceRow is one reader as the room sees it: who holds the label, and what
 // the node can honestly say about their attachment. Attached is a poll in
 // flight; LastPoll is when a poll last started. Neither is a claim about a
@@ -243,6 +266,17 @@ func WaiterKindOf(s string) string {
 // alone reports it healthy - which it did for 28 minutes, while the person who
 // had written into the room got silence.
 //
+// State is the half ATTACHED cannot carry, and it is the reason Attached is no
+// longer the raw column. polls_in_flight is a counter that only comes down when
+// a handler returns, so a node restarted mid-poll - or a decrement that ran on
+// an already-cancelled request context - leaves it up forever, and the row then
+// reads attached for as long as the table lives. Two of those were sitting on
+// this node's roster claiming to be attached, one for six hours and one for
+// thirty, while the operator asked twice why an agent was not answering. So
+// Attached now means "a poll is in flight AND it started recently enough to
+// still be one", and State says which of the three things a row that fails that
+// test actually is.
+//
 // The name is the user's handle - an agent has no handle of its own and speaks
 // under that person's, which is the rule the chat already renders by - and the
 // reader label is what the listener chose to be called, which for an agent is
@@ -254,6 +288,7 @@ type PresenceRow struct {
 	UserName  string     `json:"user_name"`
 	Attached  bool       `json:"attached"`
 	Kind      string     `json:"waiter_kind"`
+	State     string     `json:"state"`
 	LastPoll  *time.Time `json:"last_poll_at"`
 	Updated   time.Time  `json:"updated"`
 }
@@ -279,12 +314,36 @@ func (d *DB) PollStart(ctx context.Context, p *Principal, name, kind string) {
 }
 
 // PollEnd marks the poll leaving, however it left.
+//
+// ON A CONTEXT THAT OUTLIVES THE REQUEST, which is not a detail: the caller is
+// a deferred call in the /api/inbox/wait handler, and the commonest way for a
+// poll to end is the CLIENT GOING AWAY - the waiter is killed, the session is
+// torn down, the socket drops. That cancels the request context, and a decrement
+// issued on a cancelled context never reaches the database. The error was
+// swallowed here, so the row kept polls_in_flight up with nobody on the other
+// end and read as attached forever after. That is the six-hour ghost the roster
+// has been showing: not a listener that stopped being noticed, a decrement that
+// was never allowed to run.
+//
+// The timeout is what keeps "detached from the request" from meaning "may block
+// a shutting-down server indefinitely". Still swallowed: presence is
+// observational, and a failed mark must not be able to affect a waiter that has
+// already been served - and Presence now judges an in-flight poll by its age, so
+// a decrement lost anyway costs a row that reads lost rather than one that reads
+// attached forever.
 func (d *DB) PollEnd(ctx context.Context, p *Principal, name string) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), pollEndTimeout)
+	defer cancel()
 	_, _ = d.sql.ExecContext(ctx,
 		`UPDATE inbox_readers
 		    SET polls_in_flight = greatest(0, polls_in_flight - 1)
 		  WHERE principal = $1 AND reader = $2`, readerKey(p), name)
 }
+
+// pollEndTimeout bounds the detached decrement above. One statement on a primary
+// key, so seconds is generous; it exists so a request that has already ended
+// cannot hold a connection for as long as the database is willing to wait.
+const pollEndTimeout = 5 * time.Second
 
 // DeleteInboxReader drops a reader label outright. A reader row is not a
 // listener - it exists whether or not anything is attached - so a test label
@@ -305,11 +364,6 @@ func (d *DB) DeleteInboxReader(ctx context.Context, p *Principal, name string) (
 	return n > 0, nil
 }
 
-// Presence is every reader on the node, with names resolved from the principal
-// key's user and agent ids. It is the roster of who has a place in the log and
-// what the node last saw of their polling - "who is in the room" is who
-// participates, and this table answers "who has an ear on", which is the half
-// of that a reader row can carry.
 // PresenceWindow is how long after its last poll a reader is still a LISTENER.
 //
 // Every row in inbox_readers is a CURSOR - the console keeps one per room, a
@@ -323,12 +377,44 @@ func (d *DB) DeleteInboxReader(ctx context.Context, p *Principal, name string) (
 // next time somebody opened the room. So this narrows the READ, and the table
 // keeps everything.
 //
-// Ten minutes because a waiter polls on a 3600s deadline but re-polls promptly
-// when it returns, and anything that has not been seen for ten minutes is not
-// somebody you can expect an answer from - which is the question a roster is
-// asked.
+// Ten minutes because a waiter polls on a 25-second server window and re-polls
+// promptly when it returns, whatever its total deadline is and however quiet the
+// room is - a quiet waiter still polls, so silence for ten minutes is silence
+// from something that is not coming back within the next one. It is twenty-four
+// re-polls of slack, which is enough that a slow node, a retry and a restart all
+// pass through without anybody being called dead who is not.
 const PresenceWindow = 10 * time.Minute
 
+// PresenceLostWindow is how long a reader that stopped MID-POLL stays on the
+// roster saying so.
+//
+// The complaint this answers is not that the roster was too long. It is that
+// claude-glm had not polled in six hours, the row said attached, and NOTHING ON
+// ANY SURFACE SAID THE SEAT WAS DEAF - the operator asked twice why the agent
+// was not answering. Dropping the row at PresenceWindow would have tidied the
+// panel and destroyed the only evidence there was. A reader who knows a seat
+// stopped answering six hours ago can go and restart it; a reader looking at a
+// short clean list learns nothing and asks a third time.
+//
+// So a row holding an unfinished poll is kept and rendered as PresenceLost, and
+// this is how long that is worth saying. Eight hours because that is the
+// waiter's own default deadline - past its own budget a waiter would have gone
+// home anyway, so an unfinished poll older than that is no longer evidence of
+// anything going wrong, just a row nobody cleaned up. It is checked against the
+// waiter's constant in TestPresenceLostWindowFollowsTheWaitersDeadline so the
+// two cannot drift apart.
+//
+// The split falls exactly where the two rows on this node fall: claude-glm at
+// six hours is the incident and is named; ho-test at thirty is a dead test label
+// and drops off.
+const PresenceLostWindow = 8 * time.Hour
+
+// Presence is the roster: every reader the node can say something useful about
+// right now, with names resolved from the principal key's user and agent ids.
+// "Who is in the room" is who participates; this answers "who has an ear on",
+// which is the half a reader row can carry - and, since a row can hold a poll
+// that never ended, "who had an ear on and stopped", which is the half that had
+// no answer at all.
 func (d *DB) Presence(ctx context.Context) ([]*PresenceRow, error) {
 	// The principal column is user \x1f agent \x1f project. Splitting it in
 	// SQL keeps the join in one round trip; unit separators cannot appear in
@@ -338,11 +424,27 @@ func (d *DB) Presence(ctx context.Context) ([]*PresenceRow, error) {
 		`SELECT r.principal,
 		        split_part(r.principal, chr(31), 3) AS project,
 		        r.reader, coalesce(u.handle, ''),
-		        r.polls_in_flight > 0, r.waiter_kind, r.last_poll_at, r.updated
+		        r.polls_in_flight > 0, r.waiter_kind, r.last_poll_at, r.updated,
+		        -- THE DATABASE'S CLOCK, ONCE, FOR EVERY ROW. The states below
+		        -- are ages, and an age measured by a Go clock against timestamps
+		        -- written by the database is wrong by the skew in both
+		        -- directions: behind, and a live waiter reads lost; ahead, and a
+		        -- dead one reads listening. Same rule the landing lock arrived
+		        -- at - one clock stamps the window and judges it.
+		        now()
 		   FROM inbox_readers r
 		   LEFT JOIN users u ON u.id = split_part(r.principal, chr(31), 1)
-		  WHERE r.polls_in_flight > 0
-		     OR r.last_poll_at > now() - $1::interval
+		     -- Polled inside the window: listening, whether or not a poll is in
+		     -- flight at this instant. A waiter between two polls is not gone.
+		  WHERE r.last_poll_at > now() - $1::interval
+		     -- Holding a poll that never ended, and older than any poll can be.
+		     -- This clause is a LONGER window on purpose and it used to be no
+		     -- window at all: polls_in_flight > 0 alone let a leaked counter
+		     -- keep a row on the roster forever, attached, six hours after its
+		     -- listener stopped. It is kept - not dropped - so that the seat can
+		     -- be named as deaf rather than quietly disappearing. See
+		     -- PresenceLostWindow.
+		     OR (r.polls_in_flight > 0 AND r.last_poll_at > now() - $2::interval)
 		     -- A reader that EXISTS AND HAS NEVER POLLED is a waiter starting
 		     -- up, and the roster is how somebody watches it start - it reads
 		     -- as kind unknown, which is a real answer and not a ghost. The
@@ -353,8 +455,16 @@ func (d *DB) Presence(ctx context.Context) ([]*PresenceRow, error) {
 		     -- never-polled-and-seconds-old is starting, never-polled-and-hours-
 		     -- old is a cursor somebody's page left behind. Same empty field,
 		     -- two different facts, and the first cut used the field.
-		     OR r.updated > now() - $1::interval
-		  ORDER BY r.updated DESC, r.reader`, PresenceWindow.String())
+		     --
+		     -- CREATED, not updated. The updated column moves on every ack, and the
+		     -- console acks a cursor per room every time somebody reads it - so
+		     -- judging by it made three browser bookmarks permanent residents of
+		     -- the listening pane, refreshed by the very act of looking at the
+		     -- page they were cluttering. A row's age as a candidate listener is
+		     -- how long ago it was declared.
+		     OR (r.last_poll_at IS NULL AND r.created > now() - $1::interval)
+		  ORDER BY r.updated DESC, r.reader`,
+		PresenceWindow.String(), PresenceLostWindow.String())
 	if err != nil {
 		return nil, fmt.Errorf("store: presence: %w", err)
 	}
@@ -363,8 +473,10 @@ func (d *DB) Presence(ctx context.Context) ([]*PresenceRow, error) {
 	out := []*PresenceRow{}
 	for rows.Next() {
 		p := &PresenceRow{}
+		var holdsPoll bool
+		var now time.Time
 		if err := rows.Scan(&p.Principal, &p.Project, &p.Reader, &p.UserName,
-			&p.Attached, &p.Kind, &p.LastPoll, &p.Updated); err != nil {
+			&holdsPoll, &p.Kind, &p.LastPoll, &p.Updated, &now); err != nil {
 			return nil, fmt.Errorf("store: presence: %w", err)
 		}
 		// Read through the same funnel it was written through, so a row from
@@ -372,6 +484,29 @@ func (d *DB) Presence(ctx context.Context) ([]*PresenceRow, error) {
 		// - reaches the roster as unknown rather than as an empty string the
 		// view has no case for.
 		p.Kind = WaiterKindOf(p.Kind)
+
+		// The three states, from the two facts the row has. A poll counts as in
+		// flight only while it is young enough to be one: the server blocks for
+		// at most 25 seconds and a waiter comes straight back, so a poll that
+		// started before the window is not slow, it is abandoned - and the
+		// counter that says otherwise is a decrement that never ran.
+		fresh := p.LastPoll != nil && now.Sub(*p.LastPoll) < PresenceWindow
+		switch {
+		case fresh:
+			p.State = PresenceListening
+			p.Attached = holdsPoll
+		case p.LastPoll == nil:
+			p.State = PresenceStarting
+			p.Attached = false
+		default:
+			// Polled once and then stopped. The WHERE only lets one kind of
+			// this through - the row still holding a poll - but the reading
+			// does not depend on that clause staying exactly as it is: a
+			// reader whose last poll is older than the window stopped
+			// listening, and that is the word for it either way.
+			p.State = PresenceLost
+			p.Attached = false
+		}
 		out = append(out, p)
 	}
 	if err := rows.Err(); err != nil {

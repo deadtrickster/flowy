@@ -38,12 +38,21 @@ export function RoomRoster({ presence }: { presence: Presence | null }) {
   // somebody watches it start. Same empty last_poll_at as a cursor a closed
   // page left behind; two different facts.
   //
-  // Presence now windows rows at the store - attached, polled, or updated
-  // within ten minutes - so what arrives here is already the answer, and this
-  // second-guessing filter would hide exactly the rows that change made a
-  // point of keeping. The view asks the narrower question; it no longer
-  // re-answers the one the store already did.
-  const live = presence.listeners;
+  // Presence now windows rows at the store - polled inside the window, holding
+  // a poll that never ended, or declared moments ago - so what arrives here is
+  // already the answer, and this second-guessing filter would hide exactly the
+  // rows that change made a point of keeping. The view asks the narrower
+  // question; it no longer re-answers the one the store already did.
+  //
+  // TWO GROUPS, AND THE SECOND ONE IS THE POINT. A row the store marks "lost"
+  // is a seat that was armed and stopped: its poll never ended and its last
+  // poll is hours old. It is not clutter to be filtered out of the pane - it is
+  // the answer to "why is that agent not replying", which was asked twice about
+  // an agent that had been unreachable for six hours while every surface here
+  // drew it as attached. So it is split out and named, under its own heading,
+  // with how long ago it went quiet.
+  const live = presence.listeners.filter((l) => l.state !== "lost");
+  const lost = presence.listeners.filter((l) => l.state === "lost");
 
   // ONE LINE PER PRINCIPAL, NOT PER NAME. The name is a label somebody chose
   // and the principal is who they are, and on this node the two disagree in
@@ -75,24 +84,14 @@ export function RoomRoster({ presence }: { presence: Presence | null }) {
   // point of this pane, so collapsing them destroyed the feature to tidy the
   // display. Two rows of the same kind under one identity is the doubled waiter;
   // two rows of different kinds is two answers to what this seat can do.
-  const byPrincipal = new Map<
-    string,
-    { row: (typeof live)[number]; count: number; names: string[] }
-  >();
-  for (const l of live) {
-    const key = `${l.principal}\u001f${l.waiter_kind ?? ""}`;
-    const seen = byPrincipal.get(key);
-    if (!seen) {
-      byPrincipal.set(key, { row: l, count: 1, names: [l.reader] });
-      continue;
-    }
-    seen.count++;
-    if (!seen.names.includes(l.reader)) seen.names.push(l.reader);
-    // Freshest wins: the live process is the one still polling, and the stale
-    // row is the one somebody restarted away from.
-    if ((l.last_poll_at ?? "") > (seen.row.last_poll_at ?? "")) seen.row = l;
-  }
-  const ears = [...byPrincipal.values()];
+  //
+  // Grouped WITHIN each of the two groups and never across them, which is not a
+  // detail on this node: claude-glm and flowy-glm are one principal, and
+  // claude-glm is the seat that went deaf. Grouping first and splitting after
+  // would let the live row swallow the lost one and put this panel straight back
+  // to reporting a healthy agent with nobody behind it.
+  const ears = groupByPrincipal(live);
+  const deaf = groupByPrincipal(lost);
 
   return (
     <div className="border-border border-b px-4 py-3">
@@ -169,12 +168,110 @@ export function RoomRoster({ presence }: { presence: Presence | null }) {
           })}
         </ul>
       )}
+      {/*
+        WENT QUIET, and this section is the whole reason the rows are kept.
+
+        A seat here was armed - something polled under this name - and then
+        stopped, with the poll it was on never ending. The node cannot see the
+        process, so it cannot say whether the agent died, the session was torn
+        down or the machine went away; what it can say is that nothing has been
+        heard from the seat since a stated time, and that whatever was waiting
+        there is not going to answer.
+
+        This is the row the operator asked about twice. claude-glm had not
+        polled in six hours and the panel drew it as attached and polling,
+        because a poll counter that only comes down when a handler returns had
+        been left up by one that never did. Retiring the row would have made the
+        list tidy and told nobody anything - "not answering, last heard from 6h
+        ago" is what somebody can act on.
+      */}
+      {deaf.length > 0 ? (
+        <>
+          <div className="pt-2 pb-1 font-medium text-amber-600 text-xs uppercase tracking-wide dark:text-amber-500">
+            went quiet
+          </div>
+          <ul className="flex flex-col gap-0.5">
+            {deaf.map(({ row: l, count, names }) => (
+              <li
+                key={`lost-${l.principal}-${l.reader}`}
+                data-listener={l.reader}
+                data-listener-rows={count}
+                data-listener-state="lost"
+                className="flex items-center gap-2 text-xs"
+              >
+                <span className="min-w-0 truncate text-muted-foreground line-through">
+                  {names.join(" + ")}
+                  {l.reader !== l.user_name ? <span> · {l.user_name}</span> : null}
+                  {/*
+                    Said here for the same reason it is said above: one identity
+                    holding several rows is a doubled waiter, and a doubled
+                    waiter that has gone quiet is two seats to restart, not one.
+                  */}
+                  {count > 1 ? (
+                    <span
+                      className="ml-1 no-underline"
+                      title={`${count} rows under this one principal have stopped answering`}
+                    >
+                      ×{count} doubled
+                    </span>
+                  ) : null}
+                </span>
+                <span
+                  data-waiter-kind={listenerKind(l.waiter_kind).kind}
+                  title={
+                    "this seat was armed and stopped: the node is holding a poll that never " +
+                    "ended and has heard nothing since. It cannot see the process, so it " +
+                    "cannot say why - but nothing waiting here will answer"
+                  }
+                  className="ml-auto shrink-0 text-amber-600 dark:text-amber-500"
+                >
+                  not answering
+                </span>
+                <span className="shrink-0 text-muted-foreground">
+                  last heard {ago(l.last_poll_at)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </>
+      ) : null}
+
       <div className="pt-1 text-muted-foreground text-[10px]">
-        the node sees polling, not processes - a dead listener looks attached until its window
-        lapses, and a forked one hears the room with nothing to wake
+        the node sees polling, not processes - a listener that stops is named here as gone quiet
+        rather than dropped, and a forked one hears the room with nothing to wake
       </div>
     </div>
   );
+}
+
+type Listener = Presence["listeners"][number];
+
+/**
+ * groupByPrincipal collapses rows of one identity and one kind onto one line,
+ * keeping how many there were and every name they polled under.
+ *
+ * The count is carried rather than dropped because two rows under one principal
+ * is a DOUBLED WAITER - they share a server-side cursor, so each hears part of
+ * the room while both look healthy - and the line says so. See the long comment
+ * at the call site for why the key is the principal and the kind, and why this
+ * is applied to the live rows and the lost ones separately.
+ */
+function groupByPrincipal(rows: Listener[]): { row: Listener; count: number; names: string[] }[] {
+  const byPrincipal = new Map<string, { row: Listener; count: number; names: string[] }>();
+  for (const l of rows) {
+    const key = `${l.principal}${l.waiter_kind ?? ""}`;
+    const seen = byPrincipal.get(key);
+    if (!seen) {
+      byPrincipal.set(key, { row: l, count: 1, names: [l.reader] });
+      continue;
+    }
+    seen.count++;
+    if (!seen.names.includes(l.reader)) seen.names.push(l.reader);
+    // Freshest wins: the live process is the one still polling, and the stale
+    // row is the one somebody restarted away from.
+    if ((l.last_poll_at ?? "") > (seen.row.last_poll_at ?? "")) seen.row = l;
+  }
+  return [...byPrincipal.values()];
 }
 
 /**

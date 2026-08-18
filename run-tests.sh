@@ -3799,7 +3799,11 @@ a_broken_waiter_is_exit_2_and_not_exit_1() {
 ROSTER_TRACKED=roster-tracked
 ROSTER_FORKED=roster-forked
 ROSTER_QUIET=roster-quiet
-readonly ROSTER_TRACKED ROSTER_FORKED ROSTER_QUIET
+# The seat that was armed and stopped. Stalled by the presence check below and
+# still stalled when the browser check reads it, because being SAID OUT LOUD on
+# the operator's own surface is the half of this that matters.
+ROSTER_STOPPED=roster-went-quiet
+readonly ROSTER_TRACKED ROSTER_FORKED ROSTER_QUIET ROSTER_STOPPED
 
 # presence_kind NAME - what /api/presence says that listener can do. Not listed
 # at all and listed with no kind are two different failures, and a jq default
@@ -3892,6 +3896,96 @@ presence_says_what_each_listener_can_do() {
 	poll_as "$ROSTER_QUIET" wide-awake-honest || return 1
 	want_eq "a kind nobody can draw" "$(presence_kind "$ROSTER_QUIET")" unknown || return 1
 	printf 'presence: tracked, forked, and unknown for everything that has not said\n'
+}
+
+# presence_field NAME FIELD - one field of that listener's row, or the marker
+# for a reader the roster does not list at all. Not-listed has to be its own
+# answer: a jq default would turn "the row is gone" into "the field is empty",
+# and those send somebody looking in two different places.
+presence_field() {
+	api GET "$TOKEN_A" /api/presence || return 1
+	printf '%s' "$API_BODY" | jq -r --arg r "$1" --arg f "$2" \
+		'[.listeners[] | select(.reader == $r)]
+		 | if length == 0 then "<not listed>" else (.[0][$f] | tostring) end'
+}
+
+# A SEAT THAT WAS ARMED AND STOPPED IS NAMED, NOT TIDIED AWAY.
+#
+# polls_in_flight only comes down when a handler returns, so a waiter killed
+# mid-poll - or a decrement issued on a request context that had already been
+# cancelled by the client going away - leaves the counter up with nobody behind
+# it. The roster read used to take any positive counter as attached with no age
+# test at all, so such a row said "attached, polling" for as long as the table
+# lived. claude-glm sat like that for six hours and ho-test for thirty, and the
+# operator asked twice why an agent was not answering.
+#
+# The fix is not a shorter list. It is that the node can tell the three states
+# apart and SAYS which one this is: still polling, never polled yet, or armed
+# and stopped. The last one keeps its place on the roster - with the time it was
+# last heard from - because that is the fact somebody needs, and a version of
+# this that merely dropped the row would have deleted the evidence the complaint
+# was about.
+presence_retires_a_seat_that_stopped_mid_poll() {
+	recall
+	api POST "$TOKEN_A" /api/inbox/reader "{\"as\": \"$ROSTER_STOPPED\"}" || return 1
+	want_eq "declaring $ROSTER_STOPPED" "$API_STATUS" 200 || return 1
+
+	# Declared and not yet polling: a waiter arming itself, which the roster is
+	# where somebody watches.
+	want_eq "a reader that has not polled yet" \
+		"$(presence_field "$ROSTER_STOPPED" state)" starting || return 1
+
+	poll_as "$ROSTER_STOPPED" tracked || return 1
+	want_eq "a reader that just polled" \
+		"$(presence_field "$ROSTER_STOPPED" state)" listening || return 1
+
+	# The state a killed waiter leaves behind, written by hand because the pair
+	# of calls that would produce it is exactly the pair that never ran.
+	psql_do "UPDATE inbox_readers
+	            SET last_poll_at = now() - interval '6 hours', polls_in_flight = 1
+	          WHERE reader = '$ROSTER_STOPPED'" || return 1
+	want_eq "six hours after it stopped, still holding a poll" \
+		"$(presence_field "$ROSTER_STOPPED" state)" lost || return 1
+	want_eq "and what it says about being attached" \
+		"$(presence_field "$ROSTER_STOPPED" attached)" false || return 1
+	# The timestamp is what makes "lost" actionable rather than a shrug.
+	if [ "$(presence_field "$ROSTER_STOPPED" last_poll_at)" = null ]; then
+		printf 'a lost seat carries no last poll, so nothing can say how long it has been deaf\n' >&2
+		return 1
+	fi
+
+	# A second label, aged past the waiter's own deadline: by then it is a row
+	# nobody cleaned up rather than a seat that just went deaf, and it goes.
+	local old=roster-stopped-yesterday
+	api POST "$TOKEN_A" /api/inbox/reader "{\"as\": \"$old\"}" || return 1
+	want_eq "declaring $old" "$API_STATUS" 200 || return 1
+	poll_as "$old" tracked || return 1
+	psql_do "UPDATE inbox_readers
+	            SET last_poll_at = now() - interval '30 hours', polls_in_flight = 1
+	          WHERE reader = '$old'" || return 1
+	want_eq "a poll abandoned 30 hours ago" \
+		"$(presence_field "$old" state)" '<not listed>' || return 1
+
+	# And a bookmark that has never polled does not ride its acks onto the
+	# roster. The console keeps one of these per room to hold a human's unread
+	# place; they ack every time somebody reads the room, which is what kept
+	# three of them on the listening pane permanently - refreshed by the act of
+	# looking at the page they were cluttering.
+	local bookmark=console:roster-bookmark
+	api POST "$TOKEN_A" /api/inbox/reader "{\"as\": \"$bookmark\"}" || return 1
+	want_eq "declaring $bookmark" "$API_STATUS" 200 || return 1
+	psql_do "UPDATE inbox_readers SET created = now() - interval '3 hours'
+	          WHERE reader = '$bookmark'" || return 1
+	# Past its own mark, or the ack moves nothing and stamps nothing - which
+	# would make this pass without the row ever being touched.
+	local mark
+	mark="$(scalar "SELECT read_cursor + 1 FROM inbox_readers WHERE reader = '$bookmark'")" || return 1
+	api POST "$TOKEN_A" /api/inbox/ack "{\"as\": \"$bookmark\", \"cursor\": $mark}" || return 1
+	want_eq "acking the bookmark" "$API_STATUS" 200 || return 1
+	want_eq "a bookmark that never polled, acked just now" \
+		"$(presence_field "$bookmark" state)" '<not listed>' || return 1
+
+	printf 'presence: polling, starting, and armed-then-stopped are three answers, and the stopped one keeps its place\n'
 }
 
 # ------------------------------------------------------------ per-room todos
@@ -5717,7 +5811,8 @@ browser_shows_what_a_listener_can_do() {
 	recall
 	cd "$ROOT/web" || return 1
 	node scripts/roster-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" \
-		"$ROSTER_TRACKED=tracked" "$ROSTER_FORKED=forked" "$ROSTER_QUIET=unknown"
+		"$ROSTER_TRACKED=tracked" "$ROSTER_FORKED=forked" "$ROSTER_QUIET=unknown" \
+		--went-quiet="$ROSTER_STOPPED"
 }
 
 # Speakers are drawn in their own colour, and it is really applied. A palette
@@ -10225,6 +10320,18 @@ check "presence answers tracked, forked, and unknown for anything unsaid" \
 	presence_says_what_each_listener_can_do
 check "the kind is per reader and survives the poll that set it" \
 	go test -count=1 -run TestPresenceCarriesTheWaiterKind ./internal/store
+
+# Hearing stops, and the node has to be able to say so. A poll counter that only
+# comes down when a handler returns kept two seats on this roster reading
+# "attached" - one for six hours, one for thirty - while the operator asked twice
+# why an agent was not answering. The answer is not a shorter list: it is a row
+# that says the seat was armed, stopped, and when.
+check "a seat that stopped mid-poll is named as gone quiet, not left reading attached" \
+	presence_retires_a_seat_that_stopped_mid_poll
+check "the roster retires a stalled reader and keeps the evidence" \
+	go test -count=1 -run 'TestPresenceRetiresAReaderThatStoppedMidPoll|TestPresenceStartingIsJudgedByTheRowsAge' ./internal/store
+check "the two windows follow the waiter's own numbers" \
+	go test -count=1 -run 'TestPresenceWindowIsManyServerWindowsWide|TestPresenceLostWindowFollowsTheWaitersDeadline' .
 
 # A todo panel inside the room, and the field it needs. The room rides fields
 # the way as_of rides a report, and it is a filter and not a permission axis -
@@ -15369,6 +15476,193 @@ check "a superseded report is marked where somebody reads it, and the console's 
 	browser_marks_a_superseded_report
 check "signed out, the reports page says so rather than looking empty" \
 	the_reports_page_says_it_is_signed_out
+
+# The findings console: three axes, and the two documents that are not the body.
+#
+# A finding carries OUR lifecycle (open/triaged/done), a filing state on
+# SOMEBODY ELSE'S tracker (unfiled/filed as #123/accepted), and evidence (source/
+# reproduced/verified against a commit). None of the three answers either of the
+# others - done-and-unfiled is written up and sent to nobody, which is the state
+# most of the corpus sits in - and every attempt to draw one in place of another
+# has produced a page that says something false. The console reads all three off
+# the row through web/src/lib/findings.ts, and these checks are what stops that
+# collapsing again.
+#
+# TWO FINDINGS, DELIBERATELY OPPOSITE. One is done for us, filed upstream with a
+# number, ships a repro tree and carries an upstream draft. The other is open,
+# unfiled, has no tree and no draft. Everything either page claims about the
+# first has to be denied about the second, or a page that stamped every row
+# alike would pass.
+#
+# The filing keys are written with SQL rather than through a verb, because the
+# verb that writes them (store.SetFindingUpstream) is landing on another branch.
+# What the console must do is render a row that carries them, and that row is a
+# row whether a tool or an operator's import put the keys there - the names are
+# the ones internal/store/findingupstream.go and the corpus importers were both
+# given, and if they ever disagree this check is what goes red.
+FINDING_ISSUE="4471"
+# In the upstream draft and nowhere else - not in the body, not in the
+# discovery, not in a title. A pane that showed the body over again would
+# otherwise pass every assertion about the draft.
+FINDING_DRAFT_WORD="quernstone"
+FINDING_REPRO_PATH="repro-01-tables.sh"
+readonly FINDING_ISSUE FINDING_DRAFT_WORD FINDING_REPRO_PATH
+
+seeds_two_findings_on_three_axes() {
+	recall
+	local script filed unfiled referenced project
+	script="$(printf '#!/usr/bin/env bash\nexit 0\n' | base64 -w0)"
+
+	want_tool finding_write "$TOKEN_A" \
+		"$(jq -nc --arg c "$script" --arg w "$FINDING_DRAFT_WORD" --arg p "$FINDING_REPRO_PATH" \
+			'{title: "the sluice gate counter double-counts a reversed flow",
+			  body: "the counter adds on both edges, so a reversal reads as throughput",
+			  discovery: "found while reconciling the weir log against the day sheet",
+			  report: ("Reversed flow is counted as throughput. The " + $w +
+			           " test rig reproduces it in one pass."),
+			  scope: "project", severity: "high", kind: "correctness",
+			  repro: [{path: $p, content_base64: $c}],
+			  repro_entrypoint: $p, repro_interp: "bash", isolation: "plain"}')" || return 1
+	filed="$(tv .item.id)"
+	project="$(tv .item.project)"
+	want_eq "the repro tree is on the row" "$(tv '.item.fields.repro_files | length')" 1 || return 1
+	want_eq "and the upstream draft is a field, not the body" \
+		"$(tv '.item.fields.report | contains("'"$FINDING_DRAFT_WORD"'")')" true || return 1
+	want_eq "which the body does not carry" \
+		"$(tv '.item.body | contains("'"$FINDING_DRAFT_WORD"'")')" false || return 1
+
+	# Our lifecycle, walked through the door that leaves the trail event. It is
+	# walked rather than jumped because the issue workflow is a LINE - open,
+	# triaged, in-progress, in-review, done - and a jump straight to the end is
+	# refused (lifecycle.go's canTransition). That refusal is the right one and
+	# it is also why this is four calls: a finding reaches done by somebody
+	# having worked it, and the trail says so.
+	local step
+	for step in triaged in-progress in-review "done"; do
+		api POST "$TOKEN_A" "/api/artifact/$filed/status" "{\"status\": \"$step\"}" || return 1
+		want_eq "moved to $step" "$(printf '%s' "$API_BODY" | jq -r .artifact.status)" "$step" || return 1
+	done
+
+	# Their tracker, which our status says nothing about. See the head of this
+	# block on why this is SQL.
+	psql_do "UPDATE artifacts SET fields = coalesce(fields, '{}'::jsonb) || jsonb_build_object(
+		 'upstream_tracker', 'serenedb',
+		 'upstream_id', '$FINDING_ISSUE',
+		 'upstream_state', 'filed',
+		 'upstream_url', 'https://tracker.invalid/issues/$FINDING_ISSUE',
+		 'evidence_state', 'reproduced')
+	   WHERE id = '$filed'" || return 1
+
+	# The opposite row: nothing written up for anybody else, nothing to run.
+	want_tool finding_write "$TOKEN_A" \
+		'{"title": "the weir board warps in the wet and the reading drifts",
+		  "body": "suspected from the shape of the drift; nobody has run anything",
+		  "scope": "project", "severity": "medium", "kind": "correctness"}' || return 1
+	unfiled="$(tv .item.id)"
+	want_eq "and it is open" "$(tv .item.status)" open || return 1
+
+	# THE THIRD ROW IS THE ONE THAT GETS MISCOUNTED: it names things over there
+	# and nobody claims to have sent it. Seven of the sixteen RAGFlow findings
+	# are that, and reading them as filings is what reported one filing as
+	# eight - so the console has to draw REFERENCED as its own word and leave it
+	# out of the filed count. The row carries citations and no state, which is
+	# exactly what an import writes, and the state it reads as is the store's
+	# own fallback (FindingUpstreamOf) rather than anything this check states.
+	want_tool finding_write "$TOKEN_A" \
+		'{"title": "the tailrace gauge disagrees with two of their open issues",
+		  "body": "their issue text describes the same drift; nobody has written to them",
+		  "scope": "project", "severity": "low", "kind": "correctness"}' || return 1
+	referenced="$(tv .item.id)"
+	psql_do "UPDATE artifacts SET fields = coalesce(fields, '{}'::jsonb) || jsonb_build_object(
+		 'upstream_refs', jsonb_build_array(
+		   jsonb_build_object('tracker', 'serenedb', 'kind', 'issue', 'id', '901'),
+		   jsonb_build_object('tracker', 'serenedb', 'kind', 'pr', 'id', '902')))
+	   WHERE id = '$referenced'" || return 1
+
+	remember FINDING_FILED "$filed"
+	remember FINDING_UNFILED "$unfiled"
+	remember FINDING_REFERENCED "$referenced"
+	remember FINDING_PROJECT "$project"
+	printf '%s is done here and filed there as #%s; %s is open and unfiled; %s cites two and was sent to nobody\n' \
+		"$filed" "$FINDING_ISSUE" "$unfiled" "$referenced"
+}
+
+# The list read the way the console reads it: both axes have to survive the trip
+# out, or the page has nothing to draw them from. This asserts on the API before
+# the browser check asserts on the elements, so a failure says which half broke.
+the_list_carries_both_axes() {
+	recall
+	api GET "$TOKEN_A" '/api/artifacts?type=finding' || return 1
+	local row
+	row="$(printf '%s' "$API_BODY" | jq -c --arg id "$FINDING_FILED" '[.artifacts[] | select(.id == $id)][0]')"
+	want_eq "our lifecycle is on the row" "$(printf '%s' "$row" | jq -r .status)" "done" || return 1
+	want_eq "their filing state is on it too" \
+		"$(printf '%s' "$row" | jq -r .fields.upstream_state)" filed || return 1
+	want_eq "with the number a reader can act on" \
+		"$(printf '%s' "$row" | jq -r .fields.upstream_id)" "$FINDING_ISSUE" || return 1
+	want_eq "and the evidence, which is neither of them" \
+		"$(printf '%s' "$row" | jq -r .fields.evidence_state)" reproduced || return 1
+	want_eq "the upstream draft rides out with it" \
+		"$(printf '%s' "$row" | jq -r '.fields.report | contains("'"$FINDING_DRAFT_WORD"'")')" true || return 1
+	printf 'the list read carries status, upstream_state #%s and evidence_state separately\n' \
+		"$FINDING_ISSUE"
+}
+
+# And the same claims one layer out, in a browser, on the ELEMENTS - plus the
+# filter, which is the thing the list exists for: "everything written up and not
+# yet filed" is the question somebody asks before filing anything.
+browser_shows_both_axes_and_the_two_documents() {
+	recall
+	cd "$ROOT/web" || return 1
+	node scripts/findings-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" \
+		"$FINDING_PROJECT" "$FINDING_FILED" "$FINDING_UNFILED" "$FINDING_REFERENCED" \
+		"$FINDING_ISSUE" "$FINDING_DRAFT_WORD" "$FINDING_REPRO_PATH"
+}
+
+# The repro runner is a second binary on a second host, so nothing in this
+# build makes the console and its doors agree. This drives the real client
+# against the answers cmd/handoff-runner/http.go actually writes - no node and
+# no runner needed, which is why it does not sit behind the live phase.
+the_console_speaks_the_runners_answers() {
+	cd "$ROOT/web" || return 1
+	node scripts/repro-contract-check.mjs
+}
+
+say "findings: our lifecycle, their filing, and the evidence - three axes"
+check "two findings, one done and filed as #4471, one open and unfiled" \
+	seeds_two_findings_on_three_axes
+check "the list read carries all three axes, and the upstream draft" \
+	the_list_carries_both_axes
+check "the console draws both axes, filters on the mark, and keeps the draft and the tree apart" \
+	browser_shows_both_axes_and_the_two_documents
+check "the console reads the repro runner's own answers - /runs, /run and /version" \
+	the_console_speaks_the_runners_answers
+
+# The new button on /diagrams, clicked in a real browser with the name box
+# EMPTY - the state an operator reported as "cant create a diagram". Every unit
+# test passed and the node's write door was fine; the button was simply
+# disabled until the box beside it was filled, and a disabled button here has
+# no cursor, no hover, no message and no navigation. Nothing exercised the
+# click, so nothing saw it. See scripts/diagram-new-check.mjs for why the four
+# ways this fails are told apart in its output rather than after the fact.
+a_diagram_is_created_by_clicking_new() {
+	cd "$ROOT/web" || return 1
+	node scripts/diagram-new-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A"
+}
+
+# Signed out, the page says what to do about it rather than reading as "there
+# are no diagrams". No node and no token on purpose: this is the state a
+# browser is in when somebody opens the link for the first time.
+the_diagrams_page_says_it_is_signed_out() {
+	cd "$ROOT/web" || return 1
+	node scripts/render-check.mjs "" "" "paste a token to see the diagrams" /diagrams
+}
+
+say "diagrams: the new button, clicked"
+check "new with an empty name makes a diagram, opens the editor and can be renamed" \
+	a_diagram_is_created_by_clicking_new
+check "signed out, the diagrams page says so rather than looking empty" \
+	the_diagrams_page_says_it_is_signed_out
 
 say "metrics: what was measured, and for whom"
 check "every group is in the answer, and says whether it was measured" \

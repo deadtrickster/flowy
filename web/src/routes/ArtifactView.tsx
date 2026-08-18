@@ -11,6 +11,16 @@ import DOMPurify from "dompurify";
 import { marked } from "marked";
 
 import { type Artifact, LIFECYCLE_TYPES, api, refPath } from "@/lib/api";
+import {
+  UNKNOWN_UPSTREAM,
+  evidenceOf,
+  hasRepro,
+  knownUpstream,
+  refLabel,
+  reportDraftOf,
+  reproOf,
+  upstreamOf,
+} from "@/lib/findings";
 import { useSession } from "@/lib/session";
 import { isQueueItem, todoAssignee, todoRaiser } from "@/lib/todos";
 import { shortId } from "@/lib/utils";
@@ -333,8 +343,26 @@ export function ArtifactView() {
 }
 
 /**
- * The finding-specific section: severity, kind and repro-class, tags and
- * related, and ReproPanel's mount point.
+ * The finding-specific section: the three axes, the two documents that are not
+ * the body, the repro tree, and ReproPanel's mount point.
+ *
+ * A FINDING HAS THREE FACES AND THEY ARE DIFFERENT DOCUMENTS, which is why this
+ * page draws them one under another rather than folding them into one body:
+ *
+ *   the FINDING    what is wrong, for somebody who has to fix it. Rendered
+ *                  above this section, like every artifact's body.
+ *   the DISCOVERY  how it was found, what was tried, what the evidence shows.
+ *                  Also above - and it never leaves this node: the packager
+ *                  keeps it out of every package it builds.
+ *   the REPORT     the text that goes upstream, written for a maintainer who
+ *                  has never seen this setup.
+ *
+ * The third is the one that gets forgotten, and the reason it is a separate
+ * document rather than the body reused is that writing a defect up for your own
+ * record and writing it for a stranger's tracker are different jobs. Kept on the
+ * row (internal/store/findingreport.go) so it can be drafted, read here before
+ * anybody sends it, and still be here afterwards to compare against what their
+ * tracker holds.
  *
  * NOT a file-an-issue control. Forge already works for any artifact - see the
  * generic lifecycle/status machinery above, which a finding rides exactly
@@ -354,11 +382,12 @@ export function ArtifactView() {
  * the same reason lifecycle.go's head comment gives for the type itself.
  */
 function FindingSection({ artifact }: { artifact: Artifact }) {
-  const fields = (artifact.fields ?? {}) as Record<string, unknown>;
-  const files = Array.isArray(fields.repro_files) ? fields.repro_files : [];
-  const hasRepro = files.length > 0;
-  const isolation =
-    typeof fields.isolation === "string" && fields.isolation ? fields.isolation : "plain";
+  const tree = reproOf(artifact);
+  const runnable = hasRepro(tree);
+  const isolation = tree.isolation || "plain";
+  const filing = upstreamOf(artifact);
+  const evidence = evidenceOf(artifact);
+  const draft = reportDraftOf(artifact);
 
   return (
     <div className="flex flex-col gap-3 rounded-lg border border-border p-3">
@@ -368,12 +397,147 @@ function FindingSection({ artifact }: { artifact: Artifact }) {
         </span>
         {artifact.severity ? <Badge variant="outline">severity: {artifact.severity}</Badge> : null}
         {artifact.kind ? <Badge variant="outline">{artifact.kind}</Badge> : null}
-        <Badge variant="outline">{hasRepro ? `repro: ${isolation}` : "no repro tree"}</Badge>
+        <Badge variant="outline">{runnable ? `repro: ${isolation}` : "no repro tree"}</Badge>
         {(artifact.tags ?? []).map((tag) => (
           <Badge key={tag} variant="outline">
             {tag}
           </Badge>
         ))}
+      </div>
+
+      {/* The other two axes, on the page that decides what to do about this
+          finding. The status control above is OUR lifecycle and says nothing
+          about either of these - see web/src/lib/findings.ts. */}
+      <div
+        className="flex flex-wrap items-center gap-2 text-xs"
+        data-finding-upstream={filing.state}
+        data-finding-evidence={evidence.state ?? ""}
+      >
+        <span className="text-muted-foreground">upstream</span>
+        {filing.url ? (
+          <a href={filing.url} target="_blank" rel="noreferrer" className="hover:underline">
+            <Badge variant="outline">
+              {filing.state}
+              {filing.id ? ` #${filing.id}` : ""}
+              {filing.tracker ? ` · ${filing.tracker}` : ""}
+            </Badge>
+          </a>
+        ) : (
+          <Badge
+            variant="outline"
+            title={knownUpstream(filing.state) ? undefined : UNKNOWN_UPSTREAM}
+          >
+            {filing.state}
+            {filing.id ? ` #${filing.id}` : ""}
+            {filing.tracker ? ` · ${filing.tracker}` : ""}
+          </Badge>
+        )}
+        {filing.filed_at ? (
+          <span className="text-muted-foreground">
+            filed {filing.filed_at}
+            {filing.filed_by ? ` by ${filing.filed_by}` : ""}
+          </span>
+        ) : null}
+        {/* WHAT THIS FINDING CITES, which is not what was filed. A reference is
+            something over there this finding touches - an issue somebody
+            mentioned, a pull request that covers three findings at once - and
+            it asserts nothing about whether we sent anything. Drawn under its
+            own word rather than beside the filing badge, because reading one as
+            the other is what turned one filing into eight. */}
+        {filing.refs.length > 0 ? (
+          <>
+            <span className="text-muted-foreground">cites</span>
+            {filing.refs.map((ref) =>
+              ref.url ? (
+                <a
+                  key={`${ref.tracker}/${ref.kind}/${ref.id}`}
+                  href={ref.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="hover:underline"
+                >
+                  <Badge variant="outline">{refLabel(ref)}</Badge>
+                </a>
+              ) : (
+                <Badge key={`${ref.tracker}/${ref.kind}/${ref.id}`} variant="outline">
+                  {refLabel(ref)}
+                </Badge>
+              ),
+            )}
+          </>
+        ) : null}
+        <span className="text-muted-foreground">evidence</span>
+        <Badge variant="outline">{evidence.state ?? "not stated"}</Badge>
+        {evidence.verified_on ? (
+          <span className="font-mono text-muted-foreground">
+            on {evidence.verified_on.slice(0, 12)}
+            {evidence.verified_at ? ` · ${evidence.verified_at}` : ""}
+          </span>
+        ) : null}
+      </div>
+
+      {/* THE REPORT DRAFT, and its absence said out loud. A finding page that
+          simply omitted this pane when there is no draft would read as a finding
+          ready to send: the missing upstream write-up is the single most common
+          reason a finding sits unfiled, so the empty state names the verb that
+          fills it. */}
+      <div data-finding-report={draft ? "yes" : "no"}>
+        <div className="pb-1 font-medium text-muted-foreground text-xs">
+          report draft · what goes upstream
+        </div>
+        {draft ? (
+          <pre className="whitespace-pre-wrap break-words rounded-md border border-border p-2 font-sans text-sm">
+            {draft}
+          </pre>
+        ) : (
+          <div className="rounded-md border border-dashed border-border p-2 text-muted-foreground text-xs">
+            no upstream draft yet - the body above is written for us, and this is the one written
+            for their maintainers. finding_write's <span className="font-mono">report</span> is what
+            fills it.
+          </div>
+        )}
+      </div>
+
+      {/* THE REPRO TREE ITSELF, not just whether there is one. A reader
+          deciding whether a finding can be filed needs to see what would run:
+          which files, which one is the entrypoint, and under what isolation.
+          The paths come off the manifest in the order WriteFindingRepro wrote
+          them, and each file is an ordinary attachment - readable through the
+          same door any other attachment is, which is why the id is shown. */}
+      <div data-finding-repro={runnable ? "yes" : "no"}>
+        <div className="pb-1 font-medium text-muted-foreground text-xs">repro tree</div>
+        {runnable ? (
+          <div className="flex flex-col gap-1">
+            <div className="flex flex-wrap items-center gap-2 text-muted-foreground text-xs">
+              <Badge variant="outline">isolation: {isolation}</Badge>
+              {tree.cmd_override ? (
+                <span className="font-mono">{tree.cmd_override}</span>
+              ) : tree.entrypoint ? (
+                <span className="font-mono">
+                  {tree.interp ? `${tree.interp} ` : ""}
+                  {tree.entrypoint}
+                </span>
+              ) : (
+                <span>no entrypoint recorded - a runner would not know what to execute</span>
+              )}
+            </div>
+            <ul className="flex flex-col gap-0.5 font-mono text-xs">
+              {tree.files.map((file) => (
+                <li key={file.attachment_id || file.path} className="flex flex-wrap gap-2">
+                  <span>{file.path}</span>
+                  <span className="text-muted-foreground" title={file.attachment_id}>
+                    {file.attachment_id ? shortId(file.attachment_id) : ""}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : (
+          <div className="rounded-md border border-dashed border-border p-2 text-muted-foreground text-xs">
+            nothing attached to run - finding_write's <span className="font-mono">repro</span> takes
+            the tree, and until there is one no run can say anything about this finding.
+          </div>
+        )}
       </div>
 
       {artifact.related && artifact.related.length > 0 ? (
@@ -394,7 +558,10 @@ function FindingSection({ artifact }: { artifact: Artifact }) {
         </div>
       ) : null}
 
-      <ReproPanel finding={artifact.id} runnable={hasRepro} />
+      {/* The project goes with it: the runner holds several, and asking it to
+          resolve a version without saying whose source to resolve it against is
+          a question it can only answer when it happens to hold exactly one. */}
+      <ReproPanel finding={artifact.id} project={artifact.project} runnable={runnable} />
     </div>
   );
 }

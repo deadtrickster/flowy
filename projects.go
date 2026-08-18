@@ -305,10 +305,12 @@ func listProjects(ctx context.Context, base, token string) error {
 		return err
 	}
 	var list projectsResponse
-	// scope=all so that an operator sees the whole registry rather than the
-	// corner their own token is in. It does nothing at all for anybody else -
-	// the node only obeys it for its operator - so asking for it always is one
-	// request instead of two and a guess about which one is answering.
+	// scope=all so that the caller sees the whole registry rather than the
+	// corner their own token is in. It is the whole table for everybody, not
+	// only for the operator: the registry is a list of names, and this command
+	// is how somebody finds the name of a project that was declared while they
+	// were not looking. What they may read in those projects is a different
+	// question, and Reads on the response answers it.
 	if err := peerRequest(ctx, client, http.MethodGet, base+"/api/projects?scope=all", token,
 		nil, &list); err != nil {
 		return err
