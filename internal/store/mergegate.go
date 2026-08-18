@@ -59,6 +59,39 @@ func GatingAt(a *Artifact, now time.Time) bool {
 	return now.Sub(started) < GateBelievedFor
 }
 
+// applyGate writes one gate moment onto a request's fields, and reports whether
+// that moment was a DECLARATION rather than a verdict.
+//
+// It is split out of SetMergeGate, and takes `now` rather than reading the clock,
+// because the whole content of this verb is which fields end up set - and that is
+// worth testing without a database or a live run, exactly as GatingAt is. The
+// defect below was invisible for a day precisely because this logic could only be
+// exercised through a door that needed both.
+func applyGate(fields map[string]any, run, tip string, now time.Time) bool {
+	fields[GateRunField] = run
+	if tip = strings.TrimSpace(tip); tip != "" {
+		fields[GatedTipField] = normalizeTip(tip)
+		// The verdict is in, so the declaration has nothing left to say. Clearing
+		// the stamp rather than leaving it is what makes "gating" a fact about
+		// now instead of a fact about the past that nobody swept up.
+		delete(fields, GateAtField)
+		return false
+	}
+	// Stamped HERE, by the node. A caller that sets its own expiry can set it to
+	// never, which is the whole failure this replaces.
+	fields[GateAtField] = now.Format(time.RFC3339Nano)
+	// AND THE OLD VERDICT GOES, because gated_tip means "the tip the CURRENT
+	// evidence measured", and declaring a run is a statement that the old evidence
+	// is being replaced. Leaving it broke the verb in both directions. A re-gate
+	// never read as gating, since GatingAt refuses a row that already carries a
+	// tip - so on a moving master, where nearly every gate is a re-gate, the
+	// queue's only collision guard was silently off. And a re-gate of a flaky run
+	// on the SAME tip left the superseded verdict admitting the branch while its
+	// replacement was still measuring.
+	delete(fields, GatedTipField)
+	return true
+}
+
 // SetMergeGate declares that a run is measuring a merge request, or records the
 // tip it measured, and records WHO said so.
 //
@@ -108,19 +141,9 @@ func (d *DB) SetMergeGate(
 	if err != nil {
 		return nil, nil, err
 	}
-	fields[GateRunField] = run
 	status := art.Status
-	if tip = strings.TrimSpace(tip); tip != "" {
-		fields[GatedTipField] = normalizeTip(tip)
-		// The verdict is in, so the declaration has nothing left to say. Clearing
-		// the stamp rather than leaving it is what makes "gating" a fact about
-		// now instead of a fact about the past that nobody swept up.
-		delete(fields, GateAtField)
-	} else {
+	if applyGate(fields, run, tip, time.Now().UTC()) {
 		status = ActiveStatus
-		// Stamped HERE, by the node. A caller that sets its own expiry can set
-		// it to never, which is the whole failure this replaces.
-		fields[GateAtField] = time.Now().UTC().Format(time.RFC3339Nano)
 	}
 	column, err := json.Marshal(fields)
 	if err != nil {
