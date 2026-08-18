@@ -4041,6 +4041,16 @@ HIDE_TODO_DONE="rebush the crank pin"
 HIDE_TODO_OPEN="reseat the intake valve"
 readonly ROOM_HIDE HIDE_TODO_DONE HIDE_TODO_OPEN
 
+# And a room of its own for the autofill flow, because that check RAISES a todo
+# by typing into the panel and then names its carrier: it is the only console
+# check that writes through the panel rather than seeding over the API, so it
+# would otherwise leave a row in whatever room it was pointed at and move the
+# counts the two checks above assert on.
+ROOM_AUTOFILL="autofill"
+AUTOFILL_TODO="regrind the pinion shoulder"
+AUTOFILL_CARRIER="clarke"
+readonly ROOM_AUTOFILL AUTOFILL_TODO AUTOFILL_CARRIER
+
 # And a room of its own for the reply check, for a reason of its own: it asserts
 # on the LAST two messages in the room and tabs from one to the next, so a room
 # the rest of the run is still writing into would move the rows out from under
@@ -5926,6 +5936,36 @@ browser_hides_the_finished_todos() {
 	cd "$ROOT/web" || return 1
 	node scripts/hidedone-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" \
 		"$ROOM_HIDE" "$HIDE_TODO_DONE" "$HIDE_TODO_OPEN"
+}
+
+# Raising a todo does not make the browser offer a saved password or a stored
+# card, driven as the journey rather than read off the source.
+#
+# The operator reported it in their own words: "raise todo input makes my
+# browser show password and credit card suggestion. chat input doesn't". The
+# raise box was one unnamed text input with no type and no autocomplete, alone
+# in a form with a submit button, which is the shape a browser reads as a
+# sign-in. The message box beside it was never affected because what you type
+# into it is a textarea.
+#
+# It is a FLOW - open the room, click the box, type, submit, see the row, then
+# name the carrier - because a field that is annotated perfectly and cannot be
+# typed into is not fixed. That is the New-button failure two features over,
+# where the control was disabled until another box had text, so no click ever
+# reached a handler and every test still passed.
+#
+# The sweep at the end is the other half. The operator hit one field; the next
+# one they hit will be in another file, so every text box on the pages a person
+# actually opens has to say the same thing. It goes red on the raise box alone
+# against the console as it was, which was checked by hand against a stand-in
+# serving the previous bundle before this was wired in.
+browser_does_not_offer_a_password_over_a_todo() {
+	recall
+	cd "$ROOT/web" || return 1
+	node scripts/autofill-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" \
+		"$ROOM_AUTOFILL" "$AUTOFILL_TODO" "$AUTOFILL_CARRIER" \
+		--page=/ --page=/todos --page=/findings --page=/reports \
+		--page=/diagrams --page=/activity --page=/direct
 }
 
 # The roster, in a browser, on the ELEMENT: each listener's line says what that
@@ -10649,6 +10689,8 @@ check "the panel sets and overrides one, in a browser, and a poll does not wipe 
 	browser_sets_and_overrides_an_assignee
 check "the panel hides the finished ones, counts them, and remembers it, in a browser" \
 	browser_hides_the_finished_todos
+check "raising a todo offers nobody a saved password or a stored card, in a browser" \
+	browser_does_not_offer_a_password_over_a_todo
 check "each speaker is drawn in their own colour, in a browser" \
 	browser_colours_the_speakers
 check "the roster draws what each listener can do, distinctly, in a browser" \

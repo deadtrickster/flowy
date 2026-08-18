@@ -18,6 +18,7 @@ export function TokenBar() {
   return (
     <form
       className="flex flex-col gap-2 rounded-md border border-border bg-card p-2"
+      autoComplete="off"
       onSubmit={(event) => {
         event.preventDefault();
         signIn(draft);

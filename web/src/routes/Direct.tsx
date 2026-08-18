@@ -181,6 +181,7 @@ export function Direct() {
 
         <form
           className="flex flex-col gap-2 border-border border-t bg-card/40 p-3"
+          autoComplete="off"
           onSubmit={(event) => {
             event.preventDefault();
             void send();

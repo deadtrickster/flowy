@@ -136,6 +136,7 @@ export function RowNotes({ artifact, onAppended }: Props) {
       */}
       <form
         className="flex flex-col gap-2"
+        autoComplete="off"
         onSubmit={(event) => {
           event.preventDefault();
           void append();

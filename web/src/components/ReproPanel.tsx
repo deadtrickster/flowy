@@ -90,6 +90,7 @@ function RunnerBaseSetup({ onSave }: { onSave: (base: string) => void }) {
   return (
     <form
       className="flex flex-col gap-2 rounded-md border border-dashed border-border p-3 text-xs"
+      autoComplete="off"
       onSubmit={(event) => {
         event.preventDefault();
         if (draft.trim()) onSave(draft);

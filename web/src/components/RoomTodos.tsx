@@ -244,8 +244,9 @@ export function RoomTodos({ room, todos, raiseFrom, disabled, error, onRaise, on
                   Empty means nobody, which is how the work is put back down.
                 */}
                 {editing === todo.id ? (
-                  <form onSubmit={commit}>
+                  <form autoComplete="off" onSubmit={commit}>
                     <Input
+                      name="todo-assignee"
                       className="h-6 w-24 px-1 text-xs"
                       value={named}
                       // The input replaced the cell that was just clicked, so
@@ -296,9 +297,21 @@ export function RoomTodos({ room, todos, raiseFrom, disabled, error, onRaise, on
         </ul>
       </div>
 
-      <form className="flex flex-col gap-1 border-border border-t p-3" onSubmit={raise}>
+      {/* autoComplete="off" on the form as well as on the field, because the
+          browser reads the form to decide what the whole group is for and the
+          field to decide what one box is for, and it is the group that looked
+          like a sign-in here: one unnamed text box and a submit button. The
+          message box beside this panel never had the problem because what you
+          type into it is a textarea, which browsers do not offer a password or
+          a card over. */}
+      <form
+        className="flex flex-col gap-1 border-border border-t p-3"
+        autoComplete="off"
+        onSubmit={raise}
+      >
         <div className="flex items-center gap-2">
           <Input
+            name="todo-title"
             value={title}
             onChange={(event) => setTitle(event.target.value)}
             placeholder={`raise a todo in #${room}`}
