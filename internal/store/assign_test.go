@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"testing"
@@ -403,5 +404,75 @@ func TestAClaimSaysWhoItTookTheWorkFrom(t *testing.T) {
 	if stands.Held != "a-welder" {
 		t.Errorf("the standing assignment says it took the work from %q, want a-welder",
 			stands.Held)
+	}
+}
+
+// THE COLUMN IS A SECOND READING OF ONE FACT, NOT A SECOND FACT.
+//
+// Two agents misread this board in one afternoon: status was a column and the
+// carrier was one level down in fields, so a filter had to dig into JSON and
+// one of them dug wrongly. The column fixes the reading; what it must not do is
+// become a value that can disagree with the signed payload.
+//
+// GENERATED ALWAYS is what makes that structural rather than disciplined - no
+// Go path writes it, so there is no path to forget - and this asserts the two
+// properties that follow: it tracks every write to the field, including one
+// that empties it, and a query filtering on it answers the same population as
+// the field does.
+func TestTheAssigneeColumnFollowsTheSignedField(t *testing.T) {
+	ctx, db := open(t)
+	project := declaredProject(t, ctx, db, "pac")
+	me := &Principal{UserID: "u-" + ulid.NewString(), Project: project}
+
+	carried := todoIn(t, ctx, db, me, "the one somebody is carrying", VisibilityShared, "")
+	idle := todoIn(t, ctx, db, me, "the one nobody has", VisibilityShared, "")
+
+	column := func(id string) string {
+		t.Helper()
+		var got sql.NullString
+		if err := db.sql.QueryRowContext(ctx,
+			`SELECT assignee FROM artifacts WHERE id = $1`, id).Scan(&got); err != nil {
+			t.Fatalf("read the column: %v", err)
+		}
+		return got.String
+	}
+
+	if _, _, err := db.AssignTodo(ctx, me, carried.ID, "a-welder", nil); err != nil {
+		t.Fatalf("assign: %v", err)
+	}
+	if got := column(carried.ID); got != "a-welder" {
+		t.Fatalf("the column reads %q after an assignment, want a-welder", got)
+	}
+	if got := column(idle.ID); got != "" {
+		t.Errorf("a row nobody was assigned reads %q in the column", got)
+	}
+
+	// The query answers the same population, which is the point of the column.
+	mine, err := db.ListArtifacts(ctx, me, ArtifactQuery{
+		Type: MemoryType, Kind: "todo", Assignee: "a-welder",
+	})
+	if err != nil {
+		t.Fatalf("list by assignee: %v", err)
+	}
+	seen := map[string]bool{}
+	for _, a := range mine {
+		seen[a.ID] = true
+	}
+	if !seen[carried.ID] || seen[idle.ID] {
+		t.Fatalf("filtering on the column returned %d rows and the wrong ones: carried=%v idle=%v",
+			len(mine), seen[carried.ID], seen[idle.ID])
+	}
+
+	// PUTTING IT DOWN IS A VALUE, and the column has to follow that too - a
+	// column that kept the old name would be the stale second copy this design
+	// exists to make impossible.
+	// Through the claim verb, which is the door that takes an `expect` - a held
+	// row moves by naming its holder, so putting somebody else's work down is a
+	// handover rather than an overwrite.
+	if _, _, err := db.ClaimTodo(ctx, me, carried.ID, "", "a-welder"); err != nil {
+		t.Fatalf("unassign: %v", err)
+	}
+	if got := column(carried.ID); got != "" {
+		t.Fatalf("after putting the work down the column still reads %q", got)
 	}
 }

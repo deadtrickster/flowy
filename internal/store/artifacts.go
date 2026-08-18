@@ -884,7 +884,21 @@ type ArtifactQuery struct {
 	Project   string
 	Status    string
 	NotStatus string // exclude one status - what "still open" means for a todo
-	Room      string // the chat room the artifact was raised in - fields->>'room'
+	// Assignee narrows to the work one seat is carrying, off the COLUMN rather
+	// than out of the fields blob.
+	//
+	// The column is generated from fields->>'assignee' - see schema.sql - so
+	// this is a second READING of one fact rather than a second fact: the
+	// signed payload is still where the value lives, nothing in Go writes the
+	// column, and a replicated row recomputes it here instead of taking a
+	// peer's word for it.
+	//
+	// Why it is a query at all: two agents misread this board in one afternoon
+	// because status was a column and the carrier was one level down, and a
+	// filter that has to dig into JSON is a filter every client writes for
+	// itself and one of them writes wrongly.
+	Assignee string
+	Room     string // the chat room the artifact was raised in - fields->>'room'
 	// Category narrows to one kind of work out of the closed set - see
 	// TodoCategories. This is the routing half of what a closed set is FOR: "give
 	// me the bugs" has to be a query the node answers rather than a filter each
@@ -956,6 +970,9 @@ func (q ArtifactQuery) narrow(a *args, alias string) string {
 	}
 	if q.Status != "" {
 		where += " AND " + alias + ".status = " + a.next(q.Status)
+	}
+	if q.Assignee != "" {
+		where += " AND " + alias + ".assignee = " + a.next(q.Assignee)
 	}
 	if q.Kind != "" {
 		where += " AND " + alias + ".kind = " + a.next(q.Kind)

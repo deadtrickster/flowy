@@ -848,6 +848,37 @@ CREATE INDEX IF NOT EXISTS artifacts_hlc_idx          ON artifacts (hlc);
 -- pedantry: a session can work for two hours and record nothing, so the honest
 -- reading is "no write since", never "nobody is working it". A nag that claims
 -- the second fires on whoever is doing the most work.
+-- WHO IS CARRYING IT, at the top level where status is - and DERIVED rather
+-- than written, which is what makes it a second reading of one fact instead of
+-- a second fact.
+--
+-- Two agents misread this board in one afternoon and both reads were honest:
+-- status is a column and the assignee was one level down in a JSON blob, and
+-- neither is discoverable from the other. The board filters on assignee, the
+-- ready query filters on assignee, board-nag filters on assignee - a fact three
+-- readers filter on belonged where they could see it.
+--
+-- GENERATED ALWAYS, and that is the whole design rather than a convenience:
+--
+--   fields is inside the row signature (see rowsig.go), so the signed truth
+--   does not move and nothing has to be re-signed
+--   no Go path can write this column, so it cannot drift from the field the
+--   way a hand-maintained copy would
+--   a replicated row RECOMPUTES it here from the payload, so a relay that
+--   rewrites it on the wire achieves nothing - the column is this node's
+--   arithmetic, not the peer's claim
+--
+-- The value is the raw field. "unassigned" and the rest of the words for nobody
+-- normalise in one place, NobodyName, and a query that wants that reading calls
+-- it - a column that normalised would be a third answer.
+ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS assignee text
+    GENERATED ALWAYS AS (fields->>'assignee') STORED;
+
+-- The board's own read: outstanding work for one carrier. Partial on purpose -
+-- most rows are done and nobody queries for a done row's carrier.
+CREATE INDEX IF NOT EXISTS artifacts_assignee_idx ON artifacts (assignee)
+    WHERE assignee IS NOT NULL;
+
 ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS started     timestamptz;
 ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS last_worked timestamptz;
 
