@@ -289,7 +289,15 @@ func (d *DB) ListPrincipalKeys(ctx context.Context) ([]PrincipalIdentity, error)
 // running node, and a cached absence would mean the node went on writing
 // unsigned rows for that principal until somebody restarted it - which is a
 // security fix that silently does not apply, the worst kind.
-func (d *DB) principalSigner(ctx context.Context, principal string) (ed25519.PrivateKey, bool, error) {
+//
+// Because the miss is not cached, this is the read that closed the pool
+// deadlock: a principal with no key here - which is nearly every principal - had
+// this query run on EVERY write, and the write that ran it was usually inside a
+// transaction. So it takes the caller's connection, like every other read a
+// write makes. See the note on the local write paths in rowsig.go.
+func (d *DB) principalSigner(
+	ctx context.Context, q execer, principal string,
+) (ed25519.PrivateKey, bool, error) {
 	if principal == "" {
 		return nil, false, nil
 	}
@@ -301,7 +309,7 @@ func (d *DB) principalSigner(ctx context.Context, principal string) (ed25519.Pri
 	d.authorMu.Unlock()
 
 	var raw []byte
-	err := d.sql.QueryRowContext(ctx,
+	err := q.QueryRowContext(ctx,
 		`SELECT private_key FROM principal_identity WHERE principal = $1`, principal).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) || len(raw) == 0 {
 		return nil, false, nil
@@ -322,15 +330,22 @@ func (d *DB) principalSigner(ctx context.Context, principal string) (ed25519.Pri
 	return priv, true, nil
 }
 
-// principalKeyOf reads a principal's public key and epoch inside a transaction:
-// the lookup the merge makes of every row that names an author.
+// principalKeyOf reads a principal's public key and epoch through whatever the
+// caller has in hand: the lookup the merge makes of every row that names an
+// author, and the one a local write makes to decide what it may claim about a
+// row it cannot sign itself.
+//
+// It takes an execer rather than a *sql.Tx because both callers are mid-write.
+// The merge always holds a transaction; a local write holds one when it is part
+// of a sequence and the pool otherwise, and either way this read has to go
+// through the same connection as the write it belongs to.
 func principalKeyOf(
-	ctx context.Context, tx *sql.Tx, principal string,
+	ctx context.Context, q execer, principal string,
 ) (public []byte, epoch int64, ok bool, err error) {
 	if principal == "" {
 		return nil, 0, false, nil
 	}
-	err = tx.QueryRowContext(ctx,
+	err = q.QueryRowContext(ctx,
 		`SELECT public_key, epoch_hlc FROM principal_identity WHERE principal = $1`, principal).
 		Scan(&public, &epoch)
 	if errors.Is(err, sql.ErrNoRows) {

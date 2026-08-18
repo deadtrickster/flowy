@@ -151,7 +151,7 @@ func (d *DB) upsertArtifact(ctx context.Context, q execer, a *Artifact) error {
 	default:
 		a.Created = createdNow()
 	}
-	if err := d.signArtifact(ctx, a); err != nil {
+	if err := d.signArtifact(ctx, q, a); err != nil {
 		return err
 	}
 
@@ -284,7 +284,7 @@ func (d *DB) SetArtifactFields(
 	a.Fields = fields
 	a.HLC = at
 	a.Node = d.node
-	if err := d.signArtifact(ctx, a); err != nil {
+	if err := d.signArtifact(ctx, d.sql, a); err != nil {
 		return err
 	}
 	// Each event's artifact and project are taken from the item rather than from
@@ -344,7 +344,7 @@ func (d *DB) SetArtifactFieldsIf(
 	a.Fields = fields
 	a.HLC = at
 	a.Node = d.node
-	if err := d.signArtifact(ctx, a); err != nil {
+	if err := d.signArtifact(ctx, d.sql, a); err != nil {
 		return err
 	}
 	for i, e := range events {
@@ -453,7 +453,9 @@ func (d *DB) SetArtifactWordsIf(
 	a.Title, a.Body = title, body
 	a.HLC = at
 	a.Node = d.node
-	if err := d.signArtifact(ctx, a); err != nil {
+	// The pool, not a transaction: the signature is settled before inTx opens
+	// one below, so there is nothing in hand yet to sign against.
+	if err := d.signArtifact(ctx, d.sql, a); err != nil {
 		return err
 	}
 	// The first event shares the row's reading and the rest take their own, for
@@ -537,7 +539,7 @@ func (d *DB) createArtifact(ctx context.Context, q execer, a *Artifact) error {
 	// createdNow. A create is always a new row, so there is no stored date to
 	// keep and none is taken from the caller.
 	a.Created = createdNow()
-	if err := d.signArtifact(ctx, a); err != nil {
+	if err := d.signArtifact(ctx, q, a); err != nil {
 		return err
 	}
 
@@ -1259,7 +1261,7 @@ func (d *DB) TombstoneArtifact(ctx context.Context, p *Principal, id string) (*A
 	art.Fields = fields
 	// The delete is a write like any other and travels as a row, so it is signed
 	// as one: a tombstone nobody signed is a delete a peer could have invented.
-	if err := d.signArtifact(ctx, art); err != nil {
+	if err := d.signArtifact(ctx, d.sql, art); err != nil {
 		return nil, err
 	}
 	res, err := d.sql.ExecContext(ctx,

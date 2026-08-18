@@ -434,7 +434,7 @@ func (d *DB) InsertArtifact(ctx context.Context, a *Artifact) error {
 	// The date is minted here and passed in rather than left to the column's
 	// default, because it is inside the signature - see createdNow.
 	a.Created = createdNow()
-	if err := d.signArtifact(ctx, a); err != nil {
+	if err := d.signArtifact(ctx, d.sql, a); err != nil {
 		return err
 	}
 	var fields any
@@ -565,7 +565,7 @@ func (d *DB) appendEvent(ctx context.Context, q execer, e *Event) error {
 	// The date is minted here and passed in rather than left to the column's
 	// default, because it is inside the signature - see createdNow.
 	e.Created = createdNow()
-	if err := d.signEvent(ctx, e); err != nil {
+	if err := d.signEvent(ctx, q, e); err != nil {
 		return err
 	}
 	var meta any

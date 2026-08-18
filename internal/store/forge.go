@@ -202,7 +202,7 @@ func (d *DB) setArtifactExternal(
 	// The link replicates, so it is signed: an artifact arriving at a peer with
 	// a forge link on it is a peer being told which repository this node's
 	// credential talks to, and that has to come from the node that filed it.
-	if err := d.signArtifact(ctx, art); err != nil {
+	if err := d.signArtifact(ctx, q, art); err != nil {
 		return err
 	}
 	unfiled := ""

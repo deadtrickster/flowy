@@ -132,7 +132,7 @@ func keyFromColumn(raw []byte) (ed25519.PrivateKey, error) {
 // signer, which goes through here, so a node that has never had a key gets one
 // on its first write rather than on a command somebody has to remember to run.
 func (d *DB) Identity(ctx context.Context) (*NodeIdentity, error) {
-	if _, err := d.signer(ctx); err != nil {
+	if _, err := d.signer(ctx, d.sql); err != nil {
 		return nil, err
 	}
 	return d.GetIdentity(ctx, d.node)
@@ -142,7 +142,21 @@ func (d *DB) Identity(ctx context.Context) (*NodeIdentity, error) {
 // the database round trip on purpose: two writers arriving at an empty table
 // at the same moment must not each mint a key and each think theirs is the
 // node's.
-func (d *DB) signer(ctx context.Context) (ed25519.PrivateKey, error) {
+//
+// It reads through whatever the caller is writing against, because a caller
+// holding a transaction that came here for a connection of its own is the pool
+// deadlock described in rowsig.go - and holding keyMu across that made it worse,
+// since the writer that queued for the second connection blocked every other
+// writer behind the lock as well.
+//
+// The key is cached only when it was READ, or when it was minted against the
+// pool. A key minted inside somebody else's transaction is a key that goes away
+// if that transaction rolls back, and caching it would leave this process
+// signing rows under a key node_identity does not have - rows nothing can ever
+// verify, which is worse than not signing them. Left uncached, the next writer
+// reads the committed row and caches that, or mints again. This costs one extra
+// read exactly once per database, on the cold path.
+func (d *DB) signer(ctx context.Context, q execer) (ed25519.PrivateKey, error) {
 	d.keyMu.Lock()
 	defer d.keyMu.Unlock()
 	if d.priv != nil {
@@ -150,7 +164,7 @@ func (d *DB) signer(ctx context.Context) (ed25519.PrivateKey, error) {
 	}
 
 	var raw []byte
-	err := d.sql.QueryRowContext(ctx,
+	err := q.QueryRowContext(ctx,
 		`SELECT private_key FROM node_identity WHERE node_id = $1`, d.node).Scan(&raw)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
@@ -181,7 +195,7 @@ func (d *DB) signer(ctx context.Context) (ed25519.PrivateKey, error) {
 		return nil, fmt.Errorf("store: write this node's identity: %w", err)
 	}
 	seed := priv.Seed()
-	_, err = d.sql.ExecContext(ctx,
+	_, err = q.ExecContext(ctx,
 		`INSERT INTO node_identity (node_id, public_key, private_key, pinned, created_hlc, sig)
 		 VALUES ($1, $2, $3, true, $4, $5)
 		 ON CONFLICT (node_id) DO NOTHING`,
@@ -193,7 +207,7 @@ func (d *DB) signer(ctx context.Context) (ed25519.PrivateKey, error) {
 	// Somebody else got there first - two processes on one database, which is
 	// an ordinary way to run a node - so the key that counts is the stored one.
 	var stored []byte
-	err = d.sql.QueryRowContext(ctx,
+	err = q.QueryRowContext(ctx,
 		`SELECT private_key FROM node_identity WHERE node_id = $1`, d.node).Scan(&stored)
 	if err != nil {
 		return nil, fmt.Errorf("store: read this node's identity: %w", err)
@@ -202,7 +216,9 @@ func (d *DB) signer(ctx context.Context) (ed25519.PrivateKey, error) {
 	if err != nil {
 		return nil, err
 	}
-	d.priv = priv
+	if pool, ok := q.(*sql.DB); ok && pool == d.sql {
+		d.priv = priv
+	}
 	return priv, nil
 }
 
@@ -212,7 +228,7 @@ func (d *DB) signer(ctx context.Context) (ed25519.PrivateKey, error) {
 // reach selects the column it lives in, and the four Sign* functions take it
 // rather than returning it.
 func (d *DB) SigningKey(ctx context.Context) (ed25519.PrivateKey, error) {
-	return d.signer(ctx)
+	return d.signer(ctx, d.sql)
 }
 
 // signIdentity is a node's self-signature: its own name and its own public key,

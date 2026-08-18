@@ -552,7 +552,7 @@ func (d *DB) insertGrant(ctx context.Context, q execer, g *Grant) error {
 			return err
 		}
 	}
-	if err := d.signGrant(ctx, g); err != nil {
+	if err := d.signGrant(ctx, q, g); err != nil {
 		return err
 	}
 	// artifact and subject are NULL rather than '' when absent: the filter asks

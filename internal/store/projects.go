@@ -402,7 +402,7 @@ func (d *DB) writeProject(ctx context.Context, p *Project) error {
 		// inside the signature - see createdNow.
 		p.Created = createdNow()
 	}
-	if err := d.signProject(ctx, p); err != nil {
+	if err := d.signProject(ctx, d.sql, p); err != nil {
 		return err
 	}
 	if _, err := upsertProject(ctx, d.sql, p); err != nil {

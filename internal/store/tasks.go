@@ -104,7 +104,7 @@ func (d *DB) insertTask(ctx context.Context, q execer, t *Task) error {
 	if t.State == "" {
 		t.State = TaskOpen
 	}
-	if err := d.signTask(ctx, t); err != nil {
+	if err := d.signTask(ctx, q, t); err != nil {
 		return err
 	}
 	// project and assignee_agent are NULL rather than '' when absent, so a
@@ -307,7 +307,7 @@ func (d *DB) UpdateTaskEvent(ctx context.Context, t *Task, e *Event) error {
 func (d *DB) updateTask(ctx context.Context, q execer, t *Task) error {
 	// A move is a row, and the row it becomes is what is signed: the state and
 	// the agent are both inside the signature, because both are capabilities.
-	if err := d.signTask(ctx, t); err != nil {
+	if err := d.signTask(ctx, q, t); err != nil {
 		return err
 	}
 	res, err := q.ExecContext(ctx,

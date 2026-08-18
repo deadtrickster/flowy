@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -292,14 +291,30 @@ func SignSet(priv ed25519.PrivateKey, set *SyncSet) {
 
 // The local write paths. Each of them stamps the row first and signs what it is
 // about to write, so the signature is over the values that land in the columns.
+//
+// EVERY ONE OF THEM TAKES THE THING THE WRITE IS BEING MADE AGAINST, and reads
+// the keys it needs through that, because signing is not a pure function of the
+// row: it reads this node's key and it reads the author's. Those reads used to
+// go to d.sql - the pool - whatever the caller had in hand, and a caller with a
+// transaction in hand therefore held one connection while queueing for a second.
+//
+// The pool is finite. Once as many writers were in flight as the pool has
+// connections, every connection was inside a transaction and every transaction
+// was waiting for a connection, and the only thing that ever broke the cycle was
+// a context expiring. It did not present as a deadlock - the writes eventually
+// returned, having failed, so it read as latency - which is how it survived.
+//
+// So the rule is: a read a write makes goes through the same connection as the
+// write. Enlarging the pool would only move the number of concurrent writers at
+// which the cycle closes.
 
-func (d *DB) signArtifact(ctx context.Context, a *Artifact) error {
-	priv, err := d.signer(ctx)
+func (d *DB) signArtifact(ctx context.Context, q execer, a *Artifact) error {
+	priv, err := d.signer(ctx, q)
 	if err != nil {
 		return err
 	}
 	SignArtifact(priv, a)
-	return d.authorArtifact(ctx, a)
+	return d.authorArtifact(ctx, q, a)
 }
 
 // authorArtifact puts the owner's own signature on a row this node is about to
@@ -311,8 +326,8 @@ func (d *DB) signArtifact(ctx context.Context, a *Artifact) error {
 // sign.CanonicalArtifactAuthorship - so it is still the owner's signature over
 // the owner's words and it travels on. Clearing it would turn every party's
 // ordinary write into a row the owner's peers then refuse.
-func (d *DB) authorArtifact(ctx context.Context, a *Artifact) error {
-	priv, held, err := d.principalSigner(ctx, a.OwnerUser)
+func (d *DB) authorArtifact(ctx context.Context, q execer, a *Artifact) error {
+	priv, held, err := d.principalSigner(ctx, q, a.OwnerUser)
 	if err != nil {
 		return err
 	}
@@ -321,18 +336,18 @@ func (d *DB) authorArtifact(ctx context.Context, a *Artifact) error {
 		a.Authorship = AuthorshipAuthored
 		return nil
 	}
-	a.Authorship, err = d.authorshipHere(ctx, a.OwnerUser,
+	a.Authorship, err = d.authorshipHere(ctx, q, a.OwnerUser,
 		canonicalArtifactAuthorship(a.OwnerUser, a), a.AuthorSig)
 	return err
 }
 
-func (d *DB) signEvent(ctx context.Context, e *Event) error {
-	priv, err := d.signer(ctx)
+func (d *DB) signEvent(ctx context.Context, q execer, e *Event) error {
+	priv, err := d.signer(ctx, q)
 	if err != nil {
 		return err
 	}
 	SignEvent(priv, e)
-	return d.authorEvent(ctx, e)
+	return d.authorEvent(ctx, q, e)
 }
 
 // authorEvent puts the actor's own signature on an entry this node is about to
@@ -340,8 +355,8 @@ func (d *DB) signEvent(ctx context.Context, e *Event) error {
 // what POST /api/events enforces and what checkEvent enforces at the merge - so
 // this node signing as that principal is this node saying what its own
 // credentials already said, with a key rather than with a claim.
-func (d *DB) authorEvent(ctx context.Context, e *Event) error {
-	priv, held, err := d.principalSigner(ctx, e.Actor)
+func (d *DB) authorEvent(ctx context.Context, q execer, e *Event) error {
+	priv, held, err := d.principalSigner(ctx, q, e.Actor)
 	if err != nil {
 		return err
 	}
@@ -350,7 +365,8 @@ func (d *DB) authorEvent(ctx context.Context, e *Event) error {
 		e.Authorship = AuthorshipAuthored
 		return nil
 	}
-	e.Authorship, err = d.authorshipHere(ctx, e.Actor, canonicalEventAuthorship(e.Actor, e), e.AuthorSig)
+	e.Authorship, err = d.authorshipHere(ctx, q, e.Actor,
+		canonicalEventAuthorship(e.Actor, e), e.AuthorSig)
 	return err
 }
 
@@ -362,25 +378,31 @@ func (d *DB) authorEvent(ctx context.Context, e *Event) error {
 // that holds no key for a principal is in the position every node was in before
 // principal signing existed, and the mark says so rather than dressing the
 // node's own word up as the author's.
-func (d *DB) authorshipHere(ctx context.Context, author string, msg, sig []byte) (string, error) {
+func (d *DB) authorshipHere(
+	ctx context.Context, q execer, author string, msg, sig []byte,
+) (string, error) {
 	if author == "" || len(sig) == 0 {
 		return AuthorshipAttributed, nil
 	}
-	held, err := d.GetPrincipalKey(ctx, author)
-	if errors.Is(err, ErrNotFound) {
-		return AuthorshipAttributed, nil
-	}
+	// principalKeyOf rather than GetPrincipalKey because this read is made on
+	// behalf of a write and must go through the same connection as the write -
+	// see the note at the top of the local write paths. It is the same lookup
+	// the merge makes of every row that names an author.
+	public, _, ok, err := principalKeyOf(ctx, q, author)
 	if err != nil {
 		return AuthorshipAttributed, err
 	}
-	if verifyBytes(held.PublicKey, msg, sig) {
+	if !ok {
+		return AuthorshipAttributed, nil
+	}
+	if verifyBytes(public, msg, sig) {
 		return AuthorshipAuthored, nil
 	}
 	return AuthorshipAttributed, nil
 }
 
-func (d *DB) signGrant(ctx context.Context, g *Grant) error {
-	priv, err := d.signer(ctx)
+func (d *DB) signGrant(ctx context.Context, q execer, g *Grant) error {
+	priv, err := d.signer(ctx, q)
 	if err != nil {
 		return err
 	}
@@ -388,8 +410,8 @@ func (d *DB) signGrant(ctx context.Context, g *Grant) error {
 	return nil
 }
 
-func (d *DB) signProject(ctx context.Context, p *Project) error {
-	priv, err := d.signer(ctx)
+func (d *DB) signProject(ctx context.Context, q execer, p *Project) error {
+	priv, err := d.signer(ctx, q)
 	if err != nil {
 		return err
 	}
@@ -397,8 +419,8 @@ func (d *DB) signProject(ctx context.Context, p *Project) error {
 	return nil
 }
 
-func (d *DB) signTask(ctx context.Context, t *Task) error {
-	priv, err := d.signer(ctx)
+func (d *DB) signTask(ctx context.Context, q execer, t *Task) error {
+	priv, err := d.signer(ctx, q)
 	if err != nil {
 		return err
 	}

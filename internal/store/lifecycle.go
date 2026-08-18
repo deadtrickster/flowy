@@ -39,7 +39,7 @@ func (d *DB) setArtifactStatus(
 	art.Node = d.node
 	// The row this node is about to have is the row it signs: a status move
 	// changes one column and the reading, and both are inside the signature.
-	if err := d.signArtifact(ctx, art); err != nil {
+	if err := d.signArtifact(ctx, q, art); err != nil {
 		return err
 	}
 	res, err := q.ExecContext(ctx,
