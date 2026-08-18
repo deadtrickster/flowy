@@ -82,21 +82,30 @@ func lockCtx(t *testing.T) (context.Context, *DB, string) {
 	return ctx, db, declaredProject(t, ctx, db, "ml")
 }
 
+// ownTarget is this test's private target. The lock table keys on the target,
+// and a shared "master" would be one test's holder refusing another's - a
+// fresh name per test is the same discipline as a fresh project.
+func ownTarget(t *testing.T) string {
+	t.Helper()
+	return "master-" + ulid.NewString()
+}
+
 // takeBy is TakeMergeLock for one principal, so every test below exercises the
 // real compare-and-set rather than a shared shortcut.
-func takeBy(t *testing.T, ctx context.Context, db *DB, actor string) (*MergeLock, error) {
+func takeBy(t *testing.T, ctx context.Context, db *DB, actor, target string) (*MergeLock, error) {
 	t.Helper()
-	return db.TakeMergeLock(ctx, &Principal{UserID: actor, Project: "ml"}, DefaultMergeTarget)
+	return db.TakeMergeLock(ctx, &Principal{UserID: actor, Project: "ml"}, target)
 }
 
 func TestASecondDeclarerLosesAndIsToldWhoHolds(t *testing.T) {
 	ctx, db, _ := lockCtx(t)
+	target := ownTarget(t)
 
-	first, err := takeBy(t, ctx, db, "u-first")
+	first, err := takeBy(t, ctx, db, "u-first", target)
 	if err != nil {
 		t.Fatalf("the first declarer takes the target: %v", err)
 	}
-	_, err = takeBy(t, ctx, db, "u-second")
+	_, err = takeBy(t, ctx, db, "u-second", target)
 	var held *ErrTargetHeld
 	if !errors.As(err, &held) {
 		t.Fatalf("the second declarer came back %v, want ErrTargetHeld", err)
@@ -107,19 +116,19 @@ func TestASecondDeclarerLosesAndIsToldWhoHolds(t *testing.T) {
 
 	// The holder's own renewal wins: a re-declare is the same principal
 	// measuring again, not a rival.
-	if _, err := takeBy(t, ctx, db, "u-first"); err != nil {
+	if _, err := takeBy(t, ctx, db, "u-first", target); err != nil {
 		t.Fatalf("the holder's own re-declare was refused: %v", err)
 	}
 	// Non-holders cannot release what they do not hold: the release reports
 	// nothing gone, and the lock reads back still held by the first.
-	gone, err := db.ReleaseMergeLock(ctx, &Principal{UserID: "u-second"}, DefaultMergeTarget)
+	gone, err := db.ReleaseMergeLock(ctx, &Principal{UserID: "u-second"}, target)
 	if err != nil {
 		t.Fatalf("release: %v", err)
 	}
 	if gone {
 		t.Fatal("a non-holder released somebody else's lock")
 	}
-	still, err := db.MergeLockOf(ctx, DefaultMergeTarget)
+	still, err := db.MergeLockOf(ctx, target)
 	if err != nil || still == nil || still.Holder != first.Holder {
 		t.Fatalf("the lock did not survive the non-holder's release: %+v %v", still, err)
 	}
@@ -127,18 +136,19 @@ func TestASecondDeclarerLosesAndIsToldWhoHolds(t *testing.T) {
 
 func TestAnExpiredLockLosesToTheNextDeclarer(t *testing.T) {
 	ctx, db, _ := lockCtx(t)
+	target := ownTarget(t)
 
-	if _, err := takeBy(t, ctx, db, "u-first"); err != nil {
+	if _, err := takeBy(t, ctx, db, "u-first", target); err != nil {
 		t.Fatalf("take: %v", err)
 	}
 	// Age the row past its until directly: the belief window is the expiry's
 	// business, and no test should wait fifteen minutes for it.
 	if _, err := db.sql.ExecContext(ctx,
 		`UPDATE merge_locks SET until = now() - interval '1 second' WHERE target = $1`,
-		DefaultMergeTarget); err != nil {
+		target); err != nil {
 		t.Fatalf("age the lock: %v", err)
 	}
-	if _, err := takeBy(t, ctx, db, "u-second"); err != nil {
+	if _, err := takeBy(t, ctx, db, "u-second", target); err != nil {
 		t.Fatalf("an expired lock must lose to the next declarer: %v", err)
 	}
 }
@@ -147,12 +157,13 @@ func TestAnExpiredLockLosesToTheNextDeclarer(t *testing.T) {
 // gating reserved nothing, so every honest run raced every landing.
 func TestADeclarationTakesTheTargetAndRefusesItsRival(t *testing.T) {
 	ctx, db, project := lockCtx(t)
+	target := ownTarget(t)
 
 	first := &Principal{UserID: "u-first", Project: project}
 	row := &Artifact{
 		ID: ulid.NewString(), Type: MemoryType, Kind: MergeKind, Project: &project,
 		OwnerUser: first.UserID, Title: "one branch", Visibility: "project",
-		Fields: marshalFields(t, map[string]any{BranchField: "feat-one"}),
+		Fields: marshalFields(t, map[string]any{BranchField: "feat-one", TargetField: target}),
 	}
 	if err := db.UpsertArtifact(ctx, row); err != nil {
 		t.Fatalf("file the merge request: %v", err)
@@ -174,13 +185,14 @@ func TestADeclarationTakesTheTargetAndRefusesItsRival(t *testing.T) {
 // closes the row, advances the chain and releases the lock.
 func TestLandRefusesAndThenLands(t *testing.T) {
 	ctx, db, project := lockCtx(t)
+	target := ownTarget(t)
 
 	holder := &Principal{UserID: "u-holder", Project: project}
 	other := &Principal{UserID: "u-other", Project: project}
 	row := &Artifact{
 		ID: ulid.NewString(), Type: MemoryType, Kind: MergeKind, Project: &project,
 		OwnerUser: holder.UserID, Title: "one branch", Visibility: "project",
-		Fields: marshalFields(t, map[string]any{BranchField: "feat-one"}),
+		Fields: marshalFields(t, map[string]any{BranchField: "feat-one", TargetField: target}),
 	}
 	if err := db.UpsertArtifact(ctx, row); err != nil {
 		t.Fatalf("file the merge request: %v", err)
@@ -191,9 +203,13 @@ func TestLandRefusesAndThenLands(t *testing.T) {
 	if _, _, err := db.LandMerge(ctx, holder, row.ID, "abc1234"); err == nil {
 		t.Fatal("a land without a verdict succeeded")
 	}
-	// No lock: a land that skips the declaration skips the exclusivity.
+	// Declare, then the verdict: the declaration is what takes the target, so
+	// a land that skips it skips the exclusivity.
+	if _, _, err := db.SetMergeGate(ctx, holder, row.ID, "run1", "", ""); err != nil {
+		t.Fatalf("declare the run: %v", err)
+	}
 	if _, _, err := db.SetMergeGate(ctx, holder, row.ID, "run1", "1111111", ""); err != nil {
-		t.Fatalf("declare and record the verdict: %v", err)
+		t.Fatalf("record the verdict: %v", err)
 	}
 	if _, _, err := db.LandMerge(ctx, other, row.ID, "abc1234"); err == nil {
 		t.Fatal("a land by a principal who holds no lock succeeded")
@@ -211,11 +227,11 @@ func TestLandRefusesAndThenLands(t *testing.T) {
 	if art.Status != DoneStatus {
 		t.Errorf("status = %q, want done", art.Status)
 	}
-	chain, err := db.LandedTipOf(ctx, DefaultMergeTarget)
+	chain, err := db.LandedTipOf(ctx, target)
 	if err != nil || chain == nil || chain.Tip != "abc1234def5678" {
 		t.Fatalf("the chain did not advance: %+v %v", chain, err)
 	}
-	lock, err := db.MergeLockOf(ctx, DefaultMergeTarget)
+	lock, err := db.MergeLockOf(ctx, target)
 	if err != nil {
 		t.Fatalf("read the lock after land: %v", err)
 	}
