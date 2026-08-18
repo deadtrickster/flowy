@@ -255,6 +255,95 @@ var findingTools = []tool{
 		InputSchema: object(props{"finding": str("The finding's id.")}, []string{"finding"}),
 		call:        findingUpstreamLog,
 	},
+	{
+		Name: "finding_evidence",
+		Description: "Record HOW STRONG a finding's evidence is, and what commit it rests " +
+			"on. This is the third axis and it is neither of the other two: our lifecycle " +
+			"says how far we got writing it up, upstream says what their tracker says, and " +
+			"this says how sure anybody is. source is somebody read the code and believes " +
+			"this is wrong; reproduced is somebody ran it and watched it happen; verified " +
+			"is IT WAS RUN AGAINST A NAMED COMMIT, and that commit is required - the sha " +
+			"is the content of the word, and a report whose repro was never run against " +
+			"current main is closed upstream as already-fixed. AN UNSTATED EVIDENCE IS " +
+			"'nobody has said', which is NOT source: source is a claim somebody made, so " +
+			"there is nothing to set for a finding nobody has judged, and an empty state " +
+			"is refused rather than being a way to write one. An update states what " +
+			"changes: {finding, state} keeps the commit already on the row. A thin wrapper " +
+			"over store.SetFindingEvidence, where every refusal lives.",
+		InputSchema: object(props{
+			"finding": str("The finding's id."),
+			"state": enum("How strong the evidence is. verified requires verified_on.",
+				store.EvidenceStates),
+			"verified_on": str("The commit the reproduction was run against - a sha, or a " +
+				"tag when that is genuinely what ran. Required for verified, allowed for " +
+				"reproduced, refused for source, which is nobody having run it. Leave it " +
+				"out on an update to keep the commit already on the row."),
+			"verified_at": str("When that run happened - 2006-01-02 or full RFC3339. Leave " +
+				"it out and the node stamps now for a run against a new commit, or keeps " +
+				"the day the standing one was made. State it when importing a claim " +
+				"somebody wrote down months ago."),
+			"last_run": str("The run whose log backs the claim, so a reader gets from the " +
+				"word to the evidence in one hop. See finding_run_list for the full log."),
+		}, []string{"finding", "state"}),
+		call: findingEvidence,
+	},
+	{
+		Name: "finding_evidence_log",
+		Description: "Every evidence claim recorded against a finding, oldest first - so " +
+			"read-the-code, then ran-it, then ran-it-on-this-commit reads as one story " +
+			"rather than only where it ended up, and a claim walked back still names the " +
+			"commit it used to rest on. A thin wrapper over store.FindingEvidenceLog.",
+		InputSchema: object(props{"finding": str("The finding's id.")}, []string{"finding"}),
+		call:        findingEvidenceLog,
+	},
+}
+
+// findingEvidence records how strong a finding's evidence is. Every rule - the
+// vocabulary, the commit behind `verified`, the refusal of a commit under
+// `source` - is in store.SetFindingEvidence, and this only carries the arguments
+// across.
+func findingEvidence(ctx context.Context, m *mcpServer, p *store.Principal, raw json.RawMessage) (any, error) {
+	var a struct {
+		Finding    string `json:"finding"`
+		State      string `json:"state"`
+		VerifiedOn string `json:"verified_on"`
+		VerifiedAt string `json:"verified_at"`
+		LastRun    string `json:"last_run"`
+	}
+	if err := decodeParams(raw, &a); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(a.Finding) == "" {
+		return nil, errors.New("finding is required")
+	}
+	art, entry, err := m.db.SetFindingEvidence(ctx, p, a.Finding, store.Evidence{
+		State: a.State, VerifiedOn: a.VerifiedOn, VerifiedAt: a.VerifiedAt, LastRun: a.LastRun,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"item":     art,
+		"evidence": store.FindingEvidenceOf(art),
+		"entry":    store.EvidenceEntryOf(entry),
+	}, nil
+}
+
+func findingEvidenceLog(ctx context.Context, m *mcpServer, p *store.Principal, raw json.RawMessage) (any, error) {
+	var a struct {
+		Finding string `json:"finding"`
+	}
+	if err := decodeParams(raw, &a); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(a.Finding) == "" {
+		return nil, errors.New("finding is required")
+	}
+	entries, err := m.db.FindingEvidenceLog(ctx, p, a.Finding)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"finding": a.Finding, "count": len(entries), "entries": entries}, nil
 }
 
 // findingUpstream records a filing on somebody else's tracker. Every rule -
@@ -640,11 +729,17 @@ func findingRead(ctx context.Context, m *mcpServer, p *store.Principal, raw json
 	if art.Type != findingType {
 		return nil, store.NotAFindingError{ID: a.ID}
 	}
-	// Both axes on one read: the lifecycle is on the row already, and the
-	// filing is rendered beside it rather than left as raw keys in fields for
-	// each surface to dig out and spell differently. A finding nobody filed
-	// answers unfiled here, which is a fact and not a blank.
-	return map[string]any{"item": art, "upstream": store.FindingUpstreamOf(art)}, nil
+	// All three axes on one read: the lifecycle is on the row already, and the
+	// filing and the evidence are rendered beside it rather than left as raw
+	// keys in fields for each surface to dig out and spell differently. A
+	// finding nobody filed answers unfiled here, which is a fact and not a
+	// blank; one nobody has judged answers with an empty evidence state, which
+	// is a different fact - "nobody has said" is not "source".
+	return map[string]any{
+		"item":     art,
+		"upstream": store.FindingUpstreamOf(art),
+		"evidence": store.FindingEvidenceOf(art),
+	}, nil
 }
 
 // findingQuery builds the store query every finding read shares.

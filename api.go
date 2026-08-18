@@ -701,6 +701,12 @@ var mintedTypes = map[string]bool{
 	// entry typed in here would say a finding was filed as an issue that nobody
 	// opened. See store.SetFindingUpstream.
 	store.EventFindingUpstream: true,
+	// And how strong the evidence is. The refusal that makes that word a fact -
+	// `verified` names the commit the reproduction was run against - is on the
+	// verb, and the claim is written on the row in the same transaction. An entry
+	// typed in here would say a finding was verified against a build nobody ran.
+	// See store.SetFindingEvidence.
+	store.EventFindingEvidence: true,
 	// And an edit of a todo's words, which is the sharpest case on this list:
 	// the entry's whole content is "this was written against a row that had not
 	// moved", and the compare-and-set on the verb is the only thing that makes

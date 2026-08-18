@@ -1538,6 +1538,14 @@ var mintedEventTypes = map[string]bool{
 	// over here would be a filing with none of those asked, sitting beside a row
 	// that never moved.
 	EventFindingUpstream: true,
+	// And how strong a finding's evidence is. Minted for the first reason - the
+	// claim is only worth reading if somebody made it through the verb - and
+	// because the refusal the whole axis exists for is on the verb: `verified`
+	// names the commit its reproduction ran against, and a report whose repro was
+	// never run against current main is closed upstream as already-fixed. An
+	// entry handed over here would be a verified claim with no commit, sitting
+	// beside a row that never moved.
+	EventFindingEvidence: true,
 	// And an edit of a todo's words. Minted for the first reason and for the
 	// one this verb is entirely made of: the entry says the edit was written
 	// against a state the row was actually in, and the only thing that makes
