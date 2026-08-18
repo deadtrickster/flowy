@@ -102,7 +102,7 @@ func (s *server) handleTodoCategory(w http.ResponseWriter, r *http.Request) {
 	}
 	art, _, err := s.db.SetTodoCategory(r.Context(), p, r.PathValue("id"), req.Category)
 	if err != nil {
-		writeQueueError(w, r, err)
+		s.writeQueueError(w, r, err)
 		return
 	}
 	view, err := viewCategory(r.Context(), s.db, p, art)
@@ -121,7 +121,7 @@ func (s *server) handleTodoCategoryRead(w http.ResponseWriter, r *http.Request) 
 	p := principalOf(r)
 	art, err := s.db.ReadWorkItem(r.Context(), p, r.PathValue("id"))
 	if err != nil {
-		writeQueueError(w, r, err)
+		s.writeQueueError(w, r, err)
 		return
 	}
 	view, err := viewCategory(r.Context(), s.db, p, art)

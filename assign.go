@@ -135,7 +135,7 @@ func (s *server) handleTodoAssign(w http.ResponseWriter, r *http.Request) {
 		art, _, err = s.db.AssignTodo(r.Context(), p, r.PathValue("id"), req.Assignee, nil)
 	}
 	if err != nil {
-		writeAssignError(w, r, err)
+		s.writeAssignError(w, r, err)
 		return
 	}
 	view, err := viewAssignment(r.Context(), s.db, p, art)
@@ -154,7 +154,7 @@ func (s *server) handleTodoAssignee(w http.ResponseWriter, r *http.Request) {
 	p := principalOf(r)
 	art, err := s.db.ReadWorkItem(r.Context(), p, r.PathValue("id"))
 	if err != nil {
-		writeQueueError(w, r, err)
+		s.writeQueueError(w, r, err)
 		return
 	}
 	view, err := viewAssignment(r.Context(), s.db, p, art)
@@ -250,7 +250,7 @@ func (s *server) handleRoomTodoAssign(w http.ResponseWriter, r *http.Request) {
 	}
 	art, _, err = s.db.AssignTodo(r.Context(), p, id, name, said)
 	if err != nil {
-		writeQueueError(w, r, err)
+		s.writeQueueError(w, r, err)
 		return
 	}
 	view, err := viewAssignment(r.Context(), s.db, p, art)
@@ -326,11 +326,16 @@ func assignmentSaid(title, was, now string) string {
 // may make it again against another row, and a client retrying needs to tell
 // "somebody beat you" apart from "you asked wrongly". Everything else keeps the
 // mapping the queue verbs already share.
-func writeAssignError(w http.ResponseWriter, r *http.Request, err error) {
+// A lost claim carries the row explaining it, when somebody has written one, on
+// the same terms every other refusal here does - see knownissue.go. This is the
+// door the row calls out by name: "a claim lost to a compare-and-set" is on the
+// list of things already explained in chat at least once, and it will be
+// explained again to whoever loses the next one.
+func (s *server) writeAssignError(w http.ResponseWriter, r *http.Request, err error) {
 	var held store.ErrHeldBy
 	if errors.As(err, &held) {
-		writeJSON(w, http.StatusConflict, errorBody(held.Error()))
+		s.writeRefusal(w, r, http.StatusConflict, err, held.Error())
 		return
 	}
-	writeQueueError(w, r, err)
+	s.writeQueueError(w, r, err)
 }

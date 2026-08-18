@@ -315,6 +315,23 @@ export interface MergeRequest {
   reason?: string;
   /** True while a run is measuring this branch and has not reported yet. */
   gating: boolean;
+  /**
+   * The row somebody already wrote about this refusal, when there is one.
+   *
+   * It arrives attached to the refusal because that is the whole point: the
+   * reader is looking at a no they did not expect, and this is the moment they
+   * would otherwise start diagnosing it from scratch. `ref` is project/type/id -
+   * the console's own route - and is absent for a row personal to its author,
+   * which no route reaches.
+   */
+  known_issue?: KnownIssue;
+}
+
+export interface KnownIssue {
+  code: string;
+  id: string;
+  title: string;
+  ref?: string;
 }
 
 export interface Artifact {

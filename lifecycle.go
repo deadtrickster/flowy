@@ -257,7 +257,7 @@ func (s *server) queueStatusMove(
 ) {
 	art, event, err := s.db.SetTodoStatus(r.Context(), principalOf(r), art.ID, to)
 	if err != nil {
-		writeQueueError(w, r, err)
+		s.writeQueueError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"artifact": art, "event": event})

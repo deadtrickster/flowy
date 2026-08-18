@@ -1,7 +1,7 @@
 import { Link } from "react-router-dom";
 
 import { Badge } from "@/components/ui/badge";
-import type { MergeRequest } from "@/lib/api";
+import type { KnownIssue, MergeRequest } from "@/lib/api";
 import { statusStyle } from "@/lib/todos";
 
 /**
@@ -137,12 +137,51 @@ export function MergeQueue({
               what to re-gate against.
             */}
             {m.admissible === false && m.reason ? (
-              <p className="text-muted-foreground text-xs">{m.reason}</p>
+              <p className="text-muted-foreground text-xs">
+                {m.reason}
+                {/*
+                  The row that explains this refusal, INLINE with the refusal
+                  and not as a banner over the panel. A banner is a second
+                  announcement, and announcing is what already failed: the row
+                  this feature was built for was filed and announced twice, and
+                  still cost one agent three gate runs and another forty minutes
+                  of re-derivation, because it was not in front of the person
+                  looking at the symptom.
+                */}
+                {m.known_issue ? <KnownIssueLink issue={m.known_issue} /> : null}
+              </p>
             ) : null}
           </li>
         ))}
       </ul>
     </div>
+  );
+}
+
+/**
+ * The pointer at the end of a refusal: "known: <title>", linked to the row.
+ *
+ * The title is shown rather than the id because the title is what makes a
+ * reader decide to open it - an id asks them to fetch before they can tell
+ * whether it is worth fetching, and at this moment they are already annoyed.
+ *
+ * A row with no ref is one personal to its author: no route reaches it, so the
+ * text stands unlinked rather than pointing somewhere that answers 404. That is
+ * still the useful half - it says this is known and what it is called.
+ */
+function KnownIssueLink({ issue }: { issue: KnownIssue }) {
+  const label = `known: ${issue.title}`;
+  return (
+    <>
+      {" — "}
+      {issue.ref ? (
+        <Link className="underline" data-known-issue={issue.id} to={`/p/${issue.ref}`}>
+          {label}
+        </Link>
+      ) : (
+        <span data-known-issue={issue.id}>{label}</span>
+      )}
+    </>
   );
 }
 

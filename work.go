@@ -25,7 +25,7 @@ func (s *server) handleWorkClaim(w http.ResponseWriter, r *http.Request) {
 	p := principalOf(r)
 	art, entry, err := s.db.ClaimWork(r.Context(), p, r.PathValue("id"))
 	if err != nil {
-		writeWorkError(w, r, err)
+		s.writeWorkError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, workAnswer(art, entry))
@@ -38,7 +38,7 @@ func (s *server) handleWorkRelease(w http.ResponseWriter, r *http.Request) {
 	p := principalOf(r)
 	art, entry, err := s.db.ReleaseWork(r.Context(), p, r.PathValue("id"))
 	if err != nil {
-		writeWorkError(w, r, err)
+		s.writeWorkError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, workAnswer(art, entry))
@@ -51,7 +51,7 @@ func (s *server) handleWorkDone(w http.ResponseWriter, r *http.Request) {
 	p := principalOf(r)
 	art, entry, err := s.db.FinishWork(r.Context(), p, r.PathValue("id"))
 	if err != nil {
-		writeWorkError(w, r, err)
+		s.writeWorkError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, workAnswer(art, entry))
@@ -80,17 +80,21 @@ func workAnswer(art *store.Artifact, entry *store.Event) map[string]any {
 // what 409 means and what a retrying client needs to tell apart from "you asked
 // wrongly". Everything else goes through the mapping the other queue verbs
 // already use.
-func writeWorkError(w http.ResponseWriter, r *http.Request, err error) {
+func (s *server) writeWorkError(w http.ResponseWriter, r *http.Request, err error) {
 	var (
 		taken store.ErrTakenBy
 		bound store.ErrBoundElsewhere
 	)
+	// Both conflicts carry the row explaining them when one exists - see
+	// knownissue.go. "A claim lost to a compare-and-set" is on the short list of
+	// refusals this room has already explained in chat and will explain again,
+	// and the person it happens to is never the person who wrote the row.
 	switch {
 	case errors.As(err, &taken):
-		writeJSON(w, http.StatusConflict, errorBody(taken.Error()))
+		s.writeRefusal(w, r, http.StatusConflict, err, taken.Error())
 	case errors.As(err, &bound):
-		writeJSON(w, http.StatusConflict, errorBody(bound.Error()))
+		s.writeRefusal(w, r, http.StatusConflict, err, bound.Error())
 	default:
-		writeQueueError(w, r, err)
+		s.writeQueueError(w, r, err)
 	}
 }
