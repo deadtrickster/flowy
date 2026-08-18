@@ -233,6 +233,19 @@ func (d *DB) AssignTodo(
 	if err != nil {
 		return nil, nil, err
 	}
+	// "me" IS THE CALLER, not a handle. Resolved here rather than stored: see
+	// SelfName for the seat this invented on the board.
+	// RESOLVED WHEN IT CAN BE, and left alone when it cannot. A seat with no
+	// handle has nothing to resolve to, and refusing there would break every
+	// handle-less caller for a defect they do not have - measured as
+	// TestRestatingYourOwnClaimIsNotARace, which claims as "me" on a seat that
+	// has never had one. The phantom seat this fixes is the case where a handle
+	// EXISTS and the door stored the word instead.
+	if SelfName(name) {
+		if mine := d.seatHandle(ctx, p); mine != "" {
+			name = mine
+		}
+	}
 	art, err := d.readWorkItem(ctx, p, strings.TrimSpace(todo))
 	if err != nil {
 		return nil, nil, err

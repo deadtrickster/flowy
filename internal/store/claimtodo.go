@@ -81,6 +81,19 @@ func (d *DB) ClaimTodo(
 	if err != nil {
 		return nil, nil, err
 	}
+	// "me" IS THE CALLER here too. The claim door is the one every agent uses,
+	// so leaving it unresolved is what put a seat called "me" on the board.
+	// RESOLVED WHEN IT CAN BE, and left alone when it cannot. A seat with no
+	// handle has nothing to resolve to, and refusing there would break every
+	// handle-less caller for a defect they do not have - measured as
+	// TestRestatingYourOwnClaimIsNotARace, which claims as "me" on a seat that
+	// has never had one. The phantom seat this fixes is the case where a handle
+	// EXISTS and the door stored the word instead.
+	if SelfName(name) {
+		if mine := d.seatHandle(ctx, p); mine != "" {
+			name = mine
+		}
+	}
 	expect = strings.TrimSpace(expect)
 	art, err := d.readWorkItem(ctx, p, strings.TrimSpace(todo))
 	if err != nil {
