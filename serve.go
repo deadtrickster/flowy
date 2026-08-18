@@ -372,6 +372,7 @@ func (s *server) routes() http.Handler {
 	api.HandleFunc("GET /api/merge-queue", s.handleMergeQueue)
 	api.HandleFunc("POST /api/merge/{id}/gate", s.handleMergeGate)
 	api.HandleFunc("POST /api/merge/{id}/land", s.handleMergeLand)
+	api.HandleFunc("POST /api/merge/{id}/abandon", s.handleMergeAbandon)
 	api.HandleFunc("GET /api/artifact/{id}", s.handleGetArtifact)
 	api.HandleFunc("POST /api/artifact/{id}/delete", s.handleDeleteArtifact)
 	api.HandleFunc("POST /api/artifact/{id}/status", s.handleArtifactStatus)
