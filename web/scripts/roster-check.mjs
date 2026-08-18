@@ -125,6 +125,26 @@ Either the roster is not drawing its listeners or it does not mark them.${errors
       console.error(`${reader} is marked ${kind} in the markup and says nothing on the screen`);
       process.exit(1);
     }
+    // AND WHEN IT LAST ACTED, beside when it last polled. Two seats polled for
+    // an hour and a half and two hours after their last written word, and every
+    // column on this pane read them healthy for the whole of it - so a roster
+    // that draws one clock answers a question nobody is asking. The node
+    // derives the second from the events the seat authored; this asserts the
+    // pane READS it, which is where the last one stopped.
+    const acted = line.locator("[data-listener-acted]").first();
+    if ((await acted.count()) === 0) {
+      console.error(
+        `the roster line for ${JSON.stringify(reader)} says when it polled and not when it acted:
+${JSON.stringify(await line.innerText())}`,
+      );
+      process.exit(1);
+    }
+    const saidActed = (await acted.innerText()).trim();
+    if (saidActed === "") {
+      console.error(`${reader} carries an acted attribute and draws nothing for it`);
+      process.exit(1);
+    }
+
     seen.push({ reader, kind, label });
   }
 

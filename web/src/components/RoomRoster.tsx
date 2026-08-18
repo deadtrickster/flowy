@@ -163,6 +163,34 @@ export function RoomRoster({ presence }: { presence: Presence | null }) {
                   {l.attached ? "polling · " : ""}
                   {ago(l.last_poll_at)}
                 </span>
+                {/*
+                  AND WHEN IT LAST DID ANYTHING, which is the question people
+                  are actually asking when they look at this pane. Polling and
+                  working are two facts and this pane carried one of them: two
+                  seats polled for ninety minutes and two hours after their last
+                  written word, and every column here read them healthy for the
+                  whole of it.
+
+                  Its own element rather than a second clause in the timing
+                  line, because a reader compares the two numbers and a sentence
+                  that runs them together is read as one.
+
+                  A SEAT THAT HAS NEVER ACTED IS NOT A SEAT THAT ACTED AT ZERO.
+                  The node returns nothing for it, and "never" is the honest
+                  word - a waiter that has just armed has done nothing yet and
+                  is not late.
+                */}
+                <span
+                  data-listener-acted={l.last_acted_at ?? ""}
+                  title={
+                    "when this seat last WROTE something, derived from the events it authored. " +
+                    "It says when a seat stopped, never why - a seat doing work that writes no " +
+                    "event reads as silent while working"
+                  }
+                  className="shrink-0 text-muted-foreground"
+                >
+                  {l.last_acted_at ? `acted ${ago(l.last_acted_at)}` : "never acted"}
+                </span>
               </li>
             );
           })}
@@ -230,6 +258,18 @@ export function RoomRoster({ presence }: { presence: Presence | null }) {
                 <span className="shrink-0 text-muted-foreground">
                   last heard {ago(l.last_poll_at)}
                 </span>
+                {/*
+                  And when it last wrote, which on a seat that went quiet is
+                  the more useful of the two: the poll usually outlives the
+                  work by a long way, and the gap between them is how long it
+                  looked healthy while doing nothing.
+                */}
+                <span
+                  data-listener-acted={l.last_acted_at ?? ""}
+                  className="shrink-0 text-muted-foreground"
+                >
+                  {l.last_acted_at ? `acted ${ago(l.last_acted_at)}` : "never acted"}
+                </span>
               </li>
             ))}
           </ul>
@@ -237,8 +277,9 @@ export function RoomRoster({ presence }: { presence: Presence | null }) {
       ) : null}
 
       <div className="pt-1 text-muted-foreground text-[10px]">
-        the node sees polling, not processes - a listener that stops is named here as gone quiet
-        rather than dropped, and a forked one hears the room with nothing to wake
+        the node sees polling and writing, not processes - "acted" is the last thing this seat
+        wrote, so a seat working without writing reads as silent, and a listener that stops is named
+        here as gone quiet rather than dropped, and a forked one hears the room with nothing to wake
       </div>
     </div>
   );

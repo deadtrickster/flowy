@@ -213,6 +213,17 @@ export interface Presence {
     waiter_kind: string;
     state: string;
     last_poll_at?: string | null;
+    /**
+     * When this seat last WROTE something, which is a different question from
+     * when it last polled and the one somebody is actually asking. Derived by
+     * the node from the events the seat authored, so there is nothing for an
+     * agent to report - a signal an agent has to send is one a blocked agent
+     * cannot send.
+     *
+     * Absent for a seat that has never authored anything, which is a real
+     * answer and not zero.
+     */
+    last_acted_at?: string | null;
     updated: string;
   }[];
 }
