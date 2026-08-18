@@ -152,6 +152,12 @@ func applyGate(fields map[string]any, run, tip string, now time.Time) bool {
 	delete(fields, RedTipField)
 	delete(fields, RedAtField)
 	delete(fields, RedNoteField)
+	// AND THE SKIP, which is the strongest case of the three: a declaration is
+	// somebody TAKING the row, so whatever stopped the last caller taking it has
+	// just been disproved. See mergeblocked.go.
+	delete(fields, BlockedWhyField)
+	delete(fields, BlockedAtField)
+	delete(fields, BlockedByField)
 	return true
 }
 

@@ -10474,6 +10474,12 @@ check "a red verdict ends the declaration and does not admit the branch" \
 	go test -count=1 \
 	-run 'TestARedVerdictEndsTheDeclarationAndDoesNotAdmitTheBranch|TestARedIsRecordedByTheHolderAndRefusedFromAnybodyElse' \
 	./internal/store
+# Named for the same reason one field along: a row nobody can take and a row
+# waiting its turn look identical without this, which is how three rows sat
+# unpickable for twenty minutes while a drainer woke every ninety seconds and
+# found nothing it was allowed to work on.
+check "a skip is recorded, ages out, and is cleared by the next declaration" \
+	go test -count=1 -run TestASkipIsRecordedAndAgesOut ./internal/store
 check "go test ./..." go test -count=1 ./...
 # Named as well as covered by `go test ./...` above, because this one failing
 # means every console on this node loses its stream on a sixty-second clock -

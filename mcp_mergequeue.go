@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/deadtrickster/flowy/internal/store"
 )
@@ -43,6 +44,23 @@ var mergeTools = []tool{
 				"is still going - that is what says the verdict is not in yet."),
 		}, []string{"id", "run"}),
 		call: mergeGate,
+	},
+	{
+		Name: "merge_blocked",
+		Description: "Say that you could NOT take a merge request, and why - its branch " +
+			"is checked out in somebody's worktree, a rebase would conflict, whatever " +
+			"stopped you. A skip that only goes in your own log leaves the queue " +
+			"showing a row nobody can take as a row waiting its turn, which is how " +
+			"three rows sat unpickable for twenty minutes while a drainer woke every " +
+			"ninety seconds and found nothing it was allowed to work on. It takes no " +
+			"lock: this is the verb for a caller that never got that far. The next " +
+			"declaration clears it, because taking the row disproves whatever stopped " +
+			"the last caller taking it.",
+		InputSchema: object(props{
+			"id":  str("The merge request you could not take."),
+			"why": str("What stopped you, in a sentence a person can act on."),
+		}, []string{"id", "why"}),
+		call: mergeBlockedTool,
 	},
 	{
 		Name: "merge_queue",
@@ -86,9 +104,13 @@ type mergeEntry struct {
 	// finished failed run as work in progress and a second drainer would have
 	// measured the same broken tree. A verdict is a fact about the row, and a
 	// fact about the row belongs where everybody reads the row.
-	Red        *mergeRed `json:"red,omitempty"`
-	Admissible *bool     `json:"admissible,omitempty"`
-	Reason     string    `json:"reason,omitempty"`
+	Red *mergeRed `json:"red,omitempty"`
+	// Blocked is why the last caller could not take this row at all - a branch
+	// held in somebody's worktree, a rebase that would conflict. Absent when
+	// there is none, and absent once it has aged out: see store.BlockedAt.
+	Blocked    *mergeBlocked `json:"blocked,omitempty"`
+	Admissible *bool         `json:"admissible,omitempty"`
+	Reason     string        `json:"reason,omitempty"`
 	// KnownIssue is the row somebody wrote about this refusal, under the same
 	// key and in the same shape the HTTP door uses - see knownissue.go. An agent
 	// reading a no it did not expect is the reader this exists for: it is the
@@ -98,6 +120,21 @@ type mergeEntry struct {
 	// code carries the refusal's token as far as the batch lookup below, and no
 	// further.
 	code string
+}
+
+// mergeBlocked is the last skip: why nothing could take the row.
+type mergeBlocked struct {
+	Why string `json:"why"`
+	At  string `json:"at,omitempty"`
+	By  string `json:"by,omitempty"`
+}
+
+func blockedOf(item *store.Artifact, now time.Time) *mergeBlocked {
+	why := store.BlockedAt(item, now)
+	if why == "" {
+		return nil
+	}
+	return &mergeBlocked{Why: why, At: store.BlockedAtOf(item), By: store.BlockedByOf(item)}
 }
 
 // mergeRed is the last verdict that said no, as a reader sees it.
@@ -172,6 +209,7 @@ func mergeQueueTool(ctx context.Context, m *mcpServer, p *store.Principal, raw j
 			GateRun:  store.GateRunOf(item),
 			Status:   store.TodoStatusOf(item),
 			Red:      redOf(item),
+			Blocked:  blockedOf(item, time.Now().UTC()),
 		}
 		// No tip, no verdict. Answering "admissible" against a tip nobody
 		// stated would be the always-true check this whole surface exists to
@@ -256,6 +294,27 @@ func mergeGate(ctx context.Context, m *mcpServer, p *store.Principal, raw json.R
 		return nil, fmt.Errorf("result %q is not one of pass, red - and a word this door "+
 			"does not know must not be read as a pass", a.Result)
 	}
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"item": art, "event": entry}, nil
+}
+
+// mergeBlockedTool records why this caller could not take a request. Same store
+// verb the HTTP door calls, for the reason the gate gives: two implementations
+// of "why nothing could take it" would drift about the thing a reader believes.
+func mergeBlockedTool(ctx context.Context, m *mcpServer, p *store.Principal, raw json.RawMessage) (any, error) {
+	var a struct {
+		ID  string `json:"id"`
+		Why string `json:"why"`
+	}
+	if err := decodeParams(raw, &a); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(a.ID) == "" {
+		return nil, errors.New("merge_blocked needs the request id")
+	}
+	art, entry, err := m.db.SetMergeBlocked(ctx, p, a.ID, a.Why)
 	if err != nil {
 		return nil, err
 	}

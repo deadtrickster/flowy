@@ -49,11 +49,17 @@ type mergeQueueItem struct {
 	// run as work in progress - gating true, status active - and the only way to
 	// learn a branch was broken was to ask the agent who ran it. A verdict is a
 	// fact about the row.
-	Red        *mergeQueueRed `json:"red,omitempty"`
-	Status     string         `json:"status"`
-	Assignee   string         `json:"assignee,omitempty"`
-	Admissible *bool          `json:"admissible,omitempty"`
-	Reason     string         `json:"reason,omitempty"`
+	Red *mergeQueueRed `json:"red,omitempty"`
+	// Blocked is why the last caller that tried could not take this row at all -
+	// a branch held in somebody's worktree, a rebase that would conflict.
+	// Absent when there is none, and absent once it is older than
+	// store.BlockBelievedFor: a skip is a fact about a moment, and an old answer
+	// about a fast-moving fact is furniture rather than evidence.
+	Blocked    *mergeQueueBlocked `json:"blocked,omitempty"`
+	Status     string             `json:"status"`
+	Assignee   string             `json:"assignee,omitempty"`
+	Admissible *bool              `json:"admissible,omitempty"`
+	Reason     string             `json:"reason,omitempty"`
 	// Held says the target is reserved by another declarer's lock - a WAIT, as
 	// against Admissible's verdict about this row's own evidence. Distinct on
 	// purpose: collapsing them is how an agent re-gates when it should sleep
@@ -168,6 +174,7 @@ func (s *server) handleMergeQueue(w http.ResponseWriter, r *http.Request) {
 			GateRun:  store.GateRunOf(a),
 			GateRef:  store.GateRefOf(a),
 			Red:      queueRedOf(a),
+			Blocked:  queueBlockedOf(a, time.Now().UTC()),
 			Status:   store.TodoStatusOf(a),
 			Assignee: store.AssigneeOf(a),
 		}
@@ -309,5 +316,27 @@ func queueRedOf(a *store.Artifact) *mergeQueueRed {
 		Base: store.GatedBaseOf(a),
 		At:   store.RedAtOf(a),
 		Note: store.RedNoteOf(a),
+	}
+}
+
+// mergeQueueBlocked is the last skip as a browser reads it.
+type mergeQueueBlocked struct {
+	Why string `json:"why"`
+	At  string `json:"at,omitempty"`
+	By  string `json:"by,omitempty"`
+}
+
+// queueBlockedOf reads the skip a row carries, or nil - including nil for one
+// that has aged out. A declaration clears it too, so what survives here is a
+// reason nobody has disproved by taking the row.
+func queueBlockedOf(a *store.Artifact, now time.Time) *mergeQueueBlocked {
+	why := store.BlockedAt(a, now)
+	if why == "" {
+		return nil
+	}
+	return &mergeQueueBlocked{
+		Why: why,
+		At:  store.BlockedAtOf(a),
+		By:  store.BlockedByOf(a),
 	}
 }
