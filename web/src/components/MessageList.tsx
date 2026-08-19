@@ -5,7 +5,7 @@ import { AttachmentCards } from "@/components/AttachmentCards";
 import { CitedMessage } from "@/components/CitedMessage";
 import { RowCard } from "@/components/RowCard";
 import { Badge } from "@/components/ui/badge";
-import { type FlowyEvent, isAgent } from "@/lib/api";
+import { type FlowyEvent, type Reaction, isAgent } from "@/lib/api";
 import { type Selected, selectedSpan } from "@/lib/cite";
 import { renderChat } from "@/lib/markdown";
 import { speakerStyle } from "@/lib/speakercolour";
@@ -46,6 +46,19 @@ interface Props {
   loadingOlder?: boolean;
   /** The room, named at the top of the transcript when its beginning is on it. */
   room?: string;
+  /**
+   * What is on each message, keyed by message id, as the room read answered.
+   * Optional: an older node sends none, and a room that draws nothing is the
+   * right answer to that rather than a crash.
+   */
+  reactions?: Record<string, Reaction[]>;
+  /**
+   * Put an emoji on a message or take this reader's own off. Absent in the
+   * read-only surfaces that reuse this list, and every control below is drawn
+   * only when it is here - a button that cannot do anything is worse than no
+   * button.
+   */
+  onReact?: (message: string, emoji: string, on: boolean) => void;
 }
 
 /**
@@ -91,6 +104,8 @@ export function MessageList({
   moreOlder,
   loadingOlder,
   room,
+  reactions,
+  onReact,
 }: Props) {
   // Whether an id is the person reading or the agent working for them, which
   // is the pair the node treats as one reader everywhere else.
@@ -531,6 +546,17 @@ export function MessageList({
                       row {shortId(event.artifact)}
                     </button>
                   ) : null}
+                  {/* The acks on this message, and the one control that adds
+                    one. Beside `reply` because they answer the same question -
+                    "what do I do about this line" - and a reaction is the
+                    cheaper of the two answers. */}
+                  {onReact ? (
+                    <ReactionPicker
+                      message={event.id}
+                      on={reactions?.[event.id] ?? []}
+                      onReact={onReact}
+                    />
+                  ) : null}
                   <button
                     type="button"
                     data-reply={event.id}
@@ -548,6 +574,14 @@ export function MessageList({
                 and not the citing speaker's account of one.
               */}
                 {event.citation ? <CitedMessage citation={event.citation} /> : null}
+                {/* What is already on this message. Drawn whether or not this
+                  reader may add one, because reading who acked is not the same
+                  permission as acking. */}
+                <ReactionStrip
+                  message={event.id}
+                  on={reactions?.[event.id] ?? []}
+                  onReact={onReact}
+                />
                 {/*
                 The body, with the @names the node resolved drawn in the
                 colour of whoever they name - the same colour that person
@@ -685,3 +719,164 @@ const MessageBody = memo(function MessageBody({
     />
   );
 });
+
+/**
+ * The emoji a reader can put on a message without typing one.
+ *
+ * A fixed short set rather than a picker, and that is the design and not a
+ * shortcut. This is an ACK CHANNEL: the value is that answering costs nothing,
+ * and a grid of two thousand emoji costs a decision. Four answers cover what
+ * this room actually says to each other - seen, agreed, no, and something is
+ * wrong here - and anything that needs a fifth needs a sentence.
+ */
+const ACKS = [
+  { emoji: "👀", label: "seen" },
+  { emoji: "👍", label: "agreed" },
+  { emoji: "👎", label: "no" },
+  { emoji: "🔥", label: "this is the problem" },
+] as const;
+
+/**
+ * The control that adds one, folded away until it is wanted.
+ *
+ * It draws only when the surface passed onReact. A button that cannot do
+ * anything is worse than no button: it says the reader may ack and then does
+ * nothing when they try, which reads as the feature being broken rather than
+ * absent.
+ */
+function ReactionPicker({
+  message,
+  on,
+  onReact,
+}: {
+  message: string;
+  on: Reaction[];
+  onReact: (message: string, emoji: string, added: boolean) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const mine = new Set(on.filter((r) => r.mine).map((r) => r.emoji));
+  return (
+    <span className="relative inline-flex">
+      <button
+        type="button"
+        data-react-open={message}
+        onClick={() => setOpen((was) => !was)}
+        aria-label={`react to message ${shortId(message)}`}
+        aria-expanded={open}
+        className="rounded border border-border px-1.5 py-0.5 text-[11px] text-muted-foreground opacity-60 transition hover:border-primary/50 hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
+      >
+        react
+      </button>
+      {open ? (
+        <span className="absolute top-full right-0 z-10 mt-1 flex gap-1 rounded border border-border bg-background p-1 shadow-sm">
+          {ACKS.map((ack) => (
+            <button
+              key={ack.emoji}
+              type="button"
+              data-react-add={`${message}:${ack.emoji}`}
+              // The reader's own state decides what the click MEANS, so
+              // pressing an emoji already on from this reader takes it off
+              // rather than writing a second identical entry.
+              onClick={() => {
+                onReact(message, ack.emoji, !mine.has(ack.emoji));
+                setOpen(false);
+              }}
+              aria-label={`${mine.has(ack.emoji) ? "take back" : ack.label} on message ${shortId(message)}`}
+              aria-pressed={mine.has(ack.emoji)}
+              className={`rounded px-1 py-0.5 text-sm transition hover:bg-muted ${
+                mine.has(ack.emoji) ? "bg-muted" : ""
+              }`}
+            >
+              {ack.emoji}
+            </button>
+          ))}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
+/**
+ * What is on a message now.
+ *
+ * The COUNT is drawn and the NAMES are on hover, which is the split the store's
+ * shape exists for: in a room of four seats, three acks from seats that do not
+ * have to act and one from the seat that does are not the same fact, and a bare
+ * "3" cannot tell them apart. Anybody reading the room can see who; nobody has
+ * to read four names to see that it was acked.
+ *
+ * A chip is a button only when this reader may react. Otherwise it is a span -
+ * not a disabled button, because a disabled control still says "this is for
+ * you" to everyone who can see it, and a read-only surface has no such offer to
+ * make.
+ */
+/**
+ * The inside of one chip: the glyph, then how many.
+ *
+ * A function outside the map rather than a fragment inside it. The element is
+ * used once, in an already-keyed parent, but a fragment built inside a `.map`
+ * reads to the linter as an unkeyed item in an iterable and the rule is right
+ * often enough not to silence.
+ *
+ * The glyph is aria-hidden because the chip's own aria-label already says it in
+ * words, with the names beside it - a screen reader announcing the emoji twice
+ * and the names once has the emphasis exactly backwards.
+ */
+function chipBody(r: Reaction) {
+  return (
+    <>
+      <span aria-hidden="true">{r.emoji}</span> <span className="font-mono">{r.actors.length}</span>
+    </>
+  );
+}
+
+function ReactionStrip({
+  message,
+  on,
+  onReact,
+}: {
+  message: string;
+  on: Reaction[];
+  onReact?: (message: string, emoji: string, added: boolean) => void;
+}) {
+  if (on.length === 0) return null;
+  return (
+    <div className="mt-1 flex flex-wrap gap-1" data-reactions={message}>
+      {on.map((r) => {
+        const label = `${r.emoji} ${r.actors.length}: ${r.actors.join(", ")}`;
+        const className = `rounded-full border px-1.5 py-0.5 text-[11px] transition ${
+          r.mine ? "border-primary/50 bg-muted" : "border-border text-muted-foreground"
+        }`;
+        const body = chipBody(r);
+        return onReact ? (
+          <button
+            key={r.emoji}
+            type="button"
+            data-reaction={`${message}:${r.emoji}`}
+            data-reaction-count={r.actors.length}
+            data-reaction-mine={r.mine ? "yes" : "no"}
+            title={label}
+            aria-label={label}
+            aria-pressed={r.mine}
+            onClick={() => onReact(message, r.emoji, !r.mine)}
+            className={`${className} hover:border-primary/50`}
+          >
+            {body}
+          </button>
+        ) : (
+          <span
+            key={r.emoji}
+            data-reaction={`${message}:${r.emoji}`}
+            data-reaction-count={r.actors.length}
+            data-reaction-mine={r.mine ? "yes" : "no"}
+            title={label}
+            aria-label={label}
+            className={className}
+          >
+            {body}
+          </span>
+        );
+      })}
+    </div>
+  );
+}

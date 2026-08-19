@@ -674,6 +674,15 @@ func (d *DB) AppendEvent(ctx context.Context, e *Event) error {
 // appendEvent is AppendEvent against whatever is in hand: the pool for a
 // message on its own, a transaction for one that is part of an operation.
 func (d *DB) appendEvent(ctx context.Context, q execer, e *Event) error {
+	// A reaction's body is capped wherever it is written, not only in the verb.
+	// The verb is one of three doors - POST /api/events is the second and a
+	// replicated delta is the third - and a ceiling only the first applies is a
+	// ceiling a hand-written POST walks past. See ReactionBodyRefusal.
+	if e.Type == EventReactionAdd || e.Type == EventReactionRemove {
+		if why := ReactionBodyRefusal(e.Body); why != "" {
+			return refuseReaction("%s", why)
+		}
+	}
 	if err := d.stamp(&e.ID, &e.SeqHLC, &e.Node); err != nil {
 		return err
 	}

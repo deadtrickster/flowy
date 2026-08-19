@@ -200,6 +200,31 @@ export interface ChatPage {
    * Absent on a forward read, which has nothing older to offer.
    */
   before?: number;
+  /**
+   * What is on each message of this page, keyed by message id. Absent from an
+   * older node, which is why every reader treats it as optional rather than
+   * assuming a map is there.
+   *
+   * Keyed BESIDE the events rather than hung on them: an event is the row that
+   * replicates and is signed, and a fold of other people's rows does not belong
+   * inside the shape a peer receives.
+   */
+  reactions?: Record<string, Reaction[]>;
+}
+
+/**
+ * One emoji on one message and everybody who put it there.
+ *
+ * Actors rather than a count, because in a room of four seats WHO is the whole
+ * signal - an ack from the seat that has to act is worth more than three from
+ * seats that do not. The count is drawn from the length; the names are what a
+ * reader gets on hover.
+ */
+export interface Reaction {
+  emoji: string;
+  actors: string[];
+  /** True when this reader is one of them, so the control draws as pressed. */
+  mine: boolean;
 }
 
 /**
@@ -1744,6 +1769,20 @@ export const api = {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ message }),
+    }),
+
+  /**
+   * Put one emoji on one message, or take this reader's own off.
+   *
+   * `on` is sent explicitly rather than toggled here: the console knows whether
+   * the control is pressed, and a client that flipped what it last drew would
+   * fight a second tab that had already changed it.
+   */
+  react: (room: string, message: string, emoji: string, on: boolean) =>
+    request<FlowyEvent>(`/api/chat/${encodeURIComponent(room)}/react`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message, emoji, on }),
     }),
 
   /** Take it down. The log still gains an entry - see the DELETE handler. */

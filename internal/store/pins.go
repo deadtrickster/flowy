@@ -21,6 +21,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -141,11 +142,17 @@ func (d *DB) writePin(ctx context.Context, p *Principal, verb, room, message str
 	// a room's name. Pinning a message from another room into this one would
 	// put a line in this strip that this room's readers may not be able to
 	// open.
+	// "Nothing here" arrives as ErrNotFound for an id nothing answers to and as
+	// nil for a row the filter hides, and a reader is told the same thing
+	// either way. Handing the store error straight back made a stale id a 500 -
+	// the node reporting itself broken for a request that was simply wrong -
+	// which is what the reaction door was measured doing before this was fixed
+	// in both.
 	source, err := d.ReadEvent(ctx, p, message)
-	if err != nil {
+	if err != nil && !errors.Is(err, ErrNotFound) {
 		return nil, err
 	}
-	if source == nil {
+	if source == nil || errors.Is(err, ErrNotFound) {
 		return nil, refusePin("no message %s that you can read, so there is nothing to pin", message)
 	}
 	if source.Room != room {

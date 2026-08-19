@@ -937,6 +937,15 @@ func (s *server) handleAppendEvent(w http.ResponseWriter, r *http.Request) {
 		Meta:     withTrace(speakerStripped(req.Meta), traceIDOf(r)),
 	}
 	if err := s.db.AppendEvent(r.Context(), e); err != nil {
+		// A body the store refuses is the caller asking for something they may
+		// not have, not this node being broken. Without this the ceiling on a
+		// reaction arrived as a 500, which tells a client to retry the one
+		// thing that will never work.
+		var refused store.ReactionError
+		if errors.As(err, &refused) {
+			writeJSON(w, http.StatusBadRequest, errorBody(refused.Why))
+			return
+		}
 		serverError(w, r, err)
 		return
 	}

@@ -803,14 +803,14 @@ func (s *server) handleChatRead(w http.ResponseWriter, r *http.Request) {
 			serverError(w, r, err)
 			return
 		}
-		writeChatEvents(w, room, since, list)
+		writeChatEvents(w, room, since, list, s.reactionsFor(r, list))
 	case "recent":
 		list, err := s.readRoomBefore(r, room, q.Get("thread"), before, intParam(q.Get("limit")))
 		if err != nil {
 			serverError(w, r, err)
 			return
 		}
-		writeChatWindow(w, room, before, list)
+		writeChatWindow(w, room, before, list, s.reactionsFor(r, list))
 	default:
 		writeJSON(w, http.StatusBadRequest, errorBody("order must be log or recent"))
 	}
@@ -849,7 +849,7 @@ func (s *server) handleChatWait(w http.ResponseWriter, r *http.Request) {
 		serverError(w, r, err)
 		return
 	}
-	writeChatEvents(w, room, cursor, list)
+	writeChatEvents(w, room, cursor, list, s.reactionsFor(r, list))
 }
 
 // pollUntil is the watcher loop, and there is one of it. It calls look until
@@ -1020,14 +1020,18 @@ func roomBefore(
 //
 // A client can tell whether anything older exists without another request: the
 // window filled its limit or it did not.
-func writeChatWindow(w http.ResponseWriter, room string, before int64, list []*store.Event) {
+func writeChatWindow(
+	w http.ResponseWriter, room string, before int64,
+	list []*store.Event, reactions map[string][]store.Reaction,
+) {
 	cursor, older := chatWindowEnds(before, list)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"room":   room,
-		"events": list,
-		"since":  int64(0),
-		"cursor": cursor,
-		"before": older,
+		"room":      room,
+		"events":    list,
+		"since":     int64(0),
+		"cursor":    cursor,
+		"before":    older,
+		"reactions": reactions,
 	})
 }
 
@@ -1047,13 +1051,50 @@ func chatWindowEnds(before int64, list []*store.Event) (cursor, older int64) {
 
 // writeChatEvents answers with the events and the cursor to ask for next, so a
 // client never has to know that the cursor is a packed clock reading.
-func writeChatEvents(w http.ResponseWriter, room string, since int64, list []*store.Event) {
+func writeChatEvents(
+	w http.ResponseWriter, room string, since int64,
+	list []*store.Event, reactions map[string][]store.Reaction,
+) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"room":   room,
 		"events": list,
 		"since":  since,
 		"cursor": cursorOf(since, list),
+		// Keyed by message id BESIDE the events rather than on them. An Event
+		// is the row that replicates and is signed; hanging a derived view on
+		// it would put a fold of other people's rows inside the shape a peer
+		// receives, and the two would have to agree forever. The console joins
+		// on the id it already has.
+		"reactions": reactions,
 	})
+}
+
+// reactionsFor is what is on a page of messages, as this reader sees it.
+//
+// It is asked once per page and never per message: a room read of fifty
+// messages that asked fifty times would make the cheapest signal in the room
+// the most expensive thing on the screen.
+//
+// A failure here is NOT a failure of the read. The messages are the answer and
+// the reactions are a garnish on it; a room that will not paint because a fold
+// of acks could not be computed is a worse outcome than a room that paints
+// without them. So it is logged and dropped, and the caller gets an empty map,
+// which the console draws as no reactions - the one reading that is wrong in
+// the harmless direction.
+func (s *server) reactionsFor(r *http.Request, list []*store.Event) map[string][]store.Reaction {
+	if len(list) == 0 {
+		return map[string][]store.Reaction{}
+	}
+	ids := make([]string, 0, len(list))
+	for _, e := range list {
+		ids = append(ids, e.ID)
+	}
+	on, err := s.db.ReactionsOn(r.Context(), principalOf(r), ids)
+	if err != nil {
+		log.Printf("reactions: could not fold a page of %s: %v", r.URL.Path, err)
+		return map[string][]store.Reaction{}
+	}
+	return on
 }
 
 // cursorOf is the seq_hlc a caller should hand back next time: the last event's,

@@ -1960,6 +1960,15 @@ func checkEventRow(ctx context.Context, tx *sql.Tx, p *Principal, e *Event) (str
 	if why := incoherentDate(e.Created, e.SeqHLC); why != "" {
 		return "event " + e.ID + " " + why, nil
 	}
+	// The third door a reaction arrives at, and the only one on the far side of
+	// somebody else's node. A peer that wrote a megabyte into the body of a
+	// reaction is a peer putting a paragraph where every reader of that room
+	// expects a glyph, and the ceiling is not theirs to raise.
+	if e.Type == EventReactionAdd || e.Type == EventReactionRemove {
+		if why := ReactionBodyRefusal(e.Body); why != "" {
+			return "event " + e.ID + ": " + why, nil
+		}
+	}
 	pr, err := mayAssert(ctx, tx, p, e.Node, e.Actor)
 	if err != nil {
 		return "", err

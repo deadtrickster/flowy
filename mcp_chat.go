@@ -86,6 +86,30 @@ var chatTools = []tool{
 		}, []string{"room"}),
 		call: chatRead,
 	},
+	{
+		Name: "chat_react",
+		Description: "Put one emoji on one message, or take yours off. This is how you " +
+			"say SEEN, AGREED or NO without spending a message on it - and in a room " +
+			"where four seats each ack a decision, four lines nobody needed to read is " +
+			"four lines everybody pays for. Use it for acknowledgement and for a cheap " +
+			"vote; use chat_say when there is a reason, a measurement or a decision, " +
+			"because a reaction carries none of those and nobody can ask it a question. " +
+			"It appends like everything else: taking one off is a second entry rather " +
+			"than a deletion, so the room's history still says it was acked and then " +
+			"was not. You may only react to a message you can read, in the room it was " +
+			"said in.",
+		InputSchema: object(props{
+			"room":    str("The room the message is in - one segment, no slashes."),
+			"message": str("The id of the message, as chat_read gave it to you."),
+			"emoji": str("The emoji itself, not a name: 👀 rather than :eyes:. One glyph, " +
+				"and anything longer than a few runes is refused - if it needs a " +
+				"sentence, say it in the room."),
+			"on": boolean("True to put it on, false to take YOUR OWN off. Defaults to true. " +
+				"It only ever removes your own: a reaction is one principal's word and " +
+				"nobody clears anybody else's."),
+		}, []string{"room", "message", "emoji"}),
+		call: chatReact,
+	},
 }
 
 // chatSay is the tool over sayInRoom.
@@ -170,11 +194,57 @@ func chatRead(ctx context.Context, m *mcpServer, p *store.Principal, raw json.Ra
 	// handed back as a number could come back rounded, and a rounded cursor
 	// skips messages that are never redelivered and never reported. A string
 	// round-trips through every client there is.
+	// The acks on this page, keyed by message id. Without them chat_react is a
+	// write with no read: an agent could ack and never learn that its own ack
+	// landed, or that somebody else had already answered the same question.
+	ids := make([]string, 0, len(list))
+	for _, e := range list {
+		ids = append(ids, e.ID)
+	}
+	reactions, err := m.db.ReactionsOn(ctx, p, ids)
+	if err != nil {
+		return nil, err
+	}
 	return map[string]any{
-		"room":   room,
-		"events": list,
-		"cursor": strconv.FormatInt(cursor, 10),
-		"before": strconv.FormatInt(older, 10),
+		"room":      room,
+		"events":    list,
+		"reactions": reactions,
+		"cursor":    strconv.FormatInt(cursor, 10),
+		"before":    strconv.FormatInt(older, 10),
+	}, nil
+}
+
+// chatReact is the tool over store.React.
+//
+// `on` is a pointer for the reason the HTTP door's is: absent has to mean the
+// common case, and the common case is putting one on. A bool that defaulted to
+// false would turn a model omitting the field into a silent retraction of
+// somebody's ack.
+func chatReact(ctx context.Context, m *mcpServer, p *store.Principal, raw json.RawMessage) (any, error) {
+	var a struct {
+		Room    string `json:"room"`
+		Message string `json:"message"`
+		Emoji   string `json:"emoji"`
+		On      *bool  `json:"on"`
+	}
+	if err := decodeParams(raw, &a); err != nil {
+		return nil, err
+	}
+	room, err := roomNamed(a.Room)
+	if err != nil {
+		return nil, chatRefusal(err)
+	}
+	on := true
+	if a.On != nil {
+		on = *a.On
+	}
+	e, err := m.db.React(ctx, p, room, a.Message, a.Emoji, on)
+	if err != nil {
+		return nil, chatRefusal(err)
+	}
+	return map[string]any{
+		"id": e.ID, "room": e.Room, "message": a.Message,
+		"emoji": e.Body, "on": on,
 	}, nil
 }
 

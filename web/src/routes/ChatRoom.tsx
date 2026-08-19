@@ -19,6 +19,7 @@ import {
   type FlowyEvent,
   type MergeRequest,
   type Presence,
+  type Reaction,
   api,
 } from "@/lib/api";
 import { useCitation } from "@/lib/cite";
@@ -99,6 +100,15 @@ export function ChatRoom() {
   const { token, whoami } = useSession();
   const { markRead } = useUnread();
   const [events, setEvents] = useState<FlowyEvent[]>([]);
+  /**
+   * What is on each message, keyed by message id.
+   *
+   * MERGED rather than replaced by each page, for the reason events are: a
+   * backwards page carries the acks on the older messages and nothing about
+   * the ones on screen, so replacing would blank the strip on everything the
+   * reader is looking at every time they scroll up.
+   */
+  const [reactions, setReactions] = useState<Record<string, Reaction[]>>({});
   // What a reply attaches to and what it cites: the selected message, whole, or
   // the span of it somebody selected with the mouse. Selecting a message has
   // always named it as the parent here; now the reply says so on its face.
@@ -366,6 +376,34 @@ export function ChatRoom() {
     }
   }, [room]);
 
+  /**
+   * Put an emoji on a message or take this reader's own off, then take the
+   * node's word for what is on it.
+   *
+   * NOT AN OPTIMISTIC UPDATE, deliberately. The node decides - a message this
+   * reader cannot react to is refused, and a second tab may have changed the
+   * same thing - so drawing the chip first and correcting it after is a strip
+   * that flickers the wrong answer at the reader every time they are wrong.
+   * The write is one round trip and the room is already a poll; a chip that
+   * appears when the node says so is a chip that is true.
+   *
+   * It re-reads the whole page rather than patching one message, because the
+   * fold is the node's and a client that recomputed it would be a second
+   * implementation of last-write-wins with no way to be checked.
+   */
+  const react = useCallback(
+    async (message: string, emoji: string, on: boolean) => {
+      try {
+        await api.react(room, message, emoji, on);
+        const page = await api.roomWindow(room, CHAT_WINDOW);
+        setReactions((current) => ({ ...current, ...(page.reactions ?? {}) }));
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    },
+    [room],
+  );
+
   // The path's message, applied once the transcript holds it. A link opened
   // cold has the id before it has the message, so this waits for the list
   // rather than reading it at mount - the same lesson the browser checks keep
@@ -394,6 +432,7 @@ export function ChatRoom() {
 
   useEffect(() => {
     setEvents([]);
+    setReactions({});
     clear();
     setLive(false);
     setError(null);
@@ -423,6 +462,7 @@ export function ChatRoom() {
         const page = await api.roomWindow(room, CHAT_WINDOW);
         if (stopped) return;
         setEvents(page.events);
+        setReactions(page.reactions ?? {});
         // Short of the window means the whole room fits on screen, so there is
         // nothing older to offer and the transcript says where it begins.
         older.current.before = page.before ?? 0;
@@ -442,6 +482,15 @@ export function ChatRoom() {
           const page = await api.wait(room, cursor, controller.signal);
           if (stopped) return;
           if (page.events.length > 0) setEvents((current) => merge(current, page.events));
+          // Every successful poll, not only one that carried messages: an ack
+          // on a message already on screen changes nothing about the events and
+          // is the whole point of the channel. The poll returns when something
+          // was said, so a reaction alone does not wake it - what this catches
+          // is the acks that accumulated while the room was quiet, folded in
+          // the next time anybody speaks.
+          if (page.reactions) {
+            setReactions((current) => ({ ...current, ...page.reactions }));
+          }
           // Advance on every successful return, not only when something landed
           // on screen. The server answers `seq_hlc > cursor`, so a cursor that
           // moves only when the UI has events to show is a cursor that can
@@ -520,6 +569,9 @@ export function ChatRoom() {
         return;
       }
       setEvents((current) => merge(current, page.events));
+      if (page.reactions) {
+        setReactions((current) => ({ ...current, ...page.reactions }));
+      }
       older.current.before = page.before ?? 0;
       setMoreOlder(page.events.length >= CHAT_WINDOW && (page.before ?? 0) > 0);
     } catch (err) {
@@ -654,6 +706,8 @@ export function ChatRoom() {
           moreOlder={moreOlder}
           loadingOlder={loadingOlder}
           room={room}
+          reactions={reactions}
+          onReact={react}
         />
 
         {/*

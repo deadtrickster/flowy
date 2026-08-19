@@ -6358,6 +6358,118 @@ browser_colours_the_speakers() {
 	node scripts/colour-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A"
 }
 
+# An ack that does not cost a message: the reaction lands, the room read carries
+# it, and taking it back is an entry rather than a deletion.
+#
+# The ACTORS arm is the one that matters. Every agent in this fleet pays a whole
+# line to say "seen"; the value here is that the signal is cheap and still says
+# WHO, and a fold that kept only a number would pass a check that asked merely
+# whether something was drawn.
+a_reaction_is_an_ack_and_the_room_read_carries_it() {
+	local said
+	api POST "$TOKEN_A" /api/chat/general/say \
+		'{"body": "quicklime: the drainer is green on the shared tree"}' || return 1
+	said=$(jqv .id)
+
+	api POST "$TOKEN_A" "/api/chat/general/react" \
+		"{\"message\": \"$said\", \"emoji\": \"👀\"}" || return 1
+	api POST "$TOKEN_B" "/api/chat/general/react" \
+		"{\"message\": \"$said\", \"emoji\": \"👀\"}" || return 1
+
+	api GET "$TOKEN_A" "/api/chat/general?order=recent&limit=50" || return 1
+	want_eq "who is on the message" \
+		"$(jqv ".reactions[\"$said\"][0].actors | length")" 2 || return 1
+	want_eq "and this reader is one of them" \
+		"$(jqv ".reactions[\"$said\"][0].mine")" true || return 1
+
+	# Taking one back removes THIS reader's and leaves the other, which is what
+	# says a reaction is one principal's word rather than a room-wide counter.
+	api POST "$TOKEN_A" "/api/chat/general/react" \
+		"{\"message\": \"$said\", \"emoji\": \"👀\", \"on\": false}" || return 1
+	api GET "$TOKEN_A" "/api/chat/general?order=recent&limit=50" || return 1
+	want_eq "after taking mine back" \
+		"$(jqv ".reactions[\"$said\"][0].actors | length")" 1 || return 1
+	want_eq "and it is no longer mine" \
+		"$(jqv ".reactions[\"$said\"][0].mine")" false || return 1
+	printf 'two acks on %s, one taken back, one left\n' "$said"
+}
+
+# A reaction is an emoji. Without a ceiling `reaction` is a second chat with no
+# length limit, drawn beside a message as though it were a face, and every
+# reader of that room pays for it.
+#
+# BOTH DOORS, because the verb is one of three and the other two are where a
+# hand-written POST and a peer's delta arrive. POST /api/events is the one a
+# single node can reach, and it is the one a rule living in the verb would miss.
+a_reaction_is_an_emoji_at_every_door() {
+	local said
+	api POST "$TOKEN_A" /api/chat/general/say '{"body": "quicklime: something to ack"}' || return 1
+	said=$(jqv .id)
+
+	want_status 400 POST "$TOKEN_A" "/api/chat/general/react" \
+		"{\"message\": \"$said\", \"emoji\": \"seen it, will look after lunch\"}" || return 1
+	want_status 400 POST "$TOKEN_A" /api/events \
+		"{\"type\": \"reaction.add\", \"room\": \"general\", \"parents\": [\"$said\"], \"body\": \"a whole sentence written by hand\"}" ||
+		return 1
+	# The control: the same door, the same type, one glyph - so the refusal
+	# above is the ceiling and not the type being unwritable here.
+	api POST "$TOKEN_A" /api/events \
+		"{\"type\": \"reaction.add\", \"room\": \"general\", \"parents\": [\"$said\"], \"body\": \"🔥\"}" ||
+		return 1
+	printf 'a sentence refused at both doors, a glyph taken at both\n'
+}
+
+# And a person sees it. The store answering with a fold nobody draws is the
+# shape half this console's features have arrived in - see the disowned mark,
+# which landed in the API a day before anything rendered it.
+#
+# BOTH ARMS ON ONE PAGE: the acked message and one beside it with nothing on it.
+# A strip drawn on every message is indistinguishable from a strip that works,
+# from a single screenshot.
+a_reaction_is_on_the_screen_and_pressing_it_takes_it_back() {
+	local acked plain
+	api POST "$TOKEN_A" /api/chat/general/say \
+		'{"body": "quicklime: this one somebody acked"}' || return 1
+	acked=$(jqv .id)
+	api POST "$TOKEN_A" /api/chat/general/say \
+		'{"body": "quicklime: and this one nobody did"}' || return 1
+	plain=$(jqv .id)
+
+	# The OTHER principal acks it, so arm 3 can add this reader's and watch the
+	# count move, and arm 4 can take it back and watch theirs survive.
+	api POST "$TOKEN_B" "/api/chat/general/react" \
+		"{\"message\": \"$acked\", \"emoji\": \"👀\"}" || return 1
+
+	# The API says it before the browser does - without this the check below
+	# would be measuring the console for something the node never sent.
+	api GET "$TOKEN_A" "/api/chat/general?order=recent&limit=50" || return 1
+	want_eq "the node puts one ack on it" \
+		"$(jqv ".reactions[\"$acked\"][0].actors | length")" 1 || return 1
+	want_eq "and none on the control" \
+		"$(jqv ".reactions | has(\"$plain\")")" false || return 1
+
+	cd "$ROOT/web" || return 1
+	node scripts/reaction-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" \
+		general "$acked" "$plain"
+}
+
+# A reaction belongs to the room the message is in, and to a message this reader
+# can read - the same two refusals a pin gets, for the same reasons.
+a_reaction_needs_a_message_you_can_read_in_this_room() {
+	local elsewhere
+	api POST "$TOKEN_A" /api/chat/elsewhere/say '{"body": "said somewhere else"}' || return 1
+	elsewhere=$(jqv .id)
+	want_status 400 POST "$TOKEN_A" "/api/chat/general/react" \
+		"{\"message\": \"$elsewhere\", \"emoji\": \"👀\"}" || return 1
+	printf '%s\n' "$API_BODY" | grep -q "not in" || {
+		printf 'the refusal does not say which room it was said in: %s\n' "$API_BODY" >&2
+		return 1
+	}
+	want_status 400 POST "$TOKEN_A" "/api/chat/general/react" \
+		"{\"message\": \"01M00000000000000000000000\", \"emoji\": \"👀\"}" || return 1
+	printf 'a message in another room and one that is not here, both refused\n'
+}
+
 # A room remembers its decisions: a pin puts a message in the strip, and the
 # strip is answerable from the room's own log.
 a_pin_puts_a_message_up_in_the_room() {
@@ -6408,6 +6520,12 @@ a_message_from_another_room_cannot_be_pinned_here() {
 		printf 'the refusal does not say which room it was said in: %s\n' "$API_BODY" >&2
 		return 1
 	}
+	# And an id nothing answers to is a REFUSAL rather than a 500. It was a 500:
+	# the store's ErrNotFound went back unchanged, so a caller with a stale id
+	# was told the node was broken and invited to retry the one thing that will
+	# never work. Found on the reaction door and fixed in both.
+	want_status 400 POST "$TOKEN_A" "/api/chat/general/pin" \
+		'{"message": "01M00000000000000000000000"}'
 }
 
 # A pin event written by hand is a strip anybody can put a line in, with none of
@@ -11492,6 +11610,14 @@ check "every chat body renders as GFM, keeping its mentions and its span citatio
 	every_chat_body_is_markdown
 check "an @name is drawn as a mention, in their colour, in a browser" \
 	browser_draws_the_mentions
+check "a reaction is an ack, it says who, and taking it back leaves the others" \
+	a_reaction_is_an_ack_and_the_room_read_carries_it
+check "a reaction is an emoji at every door that writes one" \
+	a_reaction_is_an_emoji_at_every_door
+check "a reaction needs a message you can read, in the room it was said in" \
+	a_reaction_needs_a_message_you_can_read_in_this_room
+check "a reaction is drawn where a person reads, and pressing it takes it back" \
+	a_reaction_is_on_the_screen_and_pressing_it_takes_it_back
 check "a pin puts a message up in the room's strip" a_pin_puts_a_message_up_in_the_room
 check "an unpin takes it down, and the log remembers both" \
 	an_unpin_takes_it_down_and_the_log_remembers_both
