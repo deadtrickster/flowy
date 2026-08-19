@@ -363,6 +363,15 @@ var apiRoutes = []string{
 	"GET /api/sync/pull",
 	"POST /api/sync/push",
 	"GET /api/peers",
+	// Would this one row land right now, and if not why - the question four
+	// seats were each answering in their own bash. It is on this list for the
+	// reason the nag is: the door exists to REPLACE hand-written answers, and a
+	// door nobody can find is a door everybody reimplements.
+	//
+	// The queue doors themselves are not on this list and should be. Not fixed
+	// here: that is somebody's answer changing shape, and this change is a new
+	// door rather than a correction to the old ones.
+	"GET /api/merge/{id}/admissible",
 	// The nag, whole, in one read. It is on this list because it exists to
 	// REPLACE a script that four seats each carried a copy of - a door nobody
 	// can find is a door everybody reimplements in jq, which is what it is
@@ -438,6 +447,7 @@ func (s *server) routes() http.Handler {
 	api.HandleFunc("POST /api/rooms/{room}/leave", s.handleLeaveRoom)
 	api.HandleFunc("GET /api/merge-queue", s.handleMergeQueue)
 	api.HandleFunc("GET /api/merge-queue/wait", s.handleMergeQueueWait)
+	api.HandleFunc("GET /api/merge/{id}/admissible", s.handleMergeAdmissible)
 	api.HandleFunc("POST /api/merge/{id}/gate", s.handleMergeGate)
 	// The lock on its own, because landing is not the only thing that needs the
 	// shared checkout to itself - see api_lock.go. Same table and same holder

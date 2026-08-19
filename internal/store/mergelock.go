@@ -73,6 +73,45 @@ func (l *MergeLock) Live(now time.Time) bool {
 	return l != nil && now.Before(l.Until)
 }
 
+// WouldTake reports whether a declaration by p for item would be TAKEN right
+// now - either because nothing holds this target, or because this principal
+// already holds it for this same row and a take renews it.
+//
+// It is the WHERE clause of TakeMergeLock's upsert, written in Go, and it lives
+// here so that the two are read together and changed together. It exists
+// because a caller asking "may I declare" was otherwise left to reconstruct
+// that clause from the outside, which four callers in this fleet did four ways.
+//
+// THE ITEM IS HALF OF IT, and leaving it out is the failure this lock already
+// had once: every subagent of a seat runs under its parent's token, so two
+// processes of one seat read each other's lock as their own. Holding the target
+// for ANOTHER row of your own is not permission to declare this one - on 18 Aug
+// a sibling session landed through a lock it never took and invalidated a live
+// verdict mid-flight.
+//
+// A nil lock is a free target, which is the same reading MergeLockOf's caller
+// gets and the same one the upsert makes.
+func (l *MergeLock) WouldTake(p *Principal, item string, now time.Time) bool {
+	if !l.Live(now) {
+		return true
+	}
+	actor, _ := voteActor(p)
+	return actor != "" && l.Holder == actor && l.Item == strings.TrimSpace(item)
+}
+
+// HeldBy reports whether this live lock is held by p, whatever it is held FOR.
+//
+// Distinct from WouldTake on purpose: "the target is mine" and "I may declare
+// this row" are different facts, and the gap between them - my other session
+// holds it for another row - is exactly where the sibling-session bug lived.
+func (l *MergeLock) HeldBy(p *Principal, now time.Time) bool {
+	if !l.Live(now) {
+		return false
+	}
+	actor, _ := voteActor(p)
+	return actor != "" && l.Holder == actor
+}
+
 // ErrTargetHeld is what a lost compare-and-set is, so a caller can tell "the
 // target is reserved, retry at T" from "my evidence is stale, re-gate". Those
 // are different facts and collapsing them is the defect one level down in

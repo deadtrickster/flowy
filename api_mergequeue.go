@@ -205,54 +205,7 @@ func (s *server) readMergeQueue(r *http.Request) (mergeQueueAnswer, error) {
 		if !strings.EqualFold(store.TargetOf(a), target) {
 			continue
 		}
-		it := mergeQueueItem{
-			ID:       a.ID,
-			Title:    a.Title,
-			Type:     a.Type,
-			Branch:   store.BranchOf(a),
-			Target:   store.TargetOf(a),
-			GatedTip: store.GatedTipOf(a),
-			GateRun:  store.GateRunOf(a),
-			GateRef:  store.GateRefOf(a),
-			Red:      queueRedOf(a),
-			Blocked:  queueBlockedOf(a, time.Now().UTC()),
-			Queued:   a.Created,
-			Status:   store.TodoStatusOf(a),
-			Assignee: store.AssigneeOf(a),
-		}
-		if a.Project != nil {
-			it.Project = *a.Project
-		}
-		// Believed for a bounded time, not forever - see store.GatingAt. A run
-		// that died leaves a declaration nobody will ever clear, and the first
-		// version of this told the whole room not to land for twenty minutes
-		// after a green run had already landed.
-		it.Gating = store.GatingAt(a, time.Now())
-		if tip != "" {
-			err := store.MergeAdmissible(a, tip)
-			ok := err == nil
-			it.Admissible = &ok
-			if err != nil {
-				it.Reason = err.Error()
-				it.code = store.RefusalCodeOf(err)
-			}
-		}
-		// HELD IS NOT NOT-ADMISSIBLE, and the two must never share a boolean.
-		// "The target is reserved until T" says WAIT; "your evidence is stale"
-		// says RE-GATE. A caller that cannot tell them apart does one when it
-		// means the other, and the row that asked for this lock was explicit:
-		// an agent refused because somebody else is mid-land should be told so,
-		// with the name and the time, not folded into a bare false.
-		if lockLive && store.GateActorOf(a) != lock.Holder {
-			it.Held = true
-			held := &store.ErrTargetHeld{Target: lock.Target, Held: lock, Now: time.Now()}
-			if it.Reason == "" {
-				it.Reason = held.Error()
-			} else {
-				it.Reason = fmt.Sprintf("%s; and %s", it.Reason, held.Error())
-			}
-		}
-		items = append(items, it)
+		items = append(items, queueItemOf(a, tip, lock, lockLive, time.Now()))
 	}
 
 	// The rows explaining these refusals, in one query for the whole page, and
@@ -413,4 +366,72 @@ func queueBlockedOf(a *store.Artifact, now time.Time) *mergeQueueBlocked {
 		At:  store.BlockedAtOf(a),
 		By:  store.BlockedByOf(a),
 	}
+}
+
+// queueItemOf is one row of the queue, as this door describes it.
+//
+// It is a function rather than the body of a loop because there are two doors
+// onto it now: GET /api/merge-queue builds the page, and
+// GET /api/merge/{id}/admissible answers about one row for a caller about to
+// spend a gate run on it. 01M0B8JFXS counted four hand-written answers to that
+// question across this fleet in one day - one in pre-gate.sh, one in drain.sh,
+// one in a curl, one in a python shim - and twice two of us disagreed about
+// whether a branch was landable. Both disagreements were readings of the same
+// rows through different code. A second implementation here would be the fifth.
+//
+// The clock is a parameter rather than four calls to time.Now(). One row was
+// being judged against four readings taken microseconds apart, which is
+// harmless and is also the shape that makes a row report itself as gating and
+// not-gating in the same answer.
+func queueItemOf(
+	a *store.Artifact, tip string, lock *store.MergeLock, lockLive bool, now time.Time,
+) mergeQueueItem {
+	it := mergeQueueItem{
+		ID:       a.ID,
+		Title:    a.Title,
+		Type:     a.Type,
+		Branch:   store.BranchOf(a),
+		Target:   store.TargetOf(a),
+		GatedTip: store.GatedTipOf(a),
+		GateRun:  store.GateRunOf(a),
+		GateRef:  store.GateRefOf(a),
+		Red:      queueRedOf(a),
+		Blocked:  queueBlockedOf(a, now.UTC()),
+		Queued:   a.Created,
+		Status:   store.TodoStatusOf(a),
+		Assignee: store.AssigneeOf(a),
+	}
+	if a.Project != nil {
+		it.Project = *a.Project
+	}
+	// Believed for a bounded time, not forever - see store.GatingAt. A run
+	// that died leaves a declaration nobody will ever clear, and the first
+	// version of this told the whole room not to land for twenty minutes
+	// after a green run had already landed.
+	it.Gating = store.GatingAt(a, now)
+	if tip != "" {
+		err := store.MergeAdmissible(a, tip)
+		ok := err == nil
+		it.Admissible = &ok
+		if err != nil {
+			it.Reason = err.Error()
+			it.code = store.RefusalCodeOf(err)
+		}
+	}
+	// HELD IS NOT NOT-ADMISSIBLE, and the two must never share a boolean.
+	// "The target is reserved until T" says WAIT; "your evidence is stale"
+	// says RE-GATE. A caller that cannot tell them apart does one when it
+	// means the other, and the row that asked for this lock was explicit:
+	// an agent refused because somebody else is mid-land should be told so,
+	// with the name and the time, not folded into a bare false.
+	if lockLive && store.GateActorOf(a) != lock.Holder {
+		it.Held = true
+		held := &store.ErrTargetHeld{Target: lock.Target, Held: lock, Now: now}
+		if it.Reason == "" {
+			it.Reason = held.Error()
+		} else {
+			it.Reason = fmt.Sprintf("%s; and %s", it.Reason, held.Error())
+		}
+	}
+	return it
 }

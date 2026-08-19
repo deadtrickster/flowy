@@ -81,6 +81,7 @@ var routeParams = map[string][]string{
 	"PUT /api/me":                                {},
 	"GET /api/merge-queue":                       {"limit", "project", "room", "scope", "target", "target_tip"},
 	"GET /api/merge-queue/wait":                  {"limit", "project", "room", "scope", "since", "target", "target_tip", "window"},
+	"GET /api/merge/{id}/admissible":             {"scope", "target_tip"},
 	"GET /api/metrics":                           {"scope"},
 	"GET /api/node":                              {},
 	"GET /api/peers":                             {},
