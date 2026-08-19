@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/deadtrickster/flowy/internal/ulid"
@@ -54,7 +55,8 @@ func TestAnybodyWhoCanReadATodoCanCloseIt(t *testing.T) {
 		t.Fatalf("a fresh todo reads as %q", got)
 	}
 
-	art, entry, err := db.SetTodoStatus(ctx, builder, todo.ID, DoneStatus)
+	art, entry, err := db.SetTodoStatus(ctx, builder, todo.ID, DoneStatus,
+		"pane built; the thread column is what took the time")
 	if err != nil {
 		t.Fatalf("a principal who did not raise the todo was refused: %v", err)
 	}
@@ -110,7 +112,7 @@ func TestAPrincipalWhoCannotReadATodoCannotCloseIt(t *testing.T) {
 
 	todo := todoIn(t, ctx, db, author, "rebuild the gearbox", VisibilityProjectOnly, "a-bench")
 
-	_, _, err := db.SetTodoStatus(ctx, stranger, todo.ID, DoneStatus)
+	_, _, err := db.SetTodoStatus(ctx, stranger, todo.ID, DoneStatus, "rebuilt it")
 	if err == nil {
 		t.Fatal("a principal with no reach into the project closed the todo anyway")
 	}
@@ -160,7 +162,7 @@ func TestAClosedTodoIsReopenedAndTheLogKeepsBoth(t *testing.T) {
 		t.Fatalf("picking it up was refused: %v", err)
 	}
 	// Somebody else finishes it, from another project, over the grant.
-	if _, _, err := db.SetTodoStatus(ctx, across, todo.ID, DoneStatus); err != nil {
+	if _, _, err := db.SetTodoStatus(ctx, across, todo.ID, DoneStatus, "deployed"); err != nil {
 		t.Fatalf("a reader across the grant was refused: %v", err)
 	}
 	if got := statusIn(t, ctx, db, author, todo.ID); got != DoneStatus {
@@ -224,7 +226,7 @@ func TestOnlyAQueueItemHasTheQueuesLifecycle(t *testing.T) {
 		t.Fatal("a bug reads as a queue item, and would take the wrong lifecycle at the door")
 	}
 
-	_, _, err := db.SetTodoStatus(ctx, p, bug.ID, DoneStatus)
+	_, _, err := db.SetTodoStatus(ctx, p, bug.ID, DoneStatus, "fixed")
 	var notATodo NotATodoError
 	if !errors.As(err, &notATodo) {
 		t.Fatalf("closing a bug through the queue verb was answered with %v", err)
@@ -261,7 +263,7 @@ func TestTheVerbRefusesAStatusThatIsNotOne(t *testing.T) {
 	}
 	// Case and spacing are the caller's typing rather than a different state: a
 	// queue holding "Done" and "done" is two states nothing can compare.
-	if _, _, err := db.SetTodoStatus(ctx, p, todo.ID, "  DONE "); err != nil {
+	if _, _, err := db.SetTodoStatus(ctx, p, todo.ID, "  DONE ", "one vocabulary, three words"); err != nil {
 		t.Fatalf("a typed status was refused: %v", err)
 	}
 	if got := statusIn(t, ctx, db, p, todo.ID); got != DoneStatus {
@@ -291,11 +293,110 @@ func TestClosingATodoUnblocksWhatWaitsOnIt(t *testing.T) {
 	}
 	// Closed by somebody who did not raise either row - which is the case the
 	// drainer is in.
-	if _, _, err := db.SetTodoStatus(ctx, other, blocker.ID, DoneStatus); err != nil {
+	if _, _, err := db.SetTodoStatus(ctx, other, blocker.ID, DoneStatus, "landed"); err != nil {
 		t.Fatalf("closing the blocker was refused: %v", err)
 	}
 	r, found = readyOf(t, ctx, db, author, waiting.ID)
 	if !found || !r.Ready {
 		t.Fatalf("the waiting todo is still not ready after its blocker was closed: %+v", r)
+	}
+}
+
+// CLOSING A ROW SAYS WHAT WAS MEASURED, and a close that says nothing is
+// refused.
+//
+// COUNTED before this existed: every row closed on the live node took two calls
+// - the note, then the status - and one seat closed nine that way in a day. The
+// note is what makes the row worth reading in a week and the status is
+// bookkeeping, so two calls made the valuable half the optional one, and the
+// failure is silent: a row closed with nothing said looks exactly like a row
+// closed with a measurement until somebody opens it.
+//
+// The refusal is the mechanism rather than a convenience. Both halves are
+// asserted here: the close does not happen, and the row is still open
+// afterwards - a refusal that had moved the status anyway would be the same bug
+// with a message attached.
+func TestClosingARowWithNothingSaidIsRefused(t *testing.T) {
+	ctx, db := open(t)
+
+	here := declaredProject(t, ctx, db, "closesaid")
+	p := &Principal{UserID: "u-" + ulid.NewString(), AgentID: "a-" + ulid.NewString(), Project: here}
+	todo := todoIn(t, ctx, db, p, "measure the drain window", VisibilityProjectOnly, "")
+
+	_, _, err := db.SetTodoStatus(ctx, p, todo.ID, DoneStatus)
+	var refusal DepRefusal
+	if !errors.As(err, &refusal) {
+		t.Fatalf("a close with nothing said was answered with %v, want a refusal the caller can fix", err)
+	}
+	if !strings.Contains(err.Error(), "nothing said") {
+		t.Fatalf("the refusal does not say what is missing: %v", err)
+	}
+	if got := statusIn(t, ctx, db, p, todo.ID); got != TodoStatus {
+		t.Fatalf("the refused close moved the row to %q", got)
+	}
+
+	// PICKING IT UP IS NOT A CLOSE. A rule that fired on every move would be
+	// answered with the word "wip" nine times a day, which is the state this
+	// file exists to keep readable. Through pickUp because active is refused
+	// while nobody is carrying the row - see queuecoherence.go, which is a
+	// different rule and one this must not be read as having relaxed.
+	pickUp(t, ctx, db, p, todo.ID, p.AgentID)
+
+	// And with the measurement it closes, in ONE write: the status entry and the
+	// note carry the same clock reading, so a peer merging them sees one moment
+	// rather than a note that arrives before or after the closure it explains.
+	art, entry, err := db.SetTodoStatus(ctx, p, todo.ID, DoneStatus,
+		"drain window is 20s of refused dials, measured on the live node at 2e2e13e")
+	if err != nil {
+		t.Fatalf("a close carrying what was measured was refused: %v", err)
+	}
+	if art.Status != DoneStatus {
+		t.Fatalf("the row came back at %q", art.Status)
+	}
+	if len(art.Notes) != 1 || !strings.Contains(art.Notes[0].Note, "20s of refused dials") {
+		t.Fatalf("the answer does not carry the note just written: %+v", art.Notes)
+	}
+	// Read back through the row, which is where a reader who never learns the
+	// notes door exists finds it.
+	notes := notesOn(t, ctx, db, p, todo.ID)
+	if len(notes) != 1 || notes[0].Note != art.Notes[0].Note {
+		t.Fatalf("the note is not on the row a reader reads: %+v", notes)
+	}
+	if notes[0].SeqHLC != entry.SeqHLC {
+		t.Fatalf("the note reads at %d and the closure at %d - two moments, not one",
+			notes[0].SeqHLC, entry.SeqHLC)
+	}
+}
+
+// A ROW THAT WAS NOTED ON ALREADY CLOSES WITH NOTHING FURTHER SAID.
+//
+// The seat that wrote the note first and closed second was never the failure
+// this rule is about - it is the behaviour the rule exists to make automatic -
+// and refusing it would have made the fix a tax on the people already doing the
+// right thing. It also keeps every close button on every surface working: the
+// note box asks the question, and a row that already has the answer does not
+// need to be asked twice.
+func TestARowThatWasNotedOnClosesWithNothingFurtherSaid(t *testing.T) {
+	ctx, db := open(t)
+
+	here := declaredProject(t, ctx, db, "closenoted")
+	author := &Principal{UserID: "u-" + ulid.NewString(), Project: here}
+	worker := &Principal{UserID: "u-" + ulid.NewString(), AgentID: "a-" + ulid.NewString(), Project: here}
+	todo := todoIn(t, ctx, db, author, "read the gate log", VisibilityProjectOnly, "")
+
+	if _, _, err := db.AppendTodoNote(ctx, worker, todo.ID, "662 of 663; the guard was too wide"); err != nil {
+		t.Fatalf("note: %v", err)
+	}
+	// By somebody else again, which is the drainer's case: what was learned is on
+	// the row, and whoever closes it does not have to have been the one who
+	// learned it.
+	if _, _, err := db.SetTodoStatus(ctx, author, todo.ID, DoneStatus); err != nil {
+		t.Fatalf("closing a row that carries a note was refused: %v", err)
+	}
+	if got := statusIn(t, ctx, db, author, todo.ID); got != DoneStatus {
+		t.Fatalf("the row reads as %q", got)
+	}
+	if notes := notesOn(t, ctx, db, author, todo.ID); len(notes) != 1 {
+		t.Fatalf("the close wrote a second note: %+v", notes)
 	}
 }

@@ -40,7 +40,7 @@ usage:
   flowy todo file  --title T [--room R] [--category C] [--assignee A] [--scope S] [body]
   flowy todo note  --id ID [text]
   flowy todo claim --id ID [--as WHO] [--expect WHO]
-  flowy todo done  --id ID [--status S]
+  flowy todo done  --id ID [--status S] [--note "what was measured"]
 
 The body, and a note's text, is the argument or stdin.
 
@@ -374,11 +374,19 @@ func cliTodoClaim(args []string) error {
 	return nil
 }
 
-// cliTodoDone moves a row's status.
+// cliTodoDone moves a row's status, and for a close says what was measured.
+//
+// --note is one flag on this verb rather than a second command before it. Every
+// row closed on the live node took two calls, `todo note` and then this, and
+// the node now refuses the second one when nothing has been said: the note is
+// what makes a row worth reading in a week and the status is bookkeeping, so
+// splitting them made the valuable half the optional one. See
+// store.SetTodoStatus.
 func cliTodoDone(args []string) error {
 	fs := flag.NewFlagSet("todo done", flag.ContinueOnError)
 	id := fs.String("id", "", "the row to move")
 	status := fs.String("status", "done", "todo, active or done")
+	note := fs.String("note", "", "what was measured, written with the close")
 	url, token, agent := doorFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -390,7 +398,11 @@ func cliTodoDone(args []string) error {
 	if err != nil {
 		return err
 	}
-	payload, err := json.Marshal(map[string]string{"status": *status})
+	body := map[string]string{"status": *status}
+	if strings.TrimSpace(*note) != "" {
+		body["note"] = *note
+	}
+	payload, err := json.Marshal(body)
 	if err != nil {
 		return err
 	}

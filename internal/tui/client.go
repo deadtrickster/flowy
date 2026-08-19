@@ -732,11 +732,22 @@ func (c *Client) History(ctx context.Context, id string) (*History, error) {
 	return &out, c.get(ctx, "/api/artifact/"+url.PathEscape(id)+"/history", &out)
 }
 
-// SetStatus moves an artifact's lifecycle status.
-func (c *Client) SetStatus(ctx context.Context, id, status string) (*StatusMove, error) {
+// SetStatus moves an artifact's lifecycle status, and for a close carries what
+// was measured.
+//
+// The note is a field on this call rather than a second call beside it: the
+// node writes it in the same transaction as the closure, so a row cannot end up
+// closed with the measurement missing. Empty is sent as no field at all and the
+// NODE decides whether that is allowed - a row that was noted on already may be
+// closed with nothing further said, and which rows those are is not a thing
+// this client should hold a second opinion about. See store.SetTodoStatus.
+func (c *Client) SetStatus(ctx context.Context, id, status string, said ...string) (*StatusMove, error) {
+	body := map[string]any{"status": status}
+	if note := strings.TrimSpace(strings.Join(said, "\n")); note != "" {
+		body["note"] = note
+	}
 	var out StatusMove
-	return &out, c.post(ctx, "/api/artifact/"+url.PathEscape(id)+"/status",
-		map[string]any{"status": status}, &out)
+	return &out, c.post(ctx, "/api/artifact/"+url.PathEscape(id)+"/status", body, &out)
 }
 
 // Artifacts lists what the principal may read, optionally narrowed by type and

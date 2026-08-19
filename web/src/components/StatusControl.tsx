@@ -25,6 +25,7 @@ interface Props {
 export function StatusControl({ artifact, onMoved }: Props) {
   const [history, setHistory] = useState<History | null>(null);
   const [choice, setChoice] = useState("");
+  const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -43,8 +44,9 @@ export function StatusControl({ artifact, onMoved }: Props) {
     setBusy(true);
     setError(null);
     try {
-      const moved = await api.status(artifact.id, choice);
+      const moved = await api.status(artifact.id, choice, note.trim() || undefined);
       onMoved(moved.artifact);
+      setNote("");
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -54,6 +56,18 @@ export function StatusControl({ artifact, onMoved }: Props) {
   };
 
   const next = history?.next ?? [];
+  /**
+   * Closing a row says what was measured, and the node refuses a close that
+   * says nothing - see store.SetTodoStatus. The box is here rather than the
+   * refusal alone because a control that can only be told "no" teaches the
+   * rule by failing; this one asks the question at the moment the answer is
+   * known.
+   *
+   * Only for a close, and only while the row has nothing on it already: a row
+   * somebody noted on before closing it was never what the rule is about, and
+   * picking a row up is not a claim that anything was learned.
+   */
+  const closing = choice === "done" && (artifact.notes?.length ?? 0) === 0;
 
   return (
     <div className="flex flex-col gap-3 rounded-lg border border-border p-3">
@@ -88,6 +102,18 @@ export function StatusControl({ artifact, onMoved }: Props) {
           </span>
         )}
       </div>
+
+      {closing ? (
+        <textarea
+          aria-label="what was measured"
+          value={note}
+          disabled={busy}
+          rows={3}
+          onChange={(event) => setNote(event.target.value)}
+          placeholder="what was measured, what is left undone, which sha carries it"
+          className="w-full rounded-md border border-border bg-background p-2 text-xs"
+        />
+      ) : null}
 
       {error ? <div className="text-destructive text-xs">{error}</div> : null}
 

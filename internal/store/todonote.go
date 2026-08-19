@@ -173,6 +173,36 @@ func (d *DB) AppendTodoNote(
 	return art, entry, nil
 }
 
+// TodoNoteEntryEvent builds the entry a note is, for a write that attaches one
+// as PART of a larger write of the same row.
+//
+// It is TodoStatusEntryEvent's shape and exists for TodoStatusEntryEvent's
+// reason: a caller already inside a transaction cannot call AppendTodoNote,
+// which owns one of its own, and going through it anyway would put the
+// measurement in one write and the thing it explains in another. Its callers
+// are the closure - see SetTodoStatus - and mem_write, which writes the item
+// and its entries in a single statement.
+//
+// It builds an entry and decides nothing else: the caller has already settled
+// that the row is theirs to write on. The two refusals here are the ones that
+// are about the ENTRY rather than about the write - a token naming nobody, and
+// a projectless row, whose note would be readable by its writer and by nobody
+// else including the row's author. Emptiness is not checked: a caller with
+// nothing to attach does not call this.
+func TodoNoteEntryEvent(art *Artifact, p *Principal, note string) (*Event, error) {
+	actor, actorKind := voteActor(p)
+	if actor == "" {
+		return nil, refuseStatus("this token resolves to nobody, so it cannot write a note " +
+			"on a todo")
+	}
+	if art.Project == nil || strings.TrimSpace(*art.Project) == "" {
+		return nil, refuseStatus("todo %s has no project and is its owner's alone, so a note "+
+			"on it would be readable by whoever wrote the note and by nobody else - not even "+
+			"by the row's author. Give the row a project first", art.ID)
+	}
+	return noteEntryEvent(art, p, actor, actorKind, strings.TrimSpace(note))
+}
+
 // noteEntryEvent builds the entry a note is.
 func noteEntryEvent(art *Artifact, p *Principal, actor, actorKind, note string) (*Event, error) {
 	meta, err := json.Marshal(map[string]string{

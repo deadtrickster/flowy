@@ -1463,7 +1463,8 @@ todos_open_and_done() {
 		return 1
 	fi
 
-	want_tool mem_write "$TOKEN_A" "{\"id\": \"$todo\", \"status\": \"done\"}" || return 1
+	want_tool mem_write "$TOKEN_A" \
+		"{\"id\": \"$todo\", \"status\": \"done\", \"note\": \"mounted; the readdir path was the whole cost\"}" || return 1
 	want_eq "the title survived an update that did not restate it" \
 		"$(tv .item.title)" "mount the artifacts over FUSE" || return 1
 	want_eq "kind survived too" "$(tv .item.kind)" todo || return 1
@@ -2172,7 +2173,8 @@ a_blocker_b_cannot_see_holds_the_todo_done_or_not() {
 	want_eq "and B must not start it" "$(readyv .ready)" false || return 1
 
 	# Finished, by the only principal who can read it.
-	want_tool mem_write "$TOKEN_A" "{\"id\": \"$DEP_BLOCKER\", \"status\": \"done\"}" || return 1
+	want_tool mem_write "$TOKEN_A" \
+		"{\"id\": \"$DEP_BLOCKER\", \"status\": \"done\", \"note\": \"blocker finished; what waited on it is startable\"}" || return 1
 	want_eq "the blocker is done" "$(tv .item.status)" "done" || return 1
 	want_tool_fails mem_read "$TOKEN_B" "{\"id\": \"$DEP_BLOCKER\"}" "no such memory item" || return 1
 
@@ -4446,7 +4448,8 @@ mem_write_takes_a_room_and_todos_narrows_by_it() {
 
 	# An update that says only "done" keeps the room it was raised in: a todo
 	# does not leave its room by being finished.
-	want_tool mem_write "$TOKEN_A" "{\"id\": \"$id\", \"status\": \"done\"}" || return 1
+	want_tool mem_write "$TOKEN_A" \
+		"{\"id\": \"$id\", \"status\": \"done\", \"note\": \"done, and the room it was raised in is unchanged\"}" || return 1
 	want_eq "the room survived an update that did not restate it" \
 		"$(tv .item.fields.room)" build || return 1
 	want_eq "and so did the title" "$(tv .item.title)" "$ROOM_TODO_MCP" || return 1
@@ -5121,6 +5124,61 @@ a_todo_is_assigned_by_somebody_who_did_not_write_it() {
 	printf 'the operator and an agent both owned somebody else todo, over both doors\n'
 }
 
+# CLOSING A ROW SAYS WHAT WAS MEASURED, at every door that closes one.
+#
+# COUNTED on the live node: every row closed took two calls - the note, then the
+# status - and one seat closed nine that way in a day. The note is what makes
+# the row worth reading in a week and the status is bookkeeping, so two calls
+# made the valuable half the optional one, and the failure is silent: a row
+# closed with nothing said looks exactly like a row closed with a measurement
+# until somebody opens it.
+#
+# Driven over the wire because the claim is about the DOORS, plural. The store
+# test proves the rule; this proves that the HTTP route and the memory tool both
+# reach it rather than each holding an idea of their own - which is the failure
+# mode this whole file exists for.
+a_close_says_what_was_measured() {
+	recall
+	api POST "$TOKEN_A" "/api/chat/$ROOM_CLOSE/todo" \
+		"$(jq -nc --arg t "measure the close" '{title: $t, body: "filed by the gate"}')" || return 1
+	want_eq "raise status" "$API_STATUS" 200 || return 1
+	local id
+	id="$(jqv .item.id)"
+
+	# Nothing said, at either door.
+	want_status 400 POST "$TOKEN_A" "/api/artifact/$id/status" '{"status": "done"}' || return 1
+	case "$API_BODY" in
+	*"nothing said"*) ;;
+	*)
+		printf 'the refusal does not say what is missing: %s\n' "$API_BODY" >&2
+		return 1
+		;;
+	esac
+	want_tool_fails mem_write "$TOKEN_A" "{\"id\": \"$id\", \"status\": \"done\"}" \
+		"nothing said" || return 1
+
+	# And it is still open. A refusal that closed the row and then said no would
+	# be the same bug with a message on it.
+	api GET "$TOKEN_A" "/api/artifact/$id" || return 1
+	want_eq "still open after two refusals" "$(jqv .status)" "todo" || return 1
+
+	# PICKING IT UP IS NOT A CLOSE, so it says nothing and is allowed.
+	api POST "$TOKEN_A" "/api/todo/$id/assignee" '{"assignee": "a-measurer"}' || return 1
+	api POST "$TOKEN_A" "/api/artifact/$id/status" '{"status": "active"}' || return 1
+	want_eq "picked up with nothing said" "$API_STATUS" 200 || return 1
+
+	# With the measurement it closes, and the note comes back ON the row - one
+	# call, one transaction, so the two cannot disagree.
+	api POST "$TOKEN_A" "/api/artifact/$id/status" \
+		'{"status": "done", "note": "20s of refused dials, measured at 2e2e13e"}' || return 1
+	want_eq "closed with what was measured" "$(jqv .artifact.status)" "done" || return 1
+	api GET "$TOKEN_A" "/api/todo/$id/notes" || return 1
+	want_eq "and the note is on the row" \
+		"$(printf '%s' "$API_BODY" | jq -r '[.notes[] | select(.note | test("refused dials"))] | length')" \
+		1 || return 1
+	printf 'a close carries the measurement, and a close with nothing said is refused at both doors\n'
+}
+
 # Read permission is the bar, and it is a real bar. A principal who cannot read the
 # todo is refused at both doors and told exactly what a read of the id would have
 # told them - nothing about the row - and nothing moves.
@@ -5346,6 +5404,10 @@ mem_write_refuses_an_update_it_will_not_make() {
 ROOM_CLOSE="closing"
 CLOSE_TODO="ship the linear-thread pane"
 CLOSE_BODY="the pane that reads a thread top to bottom"
+# WHAT WAS MEASURED, because a close now carries it - see
+# a_close_says_what_was_measured and store.SetTodoStatus. It is a constant here
+# for the reason the title and the body are: the check reads it back.
+CLOSE_NOTE="pane lands; the thread column was the whole cost"
 # WHO IS CARRYING IT, in the field, because that is the only place a carrier
 # lives. It used to ride the body as `OWNER: a-bench`, which the node read as a
 # claim until that fallback came out - and a row nobody is carrying cannot be
@@ -5388,9 +5450,11 @@ a_todo_is_closed_by_somebody_who_did_not_write_it() {
 	want_eq "and it left an entry" "$(jqv .event.type)" todo.status || return 1
 	want_eq "naming both ends" "$(jqv .event.body)" "todo->active" || return 1
 
-	# The second door: mem_write with nothing on it but the status. This is the
-	# call that answered "belongs to somebody else" for everybody but the author.
-	want_tool mem_write "$TOKEN_OP" "{\"id\": \"$id\", \"status\": \"done\"}" || return 1
+	# The second door: mem_write with the status and what was measured. This is
+	# the call that answered "belongs to somebody else" for everybody but the
+	# author, and the note is now part of closing rather than a call beside it.
+	want_tool mem_write "$TOKEN_OP" \
+		"{\"id\": \"$id\", \"status\": \"done\", \"note\": \"$CLOSE_NOTE\"}" || return 1
 	want_eq "closed over MCP" "$(tv .item.status)" "done" || return 1
 
 	# What the AUTHOR reads. A closure moves one column and takes nothing over.
@@ -11596,6 +11660,8 @@ check "one read says both what state a todo is in and who is carrying it" \
 say "a todo is finished"
 check "somebody who did not write a todo can close it, at both doors" \
 	a_todo_is_closed_by_somebody_who_did_not_write_it
+check "a close says what was measured, at both doors" \
+	a_close_says_what_was_measured
 check "a todo you cannot read is a todo you cannot close" \
 	closing_a_todo_you_cannot_read_is_refused
 check "a closure says who made it and when, and a reopen appends" \

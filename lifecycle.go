@@ -144,6 +144,16 @@ func canTransition(from, to string) bool {
 // statusRequest is the body of a transition.
 type statusRequest struct {
 	Status string `json:"status"`
+	// Note is what was measured, for a move that closes a queue item: the same
+	// text POST /api/todo/{id}/note takes, written in the same transaction as
+	// the closure rather than in a call beside it. Optional to the decoder and
+	// required by the verb - see store.SetTodoStatus, which is where a close
+	// with nothing said is refused, so that the console, the CLI, the TUI and
+	// MCP cannot reach four ideas of what closing a row records.
+	//
+	// The issue workflow below ignores it: a bug's trail is its own, and notes
+	// hang off queue items. That is the lifecycle the count was taken on.
+	Note string `json:"note"`
 }
 
 // handleArtifactStatus moves an artifact through the workflow and records the
@@ -188,7 +198,7 @@ func (s *server) handleArtifactStatus(w http.ResponseWriter, r *http.Request) {
 	// below - the line, the terminal states, the trail event - is the issue
 	// workflow's, and a todo is not in it.
 	if store.IsQueueItem(art) {
-		s.queueStatusMove(w, r, art, to)
+		s.queueStatusMove(w, r, art, to, req.Note)
 		return
 	}
 	if !knownStatus(to) {
@@ -253,9 +263,9 @@ func whatItIs(art *store.Artifact) string {
 // The answer is {artifact, event}, which is what this route has always answered
 // with - the console reads one shape whichever lifecycle the row is in.
 func (s *server) queueStatusMove(
-	w http.ResponseWriter, r *http.Request, art *store.Artifact, to string,
+	w http.ResponseWriter, r *http.Request, art *store.Artifact, to, note string,
 ) {
-	art, event, err := s.db.SetTodoStatus(r.Context(), principalOf(r), art.ID, to)
+	art, event, err := s.db.SetTodoStatus(r.Context(), principalOf(r), art.ID, to, note)
 	if err != nil {
 		s.writeQueueError(w, r, err)
 		return

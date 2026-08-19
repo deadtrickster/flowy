@@ -95,6 +95,14 @@ const (
 	inputAnnBody
 	inputRepQuery
 	inputTodoQuery
+	// inputCloseNote asks what was measured, on the way to closing a row.
+	//
+	// It is a box rather than a confirmation because the node REFUSES a close
+	// that says nothing - a row closed with no note reads in a week exactly
+	// like one closed with a measurement - and a control that can only be told
+	// no teaches the rule by failing. Empty is still sent: whether this row was
+	// noted on already is the node's question, not this client's.
+	inputCloseNote
 )
 
 // draft is what a two-step compose is holding on to between the steps.
@@ -827,6 +835,12 @@ func (m *Model) submitInput() (tea.Model, tea.Cmd) {
 	kind := m.inKind
 
 	switch kind {
+	case inputCloseNote:
+		m.closeInput()
+		if m.artifact == nil {
+			return m, nil
+		}
+		return m, m.statusCmd(m.artifact.ID, todoDone, value)
 	case inputSayTo:
 		m.closeInput()
 		if value == "" {

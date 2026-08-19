@@ -131,6 +131,9 @@ func TestANoteLandsOnWorkThatIsUnderWayAndOnWorkThatIsFinished(t *testing.T) {
 	if _, _, err := db.AppendTodoNote(ctx, worker, todo.ID, "second: measured 4.2s per gate"); err != nil {
 		t.Fatalf("a note on active work was refused: %v", err)
 	}
+	// With nothing further said, which the row has earned: it already carries
+	// two notes, and a close is refused only when NOTHING has ever been said
+	// about the work. Passing one here would make this a four-note test.
 	if _, _, err := db.SetTodoStatus(ctx, worker, todo.ID, DoneStatus); err != nil {
 		t.Fatalf("the worker could not close the todo: %v", err)
 	}

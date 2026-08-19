@@ -236,7 +236,9 @@ func IsQueueItem(a *Artifact) bool {
 //
 //   - a token that resolves to nobody. An entry carries an actor, and a closure
 //     nobody made is not one.
+//
 //   - a status that is not one of the three.
+//
 //   - an id that does not name a queue item this principal may READ. One that is
 //     not here, one that is out of reach, and one that is here and is a bug or a
 //     report are all the same answer - the answer a read of it would give -
@@ -244,10 +246,38 @@ func IsQueueItem(a *Artifact) bool {
 //     A bug HAS a lifecycle and it is the issue workflow's; the door sends it
 //     there rather than this verb taking it.
 //
+//   - a close with nothing said. See below.
+//
 // It does NOT refuse a restatement, and it does not refuse a move backwards. See
 // the head of this file: reopening is the case this was asked for.
+//
+// SAID is what was measured, written in the same transaction as the closure.
+//
+// COUNTED, on one day: every row closed took two calls, POST
+// /api/todo/{id}/note and then POST /api/artifact/{id}/status, and one seat
+// closed nine that way. The note is what makes the row worth reading in a week
+// - what was measured, what was left undone, which sha - and the status is
+// bookkeeping. Two calls made the valuable half the optional one, and the
+// failure is silent: a row closed with nothing said looks exactly like a row
+// closed with a measurement until somebody opens it.
+//
+// So a move to done is REFUSED when nothing is said and the row carries no note
+// already. The refusal is the point rather than the convenience - it is the
+// only thing that stops "close it with what you measured" depending on the
+// person remembering. Either fix satisfies it, and the message says both,
+// because a seat that noted first and closed second was never the failure this
+// is about.
+//
+// NOT on the way to todo or active. Picking a row up and putting it down are
+// not claims that anything was learned, and a rule that fired on every move
+// would be answered with the word "wip" nine times a day - which is the state
+// this file exists to keep readable.
+//
+// NOT on the other doors that close a row, deliberately: /api/work/{id}/done
+// takes `did` and mem_write writes the body in the same call, so both already
+// say something. This is the verb whose whole content was a word.
 func (d *DB) SetTodoStatus(
-	ctx context.Context, p *Principal, todo, asked string,
+	ctx context.Context, p *Principal, todo, asked string, said ...string,
 ) (*Artifact, *Event, error) {
 	ctx, span := otel.Start(ctx, otel.KindIngest, "todo.status")
 	defer span.End()
@@ -269,18 +299,43 @@ func (d *DB) SetTodoStatus(
 	if err != nil {
 		return nil, nil, err
 	}
+	note := strings.TrimSpace(strings.Join(said, "\n"))
+	if IsSilentClose(art, status, note) {
+		return nil, nil, RefuseSilentClose(art)
+	}
 
 	from := TodoStatusOf(art)
 	entry, err := statusEntryEvent(art, p, actor, actorKind, from, status)
 	if err != nil {
 		return nil, nil, err
 	}
-	// One transaction, one clock reading, both rows or neither: a closure with no
+	// The note rides the same write, and it is built here rather than through
+	// AppendTodoNote because that verb owns its own transaction: going through
+	// it would put the measurement in one write and the closure in another,
+	// which is the two-call shape this argument exists to remove. Same builder,
+	// so a note written by closing is the same entry as a note written on its
+	// own - see noteEntryEvent, and the projectless refusal it inherits.
+	written := []*Event{entry}
+	var noted *Event
+	if note != "" {
+		if noted, err = TodoNoteEntryEvent(art, p, note); err != nil {
+			return nil, nil, err
+		}
+		written = append(written, noted)
+	}
+	// One transaction, one clock reading, all of them or none: a closure with no
 	// entry behind it is work nobody can trace, and an entry with no closure
 	// behind it is a log that lies. Nothing here ever comes back to finish a
 	// half-written operation.
-	if err := d.MoveArtifactStatus(ctx, art, status, entry); err != nil {
+	if err := d.MoveArtifactStatus(ctx, art, status, written...); err != nil {
 		return nil, nil, err
+	}
+	// The row is answered as a read of it would give, which is why the note just
+	// written goes on it here: this call did not go back through ReadArtifact,
+	// and a caller reading `notes` off the answer would otherwise get the row as
+	// it was one entry ago with no way to tell. AppendTodoNote's rule.
+	if noted != nil {
+		art.Notes = append(art.Notes, TodoNoteEntryOf(noted))
 	}
 	span.SetArtifact(art.ID)
 	return art, entry, nil
@@ -433,4 +488,32 @@ func statusBody(from, to string) string {
 		return "status " + to
 	}
 	return from + "->" + to
+}
+
+// IsSilentClose reports whether this move takes a queue item off the queue and
+// says nothing about it: a close, with no note on the call and none already on
+// the row.
+//
+// It is exported and it is a PREDICATE rather than a rule buried in one verb,
+// because there is more than one door that closes a row - the queue verb here
+// and mem_write, which writes the whole item in one statement - and a rule
+// enforced at one of them is a rule with a way around it. Same question, same
+// answer, whichever door was knocked on.
+//
+// Only done, and only for a queue item. See SetTodoStatus for both reasons.
+func IsSilentClose(art *Artifact, status, note string) bool {
+	return IsQueueItem(art) &&
+		status == DoneStatus &&
+		strings.TrimSpace(note) == "" &&
+		len(art.Notes) == 0
+}
+
+// RefuseSilentClose is what every door says when it is asked to close a row
+// with nothing said. One sentence, in one place, so that the console, the CLI,
+// MCP and the drainer cannot each explain it differently.
+func RefuseSilentClose(art *Artifact) error {
+	return refuseStatus("closing %s says the work is finished and says nothing about it - a "+
+		"row closed with nothing said reads in a week exactly like one closed with a "+
+		"measurement. Say what was measured, what is left undone, or which sha carries it: "+
+		"pass a note with this move, or write one on the row first", art.ID)
 }

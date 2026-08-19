@@ -312,11 +312,12 @@ func (m *Model) artifactCmd(id string) tea.Cmd {
 	}
 }
 
-func (m *Model) statusCmd(id, status string) tea.Cmd {
+// statusCmd moves a row, and on a close carries the note the box collected.
+func (m *Model) statusCmd(id, status string, said ...string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := callCtx()
 		defer cancel()
-		move, err := m.client.SetStatus(ctx, id, status)
+		move, err := m.client.SetStatus(ctx, id, status, said...)
 		return statusMoveMsg{move: move, err: err}
 	}
 }

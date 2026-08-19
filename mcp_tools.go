@@ -85,6 +85,12 @@ var tools = []tool{
 				"that room's panel and narrows nothing else: who may read it is unchanged. " +
 				"Leave it out and the item is the project's, which is where every item " +
 				"written before this field is."),
+			"note": str("What was measured, for a write that sets status \"done\": what was " +
+				"found, what is left undone, which sha carries it. Closing a row with " +
+				"nothing said is REFUSED - a row closed with no note reads in a week " +
+				"exactly like one closed with a measurement. It appends beside the item's " +
+				"body without changing it, and is written in the same transaction as the " +
+				"closure, so the two cannot disagree."),
 			"message": str("Id of the chat message that raised this - the conversation it " +
 				"came out of, kept on the item. A message you cannot read is refused."),
 			"assignee": str("Who is carrying this: a handle, as a claim about the work. " +
@@ -284,6 +290,11 @@ type memWriteArgs struct {
 	Tags    []string `json:"tags"`
 	Room    string   `json:"room"`
 	Message string   `json:"message"`
+	// What was measured, for a write whose status closes a queue item. It is
+	// not authorship - see store.AppendTodoNote - so it is allowed on somebody
+	// else's row exactly as the status beside it is, and memWriteAuthorFields
+	// deliberately does not list it.
+	Note string `json:"note"`
 	// A pointer, because "" is a value here and not a silence: an update that
 	// leaves the argument out keeps whoever is carrying the item, and one that
 	// sends it empty says nobody is. Every other string on this struct means
@@ -435,6 +446,8 @@ func memWrite(ctx context.Context, m *mcpServer, p *store.Principal, raw json.Ra
 	// And what it was filed as, for the entry the classification leaves. Empty on
 	// a create and on every row raised before this field, which is most of them.
 	var wasCategory string
+	// The row this write is updating, or nil on a create.
+	var noteOn *store.Artifact
 
 	if a.ID != "" {
 		old, err := m.db.ReadArtifact(ctx, p, a.ID, false)
@@ -453,6 +466,10 @@ func memWrite(ctx context.Context, m *mcpServer, p *store.Principal, raw json.Ra
 			// which is what mem_read gives for the same row.
 			return nil, notThere(a.ID)
 		}
+		// The row as it stands, kept for the questions that are about what is
+		// ALREADY on it rather than about what this write says - see the close
+		// below, which asks whether anything has ever been said about the work.
+		noteOn = old
 		if old.OwnerUser != p.UserID {
 			// Readable, and not this principal's to REWRITE - which is not the
 			// same as not theirs to move. An item's words are its author's; the
@@ -703,6 +720,29 @@ func memWrite(ctx context.Context, m *mcpServer, p *store.Principal, raw json.Ra
 		}
 		events = append(events, entry)
 	}
+	// AND A CLOSE SAYS WHAT WAS MEASURED, here as at the status door, because
+	// this is the OTHER door that takes a row off the queue - and a rule
+	// enforced at one of two doors is a rule with a way around it. Same
+	// predicate, same sentence: store.IsSilentClose.
+	//
+	// Asked of the row as it was READ, which is where the notes are: `art` is
+	// the write being assembled and carries none. Only on an update - a create
+	// states the body in this same call, so it has already said something, and
+	// there is no row yet to have said it on.
+	if noteOn != nil && a.ID != "" && store.IsSilentClose(noteOn, art.Status, a.Note) {
+		return nil, store.RefuseSilentClose(noteOn)
+	}
+	// The note itself rides the same transaction as everything else this write
+	// leaves, which is the whole point of taking it here: the measurement and
+	// the closure it explains are one fact, and two calls made the valuable
+	// half the one that could be skipped.
+	if strings.TrimSpace(a.Note) != "" && isWorkKind(art.Kind) {
+		entry, err := store.TodoNoteEntryEvent(art, p, a.Note)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, entry)
+	}
 	// And a write that says WHAT KIND of work a queue item is leaves the
 	// classification entry, in the same transaction and for the third time for
 	// the same reason: the author filing their own todo as a bug here and
@@ -904,7 +944,7 @@ func memWriteQueueOnly(
 		art = moved
 	}
 	if a.Status != "" {
-		moved, _, err := m.db.SetTodoStatus(ctx, p, a.ID, a.Status)
+		moved, _, err := m.db.SetTodoStatus(ctx, p, a.ID, a.Status, a.Note)
 		if err != nil {
 			return nil, err
 		}

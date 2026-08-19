@@ -91,8 +91,8 @@ func (d *DB) setArtifactStatus(
 	return nil
 }
 
-// MoveArtifactStatus moves an artifact's status and writes the event that
-// records the move, in one transaction and under one clock reading.
+// MoveArtifactStatus moves an artifact's status and writes the events that
+// record the move, in one transaction and under one clock reading.
 //
 // The trail is the point of the lifecycle: "in-review" is worth something only
 // because there is an entry saying who moved it there. Two statements with a
@@ -100,20 +100,35 @@ func (d *DB) setArtifactStatus(
 // behind it if the append failed, which nothing ever notices and nothing ever
 // repairs. They are one write now, and they carry the same reading, so a peer
 // merging them sees the move and its record at the same point in the order.
+//
+// MORE THAN ONE EVENT, in the order given, for the caller that has a second
+// thing to say ABOUT THIS MOVE and no way to say it without a second write.
+// That caller is SetTodoStatus closing a row with what was measured: the note
+// and the closure are one fact, and splitting them puts the half worth reading
+// in a write that can fail on its own. The events share the reading for the
+// reason the move and its entry do - a peer merging them sees one moment, not
+// a note that arrives before or after the closure it explains.
 func (d *DB) MoveArtifactStatus(
-	ctx context.Context, art *Artifact, status string, e *Event,
+	ctx context.Context, art *Artifact, status string, events ...*Event,
 ) error {
 	at, err := d.clock.Pack()
 	if err != nil {
 		return fmt.Errorf("store: move status of %s: %w", art.ID, err)
 	}
-	e.SeqHLC = at
+	for _, e := range events {
+		e.SeqHLC = at
+	}
 
 	return d.inTx(ctx, "move status of "+art.ID, func(tx *sql.Tx) error {
 		if err := d.setArtifactStatus(ctx, tx, art, status, at); err != nil {
 			return err
 		}
-		return d.appendEvent(ctx, tx, e)
+		for _, e := range events {
+			if err := d.appendEvent(ctx, tx, e); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 }
 

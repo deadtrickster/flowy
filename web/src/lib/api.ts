@@ -1935,11 +1935,19 @@ export const api = {
       body: JSON.stringify({ on }),
     }),
 
-  status: (id: string, status: string) =>
+  /**
+   * status moves a row, and for a close it carries what was measured.
+   *
+   * The note is one field on this call rather than a second call beside it:
+   * the node writes it in the same transaction as the closure, so a row cannot
+   * end up closed with the measurement missing. The issue workflow ignores it -
+   * notes hang off queue items. See store.SetTodoStatus.
+   */
+  status: (id: string, status: string, note?: string) =>
     request<StatusMove>(`/api/artifact/${encodeURIComponent(id)}/status`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ status }),
+      body: JSON.stringify(note ? { status, note } : { status }),
     }),
 
   history: (id: string) => request<History>(`/api/artifact/${encodeURIComponent(id)}/history`),

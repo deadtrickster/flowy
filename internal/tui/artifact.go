@@ -24,6 +24,15 @@ func (m *Model) artifactKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.history != nil && index < len(m.history.Next) {
 				status := m.history.Next[index]
 				m.statusPin = false
+				// Closing a queue row says what was measured, so the box comes
+				// up before the move rather than the refusal after it. Only for
+				// a close and only for a row the queue holds: picking one up is
+				// not a claim that anything was learned, and a bug's lifecycle
+				// keeps its trail elsewhere. See store.SetTodoStatus.
+				if status == todoDone && isQueueRow(m.artifact) {
+					return m, m.openInput(inputCloseNote,
+						"what was measured (enter to close "+shortID(m.artifact.ID)+")> ", "")
+				}
 				return m, m.statusCmd(m.artifact.ID, status)
 			}
 			return m, nil
@@ -132,4 +141,21 @@ func (m *Model) badges(a *Artifact) string {
 		parts = append(parts, "[deleted]")
 	}
 	return strings.Join(parts, " ")
+}
+
+// isQueueRow says whether this is a row the queue holds, which is the only
+// lifecycle a note hangs off. It is store.IsQueueItem's question asked over
+// what the node already put on the artifact - a second copy of the WORD list,
+// which is the copy this client cannot avoid having, rather than a second copy
+// of the rule.
+func isQueueRow(art *Artifact) bool {
+	if art == nil || art.Type != "memory" {
+		return false
+	}
+	for _, kind := range []string{"todo", "feature", "handoff", "merge", "work", "join"} {
+		if art.Kind == kind {
+			return true
+		}
+	}
+	return false
 }
