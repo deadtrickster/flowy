@@ -28,6 +28,7 @@ package main
 // verdict - so that a console, a nag and a person all read one answer.
 
 import (
+	"context"
 	"net/http"
 	"time"
 
@@ -41,6 +42,15 @@ type nagView struct {
 	Mine    int `json:"mine"`
 	Unowned int `json:"unowned"`
 	Open    int `json:"open"`
+	// MineTodo is the caller's rows that have not been started - claimed, or
+	// handed to them, and still sitting at todo.
+	//
+	// It is here because the WAKE CONDITION needed it and the alternative was a
+	// fifth copy of the rule. board-nag.sh --watch decided this in jq with its
+	// own reading of what `active` means, which is the exact drift this row
+	// moved the decisions here to end: a row a seat holds and is working is not
+	// work waiting for that seat, and a row it holds and has not started is.
+	MineTodo int `json:"mine_todo"`
 	// Stale is rows the caller holds as `active` that nothing has written to
 	// for a while. It reports what was SEEN, never what it means - a session
 	// forty minutes into a gate looks exactly like an abandoned claim from
@@ -50,24 +60,42 @@ type nagView struct {
 	// Workload is the distribution probe, whole, including its thresholds so
 	// that nobody re-derives them from the shares.
 	Workload store.Workload `json:"workload"`
+	// Changed and Cursor are the wait door's answer only - see api_nagwait.go.
+	// A plain GET /api/nag carries neither, and a caller that asked one question
+	// should not have to skip a field about a wait it never started.
+	Changed *bool  `json:"changed,omitempty"`
+	Cursor  string `json:"cursor,omitempty"`
 }
 
 // handleNag answers the whole nag in one read.
 func (s *server) handleNag(w http.ResponseWriter, r *http.Request) {
-	p := principalOf(r)
-
-	// The caller's own board. ScopeAll only when the caller is the operator and
-	// asked for it, exactly as every other list door decides it.
-	rows, err := s.db.ListArtifacts(r.Context(), p, store.ArtifactQuery{
-		Type: store.MemoryType, Kind: "todo", ScopeAll: scopeAll(r, p), Limit: 500,
-	})
+	view, err := s.readNag(r.Context(), principalOf(r), scopeAll(r, principalOf(r)))
 	if err != nil {
 		serverError(w, r, err)
 		return
 	}
+	writeJSON(w, http.StatusOK, view)
+}
+
+// readNag is the nag itself: the counts, computed for this principal.
+//
+// It is a function rather than the body of the door because there are two doors
+// onto it - GET /api/nag asks it once, GET /api/nag/wait asks it until the
+// answer changes - and two implementations of "what counts as mine" is the
+// exact drift this row moved the decision here to end. A door that computed its
+// own would be a fifth copy of the rules, after the four bash ones.
+func (s *server) readNag(ctx context.Context, p *store.Principal, all bool) (nagView, error) {
+	// The caller's own board. ScopeAll only when the caller is the operator and
+	// asked for it, exactly as every other list door decides it.
+	rows, err := s.db.ListArtifacts(ctx, p, store.ArtifactQuery{
+		Type: store.MemoryType, Kind: "todo", ScopeAll: all, Limit: 500,
+	})
+	if err != nil {
+		return nagView{}, err
+	}
 
 	view := nagView{StaleAfter: int(nagStaleAfter.Seconds())}
-	me := s.db.SeatHandle(r.Context(), p)
+	me := s.db.SeatHandle(ctx, p)
 	now := time.Now()
 	for _, a := range rows {
 		if store.DoneAt(a) {
@@ -80,6 +108,13 @@ func (s *server) handleNag(w http.ResponseWriter, r *http.Request) {
 			view.Unowned++
 		case who == me:
 			view.Mine++
+			// NOT STARTED IS NOT THE SAME AS NOT DONE. A row this seat holds
+			// and is working is not work waiting for it; one it holds and has
+			// not begun is, and that is the difference a waiter has to be able
+			// to see or it wakes an agent every tick of its own job.
+			if a.Status != "active" {
+				view.MineTodo++
+			}
 			// ACTIVE IS A CLAIM, NOT AN OBSERVATION - the operator's own
 			// complaint, and the reason this counts rather than concludes.
 			if a.Status == "active" && now.Sub(a.Updated) > nagStaleAfter {
@@ -88,8 +123,7 @@ func (s *server) handleNag(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	view.Workload = store.WorkloadOf(rows)
-
-	writeJSON(w, http.StatusOK, view)
+	return view, nil
 }
 
 // nagStaleAfter is how long a row this seat holds as `active` may go without a

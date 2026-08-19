@@ -368,6 +368,9 @@ var apiRoutes = []string{
 	// can find is a door everybody reimplements in jq, which is what it is
 	// being built out of.
 	"GET /api/nag",
+	// And the same answer waited on, because a nag that a seat has to remember
+	// to ask for is one an idle seat never asks for - see api_nagwait.go.
+	"GET /api/nag/wait",
 	"GET /api/whoami",
 	"GET /api/node",
 	"GET /api/metrics",
@@ -519,6 +522,7 @@ func (s *server) routes() http.Handler {
 	// logic of the work nagger to the go side and the nagger then will be a
 	// simple http call".
 	api.HandleFunc("GET /api/nag", s.handleNag)
+	api.HandleFunc("GET /api/nag/wait", s.handleNagWait)
 	// Who is carrying a todo - any todo the caller can read, wherever it was
 	// raised, and whoever wrote it. Read permission is the whole bar: the assignee
 	// is a name in fields and grants nobody anything, so a queue one agent filed

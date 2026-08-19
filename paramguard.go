@@ -90,6 +90,7 @@ var routeParams = map[string][]string{
 	"GET /api/proposals":                         {"limit", "room", "scope", "status"},
 	"GET /api/ready":                             {"limit", "ready", "room", "scope"},
 	"GET /api/nag":                               {"scope"},
+	"GET /api/nag/wait":                          {"scope", "since", "window"},
 	"GET /api/repro/healthz":                     {},
 	"GET /api/repro/package":                     {"finding", "version"},
 	"GET /api/repro/run/{id}/log":                {},
