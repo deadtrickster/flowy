@@ -339,7 +339,83 @@ func (s *server) handleCreateArtifact(w http.ResponseWriter, r *http.Request) {
 		serverError(w, r, err)
 		return
 	}
+	// A CORRECTION IS HEARD WHERE THE CLAIM WAS MADE.
+	//
+	// The supersede edge has existed for reports and instructions since before
+	// this, and it works for a finding today - measured on the live node: file
+	// a finding carrying fields.supersedes and the older row comes back with
+	// replaced_by and a resolved address. Nobody used it for corrections.
+	//
+	// So item 3 of 01M0B93BNH - "correct the row when the measurement changes"
+	// - was never a missing mechanism. It was a mechanism nobody met: a
+	// correction is written as prose in a note, and a reader has to notice it.
+	// On 2026-08-19 alone there were five - a wrong cause for a red, a 404 read
+	// as a typed door, a ruling built on that read and withdrawn, a sleeping
+	// drainer called dead, and two suites read as a lock failure when one was a
+	// child of the other.
+	//
+	// The edge is silent by construction: it is derived at READ time, so the
+	// only way to learn a claim was superseded is to read that claim again.
+	// Nobody re-reads a finding they have already acted on. So the node says it
+	// where the claim was made, once, in the room the superseded row lives in.
+	if said := s.supersedeHeardIn(r, art); said != nil {
+		if err := s.db.AppendEvent(r.Context(), said); err != nil {
+			// The row is written and the edge holds; only the announcement
+			// failed. Saying nothing is the same failure this exists to fix, so
+			// it is logged rather than swallowed - and it is not an error the
+			// caller can act on, so their write still answers 200.
+			log.Printf("supersede: could not announce %s -> %s: %v",
+				art.ID, store.SupersedesOf(art), err)
+		}
+	}
 	writeJSON(w, http.StatusOK, art)
+}
+
+// supersedeHeardIn is the message the room reads when a row replaces another,
+// or nil when this row replaces nothing.
+//
+// IT SPEAKS IN THE SUPERSEDED ROW'S ROOM, not the new row's. A correction
+// belongs to the conversation where the claim was made: the people who read
+// "the deps door is typed to todos" are the people who need to hear that it was
+// an id prefix, and they are not necessarily reading wherever the correction
+// happens to be filed.
+//
+// A row that replaces nothing, or replaces something this caller cannot read,
+// says nothing. The second is not a leak to close: replacedBy is
+// permission-filtered on the read side, so a caller can already only be told
+// about a replacement they may see - this keeps the announcement to the same
+// rule rather than inventing a second one.
+func (s *server) supersedeHeardIn(r *http.Request, art *store.Artifact) *store.Event {
+	older := store.SupersedesOf(art)
+	if older == "" {
+		return nil
+	}
+	p := principalOf(r)
+	was, err := s.db.ReadArtifact(r.Context(), p, older, false)
+	if err != nil {
+		return nil
+	}
+	fields, err := store.ArtifactFields(was)
+	if err != nil {
+		return nil
+	}
+	room, _ := fields[store.RoomField].(string)
+	if strings.TrimSpace(room) == "" {
+		return nil
+	}
+	actor, kind := chatActor(p)
+	meta, err := json.Marshal(speakerMeta(p, kind, s.speakerName(r.Context(), p)))
+	if err != nil {
+		return nil
+	}
+	return &store.Event{
+		Type:   chatEventType,
+		Room:   room,
+		Thread: was.ID,
+		Actor:  actor,
+		Body:   "superseded " + firstLineOf(was.Title) + " - " + firstLineOf(art.Title),
+		Meta:   withTrace(json.RawMessage(meta), traceIDOf(r)),
+	}
 }
 
 // project resolves the three states of the project field: absent means the

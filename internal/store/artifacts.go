@@ -824,6 +824,15 @@ func artifactField(a *Artifact, key string) any {
 // nothing here enforces either.)
 const SupersedesField = "supersedes"
 
+// SupersedesOf reads the row this one replaces, or "" when it replaces nothing.
+//
+// A reader rather than a second fields lookup at each call site, for the reason
+// RoomOf and BranchOf are: a key spelled by hand in three places is a key
+// misspelled in one of them eventually.
+func SupersedesOf(a *Artifact) string {
+	return strings.TrimSpace(artifactString(a, SupersedesField))
+}
+
 // MessageField is the chat message an artifact was raised out of, kept beside
 // the room. It is the link a ticket in another system loses: the item says what
 // is to be done and the message says what was being talked about when somebody
