@@ -125,3 +125,51 @@ func TestTheSpeakerIsNotTakenOnTheRowsWord(t *testing.T) {
 		t.Fatal("a reading between the two windows is covered by neither and reads as covered")
 	}
 }
+
+// Rotation is the deliberate replacement MintPrincipalKey refuses to do by
+// accident, and it is what `flowy principal repudiate` needs for the only
+// principals it exists for - the ones that already have a key.
+//
+// The defect this pins: repudiate shipped calling MintPrincipalKey alone, so it
+// worked for a principal with no key and refused for one with a key, with "a
+// principal's signing key is not replaced in place". A smoke test using fresh
+// names never met it; the browser check for the drawing half met it at once.
+func TestRotationReplacesTheKeyAndSaysWhatItReplaced(t *testing.T) {
+	ctx, db := open(t)
+	who := "u-" + ulid.NewString()
+
+	first, err := db.MintPrincipalKey(ctx, who, nil, 0)
+	if err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+	// The refusal that made the command wrong is still there, because a keygen
+	// run twice must not silently invalidate what was signed under the first.
+	if _, err := db.MintPrincipalKey(ctx, who, nil, 0); err == nil {
+		t.Fatal("minting over an existing key was accepted - a rotation by accident")
+	}
+
+	second, was, err := db.RotatePrincipalKey(ctx, who, nil)
+	if err != nil {
+		t.Fatalf("rotate: %v", err)
+	}
+	if equalKeys(first.PublicKey, second.PublicKey) {
+		t.Fatal("the key did not change")
+	}
+	// The old epoch comes back, because the caller has to know where the key it
+	// replaced began to say where the disowned window should end.
+	if was != first.Epoch {
+		t.Fatalf("the rotation reported the old epoch as %d, want %d", was, first.Epoch)
+	}
+	if second.Epoch <= first.Epoch {
+		t.Fatalf("the new epoch %d is not after the old %d", second.Epoch, first.Epoch)
+	}
+	if !second.Local {
+		t.Fatal("the rotated key has no private half here, so this node cannot sign with it")
+	}
+
+	// A principal with nothing to rotate is told so rather than quietly given a
+	// first key: the caller asked to replace something.
+	if _, _, err := db.RotatePrincipalKey(ctx, "u-"+ulid.NewString(), nil); err == nil {
+		t.Fatal("rotating a principal with no key here was accepted")
+	}
+}

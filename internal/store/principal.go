@@ -176,6 +176,85 @@ func (d *DB) MintPrincipalKey(
 	return d.GetPrincipalKey(ctx, principal)
 }
 
+// RotatePrincipalKey REPLACES the key this node holds for a principal, and it
+// is the deliberate act ErrPrincipalKeyRotation was holding the door against.
+//
+// MintPrincipalKey refuses to replace a key in place, on purpose: a keygen run
+// twice with a fresh seed would silently invalidate everything the principal
+// had signed, and the refusal makes that impossible by accident. Rotation is
+// the case where it is not an accident - the key is compromised, and replacing
+// it is the whole point.
+//
+// MEASURED, and this is why it exists: `flowy principal repudiate` shipped in
+// 746fe75 calling MintPrincipalKey, so it worked for a principal with no key
+// and refused for one with a key - which is every principal it exists for. My
+// own smoke test used fresh names and never touched the case. flowy-claude's
+// browser check found it in the first minute of running the real thing.
+//
+// IT RETURNS THE OLD EPOCH AS WELL AS THE NEW ONE, because a rotation without a
+// repudiation covering what came before is half an act, and the caller needs to
+// know where the old key's authority began to say where the disowned window
+// ends.
+func (d *DB) RotatePrincipalKey(
+	ctx context.Context, principal string, seed []byte,
+) (id *PrincipalIdentity, wasEpoch int64, err error) {
+	if principal == "" {
+		return nil, 0, errors.New("store: a principal key needs a principal")
+	}
+	held, err := d.GetPrincipalKey(ctx, principal)
+	if err != nil {
+		// A principal with no key here has nothing to rotate. Saying so is
+		// better than minting one and calling it a rotation: the caller asked
+		// to replace something, and there is nothing there.
+		return nil, 0, err
+	}
+	if !held.Local {
+		return nil, 0, fmt.Errorf(
+			"store: this node holds only the public half for %s - rotation happens where the "+
+				"private half lives, and this node pins the result", principal)
+	}
+	if seed == nil {
+		seed = make([]byte, ed25519.SeedSize)
+		if _, err := rand.Read(seed); err != nil {
+			return nil, 0, fmt.Errorf("store: rotate the key of %s: %w", principal, err)
+		}
+	}
+	if len(seed) != ed25519.SeedSize {
+		return nil, 0, fmt.Errorf("store: an ed25519 seed is %d bytes, not %d",
+			ed25519.SeedSize, len(seed))
+	}
+	priv := ed25519.NewKeyFromSeed(seed)
+	public := publicOf(priv)
+	if equalKeys(held.PublicKey, public) {
+		return nil, 0, fmt.Errorf(
+			"store: that is the key %s already has - a rotation to the same key changes nothing "+
+				"and would tell everybody it had", principal)
+	}
+	at, err := d.clock.Pack()
+	if err != nil {
+		return nil, 0, fmt.Errorf("store: rotate the key of %s: %w", principal, err)
+	}
+	if _, err := d.sql.ExecContext(ctx,
+		`UPDATE principal_identity
+		    SET public_key = $2, private_key = $3, epoch_hlc = $4
+		  WHERE principal = $1`, principal, public, seed, at); err != nil {
+		return nil, 0, fmt.Errorf("store: rotate the key of %s: %w", principal, err)
+	}
+	// THE CACHED SIGNER IS THE OLD ONE UNTIL THIS LINE. principalSigner keeps
+	// private keys in a map, so a rotation that only wrote the column would
+	// leave this process signing with the key it just replaced - for as long as
+	// it stayed up, which on this node is days.
+	d.authorMu.Lock()
+	delete(d.authors, principal)
+	d.authorMu.Unlock()
+
+	fresh, err := d.GetPrincipalKey(ctx, principal)
+	if err != nil {
+		return nil, 0, err
+	}
+	return fresh, held.Epoch, nil
+}
+
 // PinPrincipalKey records a principal's public key and epoch as the operator's
 // own decision, on a node that does not hold the private half. It is what makes
 // the refusal bite on the receiving side: a node that holds no key for alice

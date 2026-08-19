@@ -231,7 +231,25 @@ func principalRepudiate(args []string) error {
 		// THE NEW KEY NEXT. If this fails nothing has been claimed and the
 		// principal is where they were. The other order would leave a
 		// repudiation standing over a window with no key to write after it.
-		id, err := db.MintPrincipalKey(ctx, *who, seed, 0)
+		//
+		// ROTATE WHEN THERE IS SOMETHING TO ROTATE, mint when there is not.
+		//
+		// The first cut of this called MintPrincipalKey alone, which refuses to
+		// replace a key in place - so it worked for a principal with no key and
+		// refused for one with a key, which is every principal this command
+		// exists for. My smoke test used fresh names and never met the case;
+		// flowy-claude's browser check met it in its first minute:
+		// "a principal's signing key is not replaced in place".
+		id, hadEpoch, err := db.RotatePrincipalKey(ctx, *who, seed)
+		if errors.Is(err, store.ErrNotFound) {
+			// Nothing to replace. Minting is still the right act - the window
+			// being disowned was written under no key of their own at all,
+			// which is the position every principal is in before their first
+			// keygen. There is no old epoch in that case, and the answer says
+			// so rather than reporting a zero as a reading.
+			id, err = db.MintPrincipalKey(ctx, *who, seed, 0)
+			hadEpoch = 0
+		}
 		if err != nil {
 			return err
 		}
@@ -279,7 +297,7 @@ func principalRepudiate(args []string) error {
 		if err := db.WriteRepudiation(ctx, p, a, e); err != nil {
 			return err
 		}
-		return printJSON(map[string]any{
+		out := map[string]any{
 			"principal":   id.Principal,
 			"public_key":  store.EncodeKey(id.PublicKey),
 			"epoch":       id.Epoch,
@@ -287,7 +305,21 @@ func principalRepudiate(args []string) error {
 			"disowned":    map[string]int64{"from": *from, "to": id.Epoch},
 			"pin_this_key": "flowy principal pin --as " + *who + " --key " +
 				store.EncodeKey(id.PublicKey) + " --epoch " + fmt.Sprint(id.Epoch),
-		})
+		}
+		// WHERE THE KEY THAT WAS REPLACED BEGAN, when there was one. It is the
+		// number that says whether the window covers everything the old key
+		// could have signed: a --from later than this leaves rows the stolen key
+		// signed still reading as authentic, and nothing else in this answer
+		// would show that.
+		if hadEpoch > 0 {
+			out["replaced_key_epoch"] = hadEpoch
+			if *from > hadEpoch {
+				out["note"] = fmt.Sprintf(
+					"the key you replaced was authoritative from %d and you disowned from %d - "+
+						"rows it signed between those readings are not covered", hadEpoch, *from)
+			}
+		}
+		return printJSON(out)
 	})
 }
 
