@@ -56,6 +56,17 @@ func TestAnInheritedAgentBeatingAnExplicitTokenSaysSo(t *testing.T) {
 		t.Errorf("the warning does not say how to use the token instead: %q", warning)
 	}
 
+	// TWO NAMES FOR ONE PRINCIPAL IS NOT A COLLISION, which is the arm that was
+	// missing and the one the deployment found within minutes: scripts/say.sh
+	// passes FLOWY_TOKEN=<the named seat's own token> beside FLOWY_AGENT naming
+	// that seat, so every message every agent sent printed four lines about a
+	// conflict that did not exist.
+	if _, quiet := said(t, "", "tok-drainer", "", "drainer"); quiet != "" {
+		t.Errorf("the token IS the named seat's own and it warned anyway: %q\n"+
+			"Nothing is being set aside - this is one principal named two ways, "+
+			"and a warning on it fires on every scripted call in the fleet", quiet)
+	}
+
 	// A NAMED SEAT ALONE IS THE NORMAL CASE and must be silent, or the warning
 	// is noise on every command this fleet runs.
 	if _, quiet := said(t, "", "", "", "drainer"); quiet != "" {
