@@ -141,6 +141,16 @@ func (s *server) landingHeardIn(r *http.Request, id, sha string) ([]*store.Event
 	if target := store.TargetOf(art); target != "" {
 		body += " on " + target
 	}
+	// WHAT THE GATE SAID, when the run that passed it said anything. This is
+	// the half the first cut could not have: the store held a tip and no count,
+	// so a landing could say what tree it took and not what was measured of it,
+	// and every "667/0" in this room was typed by somebody reading a log on one
+	// box. A green verdict carries its own sentence now - see
+	// store.GateNoteField - and the landing repeats it rather than inventing
+	// one.
+	if note := store.GateNoteOf(art); note != "" {
+		body += " (" + firstLineOf(note) + ")"
+	}
 	return []*store.Event{{
 		Type:   chatEventType,
 		Room:   room,
@@ -149,4 +159,16 @@ func (s *server) landingHeardIn(r *http.Request, id, sha string) ([]*store.Event
 		Body:   body,
 		Meta:   withTrace(json.RawMessage(meta), traceIDOf(r)),
 	}}, nil
+}
+
+// firstLineOf is one line of what a run said, for a sentence that must stay one
+// line: a note is the run's own words and a suite is free to be chatty.
+func firstLineOf(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	if len(s) > 80 {
+		s = s[:80]
+	}
+	return strings.TrimSpace(s)
 }

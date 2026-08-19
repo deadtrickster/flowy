@@ -71,12 +71,30 @@ const RedAtField = "red_at"
 // written, and a note that tried to be the log would be a copy that rots.
 const RedNoteField = "red_note"
 
+// GateNoteField is what a run said about a verdict that PASSED - the same
+// sentence red_note carries for one that did not, and absent for a declaration.
+//
+// A red has carried its count since the verdict became a row. A green carried
+// nothing, so "667/0" lived in the drainer's log on one box and every landing
+// that wanted to say what was measured had to be typed by a person who had read
+// that log. Fifteen of them were, on 2026-08-18, and the ones nobody typed left
+// no measurement anywhere a reader could reach.
+//
+// It is the run's own words rather than a structured count, for the reason
+// red_note is: the shape of "what the gate said" is the suite's to decide, and
+// a store that parsed it would be a second opinion about a number it did not
+// produce.
+const GateNoteField = "gated_note"
+
 // RedTipOf, RedAtOf and RedNoteOf read the verdict a row carries.
 func RedTipOf(a *Artifact) string { return normalizeTip(artifactString(a, RedTipField)) }
 
 func RedAtOf(a *Artifact) string { return strings.TrimSpace(artifactString(a, RedAtField)) }
 
 func RedNoteOf(a *Artifact) string { return strings.TrimSpace(artifactString(a, RedNoteField)) }
+
+// GateNoteOf reads what the passing run said, or "" when it said nothing.
+func GateNoteOf(a *Artifact) string { return strings.TrimSpace(artifactString(a, GateNoteField)) }
 
 // GateRefOf and GateActorOf read what a declaration recorded. They live here
 // and not beside GatedTipOf in mergequeue.go on purpose: that file is one
@@ -218,10 +236,17 @@ func applyRed(fields map[string]any, run, tip, note string, now time.Time) {
 // the lander is handed the tree that went green, not the branch the row was
 // filed about, and the row that never says so is the one that lands one commit
 // of a sixteen-commit union and calls it done.
+// note is what the run said about a verdict that passed, variadic so every
+// existing caller - the MCP tool, the tests, a peer replaying an old shape -
+// keeps working and says nothing.
 func (d *DB) SetMergeGate(
-	ctx context.Context, p *Principal, id, run, tip, ref string,
+	ctx context.Context, p *Principal, id, run, tip, ref string, note ...string,
 ) (*Artifact, *Event, error) {
-	return d.setMergeGate(ctx, p, id, gateMoment{Run: run, Tip: tip, Ref: ref})
+	said := ""
+	if len(note) > 0 {
+		said = note[0]
+	}
+	return d.setMergeGate(ctx, p, id, gateMoment{Run: run, Tip: tip, Ref: ref, Note: said})
 }
 
 // SetMergeRed records that a run measured a tip and it did not pass.
@@ -334,6 +359,20 @@ func (d *DB) setMergeGate(
 		applyRed(fields, run, tip, g.Note, time.Now().UTC())
 	case applyGate(fields, run, tip, time.Now().UTC()):
 		status = ActiveStatus
+	default:
+		// A VERDICT THAT PASSED, and its note. applyGate answers false for a
+		// verdict and true for a declaration, so this branch is the green one -
+		// and a declaration must not carry a note, because there is nothing
+		// measured yet to say anything about.
+		if note := strings.TrimSpace(g.Note); note != "" {
+			fields[GateNoteField] = note
+		} else {
+			// A RE-GATE THAT SAYS NOTHING CLEARS WHAT THE LAST ONE SAID. The
+			// note describes the run that is recording now; leaving an older
+			// one would attach one run's count to another run's verdict, which
+			// is the failure gated_tip already refuses in its own dimension.
+			delete(fields, GateNoteField)
+		}
 	}
 	if declaring {
 		// A re-declaration after a rebase is a NEW measurement from wherever

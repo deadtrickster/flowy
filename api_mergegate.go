@@ -46,9 +46,15 @@ type mergeGateRequest struct {
 	// must exist, be a merge request, and be held by the caller - are the same
 	// refusals. A /red door would be a second place to forget one of them.
 	Result string `json:"result"`
-	// Note is one line about the red: a count, a check name, where the log is.
-	// It is not the log, and it is ignored on a pass, where there is nothing to
-	// explain.
+	// Note is one line about the verdict, either way: a count, a check name,
+	// where the log is. It is not the log.
+	//
+	// IT RIDES A PASS TOO, and that is the change. A red has carried its count
+	// since the verdict became a row; a green carried nothing, so "667/0" lived
+	// in the drainer's log on one box and every landing that wanted to say what
+	// was measured had to be typed by somebody who had read it. On a
+	// DECLARATION it is still ignored - there is nothing measured yet to say
+	// anything about.
 	Note string `json:"note"`
 }
 
@@ -107,7 +113,7 @@ func (s *server) recordGate(
 	switch strings.ToLower(strings.TrimSpace(req.Result)) {
 	case "", "pass", "green":
 		return s.db.SetMergeGate(r.Context(), p, r.PathValue("id"),
-			req.Run, req.GatedTip, req.GatedRef)
+			req.Run, req.GatedTip, req.GatedRef, req.Note)
 	case "red", "fail", "failed":
 		return s.db.SetMergeRed(r.Context(), p, r.PathValue("id"),
 			req.Run, req.GatedTip, req.GatedRef, req.Note)
