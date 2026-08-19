@@ -375,6 +375,16 @@ func (s *server) handleCreateArtifact(w http.ResponseWriter, r *http.Request) {
 				art.ID, store.SupersedesOf(art), err)
 		}
 	}
+	// AND A BRANCH FILED FOR THE QUEUE IS HEARD WHERE IT WAS FILED - see
+	// filedHeardIn. Only on a create: a row edited later has already been
+	// announced, and saying it twice is how a room learns to skip the line.
+	if !update {
+		if said := s.filedHeardIn(r, art); said != nil {
+			if err := s.db.AppendEvent(r.Context(), said); err != nil {
+				log.Printf("merge: could not announce %s in its room: %v", art.ID, err)
+			}
+		}
+	}
 	writeJSON(w, http.StatusOK, art)
 }
 
@@ -392,6 +402,83 @@ func (s *server) handleCreateArtifact(w http.ResponseWriter, r *http.Request) {
 // permission-filtered on the read side, so a caller can already only be told
 // about a replacement they may see - this keeps the announcement to the same
 // rule rather than inventing a second one.
+
+// filedHeardIn is the message the room reads when a BRANCH is filed for the
+// queue, or nil when the row names no room to say it in.
+//
+// WHY IT EXISTS. Measured 2026-08-19 by watching what five verbs actually put
+// in a room: `todo file --room` announces "raised a todo ...", `todo claim`
+// announces "gave ... to ...", and `merge open --room general` takes the room,
+// writes it onto the row, and says NOTHING in it. So a room hears about a new
+// todo and not about a new branch - and the branch is the louder of the two,
+// because somebody may be about to gate it, land it, or file the same work.
+//
+// It is the rule 01M0BNW8XD already settled, at the other end of the queue: a
+// claim is not a state change somebody looks up later, it is a message to the
+// other seats, and the log is not a place anybody watches. That row fixed the
+// handover; this is the filing. A landing already announces itself since the
+// same afternoon, so of the three moments a merge row has - filed, landed,
+// abandoned - only the first was silent.
+//
+// A ROW FILED INTO NO ROOM STILL SAYS NOTHING, deliberately: there is no
+// conversation it belongs to, and inventing one puts a branch in front of
+// people who never saw the work. Same rule claimHeardIn follows.
+//
+// A FAILURE TO BUILD THE MESSAGE IS NOT A FAILURE TO FILE. The row is what the
+// caller asked for; the announcement is what the room gets. Returning nil here
+// leaves the filing intact and quiet, which is what this door did for everybody
+// until today.
+func (s *server) filedHeardIn(r *http.Request, art *store.Artifact) *store.Event {
+	room, body, ok := filedSaidFor(art)
+	if !ok {
+		return nil
+	}
+	p := principalOf(r)
+	actor, kind := chatActor(p)
+	meta, err := json.Marshal(speakerMeta(p, kind, s.speakerName(r.Context(), p)))
+	if err != nil {
+		return nil
+	}
+	return &store.Event{
+		Type:   chatEventType,
+		Room:   room,
+		Thread: art.ID,
+		Actor:  actor,
+		Body:   body,
+		Meta:   withTrace(json.RawMessage(meta), traceIDOf(r)),
+	}
+}
+
+// filedSaidFor is WHETHER to say anything and WHAT, with no principal and no
+// database in it - which is what makes the four refusals testable without a
+// node. The speaker's name and the trace ride on top in filedHeardIn.
+func filedSaidFor(art *store.Artifact) (room, body string, ok bool) {
+	if art == nil || art.Kind != store.MergeKind {
+		return "", "", false
+	}
+	fields, err := store.ArtifactFields(art)
+	if err != nil {
+		return "", "", false
+	}
+	room, _ = fields[store.RoomField].(string)
+	room = strings.TrimSpace(room)
+	if room == "" {
+		return "", "", false
+	}
+	branch := strings.TrimSpace(store.BranchOf(art))
+	if branch == "" {
+		return "", "", false
+	}
+	// THE ID IS WHOLE AND FOLLOWS A WORD A READER CAN COPY FROM, which is
+	// todos.go's rule and it was paid for: two agents took a THREAD id out of a
+	// raise notification, called the row doors with it, and read the 404 as a
+	// row that had gone away. The ids differed in their last character.
+	if target := strings.TrimSpace(store.TargetOf(art)); target != "" {
+		return room, "filed " + branch + " to land on " + target + ": " + art.ID, true
+	}
+	return room, "filed " + branch + " for the queue: " + art.ID, true
+}
+
 func (s *server) supersedeHeardIn(r *http.Request, art *store.Artifact) *store.Event {
 	older := store.SupersedesOf(art)
 	if older == "" {
