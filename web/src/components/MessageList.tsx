@@ -455,6 +455,27 @@ export function MessageList({
                       attributed
                     </span>
                   )}
+                  {/*
+                    AND WHETHER ITS SPEAKER HAS TAKEN IT BACK. This is where the
+                    mark matters most: the actor is the whole of what a message
+                    means, so a line somebody has disowned and a line nobody has
+                    must not read the same. It sits BESIDE the signed/attributed
+                    mark rather than replacing it - the signature verified, and
+                    the person whose key made it says the key was not theirs.
+                  */}
+                  {event.disowned ? (
+                    <Badge
+                      variant="outline"
+                      data-disowned={event.id}
+                      className="border-[var(--danger,#b91c1c)] text-[var(--danger,#b91c1c)]"
+                      title={
+                        event.disowned.reason ||
+                        `${event.disowned.subject} has disowned the window this message falls in`
+                      }
+                    >
+                      disowned
+                    </Badge>
+                  ) : null}
                   {event.addressee ? (
                     <Badge variant="outline">
                       to {forMe ? "you" : shortId(event.addressee, 8)}

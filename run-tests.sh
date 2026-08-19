@@ -9808,6 +9808,66 @@ sign5_as() {
 # the node the principal writes from, pin on the node that receives their rows.
 # Nothing about a principal key travels on a page - a key a relay could serve
 # would be an authorship a relay could grant itself, which is the hole.
+# A message its speaker has disowned reads as disowned, and the one beside it
+# does not.
+#
+# The store half of repudiation and the six read paths both landed before
+# anything drew the mark, so a row whose author had taken it back rendered
+# exactly like one nobody had touched. The person who was impersonated is the
+# reader this exists for, and a field only an API carries is not a disclosure.
+#
+# ON NODE A, where principals already have keys and the fixture is throwaway.
+# `flowy principal repudiate` is the real command rather than a hand-written
+# row, so what the console draws is what an operator's own rotation produces.
+#
+# THE CONTROL IS ON THE SAME PAGE and it is the same speaker's earlier line:
+# written before the window opens, it must render unmarked. A mark that draws on
+# every message is indistinguishable from a mark that works, from one
+# screenshot. The cross-principal arm - somebody else's row inside the same
+# window - is asserted in the store, where it is not also a question about who
+# may read whose project.
+a_disowned_message_says_so_and_the_one_before_it_does_not() {
+	recall5
+	local before inside from out
+	want_napi 200 "$N5_PORT_A" POST "$N5_TOKEN_A" /api/events \
+		'{"type":"chat","room":"disowned","body":"before the key was taken"}' || return 1
+	before="$(jqv .id)"
+	from="$(jqv .seq_hlc)"
+	[ -n "$from" ] && [ "$from" != null ] || {
+		printf 'the first message came back with no reading: %s\n' "$API_BODY" >&2
+		return 1
+	}
+	# The window opens AFTER that message, so the same speaker has one line on
+	# either side of it - which is the whole control.
+	from=$((from + 1))
+	want_napi 200 "$N5_PORT_A" POST "$N5_TOKEN_A" /api/events \
+		'{"type":"chat","room":"disowned","body":"inside the window somebody else was signing"}' || return 1
+	inside="$(jqv .id)"
+
+	out="$(DATABASE_URL="$N5_DSN_A" "$ROOT/flowy" principal repudiate --node nodeA \
+		--as "$N5_USER_A" --from "$from" --project pa \
+		--reason "the key that signed these was not mine" 2>&1)" || {
+		printf 'repudiate refused: %s\n' "$out" >&2
+		return 1
+	}
+	want_eq "the window it disowned starts where we said" \
+		"$(printf '%s' "$out" | jq -r .disowned.from)" "$from" || return 1
+
+	# The API says it before the browser does - if this is empty the check below
+	# would be measuring the console for something the node never sent.
+	want_napi 200 "$N5_PORT_A" GET "$N5_TOKEN_A" "/api/chat/disowned?limit=20" || return 1
+	want_eq "the node marks the message inside the window" \
+		"$(printf '%s' "$API_BODY" | jq -r --arg i "$inside" \
+			'[.events[] | select(.id == $i and .disowned != null)] | length')" 1 || return 1
+	want_eq "and leaves the one before it alone" \
+		"$(printf '%s' "$API_BODY" | jq -r --arg i "$before" \
+			'[.events[] | select(.id == $i and .disowned != null)] | length')" 0 || return 1
+
+	cd "$ROOT/web" || return 1
+	node scripts/disowned-check.mjs "http://127.0.0.1:$N5_PORT_A" "$N5_TOKEN_A" \
+		disowned "$inside" "$before"
+}
+
 a_principal_gets_a_key_on_the_node_it_writes_from() {
 	recall5
 	local out key epoch
@@ -17328,6 +17388,14 @@ check "a refusal survives a moved epoch, a removed key and a re-offer, in the st
 check "the same rules in the store, row by row" \
 	go test -count=1 -run 'TestAPinnedNodeCannotSpeakForAPrincipalWithAKey|TestARowBelowTheEpochIsStillTaken|TestAPrincipalSignedEventIsAuthored|TestTheEpochHoldsWhoeverIsCarryingTheRow|TestALocalWriteCarriesThePrincipalsSignature|TestAPartysWriteKeepsTheOwnersSignature|TestARewrittenArtifactIsRefusedAfterTheEpoch|TestAPrincipalKeyIsNotReplacedInPlace' \
 	./internal/store
+# LAST IN THIS SECTION ON PURPOSE. `principal repudiate` MINTS A NEW KEY for
+# its subject and moves the epoch - that is the point of the command - so every
+# check above that reads alice's pinned key or her epoch has to have run before
+# it. Putting it earlier would rotate the key underneath them, and the failures
+# would look like the authorship rules being wrong rather than like this fixture
+# moving the ground.
+check "a disowned message says so on the screen, and the one before the window does not" \
+	a_disowned_message_says_so_and_the_one_before_it_does_not
 check "an authorship signature is not a node signature, and covers what its owner writes" \
 	go test -count=1 -run 'TestAnAuthorshipMessageIsNotTheRowsOwnMessage|TestAnArtifactsAuthorshipCoversTheOwnersFieldsAndNoOthers' \
 	./internal/sign

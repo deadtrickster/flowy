@@ -40,6 +40,33 @@ export interface Citation {
 }
 
 /** FlowyEvent is one row of the append-only log. A chat message is one of these. */
+/**
+ * Disowned is the repudiation covering a row's author at that row's reading,
+ * resolved by the node for whoever is reading - see store.FillDisowned.
+ *
+ * IT IS A THIRD READING AND IT REPLACES NEITHER of the other two. authorship
+ * records whether a signature verified at the node, and that stays true of a
+ * stolen key: the bytes really were signed with it. So a disowned row is not
+ * "attributed", it is "authored, and its author disowns it" - a stranger
+ * sentence than either half and the only accurate one. A surface that swapped
+ * one for the other would lose the difference between a stolen key and a
+ * forgery.
+ *
+ * `by` is the repudiation's own id, so a mark always has something behind it
+ * that somebody signed. A mark with no route is a rumour with a nicer font.
+ */
+export interface Disowned {
+  /** The repudiation that says so. */
+  by: string;
+  /** Who disowned it, which is also the row's author. */
+  subject: string;
+  /** What they said, absent when they said nothing. */
+  reason?: string;
+  /** The closed window they disowned, as packed clock readings. */
+  from: number;
+  to: number;
+}
+
 export interface FlowyEvent {
   id: string;
   type: string;
@@ -117,6 +144,13 @@ export interface FlowyEvent {
    * is what a store holds until principals have keys.
    */
   authorship?: "authored" | "attributed";
+  /**
+   * disowned is present when this message's ACTOR has repudiated the window it
+   * falls in - see Disowned. Absent means nobody has, which is every message on
+   * this fabric today, so a surface must draw nothing rather than drawing
+   * "not disowned" on every line.
+   */
+  disowned?: Disowned;
   created: string;
 }
 
@@ -462,6 +496,11 @@ export interface Artifact {
    * (title, body, project, tags), so a party's status move does not disturb it.
    */
   authorship?: "authored" | "attributed";
+  /**
+   * disowned is present when this row's OWNER has repudiated the window it
+   * falls in - see Disowned. Absent means nobody has.
+   */
+  disowned?: Disowned;
   /**
    * notes is what has been learned about this row since it was filed, oldest
    * first, and it arrives from a SINGLE-ROW read only. The list reads do not

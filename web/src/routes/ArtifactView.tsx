@@ -466,6 +466,40 @@ export function ArtifactView() {
                   >
                     {artifact.authorship === "authored" ? "authored" : "attributed"}
                   </span>
+                  {/*
+                  AND WHETHER ITS AUTHOR HAS TAKEN IT BACK, which is a third
+                  reading beside the two above and replaces neither: the
+                  signature really did verify, and the person whose key made it
+                  says the key was not theirs at the time. Drawn only when there
+                  is one - a page that said "not disowned" on every row would be
+                  telling everybody something about nobody.
+
+                  The id is a LINK because a mark with no route is a rumour with
+                  a nicer font: whoever reads this can open the repudiation and
+                  see the window and the words its subject signed.
+                */}
+                  {artifact.disowned ? (
+                    <>
+                      {" · "}
+                      <span
+                        data-disowned={artifact.id}
+                        className="font-medium text-[var(--danger,#b91c1c)]"
+                        title={
+                          artifact.disowned.reason ||
+                          "the author of this row has disowned the window it falls in"
+                        }
+                      >
+                        disowned by {artifact.disowned.subject}
+                      </span>{" "}
+                      <Link
+                        to={`/artifact/${artifact.disowned.by}`}
+                        data-disowned-by={artifact.disowned.by}
+                        className="underline"
+                      >
+                        see the repudiation
+                      </Link>
+                    </>
+                  ) : null}
                 </div>
               </CardContent>
             </Card>
