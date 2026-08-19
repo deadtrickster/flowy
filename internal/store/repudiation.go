@@ -356,6 +356,69 @@ func liveRepudiations(list []*Artifact) []*Artifact {
 	return keep
 }
 
+// Unreadable is what this node holds and cannot apply.
+//
+// A repudiation whose window cannot be read is dropped everywhere else: the
+// check refuses it, the live list excludes it, and every row it would have
+// covered reads as not disowned. That is the safe answer and it is not an
+// honest one on its own - the store is holding a claim somebody signed, about
+// their own name, and doing nothing with it. Silence would make "nobody
+// disowned this" and "somebody disowned this and I cannot tell whom" the same
+// answer.
+//
+// It is reported HERE and nowhere else. A mark on a chat line saying "possibly
+// disowned, cannot tell" is a mark nobody can act on, on a page about something
+// else - so the per-row readers stay silent and safe, and the surface that
+// exists to show repudiations is the one that says what it could not read. Same
+// rule as WithheldAuthorship and RefusedAuthorship: a finding lives where
+// somebody can do something about it.
+//
+// THE IDS TRAVEL, not just a count. "1 unreadable" tells a person a problem
+// exists; the id lets them fetch the row and see what a peer actually sent,
+// which is the only way to find out whose encoder is wrong.
+type Unreadable struct {
+	Rows int      `json:"rows"`
+	IDs  []string `json:"ids"`
+	// Why is the same sentence for all of them, because there is one way to be
+	// unreadable that matters: a window that cannot be trusted. See fieldInt.
+	Why string `json:"why"`
+}
+
+// UnreadableReason is why a held repudiation is not applied to anybody.
+const UnreadableReason = "the window cannot be read, so it disowns nothing"
+
+// UnreadableRepudiations counts what this node holds and cannot apply, with the
+// ids, or nil when there are none.
+//
+// ABSENT RATHER THAN ZERO, the shape withheld and refused already use: a reader
+// that has to tell "none" from "this answer does not carry the number" gets one
+// answer for both when zero is reported.
+//
+// A LIKELY SOURCE IS A PEER. A repudiation written here is written by code that
+// stores the window as text; one that arrives unreadable most probably crossed
+// from a node whose encoder put it in a JSON number, where a clock reading past
+// 2^53 loses its low bits. So this count is a federation health number rather
+// than a curiosity, which is why the ids matter more than the total.
+func (d *DB) UnreadableRepudiations(ctx context.Context) (*Unreadable, error) {
+	list, err := d.allArtifactsOfType(ctx, RepudiationType)
+	if err != nil {
+		return nil, err
+	}
+	ids := []string{}
+	for _, a := range list {
+		if strings.TrimSpace(a.ReplacedBy) != "" {
+			continue
+		}
+		if CheckRepudiation(a) != nil {
+			ids = append(ids, a.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	return &Unreadable{Rows: len(ids), IDs: ids, Why: UnreadableReason}, nil
+}
+
 // Repudiated reports whether a repudiation covers this author at this reading,
 // and which row said so.
 //

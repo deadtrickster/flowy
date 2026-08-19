@@ -451,6 +451,7 @@ func (s *server) routes() http.Handler {
 	api.HandleFunc("GET /api/me", s.handleReadMe)
 	api.HandleFunc("POST /api/lock/release", s.handleReleaseLock)
 	api.HandleFunc("GET /api/lock", s.handleReadLock)
+	api.HandleFunc("GET /api/repudiations", s.handleRepudiations)
 	api.HandleFunc("POST /api/merge/{id}/land", s.handleMergeLand)
 	api.HandleFunc("POST /api/merge/{id}/abandon", s.handleMergeAbandon)
 	api.HandleFunc("POST /api/merge/{id}/blocked", s.handleMergeBlocked)

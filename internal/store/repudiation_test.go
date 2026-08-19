@@ -335,3 +335,86 @@ func TestARepudiationMarksItsSubjectsRowsInEveryProject(t *testing.T) {
 		t.Fatal("the unfiltered read came back empty")
 	}
 }
+
+// What this node holds and cannot apply is reported, not swallowed.
+//
+// A repudiation with an unreadable window is dropped by every other surface,
+// which is safe and silent - and silence makes "nobody disowned this" and
+// "somebody disowned this and I cannot tell whom" the same answer. The place to
+// say so is the surface whose reader came to look at repudiations.
+func TestWhatCannotBeReadIsCounted(t *testing.T) {
+	ctx, db := open(t)
+
+	project := declaredProject(t, ctx, db, "unreadable")
+	alice := "u-" + ulid.NewString()
+	subject := &Principal{UserID: alice, Project: project}
+
+	// NOTHING HELD IS ABSENT, NOT ZERO - the shape withheld and refused use, so
+	// a reader can tell "none" from "this answer does not carry the number".
+	// Asked before anything is written, because after it the answer is the same
+	// either way.
+	before, err := db.UnreadableRepudiations(ctx)
+	if err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if before != nil {
+		for _, id := range before.IDs {
+			t.Logf("an earlier run left an unreadable repudiation: %s", id)
+		}
+	}
+
+	// A window written as a large JSON number - what a peer with a different
+	// encoder sends, and what this node's own writer produced before 30b5c8b.
+	bad := &Artifact{
+		ID: ulid.NewString(), Type: RepudiationType, Visibility: "project",
+		Project: &project, OwnerUser: alice,
+		Title: "unreadable by construction",
+		Fields: fieldsJSON(t, map[string]any{
+			SubjectField: alice, SpeakerField: SpeakerSubject,
+			FromField: float64(117119446652354561), ToField: float64(117119446652354570),
+		}),
+	}
+	// Written around the door, because the door is what refuses it - the case
+	// under test is a row that is ALREADY here, from a peer or an older writer.
+	if err := db.UpsertArtifact(ctx, bad); err != nil {
+		t.Fatalf("plant the unreadable row: %v", err)
+	}
+
+	got, err := db.UnreadableRepudiations(ctx)
+	if err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if got == nil {
+		t.Fatal("an unreadable repudiation is held and the count says nothing")
+	}
+	found := false
+	for _, id := range got.IDs {
+		if id == bad.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the ids %v do not name the unreadable row %s - a count alone cannot be acted on",
+			got.IDs, bad.ID)
+	}
+
+	// AND IT IS STILL APPLIED TO NOBODY. Reporting it must not be the step that
+	// starts trusting it.
+	live, err := db.LiveRepudiations(ctx)
+	if err != nil {
+		t.Fatalf("live: %v", err)
+	}
+	for _, r := range live {
+		if r.ID == bad.ID {
+			t.Fatal("the unreadable repudiation is in the list used to mark rows")
+		}
+	}
+	row := &Artifact{ID: ulid.NewString(), OwnerUser: alice, HLC: 117119446652354565}
+	if err := db.FillDisowned(ctx, []*Artifact{row}, nil); err != nil {
+		t.Fatalf("fill: %v", err)
+	}
+	if row.Disowned != nil {
+		t.Fatal("a row inside the unreadable window was marked, on evidence nobody can read")
+	}
+	_ = subject
+}
