@@ -6416,7 +6416,16 @@ a_reaction_is_an_emoji_at_every_door() {
 	api POST "$TOKEN_A" /api/events \
 		"{\"type\": \"reaction.add\", \"room\": \"general\", \"parents\": [\"$said\"], \"body\": \"🔥\"}" ||
 		return 1
-	printf 'a sentence refused at both doors, a glyph taken at both\n'
+	# Two glyphs are two glyphs however short they are, which a rune ceiling
+	# alone cannot say. Measured on the emoji people actually type: a thumbs-up
+	# is 1 rune, with a skin tone 2, a four-person family 7 and the same family
+	# with skin tones 11 - so a count set at "past the longest one" refused real
+	# characters. The rule is one grapheme; the count is only a backstop.
+	want_status 400 POST "$TOKEN_A" "/api/chat/general/react" \
+		"{\"message\": \"$said\", \"emoji\": \"👀👍\"}" || return 1
+	api POST "$TOKEN_A" "/api/chat/general/react" \
+		"{\"message\": \"$said\", \"emoji\": \"👨🏽‍👩🏽‍👧🏽‍👦🏽\"}" || return 1
+	printf 'a sentence and two glyphs refused at both doors, a family of four with tones taken\n'
 }
 
 # And a person sees it. The store answering with a fold nobody draws is the

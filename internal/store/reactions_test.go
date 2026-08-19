@@ -121,13 +121,41 @@ func TestAReactionIsAnEmojiAndNotASecondChat(t *testing.T) {
 			t.Errorf("%s was accepted as a reaction", bad.why)
 		}
 	}
-	// And the thing it is for is not refused with them: a family sequence is
-	// seven runes and is an emoji somebody actually sends, so a ceiling that
-	// cut it would be a ceiling set by counting characters rather than by
-	// looking at one.
-	for _, ok := range []string{"👀", "👍", "🔥", "👨‍👩‍👧‍👦"} {
-		if _, err := db.React(ctx, p, "general", said.ID, ok, true); err != nil {
-			t.Errorf("%q was refused as a reaction: %v", ok, err)
+	// And the things it is for are not refused with them.
+	//
+	// THE COUNTS ARE MEASURED, not assumed, because assuming them is how the
+	// first cut of this rule got it wrong: it capped at eight runes on the
+	// belief that seven was the longest emoji anybody sends, which refused a
+	// family of four with skin tones (eleven) and every tag-sequence flag
+	// (seven, but built the other way). Each case below is a real character
+	// somebody types, with what it actually costs.
+	for _, ok := range []struct{ what, emoji string }{
+		{"one rune", "👀"},
+		{"a base and a skin tone, two runes", "👍🏽"},
+		{"a four-person family, seven runes", "👨‍👩‍👧‍👦"},
+		{"the same family with skin tones, eleven runes", "👨🏽‍👩🏽‍👧🏽‍👦🏽"},
+		{"a country flag, two regional indicators", "🇬🇧"},
+		{"a subdivision flag, a base and six tag characters", "🏴󠁧󠁢󠁷󠁬󠁳󠁿"},
+		{"a keycap, three runes", "1️⃣"},
+		{"a base with an emoji variation selector", "❤️"},
+	} {
+		if _, err := db.React(ctx, p, "general", said.ID, ok.emoji, true); err != nil {
+			t.Errorf("%s (%q) was refused as a reaction: %v", ok.what, ok.emoji, err)
+		}
+	}
+	// And two glyphs are two glyphs however short they are, which is what the
+	// rule is FOR - a rune ceiling alone would take "👀👍" as
+	// happily as one of them.
+	for _, two := range []string{"👀👍", "ab", "👍!"} {
+		if _, err := db.React(ctx, p, "general", said.ID, two, true); err == nil {
+			t.Errorf("%q is more than one glyph and was accepted", two)
+		}
+	}
+	// A single regional indicator is a LETTER rather than a flag, and a
+	// trailing joiner joins nothing.
+	for _, half := range []string{"🇬", "👍‍"} {
+		if _, err := db.React(ctx, p, "general", said.ID, half, true); err == nil {
+			t.Errorf("%q is half a glyph and was accepted", half)
 		}
 	}
 }

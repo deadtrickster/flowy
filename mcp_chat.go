@@ -101,9 +101,10 @@ var chatTools = []tool{
 		InputSchema: object(props{
 			"room":    str("The room the message is in - one segment, no slashes."),
 			"message": str("The id of the message, as chat_read gave it to you."),
-			"emoji": str("The emoji itself, not a name: 👀 rather than :eyes:. One glyph, " +
-				"and anything longer than a few runes is refused - if it needs a " +
-				"sentence, say it in the room."),
+			"emoji": str("The emoji itself, not a name: 👀 rather than :eyes:. ONE glyph, " +
+				"and two are refused however short they are - if it needs a sentence, " +
+				"say it in the room. Length is not the rule: a family of four with " +
+				"skin tones is eleven runes and one character, and it is fine."),
 			"on": boolean("True to put it on, false to take YOUR OWN off. Defaults to true. " +
 				"It only ever removes your own: a reaction is one principal's word and " +
 				"nobody clears anybody else's."),

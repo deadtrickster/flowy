@@ -32,6 +32,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/lib/pq"
@@ -43,15 +44,21 @@ const (
 	EventReactionRemove = "reaction.remove"
 )
 
-// MaxReactionRunes is the ceiling on the emoji itself.
+// MaxReactionRunes is a BACKSTOP and not the rule.
 //
-// It is not decoration and it is not a guess at how long an emoji is. Without a
-// cap, `reaction` is a second chat with no length limit and no renderer willing
-// to say so: a body of ten kilobytes arrives, the room draws it beside a
-// message as though it were a face, and every reader of that room pays for it.
-// Eight runes is past the longest emoji anybody actually sends - a family
-// sequence with skin tones is seven - and far short of a sentence.
-const MaxReactionRunes = 8
+// The rule is one grapheme - see oneGrapheme - because that is what "an emoji"
+// means to the person typing one. A rune count cannot state it: measured, a
+// thumbs-up is 1 rune, with a skin tone 2, a four-person family 7, the same
+// family with skin tones 11, and a Welsh flag 7. An earlier cut capped at eight
+// runes on the belief that seven was the longest anybody sends, which refused a
+// family of four with tones and every tag-sequence flag - real characters, one
+// glyph each, typed by a person.
+//
+// This is what stops a pathological join chain instead. A single grapheme can
+// be arbitrarily long - ZWJ takes any number of bases - so "one grapheme" alone
+// still admits a kilobyte, and the room would draw it. Sixty-four runes is far
+// past any emoji in use and far short of a sentence.
+const MaxReactionRunes = 64
 
 // ReactionError is a refusal to react, in words a caller can hand to a person.
 type ReactionError struct{ Why string }
@@ -79,13 +86,91 @@ func ReactionBodyRefusal(body string) string {
 		return "a reaction is text and this one is not valid utf-8"
 	}
 	if n := utf8.RuneCountInString(trimmed); n > MaxReactionRunes {
-		return fmt.Sprintf("a reaction is %d runes and the ceiling is %d - "+
+		return fmt.Sprintf("a reaction is %d runes and the backstop is %d - "+
 			"say it in the room if it needs a sentence", n, MaxReactionRunes)
 	}
 	if strings.ContainsAny(trimmed, "\n\r\t") {
 		return "a reaction is one glyph on one line"
 	}
+	if !oneGrapheme(trimmed) {
+		return "a reaction is one glyph and this is more than one - " +
+			"say it in the room if it needs a sentence"
+	}
 	return ""
+}
+
+// oneGrapheme reports whether s is a single grapheme cluster.
+//
+// It is a narrow implementation of the part of UAX#29 that emoji actually use,
+// rather than a dependency: after the first rune, every rune must CONTINUE the
+// cluster - a zero-width joiner and whatever it joins, a variation selector, a
+// skin tone, a combining mark, a tag character, a keycap - and a rune that
+// starts a new base is a second glyph and refuses the whole body.
+//
+// Two shapes are answered before that loop because they are not built that way.
+// A country flag is exactly two regional indicators and nothing else, and one
+// on its own is a letter rather than a flag. A tag sequence - the Welsh, Scots
+// and English flags - is a base followed by tag characters, which the loop
+// handles as continuations.
+//
+// WHAT IT DOES NOT DO, said plainly rather than left to be discovered: it is
+// not full segmentation. Hangul syllables, Indic conjuncts and prepend marks
+// are not modelled, so a text-script grapheme built from several runes may be
+// refused. That is the right side to be wrong on here - this is an ack channel
+// and the set anybody reaches for is emoji - and if somebody sends one that is
+// refused, the refusal names what it wanted rather than failing silently.
+func oneGrapheme(s string) bool {
+	runes := []rune(s)
+	if len(runes) == 0 {
+		return false
+	}
+	if len(runes) == 1 {
+		return !regionalIndicator(runes[0])
+	}
+	// A country flag: two regional indicators, and only two.
+	if regionalIndicator(runes[0]) {
+		return len(runes) == 2 && regionalIndicator(runes[1])
+	}
+	joined := false
+	for _, r := range runes[1:] {
+		switch {
+		case r == zeroWidthJoiner:
+			joined = true
+		case joined:
+			// Whatever the joiner joined. A ZWJ sequence is one glyph however
+			// many people are in it.
+			joined = false
+		case clusterContinues(r):
+		default:
+			return false
+		}
+	}
+	// A trailing joiner joins nothing, so the body is a base and a dangling
+	// control rather than one glyph.
+	return !joined
+}
+
+const zeroWidthJoiner = 0x200D
+
+// regionalIndicator is one of the twenty-six letters a country flag is made of.
+func regionalIndicator(r rune) bool { return r >= 0x1F1E6 && r <= 0x1F1FF }
+
+// clusterContinues reports whether r extends the glyph before it rather than
+// starting a new one.
+func clusterContinues(r rune) bool {
+	switch {
+	case r >= 0xFE00 && r <= 0xFE0F: // variation selectors: text vs emoji presentation
+		return true
+	case r >= 0x1F3FB && r <= 0x1F3FF: // skin tone modifiers
+		return true
+	case r >= 0xE0020 && r <= 0xE007F: // tag characters: the subdivision flags
+		return true
+	case r == 0x20E3: // combining enclosing keycap
+		return true
+	case unicode.Is(unicode.Mn, r), unicode.Is(unicode.Me, r), unicode.Is(unicode.Mc, r):
+		return true
+	}
+	return false
 }
 
 // Reaction is one emoji on one message and everybody who put it there.
