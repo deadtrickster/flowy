@@ -151,19 +151,35 @@ ${JSON.stringify(redrawn)} - it did not re-read after the write`);
   // added. A store that accepted everything would still let the first one in.
   // That is flow 4 of 01M0B30FP2 - "a panel that says saved while nothing
   // changed looks identical to one that worked".
-  const login = async (pw) => {
+  // THE LIMITER IS REAL AND THIS CHECK WAITS FOR IT rather than asking to be
+  // scheduled around. /api/login allows three attempts a minute per client
+  // (api_join.go, joinBurst) because bcrypt at cost 12 makes guessing expensive
+  // for the node as well - and the sign-in check runs just before this one
+  // against the same client, so the budget is shared and this check went red on
+  // a 429 the first time it ran in a gate.
+  //
+  // "Space the checks apart" is advice nobody can enforce from inside one of
+  // them. Waiting out the window is a minute, once, only when it actually
+  // trips, and it makes this check's result depend on the panel rather than on
+  // what ran before it.
+  //
+  // A second 429 after the wait is a real refusal to report: something is
+  // spending the budget continuously, and nothing was measured either way.
+  const login = async (pw, retried = false) => {
     const answer = await fetch(`${base}/api/login`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ handle: wanted, password: pw }),
     });
-    if (answer.status === 429) {
-      die(`/api/login rate limited this check (429). Nothing was measured about the
-panel - the limiter allows three attempts a minute per client and something else
-in this gate spent them. Space the login checks apart rather than reading this
-as a broken password.`);
+    if (answer.status !== 429) return answer;
+    if (retried) {
+      die(`/api/login is still rate limiting after a full window (429). Nothing was
+measured about the panel - something in this gate is spending three login
+attempts a minute continuously.`);
     }
-    return answer;
+    console.log("  (waiting out the login limiter, 62s)");
+    await new Promise((resolve) => setTimeout(resolve, 62000));
+    return login(pw, true);
   };
 
   const good = await login(password);
