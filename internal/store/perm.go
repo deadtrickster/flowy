@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/lib/pq"
 )
 
 // ErrNotFound is what a permission-filtered read returns when the row is
@@ -113,8 +115,70 @@ type Principal struct {
 	// deliberately something a machine posts and not something a person can
 	// post by holding their own credential.
 	AgentKind string `json:"agent_kind,omitempty"`
-	Project   string `json:"project,omitempty"`
-	Operator  bool   `json:"operator,omitempty"`
+	// Project is the project this principal is ACTING IN: where a write it
+	// makes lands. It is single-valued because a write is - an artifact has one
+	// project, an event has one - and every write site in this program reads
+	// this field and means exactly that.
+	Project string `json:"project,omitempty"`
+	// Projects is what it may reach BESIDES the one it is acting in: the
+	// ceiling, not the target. Reach is the set of both.
+	//
+	// The two are separate fields rather than one set because they answer
+	// different questions and the wrong answer to either is a different kind of
+	// bug. "Where does this write land" has exactly one answer or the write is
+	// undefined; "may I see this row" has as many answers as the credential
+	// carries. A single set would have forced every one of the write sites to
+	// pick an element, which is a decision made in 600 places instead of one.
+	//
+	// Empty on every token that names one project, which is every token on
+	// every node today - see Reach, which folds Project in, so a credential
+	// that never heard of this field reaches exactly what it always did.
+	Projects []string `json:"projects,omitempty"`
+	Operator bool     `json:"operator,omitempty"`
+}
+
+// Reach is every project this principal may READ in: the one it acts in, plus
+// the rest of the set, deduplicated and with empties dropped.
+//
+// It is a method rather than a field so there is one answer and it cannot go
+// stale against the two fields behind it. Every read rule takes this - see
+// ArtifactFilterSQL and CanRead - and no write site does.
+//
+// The acting project is always in it. A credential that could write into a
+// project it cannot read would be able to file work it can never see again,
+// which is a state nothing here should be able to reach.
+func (p *Principal) Reach() []string {
+	if p == nil {
+		return nil
+	}
+	out := make([]string, 0, len(p.Projects)+1)
+	seen := make(map[string]bool, len(p.Projects)+1)
+	for _, project := range append([]string{p.Project}, p.Projects...) {
+		if project == "" || seen[project] {
+			continue
+		}
+		seen[project] = true
+		out = append(out, project)
+	}
+	return out
+}
+
+// CanReachProject reports whether this principal may act in the named project.
+//
+// It is the ceiling test the acting project is chosen against: a request that
+// names a project outside the set is REFUSED rather than narrowed to what the
+// caller can see, because a silent narrowing is a write landing somewhere the
+// caller did not ask for.
+func (p *Principal) CanReachProject(project string) bool {
+	if p == nil || project == "" {
+		return false
+	}
+	for _, reachable := range p.Reach() {
+		if reachable == project {
+			return true
+		}
+	}
+	return false
 }
 
 // Grant is a capability row: a project-wide edge when Artifact is empty, a
@@ -196,7 +260,11 @@ func CanRead(p *Principal, art *Artifact, grants []Grant) bool {
 	if art.Visibility == VisibilityPersonal || art.Project == nil {
 		return p.UserID != "" && art.OwnerUser == p.UserID
 	}
-	if p.Project != "" && *art.Project == p.Project {
+	// The SET, matching artifactReachSQL clause for clause. These two are one
+	// rule in two languages and they have drifted before - see the head of
+	// artifactReachSQL, where an event filter carrying an approximation handed
+	// over row by row what the artifact filter had refused.
+	if p.CanReachProject(*art.Project) {
 		return true
 	}
 	if art.Visibility == VisibilityProjectOnly {
@@ -207,7 +275,7 @@ func CanRead(p *Principal, art *Artifact, grants []Grant) bool {
 			continue
 		}
 		projectWide := g.Artifact == "" &&
-			p.Project != "" && g.FromProject == p.Project && g.ToProject == *art.Project
+			p.CanReachProject(g.FromProject) && g.ToProject == *art.Project
 		perArtifact := g.Artifact != "" &&
 			g.Artifact == art.ID && p.UserID != "" && g.Subject == p.UserID
 		if projectWide || perArtifact {
@@ -248,17 +316,22 @@ func (a *args) next(v any) string {
 // The grants subqueries alias the table as `g`. A caller splicing this inside
 // its own `grants g` scope would shadow that alias, so the event filter puts
 // this in a clause of its own rather than inside one.
-func artifactReachSQL(alias, user, project string) string {
-	return strings.NewReplacer("{a}", alias, "{user}", user, "{project}", project).Replace(
+// THE PROJECT SIDE IS A SET, not a string. {projects} holds a text[] of every
+// project the credential reaches - see Principal.Reach - and each test that was
+// an equality is now a membership. An empty array matches nothing, which is
+// exactly what the `<> ”` guards did for the empty string, so a projectless
+// principal still reaches only what it owns.
+func artifactReachSQL(alias, user, projects string) string {
+	return strings.NewReplacer("{a}", alias, "{user}", user, "{projects}", projects).Replace(
 		`(CASE WHEN {a}.visibility = 'personal' OR {a}.project IS NULL
 		       THEN {a}.owner_user = {user} AND {user} <> ''
 		       WHEN {a}.visibility = 'project-only'
-		       THEN {a}.project = {project} AND {project} <> ''
-		       ELSE {a}.project = {project} AND {project} <> ''
+		       THEN {a}.project = ANY({projects})
+		       ELSE {a}.project = ANY({projects})
 		         OR EXISTS (SELECT 1 FROM grants g
 		                     WHERE coalesce(g.tombstone, false) = false
 		                       AND g.artifact IS NULL
-		                       AND g.from_project = {project} AND {project} <> ''
+		                       AND g.from_project = ANY({projects})
 		                       AND g.to_project = {a}.project)
 		         OR EXISTS (SELECT 1 FROM grants g
 		                     WHERE coalesce(g.tombstone, false) = false
@@ -336,8 +409,8 @@ func ArtifactFilterSQL(p *Principal, alias string, a *args, scopeAll bool) strin
 		return "TRUE"
 	}
 	user := a.next(p.UserID)
-	project := a.next(p.Project)
-	return artifactReachSQL(alias, user, project)
+	projects := a.next(pq.Array(p.Reach()))
+	return artifactReachSQL(alias, user, projects)
 }
 
 // EventFilterSQL narrows the event log the same way, on the event's project.
@@ -414,7 +487,9 @@ func EventFilterSQL(p *Principal, alias string, a *args, scopeAll bool) string {
 	}
 	user := a.next(p.UserID)
 	agent := a.next(p.AgentID)
-	project := a.next(p.Project)
+	// The set, for the same reason the artifact filter takes one: an event
+	// belongs to a project, and a credential reaches several.
+	projects := a.next(pq.Array(p.Reach()))
 
 	// The floor, in the artifact filter's own words rather than in a copy of
 	// them. An event naming an artifact this node has never seen is not
@@ -422,20 +497,21 @@ func EventFilterSQL(p *Principal, alias string, a *args, scopeAll bool) string {
 	floor := `(coalesce({a}.artifact, '') = ''
 		           OR EXISTS (SELECT 1 FROM artifacts par
 		                       WHERE par.id = {a}.artifact
-		                         AND ` + artifactReachSQL("par", user, project) + `))`
+		                         AND ` + artifactReachSQL("par", user, projects) + `))`
 
-	return strings.NewReplacer("{a}", alias, "{user}", user, "{agent}", agent, "{project}", project).Replace(
+	return strings.NewReplacer("{a}", alias, "{user}", user, "{agent}", agent,
+		"{projects}", projects).Replace(
 		`((CASE WHEN {a}.project IS NULL
 		        THEN ({a}.actor = {user} AND {user} <> '')
 		          OR ({a}.actor = {agent} AND {agent} <> '')
 		          OR (` + privateEventSQL("{a}") + `
 		               AND (({a}.addressee = {user} AND {user} <> '')
 		                 OR ({a}.addressee = {agent} AND {agent} <> '')))
-		        ELSE ({a}.project = {project} AND {project} <> ''
+		        ELSE ({a}.project = ANY({projects})
 		               OR EXISTS (SELECT 1 FROM grants g
 		                           WHERE coalesce(g.tombstone, false) = false
 		                             AND g.artifact IS NULL
-		                             AND g.from_project = {project} AND {project} <> ''
+		                             AND g.from_project = ANY({projects})
 		                             AND g.to_project = {a}.project)
 		               OR EXISTS (SELECT 1 FROM grants g
 		                           WHERE coalesce(g.tombstone, false) = false
@@ -469,12 +545,52 @@ func (d *DB) PrincipalForToken(ctx context.Context, token string) (*Principal, e
 		agentUser, agentProject  sql.NullString
 		agentKind                sql.NullString
 	)
-	err := d.sql.QueryRowContext(ctx,
-		`SELECT t.token, t.user_id, t.agent_id, t.project, a.user_id, a.project,
+	// The set comes back with the row rather than from a second query, for the
+	// reason the agent kind does: what this token IS has to be one answer taken
+	// at one moment. A reach read separately could be read against a
+	// token_projects row that changed between the two, and the credential the
+	// request then runs under would be one that never existed.
+	const withReach = `SELECT t.token, t.user_id, t.agent_id, t.project, a.user_id, a.project,
+		        coalesce(a.agent_kind, 'worker'),
+		        coalesce(array(SELECT tp.project FROM token_projects tp
+		                        WHERE tp.token = t.token
+		                        ORDER BY tp.project), '{}')
+		   FROM tokens t LEFT JOIN agents a ON a.id = t.agent_id
+		  WHERE t.token = $1`
+	const withoutReach = `SELECT t.token, t.user_id, t.agent_id, t.project, a.user_id, a.project,
 		        coalesce(a.agent_kind, 'worker')
 		   FROM tokens t LEFT JOIN agents a ON a.id = t.agent_id
-		  WHERE t.token = $1`, token).
-		Scan(&p.Token, &userID, &agentID, &project, &agentUser, &agentProject, &agentKind)
+		  WHERE t.token = $1`
+
+	var reaches pq.StringArray
+	err := d.sql.QueryRowContext(ctx, withReach, token).
+		Scan(&p.Token, &userID, &agentID, &project, &agentUser, &agentProject, &agentKind,
+			&reaches)
+	// A DATABASE THAT PREDATES THE REACH TABLE STILL RESOLVES TOKENS, and this
+	// is deliberately NOT the answer projectNamesInUse gives for a missing
+	// projects table.
+	//
+	// The difference is whether the missing table makes the question
+	// unanswerable. Without `projects` the node cannot say what projects exist,
+	// so it refuses and says to apply schema.sql. Without `token_projects`
+	// every token reaches exactly its own project - that is not a guess, it is
+	// the true answer, because reach is empty on every node until somebody
+	// mints a token naming a second project. Refusing every request in the
+	// program to protect a widening nobody is using yet would take a node down
+	// for a feature that is switched off.
+	//
+	// MEASURED, which is why this exists at all: the gate seeds principals into
+	// a database ONE COMMIT OLD on purpose, and the combined query failed there
+	// with `relation "token_projects" does not exist` - taking token resolution,
+	// and therefore every authenticated route, down on a database that had
+	// simply not been migrated yet.
+	//
+	// The fast path stays one query. Only an unmigrated database pays a second.
+	if isUndefinedTable(err) {
+		reaches = nil
+		err = d.sql.QueryRowContext(ctx, withoutReach, token).
+			Scan(&p.Token, &userID, &agentID, &project, &agentUser, &agentProject, &agentKind)
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -496,6 +612,9 @@ func (d *DB) PrincipalForToken(ctx context.Context, token string) (*Principal, e
 	if p.Project == "" {
 		p.Project = agentProject.String
 	}
+	// The rest of the ceiling. Reach folds the acting project in, so this
+	// stays exactly what the table said and does not need to repeat it.
+	p.Projects = reaches
 	return &p, nil
 }
 
@@ -512,16 +631,84 @@ func (d *DB) InsertToken(ctx context.Context, p *Principal) error {
 	if err := requireProject(ctx, d.sql, p.Project); err != nil {
 		return err
 	}
-	_, err := d.sql.ExecContext(ctx,
-		`INSERT INTO tokens (token, user_id, agent_id, project) VALUES ($1, $2, $3, nullif($4, ''))
-		 ON CONFLICT (token) DO UPDATE
-		    SET user_id = excluded.user_id, agent_id = excluded.agent_id,
-		        project = excluded.project`,
-		p.Token, p.UserID, p.AgentID, p.Project)
-	if err != nil {
-		return fmt.Errorf("store: insert token: %w", err)
+	// EVERY project in the set is checked, not only the one it acts in, and
+	// checked BEFORE anything is written: the reach half of a credential is the
+	// half that decides what it can see, so a name nobody declared there is a
+	// grant of access to a project that does not exist.
+	for _, project := range p.Projects {
+		if err := requireProject(ctx, d.sql, project); err != nil {
+			return err
+		}
 	}
-	return nil
+	// NIL MEANS UNSTATED, and it is the difference between leaving the reach
+	// alone and replacing it with nothing. That is memWriteArgs' rule for its
+	// pointer fields, one type along: a caller that says nothing about a field
+	// must not move it.
+	//
+	// It is also what keeps this write off a database that predates the table.
+	// MEASURED: the first version cleared token_projects unconditionally, and
+	// the gate's upgrade section - which seeds principals into a database ONE
+	// COMMIT OLD, on purpose - failed with `pq: relation "token_projects" does
+	// not exist`. That is the outage that section was written after, in the
+	// write path this time. A mint that says nothing about reach now touches
+	// nothing, so a node whose database has not been migrated yet still mints
+	// exactly the tokens it always could.
+	if p.Projects == nil {
+		_, err := d.sql.ExecContext(ctx,
+			`INSERT INTO tokens (token, user_id, agent_id, project) VALUES ($1, $2, $3, nullif($4, ''))
+			 ON CONFLICT (token) DO UPDATE
+			    SET user_id = excluded.user_id, agent_id = excluded.agent_id,
+			        project = excluded.project`,
+			p.Token, p.UserID, p.AgentID, p.Project)
+		if err != nil {
+			return fmt.Errorf("store: insert token: %w", err)
+		}
+		return nil
+	}
+
+	// One transaction, because a token that exists with half its reach written
+	// is a credential nobody asked for: narrower than intended, silently, and
+	// indistinguishable from one that was minted that way.
+	return d.inTx(ctx, "insert token", func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx,
+			`INSERT INTO tokens (token, user_id, agent_id, project) VALUES ($1, $2, $3, nullif($4, ''))
+			 ON CONFLICT (token) DO UPDATE
+			    SET user_id = excluded.user_id, agent_id = excluded.agent_id,
+			        project = excluded.project`,
+			p.Token, p.UserID, p.AgentID, p.Project)
+		if err != nil {
+			return fmt.Errorf("store: insert token: %w", err)
+		}
+		// REPLACED, not added to, once a caller has stated a set at all. A mint
+		// that names its reach states the whole of it; leaving rows behind from
+		// a previous state would make re-minting a token a way to widen it by
+		// accident, which is the direction that matters.
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM token_projects WHERE token = $1`, p.Token); err != nil {
+			// Here the refusal IS the right answer, unlike the read above: the
+			// caller asked for a credential reaching more than one project and
+			// this database cannot hold that. Saying so beats minting a token
+			// narrower than the one that was asked for, which nothing would
+			// notice until the seat could not see its own work.
+			if isUndefinedTable(err) {
+				return fmt.Errorf("this database predates token_projects, so a token "+
+					"naming more than one project cannot be written: apply schema.sql "+
+					"to it first (underlying error: %w)", err)
+			}
+			return fmt.Errorf("store: clear token reach: %w", err)
+		}
+		for _, project := range p.Projects {
+			if project == "" || project == p.Project {
+				continue
+			}
+			if _, err := tx.ExecContext(ctx,
+				`INSERT INTO token_projects (token, project) VALUES ($1, $2)
+				 ON CONFLICT DO NOTHING`, p.Token, project); err != nil {
+				return fmt.Errorf("store: widen token reach: %w", err)
+			}
+		}
+		return nil
+	})
 }
 
 // InsertGrant writes a grant, stamping id/hlc/node when unset.

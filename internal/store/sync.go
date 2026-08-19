@@ -140,9 +140,13 @@ func GrantFilterSQL(p *Principal, alias string, a *args) string {
 		return "FALSE"
 	}
 	user := a.next(p.UserID)
-	project := a.next(p.Project)
-	return `(` + alias + `.to_project = ` + project + ` AND ` + project + ` <> ''
-	      OR ` + alias + `.from_project = ` + project + ` AND ` + project + ` <> ''
+	// The set. A grant names two projects and a credential reaches several, so
+	// "is either end mine" is a membership - and the `<> ''` guards go with the
+	// equality they belonged to: an empty array matches nothing, which is what
+	// they were there to ensure.
+	projects := a.next(pq.Array(p.Reach()))
+	return `(` + alias + `.to_project = ANY(` + projects + `)
+	      OR ` + alias + `.from_project = ANY(` + projects + `)
 	      OR ` + alias + `.subject = ` + user + ` AND ` + user + ` <> ''
 	      OR ` + alias + `.granted_by = ` + user + ` AND ` + user + ` <> '')`
 }

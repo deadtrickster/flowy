@@ -1101,6 +1101,28 @@ UPDATE agents SET project = NULL WHERE project = '';
 ALTER TABLE tokens DROP CONSTRAINT IF EXISTS tokens_project_fkey;
 ALTER TABLE tokens ADD  CONSTRAINT tokens_project_fkey
     FOREIGN KEY (project) REFERENCES projects (id);
+
+-- THE REST OF WHAT A TOKEN REACHES. tokens.project stays exactly what it was -
+-- the project a write made with this credential LANDS in - and this table is
+-- the ceiling around it: every other project the same credential may READ.
+--
+-- A TABLE RATHER THAN A text[] COLUMN, for the reason the column above has a
+-- foreign key: a token naming a project nobody declared is a whole seat's reach
+-- pointing at nothing, and an array cannot carry that promise. Tokens are
+-- local, so the database can hold it here the same way.
+--
+-- IT IS EMPTY ON EVERY NODE TODAY and that is the point of the shape. Reach is
+-- tokens.project folded together with these rows - see store.Principal.Reach -
+-- so a credential with no row here reaches exactly the one project it always
+-- did, and nothing changes behaviour until somebody mints a token naming a
+-- second. The safe direction: a seat that sees too few projects is
+-- inconvenienced and says so; one that sees too many is a permission failure
+-- nobody reports.
+CREATE TABLE IF NOT EXISTS token_projects (
+    token   text NOT NULL REFERENCES tokens (token) ON DELETE CASCADE,
+    project text NOT NULL REFERENCES projects (id),
+    PRIMARY KEY (token, project)
+);
 ALTER TABLE agents DROP CONSTRAINT IF EXISTS agents_project_fkey;
 ALTER TABLE agents ADD  CONSTRAINT agents_project_fkey
     FOREIGN KEY (project) REFERENCES projects (id);

@@ -513,13 +513,14 @@ func ProjectFilterSQL(p *Principal, alias string, a *args, scopeAll bool) string
 	if scopeAll {
 		return "TRUE"
 	}
-	project := a.next(p.Project)
-	return `(` + alias + `.id = ` + project + ` AND ` + project + ` <> ''
+	// The set: a credential is shown every project it reaches, and every
+	// project reachable from one of those by a grant.
+	projects := a.next(pq.Array(p.Reach()))
+	return `(` + alias + `.id = ANY(` + projects + `)
 	      OR EXISTS (SELECT 1 FROM grants g
 	                  WHERE coalesce(g.tombstone, false) = false
-	                    AND (g.from_project = ` + project + ` AND g.to_project = ` + alias + `.id
-	                      OR g.to_project = ` + project + ` AND g.from_project = ` + alias + `.id)
-	                    AND ` + project + ` <> ''))`
+	                    AND (g.from_project = ANY(` + projects + `) AND g.to_project = ` + alias + `.id
+	                      OR g.to_project = ANY(` + projects + `) AND g.from_project = ` + alias + `.id)))`
 }
 
 // ListProjects is the enumeration: every project this principal may be shown,

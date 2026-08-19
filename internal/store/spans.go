@@ -13,6 +13,8 @@ import (
 
 	"github.com/deadtrickster/flowy/internal/otel"
 	"github.com/deadtrickster/flowy/internal/ulid"
+
+	"github.com/lib/pq"
 )
 
 // Spans: what this node saw itself do, kept locally.
@@ -137,18 +139,21 @@ func SpanFilterSQL(p *Principal, alias string, a *args, scopeAll bool) string {
 	}
 	user := a.next(p.UserID)
 	agent := a.next(p.AgentID)
-	project := a.next(p.Project)
+	// The SET, not the acting project: a span belongs to one project and a
+	// credential reaches several. See Principal.Reach.
+	projects := a.next(pq.Array(p.Reach()))
 
-	return strings.NewReplacer("{a}", alias, "{user}", user, "{agent}", agent, "{project}", project).Replace(
+	return strings.NewReplacer("{a}", alias, "{user}", user, "{agent}", agent,
+		"{projects}", projects).Replace(
 		`(CASE WHEN coalesce({a}.user_id, '') <> '' AND {a}.user_id = {user} AND {user} <> ''
 		       THEN TRUE
 		       WHEN coalesce({a}.actor, '') <> '' AND {a}.actor = {agent} AND {agent} <> ''
 		       THEN TRUE
-		       WHEN coalesce({a}.project, '') <> '' AND {a}.project = {project} AND {project} <> ''
+		       WHEN coalesce({a}.project, '') <> '' AND {a}.project = ANY({projects})
 		       THEN coalesce({a}.artifact, '') = ''
 		         OR EXISTS (SELECT 1 FROM artifacts par
 		                     WHERE par.id = {a}.artifact
-		                       AND ` + artifactReachSQL("par", user, project) + `)
+		                       AND ` + artifactReachSQL("par", user, projects) + `)
 		       ELSE FALSE
 		  END)`)
 }

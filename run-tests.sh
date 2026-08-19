@@ -929,6 +929,55 @@ a_creates_two_in_pc() {
 	printf 'two artifacts in pc\n'
 }
 
+# A TOKEN NAMES ITS PROJECTS, PLURAL, and the node reaches all of them.
+#
+# The store has been multi-project since the beginning: every row carries a
+# project, the registry declares them, grants cross them, and five projects hold
+# rows on the live node. The CREDENTIAL was the single-valued half -
+# Principal.Project, one string - so a seat could act in exactly one and see
+# exactly one.
+#
+# Driven over the wire on the SAME token string, because the claim is that the
+# node resolves reach per request rather than at startup: if a principal were
+# cached anywhere, the middle arm here would still answer 404.
+#
+# THE ROW IT REACHES FOR IS $KEPT - a pc artifact with no grant to anybody,
+# which the check above proves B cannot read. So the only thing that changes
+# between the first arm and the second is the reach of B's own token.
+#
+# The reach is written with SQL rather than a door because there is no minting
+# door yet - see the row this lands under. That is stated rather than hidden:
+# what is proven here is that the READ half works, and the mint half is the next
+# commit.
+a_token_reaches_every_project_it_names() {
+	recall
+	want_status 404 GET "$TOKEN_B" "/api/artifact/$KEPT" || return 1
+
+	psql -v ON_ERROR_STOP=1 -q -c \
+		"INSERT INTO token_projects (token, project) VALUES ('$TOKEN_B', 'pc')" || return 1
+	api GET "$TOKEN_B" "/api/artifact/$KEPT" || return 1
+	want_eq "the same token now reads the pc row" "$API_STATUS" 200 || return 1
+	want_eq "and it is the row nobody shared" "$(jqv .id)" "$KEPT" || return 1
+
+	# AND THE LIST DOOR AGREES WITH THE READ DOOR. Two filters run here -
+	# artifactReachSQL through ArtifactFilterSQL, and the same rule again in Go
+	# through CanRead - and the whole reason artifactReachSQL has one copy is
+	# that those two drifted once and an artifact refused row by row was handed
+	# over event by event.
+	api GET "$TOKEN_B" "/api/artifacts?limit=200" || return 1
+	want_eq "the list door hands over the same row" \
+		"$(printf '%s' "$API_BODY" | jq --arg k "$KEPT" '[.artifacts[] | select(.id == $k)] | length')" \
+		1 || return 1
+
+	# THE CEILING IS A CEILING. Taking the project back off returns the refusal,
+	# which is what says the widening came from the row and not from something
+	# else that happened to change at the same time.
+	psql -v ON_ERROR_STOP=1 -q -c \
+		"DELETE FROM token_projects WHERE token = '$TOKEN_B' AND project = 'pc'" || return 1
+	want_status 404 GET "$TOKEN_B" "/api/artifact/$KEPT" || return 1
+	printf 'one token, two projects, and the refusal returns when the second is taken away\n'
+}
+
 b_cannot_read_either_pc() {
 	recall
 	want_status 404 GET "$TOKEN_B" "/api/artifact/$SHARED" || return 1
@@ -11389,6 +11438,8 @@ check "B cannot read either of them" b_cannot_read_either_pc
 check "A shares exactly one of them with B" a_shares_one_artifact
 check "B reads the shared one and not the other" b_reads_only_the_shared_one
 check "B's search finds the shared one and not the other" b_searches_only_the_shared_one
+check "a token reaches every project it names, and only those" \
+	a_token_reaches_every_project_it_names
 check "a principal cannot write into a project it is not acting in" cross_project_write_refused
 
 say "the event log"
