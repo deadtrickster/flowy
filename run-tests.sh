@@ -10864,6 +10864,32 @@ say "live node"
 # The suite WRITES - worklog appends, artifact creates, chat. The only thing that
 # kept those out of the live store was that its tokens are unknown there.
 HTTP_PORT="$(free_port 19787)"
+
+# AND NOTHING IN THIS SUITE MAY DEFAULT TO THE LIVE NODE.
+#
+# Picking a free port fixes where the suite's node listens. It does not stop a
+# CLI invocation that names no address from going somewhere else: the flowy
+# binary's documented default is http://127.0.0.1:8787, which is the dogfood
+# node on this box. Five checks did exactly that, and they passed for months by
+# talking to nothing - the node moved onto this machine and they turned red on a
+# diff that touched none of them.
+#
+# Each of those five now names FLOWY_ADDR itself, which fixes those five. This
+# is the half that stops the sixth: exported here, before any check runs, so a
+# CLI call that forgets reaches the suite's own node rather than production.
+#
+# FLOWY_TOKEN and FLOWY_AGENT are cleared for the same reason one step over.
+# resolveToken prefers a NAMED SEAT over an explicit token (tui.go), so a stray
+# FLOWY_AGENT in the environment - the drainer exports one - makes every check
+# speak as that seat, and the suite spent an evening reading "unknown token"
+# refusals that were about identity rather than about the tree.
+#
+# THE SUITE WRITES. worklog append, artifact create, chat say. The only thing
+# that kept those out of the live store was that its tokens are unknown there,
+# which is a property of the credentials rather than a property of the suite.
+export FLOWY_ADDR="http://127.0.0.1:$HTTP_PORT"
+export FLOWY_TOKEN=""
+export FLOWY_AGENT=""
 # FLOWY_FORGE_REPOS is the operator's list of repositories this node may file
 # into. It is o/r and nothing else, which is what makes "file it into a repo
 # nobody said you could" a refusal rather than a filing.
@@ -17625,6 +17651,43 @@ repo_shell_scripts() {
 # AND THE ENUMERATION FOUND SOMETHING. An empty or truncated list makes every
 # check built on it pass while measuring nothing - the shape this whole file is
 # careful about elsewhere.
+# NO CHECK MAY REACH THE LIVE NODE, asked of the suite itself.
+#
+# The environment exported near HTTP_PORT makes a forgotten address land on the
+# suite's own node, which is the fix. This is the check that the fix is still
+# there - and the reason it exists is that the last version of this defect was
+# invisible for months because the thing it would have hit was not running.
+#
+# It reads THIS FILE for the production port and for the exports, because the
+# failure is a line somebody writes in here, and a check that asked the running
+# process would pass on a suite that has not started its node yet.
+no_check_reaches_the_live_node() {
+	local port=8787 offenders exports=0
+	# The three exports, each named, so removing one does not silently pass on
+	# the strength of the other two.
+	# shellcheck disable=SC2016  # the pattern matches the literal $HTTP_PORT in the file
+	grep -q '^export FLOWY_ADDR="http://127\.0\.0\.1:\$HTTP_PORT"$' "$ROOT/run-tests.sh" &&
+		exports=$((exports + 1))
+	grep -q '^export FLOWY_TOKEN=""$' "$ROOT/run-tests.sh" && exports=$((exports + 1))
+	grep -q '^export FLOWY_AGENT=""$' "$ROOT/run-tests.sh" && exports=$((exports + 1))
+	if [ "$exports" -ne 3 ]; then
+		printf 'the suite exports %s of the 3 variables that keep a forgotten\n' "$exports" >&2
+		printf 'address off the live node - see the note beside HTTP_PORT\n' >&2
+		return 1
+	fi
+	# And no line may name the production port as an address. The comments about
+	# the incident say 8787 and are not addresses, so this looks for the shape a
+	# request has rather than for the number.
+	offenders=$(grep -nE '(https?://)?(127\.0\.0\.1|localhost|192\.168\.[0-9]+\.[0-9]+):'"$port" \
+		"$ROOT/run-tests.sh" | grep -vE '^\s*[0-9]+:\s*#' || true)
+	if [ -n "$offenders" ]; then
+		printf 'these lines name the live node, which this suite must never reach:\n%s\n' \
+			"$offenders" >&2
+		return 1
+	fi
+	printf 'the suite exports its own address and names the live node nowhere but in prose\n'
+}
+
 shell_scripts_enumerated() {
 	local n
 	n=$(repo_shell_scripts | wc -l)
@@ -18113,6 +18176,7 @@ handoff_runner_refuses_without_config() {
 	}
 }
 
+check "no check in this suite can reach the live node" no_check_reaches_the_live_node
 check "the repo's shell scripts are all found" shell_scripts_enumerated
 check "the repo's shell scripts parse" shell_scripts_parse
 check "the repo's shell scripts are shellcheck clean" shell_scripts_lint
