@@ -14,6 +14,7 @@ package main
 // disagrees with the first one on the day it matters.
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -97,13 +98,36 @@ type mergeQueueItem struct {
 }
 
 func (s *server) handleMergeQueue(w http.ResponseWriter, r *http.Request) {
+	response, err := s.mergeQueueAnswer(r)
+	if err != nil {
+		if errors.Is(err, errBadQueueParam) {
+			writeJSON(w, http.StatusBadRequest, errorBody(err.Error()))
+			return
+		}
+		serverError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+// errBadQueueParam is a caller's mistake in the query rather than a broken
+// node, so the door answers 400 with the sentence rather than 500 with nothing.
+var errBadQueueParam = errors.New("bad queue parameter")
+
+// mergeQueueAnswer builds what the queue says, without writing it.
+//
+// It is split from the handler for the door that WAITS on this answer - see
+// handleMergeQueueWait, which asks the same question on a loop and needs the
+// same answer to compare against itself. A second computation of "what the
+// queue says" would be two queues that disagree about when something changed,
+// which is the shape this file already refuses for admissible.
+func (s *server) mergeQueueAnswer(r *http.Request) (map[string]any, error) {
 	p := principalOf(r)
 	q := r.URL.Query()
 
 	room, err := roomArg(q.Get("room"))
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, errorBody(err.Error()))
-		return
+		return nil, fmt.Errorf("%w: %s", errBadQueueParam, err)
 	}
 	target := strings.TrimSpace(q.Get("target"))
 	if target == "" {
@@ -157,8 +181,7 @@ func (s *server) handleMergeQueue(w http.ResponseWriter, r *http.Request) {
 		QueuedOrder: true,
 	})
 	if err != nil {
-		serverError(w, r, err)
-		return
+		return nil, err
 	}
 
 	// The landing lock on this target, read once for every row. A row held by
@@ -166,8 +189,7 @@ func (s *server) handleMergeQueue(w http.ResponseWriter, r *http.Request) {
 	// and the difference is spelled out below where the two meet.
 	lock, err := s.db.MergeLockOf(r.Context(), target)
 	if err != nil {
-		serverError(w, r, err)
-		return
+		return nil, err
 	}
 	now := time.Now()
 	lockLive := lock.Live(now)
@@ -306,7 +328,7 @@ func (s *server) handleMergeQueue(w http.ResponseWriter, r *http.Request) {
 	} else {
 		response["lock"] = map[string]any{"held": false}
 	}
-	writeJSON(w, http.StatusOK, response)
+	return response, nil
 }
 
 // mergeQueueRed is the last red as a browser reads it.

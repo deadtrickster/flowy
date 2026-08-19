@@ -10606,6 +10606,12 @@ check "a repudiation marks its subject's rows and nobody else's" \
 	go test -count=1 \
 	-run 'TestTheMarkIsPutOnTheSubjectsRowsAndNobodyElses|TestTheMarkDoesNotReplaceTheAuthorshipItQualifies' \
 	./internal/store
+# Named because of the two ways a waiter fails and they look identical from
+# outside: one that never wakes, and one that wakes on every tick. The cursor is
+# what tells them apart - it must move when the target is given back and NOT
+# when a countdown counts down.
+check "the merge queue cursor moves on what a caller acts on, and not on time passing" \
+	go test -count=1 -run TestTheQueueCursorMovesOnWhatACallerActsOn .
 check "go test ./..." go test -count=1 ./...
 # Named as well as covered by `go test ./...` above, because this one failing
 # means every console on this node loses its stream on a sixty-second clock -

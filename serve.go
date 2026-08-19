@@ -434,6 +434,7 @@ func (s *server) routes() http.Handler {
 	api.HandleFunc("POST /api/rooms/{room}/invite", s.handleInviteRoom)
 	api.HandleFunc("POST /api/rooms/{room}/leave", s.handleLeaveRoom)
 	api.HandleFunc("GET /api/merge-queue", s.handleMergeQueue)
+	api.HandleFunc("GET /api/merge-queue/wait", s.handleMergeQueueWait)
 	api.HandleFunc("POST /api/merge/{id}/gate", s.handleMergeGate)
 	// The lock on its own, because landing is not the only thing that needs the
 	// shared checkout to itself - see api_lock.go. Same table and same holder
