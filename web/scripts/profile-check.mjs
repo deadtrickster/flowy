@@ -138,27 +138,58 @@ say what a save costs before the save, not after`);
 ${JSON.stringify(redrawn)} - it did not re-read after the write`);
   }
 
-  // ------------------------------------------------------- and the password works
-  const good = await fetch(`${base}/api/login`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ handle: wanted, password }),
-  });
+  // ------------------------------------------- the password works, and replaces
+  //
+  // THREE LOGINS, WHICH IS THE WHOLE BUDGET. /api/login is rate limited at three
+  // attempts a minute per client (api_join.go, joinBurst) because bcrypt at cost
+  // 12 makes guessing expensive for the NODE as well. A fourth arm here answers
+  // 429, and a 429 read as a refusal would say the panel broke logging in.
+  //
+  // So the three are chosen to be the strongest three, and the wrong-password
+  // control this used to make is subsumed: the OLD password is a wrong password
+  // after the change, and refusing it also proves the panel REPLACED rather than
+  // added. A store that accepted everything would still let the first one in.
+  // That is flow 4 of 01M0B30FP2 - "a panel that says saved while nothing
+  // changed looks identical to one that worked".
+  const login = async (pw) => {
+    const answer = await fetch(`${base}/api/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ handle: wanted, password: pw }),
+    });
+    if (answer.status === 429) {
+      die(`/api/login rate limited this check (429). Nothing was measured about the
+panel - the limiter allows three attempts a minute per client and something else
+in this gate spent them. Space the login checks apart rather than reading this
+as a broken password.`);
+    }
+    return answer;
+  };
+
+  const good = await login(password);
   if (!good.ok) {
     die(`the password set in the panel does not log in: /api/login answered ${good.status}`);
   }
-  const bad = await fetch(`${base}/api/login`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ handle: wanted, password: `${password}-wrong` }),
-  });
-  if (bad.ok) {
-    die(`a WRONG password also logged in (${bad.status}), so the arm above proves nothing
-about what the panel wrote`);
+
+  // NOW REPLACE IT FROM THE PANEL, and the first one must stop working.
+  const second = `${password}-again`;
+  await page.locator("[data-profile-password-input]").fill(second);
+  await page.locator("[data-profile-save]").click();
+  await saved.first().waitFor({ timeout: 10000 });
+
+  const stale = await login(password);
+  if (stale.ok) {
+    die(`the password the panel replaced STILL LOGS IN (${stale.status}) - the panel said
+saved and the old credential outlived it`);
+  }
+  const fresh = await login(second);
+  if (!fresh.ok) {
+    die(`the second password the panel set does not log in (${fresh.status}), so the arm
+above proves the panel broke logging in rather than replacing a password`);
   }
 
   console.log(
-    `the profile panel set the handle to ${wanted} and a password that logs in, and refused ${taken}`,
+    `the profile panel set the handle to ${wanted}, set a password that logs in, replaced it so the first stopped working, and refused ${taken}`,
   );
 } finally {
   // PUT THE NAME BACK. This check renames a seat the rest of the gate addresses
