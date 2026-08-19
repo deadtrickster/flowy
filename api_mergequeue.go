@@ -98,7 +98,7 @@ type mergeQueueItem struct {
 }
 
 func (s *server) handleMergeQueue(w http.ResponseWriter, r *http.Request) {
-	response, err := s.mergeQueueAnswer(r)
+	response, err := s.readMergeQueue(r)
 	if err != nil {
 		if errors.Is(err, errBadQueueParam) {
 			writeJSON(w, http.StatusBadRequest, errorBody(err.Error()))
@@ -121,13 +121,13 @@ var errBadQueueParam = errors.New("bad queue parameter")
 // same answer to compare against itself. A second computation of "what the
 // queue says" would be two queues that disagree about when something changed,
 // which is the shape this file already refuses for admissible.
-func (s *server) mergeQueueAnswer(r *http.Request) (map[string]any, error) {
+func (s *server) readMergeQueue(r *http.Request) (mergeQueueAnswer, error) {
 	p := principalOf(r)
 	q := r.URL.Query()
 
 	room, err := roomArg(q.Get("room"))
 	if err != nil {
-		return nil, fmt.Errorf("%w: %s", errBadQueueParam, err)
+		return mergeQueueAnswer{}, fmt.Errorf("%w: %s", errBadQueueParam, err)
 	}
 	target := strings.TrimSpace(q.Get("target"))
 	if target == "" {
@@ -181,7 +181,7 @@ func (s *server) mergeQueueAnswer(r *http.Request) (map[string]any, error) {
 		QueuedOrder: true,
 	})
 	if err != nil {
-		return nil, err
+		return mergeQueueAnswer{}, err
 	}
 
 	// The landing lock on this target, read once for every row. A row held by
@@ -189,7 +189,7 @@ func (s *server) mergeQueueAnswer(r *http.Request) (map[string]any, error) {
 	// and the difference is spelled out below where the two meet.
 	lock, err := s.db.MergeLockOf(r.Context(), target)
 	if err != nil {
-		return nil, err
+		return mergeQueueAnswer{}, err
 	}
 	now := time.Now()
 	lockLive := lock.Live(now)
@@ -294,26 +294,33 @@ func (s *server) mergeQueueAnswer(r *http.Request) (map[string]any, error) {
 		}
 	}
 
-	response := map[string]any{
-		"target":     target,
-		"target_tip": tip,
-		"gating":     gating,
-		"tip_from":   tipFrom,
-		"items":      items,
+	// A NAMED ANSWER, not a map, and that is the point of the type rather than
+	// a tidiness. Every reader of this door has had to rebuild the shape by
+	// hand: q.sh read `tip` where the payload says `target_tip`, and quoted a
+	// stale lock as current - two decisions changed by a second reader kept in
+	// step by somebody remembering. `flowy queue` decodes THIS type, so the
+	// client and the server cannot drift.
+	response := mergeQueueAnswer{
+		Target:    target,
+		TargetTip: tip,
+		Gating:    gating,
+		TipFrom:   tipFrom,
+		Items:     items,
 		// Stated rather than inferred from a missing field. A console that
 		// treats "no verdict" as "admissible" is the failure this endpoint is
 		// guarding against, and leaving it to be worked out from an absent key
 		// is how that happens.
-		"decided": tip != "",
+		Decided: tip != "",
 	}
 	// The lock rides the answer even when nothing is held, as held:false - the
 	// caller deciding to declare wants "the target is free" as a fact, not as
 	// the absence of a key they have to know the meaning of.
+	response.Lock = &mergeQueueLock{}
 	if lock != nil {
-		response["lock"] = map[string]any{
-			"held":        lockLive,
-			"holder":      lock.Holder,
-			"holder_name": lock.HolderName,
+		response.Lock = &mergeQueueLock{
+			Held:       lockLive,
+			Holder:     lock.Holder,
+			HolderName: lock.HolderName,
 			// WHICH WORK the target is held for, which is half of why the lock
 			// records it. Every session of a seat shares a principal, so
 			// "held by claude-host" is a sentence a claude-host session reads
@@ -321,14 +328,39 @@ func (s *server) mergeQueueAnswer(r *http.Request) (map[string]any, error) {
 			// three sessions held master had to message two agents and wait to
 			// learn something one read should have answered. The store had it
 			// an hour before this door said it.
-			"item":     lock.Item,
-			"until":    lock.Until,
-			"taken_at": lock.TakenAt,
+			Item:    lock.Item,
+			Until:   lock.Until,
+			TakenAt: lock.TakenAt,
 		}
-	} else {
-		response["lock"] = map[string]any{"held": false}
 	}
 	return response, nil
+}
+
+// mergeQueueAnswer is what GET /api/merge-queue says, as a type both ends read.
+type mergeQueueAnswer struct {
+	Target    string           `json:"target"`
+	TargetTip string           `json:"target_tip"`
+	Gating    int              `json:"gating"`
+	TipFrom   string           `json:"tip_from"`
+	Items     []mergeQueueItem `json:"items"`
+	Decided   bool             `json:"decided"`
+	Lock      *mergeQueueLock  `json:"lock,omitempty"`
+	// Changed and Cursor are the wait door's answer only - see
+	// api_mergequeuewait.go. They ride this type rather than a wrapper so the
+	// plain read and the waited read are one shape to a client.
+	Changed *bool  `json:"changed,omitempty"`
+	Cursor  string `json:"cursor,omitempty"`
+}
+
+// mergeQueueLock is the landing lock as this door reports it. Held is false
+// rather than the key being absent, for the reason above.
+type mergeQueueLock struct {
+	Held       bool      `json:"held"`
+	Holder     string    `json:"holder,omitempty"`
+	HolderName string    `json:"holder_name,omitempty"`
+	Item       string    `json:"item,omitempty"`
+	Until      time.Time `json:"until,omitempty"`
+	TakenAt    time.Time `json:"taken_at,omitempty"`
 }
 
 // mergeQueueRed is the last red as a browser reads it.

@@ -32,7 +32,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 )
 
@@ -40,12 +39,12 @@ func (s *server) handleMergeQueueWait(w http.ResponseWriter, r *http.Request) {
 	since := r.URL.Query().Get("since")
 
 	var (
-		answer  map[string]any
+		answer  mergeQueueAnswer
 		cursor  string
 		changed bool
 	)
 	err := pollUntil(r.Context(), waitWindowOf(r.URL.Query().Get("window")), func() (bool, error) {
-		next, err := s.mergeQueueAnswer(r)
+		next, err := s.readMergeQueue(r)
 		if err != nil {
 			return false, err
 		}
@@ -92,8 +91,8 @@ func (s *server) handleMergeQueueWait(w http.ResponseWriter, r *http.Request) {
 	// waited quietly still wants to know what it is looking at - and because a
 	// quiet window with no answer is indistinguishable from a broken one to
 	// anybody who was not watching the status code.
-	answer["changed"] = changed
-	answer["cursor"] = cursor
+	answer.Changed = &changed
+	answer.Cursor = cursor
 	writeJSON(w, http.StatusOK, answer)
 }
 
@@ -103,19 +102,15 @@ func (s *server) handleMergeQueueWait(w http.ResponseWriter, r *http.Request) {
 // and a title changes when somebody edits their own prose; a cursor that moved
 // for either would wake every waiter for nothing, which is how a feed becomes
 // one nobody reads.
-func queueCursor(answer map[string]any) (string, error) {
-	shape := map[string]any{"target": answer["target"], "target_tip": answer["target_tip"]}
-	if lock, ok := answer["lock"].(map[string]any); ok {
+func queueCursor(answer mergeQueueAnswer) (string, error) {
+	shape := map[string]any{"target": answer.Target, "target_tip": answer.TargetTip}
+	if lock := answer.Lock; lock != nil {
 		shape["lock"] = map[string]any{
-			"held": lock["held"], "holder": lock["holder"], "item": lock["item"],
+			"held": lock.Held, "holder": lock.Holder, "item": lock.Item,
 		}
 	}
 	rows := []map[string]any{}
-	items, ok := answer["items"].([]mergeQueueItem)
-	if !ok {
-		return "", fmt.Errorf("merge queue answer carries %T items", answer["items"])
-	}
-	for _, it := range items {
+	for _, it := range answer.Items {
 		row := map[string]any{
 			"id": it.ID, "status": it.Status, "gating": it.Gating,
 			"admissible": it.Admissible, "held": it.Held,

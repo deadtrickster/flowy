@@ -47,6 +47,10 @@ commands:
            (flowy worklog read [--limit N] | append "what changed" [--next N]
            [--as-of A] [--branch B] [--ref ID] [--subject WHO] [--run ID]
            [--verify S]; env: FLOWY_ADDR, FLOWY_TOKEN)
+  queue    what is waiting to land, and who holds the target. Every lock line
+           carries the moment it was read, because a lock reading is a claim
+           about the past (flowy queue [lock] [--target T]; env: FLOWY_ADDR,
+           FLOWY_TOKEN, FLOWY_AGENT)
   tui      the terminal client: rooms, inbox, memory, timeline, metrics and
            announcements over the HTTP API, keyboard-driven and tmux-friendly
            (flowy tui [--url URL] [--token T] [--agent NAME]; env: FLOWY_ADDR,
@@ -181,6 +185,11 @@ func main() {
 		if err := fuseCmd(os.Args[2:]); err != nil {
 			fmt.Fprintf(os.Stderr, "flowy fuse: %v\n", err)
 			os.Exit(1)
+		}
+	case "queue":
+		if err := queueCmd(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "flowy queue: %v\n", err)
+			os.Exit(2)
 		}
 	case "projects":
 		if err := projectsCmd(os.Args[2:]); err != nil {

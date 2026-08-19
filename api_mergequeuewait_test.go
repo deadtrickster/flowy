@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 // The cursor is the whole of what "changed" means, so what it does and does not
 // notice is the contract.
@@ -11,19 +14,27 @@ import "testing"
 // function of the answer, and a check that needed a node to establish that
 // would not be run.
 func TestTheQueueCursorMovesOnWhatACallerActsOn(t *testing.T) {
-	answer := func(mutate func(map[string]any, *mergeQueueItem)) map[string]any {
+	at := func(s string) time.Time {
+		t.Helper()
+		v, err := time.Parse(time.RFC3339, s)
+		if err != nil {
+			t.Fatalf("parse %s: %v", s, err)
+		}
+		return v
+	}
+	answer := func(mutate func(*mergeQueueAnswer, *mergeQueueItem)) mergeQueueAnswer {
 		it := mergeQueueItem{ID: "01ROW", Status: "todo", Gating: false}
-		a := map[string]any{
-			"target": "master", "target_tip": "abc1234",
-			"lock": map[string]any{
-				"held": true, "holder": "u-1", "item": "01ROW",
-				"until": "2026-08-19T01:00:00Z", "taken_at": "2026-08-19T00:45:00Z",
+		a := mergeQueueAnswer{
+			Target: "master", TargetTip: "abc1234",
+			Lock: &mergeQueueLock{
+				Held: true, Holder: "u-1", Item: "01ROW",
+				Until: at("2026-08-19T01:00:00Z"), TakenAt: at("2026-08-19T00:45:00Z"),
 			},
 		}
 		if mutate != nil {
-			mutate(a, &it)
+			mutate(&a, &it)
 		}
-		a["items"] = []mergeQueueItem{it}
+		a.Items = []mergeQueueItem{it}
 		return a
 	}
 
@@ -33,8 +44,8 @@ func TestTheQueueCursorMovesOnWhatACallerActsOn(t *testing.T) {
 	}
 
 	// TIME PASSING IS NOT A CHANGE.
-	ticked, err := queueCursor(answer(func(a map[string]any, _ *mergeQueueItem) {
-		a["lock"].(map[string]any)["until"] = "2026-08-19T01:14:00Z"
+	ticked, err := queueCursor(answer(func(a *mergeQueueAnswer, _ *mergeQueueItem) {
+		a.Lock.Until = at("2026-08-19T01:14:00Z")
 	}))
 	if err != nil {
 		t.Fatalf("cursor: %v", err)
@@ -46,8 +57,8 @@ func TestTheQueueCursorMovesOnWhatACallerActsOn(t *testing.T) {
 
 	// THE LOCK BEING GIVEN BACK IS. It is the change the waiter this door was
 	// written for is waiting for.
-	freed, err := queueCursor(answer(func(a map[string]any, _ *mergeQueueItem) {
-		a["lock"] = map[string]any{"held": false}
+	freed, err := queueCursor(answer(func(a *mergeQueueAnswer, _ *mergeQueueItem) {
+		a.Lock = &mergeQueueLock{Held: false}
 	}))
 	if err != nil {
 		t.Fatalf("cursor: %v", err)
@@ -59,14 +70,14 @@ func TestTheQueueCursorMovesOnWhatACallerActsOn(t *testing.T) {
 	// AND SO IS A ROW BECOMING GATED, or a red arriving on it.
 	for _, c := range []struct {
 		name string
-		with func(map[string]any, *mergeQueueItem)
+		with func(*mergeQueueAnswer, *mergeQueueItem)
 	}{
-		{"gating", func(_ map[string]any, it *mergeQueueItem) { it.Gating = true }},
-		{"status", func(_ map[string]any, it *mergeQueueItem) { it.Status = "active" }},
-		{"a red", func(_ map[string]any, it *mergeQueueItem) {
+		{"gating", func(_ *mergeQueueAnswer, it *mergeQueueItem) { it.Gating = true }},
+		{"status", func(_ *mergeQueueAnswer, it *mergeQueueItem) { it.Status = "active" }},
+		{"a red", func(_ *mergeQueueAnswer, it *mergeQueueItem) {
 			it.Red = &mergeQueueRed{Tip: "deadbee"}
 		}},
-		{"a skip", func(_ map[string]any, it *mergeQueueItem) {
+		{"a skip", func(_ *mergeQueueAnswer, it *mergeQueueItem) {
 			it.Blocked = &mergeQueueBlocked{Why: "checked out elsewhere"}
 		}},
 	} {
