@@ -167,9 +167,20 @@ export function ArtifactView() {
               overview
             </Link>
             <span>/</span>
-            <span>{project}</span>
+            <span>{artifact?.project ?? project}</span>
             <span>/</span>
-            <span>{type}</span>
+            {/* The ROW's type, not the path's, once there is a row.
+             *
+             * The segment is a claim the link makes, and the page is where it
+             * gets checked: a link built before artifactPath existed may carry
+             * `artifact`, which is not a type at all, and one built without a
+             * type carries `_`. Rendering the segment here put that claim in a
+             * breadcrumb two lines above a badge showing the real type, so the
+             * page contradicted itself and the breadcrumb was the half a
+             * reader believed. Until the row arrives the segment is all there
+             * is, so it stands in - and it is replaced rather than corrected,
+             * because a correction nobody sees is the same as being wrong. */}
+            <span data-artifact-type={artifact?.type ?? type}>{artifact?.type ?? type}</span>
             <span>/</span>
             <span className="font-mono">{id}</span>
           </div>

@@ -1,4 +1,4 @@
-import { type Artifact, request } from "@/lib/api";
+import { type Artifact, artifactPath, request } from "@/lib/api";
 
 /**
  * Diagrams: draw.io documents that live in the fabric, and whose shapes point
@@ -90,7 +90,9 @@ export function entityHref(type: string, id: string, project?: string): string {
     case "task":
       return `/task/${safe}`;
     default:
-      return `/p/${encodeURIComponent(project || "_")}/${encodeURIComponent(type)}/${safe}`;
+      // The same builder every view uses, so a diagram's links and a list's
+      // links cannot disagree about what a reference is.
+      return artifactPath({ project, type, id }) ?? `/p/_/_/${safe}`;
   }
 }
 

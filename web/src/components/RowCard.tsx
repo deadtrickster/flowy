@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { Badge } from "@/components/ui/badge";
-import { ApiError, type Artifact, api } from "@/lib/api";
+import { ApiError, type Artifact, api, artifactPath } from "@/lib/api";
 import { todoAssignee, todoRaiser } from "@/lib/todos";
 import { shortId } from "@/lib/utils";
 
@@ -124,7 +124,7 @@ export function RowCard({ id, onClose }: { id: string; onClose: () => void }) {
           ) : null}
           <Link
             className="mt-3 inline-block text-primary text-sm hover:underline"
-            to={`/p/${encodeURIComponent(project)}/${encodeURIComponent(row.type)}/${row.id}`}
+            to={artifactPath({ project, type: row.type, id: row.id }) ?? "#"}
             data-row-card-open=""
             onClick={onClose}
           >

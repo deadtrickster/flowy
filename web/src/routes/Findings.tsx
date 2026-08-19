@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
-import { type Artifact, api } from "@/lib/api";
+import { type Artifact, api, artifactPath } from "@/lib/api";
 import {
   EVIDENCE_STATES,
   UNKNOWN_UPSTREAM,
@@ -733,7 +733,10 @@ function FindingCard({
               className="h-3.5 w-3.5 shrink-0 accent-foreground"
             />
             <SeverityDot severity={finding.severity} />
-            <Link className="hover:underline" to={`/p/${project}/finding/${finding.id}`}>
+            <Link
+              className="hover:underline"
+              to={artifactPath({ project, type: finding.type, id: finding.id }) ?? "#"}
+            >
               {finding.title || finding.id}
             </Link>
           </CardTitle>

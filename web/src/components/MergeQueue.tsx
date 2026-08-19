@@ -2,6 +2,7 @@ import { Link } from "react-router-dom";
 
 import { Badge } from "@/components/ui/badge";
 import type { KnownIssue, MergeRequest } from "@/lib/api";
+import { artifactPath, refPath } from "@/lib/api";
 import { toneStyle, verdictTone } from "@/lib/statecolour";
 import { statusStyle } from "@/lib/todos";
 
@@ -90,7 +91,7 @@ export function MergeQueue({
             <div className="flex flex-wrap items-center gap-2">
               <Link
                 className="font-medium text-sm hover:underline"
-                to={`/p/${m.project ?? "_"}/memory/${m.id}`}
+                to={artifactPath({ project: m.project, type: m.type, id: m.id }) ?? "#"}
               >
                 {m.title || m.branch}
               </Link>
@@ -186,7 +187,7 @@ function KnownIssueLink({ issue }: { issue: KnownIssue }) {
     <>
       {" — "}
       {issue.ref ? (
-        <Link className="underline" data-known-issue={issue.id} to={`/p/${issue.ref}`}>
+        <Link className="underline" data-known-issue={issue.id} to={refPath(issue.ref) ?? "#"}>
           {label}
         </Link>
       ) : (

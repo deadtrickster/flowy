@@ -5,7 +5,7 @@ import { StateChip } from "@/components/StateMarks";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { type Artifact, api, refPath } from "@/lib/api";
+import { type Artifact, api, artifactPath, refPath } from "@/lib/api";
 import { useSession } from "@/lib/session";
 import { reportTone } from "@/lib/statecolour";
 import { shortId } from "@/lib/utils";
@@ -215,7 +215,10 @@ function ReportCard({ report }: { report: Artifact }) {
       <Card>
         <CardHeader>
           <CardTitle className="text-base">
-            <Link className="hover:underline" to={`/p/${project}/report/${report.id}`}>
+            <Link
+              className="hover:underline"
+              to={artifactPath({ project, type: report.type, id: report.id }) ?? "#"}
+            >
               {report.title || report.id}
             </Link>
           </CardTitle>

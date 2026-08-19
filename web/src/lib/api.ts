@@ -384,6 +384,12 @@ export interface Refused {
  */
 export interface MergeRequest {
   id: string;
+  /**
+   * The row's own artifact type, which is `memory` - a merge row is a memory
+   * with kind `merge`. It is sent rather than remembered so that a link to it
+   * is built out of data; see artifactPath.
+   */
+  type: string;
   title: string;
   project?: string;
   branch: string;
@@ -531,6 +537,41 @@ export function refPath(ref: string | undefined): string | undefined {
   const parts = (ref ?? "").split("/");
   if (parts.length !== 3 || parts.some((part) => part === "")) return undefined;
   return `/p/${parts.map(encodeURIComponent).join("/")}`;
+}
+
+/**
+ * artifactPath is the one place a link to a row is built, and every caller that
+ * used to assemble one out of a template literal now asks this.
+ *
+ * There were thirteen of those, and they did not agree. Four hardcoded the type
+ * segment - three said `memory` and one said `artifact` - for rows that were
+ * bugs, notes, merge requests and reports. It went unnoticed because
+ * ArtifactView fetches by id and never reads the type out of the path, so a
+ * wrong segment routes correctly and only shows up as a breadcrumb that
+ * contradicts the badge two lines below it. The cost of that was a debugging
+ * session and three withdrawn theories about a 404 that was never about the
+ * link at all: see 01M08FK999.
+ *
+ * A missing type is `_` rather than a guess. The segment exists so that a link
+ * says what it points at without being followed, and a guess makes it say
+ * something false, which is worse than saying nothing - `_` is legible as
+ * unspecified. ArtifactView shows the row's OWN type once it has the row, so a
+ * link with `_` in it is never what a reader ends up believing.
+ *
+ * An id is the one thing it will not default: without one there is no row, and
+ * undefined is the caller's signal to render text rather than a link. Same
+ * discipline as refPath above, and for the same reason.
+ */
+export function artifactPath(ref: {
+  project?: string | null;
+  type?: string | null;
+  id?: string | null;
+}): string | undefined {
+  const id = (ref.id ?? "").trim();
+  if (id === "") return undefined;
+  const project = (ref.project ?? "").trim() || "_";
+  const type = (ref.type ?? "").trim() || "_";
+  return `/p/${[project, type, id].map(encodeURIComponent).join("/")}`;
 }
 
 /**

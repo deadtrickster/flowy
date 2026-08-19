@@ -4,7 +4,7 @@ import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
-import { api } from "@/lib/api";
+import { api, artifactPath } from "@/lib/api";
 import { useSession } from "@/lib/session";
 
 /**
@@ -55,11 +55,11 @@ export function NewEntity() {
       // form has written something they now have to go and find, which is the
       // shape of the new-diagram defect this console already had once.
       //
-      // The path carries `memory` because that is how this door spells the
-      // bucket, and ArtifactView reads the id rather than the segment - the
-      // segment is there so a link says what it points at without being
-      // followed.
-      navigate(`/p/${encodeURIComponent(made.project ?? "")}/memory/${made.id}`);
+      // Built from what the node answered rather than from what this form
+      // typed: the door spells the bucket `memory`, and the row that comes back
+      // says its own type, which is the one that will still be right when a
+      // door starts writing something else.
+      navigate(artifactPath({ project: made.project, type: made.type, id: made.id }) ?? "/");
     } catch (err) {
       setError((err as Error).message);
       setWriting(false);

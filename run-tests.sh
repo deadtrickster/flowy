@@ -9817,6 +9817,77 @@ sign5_as() {
 # reader this exists for, and a field only an API carries is not a disclosure.
 #
 # ON NODE A, where principals already have keys and the fixture is throwaway.
+# A reference is (project, type, id), and one function builds every route out of
+# one.
+#
+# It was a bare id plus a convention each caller remembered separately, in
+# thirteen places. Twelve of them remembered right; the worklog wrote `artifact`,
+# which is not a type any row has. Nothing caught it because ArtifactView
+# fetches by id and never read the segment - so a wrong segment routes correctly
+# and surfaces only as a breadcrumb contradicting the badge two lines below it,
+# and the breadcrumb is the half a reader meets first. Cost: a debugging session
+# and three withdrawn theories about a 404 that was never about the link.
+#
+# The check drives it with the WRONG segment on purpose. A page that echoes the
+# path passes every test that hands it the right one, which is exactly how this
+# survived.
+a_reference_is_a_triple_everywhere_it_is_drawn() {
+	recall5
+	local id type
+	want_napi 200 "$N5_PORT_A" POST "$N5_TOKEN_A" /api/artifacts \
+		'{"type":"memory","kind":"todo","title":"a reference is built, not remembered","body":"gorse"}' ||
+		return 1
+	id="$(jqv .id)"
+	type="$(jqv .type)"
+	if [ -z "$id" ] || [ "$type" = null ] || [ -z "$type" ]; then
+		printf 'the row came back as %s\n' "$API_BODY" >&2
+		return 1
+	fi
+	# The node's own answer first. Without this the browser arms would be
+	# measuring the console against a type nobody sent.
+	want_eq "what the node calls the row it just wrote" "$type" memory || return 1
+
+	cd "$ROOT/web" || return 1
+	node scripts/reference-check.mjs "http://127.0.0.1:$N5_PORT_A" "$N5_TOKEN_A" \
+		pa "$id" "$type"
+}
+
+# And the builder stays the only one. This is a source check rather than a
+# browser one because the failure it guards is a NEW call site, which no page
+# can see: a fourteenth view assembling `/p/${...}` by hand is correct on the
+# day it is written and is the next one to drift.
+#
+# One file may build the shape: lib/api.ts, where artifactPath and refPath are.
+# Anything else is a caller reassembling a reference from memory. App.tsx
+# declares the route as a plain literal rather than a template, so it is not
+# what the pattern looks for.
+only_one_place_builds_a_reference() {
+	local all found
+	# One invocation, filtered afterwards, so the arm that finds violations and
+	# the arm that proves the pattern can see anything are the SAME search. An
+	# earlier cut used --include on one and a bare file on the other, which
+	# would have let the first arm quietly search nothing while the second still
+	# passed. web/src holds only .ts, .tsx and .css, so no filter is needed.
+	#
+	# -F because the pattern is a literal and `$` is not spelled the same by
+	# every grep: written as a regex it matched nothing here, and a guard that
+	# matches nothing passes forever. The empty-result arm below is what caught
+	# that, before this shipped.
+	# shellcheck disable=SC2016 # the ${ is the literal being searched for, not
+	# an expansion - expanding it is precisely the bug this would introduce.
+	all="$(grep -rnF -- '/p/${' "$ROOT/web/src" || true)"
+	if [ -z "$all" ]; then
+		printf 'the pattern matches nothing anywhere in web/src, so this check proves nothing\n' >&2
+		return 1
+	fi
+	found="$(printf '%s\n' "$all" | grep -v 'src/lib/api.ts' || true)"
+	if [ -n "$found" ]; then
+		printf 'a reference is assembled by hand outside lib/api.ts:\n%s\n' "$found" >&2
+		return 1
+	fi
+	printf 'one builder in lib/api.ts, no caller assembling a route by hand\n'
+}
+
 # `flowy principal repudiate` is the real command rather than a hand-written
 # row, so what the console draws is what an operator's own rotation produces.
 #
@@ -17461,6 +17532,10 @@ check "the same rules in the store, row by row" \
 # it. Putting it earlier would rotate the key underneath them, and the failures
 # would look like the authorship rules being wrong rather than like this fixture
 # moving the ground.
+check "a reference is a triple everywhere it is drawn, and a wrong segment does not become the answer" \
+	a_reference_is_a_triple_everywhere_it_is_drawn
+check "one place builds a reference, and the pattern that says so can see one" \
+	only_one_place_builds_a_reference
 check "a disowned message says so on the screen, and the one before the window does not" \
 	a_disowned_message_says_so_and_the_one_before_it_does_not
 check "an authorship signature is not a node signature, and covers what its owner writes" \

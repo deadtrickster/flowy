@@ -6,7 +6,14 @@ import { MessageList } from "@/components/MessageList";
 import { ThreadDag } from "@/components/ThreadDag";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { ASSIGN_ROOM, type FlowyEvent, type Task, type TaskState, api } from "@/lib/api";
+import {
+  ASSIGN_ROOM,
+  type FlowyEvent,
+  type Task,
+  type TaskState,
+  api,
+  artifactPath,
+} from "@/lib/api";
 import { useCitation } from "@/lib/cite";
 import { useSession } from "@/lib/session";
 import { shortId } from "@/lib/utils";
@@ -139,7 +146,13 @@ export function TaskView() {
           {task?.project ? <Badge variant="outline">{task.project}</Badge> : null}
           {task?.artifact_type && task.project ? (
             <Link
-              to={`/p/${task.project}/${task.artifact_type}/${task.artifact}`}
+              to={
+                artifactPath({
+                  project: task.project,
+                  type: task.artifact_type,
+                  id: task.artifact,
+                }) ?? "#"
+              }
               className="text-muted-foreground text-xs hover:text-foreground"
             >
               the artifact

@@ -29,8 +29,14 @@ import (
 // branch, and every reader that has had to do that today got it wrong at least
 // once - status from .fields, owner from body text, assignee from two places.
 type mergeQueueItem struct {
-	ID       string `json:"id"`
-	Title    string `json:"title"`
+	ID    string `json:"id"`
+	Title string `json:"title"`
+	// Type is the row's own artifact type, sent so that a caller building a
+	// link to it does not have to know that a merge row is stored as a memory.
+	// The console restated that convention by hand, as four other views did,
+	// and a reference every caller reassembles from a remembered rule is a
+	// reference one of them eventually assembles wrong - see 01M08FK999.
+	Type     string `json:"type"`
 	Project  string `json:"project,omitempty"`
 	Branch   string `json:"branch"`
 	Target   string `json:"target"`
@@ -202,6 +208,7 @@ func (s *server) readMergeQueue(r *http.Request) (mergeQueueAnswer, error) {
 		it := mergeQueueItem{
 			ID:       a.ID,
 			Title:    a.Title,
+			Type:     a.Type,
 			Branch:   store.BranchOf(a),
 			Target:   store.TargetOf(a),
 			GatedTip: store.GatedTipOf(a),

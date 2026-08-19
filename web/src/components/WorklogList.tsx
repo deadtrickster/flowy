@@ -2,7 +2,7 @@ import { Link } from "react-router-dom";
 
 import { Badge } from "@/components/ui/badge";
 import type { ActivityItem } from "@/lib/api";
-import { isVouched } from "@/lib/api";
+import { artifactPath, isVouched } from "@/lib/api";
 import { shortId } from "@/lib/utils";
 
 /**
@@ -177,7 +177,7 @@ export function WorklogEntry({
             <Link
               key={ref}
               className="font-mono underline"
-              to={`/p/${item.project ?? "_"}/artifact/${ref}`}
+              to={artifactPath({ project: item.project, id: ref }) ?? "#"}
             >
               {shortId(ref, 8)}
             </Link>

@@ -5,7 +5,7 @@ import { MergeQueue } from "@/components/MergeQueue";
 import { StreamAsOf } from "@/components/StreamAsOf";
 import { Badge } from "@/components/ui/badge";
 import type { Artifact, MergeRequest, Refused, Withheld } from "@/lib/api";
-import { TODO_PAGE, api } from "@/lib/api";
+import { TODO_PAGE, api, artifactPath } from "@/lib/api";
 import { useSession } from "@/lib/session";
 import { speakerStyle } from "@/lib/speakercolour";
 import { watch } from "@/lib/stream";
@@ -796,7 +796,7 @@ function Row({ todo, onTag }: { todo: Artifact; onTag: (tag: string) => void }) 
         {owner || "unowned"}
       </span>
       <Link
-        to={`/p/${encodeURIComponent(project || "_")}/memory/${todo.id}`}
+        to={artifactPath({ project, type: todo.type, id: todo.id }) ?? "#"}
         className="min-w-0 flex-1 break-words hover:underline"
       >
         {todo.title || todo.id}

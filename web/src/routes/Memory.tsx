@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 
 import { Badge } from "@/components/ui/badge";
 import type { Artifact } from "@/lib/api";
-import { api } from "@/lib/api";
+import { api, artifactPath } from "@/lib/api";
 import { useSession } from "@/lib/session";
 
 /**
@@ -72,7 +72,7 @@ export function Memory() {
             <li key={n.id} className="flex flex-col gap-1 border-border border-b px-4 py-3">
               <Link
                 className="font-medium text-sm hover:underline"
-                to={`/p/${n.project ?? "_"}/memory/${n.id}`}
+                to={artifactPath({ project: n.project, type: n.type, id: n.id }) ?? "#"}
               >
                 {n.title || n.id}
               </Link>
