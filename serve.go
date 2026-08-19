@@ -388,6 +388,48 @@ var apiRoutes = []string{
 	"POST /api/activity",
 	"GET /api/traces",
 	"GET /api/trace/{id}",
+	// RECOVERED ON 2026-08-19, in one block and dated, because the honest
+	// thing to say about them is that they were missing rather than that they
+	// were added. 32 doors were registered and not on this answer - the whole
+	// merge chain, both lock doors, /api/me, rooms, todo deps and category,
+	// finding evidence, the join approvals, worklog and role - while two new
+	// ones were added the same week quoting the rule this list exists for.
+	//
+	// TestEveryRegisteredAPIRouteIsAdvertised is what keeps it true now. The
+	// rule was already understood and written down; being understood is not a
+	// mechanism.
+	"DELETE /api/artifact/{id}/origins/{origin}",
+	"DELETE /api/todo/{id}/deps/{blocker}",
+	"GET /api/artifact/{id}/origins",
+	"GET /api/finding/{id}/evidence",
+	"GET /api/instructions",
+	"GET /api/lock",
+	"GET /api/me",
+	"GET /api/merge-queue",
+	"GET /api/merge-queue/wait",
+	"GET /api/repudiations",
+	"GET /api/rooms",
+	"GET /api/todo/{id}/category",
+	"GET /api/todo/{id}/deps",
+	"POST /api/artifact/{id}/origins",
+	"POST /api/finding/{id}/evidence",
+	"POST /api/instructions",
+	"POST /api/join/{id}/approve",
+	"POST /api/join/{id}/refuse",
+	"POST /api/lock",
+	"POST /api/lock/release",
+	"POST /api/merge/{id}/abandon",
+	"POST /api/merge/{id}/blocked",
+	"POST /api/merge/{id}/gate",
+	"POST /api/merge/{id}/land",
+	"POST /api/rooms",
+	"POST /api/rooms/{room}/invite",
+	"POST /api/rooms/{room}/leave",
+	"POST /api/todo/{id}/category",
+	"POST /api/todo/{id}/deps",
+	"POST /api/user/{id}/role",
+	"POST /api/worklog",
+	"PUT /api/me",
 }
 
 // routes wires the node's surface: an open operational corner, and everything
