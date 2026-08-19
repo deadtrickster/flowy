@@ -164,10 +164,54 @@ func identityPin(args []string) error {
 		if err := db.PinIdentity(ctx, *node, public); err != nil {
 			return err
 		}
+		exposed, rows, err := exposedByPinning(ctx, db)
+		if err != nil {
+			return err
+		}
+		if exposed > 0 {
+			fmt.Fprintf(os.Stderr,
+				"pinned %s, and this node now takes its word about %d principal(s) "+
+					"here that hold no signing key - %d rows already carry those names. "+
+					"A pinned peer may author rows under any of them and this node will "+
+					"store them and show them to that person in their own room. "+
+					"Run `flowy principal exposed`: it names every one of them with the "+
+					"command that closes it. Minting the keys is the way out and "+
+					"un-pinning is not - the log is append-only, so what a pin let in "+
+					"stays in.\n",
+				*node, exposed, rows)
+		}
 		return printJSON(map[string]any{
 			"pinned": *node, "public_key": store.EncodeKey(public),
+			"exposed_principals": exposed, "exposed_rows": rows,
 		})
 	})
+}
+
+// exposedByPinning is what a pin costs, counted at the moment it is paid.
+//
+// The list itself is not new - `flowy principal exposed` has printed it since
+// the finding was written down - and printing a list nobody reads at the moment
+// it matters is how it stayed unread. Pinning is that moment: it is the single
+// act that turns a peer's signature into this node's word about who wrote what,
+// and until now it said nothing about whose names it was doing that for.
+//
+// It WARNS rather than refusing, and the reason is a measured one rather than a
+// preference. An accept-path rule of this shape was built and gated red at 31
+// checks: holding a token here is true of both machines of one person, so any
+// rule that refuses a relayed row on that ground refuses ordinary two-machine
+// federation. Refusing the pin is the same choice one door further out - it
+// would break standing two nodes up before their principals have keys, which is
+// the order the fixture and every real setup does it in. So the door states the
+// trade and the operator makes it. See internal/store/unkeyed.go.
+func exposedByPinning(ctx context.Context, db *store.DB) (principals, rows int, err error) {
+	open, err := db.UnkeyedPrincipals(ctx)
+	if err != nil {
+		return 0, 0, err
+	}
+	for _, u := range open {
+		rows += u.Rows
+	}
+	return len(open), rows, nil
 }
 
 // identityKeygen mints a keypair and prints both halves. It touches no

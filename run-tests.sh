@@ -9868,6 +9868,65 @@ a_disowned_message_says_so_and_the_one_before_it_does_not() {
 		disowned "$inside" "$before"
 }
 
+# What a pin costs, said at the moment it is paid.
+#
+# The list is not new - `flowy principal exposed` has printed it since the
+# finding was written down. What was new is that nobody read it at the moment it
+# mattered, and pinning is that moment: it is the single act that turns a peer's
+# signature into this node's word about who wrote what.
+#
+# It warns rather than refusing, and that is measured rather than preferred: an
+# accept-path rule on the same condition was built and gated red at 31 checks,
+# because holding a token here is true of both machines of one person. Refusing
+# the pin is the same choice one door out - it would break standing two nodes up
+# before their principals have keys, which is the order this fixture and every
+# real setup does it in.
+#
+# Two arms, because a warning that is always printed says nothing. The pin of a
+# node on a database with unkeyed principals names the count; a pin on an empty
+# database says zero and prints no warning at all.
+the_pin_door_says_what_it_exposes() {
+	recall5
+	local out exposed rows empty quiet
+	out="$(DATABASE_URL="$N5_DSN_B" FLOWY_NODE=nodeB "$ROOT/flowy" identity pin \
+		--node nodeA --key "$(node_key "$N5_DSN_A" nodeA)" 2>"$WORK/pin-warning")" || return 1
+	exposed="$(printf '%s' "$out" | jq -r .exposed_principals)"
+	rows="$(printf '%s' "$out" | jq -r .exposed_rows)"
+	if [ -z "$exposed" ] || [ "$exposed" = null ] || [ "$exposed" -lt 1 ]; then
+		printf 'the pin answered %s, and node B holds rows by principals with no key\n' \
+			"$out" >&2
+		return 1
+	fi
+	if [ "$rows" -lt "$exposed" ]; then
+		printf 'it names %s principals over %s rows, which is fewer rows than names\n' \
+			"$exposed" "$rows" >&2
+		return 1
+	fi
+	# On stderr, where an operator running this by hand reads it, and naming the
+	# command that closes it rather than only the number.
+	case "$(cat "$WORK/pin-warning")" in
+	*"principal exposed"*) ;;
+	*)
+		printf 'the pin warned %s, which does not name the command that closes it\n' \
+			"$(cat "$WORK/pin-warning")" >&2
+		return 1
+		;;
+	esac
+	# The negative control: a database with nothing in it is not exposed, and a
+	# warning printed on every pin is a warning nobody reads.
+	empty="$WORK/pin-empty"
+	psql -v ON_ERROR_STOP=1 -q -d "$N5_DSN_A" -c "CREATE DATABASE pinempty" >/dev/null 2>&1 || true
+	quiet="${N5_DSN_A%/*}/pinempty?sslmode=disable"
+	psql -v ON_ERROR_STOP=1 -q -d "$quiet" -f "$ROOT/schema.sql" >"$empty.log" 2>&1 || return 1
+	out="$(DATABASE_URL="$quiet" FLOWY_NODE=nodeC "$ROOT/flowy" identity pin \
+		--node nodeA --key "$(node_key "$N5_DSN_A" nodeA)" 2>"$empty")" || return 1
+	want_eq "principals a pin exposes on a node with none" \
+		"$(printf '%s' "$out" | jq -r .exposed_principals)" 0 || return 1
+	want_eq "bytes of warning it printed" "$(wc -c <"$empty" | tr -d ' ')" 0 || return 1
+	printf 'the pin named %s principals over %s rows, and said nothing on a node with none\n' \
+		"$exposed" "$rows"
+}
+
 a_principal_gets_a_key_on_the_node_it_writes_from() {
 	recall5
 	local out key epoch
@@ -17363,6 +17422,8 @@ check "node A survived the announcements" kill -0 "$NODE5A_PID"
 check "node B survived the announcements" kill -0 "$NODE5B_PID"
 
 say "whose word a row is"
+check "the pin door names what pinning exposes, and says nothing on a node with nothing" \
+	the_pin_door_says_what_it_exposes
 check "a principal gets a signing key on the node it writes from, and the peer pins it" \
 	a_principal_gets_a_key_on_the_node_it_writes_from
 check "a message written where the key is lands on the other node as that person's own" \
