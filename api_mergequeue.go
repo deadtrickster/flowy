@@ -105,6 +105,10 @@ type mergeQueueItem struct {
 
 func (s *server) handleMergeQueue(w http.ResponseWriter, r *http.Request) {
 	response, err := s.readMergeQueue(r)
+	if err == nil {
+		scope := answerScopeOf(r, principalOf(r))
+		response.Project, response.AllProjects = scope.Project, scope.All
+	}
 	if err != nil {
 		if errors.Is(err, errBadQueueParam) {
 			writeJSON(w, http.StatusBadRequest, errorBody(err.Error()))
@@ -315,6 +319,13 @@ type mergeQueueAnswer struct {
 	// plain read and the waited read are one shape to a client.
 	Changed *bool  `json:"changed,omitempty"`
 	Cursor  string `json:"cursor,omitempty"`
+	// WHICH PROJECT THIS QUEUE IS. `target` is a branch NAME, and every repo's
+	// is called master - so a queue answer said "master" and nothing about
+	// which master. With more than one project on a node that is not a label,
+	// it is the difference between two queues. See api_scope.go, and 01M0DZP4HS
+	// for the same name-is-not-an-identity problem one layer down in the lock.
+	Project     string `json:"project,omitempty"`
+	AllProjects bool   `json:"all_projects,omitempty"`
 }
 
 // mergeQueueLock is the landing lock as this door reports it. Held is false

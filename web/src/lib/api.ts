@@ -237,6 +237,14 @@ export interface NagView {
   stale: number;
   stale_after_seconds: number;
   workload: Workload;
+  /**
+   * WHICH PROJECT THESE COUNTS ARE ABOUT. Five projects hold rows on the
+   * dogfood node, and until the doors were stamped every board answer came
+   * back indistinguishable from the same answer about any other. Absent when
+   * the caller is reading across all of them, which only an operator can.
+   */
+  project?: string;
+  all_projects?: boolean;
 }
 
 /** ChatPage is what a room read or a long poll answers with. */

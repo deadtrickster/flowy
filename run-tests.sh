@@ -4929,6 +4929,42 @@ a_row_without_a_raiser_says_nothing_rather_than_nobody() {
 		pa "$RAISED_ID" "$bare"
 }
 
+# EVERY LIST ANSWER SAYS WHICH PROJECT IT IS ABOUT.
+#
+# Five doors - artifacts, search, the nag, the merge queue and a room read -
+# each compute for ONE project, the caller's, and none of them said which.
+# Measured on the dogfood node: five projects hold rows there, "general" exists
+# in two of them with 4389 events and 106, and every one of those answers came
+# back indistinguishable from the same answer about any other project.
+#
+# A console with two tabs on two tokens, a script that took its token from an
+# env var, a person reading a pasted response - none could tell whose board they
+# had without a second call to /api/whoami, and nobody makes it.
+#
+# All five in one check because the point is that they AGREE: one helper, not
+# five spellings.
+every_list_answer_says_which_project() {
+	recall
+	local room
+	room="scope-$$"
+	api POST "$TOKEN_A" "/api/chat/$room/say" '{"body": "a message with a project on it"}' || return 1
+
+	local path
+	for path in "/api/artifacts?kind=todo&limit=1" "/api/nag" "/api/merge-queue" \
+		"/api/chat/$room?limit=5" "/api/chat/$room?order=recent&limit=5"; do
+		api GET "$TOKEN_A" "$path" || return 1
+		want_eq "the project on $path" "$(jqv .project)" "$PROJECT_A" || return 1
+	done
+
+	# AND AN OPERATOR READING EVERYTHING SAYS SO INSTEAD, because "" and
+	# "everything" are different answers and a reader must not have to guess
+	# which one a blank is.
+	api GET "$TOKEN_OP" "/api/artifacts?kind=todo&limit=1&scope=all" || return 1
+	want_eq "an all-projects read says so" "$(jqv .all_projects)" true || return 1
+	want_eq "and names no single project" "$(jqv .project)" null || return 1
+	printf 'five doors name %s, and an operator reading all of them says so\n' "$PROJECT_A"
+}
+
 # THE PROBE HAS A READER NOW, in a terminal and in a browser.
 #
 # GET /api/nag has carried the whole distribution probe since it moved off
@@ -11620,6 +11656,10 @@ check "a stated raiser wins, and a row that says nothing is not guessed at" \
 	a_stated_raiser_wins_and_nothing_is_guessed
 check "a row with no raiser says nothing about one, and still says who carries it" \
 	a_row_without_a_raiser_says_nothing_rather_than_nobody
+check "every list answer says which project it is about, and an operator's says all" \
+	every_list_answer_says_which_project
+check "the scope helper is one helper, and stamping changes nothing else on an answer" \
+	go test -count=1 -run 'TestAnAnswerSaysWhichProjectItIsAbout|TestStampingAScopeDoesNotChangeWhatWasAlreadyThere|TestARoomsProjectComesFromItsRowsAndNotItsReader' .
 check "the distribution probe has a verb and a panel, and both name which line was crossed" \
 	the_nag_has_a_verb_and_it_names_the_line
 check "and the two lines are reported because both are applied, in Go" \

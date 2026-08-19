@@ -927,6 +927,10 @@ func (s *server) handleInbox(w http.ResponseWriter, r *http.Request) {
 		"events": list,
 		"since":  since,
 		"cursor": cursorOf(since, list),
+		// The inbox spans rooms, so its project is whatever its rows carry -
+		// nothing when they carry nothing, which a direct message does. See
+		// roomProjectOf.
+		"project": roomProjectOf(list),
 	})
 }
 
@@ -1031,6 +1035,7 @@ func writeChatWindow(
 		"since":     int64(0),
 		"cursor":    cursor,
 		"before":    older,
+		"project":   roomProjectOf(list),
 		"reactions": reactions,
 	})
 }
@@ -1060,6 +1065,12 @@ func writeChatEvents(
 		"events": list,
 		"since":  since,
 		"cursor": cursorOf(since, list),
+		// WHICH PROJECT THIS ROOM IS IN. Rooms are scoped by project and the
+		// name is not: measured on the dogfood node, "general" exists in flowy
+		// with 4389 events and in pa with 106, and neither reads the other. A
+		// room read that does not say which is two conversations under one
+		// name. See api_scope.go.
+		"project": roomProjectOf(list),
 		// Keyed by message id BESIDE the events rather than on them. An Event
 		// is the row that replicates and is signed; hanging a derived view on
 		// it would put a fold of other people's rows inside the shape a peer
@@ -1097,7 +1108,28 @@ func (s *server) reactionsFor(r *http.Request, list []*store.Event) map[string][
 	return on
 }
 
-// cursorOf is the seq_hlc a caller should hand back next time: the last event's,
+// roomProjectOf is the project a page of a room belongs to, taken from the
+// ROWS rather than from the caller.
+//
+// From the rows deliberately. The caller's own project is what the filter used
+// to choose them, but a page can carry a message with no project at all - a
+// direct message is exactly that - and stamping the reader's project onto a
+// page of those would say something the rows do not. What is here is what the
+// messages say, and nothing when they say nothing.
+//
+// An empty answer names no project rather than guessing the caller's, for the
+// same reason: a room nobody has spoken in and a room this reader cannot see
+// answer the same way, and neither is evidence about a project.
+func roomProjectOf(list []*store.Event) string {
+	for _, e := range list {
+		if e != nil && e.Project != nil && *e.Project != "" {
+			return *e.Project
+		}
+	}
+	return ""
+}
+
+// cursorOf is the seq_hlc a caller should hand back next time:// cursorOf is the seq_hlc a caller should hand back next time: the last event's,
 // or the one it came in with when nothing landed.
 //
 // That is only safe because the page it reads never cuts a reading in half -

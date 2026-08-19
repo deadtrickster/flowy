@@ -685,7 +685,7 @@ func (s *server) handleListArtifacts(w http.ResponseWriter, r *http.Request) {
 	if err := s.db.FillDisowned(r.Context(), list, nil); err != nil {
 		log.Printf("disowned: could not resolve repudiations for an artifact page: %v", err)
 	}
-	body := map[string]any{"artifacts": list}
+	body := stampScope(map[string]any{"artifacts": list}, answerScopeOf(r, p))
 	if withheld != nil {
 		body["withheld"] = withheld
 	}
@@ -842,7 +842,8 @@ func (s *server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		serverError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"query": query, "artifacts": hits})
+	writeJSON(w, http.StatusOK, stampScope(
+		map[string]any{"query": query, "artifacts": hits}, answerScopeOf(r, principalOf(r))))
 }
 
 // eventRequest is the append body. There is no project field: an event lands in

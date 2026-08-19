@@ -86,15 +86,23 @@ type nagView struct {
 	// should not have to skip a field about a wait it never started.
 	Changed *bool  `json:"changed,omitempty"`
 	Cursor  string `json:"cursor,omitempty"`
+	// WHICH PROJECT THESE COUNTS ARE ABOUT. Every number above is computed for
+	// one, the caller's, and the answer did not say which - see api_scope.go.
+	// With five projects on this node a board read is meaningless without it.
+	Project     string `json:"project,omitempty"`
+	AllProjects bool   `json:"all_projects,omitempty"`
 }
 
 // handleNag answers the whole nag in one read.
 func (s *server) handleNag(w http.ResponseWriter, r *http.Request) {
-	view, err := s.readNag(r.Context(), principalOf(r), scopeAll(r, principalOf(r)))
+	p := principalOf(r)
+	view, err := s.readNag(r.Context(), p, scopeAll(r, p))
 	if err != nil {
 		serverError(w, r, err)
 		return
 	}
+	scope := answerScopeOf(r, p)
+	view.Project, view.AllProjects = scope.Project, scope.All
 	writeJSON(w, http.StatusOK, view)
 }
 

@@ -58,7 +58,15 @@ export function SpreadCard() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>the board</CardTitle>
+        {/* WHICH BOARD. Every count below is computed for one project, and the
+         * node now says which - so the title says it too rather than leaving
+         * a reader with two tabs on two tokens to work out whose rows these
+         * are. `all` when an operator is reading across every project, which
+         * is a different answer from any one of them and must not look like
+         * a project called nothing. */}
+        <CardTitle data-nag-project={nag.all_projects ? "all" : (nag.project ?? "")}>
+          the board{nag.all_projects ? " (all projects)" : nag.project ? ` · ${nag.project}` : ""}
+        </CardTitle>
         <CardDescription>{verdictLine(nag)}</CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
