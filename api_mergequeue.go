@@ -165,12 +165,21 @@ func (s *server) readMergeQueue(r *http.Request) (mergeQueueAnswer, error) {
 	// landings old, refusing green branches all night for reasons that were
 	// already false.
 	tip, tipFrom := strings.TrimSpace(q.Get("target_tip")), "stated"
+	stated := tip != ""
 	if tip == "" {
-		// THE TIP IS THIS PROJECT'S, and an unstated project reads the legacy
-		// row - see LandedTipOf. A page that lists every project's rows and
-		// judges them all against one tip is the state this door was already in
-		// and is not made worse here; it is 01M0DZRCHX, where a list door
-		// answering for a project and not saying which is the whole subject.
+		// THE PAGE'S TIP IS THE ASKED-FOR PROJECT'S. Each ROW is judged against
+		// its own below - see rowTip - because one tip for a page that lists
+		// several projects is an answer about whichever of them happened to
+		// land last.
+		//
+		// MEASURED, and it is why this exists: after landings began keying on
+		// the project, an unfiltered read asked for "" and got the legacy row,
+		// which held a tip three landings old. /api/merge-queue answered
+		// bbb3c16 while ?project=flowy and git both said 28505f3 - so every
+		// caller that states no project judged rows against a stale base, and
+		// MergeAdmissible refused correct work for a reason that was not true.
+		// A fallback that answers confidently is worse than one that says
+		// nothing.
 		if landed, err := s.db.LandedTipOf(r.Context(), q.Get("project"), target); err == nil && landed != nil {
 			tip, tipFrom = landed.Tip, "landed"
 		} else if bs := strings.TrimSpace(buildStamp); bs != "" && bs != "src" {
@@ -216,7 +225,11 @@ func (s *server) readMergeQueue(r *http.Request) (mergeQueueAnswer, error) {
 		if !strings.EqualFold(store.TargetOf(a), target) {
 			continue
 		}
-		items = append(items, queueItemOf(a, tip, lock, lockLive, time.Now()))
+		// AGAINST ITS OWN PROJECT'S TIP. A stated ?target_tip= still wins for
+		// every row - a caller who measured a tip is asking about that tree -
+		// and otherwise each row is judged against where ITS project's target
+		// actually is.
+		items = append(items, queueItemOf(a, s.rowTip(r, tip, stated, a, target), lock, lockLive, time.Now()))
 	}
 
 	// The rows explaining these refusals, in one query for the whole page, and
@@ -452,4 +465,37 @@ func queueItemOf(
 		}
 	}
 	return it
+}
+
+// rowTip is the tip THIS row is judged against.
+//
+// A page-level tip was right while one project filed merge rows and became
+// wrong the moment landings started keying on the project: the page asks for
+// one project (or none) and the list can hold rows from several, so a row from
+// project B was compared against project A's last landing.
+//
+// A stated ?target_tip= wins for every row, because a caller who measured a tip
+// is asking about that tree and not about the store's opinion of it.
+//
+// A row whose project has never landed gets the page's tip rather than nothing:
+// "no tip" makes MergeAdmissible refuse for a reason that is about the store
+// rather than the branch, and the page's tip is the same answer this door gave
+// before projects were in the key.
+func (s *server) rowTip(
+	r *http.Request, pageTip string, stated bool, a *store.Artifact, target string,
+) string {
+	if stated {
+		return pageTip
+	}
+	project := ""
+	if a != nil && a.Project != nil {
+		project = strings.TrimSpace(*a.Project)
+	}
+	if project == "" {
+		return pageTip
+	}
+	if landed, err := s.db.LandedTipOf(r.Context(), project, target); err == nil && landed != nil {
+		return landed.Tip
+	}
+	return pageTip
 }
