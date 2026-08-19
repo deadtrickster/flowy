@@ -277,12 +277,17 @@ func principalRepudiate(args []string) error {
 			Fields: mustFields(map[string]any{
 				store.SubjectField: *who,
 				store.SpeakerField: store.SpeakerSubject,
-				store.FromField:    *from,
+				// AS TEXT, because a packed reading does not survive a JSON
+				// number: encoding/json decodes into float64, and 1.17e17 is
+				// past 2^53 where consecutive integers stop being
+				// representable. Written as digits it crosses every encoder
+				// unchanged.
+				store.FromField: fmt.Sprint(*from),
 				// CLOSED AT THE EPOCH, on purpose. A row written at exactly
 				// the epoch reading must carry the new key, so including it
 				// disowns at most a row that is already refused - and
 				// excluding it would leave one reading nobody covers.
-				store.ToField: id.Epoch,
+				store.ToField: fmt.Sprint(id.Epoch),
 			}),
 		}
 		e := &store.Event{

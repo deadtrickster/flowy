@@ -52,7 +52,9 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -120,16 +122,50 @@ func repudiationField(a *Artifact, key string) string {
 	return strings.TrimSpace(fieldText(fields, key))
 }
 
-// fieldInt reads a number a field may hold as a float (json) or as text.
+// maxExactFloat is 2^53: the largest integer a float64 represents exactly.
+//
+// A PACKED CLOCK READING IS THIRTEEN TIMES PAST IT. 117119446652354561 becomes
+// 117119446652354560 the moment it passes through a float - it loses exactly
+// one, which is the smallest window this store can express and precisely where
+// a boundary sits.
+const maxExactFloat = int64(1) << 53
+
+// fieldInt reads a number a field may hold, as text or as a number, and
+// REFUSES a number that cannot have survived the trip.
+//
+// encoding/json decodes every number into float64 unless it is told otherwise,
+// so a reading written as a JSON number comes back rounded to an even
+// neighbour. Measured on 2026-08-19 by flowy-claude, on the arm that matters:
+// a repudiation window of [before+1, epoch] disowned the message at `before`,
+// because before+1 and before are the same float64. Every positive assertion
+// passed - the value is close enough for anything except the boundary, which is
+// the whole subject of a window.
+//
+// So a float that is too large to be exact is not silently truncated. It reads
+// as absent, which makes CheckRepudiation refuse the row, which makes
+// Repudiations drop it, which means it disowns NOTHING. A repudiation whose
+// window cannot be read must not disown approximately.
+//
+// Writers should store a reading as a STRING for the same reason; this is the
+// half that protects readers from every writer that has not.
 func fieldInt(fields map[string]any, key string) int64 {
 	switch v := fields[key].(type) {
 	case float64:
-		return int64(v)
+		n := int64(v)
+		if n >= maxExactFloat || n <= -maxExactFloat {
+			return 0
+		}
+		return n
 	case int64:
 		return v
+	case json.Number:
+		// What a decoder using UseNumber hands back: the digits as written,
+		// with nothing lost.
+		if n, err := v.Int64(); err == nil {
+			return n
+		}
 	case string:
-		var n int64
-		if _, err := fmt.Sscan(strings.TrimSpace(v), &n); err == nil {
+		if n, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64); err == nil {
 			return n
 		}
 	}

@@ -173,3 +173,76 @@ func TestRotationReplacesTheKeyAndSaysWhatItReplaced(t *testing.T) {
 		t.Fatal("rotating a principal with no key here was accepted")
 	}
 }
+
+// A CLOCK READING DOES NOT SURVIVE A JSON NUMBER, and a window that cannot be
+// read must disown nothing rather than disown approximately.
+//
+// Measured on 2026-08-19: a repudiation covering [before+1, epoch] marked the
+// message at `before`. encoding/json decodes numbers into float64, a packed
+// reading is about 1.17e17, and 2^53 is 9.0e15 - thirteen times smaller - so
+// before+1 and before are the same float64 and the window swallowed the one row
+// its author had deliberately left out.
+//
+// Every positive assertion passed. Only the boundary could see it, which is
+// what the negative control was for.
+func TestAReadingSurvivesTheFieldsBlob(t *testing.T) {
+	// A real reading from this node, past 2^53 by a factor of thirteen.
+	const from = int64(117119446652354561)
+	const to = int64(117119446652354570)
+
+	// AS TEXT, which is what the writer now stores: the digits cross any
+	// encoder unchanged.
+	asText := &Artifact{
+		ID: "01REPUD", Type: RepudiationType,
+		Fields: fieldsJSON(t, map[string]any{
+			SubjectField: "u-alice", SpeakerField: SpeakerSubject,
+			FromField: "117119446652354561", ToField: "117119446652354570",
+		}),
+	}
+	if err := CheckRepudiation(asText); err != nil {
+		t.Fatalf("a window written as text was refused: %v", err)
+	}
+	gotFrom, gotTo := RepudiationWindowOf(asText)
+	if gotFrom != from || gotTo != to {
+		t.Fatalf("the window read back as [%d, %d], want [%d, %d]", gotFrom, gotTo, from, to)
+	}
+	// The row one reading BELOW the window is outside it, which is the exact
+	// assertion the float64 path got wrong.
+	if Repudiated([]*Artifact{asText}, "u-alice", from-1) != nil {
+		t.Fatal("the reading one below the window is covered by it")
+	}
+	if Repudiated([]*Artifact{asText}, "u-alice", from) == nil {
+		t.Fatal("the first reading of the window is not covered by it")
+	}
+
+	// AS A JSON NUMBER, which is what a writer that has not been fixed - or a
+	// peer - may still send. It cannot have survived, so it reads as absent and
+	// the row is refused rather than applied with a window off by one.
+	asNumber := &Artifact{
+		ID: "01REPUD2", Type: RepudiationType,
+		Fields: fieldsJSON(t, map[string]any{
+			SubjectField: "u-alice", SpeakerField: SpeakerSubject,
+			FromField: float64(from), ToField: float64(to),
+		}),
+	}
+	if err := CheckRepudiation(asNumber); err == nil {
+		t.Fatal("a window that cannot have survived a float was accepted - " +
+			"it would disown a window nobody wrote")
+	}
+	if Repudiated([]*Artifact{asNumber}, "u-alice", from+1) != nil {
+		t.Fatal("an unreadable window disowned a row")
+	}
+
+	// And a small number still reads, so the guard is about what cannot be
+	// represented rather than about numbers in general.
+	small := &Artifact{
+		ID: "01REPUD3", Type: RepudiationType,
+		Fields: fieldsJSON(t, map[string]any{
+			SubjectField: "u-alice", SpeakerField: SpeakerSubject,
+			FromField: float64(100), ToField: float64(200),
+		}),
+	}
+	if err := CheckRepudiation(small); err != nil {
+		t.Fatalf("a window well inside float64's exact range was refused: %v", err)
+	}
+}
