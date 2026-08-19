@@ -299,43 +299,79 @@ type LandedTip struct {
 	At     time.Time `json:"landed_at"`
 }
 
+// projectOfArtifact is the project a row belongs to, or "" when it names none.
+//
+// It exists because two doors need a row's project as a plain string to key a
+// landing and a lock on - Artifact.Project is a *string so that "no project" and
+// "the empty project" are different things at the column, and a nil deref in a
+// land path would be a landing lost to a pointer.
+func projectOfArtifact(a *Artifact) string {
+	if a == nil || a.Project == nil {
+		return ""
+	}
+	return strings.TrimSpace(*a.Project)
+}
+
 // RecordLandedTip advances the chain. Written by the land verb only, so "where
 // the queue believes master is" moves exactly when a land says it moved - never
 // at a deploy, never at a push nobody announced, and never backwards: the row
 // states what the target became, and a stale write arriving late would need a
 // land behind it to have overwritten with.
-func (d *DB) RecordLandedTip(ctx context.Context, p *Principal, target, tip string) error {
+//
+// THE PROJECT IS HALF THE KEY. Every repository's target is called master, so
+// keying on the name alone made project B's landing the tip project A's rows
+// were judged against - and A's green verdicts would then read as stale gates.
+// See the comment on merge_lands in schema.sql.
+func (d *DB) RecordLandedTip(ctx context.Context, p *Principal, project, target, tip string) error {
 	actor, _ := voteActor(p)
 	if actor == "" {
 		return fmt.Errorf("store: this token resolves to nobody, so it cannot record a landed tip")
 	}
 	if _, err := d.sql.ExecContext(ctx,
-		`INSERT INTO merge_lands (target, tip, actor, landed_at)
-		 VALUES ($1, $2, $3, now())
-		 ON CONFLICT (target) DO UPDATE
-		    SET tip = $2, actor = $3, landed_at = now()`,
-		lockTarget(target), normalizeTip(tip), actor); err != nil {
+		`INSERT INTO merge_lands (project, target, tip, actor, landed_at)
+		 VALUES ($1, $2, $3, $4, now())
+		 ON CONFLICT (project, target) DO UPDATE
+		    SET tip = $3, actor = $4, landed_at = now()`,
+		strings.TrimSpace(project), lockTarget(target), normalizeTip(tip), actor); err != nil {
 		return fmt.Errorf("store: record landed tip on %s: %w", lockTarget(target), err)
 	}
 	return nil
 }
 
-// LandedTipOf reads the newest landed tip for a target, or nil when nothing has
-// landed through the verb yet. The queue prefers this to its build stamp when
-// nobody stated a tip: it is the last LAND, which is the question being asked,
-// rather than the last deploy, which froze the pointer twelve landings behind
-// for a whole night.
-func (d *DB) LandedTipOf(ctx context.Context, target string) (*LandedTip, error) {
-	var got LandedTip
-	err := d.sql.QueryRowContext(ctx,
-		`SELECT target, tip, actor, landed_at FROM merge_lands WHERE target = $1`,
-		lockTarget(target)).
-		Scan(&got.Target, &got.Tip, &got.Actor, &got.At)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
+// LandedTipOf reads the newest landed tip for a project's target, or nil when
+// nothing has landed through the verb yet. The queue prefers this to its build
+// stamp when nobody stated a tip: it is the last LAND, which is the question
+// being asked, rather than the last deploy, which froze the pointer twelve
+// landings behind for a whole night.
+//
+// THE EMPTY-PROJECT FALLBACK IS A MIGRATION, not a lookup rule. Rows written
+// before merge_lands had a project carry ”, and nothing in the table says
+// which project they belonged to - inventing one would be a fact about history
+// nobody measured. So an exact match wins, and a legacy row answers when there
+// is none: a node that has been landing all week keeps answering the same tip,
+// and starts answering per project the first time each one lands.
+//
+// It is MergeAdmissible's own trade for rows written before gated_base existed,
+// and for the same reason: judging old rows by the new rule would refuse every
+// one of them for missing a field nobody could have written.
+func (d *DB) LandedTipOf(ctx context.Context, project, target string) (*LandedTip, error) {
+	for _, key := range []string{strings.TrimSpace(project), ""} {
+		var got LandedTip
+		err := d.sql.QueryRowContext(ctx,
+			`SELECT target, tip, actor, landed_at FROM merge_lands
+			  WHERE project = $1 AND target = $2`,
+			key, lockTarget(target)).
+			Scan(&got.Target, &got.Tip, &got.Actor, &got.At)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			if key == "" {
+				return nil, nil
+			}
+		case err != nil:
+			return nil, fmt.Errorf("store: read landed tip on %s: %w", lockTarget(target), err)
+		default:
+			return &got, nil
+		}
 	}
-	if err != nil {
-		return nil, fmt.Errorf("store: read landed tip on %s: %w", lockTarget(target), err)
-	}
-	return &got, nil
+	return nil, nil
 }

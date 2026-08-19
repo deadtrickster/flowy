@@ -237,7 +237,10 @@ func TestLandRefusesAndThenLands(t *testing.T) {
 	if art.Status != DoneStatus {
 		t.Errorf("status = %q, want done", art.Status)
 	}
-	chain, err := db.LandedTipOf(ctx, target)
+	// THE PROJECT IS HALF THE KEY NOW. This test lands a row that carries one,
+	// so reading with "" would find neither an exact row nor a legacy one - which
+	// is what my first edit here assumed, and this test is what said otherwise.
+	chain, err := db.LandedTipOf(ctx, project, target)
 	if err != nil || chain == nil || chain.Tip != "abc1234def5678" {
 		t.Fatalf("the chain did not advance: %+v %v", chain, err)
 	}

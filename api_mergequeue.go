@@ -162,7 +162,12 @@ func (s *server) readMergeQueue(r *http.Request) (mergeQueueAnswer, error) {
 	// already false.
 	tip, tipFrom := strings.TrimSpace(q.Get("target_tip")), "stated"
 	if tip == "" {
-		if landed, err := s.db.LandedTipOf(r.Context(), target); err == nil && landed != nil {
+		// THE TIP IS THIS PROJECT'S, and an unstated project reads the legacy
+		// row - see LandedTipOf. A page that lists every project's rows and
+		// judges them all against one tip is the state this door was already in
+		// and is not made worse here; it is 01M0DZRCHX, where a list door
+		// answering for a project and not saying which is the whole subject.
+		if landed, err := s.db.LandedTipOf(r.Context(), q.Get("project"), target); err == nil && landed != nil {
 			tip, tipFrom = landed.Tip, "landed"
 		} else if bs := strings.TrimSpace(buildStamp); bs != "" && bs != "src" {
 			tip, tipFrom = bs, "deployed"

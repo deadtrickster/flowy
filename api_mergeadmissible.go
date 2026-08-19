@@ -100,7 +100,7 @@ func (s *server) handleMergeAdmissible(w http.ResponseWriter, r *http.Request) {
 	target := store.TargetOf(art)
 	tip, tipFrom := strings.TrimSpace(r.URL.Query().Get("target_tip")), "stated"
 	if tip == "" {
-		if landed, err := s.db.LandedTipOf(r.Context(), target); err == nil && landed != nil {
+		if landed, err := s.db.LandedTipOf(r.Context(), rowProject(art), target); err == nil && landed != nil {
 			tip, tipFrom = landed.Tip, "landed"
 		} else if bs := strings.TrimSpace(buildStamp); bs != "" && bs != "src" {
 			tip, tipFrom = bs, "deployed"
@@ -204,4 +204,16 @@ func admissibleWhy(a mergeAdmissibleAnswer) string {
 	default:
 		return "no verdict has been recorded against " + a.TargetTip
 	}
+}
+
+// rowProject is the project a row belongs to, as a plain string.
+//
+// Artifact.Project is a *string so the column can tell "no project" from "the
+// empty one", and a nil deref on the path that keys a landing would be a
+// landing lost to a pointer.
+func rowProject(a *store.Artifact) string {
+	if a == nil || a.Project == nil {
+		return ""
+	}
+	return strings.TrimSpace(*a.Project)
 }

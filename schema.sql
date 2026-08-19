@@ -1205,6 +1205,34 @@ CREATE TABLE IF NOT EXISTS merge_lands (
     landed_at timestamptz NOT NULL DEFAULT now()
 );
 
+-- A TARGET IS A NAME, NOT AN IDENTITY, and this table was keyed on the name.
+--
+-- Every repository's target is called master. With one project filing merge
+-- rows that is invisible; with two it is the quiet kind of wrong. LandedTipOf
+-- is what /api/merge-queue answers as target_tip when nobody stated one, and
+-- MergeAdmissible compares every row's gated_base against it - so project B
+-- landing would set the tip project A's rows are judged against, and every
+-- green verdict in A would read as "the target moved after its gate ran". A
+-- whole queue refusing itself, correctly by its own rule, for a reason that is
+-- not about it.
+--
+-- So the key is (project, target). The lock beside it has the same defect and
+-- is louder - the loser is refused and can see it - and is fixed separately.
+ALTER TABLE merge_lands ADD COLUMN IF NOT EXISTS project text NOT NULL DEFAULT '';
+ALTER TABLE merge_lands DROP CONSTRAINT IF EXISTS merge_lands_pkey;
+ALTER TABLE merge_lands ADD PRIMARY KEY (project, target);
+
+-- ROWS WRITTEN BEFORE THE COLUMN CARRY '', and they are not migrated to a
+-- guess. Nothing in this table says which project a landing belonged to, and
+-- inventing one would be a fact about history that nobody measured.
+--
+-- LandedTipOf reads the exact project first and falls back to '' when there is
+-- none - so a node that has been landing all week keeps answering the same tip
+-- for the project it was landing for, and starts answering separately the first
+-- time each project lands. That is MergeAdmissible's own trade for rows written
+-- before gated_base existed: the fallback is not politeness, it is the
+-- difference between a migration and an outage.
+
 -- ---------------------------------------------------------------- HUMAN LOGIN
 --
 -- The operator asked for this in one line: "i dont want to bother with token.

@@ -344,7 +344,7 @@ func (d *DB) setMergeGate(
 	// old way, which is the same fallback every pre-existing row gets.
 	var base string
 	if declaring {
-		if landed, err := d.LandedTipOf(ctx, TargetOf(art)); err == nil && landed != nil {
+		if landed, err := d.LandedTipOf(ctx, projectOfArtifact(art), TargetOf(art)); err == nil && landed != nil {
 			base = normalizeTip(landed.Tip)
 		}
 	}

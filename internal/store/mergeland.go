@@ -232,7 +232,7 @@ func (d *DB) LandMerge(
 	// is that the build-stamp fallback froze "where master is" twelve landings
 	// behind for a night. Recorded before the lock releases, so the next
 	// declarer reads a target that already includes this land.
-	if err := d.RecordLandedTip(ctx, p, target, sha); err != nil {
+	if err := d.RecordLandedTip(ctx, p, projectOfArtifact(art), target, sha); err != nil {
 		return nil, nil, err
 	}
 
