@@ -160,6 +160,32 @@ func resolveToken(flagToken, envToken, flagAgent, envAgent string) (string, erro
 		name, source = strings.TrimSpace(envAgent), "FLOWY_AGENT"
 	}
 	if name != "" {
+		// AN EXPLICIT CREDENTIAL LOSING TO AN AMBIENT NAME, SAID OUT LOUD.
+		//
+		// One line up, the same collision is a refusal: --token with --agent
+		// answers "two principals named ... pass one". Here the agent simply
+		// wins, and until this warning it won silently.
+		//
+		// The asymmetry is the defect rather than the precedence. FLOWY_TOKEN is
+		// a credential somebody chose; FLOWY_AGENT is usually INHERITED - the
+		// drainer exports one, a wrapper sets one, a shell has one left over -
+		// so the ambient value quietly outranks the deliberate one and every
+		// write goes out attributed to a seat the caller never named.
+		//
+		// A warning rather than a refusal, and the difference from the flag case
+		// is real: a flag pair is two things typed in one breath, while an
+		// environment pair is two things set at different times by different
+		// people. Refusing would break callers who have both today for a defect
+		// they may not have. This says which one won and how to get the other,
+		// on the channel this file already uses for "nothing named who is
+		// speaking".
+		//
+		// Only when the environment is the source of BOTH. `--agent x` beside
+		// FLOWY_TOKEN is somebody overriding on purpose, which is the case the
+		// flag exists for.
+		if source == "FLOWY_AGENT" && strings.TrimSpace(envToken) != "" {
+			warnTokenLostToAgent(name)
+		}
 		return agentToken(name, source)
 	}
 	if value := strings.TrimSpace(envToken); value != "" {
@@ -266,6 +292,21 @@ func warnUnnamedPrincipal(path string) {
 			"flowy: or pass --agent <name>, and your token is read from %s.\n"+
 			"flowy: If you are the operator, say so with --agent %s and this stops.\n",
 		path, agents, operatorSelf)
+}
+
+// warnTokenLostToAgent says that an explicit credential was set aside for an
+// inherited name.
+//
+// It names the winner rather than describing the rule, because the reader is
+// about to write something and what they need is "this will be attributed to
+// claude-host" - not a paragraph about precedence they then have to apply.
+func warnTokenLostToAgent(name string) {
+	fmt.Fprintf(tokenWarnings,
+		"flowy: WARNING: FLOWY_TOKEN is set and FLOWY_AGENT=%s wins - this speaks as\n"+
+			"flowy: %s, not as whoever that token belongs to.\n"+
+			"flowy: To use the token, unset FLOWY_AGENT. To silence this, pass --agent %s\n"+
+			"flowy: and mean it.\n",
+		name, name, name)
 }
 
 // tokenPath is $XDG_CONFIG_HOME/flowy/token, or ~/.config/flowy/token.
