@@ -378,6 +378,16 @@ export function MessageList({
             return (
               <motion.div
                 key={event.id}
+                /*
+                  The message as one addressable thing. Every mark a reader is
+                  meant to take in together - who spoke, whether the signature
+                  verified, whether they have disowned it - lives inside this
+                  element, so a check that asks "does this message say both"
+                  has an element to ask it of. Without it a check reaches for
+                  the nearest attribute it can find, which was the reply
+                  BUTTON, and answers a question about a control instead.
+                */
+                data-message={event.id}
                 layout
                 initial={{ opacity: 0, y: 8 }}
                 animate={{ opacity: 1, y: 0 }}

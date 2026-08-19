@@ -56,7 +56,7 @@ try {
   // THE WITNESS THAT THIS RUN MEASURED ANYTHING. A room that never painted
   // answers "not marked" to every question below, which is also what a
   // completely broken mark answers.
-  const both = page.locator("[data-reply]");
+  const both = page.locator("[data-message]");
   await both
     .first()
     .waitFor({ timeout: 20_000 })
@@ -89,11 +89,17 @@ try {
     );
   }
 
-  // 3. AND THE MARK DOES NOT REPLACE WHAT IT QUALIFIES. The signature really
+  // 3. AND THE MARK DOES NOT REPLACE WHAT IT QUALIFIES.
+  //
+  // Asked of [data-message], the element that holds every mark a reader takes
+  // in together. The first cut asked [data-reply], which is the reply BUTTON -
+  // so it read a control's label and reported the authorship reading missing
+  // from a message that was drawing it two lines up. The mark was on the
+  // screen; the check was looking at the wrong element. The signature really
   // did verify; the person whose key made it says the key was not theirs. A
   // surface that swapped one for the other loses the difference between a
   // stolen key and a forgery, so both readings have to survive on the row.
-  const row = page.locator(`[data-reply="${disownedId}"]`);
+  const row = page.locator(`[data-message="${disownedId}"]`);
   if ((await row.count()) > 0) {
     const said = ((await row.first().textContent()) || "").toLowerCase();
     if (!said.includes("signed") && !said.includes("attributed")) {
