@@ -9,11 +9,13 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	_ "github.com/lib/pq"
@@ -519,6 +521,76 @@ func noteMerge(ctx context.Context, db *store.DB, peer string,
 }
 
 // peerRequest makes one authenticated request to a peer and decodes its answer.
+
+// restartWindow is how long a refused connection is treated as a node coming
+// back rather than a node that is not there.
+//
+// A deploy on this fabric installs a binary and restarts the unit; measured on
+// 2026-08-19, the node answers again 5 to 8 seconds later. Twenty is comfortably
+// past that and short enough that a genuinely wrong address still fails while
+// somebody is watching.
+const restartWindow = 20 * time.Second
+
+// doThroughARestart runs the request, and waits out a node that is restarting.
+//
+// EVERY DEPLOY IS A WINDOW WHERE EVERY CLIENT FAILS. I wrote "until curl
+// healthz; sleep 5" six times on 2026-08-19 and hit the raw refusal four more -
+// once in the middle of saying something in the room, so the sentence was lost
+// rather than delayed. Every caller was wrapping the same loop around a
+// condition the client can see for itself.
+//
+// ONLY A DIAL FAILURE, and that is what makes retrying safe rather than
+// hopeful. "connection refused" means nothing was sent: no request reached the
+// node, so nothing can have happened twice. An HTTP status is never retried
+// here - a 409 is an answer, and asking again is how a lock gets taken twice.
+// A body that has already been read would also be unsafe to send again, which
+// is why the bytes are handed in rather than the reader.
+//
+// It says so on stderr, once per attempt, because a command that takes fifteen
+// seconds without explanation is one somebody kills at ten.
+func doThroughARestart(
+	ctx context.Context, client *http.Client, req *http.Request, body []byte,
+) (*http.Response, error) {
+	deadline := time.Now().Add(restartWindow)
+	for attempt := 1; ; attempt++ {
+		resp, err := client.Do(req)
+		if err == nil || !isDialRefused(err) || time.Now().After(deadline) {
+			return resp, err
+		}
+		fmt.Fprintf(os.Stderr, "%s is not answering - it may be restarting, waiting (%d)\n",
+			req.URL.Host, attempt)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(time.Second):
+		}
+		// A REQUEST IS NOT REUSABLE once its body has been consumed, so the
+		// next attempt gets a fresh one over the same bytes. Reusing the first
+		// would send an empty body on every retry, which is the shape of bug
+		// that looks like the node losing writes.
+		next := req.Clone(ctx)
+		if body != nil {
+			next.Body = io.NopCloser(bytes.NewReader(body))
+			next.ContentLength = int64(len(body))
+		}
+		req = next
+	}
+}
+
+// isDialRefused reports whether this error is a connection that was never made.
+//
+// Refused and unreachable only. A timeout is NOT included: a node that accepted
+// the connection and then went quiet may well have taken the write, and
+// retrying that is the double-write this function exists to avoid.
+func isDialRefused(err error) bool {
+	var dns *net.DNSError
+	if errors.As(err, &dns) {
+		return false
+	}
+	return errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.EHOSTUNREACH) ||
+		errors.Is(err, syscall.ENETUNREACH)
+}
+
 func peerRequest(ctx context.Context, client *http.Client, method, url, token string,
 	body []byte, into any,
 ) error {
@@ -541,7 +613,7 @@ func peerRequest(ctx context.Context, client *http.Client, method, url, token st
 		req.Header.Set("Content-Type", "application/json")
 	}
 
-	resp, err := client.Do(req)
+	resp, err := doThroughARestart(ctx, client, req, body)
 	if err != nil {
 		return fmt.Errorf("%s %s: %w", method, url, err)
 	}
