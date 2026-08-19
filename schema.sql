@@ -325,6 +325,21 @@ CREATE TABLE IF NOT EXISTS grants (
 CREATE TABLE IF NOT EXISTS artifacts (
     id         text PRIMARY KEY,
     type       text,
+    -- kind IS THREE DIFFERENT FACTS SHARING A COLUMN NAME, and only one of them
+    -- is identity. Measured on the live node, 551 rows:
+    --
+    --   type=memory       kind says what the row IS - todo, merge, note, report,
+    --                     diagram. This one is identity.
+    --   type=finding      kind is a DEFECT CLASS - bug, correctness, perf, crash,
+    --                     race. Orthogonal to identity: a crash and a
+    --                     correctness bug are both findings.
+    --   type=attachment   kind is a MEDIA TYPE.
+    --
+    -- So "type or kind" is the wrong question to ask of a row, and the answer
+    -- lives in exactly one place: store.EntityType. A caller that reads .Type or
+    -- .Kind to decide what a row is has decided it a second time, and two
+    -- answers is the defect rather than the spelling. See the ruling on
+    -- 01M0ANFYWY.
     kind       text,
     project    text,
     owner_user text,
