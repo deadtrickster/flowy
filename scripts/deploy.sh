@@ -355,6 +355,24 @@ bundle=$(basename "$(ls -t web/dist/assets/index-*.js 2>/dev/null | head -1)")
 [ -n "$bundle" ] || die "no bundle in web/dist/assets after building"
 say "    fresh bundle: $bundle"
 
+# YESTERDAY'S DRY RUNS GO, because a kept file with no expiry is a leak with a
+# good reason.
+#
+# The binary below is kept on purpose - see the dry-run branch, where clearing
+# the whole EXIT trap once stranded the landing lock, so emptying $tmp is the
+# cheaper of two bad options. What was missing is the other half: nobody is
+# coming back for a 42MB build they asked for an hour ago.
+#
+# Measured 2026-08-19: nine of them in /tmp, 16 to 42MB each, oldest from
+# 2026-08-17, on a tmpfs sitting at 82% of its inodes - the one that reached
+# 100% three times in twelve hours and took every VM with it.
+#
+# So a deploy sweeps the ones older than a day at the start of its own run. Not
+# on exit, because the file this run is about to keep is the one somebody is
+# still looking at; and not a fixed count, because the question is whether
+# anybody could still want it, and a day answers that.
+find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'flowy-deploy-*' -type f -mtime +0 \
+	-delete 2>/dev/null || true
 say "==> building the binary"
 tmp=$(mktemp -t flowy-deploy-XXXXXX) || die "cannot make a temp file"
 # STAMP THE COMMIT IN. main.go has carried a buildStamp ldflag for exactly this
@@ -378,7 +396,7 @@ if [ "$DRY" = yes ]; then
 	say "DRY RUN: built and verified, nothing deployed and NOTHING MIGRATED."
 	say "  commit  $commit"
 	say "  bundle  $bundle"
-	say "  binary  $tmp (kept)"
+	say "  binary  $tmp (kept, and swept by the next deploy after a day)"
 	# The binary is kept on purpose, and the lock is NOT: clearing the whole
 	# EXIT trap here is what used to strand it. Emptying $tmp keeps the file
 	# and leaves the release to run.
