@@ -40,7 +40,8 @@ import (
 const mergeUsage = `flowy merge - file a branch for the queue to land
 
 usage:
-  flowy merge open --branch B [--target master] [--title T] [--assignee A] [body]
+  flowy merge open --branch B [--target master] [--title T] [--assignee A]
+                   [--room R] [--scope S] [body]
 
 The body is the argument, or stdin, and it is what the next reader has instead
 of you: what changed, what was measured, what is deliberately not in it.
@@ -51,6 +52,12 @@ of you: what changed, what was measured, what is deliberately not in it.
   --title     one line for the queue (default "land <branch>").
   --assignee  who is carrying it. An unassigned row with a branch already
               written is how two people build the same thing.
+  --room      the room its landing is announced in (default general). A merge
+              row filed without one lands SILENTLY: LandMerge writes the entry
+              with the room on it, so no room means no entry anybody sees.
+              Measured 2026-08-19 - four of the six rows that landed that day
+              carried no room, and the landing announcement covered two of six,
+              which is worse than uniformly silent.
   --scope     who may read it (default project). It is SENT rather than left
               to the door: three rows sat invisible for hours because a default
               decided this and nobody typed it.
@@ -88,6 +95,7 @@ func mergeOpen(args []string) error {
 	target := fs.String("target", "", "where it lands (default master)")
 	title := fs.String("title", "", `one line for the queue (default "land <branch>")`)
 	assignee := fs.String("assignee", "", "who is carrying it")
+	room := fs.String("room", "", "the room its landing is announced in (default "+mergeRoomDefault+")")
 	scope := fs.String("scope", "project", "who may read it: "+strings.Join(store.MemScopes, ", "))
 	urlFlag := fs.String("url", "", "node to talk to (default $FLOWY_ADDR or "+defaultTUIAddr+")")
 	token := fs.String("token", "", "bearer token (default $FLOWY_TOKEN, then ~/.config/flowy/token)")
@@ -125,6 +133,34 @@ func mergeOpen(args []string) error {
 	if who := strings.TrimSpace(*assignee); who != "" {
 		fields[store.AssigneeField] = who
 	}
+	// THE ROOM, DEFAULTED AND SAID OUT LOUD.
+	//
+	// A merge row with no room lands silently. store.LandMerge writes the entry
+	// with the room on it, so a row that carries none produces an entry with
+	// nowhere to be - and until today this verb had no --room flag at all, so it
+	// was not that nobody typed one, it was that nobody could. Measured
+	// 2026-08-19: four of the six rows that landed that day carry no room, and
+	// the landing announcement therefore covered two of six. A room that reports
+	// a third of the landings is worse than one that reports none, because the
+	// silence about the other four reads as "nothing landed".
+	//
+	// SO IT DEFAULTS RATHER THAN REFUSING. The --scope comment below argues the
+	// opposite for scope and it is right there and right here: an unstated scope
+	// is a row nobody can READ, which is unrecoverable from the outside, while
+	// an unstated room is a landing announced in the wrong place, which somebody
+	// can see and move. Requiring it would break every caller in flight for a
+	// defect that has a good default.
+	//
+	// The default announces itself on stderr, which is the difference between
+	// this and the silent default that put three rows at personal scope: a
+	// caller who did not mean general finds out at the moment they could still
+	// say otherwise.
+	where := strings.TrimSpace(*room)
+	if where == "" {
+		where = mergeRoomDefault
+	}
+	fields[store.RoomField] = where
+
 	raw, err := json.Marshal(fields)
 	if err != nil {
 		return err
@@ -173,6 +209,13 @@ func mergeOpen(args []string) error {
 	fmt.Println(answer.ID)
 	fmt.Fprintf(os.Stderr, "filed %s to land %s on %s\n",
 		answer.ID, name, store.TargetOf(&store.Artifact{Fields: raw}))
+	// The room is said too, and for the same reason as the scope: it is a
+	// property of this row that decides whether anybody hears about it, and the
+	// caller can still change their mind while the words are on their screen.
+	if strings.TrimSpace(*room) == "" {
+		fmt.Fprintf(os.Stderr, "its landing will be announced in #%s - say --room to change that\n",
+			where)
+	}
 	// The scope is said out loud because it is the one property of this row a
 	// person cannot see from here and cannot afford to get wrong: a queue row
 	// only its author can read is not on the queue, and that is exactly how
@@ -183,3 +226,8 @@ func mergeOpen(args []string) error {
 	}
 	return nil
 }
+
+// mergeRoomDefault is where a landing is announced when the caller says nothing.
+// #general is where this fleet decides what to pick up, which makes it the room
+// a landing is least likely to be missed in.
+const mergeRoomDefault = "general"
