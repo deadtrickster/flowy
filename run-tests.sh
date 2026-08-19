@@ -17917,7 +17917,7 @@ shell_scripts_formatted() {
 # to put "the lock is held by somebody else" on the table on demand.
 
 # guard_stub starts a fake node answering one lock and one identity, and prints
-# its pid. Killed by its caller - AND BY ITSELF, if the caller never gets there.
+# ITS PID AND THE PORT IT BOUND. Killed by its caller - AND BY ITSELF, if the caller never gets there.
 #
 # A LEFTOVER FIXTURE IS A NODE NOBODY CAN ATTRIBUTE. One of these was found on
 # 2026-08-19 still answering 127.0.0.1:9101 after THIRTY HOURS: a suite that was
@@ -17930,8 +17930,26 @@ shell_scripts_formatted() {
 # the one that survives the suite being killed rather than exiting, which is the
 # only way this happens: STUB_TTL seconds after it starts, the stub stops
 # serving and exits, whatever else is going on.
+# AND THE PORT IS CHOSEN HERE RATHER THAN BY THE CALLER, which is the other half
+# of the same story and was measured rather than imagined.
+#
+# The ports used to be written into the checks - 9101 to 9105 - and the stub
+# above sat on 9101 for thirty hours. Two stubs in sequence on one port,
+# measured: the first binds and lives, the second dies unable to bind, the shell
+# still reports the DEAD pid, and a caller on that port reads THE FIRST SERVER.
+# The leftover answered {"held": false}, which is exactly what the first arm
+# expects, so that arm would have passed by talking to a day-old process.
+#
+# It is not a replacement for the deadline. The deadline stops a fixture
+# outliving its suite; this stops a check reading whatever else is on that
+# number - including, inside the deadline, a fixture that has not died yet.
+#
+# The stub is also not trusted until it has ANSWERED. A free port alone still
+# races two callers, and the answer check is what turns that race into a failure
+# rather than a stranger.
 guard_stub() {
-	local port="$1" lock="$2"
+	local lock="$1" port
+	port="$(free_port 9101)" || return 1
 	STUB_LOCK="$lock" STUB_TTL="${STUB_TTL:-300}" python3 -c '
 import json, os, sys, threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -17954,12 +17972,26 @@ server = HTTPServer(("127.0.0.1", int(sys.argv[1])), H)
 threading.Timer(float(os.environ["STUB_TTL"]), os._exit, [0]).start()
 server.serve_forever()
 ' "$port" >/dev/null 2>&1 &
-	# THE CHILD'S STDOUT IS CLOSED ON PURPOSE. This is called as
-	# pid="$(guard_stub ...)", and a background child that inherits the
-	# substitution's pipe holds it open, so the substitution never returns and
-	# the suite hangs with no output and no failure - which is how it hung the
-	# first time it was run.
-	printf '%s' "$!"
+	local pid=$!
+	# ANSWERING, not merely started. Waited for rather than slept past: a fixed
+	# sleep is a guess about a machine, and what the caller needs to know is that
+	# THIS stub is the one that will answer.
+	local try
+	for ((try = 0; try < 50; try++)); do
+		if curl -sS -m 1 -o /dev/null "http://127.0.0.1:$port/api/merge-queue" 2>/dev/null; then
+			# THE CHILD'S STDOUT IS CLOSED ON PURPOSE. This is called as
+			# read -r pid port <<<"$(guard_stub ...)", and a background child that
+			# inherits the substitution's pipe holds it open, so the substitution
+			# never returns and the suite hangs with no output and no failure -
+			# which is how it hung the first time it was run.
+			printf '%s %s' "$pid" "$port"
+			return 0
+		fi
+		sleep 0.1
+	done
+	kill "$pid" 2>/dev/null || true
+	printf 'the guard stub never answered on port %s\n' "$port" >&2
+	return 1
 }
 
 # guard_says runs the hook on one ref update and answers with its exit status.
@@ -17985,7 +18017,7 @@ guard_says_noop() {
 
 the_land_guard_refuses_what_it_should() {
 	recall
-	local dead=http://127.0.0.1:9 pid rc
+	local dead=http://127.0.0.1:9 pid port rc
 
 	# A branch nobody shares moves freely. A guard that made every commit ask a
 	# server would be removed within the hour, and then it guards nothing.
@@ -18010,23 +18042,20 @@ the_land_guard_refuses_what_it_should() {
 	want_eq "a node that does not answer is a refusal" \
 		"$(guard_says "$dead" refs/heads/master tok)" 1 || return 1
 
-	pid="$(guard_stub 9101 '{"held": false}')"
-	sleep 1
-	rc="$(guard_says http://127.0.0.1:9101 refs/heads/master tok)"
+	read -r pid port <<<"$(guard_stub '{"held": false}')" || return 1
+	rc="$(guard_says "http://127.0.0.1:$port" refs/heads/master tok)"
 	kill "$pid" 2>/dev/null || true
 	want_eq "a free lock is a refusal - a landing goes through a declaration" "$rc" 1 || return 1
 
-	pid="$(guard_stub 9102 '{"held": true, "holder": "somebody", "holder_name": "flowy-glm", "item": "01ROW"}')"
-	sleep 1
-	rc="$(guard_says http://127.0.0.1:9102 refs/heads/master tok)"
+	read -r pid port <<<"$(guard_stub '{"held": true, "holder": "somebody", "holder_name": "flowy-glm", "item": "01ROW"}')" || return 1
+	rc="$(guard_says "http://127.0.0.1:$port" refs/heads/master tok)"
 	kill "$pid" 2>/dev/null || true
 	want_eq "somebody else's lock is a refusal" "$rc" 1 || return 1
 
 	# The positive control. Without it every line above passes on a guard that
 	# refuses everything, which is not a guard, it is a broken repository.
-	pid="$(guard_stub 9103 '{"held": true, "holder": "a1", "holder_name": "me", "item": "01ROW"}')"
-	sleep 1
-	rc="$(guard_says http://127.0.0.1:9103 refs/heads/master tok)"
+	read -r pid port <<<"$(guard_stub '{"held": true, "holder": "a1", "holder_name": "me", "item": "01ROW"}')" || return 1
+	rc="$(guard_says "http://127.0.0.1:$port" refs/heads/master tok)"
 	kill "$pid" 2>/dev/null || true
 	want_eq "the holder may move it" "$rc" 0 || return 1
 
@@ -18114,7 +18143,7 @@ the_hatch_never_refuses_and_leaves_a_trace() {
 
 git_refuses_to_move_master_without_the_lock() {
 	recall
-	local repo pid out before
+	local repo pid port out before
 	repo="$(mktemp -d)" || return 1
 	(
 		cd "$repo" || exit 1
@@ -18139,9 +18168,8 @@ git_refuses_to_move_master_without_the_lock() {
 	}
 	before="$(git -C "$repo" rev-parse master)"
 
-	pid="$(guard_stub 9104 '{"held": false}')"
-	sleep 1
-	out="$(cd "$repo" && FLOWY_ADDR=http://127.0.0.1:9104 FLOWY_TOKEN=tok git merge --ff-only feature 2>&1 || true)"
+	read -r pid port <<<"$(guard_stub '{"held": false}')" || return 1
+	out="$(cd "$repo" && FLOWY_ADDR="http://127.0.0.1:$port" FLOWY_TOKEN=tok git merge --ff-only feature 2>&1 || true)"
 	kill "$pid" 2>/dev/null || true
 	printf '%s' "$out" | grep -q REFUSED || {
 		printf 'the merge was not refused: %s\n' "$out"
@@ -18157,9 +18185,8 @@ git_refuses_to_move_master_without_the_lock() {
 	}
 
 	# Positive control, same repository: with the lock, the same merge lands.
-	pid="$(guard_stub 9105 '{"held": true, "holder": "a1", "holder_name": "me", "item": "01ROW"}')"
-	sleep 1
-	(cd "$repo" && FLOWY_ADDR=http://127.0.0.1:9105 FLOWY_TOKEN=tok git merge --ff-only feature >/dev/null 2>&1) || true
+	read -r pid port <<<"$(guard_stub '{"held": true, "holder": "a1", "holder_name": "me", "item": "01ROW"}')" || return 1
+	(cd "$repo" && FLOWY_ADDR="http://127.0.0.1:$port" FLOWY_TOKEN=tok git merge --ff-only feature >/dev/null 2>&1) || true
 	kill "$pid" 2>/dev/null || true
 	if [ "$(git -C "$repo" rev-parse master)" != "$(git -C "$repo" rev-parse feature)" ]; then
 		printf 'the holder could not land - the guard refuses everything\n'
