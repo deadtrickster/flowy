@@ -35,6 +35,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/deadtrickster/flowy/internal/store"
 )
@@ -106,12 +107,28 @@ func assigneeOf(art *store.Artifact) string { return store.AssigneeOf(art) }
 // "somebody who can see the work can say who is doing it", and a principal who
 // cannot see it gets the 404 a read would have given.
 //
-// The room hears nothing from this door. The room panel's door says it in the
-// room because a plan beside a conversation changes hands in front of that
-// conversation; this one is reached by a drainer and by the operator's console
-// from outside any room, and a message in a room from a door that does not know
-// which room it is in would be a message in the wrong place. The entry is in the
-// log either way, and every reader of the todo can read it.
+// THE ROOM HEARS THIS DOOR TOO, and the argument that it should not was wrong
+// in a way worth keeping visible: "a door that does not know which room it is
+// in would be a message in the wrong place". The door does not know. THE ROW
+// DOES - every todo raised in a room carries it in fields.room, which is the
+// same value the room panel's door checks its path against.
+//
+// What that mistake cost, measured on 2026-08-19: at 00:12 I claimed a row
+// through this door and said nothing; at 02:18 flowy-claude read the board, saw
+// it unowned, announced taking it, and the guard refused them by name. Nobody
+// was careless and the board knew the whole time - the room, which is where
+// every seat here decides what to pick up, had no way to learn it. Earlier the
+// same night two agents landed on one row within two minutes for the same
+// reason.
+//
+// A claim is not a state change somebody can look up later. It is a message to
+// the other seats, and the log is not a place anybody watches: the entry was
+// always there, and being there is what makes "the state is not missing, the
+// EVENT is unrouted" the accurate description of the gap.
+//
+// A row raised in NO room still says nothing, and that is honest rather than a
+// remaining half of the bug: there is no conversation it belongs to, and
+// inventing one would put a handover in front of people who never saw the work.
 func (s *server) handleTodoAssign(w http.ResponseWriter, r *http.Request) {
 	p := principalOf(r)
 
@@ -128,14 +145,19 @@ func (s *server) handleTodoAssign(w http.ResponseWriter, r *http.Request) {
 	// in one morning that is exactly how a guarded claim got overwritten by a
 	// careless one. The handover path is the guarded path with the holder named
 	// - one field longer, and it cannot be fallen into by accident.
-	var (
-		art *store.Artifact
-		err error
-	)
+	var art *store.Artifact
+	// WHICH ROOM, ASKED OF THE ROW. Read before the write, because after it the
+	// row is the new state and the message names who HAD it - and a failure to
+	// read it is not a reason to refuse the assignment, only to make it quietly.
+	said, err := s.claimHeardIn(r, r.PathValue("id"), req.Assignee)
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
 	if req.Expect != nil {
-		art, _, err = s.db.ClaimTodo(r.Context(), p, r.PathValue("id"), req.Assignee, *req.Expect)
+		art, _, err = s.db.ClaimTodo(r.Context(), p, r.PathValue("id"), req.Assignee, *req.Expect, said)
 	} else {
-		art, _, err = s.db.AssignTodo(r.Context(), p, r.PathValue("id"), req.Assignee, nil)
+		art, _, err = s.db.AssignTodo(r.Context(), p, r.PathValue("id"), req.Assignee, said)
 	}
 	if err != nil {
 		s.writeAssignError(w, r, err)
@@ -314,6 +336,35 @@ func (s *server) assignmentMessage(
 		Body:    assignmentSaid(art.Title, was, now),
 		Meta:    withTrace(json.RawMessage(meta), traceIDOf(r)),
 	}, nil
+}
+
+// claimHeardIn is the message the room reads when a row changes hands through
+// the door that is not a room's own, or nil when there is no room to say it in.
+//
+// It reads the row through the ordinary permission-filtered read, so a caller
+// who cannot see the todo gets nil here and the refusal from the verb itself -
+// this must not become a way to find out that an id exists.
+//
+// A FAILURE TO BUILD THE MESSAGE IS NOT A FAILURE TO ASSIGN. The room hearing
+// about a handover is the point of this row, and it is still less important
+// than the handover landing: a node that refused to move work because it could
+// not announce it would have replaced a silent success with a loud nothing.
+func (s *server) claimHeardIn(r *http.Request, id, now string) (*store.Event, error) {
+	art, err := s.db.ReadArtifact(r.Context(), principalOf(r), id, false)
+	if err != nil {
+		// Including not-found and not-readable: the verb answers those, and
+		// answering them here first would answer them twice.
+		return nil, nil
+	}
+	fields, err := store.ArtifactFields(art)
+	if err != nil {
+		return nil, nil
+	}
+	room, _ := fields[store.RoomField].(string)
+	if strings.TrimSpace(room) == "" {
+		return nil, nil
+	}
+	return s.assignmentMessage(r, art, room, fields, assigneeOf(art), now)
 }
 
 // assignmentSaid is the sentence the room reads. It names the previous holder
