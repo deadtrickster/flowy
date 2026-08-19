@@ -187,6 +187,58 @@ export interface PinsView {
   log: PinEntry[];
 }
 
+/**
+ * WorkloadShare is one participant's slice of the open board.
+ *
+ * The denominator is every open row, unowned included: they are work in flight,
+ * and a share computed over claimed rows alone would rise as the board fills
+ * with rows nobody has taken.
+ */
+export interface WorkloadShare {
+  assignee: string;
+  open: number;
+  share: number;
+}
+
+/**
+ * Workload is the distribution probe, whole, INCLUDING BOTH ITS LINES so that
+ * nothing re-derives them from the shares.
+ *
+ * The two verdicts that matter mean different things to do - `check` is look at
+ * this, `rebalance` is hand some back - so a reader given the word and not the
+ * number it crossed is left doing the arithmetic the probe exists to end.
+ */
+export interface Workload {
+  open: number;
+  unowned: number;
+  shares: WorkloadShare[];
+  top: string;
+  top_share: number;
+  /** ok, check, rebalance, alone, or empty. The node's word, never recomputed. */
+  verdict: string;
+  /** The check line, under its old name. */
+  threshold: number;
+  check: number;
+  rebalance: number;
+}
+
+/**
+ * NagView is what an idle seat should know, computed where the rows are.
+ *
+ * EVERY COUNT IS THE CALLER'S. There is no name parameter on the door, so this
+ * is the board as this token can see it and a row it cannot read is in no total
+ * here.
+ */
+export interface NagView {
+  mine: number;
+  unowned: number;
+  open: number;
+  mine_todo: number;
+  stale: number;
+  stale_after_seconds: number;
+  workload: Workload;
+}
+
 /** ChatPage is what a room read or a long poll answers with. */
 export interface ChatPage {
   room?: string;
@@ -1756,6 +1808,13 @@ export const api = {
    * The log comes back with it because "who decided this was the decision" is
    * most of why a room pins anything, and a list of ids cannot answer it.
    */
+  /**
+   * What an idle seat should know: the caller's rows, what nobody has, what has
+   * gone stale, and how the work is spread. The node decides all of it - see
+   * api_nag.go - and this asks rather than counting the board again.
+   */
+  nag: () => request<NagView>("/api/nag"),
+
   pins: (room: string) => request<PinsView>(`/api/chat/${encodeURIComponent(room)}/pins`),
 
   /**

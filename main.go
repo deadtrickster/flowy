@@ -191,6 +191,11 @@ func main() {
 			fmt.Fprintf(os.Stderr, "flowy queue: %v\n", err)
 			os.Exit(2)
 		}
+	case "nag":
+		if err := nagCmd(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "flowy nag: %v\n", err)
+			os.Exit(2)
+		}
 	case "projects":
 		if err := projectsCmd(os.Args[2:]); err != nil {
 			fmt.Fprintf(os.Stderr, "flowy projects: %v\n", err)

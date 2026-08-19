@@ -42,13 +42,24 @@ type WorkloadShare struct {
 // because three surfaces read this and a sentence they each paraphrase is three
 // slightly different rules.
 type Workload struct {
-	Open      int             `json:"open"`
-	Unowned   int             `json:"unowned"`
-	Shares    []WorkloadShare `json:"shares"`
-	Top       string          `json:"top"`
-	TopShare  float64         `json:"top_share"`
-	Verdict   string          `json:"verdict"`
-	Threshold float64         `json:"threshold"`
+	Open     int             `json:"open"`
+	Unowned  int             `json:"unowned"`
+	Shares   []WorkloadShare `json:"shares"`
+	Top      string          `json:"top"`
+	TopShare float64         `json:"top_share"`
+	Verdict  string          `json:"verdict"`
+	// Threshold is the check line, kept under its old name so nothing that
+	// already reads it breaks.
+	Threshold float64 `json:"threshold"`
+	// Check and Rebalance are BOTH lines, reported because both are applied.
+	//
+	// The answer used to carry one number while the verdict was decided by two,
+	// so a reader seeing `rebalance` beside `threshold: 0.5` could not tell
+	// which line had been crossed - and the difference is the whole difference
+	// between "look at this" and "hand some back", which is what the operator
+	// asked for in those words.
+	Check     float64 `json:"check"`
+	Rebalance float64 `json:"rebalance"`
 }
 
 // The two thresholds, named rather than written twice.
@@ -64,7 +75,11 @@ const (
 // for exactly the opposite reason.
 func WorkloadOf(rows []*Artifact) Workload {
 	counts := map[string]int{}
-	w := Workload{Threshold: WorkloadCheck}
+	w := Workload{
+		Threshold: WorkloadCheck,
+		Check:     WorkloadCheck,
+		Rebalance: WorkloadRebalance,
+	}
 	for _, a := range rows {
 		if a == nil || DoneAt(a) {
 			continue

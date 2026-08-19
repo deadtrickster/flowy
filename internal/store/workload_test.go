@@ -96,3 +96,47 @@ func TestDoneRowsAreNotWork(t *testing.T) {
 		t.Errorf("top is %q, want b", got.Top)
 	}
 }
+
+// TestBothLinesAreReportedBecauseBothAreApplied.
+//
+// The answer carried one number while the verdict was decided by two, so a
+// reader seeing "rebalance" beside threshold 0.5 could not tell which line had
+// been crossed - and the difference between them is the whole difference
+// between "look at this" and "hand some back", which is what the probe was
+// asked for.
+func TestBothLinesAreReportedBecauseBothAreApplied(t *testing.T) {
+	rows := []*Artifact{
+		row("a"), row("a"), row("a"), row("a"), row("a"),
+		row("b"),
+	}
+	w := WorkloadOf(rows)
+	if w.Check != WorkloadCheck || w.Rebalance != WorkloadRebalance {
+		t.Fatalf("the answer reports check %v and rebalance %v, want %v and %v",
+			w.Check, w.Rebalance, WorkloadCheck, WorkloadRebalance)
+	}
+	// The old field keeps its old meaning, because things already read it.
+	if w.Threshold != WorkloadCheck {
+		t.Errorf("threshold moved to %v; it is the check line and readers depend on that", w.Threshold)
+	}
+	// And the verdict this shape produces is decided by the line the answer now
+	// names: five of six is 83%, over rebalance.
+	if w.Verdict != "rebalance" {
+		t.Fatalf("five of six rows is %v, want rebalance", w.Verdict)
+	}
+	if w.TopShare <= w.Rebalance {
+		t.Errorf("the verdict says rebalance and the top share %v is not over %v",
+			w.TopShare, w.Rebalance)
+	}
+	// The control: a share over check and under rebalance names the other line.
+	// Three of four and not two - exactly half is NOT over half, which the case
+	// table above already pins and which this control got wrong on its first
+	// run.
+	half := WorkloadOf([]*Artifact{row("a"), row("a"), row("a"), row("b")})
+	if half.Verdict != "check" {
+		t.Fatalf("three of four is %v, want check", half.Verdict)
+	}
+	if half.TopShare <= half.Check || half.TopShare > half.Rebalance {
+		t.Errorf("the verdict says check and the top share %v is not between %v and %v",
+			half.TopShare, half.Check, half.Rebalance)
+	}
+}

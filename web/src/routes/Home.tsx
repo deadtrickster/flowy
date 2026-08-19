@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
+import { SpreadCard } from "@/components/SpreadCard";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -57,6 +58,11 @@ export function Home() {
               : "paste a bearer token to see anything"}
           </p>
         </div>
+
+        {/* The board before the rooms: what is unowned and how the work is
+            spread is the thing an arriving reader can act on, and it was
+            reachable only from a terminal until now. */}
+        <SpreadCard />
 
         <Card>
           <CardHeader>

@@ -4917,6 +4917,51 @@ a_row_without_a_raiser_says_nothing_rather_than_nobody() {
 		pa "$RAISED_ID" "$bare"
 }
 
+# THE PROBE HAS A READER NOW, in a terminal and in a browser.
+#
+# GET /api/nag has carried the whole distribution probe since it moved off
+# board-nag.sh, and nothing read it: no CLI verb, nothing in the console. So
+# four seats each recomputed the shares from /api/artifacts instead - twenty
+# times in one session, counted on the commands issued. A door nobody uses is
+# the same as no door, and the reason nobody used this one is that reaching it
+# cost more than redoing the arithmetic.
+#
+# The verb decodes nagView, the door's own type, the way `flowy queue` decodes
+# mergeQueueAnswer: one definition, and the compiler holds both ends.
+the_nag_has_a_verb_and_it_names_the_line() {
+	recall
+	local out top
+	out="$(FLOWY_ADDR="http://127.0.0.1:$HTTP_PORT" FLOWY_TOKEN="$TOKEN_A" \
+		"$ROOT/flowy" nag)" || return 1
+	printf '%s\n' "$out" | grep -q '^board ' || {
+		printf 'the nag printed no board line:\n%s\n' "$out" >&2
+		return 1
+	}
+	printf '%s\n' "$out" | grep -q '^spread ' || {
+		printf 'the nag printed no spread line:\n%s\n' "$out" >&2
+		return 1
+	}
+	# --json is the node's answer unchanged, so a script reads the same numbers
+	# the person does rather than parsing the person's line.
+	out="$(FLOWY_ADDR="http://127.0.0.1:$HTTP_PORT" FLOWY_TOKEN="$TOKEN_A" \
+		"$ROOT/flowy" nag --json)" || return 1
+	# BOTH LINES, because both are applied. A reader seeing "rebalance" beside a
+	# lone 0.5 cannot tell which one was crossed, and the two mean different
+	# things to do.
+	want_eq "the answer names the check line" \
+		"$(printf '%s' "$out" | jq -r '.workload.check')" 0.5 || return 1
+	want_eq "and the rebalance line" \
+		"$(printf '%s' "$out" | jq -r '.workload.rebalance')" 0.8 || return 1
+	top="$(printf '%s' "$out" | jq -r '.workload.top')"
+	if [ -z "$top" ] || [ "$top" = null ]; then
+		printf 'the probe names nobody as carrying the most: %s\n' "$out" >&2
+		return 1
+	fi
+
+	cd "$ROOT/web" || return 1
+	node scripts/spread-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" "$top"
+}
+
 # A stated raiser is the last word, a name that is not one is refused, and a row
 # raised out of no conversation says nothing rather than guessing its author.
 #
@@ -11502,6 +11547,12 @@ check "a stated raiser wins, and a row that says nothing is not guessed at" \
 	a_stated_raiser_wins_and_nothing_is_guessed
 check "a row with no raiser says nothing about one, and still says who carries it" \
 	a_row_without_a_raiser_says_nothing_rather_than_nobody
+check "the distribution probe has a verb and a panel, and both name which line was crossed" \
+	the_nag_has_a_verb_and_it_names_the_line
+check "and the two lines are reported because both are applied, in Go" \
+	go test -count=1 -run 'TestBothLinesAreReportedBecauseBothAreApplied' ./internal/store
+check "the nag verb says which line, and its counts are the caller's own" \
+	go test -count=1 -run 'TestTheNagSaysWhichLineWasCrossed|TestTheNagCountsAreTheCallersOwn' .
 check "mem_write defaults one from the message and refuses to restate it" \
 	mem_write_takes_a_raiser_and_settles_it
 check "the raiser is a handle, is never inferred, and is settled at the raise, in Go" \
