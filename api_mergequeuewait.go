@@ -58,6 +58,21 @@ func (s *server) handleMergeQueueWait(w http.ResponseWriter, r *http.Request) {
 		// answers immediately with the queue as it stands and a cursor to wait
 		// on next time - a waiter that blocked for a minute before telling a
 		// caller anything would be one nobody uses twice.
+		//
+		// AND A CURSOR THIS NODE CANNOT PLACE IS THE SAME QUESTION. The digest
+		// is a function of the answer and nothing keeps a history of them, so
+		// "stale" and "never existed" are indistinguishable here - a cursor
+		// from another target, from a restarted caller, or simply mangled.
+		// Both possible readings are wrong in the same direction if guessed:
+		// answering `changed:false` to a cursor from another world tells a
+		// caller nothing moved when everything did, and blocking on it holds a
+		// caller against a state that will never come back.
+		//
+		// So it answers AT ONCE with what is true now and a cursor that is
+		// current, which loses nothing: a caller that uses the cursor it was
+		// given converges on the next call - measured, 0s then a full quiet
+		// window. A caller that ignores it spins, and that is visible in its
+		// own request rate rather than hidden in a wait that never returns.
 		changed = since != "" && digest != since
 		return since == "" || changed, nil
 	})
