@@ -233,6 +233,30 @@ func TestAReadingSurvivesTheFieldsBlob(t *testing.T) {
 		t.Fatal("an unreadable window disowned a row")
 	}
 
+	// AN UNREADABLE WINDOW IS EMPTY, NOT UNIVERSAL, and this is the assertion
+	// that catches the catastrophic version of this fix: (0, MaxInt64) is one
+	// typo from (0, 0) and would disown every row its subject ever wrote.
+	//
+	// It is safe by two independent mechanisms - Repudiated refuses a reading
+	// at or below zero, and the comparison needs at >= from AND at <= to - and
+	// this pins both, so removing either as redundant fails here rather than in
+	// front of somebody who has just been impersonated.
+	empty := &Artifact{
+		ID: "01REPUD4", Type: RepudiationType,
+		Fields: fieldsJSON(t, map[string]any{
+			SubjectField: "u-alice", SpeakerField: SpeakerSubject,
+		}),
+	}
+	gotFrom, gotTo = RepudiationWindowOf(empty)
+	if gotFrom != 0 || gotTo != 0 {
+		t.Fatalf("a missing window read as [%d, %d], want [0, 0]", gotFrom, gotTo)
+	}
+	for _, at := range []int64{1, 100, from, to, 1 << 62} {
+		if Repudiated([]*Artifact{empty}, "u-alice", at) != nil {
+			t.Fatalf("a zero window disowned the reading %d", at)
+		}
+	}
+
 	// And a small number still reads, so the guard is about what cannot be
 	// represented rather than about numbers in general.
 	small := &Artifact{
