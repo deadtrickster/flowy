@@ -79,6 +79,12 @@ const (
 	// an @name convention would make a message about somebody called @deploy
 	// into a message to them, and the box is one line wide.
 	inputSayTo
+	// inputReact asks which emoji goes on the selected message. A box rather
+	// than a fixed menu of keys: the four this fleet uses are offered in the
+	// prompt so the common case is one keystroke, and anything else somebody
+	// types is handed to the node, which is where the rule about what an emoji
+	// is already lives. A menu here would be a second, narrower copy of it.
+	inputReact
 	inputOpenRoom
 	inputMemQuery
 	inputMemTitle
@@ -130,10 +136,18 @@ type Model struct {
 	annSeverity   string
 
 	// rooms
-	gen        int
-	rooms      []string
-	roomSel    int
-	msgs       []*Event
+	gen     int
+	rooms   []string
+	roomSel int
+	msgs    []*Event
+	// What is on each message, keyed by message id.
+	//
+	// MERGED and never replaced by a page, for the reason the messages are
+	// appended rather than replaced: the long poll answers with what landed
+	// since the cursor and says nothing about the acks on everything already
+	// on screen, so replacing would blank the marks on the whole room every
+	// time anybody spoke.
+	reactions  map[string][]Reaction
 	cursor     int64
 	msgSel     int
 	threadOpen bool
@@ -356,6 +370,7 @@ func (m *Model) onData(msg tea.Msg) tea.Cmd {
 			return nil
 		}
 		m.msgs = msg.page.Events
+		m.reactions = msg.page.Reactions
 		m.cursor = msg.page.Cursor
 		m.msgSel = len(m.msgs) - 1
 		m.rememberRooms(m.msgs)
@@ -367,6 +382,19 @@ func (m *Model) onData(msg tea.Msg) tea.Cmd {
 		// just been opened is never a conversation beside an empty panel.
 		return tea.Batch(m.waitCmd(m.gen, m.Room(), m.cursor),
 			m.roomTodosCmd(m.gen, m.Room()))
+
+	case reactedMsg:
+		// A refusal is the node's - an emoji it will not take, a message this
+		// reader cannot react to - and it goes on the status line rather than
+		// being swallowed: the key doing nothing silently is the failure this
+		// whole client keeps producing.
+		if m.note(msg.err) {
+			return nil
+		}
+		if msg.page != nil {
+			m.mergeReactions(msg.page.Reactions)
+		}
+		return nil
 
 	case waitMsg:
 		if msg.gen != m.gen {
@@ -383,6 +411,7 @@ func (m *Model) onData(msg tea.Msg) tea.Cmd {
 		}
 		m.connOK, m.connErr = true, ""
 		atEnd := m.msgSel >= len(m.msgs)-1
+		m.mergeReactions(msg.page.Reactions)
 		if len(msg.page.Events) > 0 {
 			m.msgs = append(m.msgs, msg.page.Events...)
 			m.rememberRooms(msg.page.Events)
@@ -828,6 +857,23 @@ func (m *Model) submitInput() (tea.Model, tea.Cmd) {
 		m.closeInput()
 		return m, m.sayCmd(m.Room(), value, thread, to, nil)
 
+	case inputReact:
+		m.closeInput()
+		selected := m.selectedMessage()
+		if value == "" || selected == nil {
+			return m, nil
+		}
+		emoji, ok := ackNamed(value)
+		if !ok {
+			m.say("no ack called " + value + " - s, a, n, f, or the emoji itself")
+			return m, nil
+		}
+		// Toggle against WHAT IS DRAWN, so pressing the same ack twice takes it
+		// back. The node is told which it is rather than asked to work it out:
+		// a second reader of the same room may have changed it, and the one
+		// that knows what this reader is looking at is this client.
+		return m, m.reactCmd(m.Room(), selected.ID, emoji, !m.reactedByMe(selected.ID, emoji))
+
 	case inputOpenRoom:
 		m.closeInput()
 		if value == "" || strings.Contains(value, "/") {
@@ -1191,7 +1237,11 @@ func (m *Model) helpView() string {
 		"",
 		"  rooms       o open a room by name, n / p next / previous room,",
 		"              t thread pane, T this room's todos, i the message box,",
-		"              a say it to somebody",
+		"              a say it to somebody, R react to the selected message",
+		"  (acks)      R then one of s a n f - seen, agreed, no, this is the",
+		"              problem - or paste an emoji. The same key takes yours",
+		"              back. A row shows each emoji and how many; [brackets]",
+		"              are yours. The names are in the console, not here.",
 		"  (direct)    the first entry in the room list is not a room: it is the",
 		"              private log. i names somebody and sends them a message only",
 		"              the two of you can read. Every private row says *private.",

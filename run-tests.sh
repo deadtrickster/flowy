@@ -11627,6 +11627,15 @@ check "a reaction needs a message you can read, in the room it was said in" \
 	a_reaction_needs_a_message_you_can_read_in_this_room
 check "a reaction is drawn where a person reads, and pressing it takes it back" \
 	a_reaction_is_on_the_screen_and_pressing_it_takes_it_back
+# And in the terminal, where two of the four seats read the room. Asked in the
+# package rather than through a pty because what is being claimed is about
+# WIDTH: the mark goes in front of the body so it survives the clip, and a check
+# that only looked at a wide terminal would pass for a mark nobody on 80 columns
+# can see.
+check "the terminal draws an ack in front of the body, so a narrow pane does not clip it away" \
+	go test -count=1 -run 'TestAnAckIsDrawnInFrontOfTheBodyAndSurvivesAClip|TestThisReadersOwnAckIsDrawnAsTheirs' ./internal/tui
+check "and its ack letters reach their emoji, while a word typed out does not" \
+	go test -count=1 -run 'TestAnAckLetterReachesItsEmojiAndAWordDoesNot|TestAPageOfAcksIsMergedAndNotReplaced' ./internal/tui
 check "a pin puts a message up in the room's strip" a_pin_puts_a_message_up_in_the_room
 check "an unpin takes it down, and the log remembers both" \
 	an_unpin_takes_it_down_and_the_log_remembers_both

@@ -29,6 +29,15 @@ func (m *Model) roomsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.openInput(inputSay, m.Room()+"> ", "")
 	case "a":
 		return m, m.openInput(inputSayTo, "to> ", "")
+	case "R":
+		// An ack that does not cost a message. R rather than r, which is taken
+		// by the reload every view shares; upper case is free and reads as the
+		// same word.
+		if m.selectedMessage() == nil {
+			m.say("nothing selected to react to")
+			return m, nil
+		}
+		return m, m.openInput(inputReact, ackPrompt(), "")
 	case "o":
 		return m, m.openInput(inputOpenRoom, "room> ", "")
 	case "t":
@@ -365,7 +374,7 @@ func (m *Model) streamLines(width, height int) []string {
 		// message in the room: the room still holds it and the same people
 		// still read it, which is why the marker goes in front of the body
 		// rather than the message going somewhere else.
-		body := m.marked(e) + strings.ReplaceAll(e.Body, "\n", " ")
+		body := m.ackMark(e.ID) + m.marked(e) + strings.ReplaceAll(e.Body, "\n", " ")
 		// pad rather than %-16s: a clipped name ends in an ellipsis, which is
 		// one column and three bytes, and a column padded by byte count is a
 		// column that stops lining up the moment a name is too long for it.
@@ -489,4 +498,130 @@ func at(lines []string, i int) string {
 		return ""
 	}
 	return lines[i]
+}
+
+// The acks this fleet uses, and the letters that reach them without a picker.
+//
+// The same four the console offers, and the same reasoning: this is an ACK
+// CHANNEL, so the value is that answering costs nothing, and a grid of two
+// thousand emoji costs a decision. A letter each because a terminal has no
+// emoji keyboard - typing 👀 into a tmux pane is a copy and a paste, which is
+// more work than the message it replaces.
+var acks = []struct {
+	letter, emoji, means string
+}{
+	{"s", "👀", "seen"},
+	{"a", "👍", "agreed"},
+	{"n", "👎", "no"},
+	{"f", "🔥", "this is the problem"},
+}
+
+// ackPrompt is the box's label, built from the table so the offer and what the
+// keys do cannot drift apart.
+func ackPrompt() string {
+	parts := make([]string, 0, len(acks))
+	for _, a := range acks {
+		parts = append(parts, a.letter+" "+a.emoji)
+	}
+	return "react (" + strings.Join(parts, ", ") + ", or an emoji)> "
+}
+
+// ackNamed turns what somebody typed into the emoji to send: one of the
+// letters, or the emoji itself.
+//
+// Anything else is handed straight to the node rather than refused here. The
+// rule about what an emoji IS lives in the store - one grapheme - and a second
+// copy of it in a terminal client would be a second rule to keep in step.
+//
+// What this refuses is only a WORD, and "word" is spelled as two or more ASCII
+// characters rather than as a length: an emoji sequence can be eleven runes
+// (a family of four with skin tones), so a rune ceiling here would refuse real
+// characters exactly as an earlier version of the store's rule did. ASCII is
+// what separates "seen" typed out - somebody reaching for s and missing - from
+// anything anybody could mean by an emoji.
+func ackNamed(typed string) (string, bool) {
+	for _, a := range acks {
+		if typed == a.letter || typed == a.emoji {
+			return a.emoji, true
+		}
+	}
+	if len(typed) > 1 && isASCII(typed) {
+		return "", false
+	}
+	return typed, true
+}
+
+// isASCII reports whether every byte is below 0x80, which is what makes a word
+// a word here.
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
+}
+
+// mergeReactions folds a page's answer into what is on screen.
+//
+// Per message rather than wholesale: see Model.reactions for why replacing is
+// wrong. A message the page says nothing about keeps what it had.
+func (m *Model) mergeReactions(page map[string][]Reaction) {
+	if len(page) == 0 {
+		return
+	}
+	if m.reactions == nil {
+		m.reactions = map[string][]Reaction{}
+	}
+	for id, on := range page {
+		m.reactions[id] = on
+	}
+}
+
+// reactedByMe reports whether this reader already has that emoji on a message,
+// which is what makes the key a toggle.
+func (m *Model) reactedByMe(message, emoji string) bool {
+	for _, r := range m.reactions[message] {
+		if r.Emoji == emoji {
+			return r.Mine
+		}
+	}
+	return false
+}
+
+// ackMark is what the stream draws for a message's reactions: each emoji and
+// how many, this reader's own in a bracket.
+//
+// IN FRONT OF THE BODY rather than after it, which is the whole decision here.
+// A row is one line and is clipped to the pane, so a mark at the end is the
+// first thing to go on a narrow terminal - and present-but-clipped is
+// indistinguishable from absent to the person in front of it. The addressee
+// marker is in front for the same reason and this sits beside it.
+//
+// A count and not the names, and this client does not show the names ANYWHERE.
+// Who acked matters - it is half of why the store keeps actors rather than a
+// number - and it does not fit: at 80 columns the name column is already 17 and
+// the body has what is left, so four handles beside a message would be the
+// message, and the thread pane is a third of the terminal and narrower still.
+// The console names them on hover. Said here rather than left as a gap somebody
+// discovers, because a terminal reader who sees "👀3" and assumes they can find
+// out who is reading a promise this client does not keep.
+func (m *Model) ackMark(id string) string {
+	on := m.reactions[id]
+	if len(on) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(on))
+	for _, r := range on {
+		count := fmt.Sprintf("%s%d", r.Emoji, len(r.Actors))
+		if r.Mine {
+			// Bracketed rather than coloured: this line is already drawn in one
+			// of four colours by who is speaking and whether it is addressed to
+			// you, and a fifth meaning on the same channel would be a colour
+			// nobody can read against the other four.
+			count = "[" + count + "]"
+		}
+		parts = append(parts, count)
+	}
+	return strings.Join(parts, "") + " "
 }

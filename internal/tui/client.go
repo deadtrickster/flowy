@@ -265,6 +265,22 @@ type ChatPage struct {
 	Events []*Event `json:"events"`
 	Since  int64    `json:"since"`
 	Cursor int64    `json:"cursor"`
+	// Reactions is what is on each message of this page, keyed by message id.
+	// Absent from an older node, which is why the model treats a nil map as no
+	// reactions rather than as a page it could not read.
+	Reactions map[string][]Reaction `json:"reactions"`
+}
+
+// Reaction is one emoji on one message and everybody who put it there.
+//
+// Actors rather than a count: in a room of four seats, three acks from seats
+// that do not have to act and one from the seat that does are not the same
+// fact. The stream has room for the number; the names are what the thread pane
+// and the console show.
+type Reaction struct {
+	Emoji  string   `json:"emoji"`
+	Actors []string `json:"actors"`
+	Mine   bool     `json:"mine"`
 }
 
 // Artifact is a memory, a bug, a feature, a note or an announcement.
@@ -613,6 +629,17 @@ func (c *Client) Say(ctx context.Context, room, body string, parents []string,
 	}
 	var out Event
 	return &out, c.post(ctx, "/api/chat/"+url.PathEscape(room)+"/say", req, &out)
+}
+
+// React puts one emoji on one message, or takes this principal's own off.
+//
+// `on` is sent explicitly rather than toggled here for the console's reason:
+// the client knows what it last drew, and a client that flipped that would
+// fight a second reader of the same room who had already changed it.
+func (c *Client) React(ctx context.Context, room, message, emoji string, on bool) (*Event, error) {
+	req := map[string]any{"message": message, "emoji": emoji, "on": on}
+	var out Event
+	return &out, c.post(ctx, "/api/chat/"+url.PathEscape(room)+"/react", req, &out)
 }
 
 // DMs reads the private log from a cursor, exclusive: every direct message this

@@ -223,6 +223,32 @@ func (m *Model) sayCmd(room, body, thread, to string, parents []string) tea.Cmd 
 	}
 }
 
+// reactCmd puts an ack on a message, or takes this reader's own off, and then
+// re-reads the room so the mark on screen is the node's answer.
+//
+// It re-reads rather than patching the one message, for the console's reason:
+// the fold is the node's, and a client that recomputed it would be a second
+// implementation of last-write-wins that nothing checks against the first.
+func (m *Model) reactCmd(room, message, emoji string, on bool) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := callCtx()
+		defer cancel()
+		if _, err := m.client.React(ctx, room, message, emoji, on); err != nil {
+			return reactedMsg{err: err}
+		}
+		// From zero, because the acks on messages ALREADY on screen are what
+		// changed and a read from the cursor would answer with nothing at all.
+		page, err := m.client.Room(ctx, room, 0)
+		return reactedMsg{page: page, err: err}
+	}
+}
+
+// reactedMsg carries what the node says is on the room now.
+type reactedMsg struct {
+	page *ChatPage
+	err  error
+}
+
 // errNoAddressee is what a private message with nobody to send it to comes back
 // as. It is a message and not a refusal from the node, because nothing was sent.
 var errNoAddressee = errors.New(

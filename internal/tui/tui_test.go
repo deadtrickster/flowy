@@ -1827,3 +1827,142 @@ func TestLiveABadTokenIsRefusedClearly(t *testing.T) {
 	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
 	tm.WaitFinished(t, teatest.WithFinalTimeout(15*time.Second))
 }
+
+// ------------------------------------------------------------------ reactions
+
+// TestAnAckIsDrawnInFrontOfTheBodyAndSurvivesAClip is the one claim the stream
+// has to keep at 80 columns.
+//
+// The mark goes BEFORE the body deliberately: a row is one line and is clipped
+// to its pane, so a mark after the body is the first thing to go on a narrow
+// terminal - and present-but-clipped is indistinguishable from absent to the
+// person in front of it. This asserts that at a width where the body IS cut,
+// the ack is still there.
+func TestAnAckIsDrawnInFrontOfTheBodyAndSurvivesAClip(t *testing.T) {
+	m := testModel(t, NewClient("http://127.0.0.1:1", "t"))
+	m.msgs = []*Event{{ID: "m1", Actor: "u-a", Body: strings.Repeat("gorse ", 40)}}
+	m.msgSel = 0
+	m.reactions = map[string][]Reaction{
+		"m1": {{Emoji: "👀", Actors: []string{"u-a", "u-b"}}},
+	}
+
+	wide := strings.Join(m.streamLines(200, 10), "\n")
+	if !strings.Contains(wide, "👀2") {
+		t.Fatalf("a message with two acks draws none of them:\n%s", wide)
+	}
+	// The arm that matters. At 40 columns the body is cut; the ack must not be.
+	narrow := strings.Join(m.streamLines(40, 10), "\n")
+	if !strings.Contains(narrow, "👀2") {
+		t.Errorf("at 40 columns the ack is clipped away and the body is what survived:\n%s", narrow)
+	}
+	// And the control: a message nobody acked draws nothing, so this is not a
+	// mark that appears on every row.
+	m.reactions = nil
+	plain := strings.Join(m.streamLines(200, 10), "\n")
+	if strings.Contains(plain, "👀") {
+		t.Errorf("a message with no acks draws one:\n%s", plain)
+	}
+}
+
+// TestThisReadersOwnAckIsDrawnAsTheirs, because the count alone cannot say
+// whether the person reading has already answered - which is the one thing they
+// most need to know before answering again.
+func TestThisReadersOwnAckIsDrawnAsTheirs(t *testing.T) {
+	m := testModel(t, NewClient("http://127.0.0.1:1", "t"))
+	m.msgs = []*Event{{ID: "m1", Actor: "u-a", Body: "the drainer is green"}}
+	m.msgSel = 0
+
+	m.reactions = map[string][]Reaction{"m1": {{Emoji: "👀", Actors: []string{"u-b"}}}}
+	theirs := strings.Join(m.streamLines(120, 10), "\n")
+	if strings.Contains(theirs, "[👀") {
+		t.Errorf("somebody else's ack is drawn as this reader's:\n%s", theirs)
+	}
+	if m.reactedByMe("m1", "👀") {
+		t.Error("the toggle thinks this reader acked a message they did not")
+	}
+
+	m.reactions = map[string][]Reaction{
+		"m1": {{Emoji: "👀", Actors: []string{"u-b", "u-a"}, Mine: true}},
+	}
+	mine := strings.Join(m.streamLines(120, 10), "\n")
+	if !strings.Contains(mine, "[👀2]") {
+		t.Errorf("this reader's own ack is drawn like anybody else's:\n%s", mine)
+	}
+	if !m.reactedByMe("m1", "👀") {
+		t.Error("the toggle does not know this reader acked, so R would ack again")
+	}
+}
+
+// TestAPageOfAcksIsMergedAndNotReplaced.
+//
+// The long poll answers with what landed since the cursor and says nothing
+// about the acks on everything already on screen. Replacing would blank the
+// marks on the whole room every time anybody spoke - which is a room that
+// forgets what it was told, once a minute, for the length of a conversation.
+func TestAPageOfAcksIsMergedAndNotReplaced(t *testing.T) {
+	m := testModel(t, NewClient("http://127.0.0.1:1", "t"))
+	m.reactions = map[string][]Reaction{"old": {{Emoji: "👀", Actors: []string{"u-a"}}}}
+	m.mergeReactions(map[string][]Reaction{"new": {{Emoji: "👍", Actors: []string{"u-b"}}}})
+	if len(m.reactions["old"]) != 1 {
+		t.Errorf("a page about another message took the acks off this one: %+v", m.reactions)
+	}
+	if len(m.reactions["new"]) != 1 {
+		t.Errorf("the page's own acks did not land: %+v", m.reactions)
+	}
+	// A message the page DOES speak about is replaced rather than appended to,
+	// because the node's answer is the whole truth about that message and two
+	// folds of the same message would double every count.
+	m.mergeReactions(map[string][]Reaction{"old": {{Emoji: "👀", Actors: []string{"u-a", "u-b"}}}})
+	if len(m.reactions["old"]) != 1 || len(m.reactions["old"][0].Actors) != 2 {
+		t.Errorf("a fresh answer about a message did not replace the old one: %+v", m.reactions["old"])
+	}
+	// And an empty page changes nothing, which is what a quiet poll sends.
+	m.mergeReactions(nil)
+	if len(m.reactions) != 2 {
+		t.Errorf("a poll with no reactions cleared the room: %+v", m.reactions)
+	}
+}
+
+// TestAnAckLetterReachesItsEmojiAndAWordDoesNot.
+//
+// The letters exist because a terminal has no emoji keyboard. What is NOT
+// refused here is anything short that is not a letter: the rule about what an
+// emoji is lives in the store, and a second copy of it in a terminal client is
+// a second rule to keep in step.
+func TestAnAckLetterReachesItsEmojiAndAWordDoesNot(t *testing.T) {
+	for _, want := range acks {
+		if got, ok := ackNamed(want.letter); !ok || got != want.emoji {
+			t.Errorf("%q reached %q (%v), want %q", want.letter, got, ok, want.emoji)
+		}
+		// The emoji itself is taken too, for somebody who pasted one.
+		if got, ok := ackNamed(want.emoji); !ok || got != want.emoji {
+			t.Errorf("%q reached %q (%v), want itself", want.emoji, got, want.emoji)
+		}
+	}
+	for _, word := range []string{"seen", "agreed", "no", "ok"} {
+		if _, ok := ackNamed(word); ok {
+			t.Errorf("%q typed out was sent as an emoji; it is somebody reaching for a letter and missing", word)
+		}
+	}
+	// And the boundary is ASCII rather than length, because an emoji sequence
+	// is longer than any of those words: a family of four with skin tones is
+	// eleven runes, and a length rule here would refuse it exactly as the
+	// store's first rule did.
+	family := "👨🏽‍👩🏽‍👧🏽‍👦🏽"
+	if got, ok := ackNamed(family); !ok || got != family {
+		t.Errorf("an eleven-rune emoji was refused by the client: %q %v", got, ok)
+	}
+	// Handed on rather than judged here: the node decides, and it is the only
+	// place that should.
+	if got, ok := ackNamed("🎉"); !ok || got != "🎉" {
+		t.Errorf("an emoji with no letter was refused by the client: %q %v", got, ok)
+	}
+	// And the prompt offers exactly what the table holds, so the two cannot
+	// drift into a key that does nothing.
+	prompt := ackPrompt()
+	for _, a := range acks {
+		if !strings.Contains(prompt, a.letter+" "+a.emoji) {
+			t.Errorf("the prompt %q does not offer %s for %s", prompt, a.letter, a.emoji)
+		}
+	}
+}
