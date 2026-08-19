@@ -187,11 +187,42 @@ way to answer a message does not answer it`);
     die(`focusing the reply control on ${prevId} left the focus on
 ${JSON.stringify(focusedPrev)} - it is not focusable`);
   }
-  await page.keyboard.press("Tab");
-  const focusedLast = await page.evaluate(() => document.activeElement?.getAttribute("data-reply"));
+  // TAB UNTIL IT ARRIVES, bounded, rather than exactly once.
+  //
+  // It was one press, on the assumption that a message carries exactly one
+  // control. That stopped being true when reactions landed - a row now draws
+  // `react` and a `row` chip beside `reply` - and the check failed for a
+  // feature being added rather than for the property being broken, which is a
+  // check measuring the count of controls when it means to measure the ORDER
+  // of them.
+  //
+  // Bounded and not a loop-until-found: an unbounded walk would eventually
+  // reach the next message's reply through the browser chrome and the page
+  // furniture and call that a pass. Six is every control a row can draw plus
+  // room, and each stop is asserted to be INSIDE the transcript, so a stray tab
+  // stop between the two messages still fails.
+  const stops = [];
+  let focusedLast = null;
+  for (let press = 0; press < 6 && focusedLast !== lastId; press += 1) {
+    await page.keyboard.press("Tab");
+    const at = await page.evaluate(() => {
+      const el = document.activeElement;
+      return {
+        reply: el?.getAttribute("data-reply") ?? null,
+        message: el?.closest("[data-message]")?.getAttribute("data-message") ?? null,
+      };
+    });
+    stops.push(at);
+    if (at.message === null) {
+      die(`tabbing forward from the reply control on ${prevId} left the transcript after
+${press + 1} press(es) without reaching ${lastId}: a control between two messages is not on
+either of them, so a keyboard reader walking the room falls out of it`);
+    }
+    focusedLast = at.reply;
+  }
   if (focusedLast !== lastId) {
     die(`tabbing forward from the reply control on ${prevId} reached
-${JSON.stringify(focusedLast)} rather than ${lastId}: the controls are not in the tab order, so
+${JSON.stringify(stops)} rather than ${lastId}: the controls are not in the tab order, so
 a keyboard reader cannot arrive at them however they are drawn`);
   }
   await page.keyboard.press("Enter");
