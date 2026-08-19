@@ -66,7 +66,7 @@ func TestASkipIsRecordedAndAgesOut(t *testing.T) {
 	// IT DOES NOT TOUCH THE LOCK, in either direction. This is the verb for a
 	// caller that never got as far as taking the target, and requiring the lock
 	// to report not having it would be the joke version of the door.
-	lock, err := db.MergeLockOf(ctx, target)
+	lock, err := db.MergeLockOf(ctx, project, target)
 	if err != nil {
 		t.Fatalf("read the lock: %v", err)
 	}

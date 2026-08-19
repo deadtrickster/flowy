@@ -28,10 +28,22 @@ func TestTheLockDoorsAreGuardedAndDeclared(t *testing.T) {
 			t.Errorf("%q is guarded and not in routeParams", pattern)
 		}
 	}
-	// And the read declares the one parameter it actually reads. A route that
-	// takes `target` and does not say so answers 400 for its own caller.
-	if got := routeParams["GET /api/lock"]; len(got) != 1 || got[0] != "target" {
-		t.Errorf(`GET /api/lock declares %v, want ["target"]`, got)
+	// And the read declares the parameters it actually reads. A route that takes
+	// one and does not say so answers 400 for its own caller.
+	//
+	// `item` joined `target` when the lock became per-project: the project a
+	// lock belongs to is the ITEM's, because the gate door keys it that way and
+	// two paths keying one lock differently is the defect that change closed.
+	// So this door has to be told which item to ask about.
+	want := map[string]bool{"target": true, "item": true}
+	got := routeParams["GET /api/lock"]
+	if len(got) != len(want) {
+		t.Errorf(`GET /api/lock declares %v, want target and item`, got)
+	}
+	for _, name := range got {
+		if !want[name] {
+			t.Errorf("GET /api/lock declares %q, which it does not read", name)
+		}
 	}
 }
 

@@ -328,7 +328,7 @@ func (d *DB) setMergeGate(
 	// from whoever is actually measuring.
 	declaring := strings.TrimSpace(tip) == "" && !g.Red
 	if ref = strings.TrimSpace(ref); declaring {
-		if _, err := d.TakeMergeLock(ctx, p, TargetOf(art), art.ID); err != nil {
+		if _, err := d.TakeMergeLock(ctx, p, projectOfArtifact(art), TargetOf(art), art.ID); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -424,12 +424,12 @@ func (d *DB) setMergeGate(
 		//
 		// So: renew, and refuse when there was nothing to renew. Refusing here
 		// cannot steal anything - it is the opposite verb.
-		held, err := d.RenewMergeLock(ctx, p, TargetOf(art), art.ID)
+		held, err := d.RenewMergeLock(ctx, p, projectOfArtifact(art), TargetOf(art), art.ID)
 		if err != nil {
 			return nil, nil, err
 		}
 		if !held {
-			lock, lockErr := d.MergeLockOf(ctx, TargetOf(art))
+			lock, lockErr := d.MergeLockOf(ctx, projectOfArtifact(art), TargetOf(art))
 			if lockErr != nil {
 				return nil, nil, lockErr
 			}
@@ -522,7 +522,7 @@ func (d *DB) setMergeGate(
 	// nothing, and the next declarer would take a lock that looks like it was
 	// never held.
 	if g.Red {
-		if _, err := d.ReleaseMergeLock(ctx, p, TargetOf(art), art.ID); err != nil {
+		if _, err := d.ReleaseMergeLock(ctx, p, projectOfArtifact(art), TargetOf(art), art.ID); err != nil {
 			return nil, nil, err
 		}
 	}

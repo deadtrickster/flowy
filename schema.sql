@@ -1187,6 +1187,20 @@ CREATE TABLE IF NOT EXISTS merge_locks (
 -- re-gate of the same work renews and a sibling on different work loses.
 ALTER TABLE merge_locks ADD COLUMN IF NOT EXISTS item text NOT NULL DEFAULT '';
 
+-- A TARGET IS A NAME HERE TOO, and this table had the same defect as
+-- merge_lands one row above it: `target text PRIMARY KEY`, one row per NAME,
+-- and every repository's target is called master.
+--
+-- The two fail differently and that is why they were fixed apart. The landed
+-- tip is SILENT - project B's landing becomes the base project A's rows are
+-- judged against, and A's green verdicts read as stale gates. The lock is LOUD:
+-- two projects contend for one row, the loser is refused, and the refusal names
+-- a holder and an item from a repository it has never heard of. Loud is better
+-- and is still wrong.
+ALTER TABLE merge_locks ADD COLUMN IF NOT EXISTS project text NOT NULL DEFAULT '';
+ALTER TABLE merge_locks DROP CONSTRAINT IF EXISTS merge_locks_pkey;
+ALTER TABLE merge_locks ADD PRIMARY KEY (project, target);
+
 -- The landed-tip chain. Every land through POST /api/merge/{id}/land states
 -- the sha its target BECAME, and this row is where the queue reads "where is
 -- master" from when nobody stated a tip. Before it existed the fallback was

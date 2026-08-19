@@ -37,7 +37,7 @@ func TestAHolderGivesTheTargetBackWithoutLanding(t *testing.T) {
 
 	// The state this verb exists to end: held, and nothing but a land or the
 	// expiry could give it back.
-	held, err := db.MergeLockOf(ctx, target)
+	held, err := db.MergeLockOf(ctx, project, target)
 	if err != nil || held == nil {
 		t.Fatalf("the declaration did not take the target: %+v %v", held, err)
 	}
@@ -51,7 +51,7 @@ func TestAHolderGivesTheTargetBackWithoutLanding(t *testing.T) {
 	}
 
 	// The release happened.
-	after, err := db.MergeLockOf(ctx, target)
+	after, err := db.MergeLockOf(ctx, project, target)
 	if err != nil {
 		t.Fatalf("read the lock after the abandon: %v", err)
 	}
@@ -104,7 +104,7 @@ func TestAHolderGivesTheTargetBackWithoutLanding(t *testing.T) {
 
 	// The target is free for the next declarer, which is the whole point.
 	rival := &Principal{UserID: "u-next", Project: project}
-	if _, err := db.TakeMergeLock(ctx, rival, target, "some-other-row"); err != nil {
+	if _, err := db.TakeMergeLock(ctx, rival, project, target, "some-other-row"); err != nil {
 		t.Fatalf("the next declarer could not take the freed target: %v", err)
 	}
 }
@@ -132,7 +132,7 @@ func TestAnAbandonWithNoReasonIsRefused(t *testing.T) {
 	}
 	// And it refused before touching the lock, so a caller who forgot the
 	// reason still holds their target rather than half-releasing it.
-	still, err := db.MergeLockOf(ctx, target)
+	still, err := db.MergeLockOf(ctx, project, target)
 	if err != nil || still == nil {
 		t.Fatalf("a refused abandon released the lock anyway: %+v %v", still, err)
 	}
@@ -163,7 +163,7 @@ func TestOnlyTheHolderAbandons(t *testing.T) {
 	if refused.Held == nil {
 		t.Fatal("the refusal does not carry the lock, so it cannot name who holds it")
 	}
-	still, err := db.MergeLockOf(ctx, target)
+	still, err := db.MergeLockOf(ctx, project, target)
 	if err != nil || still == nil || still.Holder == "u-rival" {
 		t.Fatalf("a stranger took or dropped the lock: %+v %v", still, err)
 	}

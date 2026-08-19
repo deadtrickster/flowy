@@ -89,7 +89,7 @@ func (d *DB) AbandonMerge(ctx context.Context, p *Principal, id, reason string) 
 	}
 
 	target := TargetOf(art)
-	lock, err := d.MergeLockOf(ctx, target)
+	lock, err := d.MergeLockOf(ctx, projectOfArtifact(art), target)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -176,7 +176,7 @@ func (d *DB) AbandonMerge(ctx context.Context, p *Principal, id, reason string) 
 	if err := d.SetArtifactFields(ctx, art, column, entry); err != nil {
 		return nil, nil, err
 	}
-	if _, err := d.ReleaseMergeLock(ctx, p, target, art.ID); err != nil {
+	if _, err := d.ReleaseMergeLock(ctx, p, projectOfArtifact(art), target, art.ID); err != nil {
 		return nil, nil, err
 	}
 	span.SetArtifact(art.ID)

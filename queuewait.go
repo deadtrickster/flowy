@@ -216,7 +216,16 @@ func waitOnQueue(
 		return mergeQueueAnswer{}, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := client.Do(req)
+	// THROUGH A RESTART, which is the one thing this verb hits more than any
+	// other: it is a long blocking call by design, so a deploy inside its window
+	// is not unlucky, it is expected. I learned that from my own first real use -
+	// waiting on a row, the node deployed, and the verb exited 2 on "connection
+	// refused" while the row it was watching landed fine.
+	//
+	// 2e2e13e made six verbs wait a refused dial out; this one wrote its own
+	// request and so did not get it. A refused connection means nothing was sent,
+	// which is what makes retrying it safe.
+	resp, err := doThroughARestart(ctx, client, req, nil)
 	if err != nil {
 		return mergeQueueAnswer{}, err
 	}

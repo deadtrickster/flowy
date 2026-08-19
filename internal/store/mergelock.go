@@ -45,6 +45,10 @@ var lockInterval = fmt.Sprintf("%d seconds", int(MergeLockBelievedFor.Seconds())
 // name a holder answers to now is the name worth saying, exactly as the roster
 // resolves speakers from their rows and not from what somebody cached once.
 type MergeLock struct {
+	// Project is half the key. Every repository's target is called master, so
+	// the name alone made two projects contend for one row - see the comment on
+	// merge_locks in schema.sql.
+	Project    string `json:"project,omitempty"`
 	Target     string `json:"target"`
 	Holder     string `json:"holder"`
 	HolderName string `json:"holder_name,omitempty"`
@@ -153,7 +157,7 @@ func lockTarget(target string) string {
 // loser is HANDED the holder rather than a bare refusal - "held by X until T"
 // is actionable in a way "not admissible" is not, which is the whole point of
 // distinguishing this from the stale-evidence refusal.
-func (d *DB) TakeMergeLock(ctx context.Context, p *Principal, target, item string) (*MergeLock, error) {
+func (d *DB) TakeMergeLock(ctx context.Context, p *Principal, project, target, item string) (*MergeLock, error) {
 	actor, _ := voteActor(p)
 	if actor == "" {
 		return nil, fmt.Errorf("store: this token resolves to nobody, so it cannot hold a landing lock")
@@ -171,15 +175,15 @@ func (d *DB) TakeMergeLock(ctx context.Context, p *Principal, target, item strin
 	// by construction rather than unlikely by deployment.
 	var got MergeLock
 	err := d.sql.QueryRowContext(ctx,
-		`INSERT INTO merge_locks (target, holder, item, taken_at, until)
-		 VALUES ($1, $2, $4, now(), now() + $3::interval)
-		 ON CONFLICT (target) DO UPDATE
+		`INSERT INTO merge_locks (project, target, holder, item, taken_at, until)
+		 VALUES ($5, $1, $2, $4, now(), now() + $3::interval)
+		 ON CONFLICT (project, target) DO UPDATE
 		    SET holder = $2, item = $4, taken_at = now(), until = now() + $3::interval
 		  WHERE (merge_locks.holder = $2 AND merge_locks.item = $4)
 		     OR merge_locks.until <= now()
-		 RETURNING target, holder, item, taken_at, until`,
-		target, actor, lockInterval, strings.TrimSpace(item)).
-		Scan(&got.Target, &got.Holder, &got.Item, &got.TakenAt, &got.Until)
+		 RETURNING project, target, holder, item, taken_at, until`,
+		target, actor, lockInterval, strings.TrimSpace(item), strings.TrimSpace(project)).
+		Scan(&got.Project, &got.Target, &got.Holder, &got.Item, &got.TakenAt, &got.Until)
 	if err == nil {
 		return &got, nil
 	}
@@ -187,7 +191,7 @@ func (d *DB) TakeMergeLock(ctx context.Context, p *Principal, target, item strin
 		return nil, fmt.Errorf("store: take merge lock on %s: %w", target, err)
 	}
 	// No row came back: the conflict lost. Say to whom.
-	held, herr := d.MergeLockOf(ctx, target)
+	held, herr := d.MergeLockOf(ctx, project, target)
 	if herr != nil {
 		return nil, fmt.Errorf("store: take merge lock on %s: %w", target, herr)
 	}
@@ -199,7 +203,7 @@ func (d *DB) TakeMergeLock(ctx context.Context, p *Principal, target, item strin
 // it, never by the caller's.
 const renewMergeLockSQL = `UPDATE merge_locks
     SET until = now() + $3::interval
-  WHERE target = $1 AND holder = $2 AND (item = $4 OR item = '')`
+  WHERE project = $5 AND target = $1 AND holder = $2 AND (item = $4 OR item = '')`
 
 // RenewMergeLock pushes the holder's window out without taking anything.
 //
@@ -218,13 +222,13 @@ const renewMergeLockSQL = `UPDATE merge_locks
 // expired, or somebody else's: renewing something you do not hold is taking it,
 // and taking is what declare is for. false means the caller was not the holder,
 // which the caller should treat as "your window is gone" rather than retry.
-func (d *DB) RenewMergeLock(ctx context.Context, p *Principal, target, item string) (bool, error) {
+func (d *DB) RenewMergeLock(ctx context.Context, p *Principal, project, target, item string) (bool, error) {
 	actor, _ := voteActor(p)
 	if actor == "" {
 		return false, fmt.Errorf("store: this token resolves to nobody, so it cannot renew a landing lock")
 	}
 	res, err := d.sql.ExecContext(ctx, renewMergeLockSQL,
-		lockTarget(target), actor, lockInterval, strings.TrimSpace(item))
+		lockTarget(target), actor, lockInterval, strings.TrimSpace(item), strings.TrimSpace(project))
 	if err != nil {
 		return false, fmt.Errorf("store: renew merge lock on %s: %w", lockTarget(target), err)
 	}
@@ -237,7 +241,7 @@ func (d *DB) RenewMergeLock(ctx context.Context, p *Principal, target, item stri
 
 // ReleaseMergeLock gives the target back. The holder only: nobody releases
 // somebody else's reservation, exactly as nobody deletes somebody else's reader.
-func (d *DB) ReleaseMergeLock(ctx context.Context, p *Principal, target, item string) (bool, error) {
+func (d *DB) ReleaseMergeLock(ctx context.Context, p *Principal, project, target, item string) (bool, error) {
 	actor, _ := voteActor(p)
 	if actor == "" {
 		return false, fmt.Errorf("store: this token resolves to nobody, so it cannot release a landing lock")
@@ -249,8 +253,8 @@ func (d *DB) ReleaseMergeLock(ctx context.Context, p *Principal, target, item st
 		// nothing anybody could do - which is the freeze the abandon door was
 		// built to end, reintroduced by its own fix.
 		`DELETE FROM merge_locks
-		  WHERE target = $1 AND holder = $2 AND (item = $3 OR item = '')`,
-		lockTarget(target), actor, strings.TrimSpace(item))
+		  WHERE project = $4 AND target = $1 AND holder = $2 AND (item = $3 OR item = '')`,
+		lockTarget(target), actor, strings.TrimSpace(item), strings.TrimSpace(project))
 	if err != nil {
 		return false, fmt.Errorf("store: release merge lock on %s: %w", lockTarget(target), err)
 	}
@@ -266,29 +270,41 @@ func (d *DB) ReleaseMergeLock(ctx context.Context, p *Principal, target, item st
 // under, a user row is its own handle, and neither is a display string the lock
 // stores - it is a join, so a renamed holder is named by their current name in
 // every refusal that mentions them.
-const mergeLockSQL = `SELECT l.target, l.holder,
+const mergeLockSQL = `SELECT l.project, l.target, l.holder,
         coalesce(u.handle, '') AS holder_name, l.item,
         l.taken_at, l.until
    FROM merge_locks l
    LEFT JOIN agents g ON g.id = l.holder
    LEFT JOIN users u ON u.id = coalesce(g.user_id, l.holder)
-  WHERE l.target = $1`
+  WHERE l.project = $2 AND l.target = $1`
 
 // MergeLockOf reads the target's lock as it stands. A row past its until is
 // still returned - the caller decides with Live() - because "held by X until
 // T, which has passed" is a different sentence from "not held", and the first
 // one is what a lander arriving late needs to see about their own reservation.
-func (d *DB) MergeLockOf(ctx context.Context, target string) (*MergeLock, error) {
+func (d *DB) MergeLockOf(ctx context.Context, project, target string) (*MergeLock, error) {
 	var got MergeLock
-	err := d.sql.QueryRowContext(ctx, mergeLockSQL, lockTarget(target)).
-		Scan(&got.Target, &got.Holder, &got.HolderName, &got.Item, &got.TakenAt, &got.Until)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
+	// THE EXACT PROJECT FIRST, THEN THE LEGACY ROW. Locks written before the
+	// column existed carry '' and nothing records which project they were for.
+	// Unlike merge_lands this fallback expires on its own - a lock is believed
+	// for fifteen minutes - so it matters only across a deploy that lands while
+	// somebody holds the target, which is exactly when losing it would be worst.
+	for _, key := range []string{strings.TrimSpace(project), ""} {
+		err := d.sql.QueryRowContext(ctx, mergeLockSQL, lockTarget(target), key).
+			Scan(&got.Project, &got.Target, &got.Holder, &got.HolderName, &got.Item,
+				&got.TakenAt, &got.Until)
+		if err == nil {
+			return &got, nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("store: read merge lock on %s: %w", lockTarget(target), err)
+		}
+		if key == "" {
+			break
+		}
 	}
-	if err != nil {
-		return nil, fmt.Errorf("store: read merge lock on %s: %w", lockTarget(target), err)
-	}
-	return &got, nil
+	// Neither key had a row: nothing holds this target, which is not an error.
+	return nil, nil
 }
 
 // LandedTip is the newest link of a target's landed-tip chain.

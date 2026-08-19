@@ -202,7 +202,9 @@ func (s *server) readMergeQueue(r *http.Request) (mergeQueueAnswer, error) {
 	// The landing lock on this target, read once for every row. A row held by
 	// another declarer's lock is a WAIT and not a verdict about its evidence,
 	// and the difference is spelled out below where the two meet.
-	lock, err := s.db.MergeLockOf(r.Context(), target)
+	// The same project the tip was read for - a page that judged rows against
+	// one project's tip and one project's lock would be answering about two.
+	lock, err := s.db.MergeLockOf(r.Context(), q.Get("project"), target)
 	if err != nil {
 		return mergeQueueAnswer{}, err
 	}

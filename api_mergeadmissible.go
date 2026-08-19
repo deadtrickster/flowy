@@ -109,7 +109,7 @@ func (s *server) handleMergeAdmissible(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	lock, err := s.db.MergeLockOf(r.Context(), target)
+	lock, err := s.db.MergeLockOf(r.Context(), rowProject(art), target)
 	if err != nil {
 		serverError(w, r, err)
 		return

@@ -96,7 +96,7 @@ func takeBy(t *testing.T, ctx context.Context, db *DB, actor, target string) (*M
 	t.Helper()
 	// Each principal here declares its own work, which is the ordinary case:
 	// one seat, one row. The same-seat-different-row case has its own test.
-	return db.TakeMergeLock(ctx, &Principal{UserID: actor, Project: "ml"}, target, "item-"+actor)
+	return db.TakeMergeLock(ctx, &Principal{UserID: actor, Project: "ml"}, "ml", target, "item-"+actor)
 }
 
 func TestASecondDeclarerLosesAndIsToldWhoHolds(t *testing.T) {
@@ -123,14 +123,14 @@ func TestASecondDeclarerLosesAndIsToldWhoHolds(t *testing.T) {
 	}
 	// Non-holders cannot release what they do not hold: the release reports
 	// nothing gone, and the lock reads back still held by the first.
-	gone, err := db.ReleaseMergeLock(ctx, &Principal{UserID: "u-second"}, target, "item-u-second")
+	gone, err := db.ReleaseMergeLock(ctx, &Principal{UserID: "u-second"}, "ml", target, "item-u-second")
 	if err != nil {
 		t.Fatalf("release: %v", err)
 	}
 	if gone {
 		t.Fatal("a non-holder released somebody else's lock")
 	}
-	still, err := db.MergeLockOf(ctx, target)
+	still, err := db.MergeLockOf(ctx, "ml", target)
 	if err != nil || still == nil || still.Holder != first.Holder {
 		t.Fatalf("the lock did not survive the non-holder's release: %+v %v", still, err)
 	}
@@ -244,7 +244,7 @@ func TestLandRefusesAndThenLands(t *testing.T) {
 	if err != nil || chain == nil || chain.Tip != "abc1234def5678" {
 		t.Fatalf("the chain did not advance: %+v %v", chain, err)
 	}
-	lock, err := db.MergeLockOf(ctx, target)
+	lock, err := db.MergeLockOf(ctx, "ml", target)
 	if err != nil {
 		t.Fatalf("read the lock after land: %v", err)
 	}

@@ -55,7 +55,15 @@ func (s *server) handleTakeLock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	lock, err := s.db.TakeMergeLock(r.Context(), p, req.Target, req.Item)
+	// WHOSE TARGET, and it has to be the same answer the gate door gives or the
+	// two paths key one lock two ways and neither sees the other's.
+	//
+	// The gate takes the lock with the ROW's project (store/mergegate.go), and
+	// item here IS a row id for every real caller - so this reads it. A caller
+	// locking something that is not a readable row falls back to its own acting
+	// project, which is the only other honest answer: the alternative is
+	// refusing a door that has never required the item to exist.
+	lock, err := s.db.TakeMergeLock(r.Context(), p, lockProject(r, s, p, req.Item), req.Target, req.Item)
 	var held *store.ErrTargetHeld
 	if errors.As(err, &held) {
 		// 409, like the merge door's: the request was well formed and may be
@@ -83,7 +91,7 @@ func (s *server) handleReleaseLock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	released, err := s.db.ReleaseMergeLock(r.Context(), p, req.Target, req.Item)
+	released, err := s.db.ReleaseMergeLock(r.Context(), p, lockProject(r, s, p, req.Item), req.Target, req.Item)
 	if err != nil {
 		serverError(w, r, err)
 		return
@@ -104,9 +112,10 @@ func (s *server) handleReleaseLock(w http.ResponseWriter, r *http.Request) {
 // A read rather than a probe: taking a lock to find out whether it is free is
 // how two callers each take it in turn and neither does any work.
 func (s *server) handleReadLock(w http.ResponseWriter, r *http.Request) {
+	p := principalOf(r)
 	target := strings.TrimSpace(r.URL.Query().Get("target"))
 
-	lock, err := s.db.MergeLockOf(r.Context(), target)
+	lock, err := s.db.MergeLockOf(r.Context(), lockProject(r, s, p, r.URL.Query().Get("item")), target)
 	if err != nil {
 		serverError(w, r, err)
 		return
@@ -128,4 +137,21 @@ func decodeStrict(r *http.Request, into any) error {
 	dec := json.NewDecoder(http.MaxBytesReader(nil, r.Body, 4<<10))
 	dec.DisallowUnknownFields()
 	return dec.Decode(into)
+}
+
+// lockProject is whose target a lock is on: the item's project when the item is
+// a row this caller can read, and the caller's own acting project otherwise.
+//
+// It exists so the two paths that take this lock cannot disagree. The gate door
+// keys on the row's project because the row is the fact; if this door keyed on
+// the principal's, one seat could hold a target under two keys and neither hold
+// would see the other - which is the defect this whole change is closing, one
+// door over.
+func lockProject(r *http.Request, s *server, p *store.Principal, item string) string {
+	if id := strings.TrimSpace(item); id != "" {
+		if art, err := s.db.ReadArtifact(r.Context(), p, id, false); err == nil && art != nil {
+			return rowProject(art)
+		}
+	}
+	return strings.TrimSpace(p.Project)
 }

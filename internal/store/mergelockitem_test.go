@@ -20,7 +20,7 @@ func TestOneSeatTwoRowsCannotRenewEachOthersLock(t *testing.T) {
 	target := ownTarget(t)
 	seat := &Principal{UserID: "u-seat", Project: project}
 
-	first, err := db.TakeMergeLock(ctx, seat, target, "row-one")
+	first, err := db.TakeMergeLock(ctx, seat, project, target, "row-one")
 	if err != nil {
 		t.Fatalf("the first process takes the target: %v", err)
 	}
@@ -29,7 +29,7 @@ func TestOneSeatTwoRowsCannotRenewEachOthersLock(t *testing.T) {
 	}
 
 	// SAME PRINCIPAL, different work. This is the whole finding.
-	_, err = db.TakeMergeLock(ctx, seat, target, "row-two")
+	_, err = db.TakeMergeLock(ctx, seat, project, target, "row-two")
 	var held *ErrTargetHeld
 	if !errors.As(err, &held) {
 		t.Fatalf("a sibling of the same seat took the target for other work: %v", err)
@@ -40,21 +40,21 @@ func TestOneSeatTwoRowsCannotRenewEachOthersLock(t *testing.T) {
 
 	// Same principal, SAME work: a re-gate after a rebase is the same work
 	// measured again and must renew, or every rebase would deadlock on itself.
-	if _, err := db.TakeMergeLock(ctx, seat, target, "row-one"); err != nil {
+	if _, err := db.TakeMergeLock(ctx, seat, project, target, "row-one"); err != nil {
 		t.Fatalf("the holder's own re-declare of the same row was refused: %v", err)
 	}
 
 	// And a sibling cannot release what it did not take, which is the exact
 	// shape of the incident: release ran, matched on holder, deleted a lock
 	// that belonged to another process of the same seat.
-	gone, err := db.ReleaseMergeLock(ctx, seat, target, "row-two")
+	gone, err := db.ReleaseMergeLock(ctx, seat, project, target, "row-two")
 	if err != nil {
 		t.Fatalf("release: %v", err)
 	}
 	if gone {
 		t.Fatal("a sibling released a lock taken for different work")
 	}
-	still, err := db.MergeLockOf(ctx, target)
+	still, err := db.MergeLockOf(ctx, project, target)
 	if err != nil || still == nil || still.Item != "row-one" {
 		t.Fatalf("the lock did not survive the sibling's release: %+v %v", still, err)
 	}
@@ -116,7 +116,7 @@ func TestALegacyLockWithNoItemIsStillReleasableByItsHolder(t *testing.T) {
 	target := ownTarget(t)
 	seat := &Principal{UserID: "u-seat", Project: project}
 
-	if _, err := db.TakeMergeLock(ctx, seat, target, "row-one"); err != nil {
+	if _, err := db.TakeMergeLock(ctx, seat, project, target, "row-one"); err != nil {
 		t.Fatalf("take: %v", err)
 	}
 	// Age it back to the pre-column shape directly, which is what a lock held
@@ -126,7 +126,7 @@ func TestALegacyLockWithNoItemIsStillReleasableByItsHolder(t *testing.T) {
 		t.Fatalf("blank the item: %v", err)
 	}
 
-	gone, err := db.ReleaseMergeLock(ctx, seat, target, "row-one")
+	gone, err := db.ReleaseMergeLock(ctx, seat, project, target, "row-one")
 	if err != nil {
 		t.Fatalf("release: %v", err)
 	}

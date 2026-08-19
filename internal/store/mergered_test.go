@@ -151,7 +151,7 @@ func TestARedIsRecordedByTheHolderAndRefusedFromAnybodyElse(t *testing.T) {
 	// it; a red is the end of the run, and a target still held after a failure
 	// blocks every other row until the lease expires - one failed pass stalling
 	// a whole queue is the outage shape rather than the defect shape.
-	lock, err := db.MergeLockOf(ctx, target)
+	lock, err := db.MergeLockOf(ctx, project, target)
 	if err != nil {
 		t.Fatalf("read the lock: %v", err)
 	}

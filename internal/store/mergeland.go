@@ -146,7 +146,7 @@ func (d *DB) LandMerge(
 	}
 
 	target := TargetOf(art)
-	lock, err := d.MergeLockOf(ctx, target)
+	lock, err := d.MergeLockOf(ctx, projectOfArtifact(art), target)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -240,7 +240,7 @@ func (d *DB) LandMerge(
 	// a release that preceded the write would open the target while the landed
 	// tip was still unsaid, and the next declarer would measure a tip nobody
 	// had announced.
-	if _, err := d.ReleaseMergeLock(ctx, p, target, art.ID); err != nil {
+	if _, err := d.ReleaseMergeLock(ctx, p, projectOfArtifact(art), target, art.ID); err != nil {
 		// Not fatal to the land - the tip is recorded and the row is closed.
 		// The lock expires on its own, and saying so beats failing a land that
 		// already happened.
