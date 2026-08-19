@@ -56,6 +56,19 @@ fi
 	printf '%s is missing or not executable\n' "$guard" >&2
 	exit 2
 }
+# NOT OVER SOMEBODY ELSE'S HOOK. `pre-commit` is the most contested name in
+# .git/hooks - husky, lefthook, pre-commit.com and half the linters all want it -
+# and a script that overwrites one silently is a script that deletes work whose
+# author is not here to notice. @orchestrator's arm, and it is the same rule this
+# fleet learned three ways today: read the target before writing to it.
+if [ -e "$hook" ] && ! grep -q 'pre-commit.sh' "$hook" 2>/dev/null; then
+	printf 'there is already a pre-commit hook at %s and it is not this one:\n\n' "$hook" >&2
+	sed 's/^/    /' "$hook" >&2
+	printf '\nnot overwritten. Move it aside, or call this from it - the shim is two lines:\n' >&2
+	printf '    exec %s "$@"\n' "$guard" >&2
+	exit 2
+fi
+
 mkdir -p "$hooks"
 
 # A SHIM AND NOT A COPY. A copied hook is a snapshot that stops tracking the
