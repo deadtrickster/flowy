@@ -89,6 +89,12 @@ func (s *server) handleMergeLand(w http.ResponseWriter, r *http.Request) {
 // log. Inventing them here would be the announcement claiming more than the
 // store knows, which is the failure the whole authorship effort exists about,
 // one floor down.
+// landingRoom is where a landing is said when its row names no room. It is the
+// room this fleet reads, and it is a constant rather than a setting because a
+// node that could be configured to announce into a room nobody reads would have
+// a way to be quiet that looks like a way to be loud.
+const landingRoom = "general"
+
 func (s *server) landingHeardIn(r *http.Request, id, sha string) ([]*store.Event, error) {
 	art, err := s.db.ReadArtifact(r.Context(), principalOf(r), id, false)
 	if err != nil {
@@ -100,9 +106,26 @@ func (s *server) landingHeardIn(r *http.Request, id, sha string) ([]*store.Event
 	if err != nil {
 		return nil, nil
 	}
+	// A LANDING IS FLEET NEWS, NOT CONVERSATION NEWS, which is where this
+	// differs from the handover door and why it needs a fallback the other one
+	// must not have.
+	//
+	// A handover belongs to the conversation that raised the work: no room, no
+	// audience, nothing to say. A landing on master is read by every seat here
+	// whatever conversation produced it - and MEASURED on 2026-08-19, four of
+	// the six merge rows landed that day carried no room at all, because the
+	// queue is filed through the artifacts door and nothing there asks for one.
+	// So the first cut of this announced about a third of landings and was
+	// silent for the rest, which is worse than uniformly silent: it reads as
+	// "nothing landed" rather than as "this tool does not cover that".
+	//
+	// NOT categoryRoom's fallback, which the store's own merge.land entry uses.
+	// That is CategoryRoom, "category" - a room nobody watches - so routing
+	// there would be silence dressed as speech, and the two of those are the
+	// pair this fleet has spent two days telling apart.
 	room, _ := fields[store.RoomField].(string)
 	if strings.TrimSpace(room) == "" {
-		return nil, nil
+		room = landingRoom
 	}
 	p := principalOf(r)
 	actor, kind := chatActor(p)
