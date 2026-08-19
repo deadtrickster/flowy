@@ -107,3 +107,50 @@ func TestTheNagCursorMovesOnWhatASeatActsOn(t *testing.T) {
 		t.Error("the cursor moved on this node's own staleness constant")
 	}
 }
+
+// A READER GOING QUIET WAKES A WAITER, and its silence growing does not.
+//
+// Both halves matter and they pull opposite ways. A seat going quiet is
+// somebody else's death and the only reader who can act on it is one still
+// alive, so it must wake them. But the silence grows every second, so a cursor
+// carrying the DURATION would wake every waiter on every poll forever - the
+// always-speaking feed nobody reads, which this door was built to avoid.
+func TestTheNagCursorWakesOnAQuietReaderButNotOnItsSilenceGrowing(t *testing.T) {
+	base := nagView{Mine: 1, Open: 3}
+	quiet := base
+	quiet.Quiet = []store.QuietReader{{Reader: "orchestrator", Silent: 700}}
+	longer := base
+	longer.Quiet = []store.QuietReader{{Reader: "orchestrator", Silent: 4000}}
+	second := base
+	second.Quiet = []store.QuietReader{
+		{Reader: "claude-host", Silent: 640},
+		{Reader: "orchestrator", Silent: 700},
+	}
+
+	was, err := nagCursor(base)
+	if err != nil {
+		t.Fatalf("cursor: %v", err)
+	}
+	went, err := nagCursor(quiet)
+	if err != nil {
+		t.Fatalf("cursor: %v", err)
+	}
+	if went == was {
+		t.Fatal("a reader went quiet and no waiter would wake")
+	}
+	grew, err := nagCursor(longer)
+	if err != nil {
+		t.Fatalf("cursor: %v", err)
+	}
+	if grew != went {
+		t.Fatal("the same reader being quiet for longer moved the cursor - every waiter " +
+			"wakes on every poll, which is the feed nobody reads")
+	}
+	also, err := nagCursor(second)
+	if err != nil {
+		t.Fatalf("cursor: %v", err)
+	}
+	if also == went {
+		t.Fatal("a SECOND reader went quiet and no waiter would wake")
+	}
+}

@@ -60,6 +60,27 @@ type nagView struct {
 	// Workload is the distribution probe, whole, including its thresholds so
 	// that nobody re-derives them from the shares.
 	Workload store.Workload `json:"workload"`
+	// Quiet is the readers this node has stopped hearing from: attached once,
+	// and not polling now.
+	//
+	// A SEAT CANNOT REPORT ITS OWN DEATH, which is why this is here rather than
+	// in each session. Twenty-five times in one session I asked /api/presence
+	// whether MY OWN reader was alive, on a timer, and was told yes twenty-five
+	// times - and the one answer that would have mattered is the one a dead
+	// seat cannot go and fetch. Asking from inside is a check that cannot fire
+	// in the case it exists for.
+	//
+	// So the node says it, on the surface the other seats already read. It
+	// cannot wake the seat that died - nothing can, from here - but it can stop
+	// that death being invisible to everybody who is still listening, without
+	// anybody polling for it.
+	//
+	// A COUNT AND THE NAMES, because "one reader is quiet" starts an
+	// investigation and "orchestrator is quiet" ends it. Absent rather than
+	// zero, like every other finding on this node: a reader that never attached
+	// is not quiet, it is simply not here, and saying nothing about it is the
+	// honest answer.
+	Quiet []store.QuietReader `json:"quiet_readers,omitempty"`
 	// Changed and Cursor are the wait door's answer only - see api_nagwait.go.
 	// A plain GET /api/nag carries neither, and a caller that asked one question
 	// should not have to skip a field about a wait it never started.
@@ -95,6 +116,13 @@ func (s *server) readNag(ctx context.Context, p *store.Principal, all bool) (nag
 	}
 
 	view := nagView{StaleAfter: int(nagStaleAfter.Seconds())}
+	// Asked of the node rather than computed here, so the rule for "quiet" has
+	// one home - the same reason the workload moved out of four bash scripts.
+	quiet, err := s.db.QuietReaders(ctx, time.Now())
+	if err != nil {
+		return nagView{}, err
+	}
+	view.Quiet = quiet
 	me := s.db.SeatHandle(ctx, p)
 	now := time.Now()
 	for _, a := range rows {

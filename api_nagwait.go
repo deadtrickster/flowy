@@ -40,6 +40,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"sort"
 )
 
 func (s *server) handleNagWait(w http.ResponseWriter, r *http.Request) {
@@ -113,6 +114,18 @@ func nagCursor(view nagView) (string, error) {
 		"open": view.Open, "stale": view.Stale,
 		"verdict": view.Workload.Verdict,
 	}
+	// WHICH READERS ARE QUIET, by name, and never for how long. A seat going
+	// quiet is exactly the kind of change a waiter should be woken for - it is
+	// somebody else's death, and the only reader who can act on it is one who
+	// is still alive. But the silence GROWS every second, so putting the
+	// duration in the cursor would wake every waiter on every poll forever,
+	// which is the always-speaking feed nobody reads.
+	names := make([]string, 0, len(view.Quiet))
+	for _, q := range view.Quiet {
+		names = append(names, q.Reader)
+	}
+	sort.Strings(names)
+	shape["quiet"] = names
 	raw, err := json.Marshal(shape)
 	if err != nil {
 		return "", err

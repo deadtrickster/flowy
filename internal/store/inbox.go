@@ -323,6 +323,76 @@ type PresenceRow struct {
 	LastActed *time.Time `json:"last_acted_at,omitempty"`
 }
 
+// QuietAfter is how long a reader may go without polling before this node says
+// so.
+//
+// The loop every seat runs polls on a 240 second deadline and re-attaches at
+// once, so a reader that has said nothing for ten minutes has missed at least
+// two whole cycles. That is not a slow poll; it is a reader that is not there.
+// Long enough that a restart, a deploy window or a rate-limited moment passes
+// unremarked, short enough that a dead seat is named while the work it was
+// holding still matters.
+const QuietAfter = 10 * time.Minute
+
+// QuietReader is a reader this node has stopped hearing from.
+type QuietReader struct {
+	Reader string `json:"reader"`
+	// Silent is how long since its last poll, in seconds, rounded. The duration
+	// rather than the timestamp because the question is always "how long", and
+	// a reader doing that subtraction gets the clock skew for free.
+	Silent int `json:"silent_seconds"`
+	// Kind is what the waiter said it was. It rides along because "forked" is
+	// the one value that means something different - a reader that holds the
+	// cursor and wakes nobody - and a seat deciding whether to take over the
+	// name wants it in the same answer.
+	Kind string `json:"waiter_kind,omitempty"`
+}
+
+// QuietReaders are the readers that attached and have stopped polling.
+//
+// ATTACHED IS THE PRECONDITION, and it is what keeps this from naming everybody
+// who ever ran an inbox. A reader that never attached is not quiet - it is not
+// here - and a reader that detached cleanly said so. What is left is the case
+// worth a sentence: something holds the name and is not listening.
+//
+// It answers about EVERY reader, not the caller's own, because the whole reason
+// this is on the node is that the seat which died cannot ask. The counterpart
+// of that is that anybody may see it, and this leaks nothing a presence read
+// does not already show to the same caller.
+func (d *DB) QuietReaders(ctx context.Context, now time.Time) ([]QuietReader, error) {
+	rows, err := d.Presence(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return quietFrom(rows, now), nil
+}
+
+// quietFrom is the reading, split out so it can be checked without a database.
+// The whole content of this feature is which rows it names, and a rule that
+// needed a live node to exercise is one nobody re-checks when they change it.
+func quietFrom(rows []*PresenceRow, now time.Time) []QuietReader {
+	var quiet []QuietReader
+	for _, r := range rows {
+		if r == nil || !r.Attached || r.LastPoll == nil {
+			continue
+		}
+		// STRICTLY PAST, so the boundary belongs to the side that says nothing.
+		// A reader exactly at the deadline is mid-cycle, and a name given too
+		// early is worse than one given late: it trains every reader of this
+		// field to ignore it, which is the failure a nag dies of.
+		silent := now.Sub(*r.LastPoll)
+		if silent <= QuietAfter {
+			continue
+		}
+		quiet = append(quiet, QuietReader{
+			Reader: r.Reader,
+			Silent: int(silent.Round(time.Second).Seconds()),
+			Kind:   r.Kind,
+		})
+	}
+	return quiet
+}
+
 // PollStart marks a waiter attaching: the poll is the one signal the server
 // has that does not depend on the room being busy. kind is what the poller says
 // it is, and the last poll decides - a listener that stops saying is not still
