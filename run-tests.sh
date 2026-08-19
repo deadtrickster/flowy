@@ -17917,11 +17917,23 @@ shell_scripts_formatted() {
 # to put "the lock is held by somebody else" on the table on demand.
 
 # guard_stub starts a fake node answering one lock and one identity, and prints
-# its pid. Killed by its caller.
+# its pid. Killed by its caller - AND BY ITSELF, if the caller never gets there.
+#
+# A LEFTOVER FIXTURE IS A NODE NOBODY CAN ATTRIBUTE. One of these was found on
+# 2026-08-19 still answering 127.0.0.1:9101 after THIRTY HOURS: a suite that was
+# SIGKILLed on 2026-08-18 never reached its kill line, and the stub answers 200
+# to anything, so a caller pointed at that port by accident would have read a
+# plausible lock. It cost a seat a message to the room asking whose it was, and
+# the answer took a /proc lookup.
+#
+# The caller's kill stays - it is the ordinary path and it is immediate. This is
+# the one that survives the suite being killed rather than exiting, which is the
+# only way this happens: STUB_TTL seconds after it starts, the stub stops
+# serving and exits, whatever else is going on.
 guard_stub() {
 	local port="$1" lock="$2"
-	STUB_LOCK="$lock" python3 -c '
-import json, os, sys
+	STUB_LOCK="$lock" STUB_TTL="${STUB_TTL:-300}" python3 -c '
+import json, os, sys, threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 lock = json.loads(os.environ["STUB_LOCK"])
 class H(BaseHTTPRequestHandler):
@@ -17935,7 +17947,12 @@ class H(BaseHTTPRequestHandler):
         self.wfile.write(raw)
     def log_message(self, *a):
         pass
-HTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
+server = HTTPServer(("127.0.0.1", int(sys.argv[1])), H)
+# os._exit rather than shutdown(): a stub whose suite has already been killed
+# has nobody to be tidy for, and an orphan that waits politely for a connection
+# to finish is the orphan this exists to prevent.
+threading.Timer(float(os.environ["STUB_TTL"]), os._exit, [0]).start()
+server.serve_forever()
 ' "$port" >/dev/null 2>&1 &
 	# THE CHILD'S STDOUT IS CLOSED ON PURPOSE. This is called as
 	# pid="$(guard_stub ...)", and a background child that inherits the
