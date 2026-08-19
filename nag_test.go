@@ -80,3 +80,38 @@ func TestTheNagCountsAreTheCallersOwn(t *testing.T) {
 		t.Errorf("with no shares the nag prints %q", out)
 	}
 }
+
+// TestTheNagNamesQuietReadersWithoutTheirDurations.
+//
+// A seat with a share and no reader is holding work nothing can reach, so the
+// names belong on this answer. The SECONDS do not: nagCursor drops them
+// deliberately so that a reader which is still quiet does not look like news on
+// every poll, and printing them here would put a number on the screen that
+// changes every tick and says nothing new - the same wake-every-tick the cursor
+// exists to prevent, one surface out.
+func TestTheNagNamesQuietReadersWithoutTheirDurations(t *testing.T) {
+	out := nagLines(nagView{
+		Open: 2,
+		Quiet: []store.QuietReader{
+			{Reader: "flowy-glm", Silent: 4211},
+			{Reader: "claude-host", Silent: 90, Kind: "forked"},
+		},
+	})
+	for _, want := range []string{"quiet", "flowy-glm", "claude-host", "(forked)"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the nag prints %q, which does not say %q", out, want)
+		}
+	}
+	// The durations are the arm that matters.
+	for _, no := range []string{"4211", "90 ", "seconds", "ago"} {
+		if strings.Contains(out, no) {
+			t.Errorf("the nag prints %q, which carries the duration %q and should not", out, no)
+		}
+	}
+	// And a fleet where everybody is listening says nothing at all rather than
+	// an empty heading - absent is the honest answer, as it is on the door.
+	quiet := nagLines(nagView{Open: 2})
+	if strings.Contains(quiet, "quiet") {
+		t.Errorf("with nobody quiet the nag still prints %q", quiet)
+	}
+}
