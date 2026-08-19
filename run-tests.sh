@@ -17327,6 +17327,19 @@ a_person_sets_their_own_handle_and_password() {
 		"renamed-$$" "$HANDLE_B" "a-password-the-panel-set"
 }
 
+# A ROOM CAN BE MADE AND LEFT FROM THE CONSOLE, which it could not be until
+# today. POST /api/rooms, /leave and /invite have existed since rooms became
+# objects; the console called only GET /api/rooms, so the operator could read
+# rooms and neither create nor leave one - and read that as a missing feature.
+#
+# The assertions are on the NODE, not the screen: navigating proves the click
+# ran, only the roster proves a room exists. That is the discriminating half -
+# a button that renders and changes nothing is exactly the defect this closes.
+a_room_can_be_made_and_left_from_the_console() {
+	cd "$ROOT/web" || return 1
+	node scripts/room-controls-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A"
+}
+
 # The one door a person makes a row through, driven as the journey rather than
 # the handler. The operator's ask was "make all entity types user creatable",
 # and this console could make two of the nine things this store holds - a
@@ -17356,6 +17369,8 @@ check "the author of a row can fix its words, and the node holds the new ones" \
 	a_person_fixes_the_words_they_wrote
 check "a person sets their own handle and password from the console" \
 	a_person_sets_their_own_handle_and_password
+check "a room can be made and left from the console" \
+	a_room_can_be_made_and_left_from_the_console
 check "a shape inside a diagram is addressable, and a dead reference says so" \
 	a_shape_inside_a_diagram_is_addressable
 check "the diagram editor is dark, like the console around it" \

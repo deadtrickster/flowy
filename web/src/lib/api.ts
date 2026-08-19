@@ -1383,6 +1383,46 @@ export const api = {
    */
   rooms: () => request<{ rooms: Room[] }>("/api/rooms"),
 
+  /**
+   * Make a room, and be its owner.
+   *
+   * POST /api/rooms has existed since rooms became objects and nothing in this
+   * console called it - so the operator could read rooms and not make one, and
+   * read that as a missing feature rather than a missing button. Measured
+   * 2026-08-19: of the four room doors, this console called exactly one.
+   *
+   * A taken name answers 409 rather than 400, because "that name is in use" and
+   * "that is not a name" send a person to different places - see api_rooms.go.
+   */
+  createRoom: (name: string, topic?: string) =>
+    request<{ room: Room }>("/api/rooms", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, ...(topic ? { topic } : {}) }),
+    }),
+
+  /**
+   * Leave a room, and only yourself.
+   *
+   * `left` is false when you were not a member, and that is not an error: the
+   * caller wanted to not be in the room and they are not in the room. The
+   * console says which happened rather than reporting both as success.
+   */
+  leaveRoom: (room: string) =>
+    request<{ left: boolean; room: string }>(`/api/rooms/${encodeURIComponent(room)}/leave`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    }),
+
+  /** Add somebody to a room you own. The node refuses with the reason. */
+  inviteToRoom: (room: string, principal: string) =>
+    request<{ invited: string; room: string }>(`/api/rooms/${encodeURIComponent(room)}/invite`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ principal }),
+    }),
+
   whoami: () => request<Whoami>("/api/whoami"),
 
   /**

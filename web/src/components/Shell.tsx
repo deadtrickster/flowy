@@ -16,10 +16,11 @@ import {
   UserRound,
 } from "lucide-react";
 import type { ReactNode } from "react";
-import { NavLink } from "react-router-dom";
+import { NavLink, useNavigate } from "react-router-dom";
 
 import { FreshBanner } from "@/components/FreshBanner";
 import { TokenBar } from "@/components/TokenBar";
+import { api } from "@/lib/api";
 import { useRooms, useUnread } from "@/lib/unread";
 import { cn } from "@/lib/utils";
 
@@ -57,6 +58,9 @@ export function Shell({ children }: { children: ReactNode }) {
   const { counts } = useUnread();
   // The node's rooms, not this file's idea of them. See useRooms.
   const rooms = useRooms();
+  // For the create button below: a new room is somewhere to go, not just a row
+  // in the list, so it navigates rather than leaving you where you were.
+  const navigate = useNavigate();
   return (
     <div className="flex h-full">
       <aside className="flex w-60 shrink-0 flex-col gap-4 border-border border-r bg-card/40 p-3">
@@ -159,10 +163,54 @@ export function Shell({ children }: { children: ReactNode }) {
           the token bar below stay where they are - a sidebar that scrolls as
           one takes the way out with it.
         */}
-        <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto">
-          <div className="px-2 pb-1 font-medium text-muted-foreground text-xs uppercase tracking-wide">
+        {/*
+          THE HEADER IS OUTSIDE THE SCROLLING LIST, and the create button with it.
+          Inside, it scrolled away with the rooms - and the browser check found it
+          the hard way: the button rendered, was visible and enabled, and a click
+          landed on the aside because the point was clipped by the scroll
+          container. A control you cannot reach is the same as no control, which
+          is the whole defect this row is closing.
+        */}
+        <div className="flex shrink-0 items-center justify-between px-2 pb-1">
+          <span className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
             rooms
-          </div>
+          </span>
+          {/*
+              CREATING A ROOM IS A BUTTON NOW. POST /api/rooms has existed since
+              rooms became objects and nothing in this console called it, so the
+              operator could read rooms and not make one - which reads as a
+              missing feature and is a missing reader. Of the four room doors
+              this console called exactly one.
+
+              window.prompt rather than a dialog, deliberately: the name is the
+              whole input, a taken one is answered by the node, and a modal for
+              one field is the kind of thing that does not get built and so the
+              button does not either.
+            */}
+          <button
+            type="button"
+            aria-label="create a room"
+            title="create a room"
+            data-room-create=""
+            className="rounded px-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+            onClick={async () => {
+              const name = window.prompt("room name")?.trim();
+              if (!name) return;
+              try {
+                const made = await api.createRoom(name);
+                navigate(`/chat/${made.room.name}`);
+              } catch (err) {
+                // The node's own sentence, which already tells "that name is
+                // taken" from "that is not a name" - see api_rooms.go. A
+                // generic "could not create" would throw that away.
+                window.alert(err instanceof Error ? err.message : "the node refused");
+              }
+            }}
+          >
+            +
+          </button>
+        </div>
+        <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto">
           {rooms.map((room) => (
             <NavLink key={room} to={`/chat/${room}`} className={navClass}>
               <Hash className="h-4 w-4" />

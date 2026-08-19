@@ -13,6 +13,7 @@ import { ThreadDag } from "@/components/ThreadDag";
 import { ThreadList } from "@/components/ThreadList";
 import { RoomWorklog } from "@/components/WorklogList";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   type ActivityItem,
   type Artifact,
@@ -114,6 +115,11 @@ export function ChatRoom() {
   // always named it as the parent here; now the reply says so on its face.
   const { selected, citation, cite, select, citeSpan, clear } = useCitation();
   const [live, setLive] = useState(false);
+  // The leave control's state. Two values rather than one: whether the request is
+  // in flight, and what the node said - because "left" and "you were not a member"
+  // are different answers and a spinner that just stops says neither.
+  const [leaving, setLeaving] = useState(false);
+  const [left, setLeft] = useState("");
   // WHAT THIS ROOM DECIDED. Held here rather than inside the strip because the
   // strip draws messages this view already has - the pin carries an id and
   // nothing else, so the text comes from the transcript and not from a second
@@ -659,6 +665,46 @@ export function ChatRoom() {
           <span className="text-muted-foreground text-xs">
             {events.length} message{events.length === 1 ? "" : "s"} on screen
           </span>
+          {/*
+            LEAVING IS A BUTTON NOW. POST /api/rooms/{room}/leave has existed
+            since rooms became objects and nothing called it - the operator
+            could read a room and not get out of it, and read that as a missing
+            feature rather than a missing button. Measured 2026-08-19: of the
+            four room doors this console called exactly one.
+
+            It asks first. Leaving is not destructive - the room and its
+            messages stay, and an owner can invite you back - but it is not
+            undoable BY YOU, which is the property a confirm is for.
+
+            `left: false` is not an error and is not silence either: it means
+            you were not a member, which is a different sentence from "done".
+          */}
+          <Button
+            variant="ghost"
+            size="sm"
+            className="ml-auto"
+            data-room-leave=""
+            disabled={leaving}
+            onClick={async () => {
+              if (!window.confirm(`Leave #${room}? An owner can invite you back.`)) return;
+              setLeaving(true);
+              try {
+                const answer = await api.leaveRoom(room);
+                setLeft(answer.left ? `left #${room}` : `you were not a member of #${room}`);
+              } catch (err) {
+                setLeft(err instanceof Error ? err.message : "the node refused");
+              } finally {
+                setLeaving(false);
+              }
+            }}
+          >
+            {leaving ? "leaving..." : "leave"}
+          </Button>
+          {left ? (
+            <span className="text-muted-foreground text-xs" data-room-left="">
+              {left}
+            </span>
+          ) : null}
           <RoomSearch />
         </header>
 
