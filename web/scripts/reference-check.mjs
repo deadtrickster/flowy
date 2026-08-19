@@ -68,10 +68,57 @@ try {
       `${id} did not paint - the page says nothing about its type, so nothing below was measured`,
     );
   }
+  // THE BREADCRUMB EXISTS BEFORE THE ROW DOES, and waiting for it is not
+  // waiting for the row. It draws the PATH segment on the first render - by
+  // design, so the page says where it is going before it gets there - so
+  // reading it the moment it appears reads the link back to itself and fails a
+  // page that is correct half a second later. This check did exactly that.
+  //
+  // Waited on the VALUE rather than on an element, because no element appears
+  // only when the row lands - and a fixed sleep is a guess about a machine.
+  await page
+    .waitForFunction(
+      (claimed) => {
+        const el = document.querySelector("[data-artifact-type]");
+        return !!el && el.getAttribute("data-artifact-type") !== claimed;
+      },
+      "artifact",
+      { timeout: 20_000 },
+    )
+    .catch(() => {});
   const said = await crumb.first().getAttribute("data-artifact-type");
   if (said === "artifact") {
+    // WHICH OF THE TWO, asked of the node rather than guessed from the screen.
+    //
+    // The breadcrumb falls back to the path segment ONLY when the row is null,
+    // so this failure has two causes that want opposite fixes: the page read
+    // the row and drew the wrong thing, or the row never arrived at all. Told
+    // apart they are "the console lies" and "this principal can no longer read
+    // this row" - and the second is a permission regression wearing a
+    // rendering failure's clothes.
+    //
+    // It cost somebody an evening: a reach-filter change failed exactly this
+    // arm, and the message sent them looking at the breadcrumb.
+    const answered = await page.evaluate(
+      async ([base, id, token]) => {
+        try {
+          const res = await fetch(`${base}/api/artifact/${encodeURIComponent(id)}`, {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          return res.status;
+        } catch (err) {
+          return String(err);
+        }
+      },
+      [base, id, token],
+    );
+    if (answered !== 200) {
+      die(
+        `the row never arrived: GET /api/artifact/${id} answered ${answered} for this token, so the breadcrumb fell back to the path. This is a READ that stopped working, not a rendering fault - look at what may read the row, not at the page`,
+      );
+    }
     die(
-      `the page repeats the path's "artifact", which is not a type any row has - the breadcrumb is echoing the link instead of reading the row`,
+      `the page repeats the path's "artifact", which is not a type any row has - the node serves the row (200) and the breadcrumb is echoing the link instead of reading it`,
     );
   }
   if (said !== type) {
