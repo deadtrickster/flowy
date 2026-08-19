@@ -151,6 +151,24 @@ find_token() {
 		printf '%s\n' "$FLOWY_LOCK_TOKEN"
 		return 0
 	fi
+	# THE SEAT RUNNING THIS, BEFORE THE OPERATOR'S OWN TOKEN.
+	#
+	# Every deploy until now took the lock with ~/.config/flowy/token, which is
+	# the OPERATOR's. So the lock said "held by operator" whoever ran it, and
+	# the one question a held lock exists to answer - who is doing this, can I
+	# wait or is it mine - had the same answer for every agent on the box.
+	# Measured on 2026-08-18: two of us read "held by operator" and neither
+	# could tell whether that was a human at the console or a drainer three
+	# minutes into a build.
+	#
+	# $FLOWY_AGENT names the seat, and its token lives beside the others. A
+	# human running this by hand has no FLOWY_AGENT and falls through to the
+	# operator's token exactly as before.
+	if [ -n "${FLOWY_AGENT:-}" ] &&
+		[ -r "$HOME/.config/flowy/agents/$FLOWY_AGENT" ]; then
+		cat "$HOME/.config/flowy/agents/$FLOWY_AGENT"
+		return 0
+	fi
 	for candidate in "$HOME/.config/flowy/token-flowy" "$HOME/.config/flowy/token"; do
 		if [ -r "$candidate" ]; then
 			cat "$candidate"
@@ -160,8 +178,31 @@ find_token() {
 	return 1
 }
 
-lock_token=$(find_token) || die "no token in ~/.config/flowy/token-flowy or ~/.config/flowy/token -
-deploy takes the landing lock, and it cannot ask for one without a credential"
+# lock_holder_name is which credential this deploy will hold the lock under, for
+# saying out loud rather than for deciding anything.
+#
+# IT IS SAID BEFORE THE LOCK IS TAKEN, because the failure it addresses is an
+# identity nobody notices until somebody else reads the lock and cannot act on
+# it. A deploy that announces "as claude-host" is one where a wrong seat is
+# visible at the moment it happens rather than fifteen minutes later in a
+# refusal somebody else is reading.
+lock_holder_name() {
+	if [ -n "${FLOWY_LOCK_TOKEN:-}" ]; then
+		# shellcheck disable=SC2016  # naming the variable, not reading it
+		printf 'the token in $FLOWY_LOCK_TOKEN\n'
+	elif [ -n "${FLOWY_AGENT:-}" ] && [ -r "$HOME/.config/flowy/agents/$FLOWY_AGENT" ]; then
+		printf '%s\n' "$FLOWY_AGENT"
+	elif [ -r "$HOME/.config/flowy/token-flowy" ]; then
+		printf 'the operator (token-flowy)\n'
+	else
+		printf 'the operator (token)\n'
+	fi
+}
+
+lock_token=$(find_token) || die "no token in ~/.config/flowy/agents/\$FLOWY_AGENT,
+~/.config/flowy/token-flowy or ~/.config/flowy/token - deploy takes a lock, and it
+cannot ask for one without a credential"
+say "    holding the deploy lock as $(lock_holder_name)"
 
 # A DIFFERENT RESOURCE, SO A DIFFERENT TARGET.
 #
