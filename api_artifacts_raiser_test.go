@@ -7,92 +7,51 @@ import (
 	"github.com/deadtrickster/flowy/internal/store"
 )
 
-// A QUEUE ROW REMEMBERS WHO RAISED IT, and a row that is not queue work does
-// not grow a field it has no use for.
+// A RAISER IS WHO THE WORK CAME FROM, AND NOBODY IS AN ANSWER.
 //
-// raiser was stamped by POST /api/chat/{room}/todo and by the MCP raise tool
-// and by nothing else, so every row written through POST /api/artifacts - which
-// is what the console's /new page and every script here uses - carried no
-// reporter. Measured on the live node the day this was found: the six most
-// recent todos, raiser on zero of them.
-func TestADirectlyCreatedQueueRowRemembersWhoRaisedIt(t *testing.T) {
-	for _, tc := range []struct {
-		what string
-		art  *store.Artifact
-		who  string
-		want string
-	}{
-		{
-			what: "a todo with nobody named",
-			art:  &store.Artifact{Kind: "todo"},
-			who:  "fish",
-			want: "fish",
-		},
-		{
-			what: "a todo that already names its raiser",
-			art:  &store.Artifact{Kind: "todo", Fields: json.RawMessage(`{"raiser":"somebody-else"}`)},
-			who:  "fish",
-			want: "somebody-else",
-		},
-	} {
-		got, err := raiserDefault(tc.art, tc.who)
-		if err != nil {
-			t.Fatalf("%s: %v", tc.what, err)
-		}
-		if got != nil {
-			tc.art.Fields = got
-		}
-		if raised := store.RaiserOf(tc.art); raised != tc.want {
-			t.Errorf("%s: raiser is %q, want %q", tc.what, raised, tc.want)
-		}
-	}
-}
-
-// NOT A NOTE, NOT A REPORT, NOT A DIAGRAM. raiser answers "where did this work
-// come from", and a row that is not work has no answer to give.
-func TestANonQueueRowIsNotGivenARaiser(t *testing.T) {
-	art := &store.Artifact{Kind: "note"}
-	got, err := raiserDefault(art, "fish")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != nil {
-		t.Errorf("a note was given fields: %s", got)
-	}
-}
-
-// AND NOTHING IS INVENTED FOR A CALLER WITH NO NAME. store.SeatHandle answers
-// "" for a user with no handle, and the row then says nobody rather than an id
-// - which is the whole reason this does not use chatActor.
-func TestACallerWithNoHandleStampsNothing(t *testing.T) {
+// This file used to assert the opposite: that POST /api/artifacts stamps the
+// CALLER as raiser on any queue row carrying none. That was written to answer
+// "todos dont show reporter", and it contradicted a rule the room door already
+// had (todos.go:141) - the raiser is taken from the message a todo was raised
+// out of, and left empty otherwise, because owner_user already records the seat
+// that typed it and a second copy of that answer is a fact invented rather than
+// recorded.
+//
+// MEASURED, 2026-08-19: one seat filed two rows in one hour through two doors.
+// `todo file --room general` left the raiser empty; `merge open` stamped
+// claude-host. Same field, two meanings - "nobody asked for this" and "I typed
+// this" - and no reader could tell which it was holding.
+//
+// So what is pinned here now is the ABSENCE. There is no raiserDefault to test;
+// the assertion is that the create door leaves the field alone, which is a
+// property of what this package does NOT contain.
+func TestTheCreateDoorInventsNoRaiser(t *testing.T) {
+	// The row as a caller sends it, with no raiser: nothing in this package may
+	// put one on it. If a future change adds a default, this fails to compile
+	// or this assertion stops holding - both are the alarm.
 	art := &store.Artifact{Kind: "todo"}
-	got, err := raiserDefault(art, "")
-	if err != nil {
-		t.Fatal(err)
+	if got := store.RaiserOf(art); got != "" {
+		t.Fatalf("a freshly built work row carries raiser %q before any door has touched it", got)
 	}
-	if got != nil {
-		t.Errorf("a nameless caller was written into the row: %s", got)
+
+	// And an EXPLICIT raiser is still the caller's to set - the rule is about
+	// what the node invents, not about what a caller may say. This is the arm
+	// that keeps the removal from being read as "raiser is gone".
+	said := &store.Artifact{Kind: "todo", Fields: fieldsFor(t, map[string]any{
+		store.RaiserField: "fish",
+	})}
+	if got := store.RaiserOf(said); got != "fish" {
+		t.Fatalf("an explicitly named raiser read back as %q", got)
 	}
 }
 
-// The fields a create carried are KEPT. Adding one key by replacing the object
-// would drop a room, a category or an assignee - a worse bug than the one this
-// fixes, and silent.
-func TestStampingARaiserKeepsTheFieldsTheCallerSent(t *testing.T) {
-	art := &store.Artifact{Kind: "todo", Fields: json.RawMessage(`{"room":"general","category":"fix"}`)}
-	got, err := raiserDefault(art, "fish")
+// fieldsFor is a row's fields as the column holds them, so a test says what it
+// means rather than hand-writing JSON it can be wrong about.
+func fieldsFor(t *testing.T, f map[string]any) json.RawMessage {
+	t.Helper()
+	raw, err := json.Marshal(f)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("marshal fields: %v", err)
 	}
-	art.Fields = got
-
-	var fields map[string]any
-	if err := json.Unmarshal(art.Fields, &fields); err != nil {
-		t.Fatal(err)
-	}
-	for key, want := range map[string]string{"room": "general", "category": "fix", "raiser": "fish"} {
-		if fields[key] != want {
-			t.Errorf("%s is %v, want %q", key, fields[key], want)
-		}
-	}
+	return raw
 }

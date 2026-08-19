@@ -292,17 +292,24 @@ func (s *server) handleCreateArtifact(w http.ResponseWriter, r *http.Request) {
 	// owner_user would be this node inventing a fact - those rows still answer
 	// "" and the console should show that rather than a name.
 	//
-	// Create only, and only for a queue kind. An update leaves it alone,
-	// because where work came from is settled when it is raised and does not
-	// happen again.
-	if !update {
-		if raised, err := raiserDefault(art, s.db.SeatHandle(r.Context(), p)); err != nil {
-			writeJSON(w, http.StatusBadRequest, errorBody(err.Error()))
-			return
-		} else if raised != nil {
-			art.Fields = raised
-		}
-	}
+	// NO RAISER IS STAMPED HERE, and the empty answer is the honest one.
+	//
+	// This door used to write the CALLER's handle into raiser on any work row
+	// that carried none (f5f5802). That contradicted a rule the room door
+	// already had, written down at todos.go:141: the raiser is WHO THE WORK
+	// CAME FROM, taken from the message a todo was raised out of, and left
+	// empty otherwise because "owner_user already records the seat that typed
+	// it, and inventing a second copy of that answer would be inventing the
+	// fact this field exists to keep honest."
+	//
+	// MEASURED, 2026-08-19: claude-host filed two rows in one hour from one
+	// seat through two doors - `todo file --room general` left the raiser
+	// empty, `merge open` stamped claude-host. Same field, two meanings: one
+	// says nobody asked for this, the other says I typed it.
+	//
+	// The older rule wins. A row filed by the seat that wanted it has no raiser
+	// and does not need one - owner_user is that answer, and the surface that
+	// wants to show a reporter reads it there.
 
 	write := s.db.CreateArtifact
 	if update {
@@ -1312,33 +1319,4 @@ func assigneeArg(raw string) (name string, unassigned bool, err error) {
 		return "", false, err
 	}
 	return name, false, nil
-}
-
-// raiserDefault stamps the caller as the raiser of a queue row that names
-// nobody, and answers nil when there is nothing to change.
-//
-// THE HANDLE, NOT THE ID. The first cut of this used chatActor, which is what
-// authorship uses, and wrote 01USER-P into the column - an id, in the one place
-// a person reads a name. store.SeatHandle answers with the handle or with
-// nothing, and nothing is the honest answer for a user who has none: a row
-// showing no reporter is a fact, and a row showing an id is noise.
-//
-// It reads the fields the caller sent rather than replacing them, because a
-// create may carry a room, a category or an assignee and dropping those to add
-// one key would be a worse bug than the one it fixes.
-func raiserDefault(a *store.Artifact, who string) (json.RawMessage, error) {
-	if who == "" || !store.IsWorkKind(a.Kind) {
-		return nil, nil
-	}
-	if store.RaiserOf(a) != "" {
-		return nil, nil
-	}
-	fields := map[string]any{}
-	if len(a.Fields) > 0 {
-		if err := json.Unmarshal(a.Fields, &fields); err != nil {
-			return nil, fmt.Errorf("fields must be a json object: %w", err)
-		}
-	}
-	fields[store.RaiserField] = who
-	return json.Marshal(fields)
 }
