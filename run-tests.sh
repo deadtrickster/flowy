@@ -1446,6 +1446,66 @@ b_agent_searches_shared_memory() {
 
 # A todo is outstanding until it is done, and mem_write with an id is how it
 # stops being outstanding - without restating the item.
+# A ROOM PROJECTION IS AN INDEXED READ, not a sequential scan.
+#
+# WHAT THIS IS ABOUT. A room is the work boundary - a subproject is a room, and
+# everything it reads is "the rows raised in this room", so ArtifactQuery.Room
+# is a WHERE clause on the todo list, the merge queue and the activity feed.
+# The room lives in the fields JSON, so that clause is fields->>'room' = $n, and
+# without an expression index matching it exactly the read scans the table and
+# extracts JSON per row.
+#
+# WHY IT IS CHECKED WITH enable_seqscan OFF, and this is the whole subtlety: on
+# a gate database, and on the live node at 251 work rows, Postgres will choose a
+# sequential scan whatever indexes exist, because scanning a small table IS
+# faster. So "the plan says Seq Scan" proves nothing about the index, and a
+# check that asserted "Index Scan" on real data would be asserting the planner's
+# cost model rather than our schema. Turning seqscan off asks the question that
+# is actually ours: CAN the planner use this index for this clause - which is
+# true only if the indexed expression matches the query's expression exactly.
+# Get RoomField or the SQL wrong and the plan stays sequential even here.
+a_room_projection_can_use_its_index() {
+	local present plan
+	present="$(scalar "SELECT count(*) FROM pg_indexes
+	                    WHERE tablename = 'artifacts' AND indexname = 'artifacts_room_idx'")" || return 1
+	want_eq "the room index exists" "$present" 1 || return 1
+
+	# THE CLAUSE THE CODE BUILDS, not one written to pass. store.fieldEq emits
+	# the existence test and then the comparison, and both halves are here in
+	# that order for a reason: with only the comparison, all three of these
+	# indexes are unreachable, which is what they were until the room one was
+	# added and failed the same way.
+	local key
+	for key in room category supersedes; do
+		plan="$(psql -v ON_ERROR_STOP=1 -tA -c "SET enable_seqscan = off;
+		        EXPLAIN SELECT id FROM artifacts a
+		         WHERE a.fields ? '$key' AND a.fields->>'$key' = 'x'")" || return 1
+		case "$plan" in
+		*"artifacts_${key}_idx"*) ;;
+		*)
+			printf 'the planner will not use artifacts_%s_idx for the clause store.fieldEq\n' "$key" >&2
+			printf 'builds. A partial index needs the existence test in the query:\n%s\n' "$plan" >&2
+			return 1
+			;;
+		esac
+	done
+
+	# AND THE NEGATIVE, which is the arm that makes the three above mean
+	# something: without the existence test the same index is refused, even
+	# with sequential scans priced out of reach. This is the state the category
+	# and supersedes indexes were in from the day they landed.
+	plan="$(psql -v ON_ERROR_STOP=1 -tA -c "SET enable_seqscan = off;
+	        EXPLAIN SELECT id FROM artifacts a WHERE a.fields->>'room' = 'x'")" || return 1
+	case "$plan" in
+	*artifacts_room_idx*)
+		printf 'a bare fields->> comparison reached the partial index, so the arms above\n' >&2
+		printf 'prove nothing about the existence test:\n%s\n' "$plan" >&2
+		return 1
+		;;
+	esac
+	printf 'room, category and supersedes are indexed reads, and are not without the existence test\n'
+}
+
 todos_open_and_done() {
 	recall
 	want_tool mem_write "$TOKEN_A" '{
@@ -11381,6 +11441,8 @@ check "a second agent identity reads it" b_agent_reads_shared_memory
 check "and finds it by search, and in its todos" b_agent_searches_shared_memory
 
 say "todos"
+check "room, category and supersedes projections are indexed reads" \
+	a_room_projection_can_use_its_index
 check "a todo is outstanding until it is done" todos_open_and_done
 
 say "the worklog"

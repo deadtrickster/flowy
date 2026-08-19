@@ -1146,6 +1146,29 @@ CREATE INDEX IF NOT EXISTS artifacts_category_idx
     ON artifacts ((fields ->> 'category'))
  WHERE fields ? 'category';
 
+-- WHICH ROOM a row was raised in, for the same reason and in the same shape.
+--
+-- A room is the WORK boundary the way a project is the permission boundary: a
+-- subproject is a room, and every projection a subproject reads - its todos,
+-- its merge queue, its activity - is "the rows raised in this room". So
+-- ArtifactQuery.Room is a WHERE clause on those reads (see artifacts.go, which
+-- builds fields->>'room' = $n), and without this it is a sequential scan with a
+-- JSON extraction per row.
+--
+-- IT IS CHEAP TODAY AND THAT IS THE PROBLEM. Measured on the live node: 251
+-- work rows, where a scan costs nothing and the planner would ignore this index
+-- anyway. The operator's stated direction is more operators and more agents on
+-- more subprojects of one project, and this read gets slower QUIETLY - no
+-- error, no refusal, just a board that takes longer every week until somebody
+-- profiles it.
+--
+-- Partial, exactly as the two above are, and for their reason: most rows on
+-- this node carry no room at all, and a row with no room is not a row this
+-- index has anything to say about.
+CREATE INDEX IF NOT EXISTS artifacts_room_idx
+    ON artifacts ((fields ->> 'room'))
+ WHERE fields ? 'room';
+
 -- ------------------------------------------------------------------- SEARCH
 -- Everything below this line is Postgres full text and is expected to be
 -- deleted when the store moves to SereneDB and search becomes vector search.

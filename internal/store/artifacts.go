@@ -801,6 +801,36 @@ func artifactField(a *Artifact, key string) any {
 	return fields[key]
 }
 
+// fieldEq is the clause that narrows on one key inside the fields JSON, in the
+// shape the PARTIAL index over that key can actually be used for.
+//
+// MEASURED, and it is why this function exists rather than a bare `->>`
+// comparison written at each site. Three keys carry an expression index -
+// supersedes, category, and now room - and every one of them is partial:
+//
+//	CREATE INDEX ... ON artifacts ((fields ->> 'category')) WHERE fields ? 'category';
+//
+// A partial index is only available to a query the planner can prove satisfies
+// its predicate, and the clause each site built was just
+// `fields->>'category' = $1`. Nothing in that says the key is PRESENT, so
+// Postgres refused all three indexes and scanned. On a schema-loaded database
+// with enable_seqscan off - which forces the planner to use any index it
+// legally can - the plan was still `Seq Scan ... cost=10000000000`. With the
+// existence test in front of it the same index gives `Index Scan using
+// artifacts_category_idx`, Index Cond exact.
+//
+// So they had been decoration since the day they landed, and the comments
+// beside them said otherwise. Adding the room index is what surfaced it: the
+// new one failed the same way the old ones had been failing silently.
+//
+// IT DOES NOT CHANGE WHAT THE FILTER MEANS. `fields ? 'key'` is NULL for a row
+// whose fields column is NULL and false for a row without the key, and
+// `fields->>'key' = $1` was already NULL or false for exactly those rows. The
+// clause narrows to the same set; it is only shaped so the index is reachable.
+func fieldEq(alias, key, arg string) string {
+	return alias + ".fields ? '" + key + "' AND " + alias + ".fields->>'" + key + "' = " + arg
+}
+
 // SupersedesField is where a report names the report it replaces: a key in
 // fields, beside as_of, for the reason RoomField is one.
 //
@@ -1086,16 +1116,18 @@ func (q ArtifactQuery) narrow(a *args, alias string) string {
 		// room drops out of a narrowed list and stays in every unnarrowed one,
 		// which is what makes this a filter: the todos that predate the field
 		// are global, and they are still on the page that shows all of them.
-		where += " AND " + alias + ".fields->>'" + RoomField + "' = " + a.next(q.Room)
+		where += " AND " + fieldEq(alias, RoomField, a.next(q.Room))
 	}
 	if q.Category != "" {
 		// What kind of work it is, out of fields, and narrowing exactly as the
 		// room does: a todo nobody classified drops out of a narrowed list and
-		// stays in every unnarrowed one. The index that keeps this off a
-		// sequential scan is artifacts_category_idx, and it is partial for the
-		// same reason the supersedes one is - the rows carrying the key are the
-		// minority while the queue catches up.
-		where += " AND " + alias + ".fields->>'" + CategoryField + "' = " + a.next(q.Category)
+		// stays in every unnarrowed one. artifacts_category_idx is what keeps
+		// it off a sequential scan, and it is partial for the same reason the
+		// supersedes one is - the rows carrying the key are the minority while
+		// the queue catches up. See fieldEq for why the clause is shaped the
+		// way it is, and for the measurement that says this comment was a
+		// wish until now.
+		where += " AND " + fieldEq(alias, CategoryField, a.next(q.Category))
 	}
 	for _, tag := range q.Tags {
 		// One clause per tag, so several are ANDed - see the field. The two
@@ -1263,7 +1295,8 @@ func (d *DB) replacedBy(ctx context.Context, p *Principal, arts []*Artifact, sco
 	rows, err := d.sql.QueryContext(ctx,
 		`SELECT ar.fields->>'`+SupersedesField+`', ar.id, ar.project, ar.type
 		   FROM artifacts ar
-		  WHERE ar.fields->>'`+SupersedesField+`' = ANY(`+idsArg+`)
+		  WHERE ar.fields ? '`+SupersedesField+`'
+		    AND ar.fields->>'`+SupersedesField+`' = ANY(`+idsArg+`)
 		    AND coalesce(ar.tombstone, false) = false
 		    AND `+filter+`
 		  ORDER BY ar.updated ASC, ar.id ASC`,
