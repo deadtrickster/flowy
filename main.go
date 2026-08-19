@@ -187,8 +187,18 @@ func main() {
 			os.Exit(1)
 		}
 	case "queue":
+		// `queue wait` has outcomes rather than only a result, so its codes are
+		// mapped here beside inbox's for the same reason: a script must tell
+		// "still waiting" from "the node blinked" from "the branch is red"
+		// without parsing what was printed. See queuewait.go.
 		if err := queueCmd(os.Args[2:]); err != nil {
 			fmt.Fprintf(os.Stderr, "flowy queue: %v\n", err)
+			switch {
+			case errors.Is(err, errWaitedOut):
+				os.Exit(1)
+			case errors.Is(err, errRowIsRed):
+				os.Exit(3)
+			}
 			os.Exit(2)
 		}
 	case "nag":

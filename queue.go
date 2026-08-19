@@ -37,6 +37,7 @@ const queueUsage = `flowy queue - what is waiting to land, and who holds the tar
 usage:
   flowy queue                 the target, the lock, and every row waiting
   flowy queue lock            the landing lock alone, stamped with when it was read
+  flowy queue wait --row ID   block until that row lands, goes red, or the deadline passes
 
 flags:
   --target T   which target to ask about (default master)
@@ -58,6 +59,12 @@ func queueCmd(args []string) error {
 	rest := args
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		sub, rest = args[0], args[1:]
+	}
+
+	// BEFORE THIS FLAGSET, because the wait verb has flags of its own (--row,
+	// --deadline) and parsing them here would refuse them as unknown.
+	if sub == "wait" {
+		return queueWaitCmd(rest)
 	}
 
 	fs := flag.NewFlagSet("queue", flag.ContinueOnError)
