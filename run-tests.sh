@@ -258,10 +258,19 @@ go_build() {
 }
 
 # gofmt_clean checks our own sources; vendor/ is upstream's to format.
+#
+# AND .claude/worktrees IS NOT OURS EITHER. The agent harness makes a git
+# worktree per isolated agent under .claude/worktrees, each a full checkout with
+# its own vendor/ - and the prune here named ./vendor alone, so the walk went
+# into seven of them and reported 90 upstream files as ours. It was measured as
+# a red gate on a branch that had touched none of them, which is the worst shape
+# a check can fail in: true of the repository, false of the change, and it reds
+# every seat at once. They are in .git/info/exclude, so git already agrees they
+# are not this tree's source.
 gofmt_clean() {
 	local out
 	local -a files
-	mapfile -t files < <(find . -path ./vendor -prune -o -name '*.go' -print)
+	mapfile -t files < <(find . \( -path ./vendor -o -path ./.claude \) -prune -o -name '*.go' -print)
 	out="$(gofmt -l "${files[@]}")"
 	if [ -n "$out" ]; then
 		printf 'these files are not gofmt clean:\n%s\n' "$out" >&2
