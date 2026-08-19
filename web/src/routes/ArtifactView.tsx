@@ -450,10 +450,27 @@ export function ArtifactView() {
                  */}
                 {raiser || assignee ? (
                   <div className="text-muted-foreground text-xs">
-                    <span data-artifact-raiser={raiser}>
-                      raised by {raiser ? <strong>{raiser}</strong> : "nobody on the record"}
-                    </span>
-                    {", "}
+                    {/* The raiser clause only when the row HAS one, which is
+                     * the rule the queue already states and this page was
+                     * breaking. web/src/routes/Todos.tsx says why: most of
+                     * this queue predates the field, so "raised by nobody" on
+                     * all of it puts the least informative words on the page
+                     * more often than any others. Here it was worse than
+                     * uninformative - every pre-field row with an assignee got
+                     * "raised by nobody on the record", which reads as an
+                     * accusation of a missing record when the truth is that
+                     * the row is older than the field. Reported by the
+                     * operator, quoting the line.
+                     *
+                     * The assignee clause is drawn either way, and that half
+                     * Todos.tsx argues FOR: an unowned row is work nobody has
+                     * picked up, which is the thing to see. */}
+                    {raiser ? (
+                      <span data-artifact-raiser={raiser}>
+                        raised by <strong>{raiser}</strong>
+                        {", "}
+                      </span>
+                    ) : null}
                     <span data-artifact-assignee={assignee}>
                       carried by {assignee ? <strong>{assignee}</strong> : "nobody"}
                     </span>

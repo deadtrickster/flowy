@@ -4875,6 +4875,48 @@ a_todo_says_who_raised_it() {
 	printf 'todo %s raised by %s, carried by %s\n' "$id" "$HANDLE_OP" "$RAISED_CARRIER"
 }
 
+# And a person reads both facts correctly, which is a different claim from the
+# node holding them.
+#
+# The artifact page drew the clause whenever EITHER party was set, so a row that
+# predates the raiser field but has an assignee read "raised by nobody on the
+# record". Measured by the orchestrator on the live board: 227 of 235 todo rows
+# carry no raiser, so that sentence was the page's answer for nearly all of
+# them. Not false, and worse than uninformative - it reads as an accusation of a
+# missing record when the truth is that the row is older than the field. The
+# queue already had the rule and the reasoning written down; this page was the
+# surface breaking it. Reported by the operator, quoting the line.
+#
+# BOTH ARMS: a page that never draws the clause passes an arm that only checks
+# the absence, and one that always draws it passes an arm that only checks the
+# presence.
+a_row_without_a_raiser_says_nothing_rather_than_nobody() {
+	recall
+	local bare
+	# A row with no raiser at all - filed straight at the artifacts door, which
+	# is how every row before the field was written and how three since have
+	# been.
+	api POST "$TOKEN_A" /api/artifacts \
+		'{"type":"memory","kind":"todo","title":"filed with no raiser","body":"gorse"}' || return 1
+	bare="$(jqv .id)"
+	api POST "$TOKEN_A" "/api/todo/$bare/assignee" '{"assignee": "a-carrier"}' || return 1
+
+	# The node's own answer first, both ways, or the browser arms would be
+	# measuring the console against facts nobody sent.
+	api GET "$TOKEN_A" "/api/artifact/$bare" || return 1
+	# null and not "", which is what the door actually answers - measured in the
+	# gate rather than assumed here, and the assumption is what reddened this
+	# check on its first run.
+	want_eq "the bare row has no raiser" "$(jqv .raiser)" null || return 1
+	want_eq "and it does have a carrier" "$(jqv .assignee)" a-carrier || return 1
+	api GET "$TOKEN_A" "/api/artifact/$RAISED_ID" || return 1
+	want_eq "the raised row has one" "$(jqv .raiser)" "$HANDLE_OP" || return 1
+
+	cd "$ROOT/web" || return 1
+	node scripts/no-raiser-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" \
+		pa "$RAISED_ID" "$bare"
+}
+
 # A stated raiser is the last word, a name that is not one is refused, and a row
 # raised out of no conversation says nothing rather than guessing its author.
 #
@@ -11458,6 +11500,8 @@ check "a todo raised out of a message carries the speaker of it" \
 	a_todo_says_who_raised_it
 check "a stated raiser wins, and a row that says nothing is not guessed at" \
 	a_stated_raiser_wins_and_nothing_is_guessed
+check "a row with no raiser says nothing about one, and still says who carries it" \
+	a_row_without_a_raiser_says_nothing_rather_than_nobody
 check "mem_write defaults one from the message and refuses to restate it" \
 	mem_write_takes_a_raiser_and_settles_it
 check "the raiser is a handle, is never inferred, and is settled at the raise, in Go" \
