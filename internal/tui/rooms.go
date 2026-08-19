@@ -37,7 +37,7 @@ func (m *Model) roomsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.say("nothing selected to react to")
 			return m, nil
 		}
-		return m, m.openInput(inputReact, ackPrompt(), "")
+		return m, m.openInput(inputReact, m.ackPrompt(m.selectedMessage().ID), "")
 	case "o":
 		return m, m.openInput(inputOpenRoom, "room> ", "")
 	case "t":
@@ -516,14 +516,82 @@ var acks = []struct {
 	{"f", "🔥", "this is the problem"},
 }
 
-// ackPrompt is the box's label, built from the table so the offer and what the
-// keys do cannot drift apart.
-func ackPrompt() string {
+// ackPrompt is the box's label: WHO HAS ALREADY ACKED this message, then the
+// letters, built from the table so the offer and what the keys do cannot drift.
+//
+// The names are here and nowhere else in this client, and that is the whole
+// design. Who acked is half of why the store keeps actors rather than a count -
+// in a room of four seats, an ack from the seat that has to act is worth more
+// than three from seats that do not - and it does not fit beside a message: 17
+// columns of name at a width of 80, and a thread pane that is a third of the
+// terminal. But it does fit HERE, because this line exists for one message and
+// only while somebody is looking at it, which is exactly the moment the answer
+// is worth having. A reader about to ack wants to know who already did.
+//
+// Bounded, because a prompt eats the box it labels - the input is sized at
+// width minus the prompt - so three names and a count of the rest.
+func (m *Model) ackPrompt(message string) string {
 	parts := make([]string, 0, len(acks))
 	for _, a := range acks {
 		parts = append(parts, a.letter+" "+a.emoji)
 	}
-	return "react (" + strings.Join(parts, ", ") + ", or an emoji)> "
+	tail := "(" + strings.Join(parts, ", ") + ", or an emoji)> "
+	if who := m.ackWho(message); who != "" {
+		return "react " + who + " " + tail
+	}
+	return "react " + tail
+}
+
+// ackWho names the principals behind each emoji on a message, as far as this
+// client can.
+//
+// The names come out of the ROOM ON SCREEN: a reaction carries an actor id and
+// nothing else, and the handle beside it is on the messages that principal has
+// spoken, which the stream is already holding. So anybody who has said
+// something here is named and anybody who has only reacted is a short id.
+//
+// That limit is real and is the honest one to have: the alternative is a
+// roster fetch per reaction, and a terminal client that made four HTTP calls to
+// label four acks would spend more on the labels than on the conversation.
+func (m *Model) ackWho(message string) string {
+	on := m.reactions[message]
+	if len(on) == 0 {
+		return ""
+	}
+	const shown = 3
+	groups := make([]string, 0, len(on))
+	for _, r := range on {
+		names := make([]string, 0, len(r.Actors))
+		for i, actor := range r.Actors {
+			if i == shown {
+				names = append(names, fmt.Sprintf("+%d", len(r.Actors)-shown))
+				break
+			}
+			names = append(names, m.speakerNamed(actor))
+		}
+		groups = append(groups, r.Emoji+" "+strings.Join(names, ", "))
+	}
+	return "[" + strings.Join(groups, "; ") + "]"
+}
+
+// speakerNamed is what to call a principal id, out of what this room already
+// holds. A short id when nothing here has heard from them.
+func (m *Model) speakerNamed(id string) string {
+	if id == "" {
+		return "?"
+	}
+	if m.isMe(id) {
+		// "you" rather than your own handle, for the reason the addressee
+		// marker spells it out: a reader matching a ulid against their own is
+		// a reader who does not notice.
+		return "you"
+	}
+	for _, e := range m.msgs {
+		if e.Actor == id {
+			return e.Speaker()
+		}
+	}
+	return shortID(id)
 }
 
 // ackNamed turns what somebody typed into the emoji to send: one of the

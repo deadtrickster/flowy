@@ -1959,10 +1959,73 @@ func TestAnAckLetterReachesItsEmojiAndAWordDoesNot(t *testing.T) {
 	}
 	// And the prompt offers exactly what the table holds, so the two cannot
 	// drift into a key that does nothing.
-	prompt := ackPrompt()
+	m := testModel(t, NewClient("http://127.0.0.1:1", "t"))
+	prompt := m.ackPrompt("nothing")
 	for _, a := range acks {
 		if !strings.Contains(prompt, a.letter+" "+a.emoji) {
 			t.Errorf("the prompt %q does not offer %s for %s", prompt, a.letter, a.emoji)
 		}
+	}
+}
+
+// TestTheReactPromptNamesWhoHasAlreadyAcked is the one place this client says
+// who, and the reason it is the prompt rather than the stream is width: the
+// line exists for one message and only while somebody is looking at it, which
+// is exactly when a reader about to ack wants to know who already did.
+func TestTheReactPromptNamesWhoHasAlreadyAcked(t *testing.T) {
+	m := testModel(t, NewClient("http://127.0.0.1:1", "t"))
+	m.who = &Whoami{User: "u-me"}
+	// Meta is an anonymous struct on Event, so the names go on after the
+	// literal rather than inside it.
+	said := &Event{ID: "m1", Actor: "u-a", Body: "the drainer is green"}
+	said.Meta.ActorName = "claude-host"
+	earlier := &Event{ID: "m0", Actor: "u-b", Body: "earlier"}
+	earlier.Meta.ActorName = "orchestrator"
+	m.msgs = []*Event{said, earlier}
+	m.msgSel = 0
+	m.reactions = map[string][]Reaction{
+		"m1": {{Emoji: "👀", Actors: []string{"u-a", "u-b", "u-me"}, Mine: true}},
+	}
+
+	prompt := m.ackPrompt("m1")
+	// The names come out of the room on screen: a reaction carries an actor id
+	// and the handle beside it is on the messages that principal has spoken.
+	for _, want := range []string{"claude-host", "orchestrator"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("the prompt %q does not name %s, who acked and has spoken here", prompt, want)
+		}
+	}
+	// This reader is "you" rather than their own id, for the reason the
+	// addressee marker spells it out.
+	if !strings.Contains(prompt, "you") {
+		t.Errorf("the prompt %q makes this reader match a ulid against their own", prompt)
+	}
+	// A message nobody acked gets no bracket at all, so the prompt does not
+	// grow a decoration that says nothing.
+	if plain := m.ackPrompt("m0"); strings.Contains(plain, "[") {
+		t.Errorf("a message with no acks still labels the box with a list: %q", plain)
+	}
+	// A principal nothing here has heard from is a short id rather than blank
+	// or a crash: they reacted and never spoke, which is the ordinary case for
+	// a seat that only acks.
+	m.reactions["m1"] = []Reaction{{Emoji: "👍", Actors: []string{"u-silent-01M0000000"}}}
+	quiet := m.ackPrompt("m1")
+	if !strings.Contains(quiet, shortID("u-silent-01M0000000")) {
+		t.Errorf("a principal who has only reacted is not named at all: %q", quiet)
+	}
+	// And it is BOUNDED, because a prompt eats the box it labels - the input is
+	// sized at width minus the prompt.
+	many := make([]string, 0, 9)
+	for i := 0; i < 9; i++ {
+		many = append(many, fmt.Sprintf("u-%d-01M000000000000000000000", i))
+	}
+	m.reactions["m1"] = []Reaction{{Emoji: "👀", Actors: many}}
+	long := m.ackPrompt("m1")
+	if !strings.Contains(long, "+6") {
+		t.Errorf("nine acks were all spelled out in the prompt: %q", long)
+	}
+	if len([]rune(long)) > 80 {
+		t.Errorf("the prompt is %d columns and would leave no box to type in: %q",
+			len([]rune(long)), long)
 	}
 }

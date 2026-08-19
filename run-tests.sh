@@ -11636,6 +11636,11 @@ check "the terminal draws an ack in front of the body, so a narrow pane does not
 	go test -count=1 -run 'TestAnAckIsDrawnInFrontOfTheBodyAndSurvivesAClip|TestThisReadersOwnAckIsDrawnAsTheirs' ./internal/tui
 check "and its ack letters reach their emoji, while a word typed out does not" \
 	go test -count=1 -run 'TestAnAckLetterReachesItsEmojiAndAWordDoesNot|TestAPageOfAcksIsMergedAndNotReplaced' ./internal/tui
+# WHO acked, which the stream has no room for and the box does: the line exists
+# for one message and only while somebody is looking at it, which is the moment
+# a reader about to ack wants to know who already did.
+check "and the react box names who has already acked, bounded so it leaves a box to type in" \
+	go test -count=1 -run TestTheReactPromptNamesWhoHasAlreadyAcked ./internal/tui
 check "a pin puts a message up in the room's strip" a_pin_puts_a_message_up_in_the_room
 check "an unpin takes it down, and the log remembers both" \
 	an_unpin_takes_it_down_and_the_log_remembers_both
