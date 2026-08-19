@@ -62,7 +62,14 @@ func (e *ErrLandRefused) Error() string {
 // end. An expired lock held by the caller still lands: expiry exists so a dead
 // holder cannot freeze the target, not so a live verdict with a slow
 // fast-forward dies at the door.
-func (d *DB) LandMerge(ctx context.Context, p *Principal, id, sha string) (*Artifact, *Event, error) {
+// said is an extra event written in the same transaction, or nothing - the room
+// hearing what landed, as an ordinary message. It is a parameter rather than a
+// second write for the reason the assignment door's is: the landing and the
+// room learning about it are one thing, and a landing that lands while its
+// announcement fails is the silent success this exists to remove.
+func (d *DB) LandMerge(
+	ctx context.Context, p *Principal, id, sha string, said ...*Event,
+) (*Artifact, *Event, error) {
 	ctx, span := otel.Start(ctx, otel.KindIngest, "merge.land")
 	defer span.End()
 
@@ -203,7 +210,11 @@ func (d *DB) LandMerge(ctx context.Context, p *Principal, id, sha string) (*Arti
 		Body:     fmt.Sprintf("landed %s as %s on %s", fastForwarded, sha, target),
 		Meta:     meta,
 	}
-	if err := d.SetArtifactFields(ctx, art, column, entry); err != nil {
+	// The log entry first, then the room's copy: the entry is the record and
+	// the message is the announcement, and if only one can exist it must be the
+	// record.
+	written := append([]*Event{entry}, said...)
+	if err := d.SetArtifactFields(ctx, art, column, written...); err != nil {
 		return nil, nil, err
 	}
 
