@@ -3,12 +3,14 @@ package main
 import (
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"os"
 
 	"github.com/deadtrickster/flowy/internal/store"
+	"github.com/deadtrickster/flowy/internal/ulid"
 )
 
 // The operator's side of authorship: which principals this node can sign for,
@@ -51,6 +53,8 @@ usage:
   flowy principal keygen --as P [--epoch N]    mint P a keypair here, and sign P's rows with it
   flowy principal pin --as P --key K [--epoch N]
                                                record P's public key, out of band
+  flowy principal repudiate --as P --from N --project X [--reason R]
+                                               rotate P's key and disown the window it replaces
   flowy principal exposed                      every principal with rows here and no key
 
 A row carries two signatures. The node's says which machine relayed it; the
@@ -77,6 +81,8 @@ func principalCmd(args []string) error {
 		return principalList(args)
 	case "keygen":
 		return principalKeygen(args)
+	case "repudiate":
+		return principalRepudiate(args)
 	case "pin":
 		return principalPin(args)
 	case "exposed", "unkeyed":
@@ -166,6 +172,134 @@ func principalKeygen(args []string) error {
 			"local":      id.Local,
 		})
 	})
+}
+
+// principalRepudiate is the two halves of recovering from a compromised key,
+// done as one act because they are useless apart.
+//
+// Repudiating without rotating leaves the principal unable to write anything
+// anybody will believe, and the stolen key still admissible under the old
+// epoch. Rotating without repudiating leaves every row the thief wrote reading
+// as authentic, because the authorship check only ever asked whether the
+// signature verified - and it did.
+//
+// ONE CLOCK READING, TAKEN ONCE. The window ends exactly where the new epoch
+// begins, and the reading comes back from MintPrincipalKey rather than being
+// asked for again here. Reading the clock twice leaves a gap between the last
+// disowned row and the first row that must carry the new key - which is
+// precisely the moment a thief would want to write in.
+//
+// A PROJECT IS REQUIRED, and it is the honest limitation of this first cut. A
+// repudiation is a fact about a principal across the whole fabric, and artifact
+// reach here is project-scoped (see artifactReachSQL): a row with no project is
+// readable by its owner and nobody else, so a fabric-wide repudiation written
+// with no project would disown nothing for anyone but its author. Until that
+// gap is closed the subject names the project their rows are in, and runs it
+// again per project.
+func principalRepudiate(args []string) error {
+	fs := flag.NewFlagSet("principal repudiate", flag.ContinueOnError)
+	who := fs.String("as", "", "the principal disowning their own rows")
+	from := fs.Int64("from", 0, "the clock reading the compromise starts at - everything this "+
+		"principal signed from here to the new epoch is disowned")
+	project := fs.String("project", "", "the project whose readers should see it")
+	reason := fs.String("reason", "", "one line for a person reading the row later")
+	seedHex := fs.String("seed", "", "32 byte ed25519 seed in hex for the NEW key; random by default")
+	return withPrincipalDB(fs, args, func(ctx context.Context, db *store.DB) error {
+		if *who == "" || *from <= 0 || *project == "" {
+			return errors.New("repudiate needs --as, --from and --project")
+		}
+		seed, err := decodeSeed(*seedHex)
+		if err != nil {
+			return err
+		}
+		// THE READING IS CHECKED BEFORE ANYTHING IS WRITTEN.
+		//
+		// This check used to sit after the mint, and my own smoke test caught
+		// what that costs: a --from in the future was refused, correctly, and
+		// left the principal holding a NEW KEY with no repudiation behind it -
+		// the half-state the ordering below exists to prevent, produced by the
+		// guard against it. A refusal that mutates is not a refusal.
+		now, err := db.Clock().Pack()
+		if err != nil {
+			return err
+		}
+		if *from > now {
+			return fmt.Errorf("the window starts at %d and this node's clock reads %d - "+
+				"a window that starts in the future disowns nothing and nothing has been "+
+				"changed", *from, now)
+		}
+		// THE NEW KEY NEXT. If this fails nothing has been claimed and the
+		// principal is where they were. The other order would leave a
+		// repudiation standing over a window with no key to write after it.
+		id, err := db.MintPrincipalKey(ctx, *who, seed, 0)
+		if err != nil {
+			return err
+		}
+		if id.Epoch < *from {
+			// Belt to the check above: the clock moved backwards between the
+			// two reads, which should be impossible and is worth saying rather
+			// than writing a window that runs backwards.
+			return fmt.Errorf("the new epoch (%d) is before the window starts (%d)",
+				id.Epoch, *from)
+		}
+		title := "rows attributed to " + *who + " in this window are not theirs"
+		body := *reason
+		if body == "" {
+			body = "The key that signed rows in this window is no longer this principal's. " +
+				"Rows below the window and from the new epoch are unaffected."
+		}
+		a := &store.Artifact{
+			ID:         ulid.NewString(),
+			Type:       store.RepudiationType,
+			Project:    project,
+			OwnerUser:  *who,
+			Title:      title,
+			Body:       body,
+			Visibility: "project",
+			Fields: mustFields(map[string]any{
+				store.SubjectField: *who,
+				store.SpeakerField: store.SpeakerSubject,
+				store.FromField:    *from,
+				// CLOSED AT THE EPOCH, on purpose. A row written at exactly
+				// the epoch reading must carry the new key, so including it
+				// disowns at most a row that is already refused - and
+				// excluding it would leave one reading nobody covers.
+				store.ToField: id.Epoch,
+			}),
+		}
+		e := &store.Event{
+			Type:    "repudiation",
+			Project: a.Project,
+			Actor:   *who,
+			Body:    "disowned " + fmt.Sprint(*from) + " to " + fmt.Sprint(id.Epoch),
+		}
+		// The subject speaks, and the key minted a moment ago is what makes
+		// that a first-hand claim rather than the node's opinion of one.
+		p := &store.Principal{UserID: *who, Project: *project}
+		if err := db.WriteRepudiation(ctx, p, a, e); err != nil {
+			return err
+		}
+		return printJSON(map[string]any{
+			"principal":   id.Principal,
+			"public_key":  store.EncodeKey(id.PublicKey),
+			"epoch":       id.Epoch,
+			"repudiation": a.ID,
+			"disowned":    map[string]int64{"from": *from, "to": id.Epoch},
+			"pin_this_key": "flowy principal pin --as " + *who + " --key " +
+				store.EncodeKey(id.PublicKey) + " --epoch " + fmt.Sprint(id.Epoch),
+		})
+	})
+}
+
+// mustFields is the fields blob for a row this command builds itself.
+func mustFields(f map[string]any) []byte {
+	raw, err := json.Marshal(f)
+	if err != nil {
+		// The map is a literal three lines up; a failure here is a programming
+		// error rather than a runtime one.
+		panic("principal: marshal repudiation fields: " + err.Error())
+	}
+	return raw
 }
 
 // principalPin is the operator saying, on this machine, that a principal id
