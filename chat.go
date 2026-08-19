@@ -920,7 +920,7 @@ func (s *server) handleInbox(w http.ResponseWriter, r *http.Request) {
 	}
 	// The inbox read shows other people's messages, which is precisely where a
 	// disowned line must not read like an ordinary one.
-	if err := s.db.FillDisowned(r.Context(), p, nil, list); err != nil {
+	if err := s.db.FillDisowned(r.Context(), nil, list); err != nil {
 		log.Printf("disowned: could not resolve repudiations for an inbox page: %v", err)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -957,7 +957,7 @@ func (s *server) readRoom(r *http.Request, room, thread string, since int64, lim
 	// than at the two callers, because this is the function both of them get
 	// their messages from and a mark added at one door only is the shape this
 	// fleet has spent the night removing.
-	if err := s.db.FillDisowned(r.Context(), p, nil, list); err != nil {
+	if err := s.db.FillDisowned(r.Context(), nil, list); err != nil {
 		log.Printf("disowned: could not resolve repudiations for a room page: %v", err)
 	}
 	return list, nil
@@ -997,7 +997,7 @@ func roomBefore(
 	}
 	// The backwards read is the same page seen from the other end, so it
 	// carries the same mark - see readRoom.
-	if err := db.FillDisowned(ctx, p, nil, list); err != nil {
+	if err := db.FillDisowned(ctx, nil, list); err != nil {
 		log.Printf("disowned: could not resolve repudiations for a backwards page: %v", err)
 	}
 	return list, nil

@@ -253,12 +253,92 @@ func (d *DB) WriteRepudiation(ctx context.Context, p *Principal, a *Artifact, e 
 	})
 }
 
-// Repudiations are the live ones this node holds, superseded rows excluded.
+// Repudiations are the live ones this principal may READ, superseded and
+// unreadable rows excluded. It is the list surface: what a person sees when
+// they ask what this node holds.
 func (d *DB) Repudiations(ctx context.Context, p *Principal) ([]*Artifact, error) {
 	list, err := d.ListArtifacts(ctx, p, ArtifactQuery{Type: RepudiationType})
 	if err != nil {
 		return nil, err
 	}
+	return liveRepudiations(list), nil
+}
+
+// LiveRepudiations is every live repudiation this node holds, with NO
+// permission filter, for the node's own use in marking rows.
+//
+// WHY THIS IS NOT A LEAK, which is the only interesting question about it.
+//
+// A repudiation does not reveal a row. It annotates rows the caller can ALREADY
+// read, with a claim its own subject signed and published about their own
+// authorship. The most it can tell you is that a principal whose row you are
+// looking at has disowned a window - which is exactly what they wrote it to
+// say. Nothing about the repudiation's own project, body or reason is handed
+// over by the mark; those come from reading the row itself, which stays behind
+// the ordinary filter (see Repudiations above).
+//
+// WHY THE FILTERED VERSION WAS WRONG HERE. A repudiation is a fact about a
+// PRINCIPAL, and principals write in more than one project. Artifact reach is
+// project-scoped, so the filtered read answered "the repudiations in your
+// project" - which meant a subject had to file one per project and would leave
+// rows in any project they forgot reading as authentic. `flowy principal
+// repudiate` needed --project for that reason, and the requirement was the
+// defect rather than the design.
+//
+// This is the same shape as the authorship check itself: principalKeyOf reads
+// keys with no permission filter, because "whose word is this row" is not a
+// question about who is asking. Marking is the same question one step on.
+func (d *DB) LiveRepudiations(ctx context.Context) ([]*Artifact, error) {
+	list, err := d.allArtifactsOfType(ctx, RepudiationType)
+	if err != nil {
+		return nil, err
+	}
+	return liveRepudiations(list), nil
+}
+
+// allArtifactsOfType reads every live row of one type on this node, with no
+// permission filter and no limit.
+//
+// UNEXPORTED AND ONE CALLER, deliberately. Every read in this store goes
+// through ArtifactFilterSQL, and a function that skips it is a hole waiting for
+// a second caller who has not read why the first one is safe - see
+// LiveRepudiations for that argument. If a second use ever appears, the
+// question to ask again is whether ITS answer reveals a row or annotates one.
+func (d *DB) allArtifactsOfType(ctx context.Context, typ string) ([]*Artifact, error) {
+	rows, err := d.sql.QueryContext(ctx,
+		`SELECT `+artifactColumns+`
+		   FROM artifacts ar
+		  WHERE coalesce(ar.tombstone, false) = false
+		    AND ar.type = $1`, typ)
+	if err != nil {
+		return nil, fmt.Errorf("store: read every %s: %w", typ, err)
+	}
+	defer rows.Close()
+
+	out := []*Artifact{}
+	for rows.Next() {
+		art, err := scanArtifact(rows, nil)
+		if err != nil {
+			return nil, fmt.Errorf("store: read every %s: %w", typ, err)
+		}
+		out = append(out, art)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: read every %s: %w", typ, err)
+	}
+	// NO replacedBy PASS. It is a permission-filtered read of its own, and this
+	// one deliberately has no principal to filter by. A superseded repudiation
+	// is dropped by the caller on ReplacedBy being set, which the row carries
+	// only when that pass ran - so this list keeps a superseded row, and the
+	// effect is that a repudiation stays in force until the row REPLACING it
+	// also covers what it covered. That is the safe direction: a supersede that
+	// narrows a window takes effect when a filtered reader sees it, and until
+	// then the wider claim stands.
+	return out, nil
+}
+
+// liveRepudiations drops the ones that must not be applied to anybody.
+func liveRepudiations(list []*Artifact) []*Artifact {
 	keep := make([]*Artifact, 0, len(list))
 	for _, a := range list {
 		if strings.TrimSpace(a.ReplacedBy) != "" {
@@ -273,7 +353,7 @@ func (d *DB) Repudiations(ctx context.Context, p *Principal) ([]*Artifact, error
 		}
 		keep = append(keep, a)
 	}
-	return keep, nil
+	return keep
 }
 
 // Repudiated reports whether a repudiation covers this author at this reading,

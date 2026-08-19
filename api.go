@@ -599,7 +599,7 @@ func (s *server) handleListArtifacts(w http.ResponseWriter, r *http.Request) {
 	// page - see store.FillDisowned - so every row on it is judged against one
 	// state of the repudiations, which is the property a per-row lookup would
 	// lose.
-	if err := s.db.FillDisowned(r.Context(), p, list, nil); err != nil {
+	if err := s.db.FillDisowned(r.Context(), list, nil); err != nil {
 		log.Printf("disowned: could not resolve repudiations for an artifact page: %v", err)
 	}
 	body := map[string]any{"artifacts": list}
@@ -647,14 +647,14 @@ func (s *server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// AND WHETHER ITS AUTHOR HAS TAKEN IT BACK. One row, one read of the
-	// repudiations this caller may see - see store.FillDisowned, which carries
+	// every repudiation this node holds - see store.FillDisowned, which carries
 	// why the mark is a third reading rather than a replacement.
 	//
 	// A failure here does not fail the read: the row is what was asked for, and
 	// answering 500 because the mark could not be resolved would hide a row
 	// over an annotation on it. It is logged by the store call's own path and
 	// the field is simply absent, which is what every surface shows today.
-	if fillErr := s.db.FillDisowned(r.Context(), p, []*store.Artifact{art}, nil); fillErr != nil {
+	if fillErr := s.db.FillDisowned(r.Context(), []*store.Artifact{art}, nil); fillErr != nil {
 		log.Printf("disowned: could not resolve repudiations for %s: %v", art.ID, fillErr)
 	}
 	writeJSON(w, http.StatusOK, art)
@@ -1054,7 +1054,7 @@ func (s *server) handleListEvents(w http.ResponseWriter, r *http.Request) {
 		serverError(w, r, err)
 		return
 	}
-	if err := s.db.FillDisowned(r.Context(), p, nil, list); err != nil {
+	if err := s.db.FillDisowned(r.Context(), nil, list); err != nil {
 		log.Printf("disowned: could not resolve repudiations for an event page: %v", err)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"events": list})

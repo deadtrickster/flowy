@@ -30,20 +30,40 @@ import (
 // window alone would disown the whole fabric for that period - every row by
 // everybody, on the word of one person about their own key.
 
-// FillDisowned resolves Disowned on every artifact and event given, for the
-// repudiations this principal may read.
+// FillDisowned resolves Disowned on every artifact and event given, against
+// every repudiation this node holds.
 //
-// A reader who may not read a repudiation is not told about it, which follows
-// from asking through the permission-filtered list rather than around it: a
-// mark whose evidence you cannot open is a rumour, and this fabric already
-// refuses to hand those out.
+// EVERY ONE, not the ones this reader may open, and the change is the point of
+// the row it comes from (01M0BNAWCP). A repudiation is a fact about a
+// PRINCIPAL, and a principal writes in more than one project; artifact reach is
+// project-scoped, so asking through the filtered list answered "the
+// repudiations in your project" - which meant a subject had to file one per
+// project, and any project they forgot kept rendering the thief's rows as their
+// own word. `flowy principal repudiate` needed --project for that reason, and
+// the requirement was the defect.
+//
+// The first version of this file argued the opposite: a mark whose evidence you
+// cannot open is a rumour. That argument is about what a mark REVEALS, and this
+// one reveals nothing. It annotates rows the caller can already read, with a
+// claim the subject signed and published about their own authorship; the
+// repudiation's own body, reason and project stay behind the ordinary filter
+// (Repudiations), so what a reader who cannot open it learns is exactly what
+// its author wrote it to say - "that was not me".
+//
+// It is the same shape as the authorship check it sits beside: principalKeyOf
+// reads keys with no permission filter, because "whose word is this row" is not
+// a question about who is asking.
+// THE PRINCIPAL IS GONE FROM THE SIGNATURE, and that is not tidying. A
+// permission argument a function does not use is a lie about what it does: the
+// next reader sees `p` and concludes the answer is filtered by the caller, which
+// is exactly the belief this change makes false.
 func (d *DB) FillDisowned(
-	ctx context.Context, p *Principal, arts []*Artifact, events []*Event,
+	ctx context.Context, arts []*Artifact, events []*Event,
 ) error {
 	if len(arts) == 0 && len(events) == 0 {
 		return nil
 	}
-	reps, err := d.Repudiations(ctx, p)
+	reps, err := d.LiveRepudiations(ctx)
 	if err != nil {
 		return err
 	}

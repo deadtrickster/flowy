@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/deadtrickster/flowy/internal/store"
 	"github.com/deadtrickster/flowy/internal/ulid"
@@ -53,7 +54,7 @@ usage:
   flowy principal keygen --as P [--epoch N]    mint P a keypair here, and sign P's rows with it
   flowy principal pin --as P --key K [--epoch N]
                                                record P's public key, out of band
-  flowy principal repudiate --as P --from N --project X [--reason R]
+  flowy principal repudiate --as P --from N [--project X] [--reason R]
                                                rotate P's key and disown the window it replaces
   flowy principal exposed                      every principal with rows here and no key
 
@@ -189,24 +190,28 @@ func principalKeygen(args []string) error {
 // disowned row and the first row that must carry the new key - which is
 // precisely the moment a thief would want to write in.
 //
-// A PROJECT IS REQUIRED, and it is the honest limitation of this first cut. A
-// repudiation is a fact about a principal across the whole fabric, and artifact
-// reach here is project-scoped (see artifactReachSQL): a row with no project is
-// readable by its owner and nobody else, so a fabric-wide repudiation written
-// with no project would disown nothing for anyone but its author. Until that
-// gap is closed the subject names the project their rows are in, and runs it
-// again per project.
+// A PROJECT IS OPTIONAL AND DOES NOT BOUND WHAT THIS REACHES. It was required,
+// because the marking path read repudiations through the permission filter and
+// a fabric-wide claim written with no project was therefore readable by its
+// author alone. That was the defect rather than the design: a repudiation is a
+// fact about a PRINCIPAL, and a principal writes in more than one project, so
+// requiring one meant any project the subject forgot kept rendering the thief's
+// rows as their own word. The marking path now reads every repudiation this
+// node holds - see store.FillDisowned for why that reveals nothing - so this
+// flag decides only where the row is filed for people to READ, and one run
+// covers the principal everywhere.
 func principalRepudiate(args []string) error {
 	fs := flag.NewFlagSet("principal repudiate", flag.ContinueOnError)
 	who := fs.String("as", "", "the principal disowning their own rows")
 	from := fs.Int64("from", 0, "the clock reading the compromise starts at - everything this "+
 		"principal signed from here to the new epoch is disowned")
-	project := fs.String("project", "", "the project whose readers should see it")
+	project := fs.String("project", "", "the project to file it in; optional, and it does not "+
+		"limit who the repudiation reaches")
 	reason := fs.String("reason", "", "one line for a person reading the row later")
 	seedHex := fs.String("seed", "", "32 byte ed25519 seed in hex for the NEW key; random by default")
 	return withPrincipalDB(fs, args, func(ctx context.Context, db *store.DB) error {
-		if *who == "" || *from <= 0 || *project == "" {
-			return errors.New("repudiate needs --as, --from and --project")
+		if *who == "" || *from <= 0 {
+			return errors.New("repudiate needs --as and --from")
 		}
 		seed, err := decodeSeed(*seedHex)
 		if err != nil {
@@ -267,9 +272,12 @@ func principalRepudiate(args []string) error {
 				"Rows below the window and from the new epoch are unaffected."
 		}
 		a := &store.Artifact{
-			ID:         ulid.NewString(),
-			Type:       store.RepudiationType,
-			Project:    project,
+			ID:   ulid.NewString(),
+			Type: store.RepudiationType,
+			// Nil when no project was named: the claim is about a principal
+			// rather than about a project, and a row filed nowhere still marks
+			// their rows everywhere.
+			Project:    projectOrNil(project),
 			OwnerUser:  *who,
 			Title:      title,
 			Body:       body,
@@ -326,6 +334,14 @@ func principalRepudiate(args []string) error {
 		}
 		return printJSON(out)
 	})
+}
+
+// projectOrNil is the project to file under, or nothing.
+func projectOrNil(p *string) *string {
+	if p == nil || strings.TrimSpace(*p) == "" {
+		return nil
+	}
+	return p
 }
 
 // mustFields is the fields blob for a row this command builds itself.

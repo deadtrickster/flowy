@@ -270,3 +270,68 @@ func TestAReadingSurvivesTheFieldsBlob(t *testing.T) {
 		t.Fatalf("a window well inside float64's exact range was refused: %v", err)
 	}
 }
+
+// A repudiation is a fact about a PRINCIPAL, so it marks their rows in every
+// project - not only the one it happens to be filed in.
+//
+// The defect (01M0BNAWCP): the marking path read repudiations through the
+// permission filter, which is project-scoped. A subject therefore had to file
+// one per project, and any project they forgot kept rendering the thief's rows
+// as that person's own word. `flowy principal repudiate` required --project for
+// exactly that reason.
+func TestARepudiationMarksItsSubjectsRowsInEveryProject(t *testing.T) {
+	ctx, db := open(t)
+
+	here := declaredProject(t, ctx, db, "repudhere")
+	there := declaredProject(t, ctx, db, "repudthere")
+	alice := "u-" + ulid.NewString()
+	subject := &Principal{UserID: alice, Project: here}
+	// A reader who lives in the OTHER project and has never heard of the one
+	// the repudiation was filed in.
+	elsewhere := &Principal{UserID: "u-" + ulid.NewString(), Project: there}
+
+	rep := repudiation(t, alice, SpeakerSubject, 100, 1<<40)
+	rep.Project, rep.OwnerUser = &here, alice
+	if err := db.WriteRepudiation(ctx, subject, rep, nil); err != nil {
+		t.Fatalf("write the repudiation: %v", err)
+	}
+
+	// THE READER CANNOT OPEN THE ROW ITSELF, which is what makes this the real
+	// case rather than a restatement: the list surface still filters.
+	visible, err := db.Repudiations(ctx, elsewhere)
+	if err != nil {
+		t.Fatalf("list repudiations: %v", err)
+	}
+	for _, r := range visible {
+		if r.ID == rep.ID {
+			t.Fatal("a reader in another project can open the repudiation row, " +
+				"so this test is not measuring the marking path")
+		}
+	}
+
+	// And it is still applied to alice's row, because the mark annotates a row
+	// this reader can already read rather than revealing one they cannot.
+	all, err := db.LiveRepudiations(ctx)
+	if err != nil {
+		t.Fatalf("read every repudiation: %v", err)
+	}
+	hers := &Artifact{ID: ulid.NewString(), OwnerUser: alice, HLC: 500}
+	his := &Artifact{ID: ulid.NewString(), OwnerUser: "u-" + ulid.NewString(), HLC: 500}
+	if err := db.FillDisowned(ctx, []*Artifact{hers, his}, nil); err != nil {
+		t.Fatalf("fill: %v", err)
+	}
+	if hers.Disowned == nil {
+		t.Fatal("alice's row in another project was not marked, which is the whole defect")
+	}
+	if hers.Disowned.By != rep.ID {
+		t.Fatalf("marked by %q, want the repudiation %q", hers.Disowned.By, rep.ID)
+	}
+	// The negative control that has ridden with this feature from the start: a
+	// window is a range of readings and everybody writes into it at once.
+	if his.Disowned != nil {
+		t.Fatal("somebody else's row in the same window was marked")
+	}
+	if len(all) == 0 {
+		t.Fatal("the unfiltered read came back empty")
+	}
+}
