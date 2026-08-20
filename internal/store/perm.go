@@ -789,3 +789,70 @@ func (d *DB) GrantsFor(ctx context.Context, art *Artifact) ([]Grant, error) {
 	}
 	return out, nil
 }
+
+// GrantProject widens a seat's reach without re-minting it.
+//
+// 01M0FNQSZ2, from the operator: "how to grant an existing agent the access to
+// several projects?" Measured before building - there was no answer. The only
+// writer of token_projects was MintAgent, which DELETEs the whole set and
+// rewrites it, so widening meant minting a new token and replacing the old one
+// wherever it was configured: every agent file, every environment variable,
+// every long-running loop already holding it. That is a migration, not a grant.
+//
+// MINT'S RULE IS RIGHT AND STAYS. A mint that names a reach states the whole of
+// it, because leaving rows behind from a previous state would make re-minting a
+// way to widen a token by accident. This is a different verb saying a different
+// thing - "also this project", once, deliberately - and it is additive on
+// purpose.
+//
+// EVERY TOKEN THE SEAT HOLDS. Reach is a property of a credential, and an agent
+// may hold more than one; granting to some of them would make the seat's answer
+// depend on which credential it happened to present. The operator asked about
+// an AGENT, so the grant is about the agent.
+//
+// IDEMPOTENT, because a grant that has already happened is not an error. ON
+// CONFLICT DO NOTHING rather than a refusal: re-running the same grant is how
+// somebody makes sure, and making sure should not fail.
+func (d *DB) GrantProject(ctx context.Context, agentID, project string) (int, error) {
+	agentID, project = strings.TrimSpace(agentID), strings.TrimSpace(project)
+	if agentID == "" || project == "" {
+		return 0, fmt.Errorf("store: a grant needs an agent and a project")
+	}
+	// The project must exist. A grant naming a project nobody declared would be
+	// a row the foreign key refuses anyway, and refusing here says which of the
+	// two names was wrong.
+	var known bool
+	if err := d.sql.QueryRowContext(ctx,
+		`SELECT EXISTS (SELECT 1 FROM projects WHERE id = $1)`, project).Scan(&known); err != nil {
+		return 0, fmt.Errorf("store: grant %s: %w", project, err)
+	}
+	if !known {
+		return 0, fmt.Errorf("store: no project called %q on this node - "+
+			"declare it before granting it", project)
+	}
+
+	got, err := d.sql.ExecContext(ctx,
+		`INSERT INTO token_projects (token, project)
+		 SELECT t.token, $2 FROM tokens t WHERE t.agent_id = $1
+		 ON CONFLICT DO NOTHING`, agentID, project)
+	if err != nil {
+		return 0, fmt.Errorf("store: grant %s to %s: %w", project, agentID, err)
+	}
+	rows, _ := got.RowsAffected()
+	if rows == 0 {
+		// NOTHING WRITTEN IS TWO DIFFERENT FACTS and the caller needs to tell
+		// them apart: the seat has no tokens at all, or every token it has
+		// already reaches that project. Ask, rather than reporting a count of
+		// zero that reads as failure.
+		var tokens int
+		if err := d.sql.QueryRowContext(ctx,
+			`SELECT count(*) FROM tokens WHERE agent_id = $1`, agentID).Scan(&tokens); err != nil {
+			return 0, fmt.Errorf("store: grant %s to %s: %w", project, agentID, err)
+		}
+		if tokens == 0 {
+			return 0, fmt.Errorf("store: no agent called %q holds a token here, "+
+				"so there is nothing to widen", agentID)
+		}
+	}
+	return int(rows), nil
+}

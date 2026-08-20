@@ -429,6 +429,7 @@ var apiRoutes = []string{
 	"POST /api/rooms/{room}/leave",
 	"POST /api/todo/{id}/category",
 	"POST /api/todo/{id}/deps",
+	"POST /api/agent/{id}/projects",
 	"POST /api/user/{id}/role",
 	"POST /api/worklog",
 	"PUT /api/me",
@@ -486,6 +487,7 @@ func (s *server) routes() http.Handler {
 	api.HandleFunc("GET /api/artifacts", s.handleListArtifacts)
 	// Who may do what here, and only an operator may say. See internal/store/role.go.
 	api.HandleFunc("POST /api/user/{id}/role", s.operatorOnly(s.handleSetRole))
+	api.HandleFunc("POST /api/agent/{id}/projects", s.operatorOnly(s.handleGrantProject))
 	api.HandleFunc("POST /api/rooms", s.handleCreateRoom)
 	api.HandleFunc("GET /api/rooms", s.handleListRooms)
 	api.HandleFunc("POST /api/rooms/{room}/invite", s.handleInviteRoom)

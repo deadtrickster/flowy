@@ -149,6 +149,7 @@ var routeParams = map[string][]string{
 	"POST /api/merge/{id}/abandon":             {},
 	"POST /api/merge/{id}/blocked":             {},
 	"POST /api/merge/{id}/renew":               {},
+	"POST /api/agent/{id}/projects":            {},
 	"POST /api/merge/{id}/gate":                {},
 	"POST /api/merge/{id}/land":                {},
 	"POST /api/projects":                       {},
