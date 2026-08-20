@@ -215,7 +215,20 @@ func queueWaitCmd(rest []string) error {
 			// GONE IS NOT LANDED. Ask the row itself, which is the only thing
 			// that knows whether it landed, was abandoned, or simply stopped
 			// being readable to this caller.
-			return queueWaitGone(client, base, bearer, want)
+			//
+			// ASKED WITH THE ID THIS WAIT RESOLVED, not with what the caller
+			// typed. rowInQueue accepts a prefix - `--row 01M0FCNZJ2` finds the
+			// row - but GET /api/artifact takes the whole id and 404s on a
+			// prefix. So a short-id wait watched its row land and then reported
+			// "not in the queue and this seat cannot read it", exit 2, about a
+			// row that had just landed 706/0. Measured on my own row, twenty
+			// minutes after landing the prefix match: the resolution existed
+			// and was not carried one line further.
+			//
+			// last.ID is `want` until the row is seen and the full id after, so
+			// a wait that never saw its row still asks with what it was given -
+			// and the answer already says it cannot tell.
+			return queueWaitGone(client, base, bearer, last.ID)
 		case found.Red != nil && staleRed(*tip, found.Red.Tip):
 			// A RED ABOUT A TREE THE CALLER HAS ALREADY REPLACED, said once and
 			// then waited past. Measured as the cost of not doing this: a

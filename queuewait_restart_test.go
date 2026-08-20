@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -295,5 +296,37 @@ func TestAShortIdFindsTheRowItNames(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("the refusal does not name %q: %v", want, err)
 		}
+	}
+}
+
+// THE ID A WAIT RESOLVED IS THE ID IT MUST ASK WITH.
+//
+// rowInQueue accepts a prefix, because a short id is what this fleet writes.
+// GET /api/artifact does not: it takes the whole id and 404s on a prefix. So a
+// wait started with `--row 01M0FCNZJ2` found its row, watched it leave the
+// queue, asked the artifact door with the ten characters it had been given, got
+// a 404, and reported "not in the queue and this seat cannot read it" with exit
+// 2 - about a row that had just landed 706/0.
+//
+// Measured on my own row twenty minutes after landing the prefix match. The
+// resolution existed and was not carried one line further, which is the whole
+// defect.
+func TestTheGonePathAsksWithTheResolvedId(t *testing.T) {
+	var asked []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked = append(asked, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"status":"done","fields":{"branch":"feat/x","landed_tip":"abc1234"}}`)
+	}))
+	defer srv.Close()
+
+	// The full id, as the queue answer carried it.
+	full := "01FULLIDFULLIDFULLID"
+	last := mergeQueueItem{ID: full}
+	if err := queueWaitGone(srv.Client(), srv.URL, "t-1", last.ID); err != nil {
+		t.Fatalf("a landed row: %v", err)
+	}
+	if len(asked) != 1 || !strings.HasSuffix(asked[0], full) {
+		t.Fatalf("the gone path asked %v, want a read of %s", asked, full)
 	}
 }
