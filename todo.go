@@ -40,7 +40,7 @@ usage:
   flowy todo file  --title T [--room R] [--category C] [--assignee A] [--scope S] [body]
   flowy todo note  --id ID [text]
   flowy todo claim --id ID [--as WHO] [--expect WHO]
-  flowy todo done  --id ID [--status S] [--note "what was measured"]
+  flowy todo done  --id ID [--status S] [--note "what was measured"] [--duplicate-of ID]
 
 The body, and a note's text, is the argument or stdin.
 
@@ -429,6 +429,7 @@ func cliTodoDone(args []string) error {
 	id := fs.String("id", "", "the row to move")
 	status := fs.String("status", "done", "todo, active or done")
 	note := fs.String("note", "", "what was measured, written with the close")
+	dup := fs.String("duplicate-of", "", "the row that survives, when this close is a duplicate")
 	url, token, agent := doorFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -443,6 +444,14 @@ func cliTodoDone(args []string) error {
 	body := map[string]string{"status": *status}
 	if strings.TrimSpace(*note) != "" {
 		body["note"] = *note
+	}
+	// A CLOSE THAT NAMES A SURVIVOR. The node writes the same edge a
+	// superseding report writes and refuses the pair that closes into each
+	// other - see store.CloseAsDuplicate. The note is optional here for once,
+	// because naming the survivor has already said the measurement: the work is
+	// not gone, it is over there.
+	if strings.TrimSpace(*dup) != "" {
+		body["replaced_by"] = *dup
 	}
 	payload, err := json.Marshal(body)
 	if err != nil {

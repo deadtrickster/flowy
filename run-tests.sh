@@ -5439,6 +5439,55 @@ a_todo_is_assigned_by_somebody_who_did_not_write_it() {
 # test proves the rule; this proves that the HTTP route and the memory tool both
 # reach it rather than each holding an idea of their own - which is the failure
 # mode this whole file exists for.
+# TWO ROWS CLOSED INTO EACH OTHER LEAVE THE WORK FILED NOWHERE.
+#
+# MEASURED TWICE IN ONE EVENING between two seats working the same ask: each
+# filed a row within a minute of the other, and each then closed THEIR OWN as a
+# duplicate of the other's. Both ended done. Neither close is wrong on its own,
+# which is why nothing caught it - the pair is the defect, and the second close
+# is where it is refusable.
+#
+# Over the wire because the claim is about the DOOR: the store test proves the
+# rule and this proves the route reaches it, refuses with 400 rather than 500,
+# and leaves the survivor open.
+a_dedup_is_a_directed_edge() {
+	recall
+	local mine yours
+	api POST "$TOKEN_A" "/api/chat/$ROOM_CLOSE/todo" \
+		"$(jq -nc '{title: "the lock is keyed on the target name", body: "filed by the gate"}')" || return 1
+	mine="$(jqv .item.id)"
+	api POST "$TOKEN_A" "/api/chat/$ROOM_CLOSE/todo" \
+		"$(jq -nc '{title: "a target is a name, not an identity", body: "filed by the gate"}')" || return 1
+	yours="$(jqv .item.id)"
+
+	# The ordinary dedup, which must stay ordinary.
+	api POST "$TOKEN_A" "/api/artifact/$mine/status" \
+		"$(jq -nc --arg r "$yours" '{status: "done", replaced_by: $r}')" || return 1
+	want_eq "the duplicate closed" "$(jqv .artifact.status)" "done" || return 1
+	want_eq "and it names the survivor" "$(jqv .artifact.fields.supersedes)" "$yours" || return 1
+
+	# THE SECOND CLOSE, which is the one that ate the work twice.
+	want_status 400 POST "$TOKEN_A" "/api/artifact/$yours/status" \
+		"$(jq -nc --arg r "$mine" '{status: "done", replaced_by: $r}')" || return 1
+	case "$API_BODY" in
+	*"replace each other"*) ;;
+	*)
+		printf 'the refusal does not say what is wrong: %s\n' "$API_BODY" >&2
+		return 1
+		;;
+	esac
+
+	# AND THE SURVIVOR IS STILL OPEN, which is the whole point.
+	api GET "$TOKEN_A" "/api/artifact/$yours" || return 1
+	want_eq "the survivor stayed open" "$(jqv .status)" "todo" || return 1
+
+	# replaced_by only means something on a close. Refused rather than ignored:
+	# a caller who asked for what the node will not do should hear about it.
+	want_status 400 POST "$TOKEN_A" "/api/artifact/$yours/status" \
+		"$(jq -nc --arg r "$mine" '{status: "active", replaced_by: $r}')" || return 1
+	printf 'a dedup names the survivor, and two rows cannot replace each other\n'
+}
+
 a_close_says_what_was_measured() {
 	recall
 	api POST "$TOKEN_A" "/api/chat/$ROOM_CLOSE/todo" \
@@ -12094,6 +12143,8 @@ check "somebody who did not write a todo can close it, at both doors" \
 	a_todo_is_closed_by_somebody_who_did_not_write_it
 check "a close says what was measured, at both doors" \
 	a_close_says_what_was_measured
+check "a dedup names the survivor, and two rows cannot replace each other" \
+	a_dedup_is_a_directed_edge
 check "a todo you cannot read is a todo you cannot close" \
 	closing_a_todo_you_cannot_read_is_refused
 check "a closure says who made it and when, and a reopen appends" \

@@ -154,6 +154,18 @@ type statusRequest struct {
 	// The issue workflow below ignores it: a bug's trail is its own, and notes
 	// hang off queue items. That is the lifecycle the count was taken on.
 	Note string `json:"note"`
+	// ReplacedBy is the row that survives, when this close is a deduplication.
+	//
+	// It writes the same edge a superseding report writes - see
+	// store.SupersedesField - rather than a second relation meaning the same
+	// thing: "this is a duplicate of that" and "this is replaced by that" are
+	// one directed edge with different words on it, and every reader that
+	// already draws "replaced by" draws this for free.
+	//
+	// Only with status done, and only for a queue item. See
+	// store.CloseAsDuplicate, which refuses the pair that closes into each
+	// other.
+	ReplacedBy string `json:"replaced_by"`
 }
 
 // handleArtifactStatus moves an artifact through the workflow and records the
@@ -198,7 +210,7 @@ func (s *server) handleArtifactStatus(w http.ResponseWriter, r *http.Request) {
 	// below - the line, the terminal states, the trail event - is the issue
 	// workflow's, and a todo is not in it.
 	if store.IsQueueItem(art) {
-		s.queueStatusMove(w, r, art, to, req.Note)
+		s.queueStatusMove(w, r, art, to, req.Note, req.ReplacedBy)
 		return
 	}
 	if !knownStatus(to) {
@@ -263,9 +275,30 @@ func whatItIs(art *store.Artifact) string {
 // The answer is {artifact, event}, which is what this route has always answered
 // with - the console reads one shape whichever lifecycle the row is in.
 func (s *server) queueStatusMove(
-	w http.ResponseWriter, r *http.Request, art *store.Artifact, to, note string,
+	w http.ResponseWriter, r *http.Request, art *store.Artifact, to, note, replacedBy string,
 ) {
-	art, event, err := s.db.SetTodoStatus(r.Context(), principalOf(r), art.ID, to, note)
+	p := principalOf(r)
+	// A CLOSE THAT NAMES A SURVIVOR IS A DEDUPLICATION, which is the same verb
+	// with an edge on it - see store.CloseAsDuplicate. Naming one on any other
+	// move is refused rather than ignored: a caller who asked for something the
+	// node did not do should hear about it, and "replaced_by on a row going
+	// active" is a mistake with no sensible reading.
+	if strings.TrimSpace(replacedBy) != "" {
+		if to != store.DoneStatus {
+			writeJSON(w, http.StatusBadRequest, errorBody(
+				"replaced_by says which row survives a duplicate, so it only goes with "+
+					"status done - this move is to "+to))
+			return
+		}
+		art, event, err := s.db.CloseAsDuplicate(r.Context(), p, art.ID, replacedBy, note)
+		if err != nil {
+			s.writeQueueError(w, r, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"artifact": art, "event": event})
+		return
+	}
+	art, event, err := s.db.SetTodoStatus(r.Context(), p, art.ID, to, note)
 	if err != nil {
 		s.writeQueueError(w, r, err)
 		return
