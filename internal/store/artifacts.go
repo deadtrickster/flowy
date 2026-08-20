@@ -108,6 +108,33 @@ func scanArtifact(sc scanner, rank *float64) (*Artifact, error) {
 			a.External = &ref
 		}
 	}
+
+	// A ROW WITH NO TAGS IS AN EMPTY LIST, NOT null.
+	//
+	// pq.Array leaves the destination nil for a NULL column and for an empty
+	// one, so every artifact that nobody has tagged, cross-referenced or
+	// related came back with three nil slices - and Go marshals a nil slice as
+	// null. Measured 2026-08-20 on the live node: 200 rows, all three fields
+	// null on every one of them.
+	//
+	// A FRESH ROW IS AN EMPTY STATE and it exists on a node full of data, which
+	// is what makes this the half a fresh-node walk cannot see: the walk asks
+	// GETs on a node with nothing in it, and a POST answer describing a row
+	// created a moment ago carries the same nil with none of the emptiness.
+	// @flowy-claude found it on the attachment door answering a create.
+	//
+	// Defaulted HERE because scanArtifact is the one place every read path goes
+	// through - the alternative is each caller remembering, which is the same
+	// convention that produced the nil in the first place.
+	if a.Tags == nil {
+		a.Tags = []string{}
+	}
+	if a.UserTags == nil {
+		a.UserTags = []string{}
+	}
+	if a.Related == nil {
+		a.Related = []string{}
+	}
 	return &a, nil
 }
 
