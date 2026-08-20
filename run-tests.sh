@@ -11848,6 +11848,16 @@ a_room_looks_like_the_sidebar() {
 	node scripts/sidebar-consistent-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A"
 }
 
+# THE OPERATOR: "no notification no the usual red counter anywhere". Measured
+# then: document.title zero occurrences in web/src, the Notification API zero.
+# Every unread signal the console had was inside the console, so nothing could
+# call anybody back to it.
+the_tab_says_how_many_are_waiting() {
+	recall
+	cd "$ROOT/web" || return 1
+	node scripts/tab-counter-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A"
+}
+
 # THE OPERATOR REPORTED "old server parity" four or five times, and every
 # reading of it went looking for a missing widget. The widgets were all there -
 # the per-version table, the package download, the log viewer, and a filter set
@@ -19425,6 +19435,8 @@ check "related artifacts are rows, on a note and not only on a finding" \
 	related_rows_draw_on_any_artifact
 check "a room in the sidebar looks like the rest of the sidebar" \
 	a_room_looks_like_the_sidebar
+check "the browser tab says how many are waiting, and stops when none are" \
+	the_tab_says_how_many_are_waiting
 check "a screenshot pasted into a room arrives whole" \
 	a_screenshot_pasted_into_a_room_arrives_whole
 check "every control the console offers acknowledges the pointer" \

@@ -4,6 +4,7 @@ import { YourReaders } from "@/components/YourReaders";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { type Me, api } from "@/lib/api";
+import { enableDesktopNotices } from "@/lib/unread";
 
 /**
  * Your own row: the handle people see, and the password you get in with.
@@ -217,6 +218,8 @@ export function Profile() {
           </form>
         ) : null}
 
+        <DesktopNotices />
+
         {/*
           YOUR READERS, on the same page as your handle, because both answer
           "what does this token have on the node". A reader is a durable row
@@ -228,6 +231,57 @@ export function Profile() {
           <YourReaders />
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Desktop notices, asked for by a click and never on load.
+ *
+ * The operator asked for "optional browser notifications", and optional is the
+ * load-bearing word: `Notification.requestPermission()` has to come from
+ * something the reader pressed. A prompt on page load is what browsers made
+ * permanently dismissible, and a permission denied that way cannot be asked for
+ * again - so getting this wrong once costs the feature for good on that
+ * browser.
+ *
+ * It lives on Profile because that is already "your own settings", and because
+ * the alternative was the shell, which three other rows were holding.
+ *
+ * IT ALSO EXISTS SO THE OPT-IN REACHES THE BUILD. enableDesktopNotices was
+ * exported and imported by nothing, so the bundler dropped it - measured:
+ * `requestPermission` appeared 0 times in dist. An export nobody imports is not
+ * a feature, it is source code. This is the importer.
+ */
+function DesktopNotices() {
+  const [state, setState] = useState<string>(() =>
+    typeof Notification === "undefined" ? "unsupported" : Notification.permission,
+  );
+
+  const ask = async () => setState(await enableDesktopNotices());
+
+  return (
+    <div className="flex flex-col gap-1 text-xs" data-desktop-notices="">
+      <span className="text-muted-foreground">desktop notices</span>
+      {state === "granted" ? (
+        <span data-notices-state="granted">
+          on - a room that gains unread while this tab is in the background will say so
+        </span>
+      ) : state === "denied" ? (
+        <span data-notices-state="denied">
+          refused in this browser. Nothing here can re-ask - it has to be changed in the browser's
+          own site settings.
+        </span>
+      ) : state === "unsupported" ? (
+        <span data-notices-state="unsupported">this browser has no Notification API</span>
+      ) : (
+        <div className="flex items-center gap-2">
+          <Button type="button" variant="secondary" onClick={ask} data-notices-ask="">
+            allow desktop notices
+          </Button>
+          <span className="text-muted-foreground">off. The tab counter works either way.</span>
+        </div>
+      )}
     </div>
   );
 }
