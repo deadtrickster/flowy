@@ -1585,7 +1585,23 @@ export const api = {
       body: JSON.stringify({ body, parents, ...(thread ? { thread } : {}) }),
     }),
 
-  inbox: (since = 0) => request<ChatPage>(`/api/inbox?since=${since}`),
+  /**
+   * inbox is everything you may read and did not write.
+   *
+   * WHICH END OF THE LOG IS THE WHOLE QUESTION. With no order the door answers
+   * the OLDEST page - right for a cursor-follower asking "the next page after
+   * my mark", and wrong for "what happened while I was away". Measured on the
+   * live node 2026-08-20: 200 events, the newest of them four days old, on a
+   * node that had taken thousands since. The overview card had been showing a
+   * fixed window from the 16th to everybody who opened it.
+   *
+   * recent takes the other end and hands them back NEWEST FIRST, which is the
+   * order a glance wants. A caller that follows a cursor keeps the default.
+   */
+  inbox: ({ since = 0, recent = false, limit = 0 } = {}) =>
+    request<ChatPage>(
+      `/api/inbox?${recent ? "order=recent" : `since=${since}`}${limit > 0 ? `&limit=${limit}` : ""}`,
+    ),
 
   /**
    * Where this token's readers have got to. The console holds one per room and

@@ -11437,6 +11437,55 @@ the_console_shows_a_token_its_own_readers() {
 	node scripts/readers-panel-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" "$quiet" "$live"
 }
 
+# WHICH END OF THE LOG THE INBOX DOOR ANSWERS FROM.
+#
+# ListEvents orders ascending and applies LIMIT, so a read with no cursor takes
+# the OLDEST page. Right for a cursor-follower asking "the next page after my
+# mark"; wrong for "what happened while I was away", which is asked with no
+# cursor at all.
+#
+# MEASURED on the live node 2026-08-20 by two seats independently: GET
+# /api/inbox answered 200 events whose newest was FOUR DAYS OLD, on a node that
+# had taken thousands since. The console card had been showing a fixed window
+# from the 16th to everybody who opened it, and the card's own subtitle said
+# "oldest first" - the order was known and what it MEANT was not.
+#
+# THE FIXTURE IS A PAGE AND A HALF, because with fewer messages than a limit
+# both ends are the same page and every arm passes on a defect. That is exactly
+# why it survived: a scratch node with a small inbox cannot show it.
+the_inbox_answers_the_end_it_is_asked_for() {
+	recall
+	local i
+	for i in $(seq 1 60); do
+		want_status 200 POST "$TOKEN_OP" /api/chat/inboxend/say \
+			"{\"body\": \"end-fixture $i\"}" >/dev/null || return 1
+	done
+
+	api GET "$TOKEN_A" '/api/inbox?room=inboxend&limit=10' || return 1
+	want_eq "no order takes the oldest page" "$(jqv '.events[0].body')" "end-fixture 1" || return 1
+	want_eq "and ends there" "$(jqv '.events[-1].body')" "end-fixture 10" || return 1
+
+	api GET "$TOKEN_A" '/api/inbox?room=inboxend&order=recent&limit=10' || return 1
+	want_eq "order=recent takes the newest, newest first" \
+		"$(jqv '.events[0].body')" "end-fixture 60" || return 1
+	want_eq "and reads backwards from there" "$(jqv '.events[-1].body')" "end-fixture 51" || return 1
+
+	# THE CURSOR IS THE HIGHEST READING IN THE PAGE, whichever end it came from.
+	# cursorOf answers list[last], which is the OLDEST row under order=recent, so
+	# a caller that paged the new end and then followed the cursor would walk
+	# back through what it had just been handed.
+	local top
+	top="$(jqv .cursor)"
+	api GET "$TOKEN_A" "/api/inbox?room=inboxend&since=$top" || return 1
+	want_eq "and following it asks for nothing already seen" "$(jqv '.events | length')" 0 || return 1
+
+	# Two instructions that contradict each other are refused rather than
+	# resolved in some order nobody stated.
+	want_status 400 GET "$TOKEN_A" '/api/inbox?order=recent&since=5' || return 1
+	want_status 400 GET "$TOKEN_A" '/api/inbox?order=sideways' || return 1
+	printf 'both ends answered, the cursor is the top of the page, and the contradictions are refused\n'
+}
+
 # THE OVERVIEW'S INBOX FOLLOWS THE LOG, AND DOES NOT SPIN WHILE IT IS QUIET.
 #
 # MEASURED 2026-08-20 (01M0EE7B3J): Home.tsx read /api/inbox inside a single
@@ -18788,6 +18837,8 @@ check "node B survived the authorship checks" kill -0 "$NODE5B_PID"
 say "the terminal client"
 check "the tui reaches the node only through the HTTP API" tui_talks_only_to_the_api
 check "flowy tui refuses to start with no token anywhere" tui_needs_a_token
+check "the inbox door answers the end of the log it is asked for" \
+	the_inbox_answers_the_end_it_is_asked_for
 check "the overview's inbox follows the log, and does not spin while it is quiet" \
 	the_overview_inbox_follows_the_log
 check "a wait with no subject, or with two, is refused" a_wait_with_no_subject_is_refused

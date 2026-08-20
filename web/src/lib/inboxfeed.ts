@@ -61,6 +61,12 @@ export const INBOX_READER = "overview:inbox";
  */
 const WINDOW = 25;
 
+/**
+ * How many of the newest messages the card holds. Small on purpose: this is a
+ * glance at what arrived, not a reader - the room is where a log is read.
+ */
+const INBOX_PAGE = 50;
+
 /** How long to hold off after a failed read, so a broken node is not hammered. */
 const FAIL_PAUSE = 5_000;
 
@@ -75,8 +81,17 @@ export function useInboxFeed(token: string | null) {
   const [events, setEvents] = useState<FlowyEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
 
+  /**
+   * THE NEW END OF THE LOG, and that is not a preference.
+   *
+   * With no order the door answers the oldest page it has: measured on the live
+   * node, 200 events whose newest was four days old, on a node that had taken
+   * thousands since. The card was not stale by a page load - it was pinned to
+   * the first 200 things ever said to this token. Wiring a waiter to a card
+   * that re-reads the wrong end would have been a fix that changed nothing.
+   */
   const readNow = useCallback(async () => {
-    const page = await api.inbox();
+    const page = await api.inbox({ recent: true, limit: INBOX_PAGE });
     // The slice as the node sends it, which is null when it is empty.
     setEvents(page.events ?? []);
     setError(null);

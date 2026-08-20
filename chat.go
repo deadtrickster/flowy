@@ -899,15 +899,53 @@ func (s *server) handleInbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// WHICH END OF THE LOG, and the default answers the wrong question.
+	//
+	// ListEvents orders by seq_hlc ascending and applies LIMIT, so a read with
+	// no cursor takes the OLDEST page. That is right for the door this was
+	// written for - a cursor-follower asking "the next page after my mark" must
+	// get them in order - and wrong for the question the console asks, which is
+	// "what happened while I was away" with no cursor at all.
+	//
+	// MEASURED on the live node 2026-08-20, by two seats independently: GET
+	// /api/inbox answered 200 events, the newest of them four days old, on a
+	// node that had taken thousands since. The console's overview card has been
+	// showing a fixed window from the 16th to whoever opened it, ever since the
+	// node got busy. The card even says "oldest first" on its face - the order
+	// was known and what it MEANT was not.
+	//
+	// order=recent takes the other end, exactly as GET /api/chat/{room} has
+	// done since it was written, and through the same store call the room uses.
+	// The default is unchanged, because a cursor-follower is a real caller and
+	// this door has some.
 	all := scopeAll(r, p)
-	list, err := s.db.ListEvents(r.Context(), p, store.EventQuery{
+	query := store.EventQuery{
 		Type:      chatEventType,
 		Room:      q.Get("room"),
 		Since:     since,
 		NotActors: []string{p.UserID, p.AgentID},
 		ScopeAll:  all,
 		Limit:     intParam(q.Get("limit")),
-	})
+	}
+	var list []*store.Event
+	switch q.Get("order") {
+	case "", "log":
+		list, err = s.db.ListEvents(r.Context(), p, query)
+	case "recent":
+		// Since is not a window on this path: RecentEvents takes the newest
+		// Limit rows there are, and a cursor plus "newest first" is two
+		// contradictory instructions rather than one narrowing.
+		if since > 0 {
+			writeJSON(w, http.StatusBadRequest,
+				errorBody("since follows the log forwards and order=recent reads the other end: "+
+					"ask for one or the other"))
+			return
+		}
+		list, err = s.db.RecentEvents(r.Context(), p, query)
+	default:
+		writeJSON(w, http.StatusBadRequest, errorBody("order must be log or recent"))
+		return
+	}
 	if err != nil {
 		serverError(w, r, err)
 		return
@@ -926,12 +964,34 @@ func (s *server) handleInbox(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"events": list,
 		"since":  since,
-		"cursor": cursorOf(since, list),
+		// THE HIGHEST READING IN THE PAGE, whichever end it was taken from.
+		// cursorOf answers list[last], which is the newest under order=log and
+		// the OLDEST under order=recent - so a caller that paged the new end and
+		// then followed the cursor would walk backwards through what it had just
+		// been handed. A cursor is "everything up to here", and up-to-here is
+		// the maximum however the rows are sorted.
+		"cursor": highestReading(since, list),
 		// The inbox spans rooms, so its project is whatever its rows carry -
 		// nothing when they carry nothing, which a direct message does. See
 		// roomProjectOf.
 		"project": roomProjectOf(list),
 	})
+}
+
+// highestReading is the newest reading in a page, or the cursor the caller came
+// with when the page is empty.
+//
+// It exists because cursorOf assumes ascending order and this door now answers
+// both ends of the log. Written as a maximum rather than as "list[0] when
+// recent" so that it cannot be wrong about an order it was not told.
+func highestReading(since int64, list []*store.Event) int64 {
+	top := since
+	for _, e := range list {
+		if e != nil && e.SeqHLC > top {
+			top = e.SeqHLC
+		}
+	}
+	return top
 }
 
 // readRoom is the one read the three chat endpoints share, so the room view,

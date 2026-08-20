@@ -67,7 +67,7 @@ var routeParams = map[string][]string{
 	"GET /api/forge/status":                      {"artifact"},
 	"GET /api/instructions":                      {},
 	"POST /api/instructions":                     {},
-	"GET /api/inbox":                             {"limit", "room", "scope", "since"},
+	"GET /api/inbox":                             {"limit", "order", "room", "scope", "since"},
 	"GET /api/inbox/readers":                     {},
 	"GET /api/inbox/tasks":                       {"limit", "state"},
 	"GET /api/inbox/unread":                      {"as", "room"},

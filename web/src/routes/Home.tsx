@@ -87,7 +87,7 @@ export function Home() {
         <Card>
           <CardHeader>
             <CardTitle>inbox</CardTitle>
-            <CardDescription>chat you may see and did not write, oldest first</CardDescription>
+            <CardDescription>chat you may see and did not write, newest first</CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-2">
             {error ? <div className="text-destructive text-sm">{error}</div> : null}
