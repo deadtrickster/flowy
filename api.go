@@ -439,14 +439,14 @@ func (s *server) filedHeardIn(r *http.Request, art *store.Artifact) *store.Event
 	if err != nil {
 		return nil
 	}
-	return &store.Event{
+	return heardInProject(&store.Event{
 		Type:   chatEventType,
 		Room:   room,
 		Thread: art.ID,
 		Actor:  actor,
 		Body:   body,
 		Meta:   withTrace(json.RawMessage(meta), traceIDOf(r)),
-	}
+	}, art)
 }
 
 // filedSaidFor is WHETHER to say anything and WHAT, with no principal and no
@@ -502,14 +502,14 @@ func (s *server) supersedeHeardIn(r *http.Request, art *store.Artifact) *store.E
 	if err != nil {
 		return nil
 	}
-	return &store.Event{
+	return heardInProject(&store.Event{
 		Type:   chatEventType,
 		Room:   room,
 		Thread: was.ID,
 		Actor:  actor,
 		Body:   "superseded " + firstLineOf(was.Title) + " - " + firstLineOf(art.Title),
 		Meta:   withTrace(json.RawMessage(meta), traceIDOf(r)),
-	}
+	}, was)
 }
 
 // project resolves the three states of the project field: absent means the
@@ -1407,4 +1407,40 @@ func assigneeArg(raw string) (name string, unassigned bool, err error) {
 		return "", false, err
 	}
 	return name, false, nil
+}
+
+// heardInProject stamps the project a room announcement belongs to.
+//
+// EVERY *HeardIn BUILDER LEFT IT NIL, and a nil project is not "unset" at the
+// read - EventFilterSQL treats a projectless event as one no project scopes, so
+// it is returned to a reader holding no grant on the row it is about. A message
+// saying "filed <branch> for the queue: <id>" in #general reached a principal
+// who cannot read the branch, the row, or that room in their own project.
+//
+// Measured 2026-08-20 by the gate, six failures with one cause: three counting
+// checks ("messages in the room is 3, want 2") and three permission checks
+// ("pa's messages, read from pc is 1, want 0"). The filing announcement was
+// only the one that made it visible - a merge row is filed early enough in the
+// run to pollute every room count after it. supersedeHeardIn, claimHeardIn and
+// landingHeardIn have been doing the same on master since they landed, and no
+// check counted a room after those.
+//
+// THE ROW'S PROJECT, NOT THE SPEAKER'S. chat.go stamps a message with the
+// principal's home project, which is right for something a person says: they
+// said it, from where they are. An announcement is not said by anybody - it is
+// the node reporting a row - and it belongs to the room in the project that row
+// lives in. The two are the same in every case today, and they stop being the
+// same the moment an operator with two projects files into the second.
+//
+// A ROW THAT NAMES NO PROJECT LEAVES THE EVENT AS IT WAS. There is nothing to
+// narrow it to, and inventing a project to scope a message by would hide it
+// from everybody rather than from the wrong people.
+func heardInProject(e *store.Event, art *store.Artifact) *store.Event {
+	if e == nil || art == nil || art.Project == nil {
+		return e
+	}
+	if p := strings.TrimSpace(*art.Project); p != "" {
+		e.Project = &p
+	}
+	return e
 }

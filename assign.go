@@ -327,7 +327,7 @@ func (s *server) assignmentMessage(
 	if err != nil {
 		return nil, err
 	}
-	return &store.Event{
+	return heardInProject(&store.Event{
 		Type:    chatEventType,
 		Room:    room,
 		Thread:  thread,
@@ -335,7 +335,7 @@ func (s *server) assignmentMessage(
 		Actor:   actor,
 		Body:    assignmentSaid(art.Title, was, now),
 		Meta:    withTrace(json.RawMessage(meta), traceIDOf(r)),
-	}, nil
+	}, art), nil
 }
 
 // claimHeardIn is the message the room reads when a row changes hands through

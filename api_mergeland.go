@@ -151,14 +151,14 @@ func (s *server) landingHeardIn(r *http.Request, id, sha string) ([]*store.Event
 	if note := store.GateNoteOf(art); note != "" {
 		body += " (" + firstLineOf(note) + ")"
 	}
-	return []*store.Event{{
+	return []*store.Event{heardInProject(&store.Event{
 		Type:   chatEventType,
 		Room:   room,
 		Thread: art.ID,
 		Actor:  actor,
 		Body:   body,
 		Meta:   withTrace(json.RawMessage(meta), traceIDOf(r)),
-	}}, nil
+	}, art)}, nil
 }
 
 // firstLineOf is one line of what a run said, for a sentence that must stay one

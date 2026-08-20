@@ -72,3 +72,57 @@ func TestAFiledBranchIsHeardInItsRoom(t *testing.T) {
 		t.Errorf("a todo was announced by the merge path: %q", b)
 	}
 }
+
+// AN ANNOUNCEMENT BELONGS TO THE ROW'S PROJECT, and until this it belonged to
+// none.
+//
+// A nil project is not "unset" at the read: EventFilterSQL treats a projectless
+// event as one no project scopes, so it goes to a reader holding no grant on
+// the row it is about. The gate found it as six failures with one cause - three
+// counting a room ("messages in the room is 3, want 2") and three reading one
+// across a project boundary ("pa's messages, read from pc is 1, want 0").
+//
+// THE EMPTY STRING IS NOT A PROJECT. A row whose project is present but blank
+// must leave the event alone rather than scope it to "", which would hide the
+// message from everybody instead of from the wrong people - the same
+// empty-is-not-missing confusion that broke landing fleet-wide the same night.
+func TestAnAnnouncementIsScopedToTheRowsProject(t *testing.T) {
+	proj := func(s *string) *store.Artifact { return &store.Artifact{ID: "01ROW", Project: s} }
+	str := func(s string) *string { return &s }
+
+	for _, c := range []struct {
+		name string
+		art  *store.Artifact
+		want string // "" means the event must be left unscoped
+	}{
+		{"a row in a project scopes the message", proj(str("flowy")), "flowy"},
+		{"a row naming no project leaves it alone", proj(nil), ""},
+		{"an empty project is not a project", proj(str("")), ""},
+		{"blank is trimmed, not stamped", proj(str("   ")), ""},
+		{"and the value is trimmed when it is real", proj(str(" flowy ")), "flowy"},
+		{"no row at all is not a crash", nil, ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			e := heardInProject(&store.Event{Room: "general"}, c.art)
+			if c.want == "" {
+				if e.Project != nil {
+					t.Fatalf("project is %q, want unscoped", *e.Project)
+				}
+				return
+			}
+			if e.Project == nil {
+				t.Fatalf("project is unscoped, want %q - the message reaches readers with no grant on the row", c.want)
+			}
+			if *e.Project != c.want {
+				t.Fatalf("project is %q, want %q", *e.Project, c.want)
+			}
+		})
+	}
+
+	// A nil event stays nil: three of the four builders return nil when there is
+	// no room to say anything in, and this must not turn that into a panic on
+	// the write path.
+	if heardInProject(nil, proj(str("flowy"))) != nil {
+		t.Fatal("a nil announcement came back non-nil")
+	}
+}
