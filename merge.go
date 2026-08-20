@@ -30,6 +30,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"slices"
 	"strings"
 	"time"
@@ -89,6 +90,50 @@ func mergeCmd(args []string) error {
 }
 
 // mergeOpen files one merge request.
+// heldBy answers WHERE a branch is checked out, and tells that apart from not
+// knowing.
+//
+// Three answers, not two:
+//
+//	path, true   the branch is attached to a worktree at path
+//	"", true     it is not attached anywhere, measured
+//	"", false    THIS TREE CANNOT ANSWER - not a git repo, or a repo that does
+//	             not carry the branch, so its worktree list is about some other
+//	             history entirely
+//
+// The third is the whole point of the signature. A caller that collapses it
+// into "not held" gets a confident clean from a directory that has never heard
+// of the branch, which is the same defect as a nil slice serialising to null:
+// a failure to know rendered as a successful no. Twelve of those were found in
+// this codebase in one day.
+func heldBy(branch string) (string, bool) {
+	// Does this directory own the branch at all? `git worktree list` in an
+	// unrelated clone happily lists that clone's worktrees and finds nothing,
+	// which reads exactly like a clean answer about the branch in question.
+	if err := exec.Command("git", "rev-parse", "--verify", "--quiet",
+		"refs/heads/"+branch).Run(); err != nil {
+		return "", false
+	}
+	out, err := exec.Command("git", "worktree", "list", "--porcelain").Output()
+	if err != nil {
+		return "", false
+	}
+	// --porcelain is stable and line-oriented on purpose: the human format
+	// aligns columns and abbreviates, and a path with a space in it is
+	// unparseable from it. Records are blank-line separated, "worktree <path>"
+	// then optionally "branch refs/heads/<name>".
+	at := ""
+	for _, line := range strings.Split(string(out), "\n") {
+		switch {
+		case strings.HasPrefix(line, "worktree "):
+			at = strings.TrimPrefix(line, "worktree ")
+		case line == "branch refs/heads/"+branch:
+			return at, true
+		}
+	}
+	return "", true
+}
+
 func mergeOpen(args []string) error {
 	fs := flag.NewFlagSet("merge open", flag.ContinueOnError)
 	branch := fs.String("branch", "", "the branch this would land")
@@ -108,6 +153,33 @@ func mergeOpen(args []string) error {
 		return errors.New("a merge request says which branch it would land: pass --branch\n\n" +
 			mergeUsage)
 	}
+	// REFUSED AT THE DOOR, because fifteen minutes later it costs a measurement.
+	//
+	// A branch checked out in any worktree cannot be rebased, so the drainer
+	// picks the row up, records a block and moves on. From outside the row looks
+	// stalled rather than fixable, and by then whoever filed it has gone on to
+	// something else. FIVE TIMES on 2026-08-20, across three agents - the worst
+	// cost an hour on an unrelated flake because the row also carried a red, and
+	// mine sat blocked for 25 minutes while I reported that I was waiting for
+	// the gate. Here the person is still at the keyboard and the fix is one
+	// command.
+	//
+	// BEFORE THE NETWORK, deliberately: no token is resolved, no row is written,
+	// nothing to withdraw. A refusal that has already filed something is a
+	// second thing to clean up.
+	//
+	// AND IT SAYS WHERE. "that branch is checked out" sends somebody to
+	// `git worktree list`; the path plus the command is the whole fix, and the
+	// drainer's own block message already names it, so the string was proven
+	// useful before it was put here.
+	if at, known := heldBy(name); known && at != "" {
+		return fmt.Errorf("%s is checked out in %s, so the drainer cannot rebase it - "+
+			"detach that worktree first:\n\n"+
+			"    git -C %s checkout --detach\n\n"+
+			"then file this again. Filed as it stands, the row would be picked up, "+
+			"blocked, and left looking stalled", name, at, at)
+	}
+
 	body, err := bodyOrStdin(fs.Args(), "file", mergeUsage)
 	if err != nil {
 		return err
