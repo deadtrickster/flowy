@@ -72,8 +72,13 @@ var routeNeeds = map[string]string{
 	"POST /api/dm/{to}":                          needsWrite,
 	"POST /api/events":                           needsWrite,
 	"POST /api/finding/{id}/evidence":            needsWrite,
-	"POST /api/forge/file":                       needsWrite,
-	"POST /api/forge/sync":                       needsOperator,
+	// Its twin beside it. Recording where a finding went is a change to the
+	// project's own row, which is what needsWrite means - and it is deliberately
+	// not needsOperator: somebody who filed the issue but could not say so would
+	// have to ask the finding's author to say it for them.
+	"POST /api/finding/{id}/upstream": needsWrite,
+	"POST /api/forge/file":            needsWrite,
+	"POST /api/forge/sync":            needsOperator,
 	// The mock forge's own doors, registered only when the node runs one. They
 	// drive a fixture rather than a project, and they are the node's to drive:
 	// a person in a project has no business steering another project's forge
