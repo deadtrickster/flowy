@@ -58,7 +58,26 @@ try {
 
   await page.addInitScript((t) => localStorage.setItem("flowy.token", t), token);
   await page.goto(`${base}/`, { timeout: 20_000 }).catch(() => {});
-  await page.waitForTimeout(3000);
+
+  // WAIT FOR THE READER TO EXIST BEFORE SAYING ANYTHING. A reader is declared
+  // at the head of what the token can read, so a message said before the
+  // declaration lands sits above the snapshot the page already took and below
+  // the mark the reader starts at - seen by neither. A fixed sleep here passed
+  // on my machine and went red in the gate, which is a race in the INSTRUMENT
+  // reported as a defect in the code.
+  const readerReady = async () => {
+    const res = await fetch(`${base}/api/inbox/readers`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) return false;
+    const body = await res.json();
+    return (body.readers ?? []).some((r) => r.reader === "overview:inbox");
+  };
+  const until = Date.now() + 30_000;
+  while (!(await readerReady())) {
+    if (Date.now() > until) die("the overview never declared its inbox reader");
+    await new Promise((r) => setTimeout(r, 500));
+  }
   if (crashes.length > 0) die(`the overview threw: ${crashes.join("; ")}`);
 
   const marker = `inbox-follows-${Date.now()}`;
@@ -92,8 +111,7 @@ try {
       doors[key] = (doors[key] ?? 0) + 1;
     }
     die(
-      `the overview made ${during} requests in 40 quiet seconds - that is a spin, not a wait: ` +
-        JSON.stringify(doors),
+      `the overview made ${during} requests in 40 quiet seconds - that is a spin, not a wait: ${JSON.stringify(doors)}`,
     );
   }
 

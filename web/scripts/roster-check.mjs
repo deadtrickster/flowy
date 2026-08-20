@@ -164,6 +164,12 @@ ${JSON.stringify(await line.innerText())}`,
   // listeners of unknown kind, six of them, until the operator said it was a
   // mess. The pane answers "is anybody hearing me", so a row that has never
   // called the inbox does not belong in it.
+  //
+  // THE PREFIX IS A PROXY FOR "PER-ROOM BOOKMARK", not for "the console". A
+  // console reader that genuinely polls belongs in this pane and lives outside
+  // this namespace for that reason - see INBOX_READER in lib/inboxfeed.ts,
+  // which is `overview:inbox` because named `console:inbox` it was refused here
+  // by a rule it does not break.
   const bookmarks = await lines.evaluateAll((nodes) =>
     nodes
       .map((n) => n.getAttribute("data-listener") || "")

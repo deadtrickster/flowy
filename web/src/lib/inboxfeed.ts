@@ -33,8 +33,21 @@ import { type FlowyEvent, api } from "@/lib/api";
  * room, and which the readers panel on /profile can now show and drop.
  */
 
-/** The label this console waits under. Its own, and per principal. */
-export const INBOX_READER = "console:inbox";
+/**
+ * The label this console waits under. Its own, and per principal.
+ *
+ * NOT `console:inbox`, and the collision is worth writing down. `console:<room>`
+ * is the namespace lib/unread.tsx keeps a human's unread PLACE in - bookmarks
+ * that hold a position and never poll. The room roster excludes them by that
+ * prefix, because "is anybody hearing me" must not be answered by a bookmark.
+ *
+ * This reader polls, so it belongs in that pane, and named `console:inbox` it
+ * was refused by a guard whose rule it does not break - measured, as a gate red
+ * on roster-check.mjs. The prefix was a proxy for "per-room bookmark" and this
+ * is not one, so it lives outside the namespace rather than being let through
+ * it.
+ */
+export const INBOX_READER = "overview:inbox";
 
 /**
  * How long the node holds each request open. The same window the room uses, so
@@ -79,21 +92,28 @@ export function useInboxFeed(token: string | null) {
     const controller = new AbortController();
 
     const run = async () => {
-      // The snapshot FIRST, so the card is filled before anything blocks. A
-      // waiter-first order would leave the page empty for a whole window on
-      // every load of a quiet inbox, which reads as "you have nothing".
+      // THE READER IS DECLARED BEFORE THE SNAPSHOT IS READ, and the order is
+      // the whole of what makes this lossless. A reader is declared at the HEAD
+      // of what the token can read, so anything said between the snapshot and
+      // the declaration would sit above the snapshot and below the mark - seen
+      // by neither, until something else happened to wake the loop.
+      //
+      // Measured as a gate red: the check said something a few seconds after
+      // the page loaded, the declaration had not landed yet on a busy machine,
+      // and the message was never shown. It is one small request before the
+      // card fills, not a window.
+      try {
+        await api.declareInboxReader(INBOX_READER, "cursor");
+      } catch {
+        // A reader that cannot be declared means no waiter. The snapshot below
+        // still fills the card, and the loop reports the failure once when its
+        // first wait fails rather than twice here.
+      }
+
       try {
         await readNow();
       } catch (err) {
         if (!stopped) setError((err as Error).message);
-      }
-
-      try {
-        await api.declareInboxReader(INBOX_READER, "cursor");
-      } catch {
-        // A reader that cannot be declared means no waiter, and the card stays
-        // on whatever the snapshot above got. Reported by the loop below when
-        // its first wait fails, rather than twice.
       }
 
       while (!stopped) {
