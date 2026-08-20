@@ -28,6 +28,16 @@ interface Session {
   logIn: (handle: string, password: string) => Promise<void>;
   /** And out, which ends the session at the node rather than forgetting it here. */
   logOut: () => Promise<void>;
+  /**
+   * Ask the node again who this is.
+   *
+   * For acts that change what whoami ANSWERS without changing the credential -
+   * entering a project is the first of them. The session cannot notice that on
+   * its own: nothing about the token or the cookie moved, only the row behind
+   * it, and a console that kept its own copy of "which project" would disagree
+   * with the node from the moment a switch was refused.
+   */
+  refresh: () => void;
 }
 
 const SessionContext = createContext<Session | null>(null);
@@ -42,6 +52,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   // or a logout - so the ask below runs again without this file keeping its own
   // copy of the answer.
   const [asked, setAsked] = useState(0);
+  // The same trigger the login and logout paths use, exposed: see refresh in
+  // the interface above.
+  const refresh = useCallback(() => setAsked((n) => n + 1), []);
 
   // token and asked are TRIGGERS, not reads. The request carries whichever
   // credential the browser has - the bearer through authHeader, the session
@@ -92,7 +105,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <SessionContext.Provider value={{ token, whoami, error, loading, signIn, logIn, logOut }}>
+    <SessionContext.Provider
+      value={{ token, whoami, error, loading, signIn, logIn, logOut, refresh }}
+    >
       {children}
     </SessionContext.Provider>
   );

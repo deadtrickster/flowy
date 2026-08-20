@@ -13121,6 +13121,24 @@ a_project_you_read_is_one_you_can_look_into() {
 
 check "a project you can read is a project you can look into" \
 	a_project_you_read_is_one_you_can_look_into
+# THE SWITCHER, and the state anybody actually meets first.
+#
+# The operator asked twice - "how to switch projects", then "still no project
+# switcher for me" - while project_members, sessions.project, principalFor and
+# the enter door had all landed. Nothing drew them, so from where they sat none
+# of it existed. A capability nobody can reach is a capability nobody has.
+#
+# The check leads with BELONGING TO NOTHING because that is true of every person
+# on every node today, and an empty list rendered silently is the same silence
+# the row was filed against.
+browser_offers_the_projects_a_person_may_work_in() {
+	recall
+	cd "$ROOT/web" || return 1
+	node scripts/switch-project-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A"
+}
+
+check "the console offers the projects a person may work in" \
+	browser_offers_the_projects_a_person_may_work_in
 check "the console says which project this token writes in, in a browser" \
 	browser_says_which_project_this_token_is_in
 check "the roster draws what each listener can do, distinctly, in a browser" \

@@ -392,6 +392,21 @@ export interface Whoami {
   project_declared?: boolean;
   project_fixture?: boolean;
   project_origin?: string;
+  /**
+   * The projects this PERSON belongs to - where they may work, which is not
+   * the same question as what they may read. A grant points at projects they
+   * have never joined; membership is where their writes are allowed to land.
+   *
+   * [] for somebody who belongs to nothing, and that is the state every person
+   * on this node is in right now: project_members is empty everywhere. ABSENT
+   * would mean "this node does not report memberships", which is a different
+   * answer and one a client cannot tell from an empty list - see the field's
+   * comment on the node side.
+   *
+   * An agent has none at all: a seat's reach is minted into its token, a
+   * different mechanism for a different kind of credential.
+   */
+  memberships?: string[] | null;
 }
 
 /** MeUser is the registry's row for the person or seat behind this request. */
@@ -1882,6 +1897,21 @@ export const api = {
 
   /** And out. Always 200, cookie cleared, whether or not one was sent. */
   logout: () => request<{ ok: boolean }>("/api/logout", { method: "POST" }),
+
+  /**
+   * Put this session into one of the projects this person belongs to.
+   *
+   * A SESSION ACT, NOT A CREDENTIAL ONE: nothing about who you are changes,
+   * only where your writes land - which is why it needs no re-auth and why a
+   * bearer token cannot call it. The node answers where you are now writing
+   * rather than "ok", and this returns that answer so the caller says it out
+   * loud rather than assuming the click worked.
+   */
+  enterProject: (project: string) =>
+    request<{ project: string; writing_in: string }>(
+      `/api/projects/${encodeURIComponent(project)}/enter`,
+      { method: "POST" },
+    ),
 
   /**
    * The rooms this reader has closed, as a personal note on the node.

@@ -1,4 +1,5 @@
 import { type ProjectsPage, api } from "@/lib/api";
+import { useSession } from "@/lib/session";
 import { useEffect, useState } from "react";
 
 /**
@@ -37,6 +38,13 @@ export function Projects() {
   // and a page that fires requests it knows will be refused teaches its reader
   // that refusals are normal.
   const [rooms, setRooms] = useState<Record<string, string[]>>({});
+  // Switching is a session act, so the session is what has to be re-read after
+  // it: whoami is where the active project and the memberships come from, and
+  // a page that kept its own copy would disagree with the node the moment the
+  // switch failed.
+  const { whoami, refresh } = useSession();
+  const [switching, setSwitching] = useState("");
+  const [refused, setRefused] = useState("");
 
   useEffect(() => {
     let live = true;
@@ -128,6 +136,37 @@ export function Projects() {
         state - a person's session before a seat is chosen - and it says so
         rather than drawing a blank where a name goes.
       */}
+      {/*
+        WHERE THIS PERSON MAY WORK, and the control that moves them.
+        The operator asked twice - "how to switch projects", then "still no
+        project switcher for me" - while every part underneath it had landed
+        and nothing drew it. A capability nobody can reach is a capability
+        nobody has.
+      */}
+      <MembershipSwitcher
+        memberships={whoami?.memberships}
+        current={page.current ?? ""}
+        busy={switching}
+        refused={refused}
+        onEnter={async (project) => {
+          setRefused("");
+          setSwitching(project);
+          try {
+            const answer = await api.enterProject(project);
+            // SAY WHERE THE NODE PUT YOU, not where the click asked to go.
+            // `flowy say` prints the project it wrote into rather than the one
+            // it was told to, and that is the only reason this whole area was
+            // findable.
+            setPage((was) => (was ? { ...was, current: answer.writing_in } : was));
+            refresh();
+          } catch (err) {
+            setRefused(err instanceof Error ? err.message : String(err));
+          } finally {
+            setSwitching("");
+          }
+        }}
+      />
+
       <section className="rounded-md border border-border bg-card/40 p-4" data-current-panel>
         <div className="text-muted-foreground text-xs uppercase tracking-wide">
           you are writing in
@@ -231,5 +270,95 @@ export function Projects() {
         this page skipped. Declaring a project is the same - the door exists, nothing calls it yet.
       </p>
     </div>
+  );
+}
+
+/**
+ * The projects this person belongs to, and one click to work in another.
+ *
+ * NOT THE REGISTRY. The list below this one is every project on the node; this
+ * is the shorter list of places this person may WRITE, and conflating them
+ * would offer a switch that the node refuses - a control that exists to be
+ * denied teaches a reader that the tool is broken.
+ *
+ * BELONGING TO NOTHING IS THE FIRST STATE ANYBODY MEETS. project_members is
+ * empty on every node today, so this panel says so in words and says what to do
+ * about it, rather than rendering an empty list and leaving somebody to wonder
+ * whether it failed to load. That is the whole complaint this row came from.
+ */
+function MembershipSwitcher({
+  memberships,
+  current,
+  busy,
+  refused,
+  onEnter,
+}: {
+  memberships?: string[] | null;
+  current: string;
+  busy: string;
+  refused: string;
+  onEnter: (project: string) => void;
+}) {
+  // ABSENT IS NOT EMPTY, here as at the door: null means the node did not say -
+  // an agent's credential, or a whoami that has not arrived - and an empty
+  // array means this person belongs to nothing. They read differently because
+  // they are different, and only one of them is a thing to act on.
+  if (memberships == null) {
+    return null;
+  }
+  return (
+    <section
+      className="flex flex-col gap-2 rounded-md border border-border p-4"
+      data-memberships={memberships.length}
+    >
+      <div className="text-muted-foreground text-xs uppercase tracking-wide">
+        where you may work
+      </div>
+      {memberships.length === 0 ? (
+        <p className="text-muted-foreground text-sm">
+          you belong to no project yet, so your writes have nowhere to land. An owner of a project -
+          or this node's operator - puts you in one:{" "}
+          <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs">
+            POST /api/projects/&lt;project&gt;/members {"{"}"user": "&lt;your handle&gt;"{"}"}
+          </code>
+        </p>
+      ) : (
+        <ul className="flex flex-wrap gap-2">
+          {memberships.map((project) => {
+            const here = project === current;
+            return (
+              <li key={project}>
+                <button
+                  type="button"
+                  data-enter-project={project}
+                  data-enter-current={here ? "yes" : "no"}
+                  disabled={here || busy !== ""}
+                  onClick={() => onEnter(project)}
+                  className={
+                    here
+                      ? "cursor-default rounded border border-primary bg-primary/10 px-2 py-1 font-mono text-primary text-sm"
+                      : "cursor-pointer rounded border border-border px-2 py-1 font-mono text-sm hover:bg-accent"
+                  }
+                >
+                  {project}
+                  {here ? " · here" : ""}
+                  {busy === project ? " · switching…" : ""}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {/*
+        A REFUSED SWITCH SAYS THE NODE'S OWN SENTENCE. It already tells "you are
+        not a member of X" from "there is no project called X", and a generic
+        "could not switch" would throw away the half that says what to do.
+      */}
+      {refused ? (
+        <p className="text-destructive text-xs" data-enter-refused>
+          {refused}
+        </p>
+      ) : null}
+    </section>
   );
 }
