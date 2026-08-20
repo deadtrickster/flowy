@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# THE GATE FOR THIS PROJECT, declared where the project is rather than in the
+# drainer.
+#
+# The drainer used to run `./run-tests.sh` with flowy's Postgres paths spliced
+# into PATH and LD_LIBRARY_PATH, because that is what flowy's suite is called
+# and what flowy's suite needs. For a second project both are wrong, and wrong
+# in the quiet direction: a missing suite reads as a red rather than as a
+# misconfiguration, and a project that has never needed Postgres inherits a
+# requirement it does not have. 01M0DZPFQD.
+#
+# So the drainer runs THIS, from the root of the checkout, and the project says
+# what "run the tests" means. The contract is small on purpose:
+#
+#   - exit 0 is green, anything else is red. The drainer records the verdict; it
+#     does not interpret the failure.
+#   - stdout carries a line matching `^passed: N failed: M`, which is what the
+#     row's note is built from and what a seat with no access to this machine
+#     reads in `flowy queue`. A gate with nothing to count may print
+#     `passed: 1 failed: 0`.
+#   - FLOWY_AGENT is unset by the drainer before this runs. Do not set it: a
+#     named seat outranks an explicit credential in resolveToken, so a suite
+#     that inherits one measures the wrong principal.
+#
+# WHERE POSTGRES LIVES IS THE MACHINE'S BUSINESS, not the project's. The project
+# requires Postgres 17 binaries and their libraries; this machine keeps them
+# under ~/.local, and another may not. The defaults are what the drainer used to
+# hardcode, so nothing changes here today.
+set -euo pipefail
+
+PGBIN=${FLOWY_PG_BIN:-$HOME/.local/pg17-bin}
+PGLIB=${FLOWY_PG_LIB:-$HOME/.local/pg17-libs}
+
+export PATH="$PGBIN:$PATH"
+export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:+$LD_LIBRARY_PATH:}$PGLIB"
+
+exec ./run-tests.sh "$@"
