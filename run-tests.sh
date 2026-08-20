@@ -20181,6 +20181,200 @@ the_suite_refuses_to_call_nothing_a_pass() {
 		"$out"
 }
 
+# ------------------------------------------------------- the push scan
+#
+# scripts/pre-push.sh refuses a push that would publish a credential. These
+# checks exist because that guard has the failure mode every guard has: it goes
+# quiet, and quiet reads exactly like clean. Both directions are asserted -
+# it refuses what it should AND passes what it should - because "it refuses"
+# on its own is also true of a script that refuses everything.
+#
+# NO FIXTURE FILE HOLDS A TOKEN-SHAPED STRING, and that is not squeamishness:
+# the guard scans this repository, so a literal in a checked-in test would be
+# refused by the very check it was written for, and the first person to hit it
+# would reach for the skip. Every planted secret below is assembled at run time
+# from halves that match nothing on their own.
+
+# planted_secrets DIR - write one file holding one example of each shape the
+# scanner knows, built from parts. Prints nothing.
+planted_secrets() {
+	local dir="$1" ulid="01M0G9ZZZZZZZZZZZZZZZZZZZZ"
+	{
+		printf 'tok = "%s%s-%s"\n' t fakeagent "$ulid"
+		printf -- '-----BEGIN RSA %s KEY-----\n' 'PRIVATE'
+		printf 'pat: %s%s\n' gh "p_0123456789abcdefghijABCDEFGHIJ012345"
+		printf 'aws = "%s%s"\n' AKIA ABCDEFGHIJKLMNOP
+		printf 'password = "%s"\n' Xk7Qm2Vn9pLr4Zt8
+	} >"$dir/planted.conf"
+}
+
+# a_repo_with DIR - an initialised repository with one clean commit, whose sha
+# is printed. The caller commits whatever it wants to measure on top.
+a_repo_with() {
+	local dir="$1"
+	git init -q -b master "$dir" >/dev/null 2>&1 || return 1
+	git -C "$dir" config user.email a@b
+	git -C "$dir" config user.name a
+	git -C "$dir" config commit.gpgsign false
+	printf 'seed\n' >"$dir/seed"
+	git -C "$dir" add seed
+	git -C "$dir" commit -qm seed
+	git -C "$dir" rev-parse HEAD
+}
+
+the_push_scan_refuses_every_shape_it_knows() {
+	local repo base out shape
+	repo="$(mktemp -d)" || return 1
+	base="$(a_repo_with "$repo")" || {
+		rm -rf "$repo"
+		return 1
+	}
+	planted_secrets "$repo"
+	git -C "$repo" add planted.conf
+	git -C "$repo" commit -qm planted
+
+	out="$(cd "$repo" && bash "$ROOT/scripts/pre-push.sh" --range "$base..HEAD" 2>&1)" && {
+		printf 'a range holding five credentials was allowed\n'
+		rm -rf "$repo"
+		return 1
+	}
+	# EACH SHAPE NAMED SEPARATELY. One regex matching everything would pass a
+	# check that only asserted "it refused", and four dead patterns would ride
+	# along behind the one that still works.
+	for shape in flowy-token private-key github-pat aws-key assigned-secret; do
+		printf '%s' "$out" | grep -q "\[$shape\]" || {
+			printf 'the refusal does not name %s:\n%s\n' "$shape" "$out"
+			rm -rf "$repo"
+			return 1
+		}
+	done
+	# AND IT SAYS WHERE. A refusal nobody can act on gets skipped rather than
+	# fixed, so file and line are part of the contract, not presentation.
+	printf '%s' "$out" | grep -q 'planted.conf:[0-9]' || {
+		printf 'the refusal does not name the file and line:\n%s\n' "$out"
+		rm -rf "$repo"
+		return 1
+	}
+	rm -rf "$repo"
+}
+
+the_push_scan_allows_a_range_with_nothing_in_it() {
+	local repo base
+	repo="$(mktemp -d)" || return 1
+	base="$(a_repo_with "$repo")" || {
+		rm -rf "$repo"
+		return 1
+	}
+	printf 'ordinary\n' >"$repo/f"
+	git -C "$repo" add f
+	git -C "$repo" commit -qm ordinary
+	(cd "$repo" && bash "$ROOT/scripts/pre-push.sh" --range "$base..HEAD" >/dev/null 2>&1) || {
+		printf 'an ordinary commit was refused - the scan refuses everything\n'
+		rm -rf "$repo"
+		return 1
+	}
+	rm -rf "$repo"
+}
+
+# THE RANGE IS THE POINT, and this is the check that would have caught the
+# scan run by hand on 2026-08-20: it read HEAD and would have reported clean
+# with a credential sitting in an earlier commit. A secret added and then
+# REMOVED inside the range is still published by the push.
+the_push_scan_reads_the_range_and_not_the_tip() {
+	local repo base
+	repo="$(mktemp -d)" || return 1
+	base="$(a_repo_with "$repo")" || {
+		rm -rf "$repo"
+		return 1
+	}
+	planted_secrets "$repo"
+	git -C "$repo" add planted.conf
+	git -C "$repo" commit -qm planted
+	git -C "$repo" rm -q planted.conf
+	git -C "$repo" commit -qm removed
+	(cd "$repo" && bash "$ROOT/scripts/pre-push.sh" --range "$base..HEAD" >/dev/null 2>&1) && {
+		printf 'a credential added and removed inside the range was allowed - the\n'
+		printf 'scan is reading the tip, and the commit still publishes it\n'
+		rm -rf "$repo"
+		return 1
+	}
+	# The other half of the same rule: a credential BELOW the range is somebody
+	# else's already-published problem, and refusing it here would mean no push
+	# ever succeeds again.
+	(cd "$repo" && bash "$ROOT/scripts/pre-push.sh" --range "HEAD~1..HEAD" >/dev/null 2>&1) || {
+		printf 'a range above the credential was refused - every later push is\n'
+		printf 'now blocked by a commit nobody can reach\n'
+		rm -rf "$repo"
+		return 1
+	}
+	rm -rf "$repo"
+}
+
+# A SCAN THAT MEASURED NOTHING IS NOT A PASS - the suite's own rule, applied to
+# the guard. A hook wired up wrong gets no refs on stdin, and exiting 0 there
+# would be indistinguishable from a clean push for as long as it took anybody
+# to notice.
+a_push_scan_that_read_no_refs_is_not_a_pass() {
+	local status
+	bash "$ROOT/scripts/pre-push.sh" </dev/null >/dev/null 2>&1
+	status=$?
+	want_eq "the exit status of a scan given no refs" "$status" 2
+}
+
+# END TO END, THROUGH GIT ITSELF. Everything above calls the script. This one
+# installs the hook and runs a real `git push`, because the hook contract -
+# refs arrive on stdin, a non-zero exit stops the push - is the part a
+# script-level test cannot reach, and it is the part that has to hold.
+an_installed_hook_stops_a_real_push() {
+	local repo remote before
+	repo="$(mktemp -d)" || return 1
+	remote="$(mktemp -d)" || {
+		rm -rf "$repo"
+		return 1
+	}
+	git init -q --bare "$remote" >/dev/null 2>&1
+	a_repo_with "$repo" >/dev/null || {
+		rm -rf "$repo" "$remote"
+		return 1
+	}
+	git -C "$repo" remote add origin "$remote"
+	bash "$ROOT/scripts/install-pre-push.sh" "$repo" >/dev/null || {
+		rm -rf "$repo" "$remote"
+		return 1
+	}
+	bash "$ROOT/scripts/install-pre-push.sh" --check "$repo" >/dev/null 2>&1 || true
+
+	planted_secrets "$repo"
+	git -C "$repo" add planted.conf
+	git -C "$repo" commit -qm planted
+
+	# THE FIRST PUSH OF A NEW REF, which is the case that made this row: the
+	# remote has never seen master, git hands the hook all-zeros for the remote
+	# sha, and a range-only implementation quietly scans nothing.
+	git -C "$repo" push -q origin master >/dev/null 2>&1 && {
+		printf 'the first push of a branch full of credentials succeeded\n'
+		rm -rf "$repo" "$remote"
+		return 1
+	}
+	before="$(git -C "$remote" rev-parse --verify master 2>/dev/null || printf none)"
+	want_eq "what the remote holds after a refused push" "$before" none || {
+		rm -rf "$repo" "$remote"
+		return 1
+	}
+
+	# AND IT IS NOT REFUSING EVERYTHING. Same repository, same hook, the
+	# credentials rewritten out - the push now goes through.
+	git -C "$repo" rm -q planted.conf
+	git -C "$repo" commit -qm removed
+	git -C "$repo" reset -q --hard HEAD~2
+	git -C "$repo" push -q origin master >/dev/null 2>&1 || {
+		printf 'a clean branch was refused by the hook - it blocks every push\n'
+		rm -rf "$repo" "$remote"
+		return 1
+	}
+	rm -rf "$repo" "$remote"
+}
+
 check "the suite refuses to call a run of nothing a pass" \
 	the_suite_refuses_to_call_nothing_a_pass
 check "the repo's shell scripts are all found" shell_scripts_enumerated
@@ -20207,6 +20401,16 @@ check "bootstrap.sh refuses an argument it does not know, and says how to call i
 	bootstrap_refuses_misuse
 check "handoff-runner.sh refuses to run with no deploy/.env, and says where it comes from" \
 	handoff_runner_refuses_without_config
+check "the push scan refuses every credential shape it knows, and says which" \
+	the_push_scan_refuses_every_shape_it_knows
+check "the push scan allows a range with no credentials in it" \
+	the_push_scan_allows_a_range_with_nothing_in_it
+check "the push scan reads the range being pushed and not the tip" \
+	the_push_scan_reads_the_range_and_not_the_tip
+check "a push scan that read no refs is not a pass" \
+	a_push_scan_that_read_no_refs_is_not_a_pass
+check "an installed hook stops a real push and lets a clean one through" \
+	an_installed_hook_stops_a_real_push
 
 # ------------------------------------------------------------------- verdict
 
