@@ -12912,6 +12912,24 @@ check "raising a todo offers nobody a saved password or a stored card, in a brow
 	browser_does_not_offer_a_password_over_a_todo
 check "each speaker is drawn in their own colour, in a browser" \
 	browser_colours_the_speakers
+# WHICH PROJECT THIS TOKEN WRITES IN, on a page.
+#
+# MEASURED 2026-08-20: the node has GET and POST /api/projects, lib/api.ts calls
+# the first, and no route drew either - projects existed, could be declared, and
+# had no surface at all. The cost was already on the record: two messages went
+# into another project's #general from this machine, and the only thing that
+# ever said so was the line `flowy say` prints after the fact.
+#
+# In a browser rather than against the door, because the door was never the
+# broken half.
+browser_says_which_project_this_token_is_in() {
+	recall
+	cd "$ROOT/web" || return 1
+	node scripts/projects-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A"
+}
+
+check "the console says which project this token writes in, in a browser" \
+	browser_says_which_project_this_token_is_in
 check "the roster draws what each listener can do, distinctly, in a browser" \
 	browser_shows_what_a_listener_can_do
 check "a typed URL is a link, and the mention beside it survives" \

@@ -1,5 +1,6 @@
 import {
   Activity as ActivityIcon,
+  Boxes,
   Brain,
   Bug,
   FilePlus,
@@ -106,6 +107,17 @@ export function Shell({ children }: { children: ReactNode }) {
           <NavLink to="/todos" className={navClass}>
             <ListChecks className="h-4 w-4" />
             todos
+          </NavLink>
+          {/*
+            WHICH PROJECT THIS TOKEN WRITES IN. The rail says "flowy" at the
+            top and that is the product's name, not the project's - and every
+            project has a #general, so a room name stops being an address the
+            moment there is more than one. Two messages went into pa/#general
+            from this machine and nobody saw them for ten minutes.
+          */}
+          <NavLink to="/projects" className={navClass}>
+            <Boxes className="h-4 w-4" />
+            projects
           </NavLink>
           <NavLink to="/memory" className={navClass}>
             <Brain className="h-4 w-4" />

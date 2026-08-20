@@ -17,6 +17,7 @@ import { Metrics } from "@/routes/Metrics";
 import { NewEntity } from "@/routes/NewEntity";
 import { NotFound } from "@/routes/NotFound";
 import { Profile } from "@/routes/Profile";
+import { Projects } from "@/routes/Projects";
 import { Reports } from "@/routes/Reports";
 import { TaskView } from "@/routes/TaskView";
 import { Todos } from "@/routes/Todos";
@@ -84,6 +85,13 @@ export default function App() {
           <Route path="/login" element={<Login />} />
           <Route path="/profile" element={<Profile />} />
           <Route path="/new" element={<NewEntity />} />
+          {/*
+          WHICH PROJECT YOU ARE IN, and what else exists. Two doors and no
+          surface until now: lib/api.ts called GET /api/projects and nothing
+          drew the answer. See routes/Projects.tsx for what the page can and
+          cannot say.
+        */}
+          <Route path="/projects" element={<Projects />} />
           <Route path="/todos" element={<Todos />} />
           {/*
           The merge tab was a useState in Todos.tsx until now, which made
