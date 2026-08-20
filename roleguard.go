@@ -114,11 +114,19 @@ var routeNeeds = map[string]string{
 	"POST /api/todo/{id}/edit":             needsWrite,
 	"POST /api/todo/{id}/note":             needsWrite,
 	"POST /api/user/{id}/role":             needsOperator,
-	"POST /api/work/{id}/claim":            needsWrite,
-	"POST /api/work/{id}/done":             needsWrite,
-	"POST /api/work/{id}/release":          needsWrite,
-	"POST /api/worklog":                    needsWrite,
-	"POST /api/activity":                   needsWrite,
+	// The VM doors. Operator rather than write, deliberately: spawning starts
+	// a process on the host with a copy of a project tree in it, and say and
+	// down reach into one already running. A writer is somebody who may file
+	// rows; that is a different thing from somebody who may run code on the
+	// machine serving this node.
+	"POST /api/vm/spawn":          needsOperator,
+	"POST /api/vm/{name}/say":     needsOperator,
+	"POST /api/vm/{name}/down":    needsOperator,
+	"POST /api/work/{id}/claim":   needsWrite,
+	"POST /api/work/{id}/done":    needsWrite,
+	"POST /api/work/{id}/release": needsWrite,
+	"POST /api/worklog":           needsWrite,
+	"POST /api/activity":          needsWrite,
 	// Your own handle and password. A reader must be able to change their own
 	// password - a role in a project says what you may do IN THAT PROJECT, not
 	// whether you may hold an account.
