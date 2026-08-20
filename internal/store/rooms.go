@@ -27,6 +27,12 @@ import (
 const (
 	RoleOwner  = "owner"
 	RoleMember = "member"
+	// RoleReader is a PROJECT role - somebody who reads a project and writes
+	// nothing in it. It is declared beside the other two because they are one
+	// vocabulary: the same word must not mean different things in the room
+	// table and the project table. It has no meaning for a room yet; a room
+	// nobody may write in is a different question and nobody has asked it.
+	RoleReader = "reader"
 )
 
 // ErrRoomTaken is a create that lands on a name this project already has. It is

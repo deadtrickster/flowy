@@ -19,6 +19,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -332,6 +333,71 @@ func (d *DB) ProjectsOfUser(ctx context.Context, userID string) ([]string, error
 		out = append(out, project)
 	}
 	return out, rows.Err()
+}
+
+// The roles a person has in a PROJECT are the same words a room already uses -
+// see RoleOwner and RoleMember in rooms.go, and RoleReader beside them. One
+// vocabulary for both, deliberately: "owner" meaning two different things
+// depending on which table it is in is how a reader learns to distrust the
+// word.
+//
+// Only two of them decide anything today: a reader cannot write, and an owner
+// can invite. The operator's finer cases - "some cant close or cant rause" -
+// are real and are NOT here yet, because a role name that no door checks is a
+// label, and this whole file exists to keep that from happening.
+// RoleName is what to call a role in a sentence a person reads, including the
+// case where they have none: BEING IN NO PROJECT IS NOT BEING A READER IN IT,
+// and a refusal that said "you are a reader" to somebody who is not a member at
+// all would send them to ask for the wrong thing.
+func RoleName(role string) string {
+	switch strings.TrimSpace(role) {
+	case "":
+		return "not a member"
+	case RoleReader:
+		return "a reader"
+	case RoleOwner:
+		return "an owner"
+	case RoleMember:
+		return "a member"
+	default:
+		return strconv.Quote(role)
+	}
+}
+
+// RoleMayWrite reports whether that role can put something into the project.
+//
+// UNKNOWN ROLES MAY NOT WRITE. A role this build does not recognise arrives
+// from a newer node, a hand-edited row, or a name somebody will add next week -
+// and the safe reading of "I do not know what this means" is the one that
+// refuses. A reader wrongly refused says so immediately; a writer wrongly
+// allowed is discovered by reading the rows they wrote.
+func RoleMayWrite(role string) bool {
+	switch strings.TrimSpace(role) {
+	case RoleMember, RoleOwner:
+		return true
+	default:
+		return false
+	}
+}
+
+// RoleInProject is what this person is in that project, or "" when they are not
+// a member of it at all.
+func (d *DB) RoleInProject(ctx context.Context, userID, project string) (string, error) {
+	userID, project = strings.TrimSpace(userID), strings.TrimSpace(project)
+	if userID == "" || project == "" {
+		return "", nil
+	}
+	var role string
+	err := d.sql.QueryRowContext(ctx,
+		`SELECT role FROM project_members WHERE user_id = $1 AND project = $2`,
+		userID, project).Scan(&role)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("store: role in project: %w", err)
+	}
+	return strings.TrimSpace(role), nil
 }
 
 // MayInvite says whether this user can put somebody else into that project.

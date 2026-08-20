@@ -235,7 +235,7 @@ func (s *server) principalFor(r *http.Request) (*store.Principal, error) {
 		log.Printf("session project: %v", err)
 		project = ""
 	}
-	return &store.Principal{UserID: user.ID, Project: project}, nil
+	return &store.Principal{UserID: user.ID, Project: project, ViaSession: true}, nil
 }
 
 // principalOf returns the principal the middleware resolved for r.

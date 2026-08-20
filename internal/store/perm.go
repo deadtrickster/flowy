@@ -101,9 +101,25 @@ func ScopeForVisibility(visibility string) string {
 // only principal that ?scope=all obeys, it is decided by local configuration
 // rather than by a row, and it is never consulted by anything that replicates.
 type Principal struct {
-	Token   string `json:"-"`
-	UserID  string `json:"user"`
-	AgentID string `json:"agent,omitempty"`
+	// ViaSession says this principal came from a person's LOGIN - a cookie
+	// session - rather than from a bearer token.
+	//
+	// IT DECIDES WHICH SCOPING MECHANISM APPLIES, which is the whole reason it
+	// exists. A token carries its own reach, minted into it (token_projects); a
+	// session carries a person working somewhere, and what they may do there is
+	// their project_members role. Two mechanisms because there are two kinds of
+	// credential, and asking the wrong one of the wrong principal is not a
+	// stricter check, it is a different question.
+	//
+	// MEASURED, and it is why this field is not "is a person": the gate's own
+	// TOKEN_A resolves to a USER with no agent, and so does the operator's own
+	// credential. A guard that read "has a user and no agent" as "logged in"
+	// refused 321 checks in one run - every seat on this node holds a token,
+	// and none of them is a session.
+	ViaSession bool   `json:"-"`
+	Token      string `json:"-"`
+	UserID     string `json:"user"`
+	AgentID    string `json:"agent,omitempty"`
 	// AgentKind is the kind of the agent the token names, when it names one:
 	// worker|reviewer|system|monitor. It comes off the agents row at the same
 	// time as the user and the project do, because it is part of the same

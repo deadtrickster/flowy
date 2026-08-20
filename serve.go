@@ -754,7 +754,13 @@ func (s *server) routes() http.Handler {
 	// governs is IN it, and a route that is absent is indistinguishable from one
 	// declared to take nothing - see TestEveryGuardedRouteDeclaresItsParams.
 	s.apiPatterns = api.patterns
-	mux.Handle("/api/", s.observed(s.authenticate(paramGuard(api.ServeMux, api))))
+	// THE ORDER IS THE MEANING: authenticate resolves who this is, paramGuard
+	// refuses a request nobody can answer, and roleGuard refuses one this
+	// person may not make. Roles after parameters because a reader typing a
+	// misspelled parameter should be told about the parameter - the answer
+	// they can act on - rather than about a permission that was never their
+	// problem.
+	mux.Handle("/api/", s.observed(s.authenticate(paramGuard(api.ServeMux, s.roleGuard(api.ServeMux, api)))))
 
 	return logRequests(mux)
 }
