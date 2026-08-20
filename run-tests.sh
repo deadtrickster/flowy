@@ -11848,6 +11848,22 @@ a_room_looks_like_the_sidebar() {
 	node scripts/sidebar-consistent-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A"
 }
 
+# THE OPERATOR REPORTED "old server parity" four or five times, and every
+# reading of it went looking for a missing widget. The widgets were all there -
+# the per-version table, the package download, the log viewer, and a filter set
+# richer than the old console's. What was missing was the SHAPE: the old console
+# put the list and the finding on one screen, and this one made a reader leave
+# the list to read one and come back to run the next.
+#
+# Asserted as GEOMETRY rather than as markup. "Beside" is a fact about where two
+# boxes sit, and a check on a class name would pass on a pane rendered under the
+# list, which is the thing being fixed.
+a_finding_opens_beside_the_list() {
+	recall
+	cd "$ROOT/web" || return 1
+	node scripts/finding-pane-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A"
+}
+
 a_screenshot_pasted_into_a_room_arrives_whole() {
 	recall
 	cd "$ROOT/web" || return 1
@@ -19304,6 +19320,8 @@ check "the tui reaches the node only through the HTTP API" tui_talks_only_to_the
 check "flowy tui refuses to start with no token anywhere" tui_needs_a_token
 check "a room the reader closed leaves the sidebar, and stays closed" \
 	a_closed_room_leaves_the_sidebar_and_stays_closed
+check "a finding opens beside the list, and closing it leaves the list" \
+	a_finding_opens_beside_the_list
 check "a room in the sidebar looks like the rest of the sidebar" \
 	a_room_looks_like_the_sidebar
 check "a screenshot pasted into a room arrives whole" \

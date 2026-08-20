@@ -18,7 +18,11 @@
   },
   "overrides": [
     {
-      "include": ["src/routes/ArtifactView.tsx", "src/components/MessageList.tsx"],
+      "include": [
+        "src/routes/ArtifactView.tsx",
+        "src/components/MessageList.tsx",
+        "src/components/FindingPane.tsx"
+      ],
       "linter": {
         "rules": {
           "security": {

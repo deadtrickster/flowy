@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
 
+import { FindingPane } from "@/components/FindingPane";
 import { SeverityBar, SeverityDot, StateChip } from "@/components/StateMarks";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
-import { type Artifact, api, artifactPath } from "@/lib/api";
+import { type Artifact, api } from "@/lib/api";
 import {
   EVIDENCE_STATES,
   UNKNOWN_UPSTREAM,
@@ -72,6 +72,11 @@ export function Findings() {
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
+
+  // WHICH ONE IS OPEN BESIDE THE LIST. An id rather than the artifact, so a
+  // reread of the list (a search, a filter, the poll) keeps the pane pointed at
+  // the same row instead of at a stale copy of it.
+  const [open, setOpen] = useState("");
 
   const [status, setStatus] = useState("");
   const [kind, setKind] = useState("");
@@ -153,6 +158,12 @@ export function Findings() {
   // control and the number beside it cannot disagree.
   const chosen = useMemo(() => findings.filter((f) => selected.has(f.id)), [findings, selected]);
   const runnableChosen = useMemo(() => chosen.filter((f) => hasRepro(reproOf(f))), [chosen]);
+
+  // The row the pane is showing, resolved out of the rows on the page. A find
+  // rather than a stored artifact: if the list is reread - a search, a filter,
+  // the next poll - the pane follows the fresh copy instead of holding the one
+  // that was current when it was clicked.
+  const openFinding = useMemo(() => findings.find((f) => f.id === open), [findings, open]);
   const offscreen = chosen.length - chosen.filter((f) => shown.includes(f)).length;
 
   // RUN WHAT WAS ASKED FOR AND SAY WHAT HAPPENED. One POST per finding rather
@@ -370,55 +381,74 @@ export function Findings() {
 
       {error ? <div className="text-destructive text-sm">{error}</div> : null}
 
-      <ol aria-label="findings" className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
-        {shown.length === 0 ? (
-          <li className="text-muted-foreground text-sm">
-            {emptyReads({
-              token: Boolean(token),
-              loaded,
-              failed: Boolean(error),
-              query: query.trim(),
-              filtered,
-            })}
-          </li>
-        ) : null}
-        {/* Grouped by whose code it is about, with the heading sticky so the
+      {/* ONE SCREEN: the list scrolls on the left, the finding opens on the
+          right, each on its own. Reading a long finding must not move the list
+          out from under the next click. */}
+      <div className="flex min-h-0 flex-1 gap-3">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+          <ol aria-label="findings" className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
+            {shown.length === 0 ? (
+              <li className="text-muted-foreground text-sm">
+                {emptyReads({
+                  token: Boolean(token),
+                  loaded,
+                  failed: Boolean(error),
+                  query: query.trim(),
+                  filtered,
+                })}
+              </li>
+            ) : null}
+            {/* Grouped by whose code it is about, with the heading sticky so the
             corpus you are reading stays named while you scroll through forty of
             them. Grouping only happens when there is more than one corpus on the
             page: a single sticky heading over the whole list is a label, not a
             grouping, and it would push the first row down for nothing. */}
-        {groups.length > 1
-          ? groups.map((group) => (
-              <li key={group.name} data-finding-group={group.name}>
-                <div className="sticky top-0 z-10 flex flex-wrap items-center gap-2 bg-background py-1 font-semibold text-muted-foreground text-xs uppercase tracking-wide">
-                  <span>{group.name}</span>
-                  <span
-                    className="font-mono tabular-nums"
-                    data-finding-group-count={group.items.length}
-                  >
-                    {group.items.length}
-                  </span>
-                  {/* Each corpus gets its own shape, which is the question the
+            {groups.length > 1
+              ? groups.map((group) => (
+                  <li key={group.name} data-finding-group={group.name}>
+                    <div className="sticky top-0 z-10 flex flex-wrap items-center gap-2 bg-background py-1 font-semibold text-muted-foreground text-xs uppercase tracking-wide">
+                      <span>{group.name}</span>
+                      <span
+                        className="font-mono tabular-nums"
+                        data-finding-group-count={group.items.length}
+                      >
+                        {group.items.length}
+                      </span>
+                      {/* Each corpus gets its own shape, which is the question the
                       grouping is really for: is ragflow mostly high and serenedb
                       mostly low, or the other way round. */}
-                  <SeverityBar items={group.items} label={`severity across ${group.name}`} />
-                </div>
-                <ol className="flex flex-col gap-3 pt-2">
-                  {group.items.map((f) => (
-                    <FindingCard
-                      key={f.id}
-                      finding={f}
-                      selected={selected.has(f.id)}
-                      onToggle={toggle}
-                    />
-                  ))}
-                </ol>
-              </li>
-            ))
-          : shown.map((f) => (
-              <FindingCard key={f.id} finding={f} selected={selected.has(f.id)} onToggle={toggle} />
-            ))}
-      </ol>
+                      <SeverityBar items={group.items} label={`severity across ${group.name}`} />
+                    </div>
+                    <ol className="flex flex-col gap-3 pt-2">
+                      {group.items.map((f) => (
+                        <FindingCard
+                          key={f.id}
+                          finding={f}
+                          selected={selected.has(f.id)}
+                          onToggle={toggle}
+                          open={open === f.id}
+                          onOpen={setOpen}
+                        />
+                      ))}
+                    </ol>
+                  </li>
+                ))
+              : shown.map((f) => (
+                  <FindingCard
+                    key={f.id}
+                    finding={f}
+                    selected={selected.has(f.id)}
+                    onToggle={toggle}
+                    open={open === f.id}
+                    onOpen={setOpen}
+                  />
+                ))}
+          </ol>
+        </div>
+        {/* THE FINDING, BESIDE THE LIST IT CAME FROM. Chosen by id off the rows
+            already on the page, so opening one costs no read and no spinner. */}
+        {openFinding ? <FindingPane finding={openFinding} onClose={() => setOpen("")} /> : null}
+      </div>
     </div>
   );
 }
@@ -681,12 +711,15 @@ function FindingCard({
   finding,
   selected,
   onToggle,
+  open,
+  onOpen,
 }: {
   finding: Artifact;
   selected: boolean;
   onToggle: (id: string) => void;
+  open: boolean;
+  onOpen: (id: string) => void;
 }) {
-  const project = finding.project ?? "_";
   const filing = upstreamOf(finding);
   const evidence = evidenceOf(finding);
   const tree = reproOf(finding);
@@ -733,12 +766,20 @@ function FindingCard({
               className="h-3.5 w-3.5 shrink-0 accent-foreground"
             />
             <SeverityDot severity={finding.severity} />
-            <Link
-              className="hover:underline"
-              to={artifactPath({ project, type: finding.type, id: finding.id }) ?? "#"}
+            {/* THE TITLE OPENS IT BESIDE THE LIST, and does not navigate. The
+                whole complaint was that reading a finding cost the list: the
+                reader left, read, and came back to a page scrolled somewhere
+                else. The row's own address is still reachable - the pane draws
+                an "open" link - because a pane cannot be sent to anybody. */}
+            <button
+              type="button"
+              data-finding-open={finding.id}
+              aria-expanded={open}
+              className="min-w-0 truncate text-left hover:underline"
+              onClick={() => onOpen(open ? "" : finding.id)}
             >
               {finding.title || finding.id}
-            </Link>
+            </button>
           </CardTitle>
           <div className="flex flex-wrap gap-1 pt-1">
             {/* Which corpus this came out of. It is the project column, and it
