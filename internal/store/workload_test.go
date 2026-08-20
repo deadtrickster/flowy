@@ -1,6 +1,10 @@
 package store
 
-import "testing"
+import (
+	"bytes"
+	"encoding/json"
+	"testing"
+)
 
 // row is one open todo carrying a name, or nobody.
 func row(assignee string) *Artifact {
@@ -138,5 +142,36 @@ func TestBothLinesAreReportedBecauseBothAreApplied(t *testing.T) {
 	if half.TopShare <= half.Check || half.TopShare > half.Rebalance {
 		t.Errorf("the verdict says check and the top share %v is not between %v and %v",
 			half.TopShare, half.Check, half.Rebalance)
+	}
+}
+
+// AN EMPTY BOARD MARSHALS AS [], NOT null, and the difference reaches a browser.
+//
+// Go marshals a nil slice as null. Nobody carrying anything appends nothing, so
+// WorkloadOf used to return a nil Shares, /api/nag answered "shares": null, and
+// the console's whole overview - the page, not the card - served a white screen
+// on any node with an empty board. That is every node the moment it is created.
+//
+// THE ASSERTION IS ON THE BYTES, not on len(). A nil slice and an empty one have
+// the same length and marshal differently, so `len(w.Shares) == 0` passes on the
+// version that broke the page. What the reader gets is the only thing that is
+// wrong here, so it is what this reads.
+func TestAnEmptyBoardMarshalsSharesAsAnEmptyArray(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		rows []*Artifact
+	}{
+		{"no rows at all", nil},
+		{"an empty set of rows", []*Artifact{}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			out, err := json.Marshal(WorkloadOf(c.rows))
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if !bytes.Contains(out, []byte(`"shares":[]`)) {
+				t.Fatalf("shares is not an empty array on the wire: %s", out)
+			}
+		})
 	}
 }

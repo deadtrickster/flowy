@@ -11476,6 +11476,64 @@ printf 'flowy serve pid %s on 127.0.0.1:%s\n' "$SERVE_PID" "$HTTP_PORT"
 # seat's suite, one on 192.168.1.55 which is the fleet's node. Both suites named
 # their node "gate", so a bare name check would have accepted the other seat's
 # node as its own.
+# AN EMPTY NODE IS A STATE NOTHING ELSE HERE MEASURES, and it is the state every
+# new node and every new project is in.
+#
+# Go marshals a nil slice as null. WorkloadOf returned a nil Shares when nobody
+# was carrying anything, /api/nag answered "shares": null, SpreadCard read
+# w.shares.length, and the console's WHOLE OVERVIEW - not the card, the page -
+# served a white screen. Live, on 2026-08-20, on any node with an empty board.
+#
+# NO SWEEP OF A WORKING NODE CAN FIND THIS. A nil slice is only marshalled when
+# the collection is EMPTY, so the failing state is exactly the one a system with
+# data does not have. I swept the live node first and it came back clean of
+# crashes, on a node where the crash existed.
+#
+# So this asks at the only moment the suite has an empty node: after it is up
+# and before anything writes to it. `smoke seed` creates principals and nothing
+# else, which is what a fresh install looks like.
+#
+# WHERE IT SITS IS LOAD-BEARING. Every check below this line writes - a worklog
+# append, an artifact, a message - and one write makes the node non-empty
+# forever. Moving this check later does not weaken it, it silently stops testing
+# anything.
+#
+# PARAMETERLESS GETS ONLY, said plainly rather than discovered: a door needing an
+# id cannot be asked about the empty case without inventing one, and an invented
+# id answers 404. That leaves the doors reachable from a fresh console, which is
+# where the white page was.
+#
+# THE ALLOWLIST IS EMPTY AND HAS A REASON. A null that is genuinely a nullable
+# scalar belongs here with a note. Nothing qualifies today - measured, the only
+# null on an empty node is the one above.
+an_empty_node_answers_arrays_not_null() {
+	recall
+	local ep out nulls seen=0 bad=0
+	while read -r ep; do
+		# The waiters block for their window and answer about what is NEW, which
+		# is a different question and a slow one to ask 38 times.
+		case "$ep" in *"/wait"*) continue ;; esac
+		out=$(curl -sS --max-time 10 -H "Authorization: Bearer $TOKEN_A" \
+			"http://127.0.0.1:$HTTP_PORT$ep" 2>/dev/null) || continue
+		printf '%s' "$out" | jq -e 'type == "object"' >/dev/null 2>&1 || continue
+		seen=$((seen + 1))
+		nulls=$(printf '%s' "$out" | jq -r '[paths(. == null) | join(".")] | join(", ")')
+		[ -n "$nulls" ] || continue
+		printf '%s answers null at: %s\n' "$ep" "$nulls" >&2
+		bad=1
+	done < <(grep -oE 'api\.HandleFunc\("GET (/api/[^"]*)"' serve.go |
+		sed 's/.*GET //; s/"//' | grep -v '{' | sort -u)
+	# A WALK THAT REACHED NOTHING IS NOT A PASS. If the token is wrong or the
+	# port is not ours, every door answers something jq refuses and the loop ends
+	# green having asked nobody.
+	if [ "$seen" -lt 20 ]; then
+		printf 'only %d doors answered json - the walk did not run\n' "$seen" >&2
+		return 1
+	fi
+	[ "$bad" = 0 ] || return 1
+	printf '%d doors on an empty node, no null where an array belongs\n' "$seen"
+}
+
 its_our_node() {
 	local body name
 	# IT WAITS, BECAUSE IT IS THE FIRST THING TO ASK. `flowy serve` was started a
@@ -11507,6 +11565,10 @@ check "flowy serve answers /healthz" "$WORK/smoke" healthz "http://127.0.0.1:$HT
 check "healthz answers when counts are asked for" \
 	"$WORK/smoke" healthz "http://127.0.0.1:$HTTP_PORT/healthz?counts=1"
 check "spine tables exist" "$WORK/smoke" schema
+# BEFORE ANYTHING WRITES - see the comment on the function. Every check below
+# this line makes the node non-empty, and this is the only question that needs
+# it empty.
+check "an empty node answers arrays, not null" an_empty_node_answers_arrays_not_null
 
 say "subcommands"
 # There are no stubs left: mcp left this list in Phase 2, sync in Phase 5 and

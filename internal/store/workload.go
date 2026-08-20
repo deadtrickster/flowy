@@ -75,7 +75,17 @@ const (
 // for exactly the opposite reason.
 func WorkloadOf(rows []*Artifact) Workload {
 	counts := map[string]int{}
+	// SHARES IS BUILT EMPTY, NOT NIL, and the difference reaches a browser.
+	//
+	// Go marshals a nil slice as null. Nobody carrying anything means nothing is
+	// appended below, so this used to return a nil Shares, /api/nag answered
+	// "shares": null, and the console's whole overview - the page, not the card -
+	// served a white screen on any node with an empty board. Live on 2026-08-20,
+	// which is every node the moment it is created. f626523 guards the read side;
+	// this is the write side, and both are wanted: a guard protects one reader,
+	// an empty slice protects every reader there will ever be.
 	w := Workload{
+		Shares:    []WorkloadShare{},
 		Threshold: WorkloadCheck,
 		Check:     WorkloadCheck,
 		Rebalance: WorkloadRebalance,
