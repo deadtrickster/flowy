@@ -203,13 +203,12 @@ func queueWaitCmd(rest []string) error {
 		// THE ROW'S OWN STATE, ASKED OF THE ANSWER WE JUST GOT rather than of a
 		// second read. Two reads a second apart is how a waiter reports a row
 		// that landed between them as having vanished.
-		var found *mergeQueueItem
-		for i := range answer.Items {
-			if answer.Items[i].ID == want {
-				found = &answer.Items[i]
-				last = answer.Items[i]
-				break
-			}
+		found, err := rowInQueue(answer.Items, want)
+		if err != nil {
+			return err
+		}
+		if found != nil {
+			last = *found
 		}
 		switch {
 		case found == nil:
@@ -267,6 +266,46 @@ func waitOutRestart(err error, give time.Time, what string) bool {
 		"and %s is still worth waiting for (%s left)\n", what, took(int(time.Until(give).Seconds())))
 	time.Sleep(time.Second)
 	return true
+}
+
+// rowInQueue finds the row a caller named, accepting the SHORT ID everybody
+// actually writes.
+//
+// The match was `Items[i].ID == want`, exact - so `--row 01M0F7DJDM` never
+// matched anything, fell through to the gone path, and reported "left the queue
+// and this seat cannot read it" WITH EXIT 0, about a row that was sitting in
+// the queue gating at that moment. Measured 2026-08-20 by two seats. A confident
+// wrong answer under the success code is the worst shape available: a script
+// reads 0 and carries on as though the branch had landed.
+//
+// Short ids are what this fleet writes. Every row reference in the room, in
+// every commit message, and in the queue's own output is truncated - so an exact
+// match is a rule the tool's own vocabulary breaks.
+//
+// AMBIGUITY IS REFUSED RATHER THAN RESOLVED. Two rows sharing a prefix is
+// exactly when guessing is worst, and the refusal names both so the caller can
+// lengthen the id rather than wonder which one it took.
+func rowInQueue(items []mergeQueueItem, want string) (*mergeQueueItem, error) {
+	var hit *mergeQueueItem
+	var also []string
+	for i := range items {
+		if !strings.HasPrefix(items[i].ID, want) {
+			continue
+		}
+		if items[i].ID == want {
+			return &items[i], nil
+		}
+		if hit != nil {
+			also = append(also, items[i].ID)
+			continue
+		}
+		hit = &items[i]
+	}
+	if len(also) > 0 {
+		return nil, fmt.Errorf("%q names %d rows in the queue - %s and %s: use more of the id",
+			want, len(also)+1, hit.ID, strings.Join(also, ", "))
+	}
+	return hit, nil
 }
 
 // spentDeadline reports whether a failed read failed because the caller's own
@@ -335,8 +374,15 @@ func queueWaitGone(client *http.Client, base, token, id string) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		fmt.Printf("%s left the queue and this seat cannot read it (%s)\n", id, resp.Status)
-		return nil
+		// UNREADABLE IS NOT LANDED, and it used to exit 0 saying so. A row this
+		// seat cannot read might have landed, might have been closed, might
+		// never have existed - and the one thing exit 0 means to a caller is
+		// "the thing you were waiting for happened". This is the only outcome
+		// here the verb does not actually know, so it is the one that goes back
+		// as broken.
+		return fmt.Errorf("%s is not in the queue and this seat cannot read it (%s): "+
+			"it may have landed, been closed, or never existed - and this verb cannot tell",
+			id, resp.Status)
 	}
 	var art struct {
 		Status string            `json:"status"`

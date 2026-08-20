@@ -248,3 +248,52 @@ func TestAStaleRedIsNotTheAnswer(t *testing.T) {
 		t.Fatal("a red at another tip is not the answer to this wait")
 	}
 }
+
+// A SHORT ID IS WHAT THIS FLEET WRITES, and it used to mean "the row is gone".
+//
+// The match was exact, so `--row 01M0F7DJDM` matched nothing in the queue, fell
+// through to the gone path, and reported "left the queue and this seat cannot
+// read it" WITH EXIT 0 - about a row that was in the queue gating at that
+// moment. Two seats measured it within a minute of each other on 2026-08-20.
+//
+// Every row reference in the room, in commit messages and in the queue's own
+// output is truncated, so an exact match is a rule the tool's own vocabulary
+// breaks.
+func TestAShortIdFindsTheRowItNames(t *testing.T) {
+	items := []mergeQueueItem{
+		{ID: "01AAAAAAAA1111", Branch: "one"},
+		{ID: "01BBBBBBBB2222", Branch: "two"},
+	}
+
+	got, err := rowInQueue(items, "01BBBBBBBB")
+	if err != nil {
+		t.Fatalf("a short id that names one row: %v", err)
+	}
+	if got == nil || got.Branch != "two" {
+		t.Fatalf("short id found %v, want the row named two", got)
+	}
+
+	// The full id still works, and takes the exact row rather than a prefix
+	// neighbour.
+	if got, err = rowInQueue(items, "01AAAAAAAA1111"); err != nil || got == nil || got.Branch != "one" {
+		t.Fatalf("a full id: got %v, err %v", got, err)
+	}
+
+	// A row that is genuinely not there is nil and NOT an error: that is the
+	// gone path, which asks the row itself what happened to it.
+	if got, err = rowInQueue(items, "01CCCC"); err != nil || got != nil {
+		t.Fatalf("an id naming nothing: got %v, err %v", got, err)
+	}
+
+	// AMBIGUITY IS REFUSED, naming both, because guessing is worst exactly here.
+	items = append(items, mergeQueueItem{ID: "01BBBBBBBB3333", Branch: "three"})
+	_, err = rowInQueue(items, "01BBBBBBBB")
+	if err == nil {
+		t.Fatal("a prefix naming two rows was resolved instead of refused")
+	}
+	for _, want := range []string{"01BBBBBBBB2222", "01BBBBBBBB3333", "use more of the id"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("the refusal does not name %q: %v", want, err)
+		}
+	}
+}
