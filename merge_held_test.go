@@ -95,4 +95,27 @@ func TestHeldByTellsNotHeldFromCannotKnow(t *testing.T) {
 	if at, known := heldBy("main"); known || at != "" {
 		t.Fatalf(`heldBy outside a git repo = %q, %v - want "", false`, at, known)
 	}
+
+	// $FLOWY_REPO IS THE WHOLE POINT, and this arm is the one the first version
+	// of the guard failed in production.
+	//
+	// It landed correct and caught nothing: every seat files with
+	// `cd ~/Projects/flowy-dogfood && flowy merge open`, that directory holds
+	// the built binary and is not a git repository, so the guard answered
+	// cannot-know and proceeded on the only path anybody uses. Standing outside
+	// the repo is the NORMAL case here, not the edge one.
+	git(repo, "worktree", "add", "-q", filepath.Join(root, "wt2"), "loose")
+	t.Setenv("FLOWY_REPO", repo)
+	at, known = heldBy("loose")
+	if !known || at != filepath.Join(root, "wt2") {
+		t.Fatalf(`with FLOWY_REPO set, from outside any repo: heldBy("loose") = %q, %v - `+
+			`want %q, true. The guard has to ask the tree that OWNS the branch, not the `+
+			`directory the shell happens to be in`, at, known, filepath.Join(root, "wt2"))
+	}
+
+	// A FLOWY_REPO THAT IS NOT A REPO still cannot know, and must not pretend.
+	t.Setenv("FLOWY_REPO", root)
+	if at, known := heldBy("loose"); known || at != "" {
+		t.Fatalf(`FLOWY_REPO pointing at a non-repo = %q, %v - want "", false`, at, known)
+	}
 }

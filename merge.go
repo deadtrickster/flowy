@@ -107,14 +107,33 @@ func mergeCmd(args []string) error {
 // a failure to know rendered as a successful no. Twelve of those were found in
 // this codebase in one day.
 func heldBy(branch string) (string, bool) {
-	// Does this directory own the branch at all? `git worktree list` in an
+	// WHICH REPOSITORY TO ASK, and it is not always the one you are standing in.
+	//
+	// Measured after the first version of this guard landed: every seat files
+	// with `cd ~/Projects/flowy-dogfood && ./flowy merge open`, and that
+	// directory is the DEPLOY directory - it holds the built binary and is not
+	// a git repository at all. `git rev-parse --git-dir` there is a fatal. So
+	// the guard answered cannot-know, proceeded, and was inert on the only path
+	// anybody uses. It was correct and it caught nothing.
+	//
+	// $FLOWY_REPO names the tree that owns the branches, which is the tree the
+	// drainer rebases in. Unset, this falls back to the working directory, which
+	// is right for anybody running from their own worktree.
+	git := func(args ...string) *exec.Cmd {
+		cmd := exec.Command("git", args...)
+		if repo := strings.TrimSpace(os.Getenv("FLOWY_REPO")); repo != "" {
+			cmd.Dir = repo
+		}
+		return cmd
+	}
+	// Does that directory own the branch at all? `git worktree list` in an
 	// unrelated clone happily lists that clone's worktrees and finds nothing,
 	// which reads exactly like a clean answer about the branch in question.
-	if err := exec.Command("git", "rev-parse", "--verify", "--quiet",
+	if err := git("rev-parse", "--verify", "--quiet",
 		"refs/heads/"+branch).Run(); err != nil {
 		return "", false
 	}
-	out, err := exec.Command("git", "worktree", "list", "--porcelain").Output()
+	out, err := git("worktree", "list", "--porcelain").Output()
 	if err != nil {
 		return "", false
 	}
@@ -132,6 +151,20 @@ func heldBy(branch string) (string, bool) {
 		}
 	}
 	return "", true
+}
+
+// repoHint says which directory was asked, when one was. It exists so the note
+// above names a PLACE rather than a condition: "no git repository here" sends
+// somebody looking at their shell, "no git repository at /x/y" tells them their
+// FLOWY_REPO is wrong, and those are different fixes.
+func repoHint() string {
+	if repo := strings.TrimSpace(os.Getenv("FLOWY_REPO")); repo != "" {
+		return " at " + repo + " (from $FLOWY_REPO)"
+	}
+	if wd, err := os.Getwd(); err == nil {
+		return " at " + wd
+	}
+	return ""
 }
 
 func mergeOpen(args []string) error {
@@ -172,7 +205,27 @@ func mergeOpen(args []string) error {
 	// `git worktree list`; the path plus the command is the whole fix, and the
 	// drainer's own block message already names it, so the string was proven
 	// useful before it was put here.
-	if at, known := heldBy(name); known && at != "" {
+	at, known := heldBy(name)
+	// CANNOT-KNOW IS SAID OUT LOUD, not swallowed.
+	//
+	// A silent proceed is what made the first version of this guard useless: it
+	// could not check, said nothing, and every reader assumed the check had run
+	// and passed. That is the same defect the three-valued return exists to
+	// avoid, reappearing one layer up - the distinction was kept in heldBy and
+	// then thrown away by the caller.
+	//
+	// A NOTE, NOT A REFUSAL. Nobody should be blocked from filing because their
+	// shell is in the wrong directory, and there are honest callers with no repo
+	// anywhere near them. But "I did not check" has to reach the person who
+	// would otherwise read silence as a pass.
+	if !known {
+		fmt.Fprintf(os.Stderr,
+			"note: could not check whether %s is checked out somewhere - "+
+				"no git repository here%s. Set FLOWY_REPO to the tree that owns the "+
+				"branch to enable the check. Filing anyway.\n",
+			name, repoHint())
+	}
+	if known && at != "" {
 		return fmt.Errorf("%s is checked out in %s, so the drainer cannot rebase it - "+
 			"detach that worktree first:\n\n"+
 			"    git -C %s checkout --detach\n\n"+
