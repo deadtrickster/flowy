@@ -325,6 +325,12 @@ var apiRoutes = []string{
 	// And the runner behind it. On this list because a console that cannot find
 	// these doors falls back to asking the operator for an address, which is the
 	// thing they asked to stop doing.
+	"GET /api/vm/projects",
+	"GET /api/vm/list",
+	"POST /api/vm/spawn",
+	"GET /api/vm/{name}/log",
+	"POST /api/vm/{name}/say",
+	"POST /api/vm/{name}/down",
 	"POST /api/repro/run",
 	"GET /api/repro/runs",
 	"GET /api/repro/run/{id}/log",
@@ -534,6 +540,14 @@ func (s *server) routes() http.Handler {
 	api.HandleFunc("GET /api/finding/{id}/runs", s.handleFindingRuns)
 	// The repro runner, forwarded. One origin and one token for the console, and
 	// no address in anybody's browser - see repro_proxy.go.
+	// The VMs, run here rather than behind a configured address - see
+	// api_vm.go for why this is an exec and the repro path is a proxy.
+	api.HandleFunc("GET /api/vm/projects", s.operatorOnly(s.handleVMProjects))
+	api.HandleFunc("GET /api/vm/list", s.operatorOnly(s.handleVMList))
+	api.HandleFunc("POST /api/vm/spawn", s.operatorOnly(s.handleVMSpawn))
+	api.HandleFunc("GET /api/vm/{name}/log", s.operatorOnly(s.handleVMLog))
+	api.HandleFunc("POST /api/vm/{name}/say", s.operatorOnly(s.handleVMSay))
+	api.HandleFunc("POST /api/vm/{name}/down", s.operatorOnly(s.handleVMDown))
 	api.HandleFunc("POST /api/repro/run", s.handleRepro)
 	api.HandleFunc("GET /api/repro/runs", s.handleRepro)
 	api.HandleFunc("GET /api/repro/run/{id}/log", s.handleRepro)

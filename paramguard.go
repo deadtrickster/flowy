@@ -98,6 +98,12 @@ var routeParams = map[string][]string{
 	"GET /api/repro/runs":                        {"finding"},
 	"GET /api/repro/version":                     {"project", "v"},
 	"POST /api/repro/run":                        {},
+	"GET /api/vm/projects":                       {},
+	"GET /api/vm/list":                           {},
+	"POST /api/vm/spawn":                         {},
+	"GET /api/vm/{name}/log":                     {},
+	"POST /api/vm/{name}/say":                    {},
+	"POST /api/vm/{name}/down":                   {},
 	"GET /api/rooms":                             {"project", "scope"},
 	// Both take their subject from the path and their body, so neither reads a
 	// query parameter - see the room doors above for why {} is said rather than
