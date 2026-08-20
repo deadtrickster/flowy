@@ -332,10 +332,37 @@ export function Todos() {
                   n={merges.filter((m) => m.admissible === true).length}
                   what="may land"
                 />
+                {/*
+                  BLOCKED IS THE ROW THAT CARRIES A REASON, and queued is
+                  everything else. The operator's row (01M0G82K03) was filed as
+                  "merges tab is always 0"; measured, the tab read
+                  "0 may land, 2 refused" while both of those rows said "no gate
+                  has measured it" on their own cards and one of them was
+                  gating. Nothing had refused either.
+
+                  The cause was `admissible === false` standing in for refused.
+                  Absent means nobody asked; false means asked and no; and the
+                  node answers false for a row it has simply not measured yet -
+                  its own reason says so in words. So on a working queue almost
+                  every row was drawn red.
+
+                  claude-host fixed the identical shape in board-nag.sh
+                  (b2187ce, 5d0afcb) and the rule from it is the one applied
+                  here: THE ELSE-BRANCH NAMES THE COMMON CASE. An else wearing an
+                  alarming word borrows alarm it has not earned, and a reader who
+                  learns the red means nothing stops reading the red.
+
+                  "0 may land" is left alone deliberately. It is correct and it
+                  is almost always zero, because admissible is the momentary
+                  window between a green gate and the land - that is a fact about
+                  the queue, not a defect in the counter, and hiding it would
+                  hide the thing the operator is actually looking at.
+                */}
+                <Stat colour="#d1585f" n={merges.filter((m) => m.blocked).length} what="blocked" />
                 <Stat
-                  colour="#d1585f"
-                  n={merges.filter((m) => m.admissible === false).length}
-                  what="refused"
+                  colour="#8b93a7"
+                  n={merges.filter((m) => m.admissible !== true && !m.blocked).length}
+                  what="queued"
                 />
               </>
             ) : null

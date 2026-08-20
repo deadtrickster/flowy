@@ -536,6 +536,31 @@ export interface MergeRequest {
    * which no route reaches.
    */
   known_issue?: KnownIssue;
+  /**
+   * The skip somebody already recorded against this row, or absent.
+   *
+   * THE CONSOLE WAS BLIND TO THIS FIELD until 01M0G82K03, and the merge queue
+   * tab paid for it: with nothing to distinguish "a drainer refused this" from
+   * "its turn has not come", it counted every `admissible === false` as
+   * REFUSED - in red, under a card whose own text read "no gate has measured
+   * it". The field has been on the wire the whole time
+   * (api_mergequeue.go, `Blocked *mergeQueueBlocked`), omitempty, which is
+   * exactly why a reader listing the keys of a healthy payload concluded it did
+   * not exist.
+   *
+   * Absent means nobody has skipped this row, and that is the COMMON case on a
+   * working queue - see queueBlockedOf, which returns nil for a reading that has
+   * aged out and for a row somebody has since declared, so what survives here is
+   * a reason nobody has disproved by taking the row.
+   */
+  blocked?: MergeBlocked;
+}
+
+/** Why a row was skipped, when it was skipped, and by which seat. */
+export interface MergeBlocked {
+  why: string;
+  at?: string;
+  by?: string;
 }
 
 export interface KnownIssue {
