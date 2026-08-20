@@ -11958,6 +11958,26 @@ a_number_in_the_rail_means_it_is_your_turn() {
 	node scripts/rail-act-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" general
 }
 
+# THE OPERATOR: "merges tab is always 0". Measured on the live console before
+# anything changed, it read "0 may land, 2 refused" - and both of those rows
+# carried "no gate has measured it" on their own cards while one of them was
+# gating. Nothing had refused either.
+#
+# `admissible === false` was standing in for refused. Absent means nobody asked,
+# false means asked and no, and the node answers false for a row it has not
+# measured yet - so on a working queue almost every row was drawn red, and a
+# reader who learns the red means nothing stops reading the red.
+#
+# ASSERTS AGREEMENT WITH THE NODE, not literal numbers: the three counts come
+# from /api/merge-queue and must partition it. Pinning numbers would fail every
+# time the queue moved, which is constantly, and would teach whoever hit it to
+# delete the check.
+the_merge_tab_says_queued_not_refused() {
+	recall
+	cd "$ROOT/web" || return 1
+	node scripts/merge-tab-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A"
+}
+
 # THE OPERATOR, LOOKING AT THE CARD: "why it doesnt sum up to 100%?"
 #
 # Every percentage was right - each is a seat's share of ALL open rows - and the
@@ -19507,6 +19527,8 @@ check "the rail's unread totals agree with the dots they are summed from" \
 	the_rail_totals_agree
 check "a number in the rail means it is your turn, and the rest carry none" \
 	a_number_in_the_rail_means_it_is_your_turn
+check "the merge tab counts what the node says, and calls unjudged rows queued" \
+	the_merge_tab_says_queued_not_refused
 check "the spread card accounts for every open row, unowned included" \
 	the_spread_card_shows_the_unclaimed
 check "a chat todo opens where it sits and links to its own full card" \
