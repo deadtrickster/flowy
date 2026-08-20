@@ -23,9 +23,20 @@
 
 import { chromium } from "playwright";
 
-const [base, token] = process.argv.slice(2);
-if (!base || !token) {
-  console.error("usage: node scripts/rail-counters-check.mjs BASE_URL TOKEN");
+// A SECOND TOKEN, IN THE SAME PROJECT, and neither half of that is optional.
+//
+// A message written by the reader is not unread TO that reader, so a check that
+// speaks and then looks for it finds an empty rail and calls the feature
+// missing - which is what the first run of this did.
+//
+// And the second principal has to share the project. The gate's TOKEN_B is a
+// different person in a different project, so a message from it lands in a room
+// this reader cannot see, unread stays 0, and the check fails while everything
+// works. Measured: say as B -> project pb, unread 0; say as A's own agent ->
+// project pa, unread 1. Pass TOKEN_A_AGENT, not TOKEN_B.
+const [base, token, other] = process.argv.slice(2);
+if (!base || !token || !other) {
+  console.error("usage: node scripts/rail-counters-check.mjs BASE_URL TOKEN OTHER_TOKEN");
   process.exit(2);
 }
 
@@ -47,6 +58,17 @@ try {
     .catch(() => {});
   if (crashes.length > 0) die(`the shell threw: ${crashes.join("; ")}`);
 
+  // THE ORDER IS THE WHOLE CHECK, and three wrong ones came first.
+  //
+  // The reader has to EXIST before anything can be unread for it - the console
+  // declares one per room, and the node refuses otherwise: "no inbox reader
+  // called X for this principal". The overview declares them without opening a
+  // room, which matters, because OPENING a room marks it read and acks away the
+  // very thing this is about to look for.
+  //
+  // So: load the overview, let somebody else speak, wait out the refresh.
+  await page.waitForTimeout(3_000);
+
   // Something unread has to exist, or every assertion below is satisfied by a
   // rail with no numbers on it - which is the state being fixed.
   const said = await page.evaluate(
@@ -58,15 +80,16 @@ try {
       });
       return res.ok ? await res.json() : { error: `${res.status} ${await res.text()}` };
     },
-    [token],
+    [other],
   );
   if (said.error) die(`could not write a message to be unread: ${said.error}`);
 
-  await page.goto(`${base}/profile`, { timeout: 30_000 }).catch(() => {});
-  await page.goto(`${base}/`, { timeout: 30_000 }).catch(() => {});
+  // The badges are refilled on a timer - REFRESH_MS in lib/unread is 20s - so
+  // this waits for the number rather than for a navigation. A reload would
+  // work too and would hide the fact that the rail updates on its own.
   await page
     .locator("[data-rooms-unread]")
-    .waitFor({ state: "visible", timeout: 30_000 })
+    .waitFor({ state: "visible", timeout: 40_000 })
     .catch(() => {});
 
   const seen = await page.evaluate(() => {

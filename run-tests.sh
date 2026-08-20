@@ -11903,6 +11903,27 @@ related_rows_draw_on_any_artifact() {
 	node scripts/related-rows-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A"
 }
 
+# THE OPERATOR: "our panel switcher on the left looks dead ... or maybe a new one
+# came i didnt read yet". The rail had one number in it - the per-room dot - and
+# could not say that anything had happened.
+#
+# They placed both totals and ruled on the hard part: "global is global", so the
+# ROOMS heading counts every room including closed ones, and the closed pile
+# carries its own beside it.
+#
+# ASSERTS AGREEMENT, not a number: open dots + closed == heading. A wrong total
+# is not the failure worth catching - the totals drifting from the counts they
+# are summed from is, which is what happens the day somebody sums the room LIST.
+#
+# TOKEN_A_AGENT, not TOKEN_B: the writer must be a different principal in the
+# SAME project. B is another project, so its message lands in a room this reader
+# cannot see and nothing is ever unread.
+the_rail_totals_agree() {
+	recall
+	cd "$ROOT/web" || return 1
+	node scripts/rail-counters-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" "$TOKEN_A_AGENT"
+}
+
 a_screenshot_pasted_into_a_room_arrives_whole() {
 	recall
 	cd "$ROOT/web" || return 1
@@ -19417,6 +19438,8 @@ check "the tui reaches the node only through the HTTP API" tui_talks_only_to_the
 check "flowy tui refuses to start with no token anywhere" tui_needs_a_token
 check "a room the reader closed leaves the sidebar, and stays closed" \
 	a_closed_room_leaves_the_sidebar_and_stays_closed
+check "the rail's unread totals agree with the dots they are summed from" \
+	the_rail_totals_agree
 check "a finding opens beside the list, and closing it leaves the list" \
 	a_finding_opens_beside_the_list
 check "a person can file a finding upstream from the console, and take it back" \
