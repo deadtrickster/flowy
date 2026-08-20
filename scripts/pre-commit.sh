@@ -67,13 +67,60 @@ fi
 # on stdin has to be told what it is called - without --filename it formats to
 # its own defaults and reports every file in a repo that uses tabs.
 mapfile -t shfiles < <(staged_of '*.sh')
+
+# THE FINDINGS THIS CHANGE ADDED, not the findings the file has.
+#
+# This used to refuse any staged .sh that shellcheck said anything about. That
+# makes every person who touches a file responsible for its whole history, and
+# on 2026-08-20 it cost exactly what that predicts: run-tests.sh is 18k lines
+# with four pre-existing notes, two seats touched it within the hour, both were
+# refused over the same four findings, both silenced them independently in
+# overlapping regions - and the two branches then CONFLICTED with each other
+# while each merged clean on master. A guard that blocks the next person rather
+# than the next defect, and charges two people for one debt.
+#
+# So the comparison is against the same file at HEAD. A change is refused for
+# what IT introduced.
+#
+# COUNTED PER CODE, NOT MATCHED PER LINE. Line numbers move for reasons that
+# have nothing to do with the finding - inserting a function above shifts every
+# one below it - so matching on position would report a file's whole tail as new
+# the first time anybody adds a paragraph. A code going from three to four is
+# what "you added one" actually means.
+#
+# WHAT THIS GIVES UP, stated rather than discovered later: moving a finding
+# without changing its count passes, and so does replacing one instance with
+# another of the same code. The alternative is matching on the finding's text,
+# which is stable until shellcheck changes its wording, and then reports every
+# finding in the repository as new on the day somebody upgrades it.
+#
+# A NEW FILE HAS NO BASELINE and every finding in it is new, which is right: it
+# is all being introduced now.
+sc_counts() {
+	shellcheck --format=gcc --shell=bash - 2>&1 |
+		grep -oE '\[SC[0-9]+\]$' | tr -d '[]' | sort | uniq -c |
+		awk '{ printf "%s %s\n", $2, $1 }' | sort
+}
 if [ ${#shfiles[@]} -gt 0 ] && command -v shellcheck >/dev/null 2>&1; then
 	for f in "${shfiles[@]}"; do
-		if ! out=$(git show ":$f" 2>/dev/null | shellcheck --format=gcc --shell=bash - 2>&1); then
-			say "shellcheck on $f:"
-			printf '%s\n' "$out" | head -6 | sed "s|^-:|           $f:|" >&2
-			fail=1
-		fi
+		now=$(git show ":$f" 2>/dev/null | sc_counts || true)
+		was=$(git show "HEAD:$f" 2>/dev/null | sc_counts || true)
+		added=""
+		while read -r code count; do
+			[ -n "$code" ] || continue
+			before=$(printf '%s\n' "$was" | awk -v c="$code" '$1 == c { print $2; exit }')
+			[ -n "$before" ] || before=0
+			[ "$count" -gt "$before" ] || continue
+			added="$added $code"
+		done <<<"$now"
+		[ -n "$added" ] || continue
+		say "shellcheck on $f - this change adds:${added}. Every instance of those codes:"
+		for code in $added; do
+			git show ":$f" 2>/dev/null | shellcheck --format=gcc --shell=bash - 2>&1 |
+				grep -F "[$code]" | head -3 | sed "s|^-:|           $f:|" >&2
+		done
+		say "         the count went up, so one of these is new - the rest are not your debt."
+		fail=1
 	done
 fi
 if [ ${#shfiles[@]} -gt 0 ] && command -v shfmt >/dev/null 2>&1; then
