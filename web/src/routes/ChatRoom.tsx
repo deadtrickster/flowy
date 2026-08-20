@@ -6,6 +6,7 @@ import { MergeQueue } from "@/components/MergeQueue";
 import { MessageBox } from "@/components/MessageBox";
 import { MessageList } from "@/components/MessageList";
 import { PinnedStrip } from "@/components/PinnedStrip";
+import { ResizeHandle } from "@/components/ResizeHandle";
 import { RoomRoster } from "@/components/RoomRoster";
 import { RoomSearch } from "@/components/RoomSearch";
 import { RoomTodos } from "@/components/RoomTodos";
@@ -125,6 +126,10 @@ export function ChatRoom() {
   // phone: the transcript is what you came for, and the panel is what you go
   // and get.
   const [panelOpen, setPanelOpen] = useState(false);
+  // The side column's width when it IS a column. Null leaves the default class
+  // alone, so nothing changes for a reader who never touches it. Not applied
+  // below lg, where the panel is an overlay and a desk width means nothing.
+  const [panelWidth, setPanelWidth] = useState<number | null>(null);
   const [left, setLeft] = useState("");
   // WHAT THIS ROOM DECIDED. Held here rather than inside the strip because the
   // strip draws messages this view already has - the pin carries an id and
@@ -882,10 +887,33 @@ export function ChatRoom() {
           onClick={() => setPanelOpen(false)}
         />
       ) : null}
+      {/*
+        The edge between the conversation and the column beside it. Only at lg
+        and above, where both are columns - below it the panel slides over the
+        transcript and there is no shared edge to move.
+      */}
+      <div className="hidden lg:flex">
+        <ResizeHandle
+          storageKey="flowy.roompanel.width"
+          min={280}
+          max={720}
+          edge="right"
+          onWidth={setPanelWidth}
+          label="width of the room panel"
+        />
+      </div>
       <aside
+        style={
+          panelWidth !== null
+            ? ({ "--panel-w": `${panelWidth}px` } as React.CSSProperties)
+            : undefined
+        }
         data-room-panel-state={panelOpen ? "open" : "closed"}
         className={cn(
-          "flex w-[26rem] max-w-full shrink-0 flex-col border-border border-l",
+          // One width utility per breakpoint - see Shell.tsx. Below lg the panel is
+          // an overlay and keeps its own width; at lg the variable decides, with
+          // the old value as its fallback.
+          "flex w-[26rem] max-w-full shrink-0 flex-col border-border border-l lg:w-[var(--panel-w,26rem)]",
           "fixed inset-y-0 right-0 z-40 bg-background transition-transform lg:static lg:z-auto lg:translate-x-0 lg:bg-transparent",
           panelOpen ? "translate-x-0 shadow-xl" : "translate-x-full",
         )}

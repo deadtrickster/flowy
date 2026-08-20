@@ -7176,6 +7176,23 @@ rooms_scroll_inside_themselves() {
 	node scripts/rooms-scroll-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A"
 }
 
+# THE TWO COLUMNS CAN BE DRAGGED, AND REMEMBER.
+#
+# The operator: "make left/right panels resizable". Both were a fixed width
+# chosen by whoever wrote them - w-60 and w-[26rem].
+#
+# Every assertion in the check is a MEASURED WIDTH rather than a class name, and
+# that is not stylistic: three of the four defects found while writing it would
+# have passed a source read. Two width utilities at one breakpoint, decided by
+# Tailwind's emission order and not by the attribute. A move handler reading
+# state that is one render behind the press that set it. And a one-pixel handle
+# with a pseudo-element pretending to be a hit area, which recorded zero
+# pointerdowns from a press aimed at its middle.
+the_columns_can_be_dragged() {
+	cd "$ROOT/web" || return 1
+	node scripts/resize-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A"
+}
+
 # A THREAD CAN BE ANSWERED FROM THE PANE THAT SHOWS IT.
 #
 # The operator: "no way to post to a thread (look at mattermost again)". The
@@ -13262,6 +13279,8 @@ check "the console is usable on a phone, and unchanged on a desk" \
 	the_console_works_on_a_phone
 check "a thread can be answered from the pane that shows it" \
 	a_thread_can_be_answered_where_it_is_read
+check "the left and right columns can be dragged, keep their floors, and remember" \
+	the_columns_can_be_dragged
 check "the panel sets and overrides one, in a browser, and a poll does not wipe it" \
 	browser_sets_and_overrides_an_assignee
 check "the panel hides the finished ones, counts them, and remembers it, in a browser" \

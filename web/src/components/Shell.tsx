@@ -22,6 +22,7 @@ import { type ReactNode, useEffect, useRef, useState } from "react";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 
 import { FreshBanner } from "@/components/FreshBanner";
+import { ResizeHandle } from "@/components/ResizeHandle";
 import { TokenBar } from "@/components/TokenBar";
 import { api } from "@/lib/api";
 import { useRoomList, useUnread } from "@/lib/unread";
@@ -132,6 +133,13 @@ export function Shell({ children }: { children: ReactNode }) {
   // drawer has to close on navigation - a menu that stays over the page you
   // just asked for is the second half of this same complaint.
   const [navOpen, setNavOpen] = useState(false);
+  // THE NAV'S WIDTH, when it is a column. Null until something says otherwise -
+  // the Tailwind class stays the default, so a reader who has never dragged it
+  // gets exactly what they got before and nothing is stored on their behalf.
+  //
+  // Not applied below the breakpoint: down there the nav is a drawer over the
+  // page, and a width dragged on a desk has no meaning on a phone.
+  const [navWidth, setNavWidth] = useState<number | null>(null);
   // CLOSING IS TIED TO ARRIVING SOMEWHERE, not to the tap that started it. A
   // click handler on the drawer closes it when somebody taps dead space in it,
   // and does not close it when they reach a page by keyboard - both wrong, and
@@ -175,6 +183,9 @@ export function Shell({ children }: { children: ReactNode }) {
         />
       ) : null}
       <aside
+        style={
+          navWidth !== null ? ({ "--nav-w": `${navWidth}px` } as React.CSSProperties) : undefined
+        }
         data-nav=""
         data-nav-state={navOpen ? "open" : "closed"}
         className={cn(
@@ -183,7 +194,13 @@ export function Shell({ children }: { children: ReactNode }) {
           // console names rooms after ULIDs. 18rem still leaves the page
           // visible behind the backdrop, which is what says the drawer is over
           // something rather than being the whole app.
-          "flex w-72 shrink-0 flex-col gap-4 border-border border-r p-3 md:w-60",
+          // ONE width utility at md, not two. The first cut kept md:w-60 and added
+          // md:w-[var(--nav-w)] beside it, and the drag did nothing: two width
+          // utilities at the same breakpoint are decided by the order Tailwind
+          // emits them, not by the order they appear in the attribute. The var
+          // carries its own default instead, so there is one rule and the
+          // fallback IS the old value.
+          "flex w-72 shrink-0 flex-col gap-4 border-border border-r p-3 md:w-[var(--nav-w,15rem)]",
           // OPAQUE AS A DRAWER, translucent as a column. bg-card/40 over a
           // transcript is unreadable - both layers of text land on top of each
           // other - and the first build of this drawer shipped exactly that.
@@ -560,6 +577,21 @@ export function Shell({ children }: { children: ReactNode }) {
           <TokenBar />
         </div>
       </aside>
+
+      {/*
+        Between the two, and only where there are two: below md the nav is a
+        drawer over the page and there is no edge to drag.
+      */}
+      <div className="hidden md:flex">
+        <ResizeHandle
+          storageKey="flowy.nav.width"
+          min={180}
+          max={420}
+          edge="left"
+          onWidth={setNavWidth}
+          label="width of the navigation column"
+        />
+      </div>
 
       <main className="flex min-w-0 flex-1 flex-col overflow-hidden pt-12 md:pt-0">
         {/*
