@@ -255,7 +255,20 @@ export function Shell({ children }: { children: ReactNode }) {
                 data-close-room={room}
                 title={`close ${room} - it stays readable, and reopens from the line below`}
                 aria-label={`close ${room}`}
-                className="absolute right-1 hidden rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground group-hover:block"
+                // VISIBLE ON EVERY ROW, faint, and solid when you point at it.
+                //
+                // It was `hidden group-hover:block`, which is the ordinary
+                // pattern and was wrong here: the operator asked how to remove
+                // a room from the list THREE TIMES, twice after this shipped.
+                // From where they were sitting the sidebar offered nothing -
+                // the control only existed once the pointer happened to be on
+                // the right row. A control you find by accident is not a
+                // control, and "ask the person who built it" is not an
+                // affordance.
+                //
+                // opacity rather than display, so the row does not reflow under
+                // the pointer and the target does not move as you approach it.
+                className="absolute right-1 rounded p-1 text-muted-foreground opacity-40 hover:bg-muted hover:text-foreground hover:opacity-100"
                 onClick={() => void close(room)}
               >
                 <X className="h-3 w-3" />

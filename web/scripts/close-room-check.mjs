@@ -146,12 +146,19 @@ try {
     .waitFor({ state: "attached", timeout: 10_000 })
     .catch(() => {});
   if ((await closer.count()) === 0) die(`the sidebar offers no way to close #${room}`);
-  // HOVER FIRST, because the control is revealed on hover and a click through
-  // `force` is not the interaction a person has. The first version forced it
-  // and playwright refused - a display:none element is not clickable however
-  // hard you ask - which is the check being right about the affordance: a
-  // control nobody can reach is not a control.
-  await link.first().hover();
+  // THE CONTROL IS VISIBLE WITHOUT HOVERING, and that is asserted rather than
+  // assumed. It was revealed on hover, which is the ordinary pattern and was
+  // wrong here: the operator asked how to remove a room from the list THREE
+  // TIMES, twice after this shipped, because from where they sat the sidebar
+  // offered nothing until the pointer happened to be on the right row.
+  //
+  // So this clicks WITHOUT hovering first. If the control ever goes back to
+  // being hover-only, playwright refuses to click a display:none element
+  // however hard you ask, and this fails - which is the check standing in for
+  // somebody looking at the sidebar and seeing no way out.
+  if (!(await closer.isVisible())) {
+    die(`the close control for #${room} is not visible until something hovers it${await seen()}`);
+  }
   await closer.click();
 
   await page
