@@ -60,7 +60,7 @@ gap-probe, not the backend).
   `pa` write - `pa` is a legitimate writable project - it makes it visible at the moment it
   is made. Registry rows are signed and replicate; identity is the name, and the
   canonicalised git remote on the row is what decides whether two nodes' `flowy` is one
-  project. See the project entity section in README.md.
+  project. See the project entity section in docs/reference.md.
 - **declare a project before pointing a token at it.** `flowy projects declare --project
   <name> --origin <remote>` (the remote is read from the work tree if you leave it out).
   `tokens.project` and `agents.project` are foreign keys into the registry, so a token
