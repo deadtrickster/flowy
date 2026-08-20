@@ -11884,6 +11884,25 @@ a_finding_opens_beside_the_list() {
 	node scripts/finding-pane-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A"
 }
 
+# THE OPERATOR: "pathetic - artifacts are just names not lists." Related
+# artifacts rendered as eight characters of a ULID, with no title, no type and
+# no link, because a link built from the PARENT's project and type would point
+# at the wrong row - true, and the wrong conclusion: the node answers a bare id
+# with the CHILD's own project, type and title.
+#
+# Then, while verifying that: the related block sat inside FindingSection, so it
+# drew only on findings. A note carrying related ids stored them and showed
+# nothing, and every existing check looked at a finding, so nothing caught it.
+#
+# THIS ASKS A NOTE for that reason, and points it at one id that cannot resolve,
+# because vanishing is the wrong answer - the list would disagree with the count
+# beside it and the reader would never learn the row points somewhere.
+related_rows_draw_on_any_artifact() {
+	recall
+	cd "$ROOT/web" || return 1
+	node scripts/related-rows-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A"
+}
+
 a_screenshot_pasted_into_a_room_arrives_whole() {
 	recall
 	cd "$ROOT/web" || return 1
@@ -19384,6 +19403,8 @@ check "a finding opens beside the list, and closing it leaves the list" \
 	a_finding_opens_beside_the_list
 check "a person can file a finding upstream from the console, and take it back" \
 	a_person_can_file_a_finding_upstream
+check "related artifacts are rows, on a note and not only on a finding" \
+	related_rows_draw_on_any_artifact
 check "a room in the sidebar looks like the rest of the sidebar" \
 	a_room_looks_like_the_sidebar
 check "a screenshot pasted into a room arrives whole" \

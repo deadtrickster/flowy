@@ -370,6 +370,22 @@ export function ArtifactView() {
                 ) : null}
                 {artifact.type === "finding" ? <FindingSection artifact={artifact} /> : null}
 
+                {/* RELATED IS A FIELD ON EVERY ARTIFACT, and it was drawn only
+                    inside FindingSection - so a note, a report, a todo or a
+                    merge row could carry related ids, store them, and show
+                    nothing at all. Measured on the live node: a note written
+                    with two of them answers with both from /api/artifact and
+                    rendered none.
+                    It went unnoticed because every check that looks at related
+                    rows looks at a finding, which is why the check beside this
+                    asks a NOTE. */}
+                {artifact.related && artifact.related.length > 0 ? (
+                  <div data-related-block="">
+                    <div className="pb-1 font-medium text-muted-foreground text-xs">related</div>
+                    <RelatedRows ids={artifact.related} />
+                  </div>
+                ) : null}
+
                 {/*
                  * WHAT WAS LEARNED ABOUT THE ROW, under the words it was filed
                  * with, which is the order somebody reading it needs: the
@@ -830,13 +846,6 @@ function FindingSection({ artifact }: { artifact: Artifact }) {
           </div>
         )}
       </div>
-
-      {artifact.related && artifact.related.length > 0 ? (
-        <div>
-          <div className="pb-1 font-medium text-muted-foreground text-xs">related</div>
-          <RelatedRows ids={artifact.related} />
-        </div>
-      ) : null}
 
       {/* The project goes with it: the runner holds several, and asking it to
           resolve a version without saying whose source to resolve it against is
