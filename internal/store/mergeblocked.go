@@ -74,23 +74,56 @@ func BlockedByOf(a *Artifact) string { return strings.TrimSpace(artifactString(a
 // forever, which is GatingAt's rule and made for the same case: a row written
 // before this field existed has no stamp, and the safe reading of "I do not
 // know when this was found" is not "nothing may ever take this".
+//
+// KEPT AS THE FRESH-ONLY ANSWER for callers that want exactly that; readers
+// that draw a row for a person want BlockedNow instead, and the reason is in
+// its comment.
 func BlockedAt(a *Artifact, now time.Time) string {
-	why := BlockedWhyOf(a)
-	if why == "" {
-		return ""
-	}
-	stamp := BlockedAtOf(a)
-	if stamp == "" {
-		return ""
-	}
-	found, err := time.Parse(time.RFC3339Nano, stamp)
-	if err != nil {
-		return ""
-	}
-	if now.Sub(found) >= BlockBelievedFor {
+	why, fresh := BlockedNow(a, now)
+	if !fresh {
 		return ""
 	}
 	return why
+}
+
+// BlockedNow is the reason and whether anybody has vouched for it lately.
+//
+// THE THREE ANSWERS ARE NOT TWO. A row can carry no block at all, a block
+// somebody observed within the window, or a block nobody has re-checked since.
+// BlockedAt collapsed the last two into "", so a row whose branch was still
+// checked out somewhere read exactly like a row with nothing wrong with it -
+// empty and absent arriving as the same value, which is the defect this fleet
+// spends its days removing, here inside the guard that exists to report it.
+//
+// MEASURED 2026-08-20: feat/the-console-switches-projects sat in a worktree of
+// mine for over an hour. The drainer re-stamped the block each pass it reached
+// the row, so it happened to stay fresh - but any quiet stretch longer than
+// BlockBelievedFor and the row would have read as takeable while nothing about
+// it had changed. That failure is the dangerous direction: a stale red makes a
+// row look stuck when it is not, and somebody eventually looks; an expired
+// block makes a stuck row look fine, and nobody does.
+//
+// WHY THE WINDOW STAYS. The alternative was to expire a block on the branch and
+// target shas, the way a red expires - and it is wrong here. A red is a
+// statement about a TREE, so a tree that has moved retires it. "This branch is
+// checked out in /home/dead/Projects/wt-drain" is a statement about a MACHINE,
+// and no amount of committing makes it false. Nothing this node can read
+// answers it, so the honest report is the observation with its age attached,
+// and the reader decides.
+func BlockedNow(a *Artifact, now time.Time) (why string, fresh bool) {
+	why = BlockedWhyOf(a)
+	if why == "" {
+		return "", false
+	}
+	stamp := BlockedAtOf(a)
+	if stamp == "" {
+		return "", false
+	}
+	found, err := time.Parse(time.RFC3339Nano, stamp)
+	if err != nil {
+		return "", false
+	}
+	return why, now.Sub(found) < BlockBelievedFor
 }
 
 // EventMergeBlocked is what a skip leaves in the log.

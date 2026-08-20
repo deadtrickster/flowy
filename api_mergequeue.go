@@ -429,20 +429,34 @@ type mergeQueueBlocked struct {
 	Why string `json:"why"`
 	At  string `json:"at,omitempty"`
 	By  string `json:"by,omitempty"`
+	// Stale is set when nobody has vouched for this reason inside
+	// store.BlockBelievedFor. It is NOT omitempty on purpose: false has to
+	// arrive as false, because a caller that cannot see the field reads a
+	// stale block and a fresh one the same way, which is the bug this field
+	// was added to end.
+	Stale bool `json:"stale"`
 }
 
-// queueBlockedOf reads the skip a row carries, or nil - including nil for one
-// that has aged out. A declaration clears it too, so what survives here is a
-// reason nobody has disproved by taking the row.
+// queueBlockedOf reads the skip a row carries, or nil when it carries none.
+// A declaration clears it, so what survives here is a reason nobody has
+// disproved by taking the row.
+//
+// AN AGED-OUT SKIP IS STILL SENT, with Stale set. It used to be dropped, which
+// made a row whose branch was still checked out somewhere identical to a row
+// with nothing wrong with it - the reader could not tell "nothing is blocking
+// this" from "nobody has looked in the last fifteen minutes". See
+// store.BlockedNow for why the window stays and why the observation is reported
+// with its age rather than re-derived.
 func queueBlockedOf(a *store.Artifact, now time.Time) *mergeQueueBlocked {
-	why := store.BlockedAt(a, now)
+	why, fresh := store.BlockedNow(a, now)
 	if why == "" {
 		return nil
 	}
 	return &mergeQueueBlocked{
-		Why: why,
-		At:  store.BlockedAtOf(a),
-		By:  store.BlockedByOf(a),
+		Why:   why,
+		At:    store.BlockedAtOf(a),
+		By:    store.BlockedByOf(a),
+		Stale: !fresh,
 	}
 }
 

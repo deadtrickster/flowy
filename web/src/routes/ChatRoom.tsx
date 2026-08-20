@@ -26,7 +26,7 @@ import {
 import { useCitation } from "@/lib/cite";
 import { useSession } from "@/lib/session";
 import { useUnread } from "@/lib/unread";
-import { shortId } from "@/lib/utils";
+import { cn, shortId } from "@/lib/utils";
 
 /** merge folds a page of new events into the ones on screen, by id, in log order. */
 function merge(current: FlowyEvent[], incoming: FlowyEvent[]): FlowyEvent[] {
@@ -119,6 +119,12 @@ export function ChatRoom() {
   // in flight, and what the node said - because "left" and "you were not a member"
   // are different answers and a spinner that just stops says neither.
   const [leaving, setLeaving] = useState(false);
+  // WHETHER THE ROOM'S SIDE PANEL IS SHOWING, which is a question only a narrow
+  // screen asks. At lg and above the panel is an ordinary column and this value
+  // is not consulted - see the aside below. Closed is the right default on a
+  // phone: the transcript is what you came for, and the panel is what you go
+  // and get.
+  const [panelOpen, setPanelOpen] = useState(false);
   const [left, setLeft] = useState("");
   // WHAT THIS ROOM DECIDED. Held here rather than inside the strip because the
   // strip draws messages this view already has - the pin carries an id and
@@ -650,11 +656,70 @@ export function ChatRoom() {
   const thread = selected?.thread ?? events.at(-1)?.thread;
   const threadEvents = thread ? events.filter((event) => event.thread === thread) : [];
 
+  /**
+   * ANSWERING THE THREAD, from the pane that shows it.
+   *
+   * The operator, 2026-08-20: "no way to post to a thread (look at mattermost
+   * again)". Measured before building: posting into a thread has WORKED the
+   * whole time - chat.go:538 takes {body, thread, parents}, api.ts's say()
+   * carries it, and send() below passes selected?.thread. Every reply sent
+   * while a message happened to be selected has been going into that message's
+   * thread since it was written.
+   *
+   * What was missing is every way of knowing that. The thread pane had no
+   * composer at all - zero textareas across ThreadDag and ThreadList - the
+   * composer below the transcript never said which thread it was about, and
+   * nothing offered "reply in thread" as a choice. Selecting a message was the
+   * only door and was not labelled as one. Another seat measured the
+   * consequence: of the operator's messages, none has ever landed in a thread.
+   *
+   * THE PARENT IS THE LAST EVENT IN THE THREAD, not the selected message and
+   * not the root. This box means "continue this", so the reply hangs off what
+   * it is continuing and the DAG stays a conversation rather than a fan of
+   * replies to the opening line. The thread id travels explicitly beside it:
+   * parents describe the shape, `thread` decides where it lands, and a reply
+   * that inferred one from the other would start a second thread the first time
+   * somebody answered a message that had been moved.
+   */
+  const answerThread = useCallback(
+    async (body: string, to: string, attachments: string[]) => {
+      if (!thread) return;
+      const last = threadEvents.at(-1);
+      const said = await api.say(
+        room,
+        body,
+        last ? [last.id] : [],
+        thread,
+        to,
+        undefined,
+        attachments,
+      );
+      setEvents((current) => merge(current, [said]));
+    },
+    [room, thread, threadEvents],
+  );
+
   return (
     <div className="flex h-full">
       <section className="flex min-w-0 flex-1 flex-col">
-        <header className="flex items-center gap-3 border-border border-b px-4 py-3">
+        <header className="flex flex-wrap items-center gap-3 border-border border-b px-4 py-3 pl-14 md:pl-4">
           <h1 className="font-semibold text-base">#{room}</h1>
+          {/*
+            THE WAY TO THE PANEL, and it exists only where the panel has been
+            taken out of the row. Named for what is behind it rather than
+            "panel": the reader wants their todos, and a control called after
+            the layout is a control that tells them nothing.
+          */}
+          <Button
+            variant="outline"
+            size="sm"
+            data-room-panel-toggle=""
+            aria-expanded={panelOpen}
+            className="lg:hidden"
+            onClick={() => setPanelOpen((open) => !open)}
+          >
+            {panelOpen ? "hide" : "todos, threads"}
+          </Button>
           {whoami?.project ? <Badge variant="outline">{whoami.project}</Badge> : null}
           <Badge variant={live ? "default" : "outline"}>{live ? "watching" : "idle"}</Badge>
           {/*
@@ -797,7 +862,34 @@ export function ChatRoom() {
         carry the numbers - so the column is one pane deep and a person can see
         which of the four wants them without opening any.
       */}
-      <aside className="flex w-[26rem] shrink-0 flex-col border-border border-l">
+      {/*
+        THE SIDE COLUMN IS A PANEL ON A SMALL SCREEN, and the reason is that it
+        was not clipped, it was OVERLAPPING. Measured at 390x664 against the
+        deployed node: this aside is w-[26rem] shrink-0 - 416px - inside a main
+        column 150px wide, so the todos pane, the thread pane and the transcript
+        were all painted on top of one another. shrink-0 is correct at desk
+        width and is what does the damage below it.
+
+        26rem is kept as the ceiling rather than replaced, so the panel is the
+        same panel; it just stops being a column that has nowhere to be.
+      */}
+      {panelOpen ? (
+        <button
+          type="button"
+          aria-label="close the room panel"
+          data-room-panel-backdrop=""
+          className="fixed inset-0 z-30 bg-background/70 lg:hidden"
+          onClick={() => setPanelOpen(false)}
+        />
+      ) : null}
+      <aside
+        data-room-panel-state={panelOpen ? "open" : "closed"}
+        className={cn(
+          "flex w-[26rem] max-w-full shrink-0 flex-col border-border border-l",
+          "fixed inset-y-0 right-0 z-40 bg-background transition-transform lg:static lg:z-auto lg:translate-x-0 lg:bg-transparent",
+          panelOpen ? "translate-x-0 shadow-xl" : "translate-x-full",
+        )}
+      >
         {/*
           Tabs, not a stack. The operator asked four times: the counts belong in
           the tab title so a person can see whether a pane needs them without
@@ -942,13 +1034,27 @@ export function ChatRoom() {
                 {threadEvents.length === 1 ? "" : "s"}
               </span>
             </header>
-            <div className="min-h-0 flex-1">
+            <div className="min-h-0 flex-1 overflow-y-auto">
               {threadGraph ? (
                 <ThreadDag events={threadEvents} />
               ) : (
                 <ThreadList events={threadEvents} selected={selected} onSelect={point} />
               )}
             </div>
+            {/*
+              THE BOX THAT ANSWERS IT. Beneath the thread rather than beside the
+              transcript, because "reply here" is a fact about the pane you are
+              reading and not about whichever message happens to be selected -
+              which is the door that existed and that nobody found.
+
+              Only when there IS a thread. An empty pane with a composer under
+              it invites somebody to write into nothing.
+            */}
+            {thread ? (
+              <div className="shrink-0 border-border border-t" data-thread-compose="">
+                <MessageBox disabled={!token} onSend={answerThread} room={room} />
+              </div>
+            ) : null}
           </section>
         ) : null}
         {pane === "listening" ? (

@@ -4,7 +4,6 @@ import { YourReaders } from "@/components/YourReaders";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { type Me, api } from "@/lib/api";
-import { enableDesktopNotices } from "@/lib/unread";
 
 /**
  * Your own row: the handle people see, and the password you get in with.
@@ -31,12 +30,30 @@ import { enableDesktopNotices } from "@/lib/unread";
  * The warning is above the button rather than after it, because "you have been
  * signed out elsewhere" is not news anybody wants after the fact.
  */
+/**
+ * PASSWORD_MIN and PASSWORD_MAX are store/login.go's, in the units it uses.
+ * MAX is a BYTE count because bcrypt truncates at 72 bytes and the node checks
+ * len() on the string.
+ */
+const PASSWORD_MIN = 8;
+const PASSWORD_MAX = 72;
+
 export function Profile() {
   const [me, setMe] = useState<Me | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   const [handle, setHandle] = useState("");
+  // TYPED TWICE, COMPARED HERE. The node cannot catch this one: a typo is a
+  // valid password, so every rule it has - see PASSWORD_MIN and PASSWORD_MAX
+  // below - passes it. It is discovered at the NEXT LOGIN, and on this node
+  // that is worse than usual: the handle is also the login name, there is no
+  // "forgot" on /login, and PUT /api/me needs a session or a bearer. So the
+  // recovery for one mistyped character is somebody with database access.
+  //
+  // The operator, seeing the form: "profile panel is funny - no password
+  // confirmation, no password strength".
+  const [again, setAgain] = useState("");
   const [password, setPassword] = useState("");
   const [current, setCurrent] = useState("");
   const [saved, setSaved] = useState<string | null>(null);
@@ -62,9 +79,25 @@ export function Profile() {
     void read();
   }, [read]);
 
+  // THE NODE'S OWN LIMITS, mirrored, and the mirroring is a real cost stated
+  // rather than hidden - the same trade MAX_ATTACHMENT makes in lib/api.ts.
+  // Two numbers that have to agree, in exchange for the one thing a person
+  // notices: a refusal beside the box instead of after a round trip.
+  //
+  //   login.go:80  fewer than 8   refused
+  //   login.go:83  more than 72   refused, because bcrypt reads only the first
+  //                72 BYTES and would otherwise verify a truncation - two
+  //                different passwords that both work
+  //
+  // BYTES, NOT CHARACTERS, which is the half a browser gets wrong by default.
+  // `"é".length` is 1 and the node counts 2; an eight-emoji password is 8
+  // characters and 32 bytes. TextEncoder counts what Go's len() counts, so the
+  // box and the door agree about one password rather than two.
+  //
   // A cookie session changing a password has to prove the old one. A bearer
   // token does not, and neither does anybody who has no password yet.
   const needsCurrent = Boolean(me?.has_password && !me.by_bearer);
+  const passwordBytes = new TextEncoder().encode(password).length;
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -73,7 +106,26 @@ export function Profile() {
     const body: { handle?: string; password?: string; current?: string } = {};
     const wantHandle = handle.trim();
     if (wantHandle && wantHandle !== (me.user.handle ?? "")) body.handle = wantHandle;
-    if (password) body.password = password;
+    if (password) {
+      // BEFORE THE REQUEST, in the order a person meets the mistakes. The
+      // mismatch is checked first because it is the one the node can never
+      // answer, and the one that costs a lockout rather than an error message.
+      if (again !== password) {
+        setRefused("the two passwords are not the same - nothing was saved");
+        return;
+      }
+      if (passwordBytes < PASSWORD_MIN) {
+        setRefused(`a password needs at least ${PASSWORD_MIN} characters`);
+        return;
+      }
+      if (passwordBytes > PASSWORD_MAX) {
+        setRefused(
+          `that is ${passwordBytes} bytes and the limit is ${PASSWORD_MAX} - accents and emoji count for more than one`,
+        );
+        return;
+      }
+      body.password = password;
+    }
     if (!body.handle && !body.password) {
       setRefused("nothing to save: change the handle or type a new password");
       return;
@@ -92,6 +144,7 @@ export function Profile() {
     try {
       const answer = await api.updateMe(body);
       setPassword("");
+      setAgain("");
       setCurrent("");
       // Re-read rather than trusting what was sent: the node's row is the
       // answer, and a page that showed what it posted would look identical
@@ -195,6 +248,56 @@ export function Profile() {
               />
             </div>
 
+            {/*
+              THE SECOND BOX. Only once there is something to confirm - an
+              empty form with two password fields asks a question nobody has
+              started answering yet.
+            */}
+            {password ? (
+              <div className="flex flex-col gap-1 text-xs">
+                <span className="text-muted-foreground">and again</span>
+                <Input
+                  aria-label="repeat the new password"
+                  data-profile-password-again=""
+                  type="password"
+                  value={again}
+                  autoComplete="new-password"
+                  onChange={(e) => setAgain(e.target.value)}
+                />
+                {/*
+                  SAID WHILE TYPING, not only on submit. A mismatch found at
+                  save time is a mismatch found after the reader has stopped
+                  looking at the boxes.
+                */}
+                {again && again !== password ? (
+                  <span className="text-destructive" data-profile-password-mismatch="">
+                    these do not match
+                  </span>
+                ) : null}
+              </div>
+            ) : null}
+
+            {/*
+              THE RULE WHERE IT IS TYPED. Both numbers were only discoverable by
+              being refused - one at a time, after a round trip.
+            */}
+            {password ? (
+              <p
+                className={
+                  passwordBytes < PASSWORD_MIN || passwordBytes > PASSWORD_MAX
+                    ? "text-destructive text-xs"
+                    : "text-muted-foreground text-xs"
+                }
+                data-profile-password-rule=""
+              >
+                {passwordBytes < PASSWORD_MIN
+                  ? `${PASSWORD_MIN - passwordBytes} more to go - at least ${PASSWORD_MIN}`
+                  : passwordBytes > PASSWORD_MAX
+                    ? `${passwordBytes} bytes, and ${PASSWORD_MAX} is the limit`
+                    : `${passwordBytes} of ${PASSWORD_MAX} bytes`}
+              </p>
+            ) : null}
+
             {password ? (
               <p className="text-muted-foreground text-xs" data-profile-warning="">
                 changing your password signs your other browsers out
@@ -218,8 +321,6 @@ export function Profile() {
           </form>
         ) : null}
 
-        <DesktopNotices />
-
         {/*
           YOUR READERS, on the same page as your handle, because both answer
           "what does this token have on the node". A reader is a durable row
@@ -231,57 +332,6 @@ export function Profile() {
           <YourReaders />
         </div>
       </div>
-    </div>
-  );
-}
-
-/**
- * Desktop notices, asked for by a click and never on load.
- *
- * The operator asked for "optional browser notifications", and optional is the
- * load-bearing word: `Notification.requestPermission()` has to come from
- * something the reader pressed. A prompt on page load is what browsers made
- * permanently dismissible, and a permission denied that way cannot be asked for
- * again - so getting this wrong once costs the feature for good on that
- * browser.
- *
- * It lives on Profile because that is already "your own settings", and because
- * the alternative was the shell, which three other rows were holding.
- *
- * IT ALSO EXISTS SO THE OPT-IN REACHES THE BUILD. enableDesktopNotices was
- * exported and imported by nothing, so the bundler dropped it - measured:
- * `requestPermission` appeared 0 times in dist. An export nobody imports is not
- * a feature, it is source code. This is the importer.
- */
-function DesktopNotices() {
-  const [state, setState] = useState<string>(() =>
-    typeof Notification === "undefined" ? "unsupported" : Notification.permission,
-  );
-
-  const ask = async () => setState(await enableDesktopNotices());
-
-  return (
-    <div className="flex flex-col gap-1 text-xs" data-desktop-notices="">
-      <span className="text-muted-foreground">desktop notices</span>
-      {state === "granted" ? (
-        <span data-notices-state="granted">
-          on - a room that gains unread while this tab is in the background will say so
-        </span>
-      ) : state === "denied" ? (
-        <span data-notices-state="denied">
-          refused in this browser. Nothing here can re-ask - it has to be changed in the browser's
-          own site settings.
-        </span>
-      ) : state === "unsupported" ? (
-        <span data-notices-state="unsupported">this browser has no Notification API</span>
-      ) : (
-        <div className="flex items-center gap-2">
-          <Button type="button" variant="secondary" onClick={ask} data-notices-ask="">
-            allow desktop notices
-          </Button>
-          <span className="text-muted-foreground">off. The tab counter works either way.</span>
-        </div>
-      )}
     </div>
   );
 }

@@ -348,92 +348,10 @@ export function UnreadProvider({ children }: { children: ReactNode }) {
     [token],
   );
 
-  useTabTitle(counts);
-  useDesktopNotice(counts);
-
   return <UnreadContext.Provider value={{ counts, markRead }}>{children}</UnreadContext.Provider>;
 }
 
 /** The unread counts and the way to clear one, for the shell and the room. */
 export function useUnread(): Unread {
   return useContext(UnreadContext);
-}
-
-/**
- * The count in the browser tab, because every other unread signal in this
- * console requires you to be looking at it already.
- *
- * The operator, 2026-08-20: "no notification no the usual red counter
- * anywhere". Measured at the time: `document.title` appeared zero times in
- * web/src and the Notification API zero times, so the only unread signal was
- * UnreadDot in the rail - visible only from the page it is telling you to come
- * back to.
- *
- * It lives in the provider rather than in the shell on purpose. The count is
- * already here, the shell is a contended file, and a title is not a component's
- * business - three console rows were open on Shell.tsx the evening this landed.
- */
-function useTabTitle(counts: Record<string, number>) {
-  useEffect(() => {
-    // The title WITHOUT a count, captured once, so a re-render cannot fold an
-    // old count into the base and produce "(3) (1) flowy".
-    const base = document.title.replace(/^\(\d+\)\s*/, "");
-    const total = Object.values(counts).reduce((sum, n) => sum + n, 0);
-    document.title = total > 0 ? `(${total}) ${base}` : base;
-  }, [counts]);
-}
-
-/**
- * A desktop notice, and ONLY when the reader has already said yes.
- *
- * This never asks. `Notification.requestPermission()` must come from something
- * the reader clicked - a prompt on page load is the thing browsers made
- * dismissible-forever precisely because software did that - so the asking
- * belongs to a control in the UI, and `enableDesktopNotices` below is what that
- * control calls. Until somebody grants it, this is inert.
- *
- * It notifies on an INCREASE rather than on a non-zero count. Otherwise every
- * poll of a room you have not read re-announces the same message, which is how
- * a notification becomes something people turn off.
- */
-function useDesktopNotice(counts: Record<string, number>) {
-  const previous = useRef<Record<string, number> | null>(null);
-  useEffect(() => {
-    const before = previous.current;
-    previous.current = counts;
-    // The first pass has nothing to compare against: everything unread on load
-    // is old news, and announcing it would greet the reader with a pile of
-    // notices for messages that arrived while the tab was closed.
-    if (before === null) return;
-    if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
-    if (document.visibilityState === "visible") return;
-
-    const grew = Object.entries(counts).filter(([room, n]) => n > (before[room] ?? 0));
-    if (grew.length === 0) return;
-    const total = grew.reduce((sum, [, n]) => sum + n, 0);
-    const where = grew.length === 1 ? `#${grew[0][0]}` : `${grew.length} rooms`;
-    new Notification(`${total} new in ${where}`, {
-      body: "flowy",
-      // One notice at a time rather than a stack: a tag replaces the previous
-      // notification with the same tag, so a quiet hour does not leave twenty.
-      tag: "flowy-unread",
-    });
-  }, [counts]);
-}
-
-/**
- * Ask for permission to show desktop notices. Call this from a control the
- * reader clicked, never on load.
- *
- * Returns what the browser decided, so the caller can render the difference
- * between "granted", "denied" and "the reader closed the prompt" rather than
- * guessing from a boolean.
- */
-export async function enableDesktopNotices(): Promise<NotificationPermission | "unsupported"> {
-  if (typeof Notification === "undefined") return "unsupported";
-  if (Notification.permission === "granted") return "granted";
-  // A browser that has already been told no does not re-prompt, and asking
-  // again silently returns "denied" - so the caller is told that rather than
-  // being left to wonder why nothing happened.
-  return await Notification.requestPermission();
 }

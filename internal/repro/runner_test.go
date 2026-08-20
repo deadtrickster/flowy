@@ -27,6 +27,13 @@ type fakeStore struct {
 	reproErr error
 	recErr   error
 
+	// atRecord is called INSIDE RecordFindingRun, before the row is kept. It
+	// is the only way to observe the ORDER of the two things finish() does -
+	// writing the verdict down and publishing the terminal status - and order
+	// is what the defect was. A test that waits and then looks measures the
+	// speed of the box it runs on; this measures the sequence.
+	atRecord func()
+
 	mu       sync.Mutex
 	recorded []store.FindingRun
 	// asWho is the agent id of the principal each of the three calls was
@@ -68,6 +75,9 @@ func (f *fakeStore) ReadFindingRepro(_ context.Context, p *store.Principal, _ st
 
 func (f *fakeStore) RecordFindingRun(_ context.Context, p *store.Principal, _ string, run store.FindingRun) (*store.Event, error) {
 	f.note(&f.recordAs, p)
+	if f.atRecord != nil {
+		f.atRecord()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.recErr != nil {
@@ -871,6 +881,80 @@ func TestVerdictIsSignedByWhoeverAsked(t *testing.T) {
 	if got, want := h.store.whoRead(), []string{"agent-one", "agent-two"}; !equalStrings(got, want) {
 		t.Errorf("findings read as %v, want %v - a run reads with the asker's reach, not the daemon's",
 			got, want)
+	}
+}
+
+// TestATerminalRunHasItsVerdictWrittenDown is the invariant behind a red that
+// would not reproduce.
+//
+// On 2026-08-20 the drainer failed a branch with
+// "TestVerdictIsSignedByWhoeverAsked: verdicts recorded as [agent-one], want
+// [agent-one agent-two]", and the same sha on the same suite passed 714/0 when
+// re-run. Nothing was wrong with the branch. The runner published a run's
+// TERMINAL STATUS before writing its verdict to the finding's run log, so
+// anything that waited for terminal - the console, a caller, that test - could
+// look in between and find a finished run with no verdict. On a loaded box the
+// window is wide enough to land in.
+//
+// THIS TEST DOES NOT WAIT AND LOOK, because that measures the machine. It
+// observes the ORDER: at the moment the store is asked to record a verdict,
+// the run must not yet be terminal. That is true or false in one run of the
+// suite, on any box, forever.
+//
+// Against the code that produced the red it fails immediately: verdict() set a
+// terminal Status the moment the repro exited, which was before teardown and
+// long before the recording.
+func TestATerminalRunHasItsVerdictWrittenDown(t *testing.T) {
+	h := newHarness(t, Options{Workers: 1})
+
+	// THE HOOK GOES ON BEFORE THERE IS ANYTHING TO RECORD. Installed after the
+	// enqueue it is a write the worker goroutine may already be reading - the
+	// race detector says so, and it is the ordinary shape of a test that
+	// arranges its instrument after starting the thing it measures.
+	var mu sync.Mutex
+	var terminalAtRecord []Status
+	h.store.atRecord = func() {
+		// Runs() rather than a captured id, so this needs nothing the enqueue
+		// has not returned yet. The harness runs one finding on one worker, so
+		// "any run" and "this run" are the same set.
+		for _, run := range h.Runs() {
+			if !run.Status.Terminal() {
+				continue
+			}
+			mu.Lock()
+			terminalAtRecord = append(terminalAtRecord, run.Status)
+			mu.Unlock()
+		}
+	}
+
+	ids, err := h.Enqueue(testAsker, "flowy", []string{"01M08YNY9ZFD7089CKAGM6HMA3"}, "26.07.5")
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	id := ids[0]
+	run := h.await(t, id)
+
+	mu.Lock()
+	seen := append([]Status(nil), terminalAtRecord...)
+	mu.Unlock()
+	if len(seen) > 0 {
+		t.Errorf("the run was already %v when its verdict was being recorded - a reader that "+
+			"waits for terminal can see a finished run with nothing written down",
+			seen)
+	}
+	// AND THE OTHER DIRECTION, so this cannot pass by never recording anything:
+	// by the time the run IS terminal, the verdict is in the log.
+	if !run.Status.Terminal() {
+		t.Fatalf("await returned a run in %v", run.Status)
+	}
+	if got := h.store.verdicts(); len(got) != 1 {
+		t.Fatalf("the run is %v and the finding has %d verdicts on it, want 1", run.Status, len(got))
+	}
+	// The recorded status is the verdict, not the status the run held while the
+	// write was in flight - which is non-terminal now, and would be written
+	// into an append-only log of finished runs if finish() read the wrong field.
+	if got, want := h.store.verdicts()[0].Status, string(StatusConfirmed); got != want {
+		t.Errorf("the run log says %q, want %q", got, want)
 	}
 }
 

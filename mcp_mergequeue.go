@@ -127,14 +127,22 @@ type mergeBlocked struct {
 	Why string `json:"why"`
 	At  string `json:"at,omitempty"`
 	By  string `json:"by,omitempty"`
+	// Stale says nobody has vouched for this reason lately. Not omitempty:
+	// false must arrive as false. See mergeQueueBlocked.Stale.
+	Stale bool `json:"stale"`
 }
 
+// An aged-out skip is reported with Stale set rather than dropped - an agent
+// reading this door has the same right as a browser to tell "nothing is
+// blocking this row" from "nobody has checked lately". See store.BlockedNow.
 func blockedOf(item *store.Artifact, now time.Time) *mergeBlocked {
-	why := store.BlockedAt(item, now)
+	why, fresh := store.BlockedNow(item, now)
 	if why == "" {
 		return nil
 	}
-	return &mergeBlocked{Why: why, At: store.BlockedAtOf(item), By: store.BlockedByOf(item)}
+	return &mergeBlocked{
+		Why: why, At: store.BlockedAtOf(item), By: store.BlockedByOf(item), Stale: !fresh,
+	}
 }
 
 // mergeRed is the last verdict that said no, as a reader sees it.

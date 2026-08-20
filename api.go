@@ -772,7 +772,32 @@ func (s *server) handleListArtifacts(w http.ResponseWriter, r *http.Request) {
 	if err := s.db.FillDisowned(r.Context(), list, nil); err != nil {
 		log.Printf("disowned: could not resolve repudiations for an artifact page: %v", err)
 	}
+	// A NARROWING THAT MATCHED NOTHING SAYS WHAT IT NARROWED ON, and what this
+	// reader would have found something under.
+	//
+	// MEASURED 2026-08-20: ?kind=attachment answers 200 with an empty list, and
+	// so does ?kind=nonsense-xyz. Both are honest and neither is useful -
+	// "attachment" is a TYPE and has never been a kind, and the door has no way
+	// to say so. A seat filed a bug against a working filter on the strength of
+	// it, and two more of us endorsed the bug before anybody read the
+	// vocabulary. "none of those" and "that is not one of these" arriving as
+	// the same answer is the empty-vs-absent collapse, in a door people use to
+	// find things.
+	//
+	// NOT A REFUSAL. kind is open in the data - todo, merge, binary, note,
+	// node, text, and rows with none at all - so a closed set would refuse
+	// callers asking about values that exist. category IS closed and IS
+	// refused, a few lines up, and the difference is the point.
+	//
+	// ONLY WHEN THE PAGE IS EMPTY, so the ordinary read pays nothing. The
+	// question "what else is there" is one nobody asks about a page that
+	// answered.
 	body := stampScope(map[string]any{"artifacts": list}, answerScopeOf(r, p))
+	if len(list) == 0 {
+		if hint := s.vocabularyHint(r, p, q); len(hint) > 0 {
+			body["vocabulary"] = hint
+		}
+	}
 	if withheld != nil {
 		body["withheld"] = withheld
 	}
@@ -780,6 +805,46 @@ func (s *server) handleListArtifacts(w http.ResponseWriter, r *http.Request) {
 		body["refused"] = refused
 	}
 	writeJSON(w, http.StatusOK, body)
+}
+
+// vocabularyHint is what the narrowed-on columns actually hold for this reader,
+// for the columns this request narrowed on and no others.
+//
+// It answers about kind and type only. Those are the two that look like closed
+// sets, share several words with each other, and are therefore the two a caller
+// gets wrong - ?kind=attachment and ?type=attachment differ by one word and by
+// 152 rows. room, project and assignee are names rather than vocabularies, and
+// listing every assignee on a node because somebody misspelled one would be a
+// worse answer than silence.
+//
+// A failure here is not a failure of the read. The page is correct and already
+// built; this is the sentence beside it, and a caller that gets the page and no
+// hint is strictly better off than one that gets an error instead of the page.
+func (s *server) vocabularyHint(
+	r *http.Request, p *store.Principal, q url.Values,
+) map[string]any {
+	out := map[string]any{}
+	for _, column := range []string{"kind", "type"} {
+		asked := strings.TrimSpace(q.Get(column))
+		if asked == "" {
+			continue
+		}
+		have, err := s.db.ArtifactVocabulary(r.Context(), p, column, scopeAll(r, p))
+		if err != nil {
+			log.Printf("vocabulary: could not read the %s column: %v", column, err)
+			continue
+		}
+		if _, ok := have[asked]; ok {
+			// The value IS a kind and simply has nothing under it here - a true
+			// empty. Saying "these exist" would imply the opposite.
+			continue
+		}
+		out[column] = map[string]any{
+			"asked": asked,
+			"have":  have,
+		}
+	}
+	return out
 }
 
 // handleGetArtifact returns one artifact, or 404 when it is missing or out of

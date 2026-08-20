@@ -133,6 +133,11 @@ func queueWaitCmd(rest []string) error {
 	// say what it was watching rather than only that it stopped.
 	var last mergeQueueItem
 	last.ID = want
+	// The target tip as of the last answer, kept beside the row for the same
+	// reason the row is kept: rowLine needs it to tell a live red from one
+	// measured off a base the target has left, and the line that reports a
+	// timed-out wait is printed after the loop has stopped reading.
+	lastTip := ""
 	// Whether this wait has ever had an answer from the node. A read cancelled
 	// by our own cap is the quiet deadline only once we have been TALKING to
 	// the node: before that, a cancellation means the question was never asked,
@@ -167,7 +172,7 @@ func queueWaitCmd(rest []string) error {
 			// that a wait which found nothing is not a failure. A script that
 			// retries on 2 would have retried a perfectly ordinary quiet
 			// deadline forever.
-			fmt.Println("still queued " + rowLine(last))
+			fmt.Println("still queued " + rowLine(last, lastTip))
 			return errWaitedOut
 		}
 		if err != nil {
@@ -210,6 +215,7 @@ func queueWaitCmd(rest []string) error {
 		if found != nil {
 			last = *found
 		}
+		lastTip = answer.TargetTip
 		switch {
 		case found == nil:
 			// GONE IS NOT LANDED. Ask the row itself, which is the only thing
@@ -251,7 +257,7 @@ func queueWaitCmd(rest []string) error {
 			return errRowIsRed
 		}
 		if !time.Now().Before(give) {
-			fmt.Println("still queued " + rowLine(*found))
+			fmt.Println("still queued " + rowLine(*found, answer.TargetTip))
 			return errWaitedOut
 		}
 	}

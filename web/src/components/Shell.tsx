@@ -13,12 +13,13 @@ import {
   ListChecks,
   ListTree,
   Lock,
+  Menu,
   Shapes,
   UserRound,
   X,
 } from "lucide-react";
-import type { ReactNode } from "react";
-import { NavLink, useNavigate } from "react-router-dom";
+import { type ReactNode, useEffect, useRef, useState } from "react";
+import { NavLink, useLocation, useNavigate } from "react-router-dom";
 
 import { FreshBanner } from "@/components/FreshBanner";
 import { TokenBar } from "@/components/TokenBar";
@@ -111,15 +112,121 @@ export function Shell({ children }: { children: ReactNode }) {
   // For the create button below: a new room is somewhere to go, not just a row
   // in the list, so it navigates rather than leaving you where you were.
   const navigate = useNavigate();
+  // THE NAV IS A DRAWER ON A SMALL SCREEN AND A COLUMN ON A LARGE ONE.
+  //
+  // Measured in a real browser against the deployed node, 2026-08-20, at the
+  // size the operator was actually holding:
+  //
+  //   390x664   aside 240  main 150  composer 26px wide  rooms on screen 0/28
+  //   768x1024  aside 240  main 528                      rooms 10/28
+  //   1600x1000 aside 240  main 1360 composer 920
+  //
+  // The column was a hard w-60 with no breakpoint anywhere in this file, so on
+  // a phone it took 62% of the width and its thirteen links pushed the ROOMS
+  // heading below the fold - the operator's words were "not enough vertical
+  // space, simply not visible", and the measurement agrees: not one of
+  // twenty-eight rooms was reachable. Nothing signalled it either, because the
+  // page does not overflow horizontally; it simply looked broken.
+  //
+  // Open state rather than a CSS-only :target or a checkbox hack, because the
+  // drawer has to close on navigation - a menu that stays over the page you
+  // just asked for is the second half of this same complaint.
+  const [navOpen, setNavOpen] = useState(false);
+  // CLOSING IS TIED TO ARRIVING SOMEWHERE, not to the tap that started it. A
+  // click handler on the drawer closes it when somebody taps dead space in it,
+  // and does not close it when they reach a page by keyboard - both wrong, and
+  // the second is the one nobody tests. The path changing is the actual event:
+  // you asked for a page, so the menu is done.
+  const { pathname } = useLocation();
+  const shownFor = useRef(pathname);
+  useEffect(() => {
+    if (shownFor.current === pathname) return;
+    shownFor.current = pathname;
+    setNavOpen(false);
+  }, [pathname]);
   return (
     <div className="flex h-full">
-      <aside className="flex w-60 shrink-0 flex-col gap-4 border-border border-r bg-card/40 p-3">
+      {/*
+        THE BUTTON THAT OPENS IT, and it only exists where the drawer does.
+        md:hidden rather than a conditional render: the breakpoint is the one
+        fact deciding both halves, and two ways of asking it drift.
+      */}
+      <button
+        type="button"
+        data-nav-open=""
+        aria-label="rooms and navigation"
+        aria-expanded={navOpen}
+        className="fixed top-2 left-2 z-50 rounded-md border border-border bg-card p-2 shadow-sm md:hidden"
+        onClick={() => setNavOpen((open) => !open)}
+      >
+        {navOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
+      </button>
+      {/*
+        The backdrop is what makes it a drawer rather than a panel stuck open:
+        one tap anywhere on the page you were reading puts you back on it.
+      */}
+      {navOpen ? (
+        <button
+          type="button"
+          aria-label="close navigation"
+          data-nav-backdrop=""
+          className="fixed inset-0 z-30 bg-background/70 md:hidden"
+          onClick={() => setNavOpen(false)}
+        />
+      ) : null}
+      <aside
+        data-nav=""
+        data-nav-state={navOpen ? "open" : "closed"}
+        className={cn(
+          // WIDER AS A DRAWER than as a column, because a room called
+          // doc-01M07SCJ5XDXKCSY4SJ1NR87 does not fit in 240px and this
+          // console names rooms after ULIDs. 18rem still leaves the page
+          // visible behind the backdrop, which is what says the drawer is over
+          // something rather than being the whole app.
+          "flex w-72 shrink-0 flex-col gap-4 border-border border-r p-3 md:w-60",
+          // OPAQUE AS A DRAWER, translucent as a column. bg-card/40 over a
+          // transcript is unreadable - both layers of text land on top of each
+          // other - and the first build of this drawer shipped exactly that.
+          "bg-card md:bg-card/40",
+          // ONE SCROLL REGION ON A SHORT SCREEN. Thirteen nav links are taller
+          // than a 664px phone on their own, so with the rooms in their own
+          // scroller the rooms got nothing: measured 0 of 28 reachable with the
+          // drawer OPEN, which is the operator's complaint surviving the fix
+          // that was supposed to answer it. Above the breakpoint the column
+          // keeps its old shape, where the nav is fixed, the rooms scroll and
+          // the token bar stays put.
+          "overflow-y-auto md:overflow-y-visible",
+          // Off-canvas below the breakpoint, an ordinary column at and above it.
+          // `fixed` takes it out of the flex row entirely, which is the point:
+          // a hidden-but-laid-out column still costs its 240px.
+          "fixed inset-y-0 left-0 z-40 transition-transform md:static md:z-auto md:translate-x-0",
+          navOpen ? "translate-x-0 shadow-xl" : "-translate-x-full",
+          // Room for the open/close button, which sits over this column's own
+          // header while the drawer is open.
+          "pt-12 md:pt-3",
+        )}
+      >
         <div className="px-2 pt-1">
           <div className="font-semibold text-lg tracking-tight">flowy</div>
           <div className="text-muted-foreground text-xs">handoff fabric console</div>
         </div>
 
-        <nav className="flex flex-col gap-0.5">
+        {/*
+          ROOMS FIRST ON A PHONE, and this is a judgement rather than a
+          measurement, so it is written down. With the drawer scrolling, all 28
+          rooms are reachable - but only after scrolling past thirteen nav
+          links, and measured with the drawer OPEN not one room was on screen.
+          On a phone this console is a chat client: the rooms are the thing, and
+          overview/metrics/traces are where you go afterwards. Above the
+          breakpoint the source order stands, because a mouse and a tall window
+          make the whole column visible at once and moving things would only
+          surprise somebody who already knows where they are.
+
+          CSS order rather than two renderings of the same list, so there is one
+          nav in the document and a check cannot pass against the copy that is
+          not showing.
+        */}
+        <nav className="order-3 flex flex-col gap-0.5 md:order-none">
           <NavLink to="/" className={navClass} end>
             <HomeIcon className="h-4 w-4" />
             overview
@@ -270,7 +377,7 @@ export function Shell({ children }: { children: ReactNode }) {
           container. A control you cannot reach is the same as no control, which
           is the whole defect this row is closing.
         */}
-        <div className="flex shrink-0 items-center justify-between px-2 pb-1">
+        <div className="order-1 flex shrink-0 items-center justify-between px-2 pb-1 md:order-none">
           <span className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
             rooms
           </span>
@@ -339,7 +446,10 @@ export function Shell({ children }: { children: ReactNode }) {
           things on a busy node - and a check that asked the document rather than
           this list could never see a room leave it.
         */}
-        <div data-room-list="" className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto">
+        <div
+          data-room-list=""
+          className="order-2 flex flex-col gap-0.5 md:order-none md:min-h-0 md:flex-1 md:overflow-y-auto"
+        >
           {rooms.map((room) => (
             <div key={room} className="group relative flex items-center">
               {/* navClass is a FUNCTION, because NavLink hands it isActive.
@@ -401,7 +511,10 @@ export function Shell({ children }: { children: ReactNode }) {
             back and it is one click.
           */}
           {hidden.length > 0 ? (
-            <details className="mt-1 px-2 text-muted-foreground text-xs" data-closed-rooms="">
+            <details
+              className="order-2 mt-1 px-2 text-muted-foreground text-xs md:order-none"
+              data-closed-rooms=""
+            >
               {/*
                 AND THE CLOSED PILE CARRIES ITS OWN, the operator's second
                 ruling: "closed accordeon tiitlle can have closed counter".
@@ -443,12 +556,12 @@ export function Shell({ children }: { children: ReactNode }) {
         {/* shrink-0 so the rooms list cannot squeeze it away; mt-auto is gone
             because the rooms block now takes the slack that used to push this
             down. */}
-        <div className="shrink-0">
+        <div className="order-4 shrink-0 md:order-none">
           <TokenBar />
         </div>
       </aside>
 
-      <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
+      <main className="flex min-w-0 flex-1 flex-col overflow-hidden pt-12 md:pt-0">
         {/*
           Above every route rather than inside one: a tab running a replaced
           console is a fact about the tab, not about whichever page it happens

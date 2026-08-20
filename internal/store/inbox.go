@@ -330,6 +330,29 @@ type PresenceRow struct {
 	// because they fail independently: a live waiter with a blocked agent, and
 	// a working agent whose waiter died.
 	LastActed *time.Time `json:"last_acted_at,omitempty"`
+	// Cursor is HOW FAR THIS READER HAS BEEN HANDED, as an hlc on the same
+	// sequence every event carries. So "has this reader seen that message" is
+	// `Cursor >= event.seq_hlc`, with no new state anywhere: inbox_readers has
+	// held a cursor per reader since it existed, and the presence view simply
+	// did not hand it over.
+	//
+	// The operator asked for read statuses on 2026-08-20 after asking why two
+	// seats had not answered them. The answer to both is here.
+	//
+	// DELIVERED, NOT READ BY A PERSON, and anything drawn from it has to say so.
+	// For an agent the two are close: the waiter woke and the message was in its
+	// digest. For somebody in a browser they are closer still, because the
+	// console declares readers of its own and acks what it has actually reached
+	// - see web/src/lib/unread.tsx, which was written for exactly this
+	// distinction. Neither is a claim that anybody UNDERSTOOD it, and a tick
+	// that reads as "they are dealing with it" will be trusted as one.
+	//
+	// A POINTER, NOT A COUNT, so it is never "0 unread". A reader that has never
+	// been handed anything has a zero cursor and that is a real position: it has
+	// seen nothing. A reader that does not exist is not on this list at all,
+	// which is the different answer, and the one the roster already draws by
+	// absence.
+	Cursor int64 `json:"cursor"`
 }
 
 // QuietAfter is how long a reader may go without polling before this node says
@@ -565,6 +588,12 @@ func (d *DB) Presence(ctx context.Context) ([]*PresenceRow, error) {
 		        split_part(r.principal, chr(31), 3) AS project,
 		        r.reader, coalesce(u.handle, ''),
 		        r.polls_in_flight > 0, r.waiter_kind, r.last_poll_at, r.updated,
+		        -- HOW FAR THIS READER HAS BEEN HANDED. Already stored, on every
+		        -- row, written by every poll; this view was the only thing not
+		        -- passing it on. It is a position on the event sequence, so a
+		        -- caller compares it with a message's seq_hlc rather than
+		        -- counting anything.
+		        r.read_cursor,
 		        -- WHICH PROCESS SAID IT, so a repair names it instead of
 		        -- hunting for it. All three or none - see WaiterProcess.
 		        r.waiter_pid, r.waiter_since, r.waiter_host,
@@ -642,7 +671,7 @@ func (d *DB) Presence(ctx context.Context) ([]*PresenceRow, error) {
 		var since sql.NullTime
 		var host sql.NullString
 		if err := rows.Scan(&p.Principal, &p.Project, &p.Reader, &p.UserName,
-			&holdsPoll, &p.Kind, &p.LastPoll, &p.Updated,
+			&holdsPoll, &p.Kind, &p.LastPoll, &p.Updated, &p.Cursor,
 			&pid, &since, &host,
 			&p.LastActed, &now); err != nil {
 			return nil, fmt.Errorf("store: presence: %w", err)

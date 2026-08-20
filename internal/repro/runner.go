@@ -135,6 +135,30 @@ type Run struct {
 	// down. A reader outside sees the status, which is the truth it needs.
 	failed bool
 
+	// reached is the verdict this run arrived at, held back until finish().
+	//
+	// It is failed's other half and exists for the same reason, which fail()
+	// already states and verdict() did not honour: a run is not finished while
+	// its containers are still up. execute() decides confirmed-or-not, then
+	// returns to runOne, which tears the compose project down and only then
+	// records the verdict on the finding. Setting Status to a TERMINAL value at
+	// the moment the verdict is known - which is what verdict() used to do -
+	// publishes "this run is done" while `down -v` has not run and while the
+	// finding's run log has not been written.
+	//
+	// Measured 2026-08-20 as a drainer red that would not reproduce:
+	// TestVerdictIsSignedByWhoeverAsked read [agent-one] where it wanted
+	// [agent-one agent-two], because the second run went terminal before its
+	// record landed and the test - correctly waiting on terminal - looked in
+	// between. That is the small version. The large version is a caller that
+	// waits for terminal and starts the next run into the previous one's
+	// containers and volumes, which is the exact collision fail()'s comment
+	// warns about.
+	//
+	// Unexported and not on the wire, like failed: outside readers see Status,
+	// and Status does not go terminal until everything behind it is true.
+	reached Status
+
 	// principal is WHO THIS RUN IS PERFORMED ON BEHALF OF, carried from the
 	// enqueue that asked for it to the store calls that read the finding and
 	// record the verdict. It is unexported and has no JSON name on purpose:
@@ -805,11 +829,15 @@ func (r *Runner) RenderInputFor(
 
 // verdict writes a run's answer onto its record. Both callers are in
 // execute; recording it in the store is finish's, once, on the way out.
+// verdict records what the repro decided, WITHOUT ending the run - the same
+// contract fail() has, and for the same reason it gives. finish() publishes it
+// once the teardown has happened and the finding's run log has the verdict on
+// it. See Run.reached.
 func (r *Runner) verdict(id int64, confirmed bool, status Status) {
 	r.update(id, func(run *Run) {
 		c := confirmed
 		run.Confirmed = &c
-		run.Status = status
+		run.reached = status
 	})
 }
 
@@ -862,33 +890,53 @@ func (r *Runner) finish(ctx context.Context, id int64) {
 	if !ok {
 		return
 	}
-	// An error run was already stamped by fail, at the moment it failed;
-	// this only stamps the runs that ended with a verdict.
+	// THE RECORD FIRST, THE TERMINAL STATUS AFTER IT.
+	//
+	// This used to be the other way round, and the ordering was the bug rather
+	// than a detail of it: anything waiting for this run - the console, a
+	// caller, a test - sees Status go terminal and reads the finding's run log
+	// in the same breath. Between those two moments the log did not have this
+	// run's verdict in it yet, so the answer was "the run is done and there is
+	// no verdict", which is empty-vs-absent wearing a timestamp.
+	//
+	// It failed roughly one gate run in a hundred and never on the box that
+	// looked. See Run.reached for the measurement.
+	//
+	// The write is attempted for a run that reached a verdict and skipped for
+	// one that did not - a failed run has nothing to record, which is not the
+	// same as failing to record it.
+	note := ""
+	if run.Confirmed != nil {
+		// The status the run ARRIVED at, which is what the log should carry.
+		// run.Status is still non-terminal here by design, so reading it would
+		// write "running" into an append-only record of finished runs.
+		if _, err := r.findings.RecordFindingRun(ctx, run.principal, run.Finding, store.FindingRun{
+			Version:   run.Version,
+			SHA:       run.SHA,
+			Confirmed: *run.Confirmed,
+			Status:    string(run.reached),
+		}); err != nil {
+			note = " (verdict not recorded: " + err.Error() + ")"
+		}
+	}
 	r.update(id, func(run *Run) {
-		// The ending is stamped HERE, after teardown, for both paths. A failed
-		// run reaches its terminal status at the same moment a successful one
-		// does: when there is nothing of it left running.
-		if run.failed {
+		// The ending is stamped HERE, after teardown and after the recording,
+		// for every path out. A failed run reaches its terminal status at the
+		// same moment a confirmed one does: when there is nothing of it left
+		// running and nothing left to write down.
+		switch {
+		case run.failed:
 			run.Status = StatusError
+		case run.reached != "":
+			run.Status = run.reached
 		}
 		if run.EndedAt == nil {
 			run.EndedAt = nowPtr()
 		}
+		if note != "" {
+			run.Note = strings.TrimSpace(run.Note + note)
+		}
 	})
-	if run.Confirmed == nil {
-		return
-	}
-	_, err := r.findings.RecordFindingRun(ctx, run.principal, run.Finding, store.FindingRun{
-		Version:   run.Version,
-		SHA:       run.SHA,
-		Confirmed: *run.Confirmed,
-		Status:    string(run.Status),
-	})
-	if err != nil {
-		r.update(id, func(run *Run) {
-			run.Note = strings.TrimSpace(run.Note + " (verdict not recorded: " + err.Error() + ")")
-		})
-	}
 }
 
 // cancelledOr answers the shutdown note when this run's context was

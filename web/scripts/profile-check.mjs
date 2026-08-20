@@ -107,8 +107,20 @@ ${JSON.stringify(afterRefusal.user?.handle)} - the refusal was cosmetic`);
 
   // ------------------------------------------------------------ and a free one
   await page.locator("[data-profile-handle-input]").fill(wanted);
+  // TYPED TWICE NOW. The panel refuses a password that is not confirmed, so a
+  // check that fills one box is checking that the refusal works, by accident.
   await page.locator("[data-profile-password-input]").fill(password);
+  await page.locator("[data-profile-password-again]").fill(password);
+  // WAITED FOR, NOT COUNTED. The warning renders on the state change the fill
+  // above causes, and React has not necessarily rendered it by the time the
+  // fill() promise resolves. Latent here rather than red, and found by sweeping
+  // every check in web/scripts for this shape after it cost two gate passes in
+  // way-in-check tonight - twice, in one file, twenty lines apart.
   const warning = page.locator("[data-profile-warning]");
+  await warning
+    .first()
+    .waitFor({ state: "visible", timeout: 10_000 })
+    .catch(() => {});
   if ((await warning.count()) === 0) {
     die(`typing a new password drew no warning that other sessions end - the panel has to
 say what a save costs before the save, not after`);
@@ -190,6 +202,7 @@ attempts a minute continuously.`);
   // NOW REPLACE IT FROM THE PANEL, and the first one must stop working.
   const second = `${password}-again`;
   await page.locator("[data-profile-password-input]").fill(second);
+  await page.locator("[data-profile-password-again]").fill(second);
   await page.locator("[data-profile-save]").click();
   await saved.first().waitFor({ timeout: 10000 });
 
@@ -204,8 +217,44 @@ saved and the old credential outlived it`);
 above proves the panel broke logging in rather than replacing a password`);
   }
 
+  // A PASSWORD TYPED WRONG THE SECOND TIME IS NOT SAVED, and this is the arm
+  // the panel was missing entirely. The node cannot refuse it - a typo is a
+  // valid password - so it would be stored, and found at the next login, which
+  // for a person whose handle is also their login name and who has no reset
+  // path is a lockout. See routes/Profile.tsx.
+  const typo = `${second}-typo`;
+  await page.locator("[data-profile-password-input]").fill(typo);
+  await page.locator("[data-profile-password-again]").fill(`${typo}X`);
+  // SAID WHILE TYPING, before anybody presses save.
+  const mismatch = page.locator("[data-profile-password-mismatch]");
+  if ((await mismatch.count()) === 0) {
+    die("two different passwords are typed and nothing on the page says they differ");
+  }
+  await page.locator("[data-profile-save]").click();
+  await page.waitForTimeout(500);
+  const refusedText = await page.locator("[data-profile-refused]").first().textContent();
+  if (!refusedText || !/not the same/i.test(refusedText)) {
+    die(`a mismatched password was not refused - the panel said ${JSON.stringify(refusedText)}`);
+  }
+  // AND NOTHING WAS SAVED, which is the assertion that matters: a refusal that
+  // still wrote would be worse than no refusal, because the reader believes it.
+  const unchanged = await login(second);
+  if (!unchanged.ok) {
+    die(`the mismatched submit changed the password anyway - ${second} no longer logs in`);
+  }
+
+  // THE FLOOR IS ON THE PAGE, not discovered by being refused. Both of the
+  // node's numbers were invisible: login.go refuses under 8 and over 72, and
+  // nothing in the panel said either until it answered.
+  await page.locator("[data-profile-password-input]").fill("short");
+  await page.locator("[data-profile-password-again]").fill("short");
+  const rule = await page.locator("[data-profile-password-rule]").first().textContent();
+  if (!rule || !/8/.test(rule)) {
+    die(`the panel does not say how long a password has to be - it reads ${JSON.stringify(rule)}`);
+  }
+
   console.log(
-    `the profile panel set the handle to ${wanted}, set a password that logs in, replaced it so the first stopped working, and refused ${taken}`,
+    `the profile panel set the handle to ${wanted}, set a password that logs in, replaced it so the first stopped working, refused ${taken}, refused a mismatch without saving it, and says the floor`,
   );
 } finally {
   // PUT THE NAME BACK. This check renames a seat the rest of the gate addresses

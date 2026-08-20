@@ -1649,3 +1649,68 @@ func (d *DB) TombstoneArtifact(ctx context.Context, p *Principal, id string) (*A
 	}
 	return art, nil
 }
+
+// ArtifactVocabulary is which values of one column this reader would actually
+// find something under, with how many rows each - "the kinds there are", asked
+// of the data rather than of a list somebody maintains.
+//
+// WHY IT IS NOT A CONSTANT SET. `category` is closed and is checked against a
+// list, and api.go says why: "give me the bugs" is only a question with an
+// answer if there is one word for bugs. `kind` is not that. Measured on the
+// dogfood node 2026-08-20: todo, merge, binary, note, node, text - and 25 rows
+// carrying no kind at all. A hardcoded list would refuse callers asking about
+// values that genuinely exist.
+//
+// WHY IT IS PERMISSION-FILTERED, through the same clause the list itself uses:
+// the answer to "what kinds are there" must be the answer to "what kinds would
+// I see", or it is a hint that leads a reader to a filter which then returns
+// nothing - which is where they started. It also means two people on one node
+// get different vocabularies, honestly.
+//
+// COLUMN IS A CALLER-SUPPLIED IDENTIFIER and is therefore checked against a
+// closed set here rather than interpolated. There is no way to parameterise a
+// column name in SQL, so the only safe version of this function is one that
+// cannot be handed an arbitrary string.
+func (d *DB) ArtifactVocabulary(
+	ctx context.Context, p *Principal, column string, scopeAll bool,
+) (map[string]int, error) {
+	var col string
+	switch column {
+	case "kind":
+		col = "ar.kind"
+	case "type":
+		col = "ar.type"
+	default:
+		return nil, fmt.Errorf("store: %q is not a column with a vocabulary", column)
+	}
+	ctx, span := otel.Start(ctx, otel.KindQuery, "artifacts.vocabulary")
+	defer span.End()
+	a := &args{}
+	filter := ArtifactFilterSQL(p, "ar", a, scopeAll)
+	query := `SELECT ` + col + ` AS v, count(*) AS n
+	            FROM artifacts ar
+	           WHERE coalesce(ar.tombstone, false) = false
+	             AND ` + col + ` IS NOT NULL AND ` + col + ` <> ''
+	             AND ` + filter + `
+	           GROUP BY v
+	           ORDER BY n DESC`
+	rows, err := d.sql.QueryContext(ctx, query, a.vals...)
+	if err != nil {
+		span.Fail("the vocabulary did not run")
+		return nil, fmt.Errorf("store: artifact vocabulary: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var v string
+		var n int
+		if err := rows.Scan(&v, &n); err != nil {
+			return nil, fmt.Errorf("store: artifact vocabulary: %w", err)
+		}
+		out[v] = n
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: artifact vocabulary: %w", err)
+	}
+	return out, nil
+}

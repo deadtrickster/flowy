@@ -133,6 +133,10 @@ if [ "$GATE_LOCK" != off ]; then
 fi
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/flowy-gate.XXXXXX")"
+# The per-check clock's file. Declared beside WORK because timed() is a no-op
+# until it is set, which is what keeps the timing out of the way of anything
+# that runs before the workspace exists.
+timings="$WORK/timings"
 PGDATA="$WORK/pgdata"
 PGSOCK="$WORK/sock"
 PGLOG="$WORK/postgres.log"
@@ -203,6 +207,16 @@ trap cleanup EXIT INT TERM
 
 say() { printf '\n== %s\n' "$*"; }
 
+# secs_since START - seconds since START, to two places, in bash arithmetic.
+#
+# EPOCHREALTIME with the dot removed is microseconds, which integer arithmetic
+# can subtract exactly. Doing it in floating point through a subshell would cost
+# a process per check to gain nothing anybody reads.
+secs_since() {
+	local us=$((${EPOCHREALTIME/./} - $1))
+	printf '%d.%02d' $((us / 1000000)) $((us % 1000000 / 10000))
+}
+
 indent() { sed 's/^/     /'; }
 
 # check <name> <command...> - runs the command, prints PASS or FAIL with its
@@ -220,17 +234,76 @@ indent() { sed 's/^/     /'; }
 # after the stray call says what happened, once, and the rest of the suite runs
 # where it is supposed to - the difference between one honest failure and nine
 # that point at the wrong file.
+# WHERE THE TIME WENT, per check.
+#
+# On 2026-08-20 three seats tried to account for a ~530s gate and between them
+# reached ~185s: go build 5.8s, go test 43.5s, initdb 0.24s, npm and vite 8s,
+# 63 chromium launches 5.1s, 80 page loads ~60s, 38 waitForTimeout 70.3s. That
+# left roughly 345 SECONDS with no owner, and every attempt to find it from the
+# gate log failed for the same reason - the log interleaves the node's stream
+# with the suite's, so consecutive timestamps are not one clock.
+#
+# Three separate wrong causes were proposed that evening from real numbers with
+# unmeasured costs attached: "scope" for a count that was paging, "the drainer"
+# for an interval that was 77% suite, "63 launches" for 1% of the runtime. The
+# fix for that is not more care, it is a clock in the one place that already
+# knows the boundaries of every unit of work.
+#
+# EPOCHREALTIME rather than `date`: it is a bash builtin variable, so this costs
+# no process per check. At 721 checks a subshell each would itself be seconds of
+# the thing being measured.
+#
+# The file is appended to rather than held in an array because a check that
+# kills the suite should still leave behind what it had timed.
+timed() { # name seconds
+	[ -n "$timings" ] || return 0
+	printf '%s\t%s\n' "$2" "$1" >>"$timings"
+}
+
+# ONLY <name> - a filter, so verifying one check does not cost the whole suite.
+#
+#	ONLY=phone ./run-tests.sh
+#
+# MEASURED by flowy-claude 2026-08-20: 20553 lines, 726 checks, and no way to run
+# one. Five gate passes and about forty-five minutes went that night on defects
+# their author could have found in twenty seconds - two races in way-in-check,
+# two in phone-check, and a lint error in a file I created and did not lint. The
+# cost also runs the other way: knowing a run is nine minutes is exactly why
+# people verify by reading instead of running, which is how three of that
+# night's silent greens survived.
+#
+# A SUBSTRING OF THE NAME, not a regex and not a function name. The name is what
+# a person reads in the output and what the drainer's red note quotes, so it is
+# the string they already have in front of them.
+#
+# WHAT IT DOES NOT DO, deliberately: it filters what is RUN, never what is SET
+# UP. Checks here are not independent - the room checks address @$HANDLE_A, the
+# queue checks want a row somebody queued - so the fixtures still build in full.
+# A filtered run is therefore not much faster to START, and is enormously faster
+# to FINISH, which is the half that was costing the passes.
+only=${ONLY:-}
+# How many were skipped, so the verdict can say so. A filtered run that printed
+# the same line a full run prints would be pasted as evidence a branch is green,
+# and the drainer reads that line.
+skipped=0
+
 check() {
 	local name="$1"
 	shift
-	local out status
+	local out status started
+	if [ -n "$only" ] && [ "${name#*"$only"}" = "$name" ]; then
+		skipped=$((skipped + 1))
+		return 0
+	fi
 	if [ "$PWD" != "$SUITE_PWD" ]; then
 		printf 'FAIL the suite is running in %s, not %s\n' "$PWD" "$SUITE_PWD"
 		printf '%s\n' "something ran outside check() and changed the directory - look at the registration just above \"$name\", which is where a bare function call gets written by mistake. Directory restored; later tests are not to be trusted until this is fixed." | indent
 		failed=$((failed + 1))
 		cd "$SUITE_PWD" || return 1
 	fi
+	started=${EPOCHREALTIME/./}
 	if out="$("$@" 2>&1)"; then
+		timed "$name" "$(secs_since "$started")"
 		printf 'PASS %s\n' "$name"
 		if [ -n "$out" ]; then
 			printf '%s\n' "$out" | indent
@@ -238,6 +311,7 @@ check() {
 		passed=$((passed + 1))
 	else
 		status=$?
+		timed "$name" "$(secs_since "$started")"
 		printf 'FAIL %s (exit %d)\n' "$name" "$status"
 		if [ -n "$out" ]; then
 			printf '%s\n' "$out" | indent
@@ -7102,6 +7176,46 @@ rooms_scroll_inside_themselves() {
 	node scripts/rooms-scroll-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A"
 }
 
+# A THREAD CAN BE ANSWERED FROM THE PANE THAT SHOWS IT.
+#
+# The operator: "no way to post to a thread (look at mattermost again)". The
+# door was never missing - chat.go takes {body, thread, parents} and the console
+# has been passing selected?.thread since it was written, so every reply sent
+# while a message happened to be selected went into that message's thread. What
+# was missing was any way to know: the thread pane held zero textareas, and
+# selecting a message was the only door and was not labelled as one. Counted by
+# another seat: not one of the operator's messages had ever landed in a thread.
+#
+# So the check is not "the API accepts a thread" - that would have passed on the
+# day the complaint was made. It is that somebody looking at a thread can answer
+# it, that what they type lands IN that thread, and that it continues the thread
+# rather than fanning off its opening line.
+a_thread_can_be_answered_where_it_is_read() {
+	cd "$ROOT/web" || return 1
+	node scripts/thread-answer-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A"
+}
+
+# THE CONSOLE ON A PHONE, and unchanged on a desk.
+#
+# The operator, on their phone: "can open general room because not enough
+# vertical space on the phone - simply not visible". Measured at 390x664 before
+# the fix: the nav column held 240px of the 390, main got 150, the box you type
+# in was 26px wide, and not one of twenty-eight rooms was on screen. In the
+# 150px that was left, the todos pane, the thread pane and the transcript were
+# painted on top of one another - ChatRoom's side column is w-[26rem] shrink-0,
+# which is right at desk width and is what does the damage below it.
+#
+# Nothing signalled any of it. The page does not overflow horizontally, so there
+# was no scrollbar to hint that anything was missing; it simply looked broken.
+#
+# The check drives both arms in one run: the phone, and then 1600x1000 to assert
+# the drawer button is ABSENT and the panel is still a column. A phone fix that
+# changes the desk is a regression wearing a feature's clothes.
+the_console_works_on_a_phone() {
+	cd "$ROOT/web" || return 1
+	node scripts/phone-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A"
+}
+
 # The panel puts the finished work away, says how much of it there is, and
 # remembers the answer - in a browser, driving the checkbox a person drives.
 #
@@ -11848,16 +11962,6 @@ a_room_looks_like_the_sidebar() {
 	node scripts/sidebar-consistent-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A"
 }
 
-# THE OPERATOR: "no notification no the usual red counter anywhere". Measured
-# then: document.title zero occurrences in web/src, the Notification API zero.
-# Every unread signal the console had was inside the console, so nothing could
-# call anybody back to it.
-the_tab_says_how_many_are_waiting() {
-	recall
-	cd "$ROOT/web" || return 1
-	node scripts/tab-counter-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A"
-}
-
 # THE OPERATOR REPORTED "old server parity" four or five times, and every
 # reading of it went looking for a missing widget. The widgets were all there -
 # the per-version table, the package download, the log viewer, and a filter set
@@ -13154,6 +13258,10 @@ check "the room's todo panel is on the screen in a browser, as an element" \
 	browser_renders_the_rooms_todos
 check "the rooms list scrolls inside itself and the page does not" \
 	rooms_scroll_inside_themselves
+check "the console is usable on a phone, and unchanged on a desk" \
+	the_console_works_on_a_phone
+check "a thread can be answered from the pane that shows it" \
+	a_thread_can_be_answered_where_it_is_read
 check "the panel sets and overrides one, in a browser, and a poll does not wipe it" \
 	browser_sets_and_overrides_an_assignee
 check "the panel hides the finished ones, counts them, and remembers it, in a browser" \
@@ -19541,8 +19649,6 @@ check "related artifacts are rows, on a note and not only on a finding" \
 	related_rows_draw_on_any_artifact
 check "a room in the sidebar looks like the rest of the sidebar" \
 	a_room_looks_like_the_sidebar
-check "the browser tab says how many are waiting, and stops when none are" \
-	the_tab_says_how_many_are_waiting
 check "a screenshot pasted into a room arrives whole" \
 	a_screenshot_pasted_into_a_room_arrives_whole
 check "every control the console offers acknowledges the pointer" \
@@ -20566,6 +20672,44 @@ if [ "$failed" -ne 0 ]; then
 			indent <"$log"
 		fi
 	done
+fi
+# WHERE THE TIME WENT. Ten lines, because a gate nobody can account for gets
+# optimised by guess - and the three guesses this file's clock was written after
+# were all wrong about which component was expensive.
+#
+# Printed on green as well as red, deliberately: the run somebody wants this
+# from is the ordinary one, and a number that only appears on failure is a
+# number nobody has for the normal case.
+if [ -s "$timings" ]; then
+	printf '\nslowest checks:\n'
+	sort -rn "$timings" | head -10 | while IFS=$'\t' read -r secs name; do
+		printf '  %6ss  %s\n' "$secs" "$name"
+	done
+	# AND THE TOTAL THEY ACCOUNT FOR, which is the number that matters: the gap
+	# between this and the wall clock is the part that is not in any check -
+	# fixtures, node restarts, the sleeps between them - and that gap is what
+	# nobody had a figure for.
+	# THE PARTS AND THE WHOLE, SEPARATELY, and the gap between them named rather
+	# than left as a subtraction. That gap is the entire reason this exists: it
+	# is everything the suite spends OUTSIDE a check - building fixtures,
+	# restarting the node, and the sleeps between - and three seats spent forty
+	# minutes guessing at it because nothing printed it.
+	#
+	# $SECONDS is the shell's own clock since it started, so the wall time is
+	# free and exact rather than another reading somebody has to trust.
+	awk -F'\t' -v wall="$SECONDS" '
+		{ total += $1 }
+		END {
+			printf "  %6.1fs in %d checks\n", total, NR
+			printf "  %6ss wall, so %.1fs outside any check\n", wall, wall - total
+		}' "$timings"
+fi
+# A FILTERED RUN IS NOT A RUN, and says so ABOVE the verdict rather than after
+# it. The line below is what gets pasted into a row as evidence; this one has to
+# reach the same eyes.
+if [ -n "$only" ]; then
+	printf '\nONLY=%s - %d check(s) were SKIPPED. This is not a full run and cannot green a branch.\n' \
+		"$only" "$skipped"
 fi
 printf 'passed: %d failed: %d\n' "$passed" "$failed"
 if ! a_run_that_measured_nothing_is_not_a_pass "$passed" "$failed"; then

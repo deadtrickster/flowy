@@ -99,3 +99,61 @@ func TestASkipIsRecordedAndAgesOut(t *testing.T) {
 			BlockedWhyOf(after), BlockedAtOf(after), BlockedByOf(after))
 	}
 }
+
+// TestAnUncheckedBlockIsNotAClearRow: "nothing is blocking this" and "nobody
+// has looked lately" are different answers and must not arrive as one value.
+//
+// BlockedAt returned "" for both, which made a row whose branch was still
+// checked out in somebody's worktree read exactly like a row with nothing wrong
+// with it. That is the empty-vs-absent collapse, inside the guard whose whole
+// job is to report the thing being collapsed.
+//
+// It fails in the dangerous direction, which is why it is worth a change of its
+// own. A stale RED makes a row look stuck when it is not, and somebody
+// eventually goes and looks. An expired BLOCK makes a stuck row look fine, and
+// nobody does - measured on 2026-08-20, when a row of mine sat unrebasable for
+// over an hour behind a worktree I had forgotten.
+func TestAnUncheckedBlockIsNotAClearRow(t *testing.T) {
+	now := time.Now().UTC()
+	fields, err := json.Marshal(map[string]any{
+		BlockedWhyField: "feat/x is checked out in /home/dead/Projects/wt-drain",
+		BlockedAtField:  now.Format(time.RFC3339Nano),
+	})
+	if err != nil {
+		t.Fatalf("fields: %v", err)
+	}
+	blocked := &Artifact{Fields: fields}
+
+	// Fresh: a reason, vouched for.
+	why, fresh := BlockedNow(blocked, now.Add(time.Minute))
+	if why == "" || !fresh {
+		t.Errorf("a skip one minute old reads as (%q, %v), want the reason and fresh", why, fresh)
+	}
+
+	// Aged out: THE SAME REASON, and nobody standing behind it. The reason must
+	// survive - a reader that is told nothing cannot tell this row from a clear
+	// one, which is the whole defect.
+	why, fresh = BlockedNow(blocked, now.Add(BlockBelievedFor+time.Minute))
+	if why == "" {
+		t.Errorf("a skip %v old lost its reason - the row now reads as clear", BlockBelievedFor)
+	}
+	if fresh {
+		t.Errorf("a skip %v old still claims somebody vouched for it", BlockBelievedFor)
+	}
+
+	// No block at all: nothing, and not fresh. This is the answer the other two
+	// must not be confusable with.
+	if why, fresh := BlockedNow(&Artifact{}, now); why != "" || fresh {
+		t.Errorf("a row with no skip reads as (%q, %v), want empty and not fresh", why, fresh)
+	}
+
+	// AND THE OLD CONTRACT IS UNCHANGED. BlockedAt is the fresh-only answer and
+	// callers that want exactly that still get it, so this change adds a
+	// question rather than altering one.
+	if got := BlockedAt(blocked, now.Add(BlockBelievedFor+time.Minute)); got != "" {
+		t.Errorf("BlockedAt returned %q for an aged-out skip - its meaning moved", got)
+	}
+	if got := BlockedAt(blocked, now.Add(time.Minute)); got == "" {
+		t.Errorf("BlockedAt lost a fresh skip")
+	}
+}

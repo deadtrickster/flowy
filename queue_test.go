@@ -60,7 +60,7 @@ func TestARowSaysWhyItIsNotMoving(t *testing.T) {
 		{"waiting", mergeQueueItem{ID: "01E", Branch: "b", Status: "todo"}, "todo"},
 	}
 	for _, c := range cases {
-		got := rowLine(c.it)
+		got := rowLine(c.it, "")
 		if !strings.Contains(got, c.want) {
 			t.Errorf("%s row read %q, want it to say %q", c.name, got, c.want)
 		}
@@ -70,12 +70,12 @@ func TestARowSaysWhyItIsNotMoving(t *testing.T) {
 	}
 	// A red is louder than a gate, because a row being re-measured after a red
 	// is the case where "gating" alone would hide the thing worth knowing.
-	both := rowLine(mergeQueueItem{ID: "01F", Branch: "b", Gating: true, Red: &mergeQueueRed{Tip: "abc"}})
+	both := rowLine(mergeQueueItem{ID: "01F", Branch: "b", Gating: true, Red: &mergeQueueRed{Tip: "abc"}}, "")
 	if !strings.Contains(both, "RED") {
 		t.Errorf("a row that is red AND gating read %q, hiding the red", both)
 	}
 	// And a note never breaks the line into two.
-	long := rowLine(mergeQueueItem{ID: "01G", Branch: "b", Red: &mergeQueueRed{Tip: "abc", Note: "line one\nline two"}})
+	long := rowLine(mergeQueueItem{ID: "01G", Branch: "b", Red: &mergeQueueRed{Tip: "abc", Note: "line one\nline two"}}, "")
 	if strings.Contains(long, "\n") {
 		t.Errorf("a multi-line note put a newline in one row: %q", long)
 	}
@@ -101,7 +101,7 @@ func TestACutReasonSaysSoAndKeepsBothEnds(t *testing.T) {
 		Blocked: &mergeQueueBlocked{
 			Why: "feat/a-person-belongs-to-projects is checked out in /tmp/claude-1000/scratchpad/wt-member",
 		},
-	})
+	}, "")
 	if !strings.Contains(blocked, "…") {
 		t.Errorf("a cut reason read %q, with nothing saying it was cut", blocked)
 	}
@@ -116,7 +116,7 @@ func TestACutReasonSaysSoAndKeepsBothEnds(t *testing.T) {
 			Tip:  "c58abd2000",
 			Note: "passed: 699 failed: 9 - FAIL the tui, driven headless by the keyboard against the live node",
 		},
-	})
+	}, "")
 	// And the head is the whole point of this one: what failed and how much.
 	if !strings.Contains(red, "passed: 699 failed: 9") {
 		t.Errorf("a red row read %q, dropping the counts it leads with", red)
@@ -130,7 +130,7 @@ func TestACutReasonSaysSoAndKeepsBothEnds(t *testing.T) {
 	whole := rowLine(mergeQueueItem{
 		ID: "01J", Branch: "b",
 		Blocked: &mergeQueueBlocked{Why: "the lock is held"},
-	})
+	}, "")
 	if strings.Contains(whole, "…") {
 		t.Errorf("a reason that fits read %q, marked as cut", whole)
 	}
@@ -144,5 +144,69 @@ func TestACutReasonSaysSoAndKeepsBothEnds(t *testing.T) {
 			t.Errorf("cutting a reason of wide characters produced %q", wide)
 			break
 		}
+	}
+}
+
+// A QUEUE LINE SAYS WHAT IS TRUE NOW, not the loudest thing the row remembers.
+//
+// This is 01M0GAJVEF, and it is written from the response that caused it. One
+// row, one read of /api/merge-queue on 2026-08-20, carrying three answers at
+// once thirty-four minutes apart:
+//
+//	red      35e4256, measured from base db7ec6b, at 18:56
+//	blocked  "checked out in .../wt-sw3", at 19:30
+//	target   f0f0df8
+//
+// The line printed the red, because the switch tested Red first. That red was
+// not merely old - it was measured from a base the target had left, which the
+// same object says, and which drain.sh already uses to decide the row is worth
+// re-gating. Two seats spent an hour between them on the test that red named
+// before either read the field below it.
+func TestASpentRedDoesNotOutrankWhatIsTrueNow(t *testing.T) {
+	tonight := mergeQueueItem{
+		ID: "01M0G34J3N", Branch: "feat/the-console-switches-projects",
+		Red:     &mergeQueueRed{Tip: "35e4256", Base: "db7ec6b", Note: "passed: 713 failed: 1"},
+		Blocked: &mergeQueueBlocked{Why: "checked out in /tmp/scratchpad/wt-sw3"},
+	}
+	got := rowLine(tonight, "f0f0df8")
+	if strings.Contains(got, "713") {
+		t.Errorf("the line still leads with a spent red: %q", got)
+	}
+	if !strings.Contains(got, "BLOCKED") || !strings.Contains(got, "wt-sw3") {
+		t.Errorf("the line reads %q - it must say the reason that is true now", got)
+	}
+
+	// A LIVE RED IS UNTOUCHED. Same row, same everything, except the target has
+	// not moved since it was measured. Without this the fix is "stop reporting
+	// reds", which is worse than what it replaces.
+	live := rowLine(tonight, "db7ec6b")
+	if !strings.Contains(live, "RED") || !strings.Contains(live, "713") {
+		t.Errorf("a red measured from the CURRENT target read %q, and must still lead", live)
+	}
+
+	// AN UNKNOWN BASE COUNTS AS LIVE. The rule only ever demotes a red whose
+	// base we can see has moved; anything else keeps shouting, because the cost
+	// of hiding a live red is a broken landing and the cost of showing a spent
+	// one is a sentence.
+	noBase := rowLine(mergeQueueItem{
+		ID: "01K", Branch: "b",
+		Red: &mergeQueueRed{Tip: "abc1234", Note: "passed: 1 failed: 1"},
+	}, "f0f0df8")
+	if !strings.Contains(noBase, "RED") {
+		t.Errorf("a red with no recorded base read %q - it must be treated as live", noBase)
+	}
+
+	// AND A SPENT RED SAYS SO rather than vanishing. A row that goes quiet is
+	// the other failure: somebody who saw the red an hour ago needs to be told
+	// it no longer applies, not left to wonder where it went.
+	alone := rowLine(mergeQueueItem{
+		ID: "01L", Branch: "b", Status: "todo",
+		Red: &mergeQueueRed{Tip: "35e4256", Base: "db7ec6b", Note: "passed: 713 failed: 1"},
+	}, "f0f0df8")
+	if !strings.Contains(alone, "spent") {
+		t.Errorf("a row whose only mark is a spent red read %q, saying nothing about it", alone)
+	}
+	if !strings.Contains(alone, "db7ec6b") || !strings.Contains(alone, "f0f0df8") {
+		t.Errorf("the spent line reads %q without both shas - it must say what moved", alone)
 	}
 }
