@@ -117,7 +117,8 @@ func getCmd(args []string) error {
 		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+bearer)
-	resp, err := doThroughARestart(ctx, &http.Client{Timeout: 60 * time.Second}, req, nil)
+	resp, err := doThroughARestartFrom(ctx, &http.Client{Timeout: 60 * time.Second}, req, nil,
+		addressWasNamed(a.url, os.Getenv("FLOWY_ADDR")))
 	if err != nil {
 		return err
 	}

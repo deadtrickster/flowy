@@ -94,6 +94,20 @@ func tuiCmd(args []string) error {
 // the sort `flowy serve` takes - a bare host:port, or :8787 - is turned into a
 // URL rather than refused, because that is the value people already have in
 // their environment for the server.
+// addressWasNamed reports whether the caller said where the node is, rather
+// than falling through to defaultTUIAddr.
+//
+// 01M0EXXNGY. It is the difference between "this node is restarting" and "there
+// is no node here", which are the same errno and which doThroughARestart could
+// not previously tell apart. A caller who NAMED an address is asserting a node
+// lives there, so a refusal is worth waiting out. A caller who named nothing
+// got a default that is right for a laptop and wrong for every seat on a box
+// where the node is somewhere else - and waiting twenty cycles for it teaches
+// them nothing until it gives up.
+func addressWasNamed(flagValue, env string) bool {
+	return strings.TrimSpace(flagValue) != "" || strings.TrimSpace(env) != ""
+}
+
 func resolveURL(flagValue, env string) string {
 	value := strings.TrimSpace(flagValue)
 	if value == "" {

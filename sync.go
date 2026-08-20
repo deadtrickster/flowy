@@ -15,6 +15,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -548,14 +549,67 @@ const restartWindow = 20 * time.Second
 //
 // It says so on stderr, once per attempt, because a command that takes fifteen
 // seconds without explanation is one somebody kills at ten.
+// hasAnswered remembers which addresses have replied in this process, so a
+// refusal AFTER a successful exchange is treated as a restart and a refusal
+// before any is treated as a wrong address.
+//
+// Process-scoped on purpose, and the scope is honest about what it knows: a
+// one-shot command has never had an answer from anywhere, which is exactly why
+// it must not sit through a restart window for a host it was never told about.
+// A long-running caller - queue wait, nag, sync - marks the address on its
+// first success and keeps the old behaviour for every refusal after it.
+var hasAnswered sync.Map
+
 func doThroughARestart(
 	ctx context.Context, client *http.Client, req *http.Request, body []byte,
+) (*http.Response, error) {
+	// TRUE, NOT FALSE. The wrapper exists to keep the four older callers exactly
+	// as they were, and passing false here would have given them the NEW rule -
+	// which is what it did in the first cut, breaking three restart tests that
+	// dial an address nothing has answered on. The commit message said "keep the
+	// old behaviour" while the code changed it.
+	return doThroughARestartFrom(ctx, client, req, body, true)
+}
+
+// doThroughARestartFrom is the same with the caller saying whether the address
+// was NAMED - by --url or by FLOWY_ADDR - rather than defaulted.
+//
+// 01M0EXXNGY: @flowy-claude ran `flowy get` with no --url a minute after it
+// deployed, reached 127.0.0.1:8787 where nothing lives, and waited out twenty
+// restart cycles. That is the failure the verb was built to remove, reproduced
+// by the verb: a seat probing the default for the live node, learning nothing
+// until it gave up.
+//
+// WAIT WHEN THERE IS A REASON TO BELIEVE A NODE IS THERE, which is either of:
+//
+//   - the caller named the address, so they are asserting one exists. This is
+//     what keeps the deploy window working: the drainer sets FLOWY_ADDR and a
+//     command started mid-restart still waits, which is the case 2e2e13e was
+//     written for and must not regress.
+//   - something has already answered here in this process.
+//
+// Otherwise the first refusal is the answer, and it says which address was
+// tried and how to name a different one. Twenty identical lines about a host
+// nobody chose is not a diagnostic.
+func doThroughARestartFrom(
+	ctx context.Context, client *http.Client, req *http.Request, body []byte, named bool,
 ) (*http.Response, error) {
 	deadline := time.Now().Add(restartWindow)
 	for attempt := 1; ; attempt++ {
 		resp, err := client.Do(req)
-		if err == nil || !isDialRefused(err) || time.Now().After(deadline) {
+		if err == nil {
+			hasAnswered.Store(req.URL.Host, struct{}{})
 			return resp, err
+		}
+		if !isDialRefused(err) || time.Now().After(deadline) {
+			return resp, err
+		}
+		if _, seen := hasAnswered.Load(req.URL.Host); !seen && !named {
+			return nil, fmt.Errorf(
+				"nothing is listening on %s, and no address was named - "+
+					"this is a refusal rather than a restart, so waiting would only be slower. "+
+					"Set FLOWY_ADDR or pass --url if the node is somewhere else",
+				req.URL.Host)
 		}
 		fmt.Fprintf(os.Stderr, "%s is not answering - it may be restarting, waiting (%d)\n",
 			req.URL.Host, attempt)
