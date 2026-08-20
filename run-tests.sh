@@ -19235,7 +19235,8 @@ check "the tui reaches the node only through the HTTP API" tui_talks_only_to_the
 check "flowy tui refuses to start with no token anywhere" tui_needs_a_token
 check "a room the reader closed leaves the sidebar, and stays closed" \
 	a_closed_room_leaves_the_sidebar_and_stays_closed
-a_screenshot_pasted_into_a_room_arrives_whole
+check "a screenshot pasted into a room arrives whole" \
+	a_screenshot_pasted_into_a_room_arrives_whole
 check "the inbox door answers the end of the log it is asked for" \
 	the_inbox_answers_the_end_it_is_asked_for
 check "the overview's inbox follows the log, and does not spin while it is quiet" \
