@@ -121,7 +121,12 @@ func readQueue(
 		return mergeQueueAnswer{}, time.Time{}, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := client.Do(req)
+	// THROUGH A RESTART. 2e2e13e taught the verbs that go via peerRequest to
+	// wait out a refused dial; this one builds its own request and so did not
+	// get it. A refused connection means nothing was sent, which is what makes
+	// retrying it safe - and a deploy takes about ten seconds, during which
+	// every client here would otherwise exit with a dial error.
+	resp, err := doThroughARestart(ctx, client, req, nil)
 	if err != nil {
 		return mergeQueueAnswer{}, time.Time{}, err
 	}
