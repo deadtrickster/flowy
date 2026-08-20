@@ -276,35 +276,48 @@ const mergeLockSQL = `SELECT l.project, l.target, l.holder,
    FROM merge_locks l
    LEFT JOIN agents g ON g.id = l.holder
    LEFT JOIN users u ON u.id = coalesce(g.user_id, l.holder)
-  WHERE l.project = $2 AND l.target = $1`
+  WHERE l.target = $1 AND ($2 = '' OR l.project = $2)
+  ORDER BY (l.project = $2) DESC, l.until DESC
+  LIMIT 1`
 
 // MergeLockOf reads the target's lock as it stands. A row past its until is
 // still returned - the caller decides with Live() - because "held by X until
 // T, which has passed" is a different sentence from "not held", and the first
 // one is what a lander arriving late needs to see about their own reservation.
 func (d *DB) MergeLockOf(ctx context.Context, project, target string) (*MergeLock, error) {
+	// AN UNNAMED PROJECT ASKS ABOUT THE TARGET, NOT ABOUT THE EMPTY PROJECT.
+	//
+	// This is the fix for a landing outage I caused. cbf8813 keyed the lock on
+	// (project, target) and this read looked for the exact project and then a
+	// legacy '' row. scripts/land-guard.sh asks /api/merge-queue with NO
+	// project; that door passed "" straight through; so the read looked for ''
+	// twice and never saw the lock the gate had taken under "flowy". The guard
+	// concluded nobody held master and refused every ref update - landing broken
+	// fleet-wide, and a row that burned three full suites re-gating.
+	//
+	// The lesson is about the QUESTION rather than the key. A caller that names
+	// no project is not asking "is the unnamed project holding this" - it is
+	// asking "is this target held at all", and for the guard that is exactly the
+	// right question: it is about to move a ref and wants to know whether
+	// anybody is mid-landing on it.
+	//
+	// A named project still gets its own lock first: the ORDER BY puts an exact
+	// match ahead of everybody else's, so a project asking about its own target
+	// cannot be answered with a stranger's hold. The legacy '' row is included
+	// rather than special-cased, because with this predicate it is just another
+	// project's lock and needs no clause of its own.
 	var got MergeLock
-	// THE EXACT PROJECT FIRST, THEN THE LEGACY ROW. Locks written before the
-	// column existed carry '' and nothing records which project they were for.
-	// Unlike merge_lands this fallback expires on its own - a lock is believed
-	// for fifteen minutes - so it matters only across a deploy that lands while
-	// somebody holds the target, which is exactly when losing it would be worst.
-	for _, key := range []string{strings.TrimSpace(project), ""} {
-		err := d.sql.QueryRowContext(ctx, mergeLockSQL, lockTarget(target), key).
-			Scan(&got.Project, &got.Target, &got.Holder, &got.HolderName, &got.Item,
-				&got.TakenAt, &got.Until)
-		if err == nil {
-			return &got, nil
-		}
-		if !errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf("store: read merge lock on %s: %w", lockTarget(target), err)
-		}
-		if key == "" {
-			break
-		}
+	err := d.sql.QueryRowContext(ctx, mergeLockSQL, lockTarget(target), strings.TrimSpace(project)).
+		Scan(&got.Project, &got.Target, &got.Holder, &got.HolderName, &got.Item,
+			&got.TakenAt, &got.Until)
+	if errors.Is(err, sql.ErrNoRows) {
+		// Nothing holds this target, which is not an error.
+		return nil, nil
 	}
-	// Neither key had a row: nothing holds this target, which is not an error.
-	return nil, nil
+	if err != nil {
+		return nil, fmt.Errorf("store: read merge lock on %s: %w", lockTarget(target), err)
+	}
+	return &got, nil
 }
 
 // LandedTip is the newest link of a target's landed-tip chain.

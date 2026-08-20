@@ -69,3 +69,59 @@ func TestALockBelongsToItsProject(t *testing.T) {
 		t.Error("beta's lock is not live after alpha released its own")
 	}
 }
+
+// AN UNNAMED PROJECT ASKS ABOUT THE TARGET; A NAMED ONE ASKS ABOUT ITS OWN.
+//
+// The landing outage: land-guard.sh asks /api/merge-queue with no project, that
+// door passed "" through, and the read looked for the legacy ” row twice while
+// the gate had taken the lock under "flowy". The guard concluded nobody held
+// master and refused every ref update.
+//
+// The two questions are genuinely different and this pins both. The guard is
+// about to move a ref on THIS MACHINE and wants to know whether anybody is
+// mid-landing. A project asking about its own target must NOT be told about
+// somebody else's hold: per-project checkouts mean their masters are different
+// refs, which is why the lock is keyed this way at all.
+func TestAnUnnamedProjectAsksAboutTheTarget(t *testing.T) {
+	ctx, db := open(t)
+	// A TARGET OF ITS OWN. The database is shared with every other test in this
+	// package, and the first version of this asserted "beta holds nothing" on a
+	// target beta had taken a lock on two tests earlier - a failure about the
+	// fixture wearing the face of a failure about the code.
+	target := ownTarget(t)
+	holder := &Principal{UserID: "u-alpha", Project: "alpha"}
+	if _, err := db.TakeMergeLock(ctx, holder, "alpha", target, "01ALPHA"); err != nil {
+		t.Fatalf("alpha could not take its master: %v", err)
+	}
+
+	// THE GUARD'S QUESTION. No project named, and it must see the hold - this
+	// returning nil is the outage.
+	any, err := db.MergeLockOf(ctx, "", target)
+	if err != nil {
+		t.Fatalf("unnamed read: %v", err)
+	}
+	if any == nil {
+		t.Fatal("an unnamed read saw no lock while alpha holds the target - this is the " +
+			"shape that told land-guard.sh nobody held the target and broke every landing")
+	}
+	if any.Item != "01ALPHA" {
+		t.Errorf("the unnamed read found %q", any.Item)
+	}
+
+	// A NAMED PROJECT WITH NO LOCK OF ITS OWN SEES NOTHING, rather than being
+	// told about alpha's. Their masters are different refs.
+	mine, err := db.MergeLockOf(ctx, "beta", target)
+	if err != nil {
+		t.Fatalf("beta read: %v", err)
+	}
+	if mine != nil {
+		t.Errorf("beta was told the target is held for %q, which is alpha's row in alpha's "+
+			"checkout - cross-project contention is what keying the lock removed", mine.Item)
+	}
+
+	// AND A NAMED PROJECT WITH ONE SEES ITS OWN.
+	own, err := db.MergeLockOf(ctx, "alpha", target)
+	if err != nil || own == nil || own.Item != "01ALPHA" {
+		t.Fatalf("alpha could not read its own lock: %+v %v", own, err)
+	}
+}
