@@ -235,6 +235,18 @@ func main() {
 			fmt.Fprintf(os.Stderr, "flowy wait: %v\n", err)
 			os.Exit(2)
 		}
+	case "waiter":
+		// Healthy, broken, and could-not-ask are three outcomes rather than a
+		// result and an error, so they get three codes - a nag branches on the
+		// number without parsing English, and a node that blinked must never
+		// read as a seat that died. See waitercheck.go.
+		if err := waiterCmd(os.Args[2:]); err != nil {
+			if errors.Is(err, errWaiterBroken) {
+				os.Exit(1)
+			}
+			fmt.Fprintf(os.Stderr, "flowy waiter: %v\n", err)
+			os.Exit(2)
+		}
 	case "nag":
 		if err := nagCmd(os.Args[2:]); err != nil {
 			fmt.Fprintf(os.Stderr, "flowy nag: %v\n", err)

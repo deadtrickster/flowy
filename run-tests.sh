@@ -4204,6 +4204,142 @@ presence_process() {
 		   else (.[0].process[$f] | tostring) end'
 }
 
+# `flowy waiter check` is the heartbeat, as a program rather than as a
+# procedure somebody retypes.
+#
+# COUNTED from the operator's own scrollback on 2026-08-19/20: a thirty-line
+# prompt, roughly every fifteen minutes for a day, to answer one question - and
+# the prompt carried the REASONING, because that is where it goes wrong.
+# "unknown" is not deafness (measured 2026-08-17: two monitor-run seats read
+# unknown while delivering in real time, and restarting one of them cost 28
+# minutes), "forked" is, and a node that cannot be asked is not a seat that
+# died.
+#
+# So the three outcomes are three exit codes and the line NAMES THE CLAUSE THAT
+# DECIDED. A verb that answered healthy or broken without saying why would be
+# the pane that said "polling 4s ago" while the session behind it was deaf.
+#
+# Its own readers rather than the roster ones, because this runs in a different
+# phase and a check that reads whatever another check happened to leave behind
+# is measuring the order the suite ran in.
+#
+# AND UNDER A DIFFERENT PRINCIPAL, which the first cut of this got wrong and the
+# roster's own browser check caught: the roster collapses rows of one principal
+# and one kind onto ONE line, named for whichever row it drew first. Declaring
+# another tracked reader under TOKEN_A grouped it with roster-tracked and the
+# line came back named heartbeat-polling, so a check about the roster failed
+# because of a check about the heartbeat. Two checks sharing an identity share
+# more than they meant to.
+HEARTBEAT_LIVE=heartbeat-polling
+HEARTBEAT_FORKED=heartbeat-forked
+HEARTBEAT_QUIET=heartbeat-unsaid
+HEARTBEAT_PID=4194303
+readonly HEARTBEAT_LIVE HEARTBEAT_FORKED HEARTBEAT_QUIET HEARTBEAT_PID
+
+# poll_as_b NAME [KIND] - poll_as under the second principal, so these readers
+# do not join the roster's group.
+poll_as_b() {
+	local path="/api/inbox/wait?as=$1&window=1"
+	if [ -n "${2-}" ]; then
+		path="$path&kind=$2"
+	fi
+	api GET "$TOKEN_B" "$path" || return 1
+	want_eq "poll status for $1" "$API_STATUS" 200 || return 1
+}
+
+# heartbeat NAME [TOKEN] - run the verb and leave its line in HEARTBEAT_OUT and
+# its code in HEARTBEAT_STATUS. The status is captured from the binary itself
+# rather than from a pipeline: a pipeline reports its LAST stage, and reading
+# `| head`'s status as the command's is a mistake three seats made a combined
+# thirty times in one night.
+heartbeat() {
+	HEARTBEAT_STATUS=0
+	HEARTBEAT_OUT="$("$ROOT/flowy" waiter check --as "$1" --token "${2:-$TOKEN_B}" \
+		--url "http://127.0.0.1:$HTTP_PORT" 2>&1)" || HEARTBEAT_STATUS=$?
+}
+
+waiter_check_says_which_clause_decided() {
+	recall
+	local reader
+	for reader in "$HEARTBEAT_LIVE" "$HEARTBEAT_FORKED" "$HEARTBEAT_QUIET"; do
+		api POST "$TOKEN_B" /api/inbox/reader "{\"as\": \"$reader\"}" || return 1
+		want_eq "declaring $reader" "$API_STATUS" 200 || return 1
+	done
+
+	# Declared and never polled. Nothing has been armed under that name, which
+	# is a different repair from a seat that was armed and stopped.
+	heartbeat "$HEARTBEAT_LIVE"
+	want_eq "a reader that has never polled" "$HEARTBEAT_STATUS" 1 || return 1
+
+	# Polling, and saying which process is doing it - so this is also the
+	# end-to-end proof that the pid reaches the person doing the repair.
+	api GET "$TOKEN_B" \
+		"/api/inbox/wait?as=$HEARTBEAT_LIVE&window=1&kind=tracked&pid=$HEARTBEAT_PID&since=$(date -u +%Y-%m-%dT%H:%M:%SZ)&host=heartbeat-host" || return 1
+	want_eq "the live seat's poll" "$API_STATUS" 200 || return 1
+	heartbeat "$HEARTBEAT_LIVE"
+	want_eq "a polling seat is healthy" "$HEARTBEAT_STATUS" 0 || return 1
+	case "$HEARTBEAT_OUT" in
+	healthy*polled*"pid $HEARTBEAT_PID"*) ;;
+	*)
+		printf 'a healthy line must name the facts it was decided on and the process to act on, got: %s\n' \
+			"$HEARTBEAT_OUT" >&2
+		return 1
+		;;
+	esac
+
+	# UNKNOWN IS NOT DEAF, and this is the arm that stops a healthy listener
+	# being restarted. It polls and has never said what it is.
+	poll_as_b "$HEARTBEAT_QUIET" || return 1
+	heartbeat "$HEARTBEAT_QUIET"
+	want_eq "a listener of unknown kind is not broken" "$HEARTBEAT_STATUS" 0 || return 1
+	case "$HEARTBEAT_OUT" in
+	*"kind unknown"*) ;;
+	*)
+		printf 'an unknown kind must be reported rather than hidden, got: %s\n' "$HEARTBEAT_OUT" >&2
+		return 1
+		;;
+	esac
+
+	# FORKED IS. It holds the reader, advances the cursor and wakes nobody.
+	poll_as_b "$HEARTBEAT_FORKED" forked || return 1
+	heartbeat "$HEARTBEAT_FORKED"
+	want_eq "a forked waiter is broken" "$HEARTBEAT_STATUS" 1 || return 1
+	case "$HEARTBEAT_OUT" in
+	*"kind forked"*) ;;
+	*)
+		printf 'a forked waiter must be broken FOR being forked, got: %s\n' "$HEARTBEAT_OUT" >&2
+		return 1
+		;;
+	esac
+
+	# A name nothing has ever polled under at all.
+	heartbeat no-such-listener-anywhere
+	want_eq "a name nothing polled under" "$HEARTBEAT_STATUS" 1 || return 1
+	case "$HEARTBEAT_OUT" in
+	*"no reader row"*) ;;
+	*)
+		printf 'a missing row must say so rather than being called deaf, got: %s\n' "$HEARTBEAT_OUT" >&2
+		return 1
+		;;
+	esac
+
+	# A SEAT THAT WENT QUIET. Written by hand because the pair of calls that
+	# produces it - a poll that starts and never returns - is exactly the pair
+	# that never ran.
+	psql_do "UPDATE inbox_readers
+	            SET last_poll_at = now() - interval '6 hours', polls_in_flight = 1
+	          WHERE reader = '$HEARTBEAT_LIVE'" || return 1
+	heartbeat "$HEARTBEAT_LIVE"
+	want_eq "a seat that stopped six hours ago" "$HEARTBEAT_STATUS" 1 || return 1
+
+	# AND A NODE THAT CANNOT BE ASKED IS NOT A SEAT THAT DIED. Folding this into
+	# broken would have one blinked node restart the whole fleet.
+	heartbeat "$HEARTBEAT_QUIET" not-a-real-token
+	want_eq "a refused token is could-not-ask, not broken" "$HEARTBEAT_STATUS" 2 || return 1
+
+	printf 'the heartbeat is a verb: healthy 0, broken 1, could-not-ask 2, and the line names the clause\n'
+}
+
 # poll_as NAME [KIND] - one short poll of that reader's inbox, from a client
 # that says what it is, or - with no KIND - from one that says nothing, which
 # is every client written before this existed.
@@ -12440,6 +12576,8 @@ check "the waiter says which kind it is, and the row follows it" \
 	the_waiter_says_which_kind_it_is
 check "presence answers tracked, forked, and unknown for anything unsaid" \
 	presence_says_what_each_listener_can_do
+check "the heartbeat is a verb that says which clause decided" \
+	waiter_check_says_which_clause_decided
 check "the kind is per reader and survives the poll that set it" \
 	go test -count=1 -run TestPresenceCarriesTheWaiterKind ./internal/store
 
