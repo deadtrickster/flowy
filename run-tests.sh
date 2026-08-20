@@ -11958,6 +11958,21 @@ a_number_in_the_rail_means_it_is_your_turn() {
 	node scripts/rail-act-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" general
 }
 
+# THE OPERATOR, LOOKING AT THE CARD: "why it doesnt sum up to 100%?"
+#
+# Every percentage was right - each is a seat's share of ALL open rows - and the
+# bars summed to about half because the list drew `shares`, which is per
+# assignee, and nothing drew the 17 unowned rows that were the rest.
+#
+# ASSERTS THE SUM: seats plus nobody equals every open row. That also guards the
+# tempting wrong fix, which is to renormalise over the assigned rows so the bars
+# add up - it doubles every seat and deletes the fact being asked about.
+the_spread_card_shows_the_unclaimed() {
+	recall
+	cd "$ROOT/web" || return 1
+	node scripts/spread-unowned-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A"
+}
+
 a_screenshot_pasted_into_a_room_arrives_whole() {
 	recall
 	cd "$ROOT/web" || return 1
@@ -19476,6 +19491,8 @@ check "the rail's unread totals agree with the dots they are summed from" \
 	the_rail_totals_agree
 check "a number in the rail means it is your turn, and the rest carry none" \
 	a_number_in_the_rail_means_it_is_your_turn
+check "the spread card accounts for every open row, unowned included" \
+	the_spread_card_shows_the_unclaimed
 check "a finding opens beside the list, and closing it leaves the list" \
 	a_finding_opens_beside_the_list
 check "a person can file a finding upstream from the console, and take it back" \
