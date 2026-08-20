@@ -51,6 +51,14 @@ package main
 //	   a waiter is for
 //	2  broken: the node did not answer, or the token was refused
 //	3  a red verdict arrived (--row only, from `queue wait`)
+//
+// A NODE THAT NEVER ANSWERED IS 2 AND NOT 1, and the difference is what the
+// caller learned. A quiet deadline means the question was asked and the answer
+// was "not yet"; a node that was never there means it was never asked, and a
+// script that treated those alike would report "the tip did not move" about a
+// tip it never read. --deploy is the deliberate exception: waiting for a node
+// to come back IS its subject, so a node that is down for the whole deadline is
+// a quiet deadline there rather than a failure.
 
 import (
 	"context"
@@ -219,9 +227,20 @@ func waitForTip(base, token, target, project, want string, deadline int) error {
 	started := time.Now()
 	give := started.Add(time.Duration(deadline) * time.Second)
 
-	first, err := queueLook(client, base, token, target, project, "", window)
-	if err != nil {
-		return err
+	// THE OPENING READ IS NOT SPECIAL, and it must not be the one place this
+	// verb still dies during a restart: a caller who runs `flowy wait --tip`
+	// the instant after a land is running it at the exact moment the node goes
+	// away to deploy that land.
+	var first mergeQueueAnswer
+	for {
+		var err error
+		first, err = queueLook(client, base, token, target, project, "", window, give)
+		if err == nil {
+			break
+		}
+		if !waitOutRestart(err, give, target) {
+			return err
+		}
 	}
 	was := strings.TrimSpace(first.TargetTip)
 	if want != "" && sameCommit(want, was) {
@@ -256,9 +275,17 @@ func waitForTip(base, token, target, project, want string, deadline int) error {
 		if left < hold {
 			hold = left
 		}
-		answer, err := queueLook(client, base, token, target, project, cursor, hold)
+		answer, err := queueLook(client, base, token, target, project, cursor, hold, give)
 		if err != nil {
-			return err
+			// A DEPLOY IS THE EXPECTED INTERRUPTION HERE, for the reason
+			// written out in queuewait.go: what this is waiting for is a
+			// landing, and a landing is followed by the node restarting. The
+			// caller's deadline is the only cap - doThroughARestart's twenty
+			// seconds is sized for a one-shot call, not for an hour-long wait.
+			if !waitOutRestart(err, give, target) {
+				return err
+			}
+			continue
 		}
 		cursor = answer.Cursor
 		now := strings.TrimSpace(answer.TargetTip)
@@ -279,10 +306,27 @@ func waitForTip(base, token, target, project, want string, deadline int) error {
 
 // queueLook is one blocking read of the queue, with the restart tolerance the
 // row waiter already has: a long call is a call a deploy lands inside of.
+// queueLook is one blocking read, bounded by the CALLER'S deadline as well as
+// by the window.
+//
+// give is passed in rather than left to the window, because the request is not
+// the only thing that can outlast a short wait: doThroughARestart rides out a
+// refused dial for its own twenty seconds before it returns anything at all, so
+// `--deadline 8` against a node that is not there took twenty. Measured. The
+// context is what stops it - the retry loop selects on ctx.Done() - so bounding
+// the context bounds every layer under it at once, which is the only way a cap
+// chosen once stays the only cap.
 func queueLook(
-	client *http.Client, base, token, target, project, since string, window int,
+	client *http.Client, base, token, target, project, since string, window int, give time.Time,
 ) (mergeQueueAnswer, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(window+10)*time.Second)
+	hold := time.Duration(window+10) * time.Second
+	if left := time.Until(give); left < hold {
+		hold = left
+	}
+	if hold <= 0 {
+		hold = time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), hold)
 	defer cancel()
 	return waitOnQueue(ctx, client, base, token, target, project, since, window)
 }

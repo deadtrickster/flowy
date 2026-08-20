@@ -110,11 +110,49 @@ func queueWaitCmd(rest []string) error {
 
 	cursor := ""
 	for {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(window+10)*time.Second)
+		// BOUNDED BY THE CALLER'S DEADLINE AS WELL AS BY THE WINDOW. The
+		// request is not the only thing that can outlast a short wait:
+		// doThroughARestart rides out a refused dial for its own twenty seconds
+		// before returning anything, so a --deadline shorter than that used to
+		// be overrun by it. The retry loop selects on ctx.Done(), so bounding
+		// the context bounds every layer under it - which is what keeps the cap
+		// the caller chose the only one.
+		hold := time.Duration(window+10) * time.Second
+		if left := time.Until(give); left < hold {
+			hold = left
+		}
+		if hold <= 0 {
+			hold = time.Second
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), hold)
 		answer, err := waitOnQueue(ctx, client, base, bearer, *target, "", cursor, window)
 		cancel()
 		if err != nil {
-			return err
+			// A DEPLOY IS NOT A FAILURE OF THE WAIT, and for this verb it is
+			// the single most likely interruption there is: landing is what it
+			// is waiting FOR, so the moment its subject happens is the moment
+			// the node goes away.
+			//
+			// doThroughARestart already rides out a refused dial, but only for
+			// restartWindow - twenty seconds, sized in 2e2e13e for a ONE-SHOT
+			// call that must not hang forever on a dead host. A deploy takes
+			// longer than that, so the retry did its job and then correctly
+			// gave up on a wait that had fifty-nine minutes left.
+			//
+			// MEASURED TWICE on 2026-08-20, by two seats independently: this
+			// verb exited 2 mid-deploy while, through the same restart on the
+			// same binary, `flowy wait --deploy` rode it out - because that one
+			// polls against its OWN deadline and never goes near the constant.
+			// One verb, two waits, one deploy, opposite outcomes.
+			//
+			// So the caller's deadline is the only cap. Lengthening
+			// restartWindow would fix this by making every one-shot verb hang
+			// longer on a genuinely dead host, which is the trade it was
+			// deliberately not making.
+			if !waitOutRestart(err, give, "the queue") {
+				return err
+			}
+			continue
 		}
 		cursor = answer.Cursor
 
@@ -147,6 +185,30 @@ func queueWaitCmd(rest []string) error {
 			return errWaitedOut
 		}
 	}
+}
+
+// waitOutRestart decides whether a failed read is worth carrying on from, and
+// says so on the way past.
+//
+// True means the node was not there and the caller still has time: a waiter
+// should keep waiting. False means either the deadline is spent or this is not
+// a node that went away, and the caller should report it.
+//
+// IT SLEEPS, so the caller's loop cannot spin against a refused dial. A second
+// is the same beat doThroughARestart uses, for the same reason: a restart is
+// tens of seconds and asking faster measures nothing.
+//
+// The `what` is what the line calls the thing being waited on, because "the
+// node is not answering" says nothing about which of a script's waits printed
+// it.
+func waitOutRestart(err error, give time.Time, what string) bool {
+	if !isDialRefused(err) || !time.Now().Before(give) {
+		return false
+	}
+	fmt.Fprintf(os.Stderr, "the node is not answering - a restart is the usual reason, "+
+		"and %s is still worth waiting for (%s left)\n", what, took(int(time.Until(give).Seconds())))
+	time.Sleep(time.Second)
+	return true
 }
 
 // queueWaitGone says what happened to a row that is no longer in the queue.

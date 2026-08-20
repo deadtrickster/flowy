@@ -11356,6 +11356,31 @@ a_wait_gives_up_within_its_deadline() {
 	printf 'asked for 5s, gave up after %ss, exit 1\n' "$elapsed"
 }
 
+# AND THE DEADLINE BOUNDS THE DIAL RETRY TOO, which is the second layer that
+# used to overrun it. doThroughARestart rides out a refused dial for its own
+# twenty seconds before returning anything, so `--deadline 5` against a node
+# that is not there took twenty - measured 2026-08-20. Driven against a port
+# nothing is on, because that is the only way to reach the dial retry at all.
+#
+# EXIT 2 AND NOT 1 IS ASSERTED ON PURPOSE: a node that never answered means the
+# question was never asked, and a script that read that as "the tip did not
+# move" would be reporting about a tip it never saw.
+a_wait_is_not_overrun_by_the_dial_retry() {
+	local started elapsed rc
+	started="$(date +%s)"
+	FLOWY_TOKEN=tok "$ROOT/flowy" wait --tip master --url http://127.0.0.1:9 --deadline 5 \
+		>/dev/null 2>&1
+	rc=$?
+	elapsed=$(($(date +%s) - started))
+	want_eq "a node that never answered is broken, not a quiet deadline" "$rc" 2 || return 1
+	if [ "$elapsed" -gt 15 ]; then
+		printf 'asked for 5s and took %ss - the dial retry has a cap of its own inside the deadline\n' \
+			"$elapsed" >&2
+		return 1
+	fi
+	printf 'asked for 5s against a dead port, gave up after %ss, exit 2\n' "$elapsed"
+}
+
 # A NODE THAT IS NOT ANSWERING IS THE MIDDLE OF A DEPLOY, not a broken waiter.
 # Driven against a port nothing is on, which is the same thing the waiter sees
 # between the old process stopping and the new one listening.
@@ -18747,6 +18772,8 @@ check "a wait for what is already true answers at once" \
 	a_wait_for_what_is_already_true_answers_at_once
 check "a wait gives up inside its deadline, not a blocking read later" \
 	a_wait_gives_up_within_its_deadline
+check "a wait's deadline bounds the dial retry inside it too" \
+	a_wait_is_not_overrun_by_the_dial_retry
 check "a deploy wait treats a silent node as a restart, not as broken" \
 	a_deploy_wait_treats_a_silent_node_as_a_restart
 check "the console shows a token its own readers, and says they are its own" \
