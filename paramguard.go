@@ -98,7 +98,7 @@ var routeParams = map[string][]string{
 	"GET /api/repro/runs":                        {"finding"},
 	"GET /api/repro/version":                     {"project", "v"},
 	"POST /api/repro/run":                        {},
-	"GET /api/rooms":                             {},
+	"GET /api/rooms":                             {"project", "scope"},
 	"GET /api/search":                            {"kind", "limit", "project", "q", "scope", "status", "type"},
 	"GET /api/stream":                            {"since", "topics"},
 	"GET /api/sync/pull":                         {"limit", "since"},

@@ -12928,6 +12928,74 @@ browser_says_which_project_this_token_is_in() {
 	node scripts/projects-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A"
 }
 
+# WHAT IS INSIDE A PROJECT YOU CAN READ, and a refusal that names the one you
+# cannot.
+#
+# The /projects page landed saying on its own face that it could not show what
+# was in anything it listed: GET /api/rooms took no project, so it answered
+# about the caller's own and nothing else. A person with three projects on this
+# node could read three names and not one thing in any of them.
+#
+# THE REFUSAL IS THE HALF THAT MATTERS. An empty room list for a project this
+# token cannot read would say "there is nothing in it" for "you cannot see into
+# it" - four times in two days this area has collapsed those two, so the check
+# asserts the status AND that the message names the project.
+a_project_you_read_is_one_you_can_look_into() {
+	recall
+
+	# The caller's own project, unnamed: unchanged behaviour.
+	api GET "$TOKEN_A" /api/rooms || return 1
+	want_eq "listing my own rooms" "$API_STATUS" 200 || return 1
+	local mine
+	mine="$(printf '%s' "$API_BODY" | jq -r '.project')"
+	if [ -z "$mine" ] || [ "$mine" = null ]; then
+		printf 'the answer does not say which project it is about: %s\n' "$API_BODY" >&2
+		return 1
+	fi
+
+	# NAMED EXPLICITLY, the same answer. A door that behaves differently when
+	# asked about the project it would have picked anyway has two code paths for
+	# one question.
+	api GET "$TOKEN_A" "/api/rooms?project=$mine" || return 1
+	want_eq "naming my own project" "$API_STATUS" 200 || return 1
+	want_eq "and it says which project it answered about" \
+		"$(printf '%s' "$API_BODY" | jq -r '.project')" "$mine" || return 1
+
+	# A project this token cannot read. TOKEN_B's project is the one the scope
+	# checks already use for exactly this.
+	local theirs
+	api GET "$TOKEN_B" /api/rooms || return 1
+	theirs="$(printf '%s' "$API_BODY" | jq -r '.project')"
+	if [ "$theirs" = "$mine" ] || [ -z "$theirs" ] || [ "$theirs" = null ]; then
+		printf 'the two gate principals share a project (%s), so this check cannot measure a refusal\n' \
+			"$theirs" >&2
+		return 1
+	fi
+
+	api GET "$TOKEN_A" "/api/rooms?project=$theirs" || true
+	want_eq "asking about a project this token cannot read" "$API_STATUS" 403 || return 1
+	case "$(printf '%s' "$API_BODY" | jq -r '.error')" in
+	*"$theirs"*)
+		;;
+	*)
+		printf 'the refusal does not name the project: %s\n' "$API_BODY" >&2
+		return 1
+		;;
+	esac
+	case "$(printf '%s' "$API_BODY" | jq -r '.error')" in
+	*"not the same as"*) ;;
+	*)
+		printf 'the refusal does not say it differs from having no rooms: %s\n' "$API_BODY" >&2
+		return 1
+		;;
+	esac
+
+	printf 'rooms answer per project (%s), and a project this token cannot read is refused BY NAME rather than answered empty\n' \
+		"$mine"
+}
+
+check "a project you can read is a project you can look into" \
+	a_project_you_read_is_one_you_can_look_into
 check "the console says which project this token writes in, in a browser" \
 	browser_says_which_project_this_token_is_in
 check "the roster draws what each listener can do, distinctly, in a browser" \

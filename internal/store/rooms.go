@@ -152,6 +152,21 @@ func (d *DB) CreateRoom(ctx context.Context, p *Principal, name, topic string) (
 // it does, this is the one query that changes, and Role being empty is already
 // how a caller tells the two apart.
 func (d *DB) RoomsFor(ctx context.Context, p *Principal) ([]Room, error) {
+	return d.RoomsIn(ctx, p, strings.TrimSpace(p.Project))
+}
+
+// RoomsIn is RoomsFor for a NAMED project, which is what a person asks when
+// they can see three projects on a node and nothing inside two of them.
+//
+// IT DOES NOT DECIDE WHETHER THEY MAY. The caller checks that against
+// ReadableProjects and refuses by name - see handleListRooms. Putting the
+// permission here as well would be a second implementation of "may this token
+// read that project", and the two would disagree the first time one of them
+// changed.
+//
+// Membership is still the ASKING principal's: role is what THIS reader is in
+// that room, whichever project the room lives in.
+func (d *DB) RoomsIn(ctx context.Context, p *Principal, project string) ([]Room, error) {
 	actor, _ := voteActor(p)
 	if actor == "" {
 		return nil, fmt.Errorf("store: this token resolves to nobody, so it has no rooms")
@@ -181,7 +196,7 @@ func (d *DB) RoomsFor(ctx context.Context, p *Principal) ([]Room, error) {
 		   FROM named n
 		   LEFT JOIN rooms r ON r.project = n.project AND r.name = n.name
 		  ORDER BY r.created NULLS LAST, n.name`,
-		strings.TrimSpace(p.Project), roomPrincipal(p))
+		strings.TrimSpace(project), roomPrincipal(p))
 	if err != nil {
 		return nil, fmt.Errorf("store: list rooms: %w", err)
 	}

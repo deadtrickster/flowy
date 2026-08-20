@@ -38,22 +38,33 @@ func TestRoomRoutesAreRegistered(t *testing.T) {
 	}
 }
 
-// None of the room doors reads a query parameter, so none of them may accept
-// one - a route quietly gaining a parameter without declaring it is the drift
-// routeParams exists to stop.
+// The room doors take what they say they take - a route quietly gaining a
+// parameter without declaring it is the drift routeParams exists to stop.
 //
 // This asked for the entry to be ABSENT when it was written, because absence
 // was then the only way to say "takes nothing". It is now an entry that is
 // EMPTY, and the difference is the point: absent meant nobody had looked, and
-// these four had been looked at. The assertion is the same one either way -
-// these routes accept no parameters - and it now fails if somebody deletes the
-// entry as well as if somebody fills it in.
-func TestRoomRoutesDeclareNoQueryParameters(t *testing.T) {
-	for _, pattern := range []string{
-		"POST /api/rooms",
-		"GET /api/rooms",
-		"POST /api/rooms/{room}/invite",
-		"POST /api/rooms/{room}/leave",
+// these had been looked at. It fails if somebody deletes the entry as well as
+// if somebody fills it in.
+//
+// GET /api/rooms IS THE EXCEPTION AND HERE IS WHY, which is what the older
+// version of this test asked for by name.
+//
+// It takes `project`, because until it did, the console could list the projects
+// a token may see and not one thing inside any of them - /projects landed
+// saying exactly that on its own face. And `scope`, because the permission it
+// checks is ReadableProjects, which is scope-aware everywhere else it is used;
+// a door that asked that question with a different scope from the door beside
+// it would give two answers to one question.
+//
+// The other three take nothing and still take nothing. A write with a query
+// parameter is a write whose subject is in two places.
+func TestRoomRoutesDeclareWhatTheyTake(t *testing.T) {
+	for pattern, want := range map[string][]string{
+		"POST /api/rooms":               {},
+		"GET /api/rooms":                {"project", "scope"},
+		"POST /api/rooms/{room}/invite": {},
+		"POST /api/rooms/{room}/leave":  {},
 	} {
 		params, ok := routeParams[pattern]
 		if !ok {
@@ -61,8 +72,16 @@ func TestRoomRoutesDeclareNoQueryParameters(t *testing.T) {
 				"and {} is how it says none", pattern)
 			continue
 		}
-		if len(params) != 0 {
-			t.Errorf("%s declares %v - if that is deliberate, say why here", pattern, params)
+		if len(params) != len(want) {
+			t.Errorf("%s declares %v, want %v - a door that takes more than it says is the drift "+
+				"this test exists to catch, and one that takes less has lost a feature", pattern, params, want)
+			continue
+		}
+		for i, p := range want {
+			if params[i] != p {
+				t.Errorf("%s declares %v, want %v", pattern, params, want)
+				break
+			}
 		}
 	}
 }

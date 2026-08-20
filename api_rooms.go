@@ -3,6 +3,8 @@ package main
 import (
 	"errors"
 	"net/http"
+	"slices"
+	"strings"
 
 	"github.com/deadtrickster/flowy/internal/store"
 )
@@ -49,13 +51,54 @@ func (s *server) handleCreateRoom(w http.ResponseWriter, r *http.Request) {
 // This is what replaces the three names hardcoded in the console at
 // web/src/lib/unread.tsx:66. A client that asks the node cannot be wrong about
 // which rooms exist; a client with a literal array always eventually is.
+//
+// ?project=X ASKS ABOUT ANOTHER ONE. Without it this door answers about the
+// caller's own project and nothing else, which is why /projects landed saying
+// on its own face that it could not show what is inside anything it listed. A
+// person with three projects on a node could read the names and not one thing
+// in any of them.
+//
+// THE PERMISSION IS ReadableProjects AND NOTHING ELSE. That is the same list
+// /api/projects answers as `reads`, computed in one place: a second
+// implementation of "may this token read that project" is how two answers to
+// one question come to disagree. Reading is one-directional even though the
+// registry is not - a grant edge either way puts a name in the list of
+// projects, and only one of them lets you read.
+//
+// AND A REFUSAL NAMES THE PROJECT. Answering an empty room list for a project
+// this token cannot read would say "there is nothing in it" for "you cannot
+// see into it" - the collapse this area has produced four times in two days.
 func (s *server) handleListRooms(w http.ResponseWriter, r *http.Request) {
-	rooms, err := s.db.RoomsFor(r.Context(), principalOf(r))
+	p := principalOf(r)
+	project := strings.TrimSpace(r.URL.Query().Get("project"))
+
+	if project != "" && project != strings.TrimSpace(p.Project) {
+		reads, err := s.db.ReadableProjects(r.Context(), p, scopeAll(r, p))
+		if err != nil {
+			serverError(w, r, err)
+			return
+		}
+		if !slices.Contains(reads, project) {
+			writeJSON(w, http.StatusForbidden, errorBody(
+				"this token cannot read "+project+"'s rows, so it cannot be shown that project's rooms - "+
+					"which is not the same as that project having none"))
+			return
+		}
+	}
+	if project == "" {
+		project = strings.TrimSpace(p.Project)
+	}
+
+	rooms, err := s.db.RoomsIn(r.Context(), p, project)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, errorBody(err.Error()))
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"rooms": rooms})
+	// The project comes back on the answer, so a caller that asked about
+	// another one cannot mistake the reply for its own - the same reason
+	// `flowy say` prints the project it wrote into rather than the one it was
+	// told to.
+	writeJSON(w, http.StatusOK, map[string]any{"rooms": rooms, "project": project})
 }
 
 // POST /api/rooms/{room}/invite - an owner adds somebody.

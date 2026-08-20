@@ -1435,7 +1435,10 @@ export const api = {
    * console. A client with a hardcoded list is always eventually wrong; one
    * that asks cannot be.
    */
-  rooms: () => request<{ rooms: Room[] }>("/api/rooms"),
+  rooms: (project?: string) =>
+    request<{ rooms: Room[]; project: string }>(
+      project ? `/api/rooms?project=${encodeURIComponent(project)}` : "/api/rooms",
+    ),
 
   /**
    * Make a room, and be its owner.

@@ -30,6 +30,13 @@ import { useEffect, useState } from "react";
 export function Projects() {
   const [page, setPage] = useState<ProjectsPage | null>(null);
   const [failed, setFailed] = useState("");
+  // The rooms inside each project this token can read, keyed by project.
+  //
+  // ASKED ONLY FOR THE ONES `reads` NAMES. Asking about the others would earn a
+  // 403 per row and put a refusal on screen for a rule the page already knows -
+  // and a page that fires requests it knows will be refused teaches its reader
+  // that refusals are normal.
+  const [rooms, setRooms] = useState<Record<string, string[]>>({});
 
   useEffect(() => {
     let live = true;
@@ -48,6 +55,35 @@ export function Projects() {
       live = false;
     };
   }, []);
+
+  // A second pass once the registry is in, because which projects to ask about
+  // is an answer from the first one.
+  useEffect(() => {
+    if (!page) return;
+    let live = true;
+    const readable = page.reads ?? [];
+    for (const id of readable) {
+      api
+        .rooms(id)
+        .then((answer) => {
+          // KEYED BY WHAT THE NODE SAID IT WAS ABOUT, not by what was asked.
+          // Three requests are in flight at once and they answer in whatever
+          // order they answer; keying by the request would put one project's
+          // rooms under another's name the first time that ordering surprised
+          // somebody.
+          if (live) {
+            setRooms((was) => ({ ...was, [answer.project]: answer.rooms.map((r) => r.name) }));
+          }
+        })
+        .catch(() => {
+          // Left absent rather than set to empty: a project whose rooms could
+          // not be read must not draw as a project with no rooms.
+        });
+    }
+    return () => {
+      live = false;
+    };
+  }, [page]);
 
   if (failed) {
     return (
@@ -163,6 +199,21 @@ export function Projects() {
                   {p.provenance ? ` · ${p.provenance}` : ""}
                   {p.origin ? ` · from ${p.origin}` : ""}
                 </div>
+                {/*
+                  WHAT IS IN IT, for the projects this token reads. Absent is
+                  its own state and says so: a project whose rooms have not
+                  arrived, or could not be read, must not draw as a project
+                  with no rooms in it.
+                */}
+                {readable ? (
+                  <div className="text-muted-foreground text-xs" data-project-rooms={p.id}>
+                    {rooms[p.id]
+                      ? rooms[p.id].length > 0
+                        ? `rooms: ${rooms[p.id].join(", ")}`
+                        : "no rooms yet - nothing has been said in this project"
+                      : "reading its rooms…"}
+                  </div>
+                ) : null}
                 {p.superseded && p.superseded.length > 0 ? (
                   <div className="text-muted-foreground text-xs">
                     supersedes {p.superseded.join(", ")}
