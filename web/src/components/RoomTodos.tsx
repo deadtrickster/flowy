@@ -1,9 +1,10 @@
 import { type FormEvent, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import type { Artifact, FlowyEvent } from "@/lib/api";
+import { type Artifact, type FlowyEvent, artifactPath } from "@/lib/api";
 import { speakerStyle } from "@/lib/speakercolour";
 import {
   TODO_KINDS,
@@ -54,6 +55,10 @@ interface Props {
  * can read and not answer is the surface this replaced.
  */
 export function RoomTodos({ room, todos, raiseFrom, disabled, error, onRaise, onAssign }: Props) {
+  // WHICH ROW IS OPEN BENEATH ITS TITLE. An id rather than the row, so a reread
+  // of the panel keeps the summary pointed at the same work instead of at a
+  // stale copy of it.
+  const [open, setOpen] = useState("");
   const [title, setTitle] = useState("");
   /**
    * What KIND of work this is, chosen when it is raised.
@@ -299,10 +304,41 @@ export function RoomTodos({ room, todos, raiseFrom, disabled, error, onRaise, on
                     from <span style={speakerStyle(raiser)}>{raiser}</span>
                   </span>
                 ) : null}
-                <span className="min-w-0 flex-1 break-words">{todo.title || todo.id}</span>
+                {/*
+                  THE TITLE OPENS THE ROW. The operator: "no way to go from chat
+                  todo to full todo card", and then "i want a quick view for
+                  chat todo when I click on it - quick summary card + link to
+                  the full todo card".
+
+                  The panel had the id, the title, the status and the assignee
+                  and no way to reach any of the rest - the body, the notes, the
+                  history - so a row raised out of a conversation was readable
+                  here and nowhere else without copying an id into a URL by
+                  hand.
+
+                  Expanding in place rather than navigating, because the panel
+                  sits BESIDE the conversation the row came out of: leaving the
+                  room to read a todo is what the finding pane fixed on the
+                  other surface tonight, and the same argument applies here. The
+                  link to the full card is drawn inside the summary, which is
+                  what the operator asked for in the same sentence.
+                */}
+                <button
+                  type="button"
+                  data-todo-open={todo.id}
+                  aria-expanded={open === todo.id}
+                  className="min-w-0 flex-1 break-words text-left hover:underline"
+                  onClick={() => setOpen(open === todo.id ? "" : todo.id)}
+                >
+                  {todo.title || todo.id}
+                </button>
               </li>
             );
           })}
+          {/* THE SUMMARY, under the row it belongs to rather than in a pane of
+              its own: the panel is already a narrow column beside a
+              conversation, and a second column would leave neither readable. */}
+          {open ? <TodoSummary todo={todos.find((t) => t.id === open)} /> : null}
         </ul>
       </div>
 
@@ -361,5 +397,64 @@ export function RoomTodos({ room, todos, raiseFrom, disabled, error, onRaise, on
         {failed ? <span className="text-destructive text-xs">{failed}</span> : null}
       </form>
     </section>
+  );
+}
+
+/**
+ * A chat todo, opened where it sits.
+ *
+ * THE OPERATOR ASKED FOR EXACTLY THIS: "i want a quick view for chat todo when
+ * I click on it - quick summary card + link to the full todo card", after
+ * "no way to go from chat todo to full todo card".
+ *
+ * The panel had the id, the title, the status and the assignee, and no way to
+ * reach the body or the row itself - so work raised out of a conversation was
+ * readable beside that conversation and nowhere else, unless somebody typed an
+ * id into a URL.
+ *
+ * The body is drawn as PLAIN TEXT, not markdown. Every other body in this
+ * console goes through the sanitizer, and this one is a summary in a narrow
+ * column beside a live transcript - rendering headings and lists here would
+ * make a three-line panel out of a row that is meant to be glanceable. The full
+ * card is one click away and renders it properly.
+ */
+function TodoSummary({ todo }: { todo?: Artifact }) {
+  // The row can vanish between the click and this render - a poll that drops it,
+  // a filter that hides it, somebody closing it elsewhere. Saying so is better
+  // than an empty box, and better than the panel silently forgetting what was
+  // opened.
+  if (!todo) {
+    return (
+      <li className="px-4 py-2 text-muted-foreground text-xs" data-todo-summary="">
+        that row is no longer in this panel
+      </li>
+    );
+  }
+  const to = artifactPath(todo);
+  const body = (todo.body ?? "").trim();
+  return (
+    <li
+      data-todo-summary={todo.id}
+      className="border-border/60 border-b bg-muted/30 px-4 py-2 text-xs"
+    >
+      <div className="flex items-baseline gap-2">
+        <span className="font-mono text-muted-foreground">{shortId(todo.id)}</span>
+        {to ? (
+          <Link to={to} data-todo-full-card={todo.id} className="ml-auto text-primary underline">
+            open the full card
+          </Link>
+        ) : null}
+      </div>
+      {body ? (
+        <p className="whitespace-pre-wrap break-words pt-1">{body.slice(0, 400)}</p>
+      ) : (
+        <p className="pt-1 text-muted-foreground">no body on this row</p>
+      )}
+      {body.length > 400 ? (
+        <p className="pt-1 text-muted-foreground">
+          … {body.length - 400} more characters on the full card
+        </p>
+      ) : null}
+    </li>
   );
 }
