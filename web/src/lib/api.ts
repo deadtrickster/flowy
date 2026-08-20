@@ -2147,6 +2147,33 @@ export const api = {
 
   artifact: (id: string) => request<Artifact>(`/api/artifact/${encodeURIComponent(id)}`),
 
+  /**
+   * fileUpstream records where a finding went upstream, or takes the filing
+   * back off it.
+   *
+   * THE VERB EXISTED ONLY OVER MCP until this door. An agent with an MCP
+   * connection could file a finding upstream and a person sitting in the
+   * console could not, while every finding rendered "upstream: unfiled" at
+   * them. findingevidence.go's head comment names the same failure about the
+   * axis beside it, and api_mergegate.go names it about the gate: a door only
+   * agents can knock on is half a door.
+   *
+   * `refs` is left out on purpose rather than passed as an empty array. The
+   * store reads a stated list as "these are the citations NOW" and replaces
+   * them whole, so sending [] from a control that is only setting a state would
+   * silently clear every citation on the row. Absent means leave them alone,
+   * and this control has nothing to say about them.
+   */
+  fileUpstream: (
+    finding: string,
+    filing: { state: string; kind?: string; id?: string; url?: string; tracker?: string },
+  ) =>
+    request<{ item: Artifact }>(`/api/finding/${encodeURIComponent(finding)}/upstream`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(filing),
+    }),
+
   /** thread reads one thread of the log, whichever room it was said in. */
   thread: (thread: string) =>
     request<{ events: FlowyEvent[] }>(`/api/events?thread=${encodeURIComponent(thread)}`),

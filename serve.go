@@ -411,6 +411,7 @@ var apiRoutes = []string{
 	"DELETE /api/todo/{id}/deps/{blocker}",
 	"GET /api/artifact/{id}/origins",
 	"GET /api/finding/{id}/evidence",
+	"GET /api/finding/{id}/upstream",
 	"GET /api/instructions",
 	"GET /api/lock",
 	"GET /api/me",
@@ -422,6 +423,7 @@ var apiRoutes = []string{
 	"GET /api/todo/{id}/deps",
 	"POST /api/artifact/{id}/origins",
 	"POST /api/finding/{id}/evidence",
+	"POST /api/finding/{id}/upstream",
 	"POST /api/instructions",
 	"POST /api/join/{id}/approve",
 	"POST /api/join/{id}/refuse",
@@ -533,6 +535,8 @@ func (s *server) routes() http.Handler {
 	// well as MCP, for api_mergegate.go's reason: a door only agents can knock
 	// on is half a door - see findingevidence.go.
 	api.HandleFunc("POST /api/finding/{id}/evidence", s.handleFindingEvidence)
+	api.HandleFunc("POST /api/finding/{id}/upstream", s.handleFindingUpstream)
+	api.HandleFunc("GET /api/finding/{id}/upstream", s.handleFindingUpstreamLog)
 	api.HandleFunc("GET /api/finding/{id}/evidence", s.handleFindingEvidenceLog)
 	// And the run history behind it, for findingevidence.go's own reason: the
 	// verdict a repro run records is the console's red/green line, and the

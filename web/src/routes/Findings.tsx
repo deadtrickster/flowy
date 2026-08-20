@@ -447,7 +447,19 @@ export function Findings() {
         </div>
         {/* THE FINDING, BESIDE THE LIST IT CAME FROM. Chosen by id off the rows
             already on the page, so opening one costs no read and no spinner. */}
-        {openFinding ? <FindingPane finding={openFinding} onClose={() => setOpen("")} /> : null}
+        {openFinding ? (
+          <FindingPane
+            finding={openFinding}
+            onClose={() => setOpen("")}
+            // The node's own answer replaces the row in the list, so the badge
+            // beside the title changes with the pane rather than after a
+            // reload. Replacing in place rather than refetching keeps the
+            // filters, the scroll and the selection exactly where they were.
+            onFiled={(updated) =>
+              setFindings((current) => current.map((f) => (f.id === updated.id ? updated : f)))
+            }
+          />
+        ) : null}
       </div>
     </div>
   );

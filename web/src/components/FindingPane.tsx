@@ -1,6 +1,7 @@
 import { X } from "lucide-react";
 import { Link } from "react-router-dom";
 
+import { FiledUpstream } from "@/components/FiledUpstream";
 import { ReproPanel } from "@/components/ReproPanel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -22,7 +23,18 @@ import { renderChat } from "@/lib/markdown";
  * list read it a moment ago, and a second read would put a spinner between the
  * click and the words for a row that is already in memory.
  */
-export function FindingPane({ finding, onClose }: { finding: Artifact; onClose: () => void }) {
+export function FindingPane({
+  finding,
+  onClose,
+  onFiled,
+}: {
+  finding: Artifact;
+  onClose: () => void;
+  /** The row as the node returned it after a write, so the list beside this
+   * pane shows the new state without a reload - the pane and the list read the
+   * same row and must not disagree about it. */
+  onFiled: (updated: Artifact) => void;
+}) {
   const to = artifactPath(finding);
   const runnable = hasRepro(reproOf(finding));
 
@@ -65,6 +77,11 @@ export function FindingPane({ finding, onClose }: { finding: Artifact; onClose: 
           <X className="h-3 w-3" />
         </Button>
       </div>
+
+      {/* WHERE IT WENT, and the control to say so. It sits above the body
+          because "has this been sent" is the question a reader opens a finding
+          to answer more often than they open it to read the prose again. */}
+      <FiledUpstream finding={finding} onFiled={onFiled} />
 
       {finding.body?.trim() ? (
         <div

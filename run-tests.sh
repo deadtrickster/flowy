@@ -11858,6 +11858,26 @@ a_room_looks_like_the_sidebar() {
 # Asserted as GEOMETRY rather than as markup. "Beside" is a fact about where two
 # boxes sit, and a check on a class name would pass on a pane rendered under the
 # list, which is the thing being fixed.
+# finding_upstream shipped as an MCP TOOL ONLY, so any seat with an MCP
+# connection could say a finding had been sent upstream and the operator, in the
+# console, read "upstream: unfiled" on every row with no way to change it.
+# findingevidence.go makes the same complaint about the axis beside it and
+# api_mergegate.go makes it about the gate: a door only agents can knock on is
+# half a door.
+#
+# The middle arm is why this is a browser check rather than a door test: the
+# write can succeed and the page still show the old state, and from where a
+# person sits that is indistinguishable from a write that failed.
+#
+# Taking it back is "withdrawn" and not "unfiled", which the STORE taught this
+# control by refusing: calling a filed row unfiled erases the number, "after
+# which somebody files it there a second time".
+a_person_can_file_a_finding_upstream() {
+	recall
+	cd "$ROOT/web" || return 1
+	node scripts/filed-upstream-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A"
+}
+
 a_finding_opens_beside_the_list() {
 	recall
 	cd "$ROOT/web" || return 1
@@ -19322,6 +19342,8 @@ check "a room the reader closed leaves the sidebar, and stays closed" \
 	a_closed_room_leaves_the_sidebar_and_stays_closed
 check "a finding opens beside the list, and closing it leaves the list" \
 	a_finding_opens_beside_the_list
+check "a person can file a finding upstream from the console, and take it back" \
+	a_person_can_file_a_finding_upstream
 check "a room in the sidebar looks like the rest of the sidebar" \
 	a_room_looks_like_the_sidebar
 check "a screenshot pasted into a room arrives whole" \
