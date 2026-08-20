@@ -55,6 +55,24 @@ try {
     }
   });
   const why = () => (refused.length > 0 ? `\n  the node refused: ${refused.join("; ")}` : "");
+  // AND WHAT THE PAGE LOOKED LIKE, because a failure with no refusal behind it
+  // is the harder one: the first two gate runs both said "still in the sidebar"
+  // with nothing else, and neither said whether the click had landed, whether
+  // the closed list existed, or whether the console was even built. This runs
+  // in the browser at the moment of failure and costs nothing until then.
+  const seen = async () => {
+    try {
+      const state = await page.evaluate(() => ({
+        rooms: document.querySelectorAll('a[href^="/chat/"]').length,
+        closers: document.querySelectorAll("[data-close-room]").length,
+        closedBlock: document.querySelectorAll("[data-closed-rooms]").length,
+        head: document.body.innerText.slice(0, 120).replace(/\s+/g, " "),
+      }));
+      return `\n  the page had ${state.rooms} rooms, ${state.closers} close controls, ${state.closedBlock} closed-lists; body starts ${JSON.stringify(state.head)}`;
+    } catch {
+      return "\n  the page could not be read at all";
+    }
+  };
   await page.addInitScript((t) => localStorage.setItem("flowy.token", t), token);
   await page.goto(`${base}/`, { timeout: 20_000 }).catch(() => {});
 
@@ -73,7 +91,7 @@ try {
   if ((await link.count()) === 0) {
     const closed = page.locator("[data-closed-rooms]");
     if ((await closed.count()) === 0) {
-      die(`#${room} is not in the sidebar and nothing says it is closed`);
+      die(`#${room} is not in the sidebar and nothing says it is closed${why()}${await seen()}`);
     }
     await closed.locator("summary").click();
     const back = page.locator(`[data-reopen-room="${room}"]`);
@@ -111,13 +129,17 @@ try {
     .waitForFunction((r) => !document.querySelector(`a[href="/chat/${r}"]`), room, {
       timeout: 10_000,
     })
-    .catch(() => die(`#${room} is still in the sidebar after it was closed${why()}`));
+    .catch(async () =>
+      die(`#${room} is still in the sidebar after it was closed${why()}${await seen()}`),
+    );
 
   // IT SURVIVES A RELOAD, which is the arm that says the node holds it.
   await page.reload({ timeout: 20_000 }).catch(() => {});
   await page.waitForTimeout(3000);
   if ((await page.locator(`a[href="/chat/${room}"]`).count()) !== 0) {
-    die(`#${room} came back after a reload - the preference did not reach the node${why()}`);
+    die(
+      `#${room} came back after a reload - the preference did not reach the node${why()}${await seen()}`,
+    );
   }
 
   const closed = page.locator("[data-closed-rooms]");
