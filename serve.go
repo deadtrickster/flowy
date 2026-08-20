@@ -314,6 +314,7 @@ var apiRoutes = []string{
 	"GET /api/todo/{id}/notes",
 	"GET /api/proposals",
 	"GET /api/proposal/{id}",
+	"POST /api/attachment",
 	"GET /api/attachment/{id}",
 	// A finding's run history. It is on this list for the reason the queue doors
 	// are, with a measurement behind it: the repro path ran end to end on
@@ -618,6 +619,7 @@ func (s *server) routes() http.Handler {
 	// card a reader sees names this, and "the card is there but the bytes are
 	// not" is a real state the filter produces, answered as metadata without
 	// content rather than as an error.
+	api.HandleFunc("POST /api/attachment", s.handleWriteAttachment)
 	api.HandleFunc("GET /api/attachment/{id}", s.handleAttachmentRead)
 	// Direct messages. They are chat events and they are read back through the
 	// same filter every other event is, so these are three narrowings of reads

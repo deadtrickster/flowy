@@ -172,6 +172,47 @@ func attachmentWrite(ctx context.Context, m *mcpServer, p *store.Principal, raw 
 	if err := decodeParams(raw, &a); err != nil {
 		return nil, err
 	}
+	written, err := writeAttachmentFrom(ctx, m.db, p, a)
+	if err != nil {
+		return nil, err
+	}
+	// The artifact, what the bytes are, and - when this token writes into a
+	// fixture - the sentence nobody was shown the day a week of real memory
+	// went into pa. See mcp_projects.go. The content is not echoed back: the
+	// caller has it, and a megabyte round trip for nothing is a megabyte
+	// through the model's context.
+	return withFixtureWarning(ctx, m, p, map[string]any{
+		"item":           written.Item,
+		sizeField:        written.Size,
+		digestField:      written.Digest,
+		contentTypeField: written.ContentType,
+	}), nil
+}
+
+// writtenAttachment is what both doors say about a capture that landed: the
+// row, and the three facts about the bytes that are not on it.
+type writtenAttachment struct {
+	Item        *store.Artifact
+	Size        int
+	Digest      string
+	ContentType string
+}
+
+// writeAttachmentFrom is what WRITING AN ATTACHMENT IS: the checks, the scope,
+// the message it hangs off, what the bytes turn out to be, and the row.
+//
+// It is a function of a context and a database rather than of an MCP server for
+// sayInRoom's reason, and the defect is the same one measured a different way.
+// attachment_write was the ONLY caller, so an agent could attach a file to a
+// message and a person could not - the console renders a card for bytes it has
+// no way to produce. A second implementation behind POST /api/attachment would
+// be a second answer to every question here: what scope a capture is born at,
+// whether the message is readable, what a claimed content type may say, and
+// what the filename is allowed to steer. Those are decisions, and they are made
+// once.
+func writeAttachmentFrom(
+	ctx context.Context, db *store.DB, p *store.Principal, a attachmentWriteArgs,
+) (*writtenAttachment, error) {
 	if p.UserID == "" {
 		return nil, errors.New("this token resolves to no user, so it cannot own an attachment")
 	}
@@ -207,7 +248,7 @@ func attachmentWrite(ctx context.Context, m *mcpServer, p *store.Principal, raw 
 	// linking mechanism: a message names an artifact on the event row already,
 	// and the item names the message in fields already, so an attachment is
 	// reachable from a conversation with nothing new to learn.
-	if err := readableMessage(ctx, m.db, p, a.Message); err != nil {
+	if err := readableMessage(ctx, db, p, a.Message); err != nil {
 		return nil, err
 	}
 
@@ -264,7 +305,7 @@ func attachmentWrite(ctx context.Context, m *mcpServer, p *store.Principal, raw 
 	if actor == "" {
 		actor = p.UserID
 	}
-	if err := m.db.WriteAttachment(ctx, art, content, &store.Event{
+	if err := db.WriteAttachment(ctx, art, content, &store.Event{
 		Type:  "attachment.write",
 		Room:  "attachments",
 		Actor: actor,
@@ -272,18 +313,12 @@ func attachmentWrite(ctx context.Context, m *mcpServer, p *store.Principal, raw 
 	}); err != nil {
 		return nil, err
 	}
-
-	// The artifact, what the bytes are, and - when this token writes into a
-	// fixture - the sentence nobody was shown the day a week of real memory
-	// went into pa. See mcp_projects.go. The content is not echoed back: the
-	// caller has it, and a megabyte round trip for nothing is a megabyte
-	// through the model's context.
-	return withFixtureWarning(ctx, m, p, map[string]any{
-		"item":           art,
-		sizeField:        len(content),
-		digestField:      hex.EncodeToString(sum[:]),
-		contentTypeField: sniffed,
-	}), nil
+	return &writtenAttachment{
+		Item:        art,
+		Size:        len(content),
+		Digest:      hex.EncodeToString(sum[:]),
+		ContentType: sniffed,
+	}, nil
 }
 
 func attachmentRead(ctx context.Context, m *mcpServer, p *store.Principal, raw json.RawMessage) (any, error) {

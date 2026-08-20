@@ -117,9 +117,13 @@ var routeParams = map[string][]string{
 	"POST /api/announcements":                    {},
 	"POST /api/artifact/{id}/delete":             {},
 	"POST /api/artifact/{id}/status":             {},
-	"POST /api/artifacts":                        {},
-	"POST /api/assign":                           {},
-	"POST /api/chat/{room}/pin":                  {},
+	// {} because the whole request is a body: the bytes, what they claim to be,
+	// and the message they hang off. Nothing about an attachment belongs in a
+	// query string a proxy log keeps.
+	"POST /api/attachment":      {},
+	"POST /api/artifacts":       {},
+	"POST /api/assign":          {},
+	"POST /api/chat/{room}/pin": {},
 	// {} on purpose: a reaction names its message and its emoji in the body,
 	// where the signature covers them, and nothing about it belongs in a query
 	// string a proxy log keeps.

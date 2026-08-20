@@ -2563,6 +2563,60 @@ tool_file() {
 		jq -r 'if .error or .result.isError then "null" else .result.content[0].text end')"
 }
 
+# A PERSON CAN MAKE ONE TOO, and it is the same attachment.
+#
+# GET /api/attachment/{id} has served the bytes since attachments existed, a
+# message carries them, and MessageList draws a card for each - but the only
+# writer was attachment_write on the MCP surface. So the console rendered a card
+# for bytes it had no way to produce, and the operator could read a capture an
+# agent made and never make one. Not a missing feature: a write side reachable
+# by exactly one kind of principal. See 01M0EE6W1N.
+#
+# BOTH DOORS THROUGH ONE FUNCTION, which is what this check is really about.
+# writeAttachmentFrom is what writing an attachment IS, and attachment_write and
+# POST /api/attachment both call it - the same shape sayInRoom has, for the same
+# reason. So the arms below assert the HTTP door produces a row the MCP door
+# would recognise: same type, same scope rule, same three facts about the bytes.
+an_attachment_can_be_made_over_http_too() {
+	recall
+	local in="$WORK/att-http-in" id
+	att_fixture "$in"
+	att_args "$in" "a capture a person made" || return 1
+
+	api POST "$TOKEN_A" /api/attachment "@$WORK/att-args.json" || return 1
+	want_eq "the door took it" "$API_STATUS" 200 || return 1
+	want_eq "type" "$(jqv .item.type)" attachment || return 1
+	# The SAME defaults the MCP door applies, because they are one function.
+	want_eq "scope defaults to project" "$(jqv .item.visibility)" project-only || return 1
+	want_eq "project" "$(jqv .item.project)" pa || return 1
+	want_eq "owner" "$(jqv .item.owner_user)" "$USER_A" || return 1
+	want_eq "the size it recorded" "$(jqv .size_bytes)" "$(wc -c <"$in")" || return 1
+	want_eq "the digest it recorded" \
+		"$(jqv .digest_sha256)" "$(sha256sum <"$in" | cut -d' ' -f1)" || return 1
+	id="$(jqv .item.id)"
+
+	# AND THE BYTES COME BACK, byte for byte, through the read door that has
+	# been there all along. Without this the check passes for a door that
+	# writes a row and drops the content.
+	api GET "$TOKEN_A" "/api/attachment/$id" || return 1
+	printf '%s' "$API_BODY" | jq -r .content | base64 -d >"$WORK/att-http-out" || return 1
+	cmp -s "$in" "$WORK/att-http-out" || {
+		printf 'what came back is not what went in\n' >&2
+		return 1
+	}
+
+	# The refusals, which are the shared path's and not this door's - so they
+	# arrive as 400 with their own sentence rather than as 500 with nothing. A
+	# caller told the node is broken retries the one thing that cannot work.
+	want_status 400 POST "$TOKEN_A" /api/attachment \
+		'{"title": "x", "content_base64": "aGk=", "message": "01M00000000000000000000000"}' || return 1
+	want_status 400 POST "$TOKEN_A" /api/attachment \
+		'{"title": "x", "content_base64": "aGk=", "filename": "../../etc/passwd"}' || return 1
+	want_status 400 POST "$TOKEN_A" /api/attachment \
+		'{"title": "x", "content_base64": "!!!not base64!!!"}' || return 1
+	printf 'a person wrote %s over http and read it back byte for byte\n' "$id"
+}
+
 # The claim the surface rests on: what came out is what went in, compared byte
 # for byte with cmp rather than by eye or by length.
 an_attachment_round_trips_byte_for_byte() {
@@ -3090,6 +3144,9 @@ a_says_two_messages() {
 	want_eq "the message landed in pa" "$(jqv .project)" pa || return 1
 	want_eq "a human posts as the user" "$(jqv .actor)" "$USER_A" || return 1
 	want_eq "and is marked as one" "$(jqv .meta.actor_kind)" user || return 1
+	# shellcheck disable=SC2153 # HANDLE_A is seeded by cmd/smoke and read
+	# through `recall`, so no assignment is visible in this file. It is not a
+	# misspelling of HANDLE_B.
 	want_eq "under the name they had when they said it" \
 		"$(jqv .meta.actor_name)" "$HANDLE_A" || return 1
 	want_eq "an opening message has no parents" "$(jqv '.parents | length')" 0 || return 1
@@ -3441,6 +3498,8 @@ a_mention_addresses_the_message() {
 # asserting rather than leaving to whichever the map iterated first.
 the_first_mention_addresses_and_the_rest_are_recorded() {
 	recall
+	# shellcheck disable=SC2153 # HANDLE_OP is seeded by cmd/smoke and read
+	# through `recall`, as HANDLE_A and HANDLE_B are. Not a misspelling.
 	say_body "$TOKEN_A" addressing "@$HANDLE_B and @$HANDLE_OP, one of you please" || return 1
 	want_eq "say status" "$API_STATUS" 200 || return 1
 	want_eq "the first name addressed it" "$(jqv .addressee)" "$USER_B" || return 1
@@ -11605,6 +11664,8 @@ check "an edge is written by the verb that makes it, not by hand" \
 say "attachments"
 check "the bytes come back byte for byte, NUL and newline included" \
 	an_attachment_round_trips_byte_for_byte
+check "and a person can make one over http, with the same defaults and the same bytes" \
+	an_attachment_can_be_made_over_http_too
 check "over the ceiling is refused, and the refusal names it" \
 	an_attachment_over_the_ceiling_is_refused_with_the_number
 check "an attachment with no bytes is not an attachment" an_empty_attachment_is_refused
