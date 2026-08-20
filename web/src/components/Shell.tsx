@@ -25,6 +25,7 @@ import { TokenBar } from "@/components/TokenBar";
 import { api } from "@/lib/api";
 import { useRoomList, useUnread } from "@/lib/unread";
 import { cn } from "@/lib/utils";
+import { useWaiting } from "@/lib/waiting";
 
 function navClass({ isActive }: { isActive: boolean }) {
   return cn(
@@ -58,6 +59,33 @@ function UnreadDot({ room, n }: { room: string; n: number }) {
   );
 }
 
+/**
+ * WaitingDot is the same badge for a rail row that is not a room: how much work
+ * is waiting for this principal behind that link.
+ *
+ * ABSENT ON NULL AND ABSENT ON ZERO, and those are two different reasons that
+ * happen to look the same. Zero is "nothing is waiting", null is "we could not
+ * ask" - see lib/waiting for why the distinction is kept rather than collapsed.
+ * Neither draws a badge, because a badge means WORK IS HERE and a node that
+ * cannot be read is not work. What must never happen is the third thing: a
+ * failed read rendering as a confident "0".
+ *
+ * Named by its row rather than by its endpoint, because a check asks the
+ * SIDEBAR which row carries a number - see scripts/rail-act-check.mjs.
+ */
+function WaitingDot({ row, n }: { row: string; n: number | null }) {
+  if (n === null || n <= 0) return null;
+  return (
+    <span
+      data-waiting={row}
+      data-waiting-count={n}
+      className="ml-auto inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 font-mono text-[10px] text-primary-foreground"
+    >
+      {n > 99 ? "99+" : n}
+    </span>
+  );
+}
+
 /** Shell is the frame every route renders inside: navigation, and the token. */
 export function Shell({ children }: { children: ReactNode }) {
   // What the node's reader marks say is unread, per room. The counting and the
@@ -66,6 +94,10 @@ export function Shell({ children }: { children: ReactNode }) {
   const { counts } = useUnread();
   // The node's rooms, not this file's idea of them. See useRooms.
   const { shown: rooms, hidden, close, reopen } = useRoomList();
+  // How much is waiting for this principal, for the two rows where "waiting"
+  // has an answer that ever reaches zero. lib/waiting holds the reasoning for
+  // which rows those are and why the other eleven carry nothing.
+  const waiting = useWaiting();
   // THE TWO TOTALS, summed from the same per-room counts the dots are drawn
   // from - so a reader who sees the heading move can find the room it moved
   // for, and the three numbers can never disagree with each other.
@@ -92,15 +124,32 @@ export function Shell({ children }: { children: ReactNode }) {
             <HomeIcon className="h-4 w-4" />
             overview
           </NavLink>
+          {/*
+            THE TASK INBOX, not the message one, and the badge counts what the
+            page lists. /inbox reads /api/inbox/tasks - work handed to this
+            principal by name - and the rail was the last place that fact was
+            invisible: an agent could be holding four delegated tasks and the
+            only way to find out was to click.
+          */}
           <NavLink to="/inbox" className={navClass}>
             <InboxIcon className="h-4 w-4" />
             inbox
+            <WaitingDot row="inbox" n={waiting.tasks} />
           </NavLink>
           {/*
             Above the rooms and not among them, because it is not one. The
             padlock is the point of the row: it is the only place in this
             console where what you write is read by one named person, and it
             has to be told apart from a room at a glance.
+
+            NO BADGE, and it is the row that most deserves one. A private
+            message is exactly "waiting for you" - but /api/dm has no reader
+            mark. api.dms and api.dmWait both take a raw cursor the tab holds
+            in memory, so nothing on the node says which of these this person
+            has read, and the only number available is "how many DMs exist" -
+            a badge that would never clear. That is worse than no badge: it
+            teaches a reader to ignore the two above it that do clear. The
+            missing mark is filed as its own row rather than papered over here.
           */}
           <NavLink to="/direct" className={navClass}>
             <Lock className="h-4 w-4" />
@@ -120,9 +169,16 @@ export function Shell({ children }: { children: ReactNode }) {
             <FilePlus className="h-4 w-4" />
             new
           </NavLink>
+          {/*
+            OPEN ROWS ASSIGNED TO THIS PRINCIPAL - mine_todo from /api/nag, so
+            the rail and the board nag report the same number. They were two
+            answers to one question before this, and only one of them was ever
+            on screen.
+          */}
           <NavLink to="/todos" className={navClass}>
             <ListChecks className="h-4 w-4" />
             todos
+            <WaitingDot row="todos" n={waiting.todos} />
           </NavLink>
           {/*
             WHICH PROJECT THIS TOKEN WRITES IN. The rail says "flowy" at the
@@ -130,6 +186,20 @@ export function Shell({ children }: { children: ReactNode }) {
             project has a #general, so a room name stops being an address the
             moment there is more than one. Two messages went into pa/#general
             from this machine and nobody saw them for ten minutes.
+          */}
+          {/*
+            FROM HERE DOWN, NO NUMBERS, and that is the answer to 01M0GGEW74
+            rather than a corner left uncut. The row read "the rail carries one
+            number and thirteen rows carry none"; thirteen badges is the wrong
+            fix. What these rows could count is HOW MANY EXIST - 47 memories,
+            9 reports - which on a working node is never zero and never goes
+            down. A badge that never clears is decoration, and decoration next
+            to a badge that does clear is what stops anybody reading either.
+
+            The question these rows deserve is "did it move since I looked",
+            which is a read mark per list, which the node does not keep. Same
+            gap as direct above. Until it does, silence here is the honest
+            answer and the two badges above keep their meaning.
           */}
           <NavLink to="/projects" className={navClass}>
             <Boxes className="h-4 w-4" />

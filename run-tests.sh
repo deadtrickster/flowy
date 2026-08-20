@@ -11924,6 +11924,30 @@ the_rail_totals_agree() {
 	node scripts/rail-counters-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" "$TOKEN_A_AGENT"
 }
 
+# THE OTHER HALF OF THE SAME ROW, and it is mostly a NEGATIVE assertion.
+#
+# 01M0GGEW74 read "the rail carries one number and thirteen rows carry none",
+# and the tempting fix - thirteen numbers - is the wrong one. Two of those rows
+# hold work handed to this principal in a state that ends, so a badge there goes
+# down when the work is done. The rest would count how many rows EXIST, which
+# never falls and never clears, and a badge that never clears is what teaches a
+# reader to stop looking at the two that mean something.
+#
+# So this asserts the todos badge equals /api/nag's mine_todo - the same number
+# the board nag reports, in the two places the operator sees it - and that
+# twelve named rows carry no badge at all. The second half is the one that
+# outlives the first: the regression to catch is somebody putting "47" beside
+# memory because the number was easy to fetch.
+#
+# IT FILES AND CLAIMS A ROW FIRST. A fresh node has nothing assigned to anybody,
+# so mine_todo is 0, the absent badge is correct, and a check that only looked
+# would pass on a console that never draws one.
+a_number_in_the_rail_means_it_is_your_turn() {
+	recall
+	cd "$ROOT/web" || return 1
+	node scripts/rail-act-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" general
+}
+
 a_screenshot_pasted_into_a_room_arrives_whole() {
 	recall
 	cd "$ROOT/web" || return 1
@@ -19440,6 +19464,8 @@ check "a room the reader closed leaves the sidebar, and stays closed" \
 	a_closed_room_leaves_the_sidebar_and_stays_closed
 check "the rail's unread totals agree with the dots they are summed from" \
 	the_rail_totals_agree
+check "a number in the rail means it is your turn, and the rest carry none" \
+	a_number_in_the_rail_means_it_is_your_turn
 check "a finding opens beside the list, and closing it leaves the list" \
 	a_finding_opens_beside_the_list
 check "a person can file a finding upstream from the console, and take it back" \
