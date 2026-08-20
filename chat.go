@@ -935,7 +935,15 @@ func (s *server) handleInbox(w http.ResponseWriter, r *http.Request) {
 		// Since is not a window on this path: RecentEvents takes the newest
 		// Limit rows there are, and a cursor plus "newest first" is two
 		// contradictory instructions rather than one narrowing.
-		if since > 0 {
+		//
+		// ASKED OF THE QUERY STRING, NOT OF THE VALUE. cursorParam turns an
+		// absent since into 0, so `since > 0` cannot tell "I did not say" from
+		// "I said start at the beginning" - and ?order=recent&since=0 would have
+		// been accepted and quietly answered recent. That is the same
+		// empty-versus-absent collapse this door was just fixed for, committed
+		// one line into the fix. Has() is the only thing here that knows the
+		// difference between a value and a statement.
+		if q.Has("since") {
 			writeJSON(w, http.StatusBadRequest,
 				errorBody("since follows the log forwards and order=recent reads the other end: "+
 					"ask for one or the other"))

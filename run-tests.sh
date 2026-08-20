@@ -11482,6 +11482,11 @@ the_inbox_answers_the_end_it_is_asked_for() {
 	# Two instructions that contradict each other are refused rather than
 	# resolved in some order nobody stated.
 	want_status 400 GET "$TOKEN_A" '/api/inbox?order=recent&since=5' || return 1
+	# AND since=0 IS A STATEMENT, not an absence. cursorParam turns a missing
+	# since into 0, so a guard written on the VALUE cannot tell "I did not say"
+	# from "start at the beginning" - and this pair would have been accepted and
+	# quietly answered recent. The refusal is asked of the query string.
+	want_status 400 GET "$TOKEN_A" '/api/inbox?order=recent&since=0' || return 1
 	want_status 400 GET "$TOKEN_A" '/api/inbox?order=sideways' || return 1
 	printf 'both ends answered, the cursor is the top of the page, and the contradictions are refused\n'
 }
