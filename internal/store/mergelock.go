@@ -334,6 +334,14 @@ type LandedTip struct {
 // landing and a lock on - Artifact.Project is a *string so that "no project" and
 // "the empty project" are different things at the column, and a nil deref in a
 // land path would be a landing lost to a pointer.
+// ProjectOfRow is projectOfArtifact for callers outside this package.
+//
+// The api package needs a row's project as a plain string to name a lock, and
+// had no way to get one: Artifact.Project is a *string so that "no project" and
+// "the empty project" stay different at the column, and every caller doing that
+// dereference by hand is a nil panic waiting for the first personal row.
+func ProjectOfRow(a *Artifact) string { return projectOfArtifact(a) }
+
 func projectOfArtifact(a *Artifact) string {
 	if a == nil || a.Project == nil {
 		return ""
