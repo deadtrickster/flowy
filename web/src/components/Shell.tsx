@@ -211,7 +211,14 @@ export function Shell({ children }: { children: ReactNode }) {
             +
           </button>
         </div>
-        <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto">
+        {/*
+          NAMED, because "is this room in the sidebar" has to be asked of the
+          SIDEBAR. Every message in the overview's inbox card carries a link to
+          the room it was said in, so `a[href="/chat/general"]` matches dozens of
+          things on a busy node - and a check that asked the document rather than
+          this list could never see a room leave it.
+        */}
+        <div data-room-list="" className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto">
           {rooms.map((room) => (
             <div key={room} className="group relative flex items-center">
               <NavLink to={`/chat/${room}`} className={cn(navClass, "flex-1 pr-7")}>

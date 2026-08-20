@@ -63,12 +63,13 @@ try {
   const seen = async () => {
     try {
       const state = await page.evaluate(() => ({
-        rooms: document.querySelectorAll('a[href^="/chat/"]').length,
+        rooms: document.querySelectorAll('[data-room-list] a[href^="/chat/"]').length,
+        chatLinksAnywhere: document.querySelectorAll('a[href^="/chat/"]').length,
         closers: document.querySelectorAll("[data-close-room]").length,
         closedBlock: document.querySelectorAll("[data-closed-rooms]").length,
         head: document.body.innerText.slice(0, 120).replace(/\s+/g, " "),
       }));
-      return `\n  the page had ${state.rooms} rooms, ${state.closers} close controls, ${state.closedBlock} closed-lists; body starts ${JSON.stringify(state.head)}`;
+      return `\n  the sidebar had ${state.rooms} rooms and ${state.closers} close controls, ${state.chatLinksAnywhere} chat links on the whole page, ${state.closedBlock} closed-lists; body starts ${JSON.stringify(state.head)}`;
     } catch {
       return "\n  the page could not be read at all";
     }
@@ -76,7 +77,14 @@ try {
   await page.addInitScript((t) => localStorage.setItem("flowy.token", t), token);
   await page.goto(`${base}/`, { timeout: 20_000 }).catch(() => {});
 
-  const link = page.locator(`a[href="/chat/${room}"]`);
+  // ASKED OF THE SIDEBAR, NOT THE DOCUMENT. The overview's inbox card links
+  // every message to the room it was said in, so on a busy node
+  // `a[href="/chat/general"]` matches dozens of elements and the room can never
+  // "leave the page". Measured in the gate: 122 chat links against 72 rooms in
+  // the list - the extra fifty were inbox entries, and this check had been
+  // waiting for all of them to disappear.
+  const list = page.locator("[data-room-list]");
+  const link = list.locator(`a[href="/chat/${room}"]`);
   await link
     .first()
     .waitFor({ state: "visible", timeout: 20_000 })
@@ -100,11 +108,32 @@ try {
     }
     await back.click();
     await page
-      .waitForFunction((r) => !!document.querySelector(`a[href="/chat/${r}"]`), room, {
-        timeout: 10_000,
-      })
+      .waitForFunction(
+        (r) => !!document.querySelector(`[data-room-list] a[href="/chat/${r}"]`),
+        room,
+        { timeout: 10_000 },
+      )
       .catch(() => die(`#${room} was already closed and would not reopen${why()}`));
   }
+
+  // WAIT FOR THE INBOX CARD TO FILL FIRST, so this check meets the hard case
+  // every time instead of sometimes. The overview lists every message you may
+  // read, each linking to the room it was said in - so once the card is full
+  // there are many `a[href="/chat/<room>"]` on the page and only ONE of them is
+  // the sidebar's. Measured here: 13 links to /chat/general, 1 in the sidebar.
+  //
+  // That is a race, and it is why this passed locally and failed in the gate:
+  // close the room before the card fills and a document-wide selector happens
+  // to be right; close it after, and it can never see the room leave. Waiting
+  // removes the luck from the check as well as from the assertion.
+  await page
+    .waitForFunction((r) => document.querySelectorAll(`a[href="/chat/${r}"]`).length > 1, room, {
+      timeout: 15_000,
+    })
+    .catch(() => {
+      // A room with nothing said in it never fills the card. That is a weaker
+      // fixture, not a failure - the assertions below still hold.
+    });
 
   const closer = page.locator(`[data-close-room="${room}"]`);
   // WAITED FOR, not counted once. When the room had to be reopened above, the
@@ -126,9 +155,13 @@ try {
   await closer.click();
 
   await page
-    .waitForFunction((r) => !document.querySelector(`a[href="/chat/${r}"]`), room, {
-      timeout: 10_000,
-    })
+    .waitForFunction(
+      (r) => !document.querySelector(`[data-room-list] a[href="/chat/${r}"]`),
+      room,
+      {
+        timeout: 10_000,
+      },
+    )
     .catch(async () =>
       die(`#${room} is still in the sidebar after it was closed${why()}${await seen()}`),
     );
@@ -136,7 +169,7 @@ try {
   // IT SURVIVES A RELOAD, which is the arm that says the node holds it.
   await page.reload({ timeout: 20_000 }).catch(() => {});
   await page.waitForTimeout(3000);
-  if ((await page.locator(`a[href="/chat/${room}"]`).count()) !== 0) {
+  if ((await page.locator(`[data-room-list] a[href="/chat/${room}"]`).count()) !== 0) {
     die(
       `#${room} came back after a reload - the preference did not reach the node${why()}${await seen()}`,
     );
@@ -153,9 +186,13 @@ try {
     .catch(() => die(`no way to reopen #${room}`));
   await back.click();
   await page
-    .waitForFunction((r) => !!document.querySelector(`a[href="/chat/${r}"]`), room, {
-      timeout: 10_000,
-    })
+    .waitForFunction(
+      (r) => !!document.querySelector(`[data-room-list] a[href="/chat/${r}"]`),
+      room,
+      {
+        timeout: 10_000,
+      },
+    )
     .catch(() => die(`#${room} did not come back when it was reopened`));
 
   if (crashes.length > 0) die(`the shell threw: ${crashes.join("; ")}`);
