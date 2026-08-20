@@ -71,7 +71,7 @@ var routeParams = map[string][]string{
 	"GET /api/inbox/readers":                     {},
 	"GET /api/inbox/tasks":                       {"limit", "state"},
 	"GET /api/inbox/unread":                      {"as", "room"},
-	"GET /api/inbox/wait":                        {"addressed", "as", "kind", "limit", "room", "window"},
+	"GET /api/inbox/wait":                        {"addressed", "as", "host", "kind", "limit", "pid", "room", "since", "window"},
 	"GET /api/lock":                              {"item", "target"},
 	"GET /api/repudiations":                      {},
 	"POST /api/artifact/{id}/origins":            {},

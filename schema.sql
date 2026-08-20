@@ -179,6 +179,37 @@ ALTER TABLE inbox_readers ADD COLUMN IF NOT EXISTS polls_in_flight int NOT NULL 
 -- true, so a client cannot invent a fourth state for the roster to render.
 ALTER TABLE inbox_readers ADD COLUMN IF NOT EXISTS waiter_kind text NOT NULL DEFAULT 'unknown';
 
+-- WHICH PROCESS the waiter is, so a repair can name it instead of hunting for
+-- it.
+--
+-- MEASURED, twice, on 2026-08-19: the documented repair for a dead waiter is
+-- `pkill -9 -f 'flowy inbox --as NAME'`, and it killed the shell that ran it -
+-- exit 144 - because the pattern matched the process evaluating the pattern.
+-- The same class cost another seat two wrong answers from pgrep the same night.
+-- A COMMAND LINE IS A NAME THAT ANYTHING CAN WEAR, including the search.
+--
+-- PID ALONE IS NOT AN IDENTITY EITHER, which is why there are three columns
+-- rather than one:
+--
+--   waiter_pid    the process id, as the waiter itself reported it
+--   waiter_since  its start time, from the OS rather than from the clock - a
+--                 pid is reused, so a stale pid can name a completely different
+--                 process and killing it is the pkill failure in a new costume.
+--                 pid plus start time is what /proc keeps and what makes the
+--                 pair unambiguous.
+--   waiter_host   the machine that owns the number. A pid from a federated
+--                 node's reader means nothing here, and a number that looks
+--                 actionable and is not is worse than no number.
+--
+-- Client-supplied, exactly as waiter_kind is: the node cannot see the process,
+-- only the process can say what it is. That makes it a CLAIM rather than a
+-- measurement, and it is safe as one because of what a reader does with it -
+-- checking the identity of a pid you were GIVEN is exact, where matching a
+-- pattern to FIND a process is what went wrong.
+ALTER TABLE inbox_readers ADD COLUMN IF NOT EXISTS waiter_pid   int;
+ALTER TABLE inbox_readers ADD COLUMN IF NOT EXISTS waiter_since timestamptz;
+ALTER TABLE inbox_readers ADD COLUMN IF NOT EXISTS waiter_host  text;
+
 -- Phase 10. The project registry: the row every project column points at.
 --
 -- A project used to be a free string. Nothing declared one and nothing checked

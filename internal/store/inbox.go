@@ -297,15 +297,24 @@ const (
 // reader label is what the listener chose to be called, which for an agent is
 // the name worth showing.
 type PresenceRow struct {
-	Principal string     `json:"principal"`
-	Project   string     `json:"project"`
-	Reader    string     `json:"reader"`
-	UserName  string     `json:"user_name"`
-	Attached  bool       `json:"attached"`
-	Kind      string     `json:"waiter_kind"`
-	State     string     `json:"state"`
-	LastPoll  *time.Time `json:"last_poll_at"`
-	Updated   time.Time  `json:"updated"`
+	Principal string `json:"principal"`
+	Project   string `json:"project"`
+	Reader    string `json:"reader"`
+	UserName  string `json:"user_name"`
+	Attached  bool   `json:"attached"`
+	Kind      string `json:"waiter_kind"`
+	State     string `json:"state"`
+	// Process is which process the waiter says it is, when it has said. It is
+	// how a repair names a listener instead of hunting for one: see
+	// waiterproc.go, and the two nights this fleet spent killing the shell that
+	// ran the pkill.
+	//
+	// Empty when the waiter has not claimed one or claimed an incomplete one -
+	// which is every waiter written before this existed, and is a real answer:
+	// "this one cannot be named, fall back to what you did before".
+	Process  WaiterProcess `json:"process,omitzero"`
+	LastPoll *time.Time    `json:"last_poll_at"`
+	Updated  time.Time     `json:"updated"`
 	// LastActed is when this seat last DID something - the newest event it
 	// authored, whatever room or row it was in. Nil when the log holds nothing
 	// for it.
@@ -411,6 +420,37 @@ func (d *DB) PollStart(ctx context.Context, p *Principal, name, kind string) {
 		    SET last_poll_at = now(), polls_in_flight = polls_in_flight + 1,
 		        waiter_kind = $3
 		  WHERE principal = $1 AND reader = $2`, readerKey(p), name, WaiterKindOf(kind))
+}
+
+// PollStartAs is PollStart with the waiter saying WHICH PROCESS IT IS, so a
+// repair can name it rather than hunt for it. See waiterproc.go for why a
+// command-line pattern is not an identity and what makes a pid one.
+//
+// Written on every poll rather than once at registration, deliberately: a
+// waiter that died and was replaced has a new pid, and a row still carrying the
+// old one is the stale-identity failure this exists to remove. The freshest
+// claim is the only one worth keeping, and it arrives with the freshest poll.
+//
+// An incomplete claim CLEARS the columns rather than leaving what was there. A
+// waiter that has stopped saying which process it is has, as far as anything
+// acting on this can tell, stopped being that process.
+func (d *DB) PollStartAs(ctx context.Context, p *Principal, name, kind string, proc WaiterProcess) {
+	if !proc.Complete() {
+		d.PollStart(ctx, p, name, kind)
+		_, _ = d.sql.ExecContext(ctx,
+			`UPDATE inbox_readers
+			    SET waiter_pid = NULL, waiter_since = NULL, waiter_host = NULL
+			  WHERE principal = $1 AND reader = $2`, readerKey(p), name)
+		return
+	}
+	// Swallowed for PollStart's reason: presence is observational, and a failed
+	// mark must not refuse a waiter its messages.
+	_, _ = d.sql.ExecContext(ctx,
+		`UPDATE inbox_readers
+		    SET last_poll_at = now(), polls_in_flight = polls_in_flight + 1,
+		        waiter_kind = $3, waiter_pid = $4, waiter_since = $5, waiter_host = $6
+		  WHERE principal = $1 AND reader = $2`,
+		readerKey(p), name, WaiterKindOf(kind), proc.Pid, proc.Since, proc.Host)
 }
 
 // PollEnd marks the poll leaving, however it left.
@@ -525,6 +565,9 @@ func (d *DB) Presence(ctx context.Context) ([]*PresenceRow, error) {
 		        split_part(r.principal, chr(31), 3) AS project,
 		        r.reader, coalesce(u.handle, ''),
 		        r.polls_in_flight > 0, r.waiter_kind, r.last_poll_at, r.updated,
+		        -- WHICH PROCESS SAID IT, so a repair names it instead of
+		        -- hunting for it. All three or none - see WaiterProcess.
+		        r.waiter_pid, r.waiter_since, r.waiter_host,
 		        -- WHEN THIS SEAT LAST DID SOMETHING, from the log rather than
 		        -- from the roster. The reader's own columns can only say that a
 		        -- waiter is alive; the events table is the only place that
@@ -595,9 +638,28 @@ func (d *DB) Presence(ctx context.Context) ([]*PresenceRow, error) {
 		p := &PresenceRow{}
 		var holdsPoll bool
 		var now time.Time
+		var pid sql.NullInt64
+		var since sql.NullTime
+		var host sql.NullString
 		if err := rows.Scan(&p.Principal, &p.Project, &p.Reader, &p.UserName,
-			&holdsPoll, &p.Kind, &p.LastPoll, &p.Updated, &p.LastActed, &now); err != nil {
+			&holdsPoll, &p.Kind, &p.LastPoll, &p.Updated,
+			&pid, &since, &host,
+			&p.LastActed, &now); err != nil {
 			return nil, fmt.Errorf("store: presence: %w", err)
+		}
+		// ALL THREE OR NONE, at the read as at the write: a pid without its
+		// start time is the ambiguity this exists to remove, and a pid without
+		// a host is a number somebody might act on from the wrong machine. A
+		// partial row answers nothing rather than answering half an identity.
+		if pid.Valid && since.Valid && host.Valid {
+			started := since.Time
+			p.Process = WaiterProcess{Pid: int(pid.Int64), Since: &started, Host: host.String}
+			// And through the same test the write used, so a row edited by hand
+			// - or written before the constraint existed - reaches the roster
+			// as nothing rather than as a pid of 0 somebody could read as real.
+			if !p.Process.Complete() {
+				p.Process = WaiterProcess{}
+			}
 		}
 		// Read through the same funnel it was written through, so a row from
 		// a database that predates the column - or one somebody edited by hand

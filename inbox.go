@@ -217,7 +217,13 @@ func (s *server) handleInboxWait(w http.ResponseWriter, r *http.Request) {
 	//
 	// A client that sends nothing is unknown, never tracked. WaiterKindOf is
 	// what makes that true whatever arrives here.
-	s.db.PollStart(r.Context(), p, name, q.Get("kind"))
+	// AND WHICH PROCESS IS ASKING, when it says. The waiter claims a pid, a
+	// start time and a host; the node stores them only as a complete set, and a
+	// repair names that process instead of matching a command line - which is
+	// how the documented pkill killed the shell running it, twice in one night.
+	// See store.WaiterProcessOf.
+	s.db.PollStartAs(r.Context(), p, name, q.Get("kind"),
+		store.WaiterProcessOf(q.Get("pid"), q.Get("since"), q.Get("host")))
 	defer s.db.PollEnd(r.Context(), p, name)
 
 	// The scan does NOT narrow to what will be handed over, and that is the
@@ -754,6 +760,25 @@ func waitOnInbox(ctx context.Context, client *http.Client, base, bearer, as, roo
 	// it first. It is constant for this process, so it is set here and not in
 	// the loop.
 	query.Set("kind", waiterKind())
+	// AND WHICH PROCESS THIS IS, for the same reason the kind is said and one
+	// step further: the kind tells a reader whether this waiter can wake
+	// anybody, and this tells them WHICH PROCESS TO ACT ON if it cannot.
+	//
+	// The documented repair has been `pkill -9 -f 'flowy inbox --as NAME'`, and
+	// on 2026-08-19 it killed the shell running it - twice, exit 144 - because
+	// the pattern matched the process evaluating the pattern. Four instances
+	// across three seats in one night, every one of them by somebody who had
+	// already written the lesson down. A command line is a name anything can
+	// wear; a pid with its start time is not.
+	//
+	// Constant for this process, so it is set once here rather than per poll.
+	// All three or none - see store.WaiterProcessOf, which discards a partial
+	// claim rather than storing half an identity.
+	if pid, since, host, ok := thisProcess(); ok {
+		query.Set("pid", pid)
+		query.Set("since", since)
+		query.Set("host", host)
+	}
 	if room != "" {
 		query.Set("room", room)
 	}
@@ -1116,4 +1141,36 @@ func (s *server) handleInboxReaderDelete(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": name})
+}
+
+// thisProcess is what this waiter says it is: its pid, when it started, and the
+// machine it runs on.
+//
+// THE START TIME COMES FROM THE OS, not from a clock reading taken here. A pid
+// is reused, so the pair (pid, start) is what tells this process from whatever
+// inherits its number later - and a start time this program invented at
+// launch would be a second opinion about the same fact, wrong across a restart
+// that reuses the pid within the same second.
+//
+// On Linux that is /proc/self/stat field 22, in clock ticks since boot. Rather
+// than parse it and add it to the boot time - two readings and an arithmetic
+// that is wrong by any skew between them - this reads the modification time of
+// /proc/self, which the kernel sets to the process's start and which needs no
+// conversion.
+//
+// EVERYTHING OR NOTHING. A claim missing any part is not made at all: half an
+// identity is not a weaker identity, it is a number somebody might act on
+// believing it names something it does not.
+func thisProcess() (pid, since, host string, ok bool) {
+	info, err := os.Stat("/proc/self")
+	if err != nil {
+		// Not Linux, or no procfs. Saying nothing is correct: a start time this
+		// process guessed would defeat the only thing it is carried for.
+		return "", "", "", false
+	}
+	name, err := os.Hostname()
+	if err != nil || strings.TrimSpace(name) == "" {
+		return "", "", "", false
+	}
+	return strconv.Itoa(os.Getpid()), info.ModTime().UTC().Format(time.RFC3339Nano), name, true
 }
