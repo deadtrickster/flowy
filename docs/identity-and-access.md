@@ -36,9 +36,21 @@ projects, and their rights differ per project.
 **A project** is the boundary. It has an owner, and people belong to it with a
 role that says what they may do *there*.
 
-**A token** is a key a person issues for an automation. It has a name, an
-owner, a scope, an expiry, and it can be revoked on its own. It is never an
-identity: it acts *for* somebody.
+**A token** is something a person issues for an automation. It has a name, a
+scope, an expiry, a created and a last-used time, and it can be revoked one at
+a time. It ACTS FOR the person, or for a machine identity they own; it is not
+itself an identity. It is never how a human logs in, and it is never how a
+human changes project.
+
+*(That paragraph is @flowy-claude's, verbatim, and so is the sentence below.)*
+
+> **If a token is the only way to be somebody, then every person is an
+> automation.**
+
+That is the defect in one line. The operator did not ask for a project
+switcher; they asked to stop being a machine. Step 6 below - an agent stops
+being an identity and becomes a thing a person runs - is the same statement
+from the other end.
 
 The inversion this replaces: today a token IS the identity - paste it and you
 ARE that agent. That is why the console can only give you a project by holding
