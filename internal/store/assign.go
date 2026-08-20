@@ -290,6 +290,17 @@ func (d *DB) AssignTodo(
 			"todo %s is carried by %s - a held row moves by naming its holder: pass expect:%s to take it over",
 			art.ID, claimed, claimed))
 	}
+	// AND CAN THE SEAT BEING HANDED THE WORK SEE IT. Every refusal above is
+	// about the caller; this is the only one about the party being named. See
+	// assignreach.go, including why "I cannot say" is not a refusal.
+	//
+	// Last, after the holder guard, so a caller taking a held row is told about
+	// the holder rather than about reach: the holder is the thing they can act
+	// on immediately, and two refusals for one call would make them fix the
+	// second problem first.
+	if err := d.assigneeCanReach(ctx, art, name); err != nil {
+		return nil, nil, err
+	}
 	// Written whenever it was asked for, including empty: the key being there at
 	// all is what says somebody decided, and what outranks a stale OWNER line in
 	// the body. See AssigneeOf.
