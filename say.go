@@ -124,6 +124,34 @@ func sayBody(rest []string) (string, error) { return bodyOrStdin(rest, "say", sa
 // with the wrong verb's help under it, which reads as the tool being confused
 // about what was asked.
 func bodyOrStdin(rest []string, verb, usage string) (string, error) {
+	// A LONE `-` MEANS STDIN, which is what it means to every tool that takes a
+	// body from a pipe: cat -, git apply -, kubectl apply -f -.
+	//
+	// MEASURED, and it is the reason this exists rather than a nicety. Four
+	// doors read a body this way - say, todo file, todo note, merge open - and
+	// `flowy say --url U - <<EOF` posted the literal string "-" as the message,
+	// exit 0, with the same success line and the same shape of id a real
+	// message gets. The heredoc on stdin was never read, because an argument
+	// was given and the argument wins.
+	//
+	// The damage on one evening, counted by reading the bodies back rather than
+	// by trusting the success line: six rows filed with a body of "-", two of
+	// them MERGE rows sitting in the queue carrying no evidence at all, every
+	// note written across four hours, and about ten messages in a room -
+	// including two corrections and a ruling. The operator spotted it before
+	// any of the four agents did, and asked twice.
+	//
+	// It survived because the failure is silent in BOTH directions: the writer
+	// sees success, and the reader sees a row that exists, has a title, and
+	// appears filed properly - a dash reads as a formatting artefact rather
+	// than as a missing body.
+	//
+	// ONLY A LONE DASH. `flowy say - hello` still says "- hello", because a
+	// dash among other words is a word. And a body that is genuinely one dash
+	// is still sayable, on stdin: printf -- '-' | flowy say.
+	if len(rest) == 1 && rest[0] == "-" {
+		rest = nil
+	}
 	if len(rest) > 0 {
 		return strings.Join(rest, " "), nil
 	}
