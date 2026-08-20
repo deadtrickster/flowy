@@ -5519,6 +5519,42 @@ a_dedup_is_a_directed_edge() {
 	printf 'a dedup names the survivor, and two rows cannot replace each other\n'
 }
 
+# AN ANSWER SAYS WHICH ROOM THE WORK IS IN, over the wire, from both doors.
+#
+# MEASURED before it did: GET /api/artifact/{id} answered room: null while
+# fields.room held "general", so every work row on the live node read as
+# roomless from every list door and a client could only group by room by
+# reaching into the fields blob. That is the same defect the project half had -
+# an answer that does not say what it is about.
+#
+# The room is the WORK boundary as distinct from the project, which is the
+# permission boundary, so every per-room projection reads this.
+an_answer_names_its_room() {
+	recall
+	local id
+	api POST "$TOKEN_A" "/api/chat/$ROOM_CLOSE/todo" \
+		"$(jq -nc '{title: "raised in a room and it says so", body: "filed by the gate"}')" || return 1
+	id="$(jqv .item.id)"
+
+	# The single-row read.
+	api GET "$TOKEN_A" "/api/artifact/$id" || return 1
+	want_eq "the row names the room it was raised in" "$(jqv .room)" "$ROOM_CLOSE" || return 1
+
+	# The list door, which is where a projection reads. This is the one that
+	# answered roomless for every row.
+	api GET "$TOKEN_A" "/api/artifacts?limit=200" || return 1
+	want_eq "and the list door says the same" \
+		"$(printf '%s' "$API_BODY" | jq -r --arg i "$id" '[.artifacts[] | select(.id == $i) | .room] | first')" \
+		"$ROOM_CLOSE" || return 1
+
+	# A row raised outside any room answers empty rather than inventing one -
+	# absent and "general" are different facts.
+	api POST "$TOKEN_A" /api/artifacts \
+		'{"type": "memory", "kind": "todo", "title": "raised out of nothing"}' || return 1
+	want_eq "a roomless row says no room" "$(jqv .room)" "" || return 1
+	printf 'an answer names its room, from the read door and the list door\n'
+}
+
 a_close_says_what_was_measured() {
 	recall
 	api POST "$TOKEN_A" "/api/chat/$ROOM_CLOSE/todo" \
@@ -12317,6 +12353,8 @@ check "one read says both what state a todo is in and who is carrying it" \
 say "a todo is finished"
 check "somebody who did not write a todo can close it, at both doors" \
 	a_todo_is_closed_by_somebody_who_did_not_write_it
+check "an answer names its room, from both doors" \
+	an_answer_names_its_room
 check "a close says what was measured, at both doors" \
 	a_close_says_what_was_measured
 check "a dedup names the survivor, and two rows cannot replace each other" \

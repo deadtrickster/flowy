@@ -1221,6 +1221,7 @@ func (d *DB) ListArtifacts(ctx context.Context, p *Principal, q ArtifactQuery) (
 		return nil, err
 	}
 	fillAssignee(out)
+	fillRoom(out)
 	fillCategory(out)
 	fillRaiser(out)
 	return out, nil
@@ -1240,6 +1241,26 @@ func fillAssignee(arts []*Artifact) {
 	for _, art := range arts {
 		if art != nil {
 			art.Assignee = AssigneeOf(art)
+		}
+	}
+}
+
+// fillRoom puts the room the work was raised in on the row itself, beside
+// Assignee and Category.
+//
+// It is fillAssignee one field along and for its reason: the facts a queue is
+// read by have to come back in one shape from one read. A reader that had to
+// dig `room` out of the fields blob is a reader that has to know the key, and a
+// second reader that spells it differently is the disagreement RoomOf exists to
+// prevent.
+//
+// The room is the WORK boundary - which board this is on - as distinct from the
+// project, which is the permission boundary. See 01M0E26T9T. Every per-room
+// projection reads this.
+func fillRoom(arts []*Artifact) {
+	for _, art := range arts {
+		if art != nil {
+			art.Room = RoomOf(art)
 		}
 	}
 }
@@ -1291,6 +1312,7 @@ func fillCategory(arts []*Artifact) {
 // because the caller has already made both by writing the row.
 func FillDerived(arts ...*Artifact) {
 	fillAssignee(arts)
+	fillRoom(arts)
 	fillCategory(arts)
 	fillRaiser(arts)
 }
@@ -1448,6 +1470,7 @@ func (d *DB) SearchArtifacts(ctx context.Context, p *Principal, q ArtifactQuery)
 		return nil, err
 	}
 	fillAssignee(found)
+	fillRoom(found)
 	fillCategory(found)
 	fillRaiser(found)
 	return out, nil
@@ -1495,6 +1518,7 @@ func (d *DB) ReadArtifact(ctx context.Context, p *Principal, id string, scopeAll
 		return nil, err
 	}
 	fillAssignee([]*Artifact{art})
+	fillRoom([]*Artifact{art})
 	fillCategory([]*Artifact{art})
 	fillRaiser([]*Artifact{art})
 	// And what has been learned about it since it was filed. It is on the

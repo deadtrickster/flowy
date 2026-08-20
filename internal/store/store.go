@@ -391,6 +391,39 @@ type Artifact struct {
 	// who never sees this name. Empty is a todo nobody has classified, which is
 	// legal and is most of the queue.
 	Category string `json:"category,omitempty"`
+	// Room is the chat room this was raised in, put beside Assignee and Category
+	// for their reason: the facts a queue is read by must come back in one shape
+	// from one read.
+	//
+	// IT IS THE WORK BOUNDARY, and that is why it belongs on the row rather than
+	// only in fields. A project says what a credential may reach; a room says
+	// which board a piece of work is on - see 01M0E26T9T. Every per-room
+	// projection the console draws, and every "which subproject is this",
+	// answers off this.
+	//
+	// MEASURED before it existed: GET /api/artifact/{id} answered room: null
+	// while fields.room held "general", so 251 of 251 work rows read as roomless
+	// from every list door, and a client could only group by room by reaching
+	// into the fields blob and knowing the key. That is the same defect the
+	// project half had before bd8d84f - an answer that does not say what it is
+	// about.
+	//
+	// Derived at read time by RoomOf, exactly as Assignee and Category are: the
+	// value lives in fields, replicates there, and is projected onto the row by
+	// fillRoom for the readers that carry the permission filter. Nothing signs
+	// it here and nothing stores it twice.
+	//
+	// NOT omitempty, unlike Assignee and Category beside it, and the gate check
+	// on this commit is what forced the difference: with omitempty a roomless
+	// row simply has no `room` key, so "this row is in no room" and "this node
+	// does not report rooms" are the same bytes. My own check read null where it
+	// wanted "" and failed, which is the sixth instance in one night of an empty
+	// value and an absent one collapsing into one answer.
+	//
+	// The two beside it carry the older shape and are deliberately not changed
+	// here - they have readers, this field has none yet, and a wire change with
+	// consumers is a different row from a wire choice without them.
+	Room string `json:"room"`
 	// Raiser is WHO THE WORK CAME FROM, put beside Assignee for the reason
 	// Category is put beside Status: the queue is read by these facts together,
 	// and one of them living a level down in fields is how a client ends up
