@@ -4986,6 +4986,14 @@ the_queue_is_worked_from_a_shell() {
 		;;
 	esac
 
+	# THIS ROW WAS RAISED IN NO ROOM, and that is the second thing these arms
+	# measure: a guarded claim on a roomless row panicked the node and dropped
+	# the connection, because handleTodoAssign passes the nil claimHeardIn
+	# answers for such a row into ClaimTodo's variadic and a nil pointer in a
+	# slice is not an absent argument. The store test is
+	# TestAClaimWithANilEventToSayIsStillAClaim; this arm is what found it, from
+	# the outside, through the door a person uses.
+	#
 	# HANDING IT BACK, which is a different instruction from taking it and used
 	# to be spelled the same way. --as defaults to a sentinel rather than to the
 	# empty string, so an empty --as reaches the node as an empty assignee
@@ -4993,8 +5001,16 @@ the_queue_is_worked_from_a_shell() {
 	# resolved to the caller's own handle and claimed the row FOR them. An
 	# argument that silently did the opposite of what it said.
 	local put
-	put="$(FLOWY_AGENT='' FLOWY_ADDR="http://127.0.0.1:$HTTP_PORT" FLOWY_TOKEN="$TOKEN_A" \
-		"$ROOT/flowy" todo claim --id "$board" --as "" --expect "$HANDLE_A" 2>&1)" || return 1
+	# The output is CAPTURED AND PRINTED BACK ON FAILURE, which the arm above
+	# does not do and should. This check went red once with no detail at all -
+	# a bare `|| return 1` on a command whose stderr went into a variable - and
+	# reading that red cost a scratch node and a reproduction to learn what the
+	# node had already said in one sentence.
+	if ! put="$(FLOWY_AGENT='' FLOWY_ADDR="http://127.0.0.1:$HTTP_PORT" FLOWY_TOKEN="$TOKEN_A" \
+		"$ROOT/flowy" todo claim --id "$board" --as "" --expect "$HANDLE_A" 2>&1)"; then
+		printf 'putting a row back down was refused:\n%s\n' "$put" >&2
+		return 1
+	fi
 	api GET "$TOKEN_A" "/api/artifact/$board" || return 1
 	want_eq "put back down, so the row is unowned" "$(jqv .fields.assignee)" "" || return 1
 	# And it SAYS so. The line used to print the answer's assignee straight
@@ -5014,8 +5030,11 @@ the_queue_is_worked_from_a_shell() {
 	# An ABSENT --as still means the caller, which is the half that must not
 	# have moved: the sentinel exists to tell absent from empty, not to stop
 	# taking a row.
-	FLOWY_AGENT='' FLOWY_ADDR="http://127.0.0.1:$HTTP_PORT" FLOWY_TOKEN="$TOKEN_A" \
-		"$ROOT/flowy" todo claim --id "$board" --expect "" >/dev/null 2>&1 || return 1
+	if ! put="$(FLOWY_AGENT='' FLOWY_ADDR="http://127.0.0.1:$HTTP_PORT" FLOWY_TOKEN="$TOKEN_A" \
+		"$ROOT/flowy" todo claim --id "$board" --expect "" 2>&1)"; then
+		printf 'taking a released row back was refused:\n%s\n' "$put" >&2
+		return 1
+	fi
 	api GET "$TOKEN_A" "/api/artifact/$board" || return 1
 	want_eq "taken back by a claim that named nobody" "$(jqv .fields.assignee)" "$HANDLE_A" || return 1
 

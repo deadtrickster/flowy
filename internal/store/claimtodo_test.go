@@ -221,3 +221,51 @@ func TestRestatingYourOwnClaimIsNotARace(t *testing.T) {
 		t.Error("restating my own claim wrote a second entry")
 	}
 }
+
+// A CLAIM WITH NOTHING TO ANNOUNCE IS STILL A CLAIM.
+//
+// ClaimTodo takes its extra event as a variadic so that an ordinary claim stays
+// a one-argument decision, and the http door has exactly one *Event to hand
+// over - nil for a row raised in NO ROOM, where there is no conversation for
+// the handover to be announced in. It passed that nil unconditionally, and a
+// variadic cannot tell "I passed you nothing" from "I passed you one nothing",
+// so the slice held a nil POINTER and the writer dereferenced it: a panic
+// inside an http handler, the connection dropped, and the caller reading an EOF
+// with the trace on somebody else's box.
+//
+// What it cost: every compare-and-set claim - the mechanism that stops two
+// seats taking one row - was dead on any row filed off-board, which is most
+// rows filed from a shell. The plain assign one branch over was fine, because
+// AssignTodo takes said as a plain parameter where a nil means nothing to say.
+//
+// Driven through the same call shape the door makes rather than with an empty
+// variadic, because the empty one was never the broken case.
+func TestAClaimWithANilEventToSayIsStillAClaim(t *testing.T) {
+	ctx, db := open(t)
+	project := declaredProject(t, ctx, db, "claimtodo")
+	id := todoRow(t, ctx, db, project, "raised in no room")
+	me := &Principal{UserID: "01USER-ME", AgentID: "01AGENT-ME", Project: project}
+
+	var nothingToSay *Event
+	if _, _, err := db.ClaimTodo(ctx, me, id, "a-bench", "", nothingToSay); err != nil {
+		t.Fatalf("claiming a roomless row with nothing to announce: %v", err)
+	}
+	art, err := db.GetArtifact(ctx, id)
+	if err != nil {
+		t.Fatalf("reading it back: %v", err)
+	}
+	if got := AssigneeOf(art); got != "a-bench" {
+		t.Fatalf("who is carrying it is %q, want a-bench", got)
+	}
+
+	// And the release through the same door, which is the arm that found it.
+	if _, _, err := db.ClaimTodo(ctx, me, id, "", "a-bench", nothingToSay); err != nil {
+		t.Fatalf("putting it back down: %v", err)
+	}
+	if art, err = db.GetArtifact(ctx, id); err != nil {
+		t.Fatalf("reading it back: %v", err)
+	}
+	if got := AssigneeOf(art); got != "" {
+		t.Fatalf("it is still carried by %q after a release", got)
+	}
+}

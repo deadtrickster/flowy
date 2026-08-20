@@ -301,11 +301,8 @@ func (d *DB) WriteMemory(ctx context.Context, a *Artifact, events ...*Event) err
 		return fmt.Errorf("store: write memory: %w", err)
 	}
 	d.fillAt(a, at)
-	for i, e := range events {
-		if i == 0 {
-			e.SeqHLC = at
-		}
-		e.Artifact, e.Project = a.ID, a.Project
+	if err := stampEvents(a, at, events); err != nil {
+		return err
 	}
 
 	return d.inTx(ctx, "write memory "+a.ID, func(tx *sql.Tx) error {
@@ -417,6 +414,49 @@ func (d *DB) SetArtifactFieldsAndStatusIf(
 	return d.writeArtifactFields(ctx, a, fields, status, guard, events...)
 }
 
+// stampEvents puts the row's identity on every event of a write, and refuses a
+// nil one instead of dereferencing it.
+//
+// THE FIRST EVENT SHARES THE ROW'S READING, because it is the record OF this
+// write and the two are one point in the order. Any event after it is left
+// unstamped and takes the next reading in appendEvent, deliberately: a log
+// cursor is a seq_hlc and it is exclusive, so two events sharing one reading
+// are two events a page boundary can fall between - and the second of them
+// would then be skipped by every reader paging forwards, silently and
+// permanently.
+//
+// Each event's artifact and project are taken from the item rather than from
+// the caller, as WriteMemory takes them: an entry naming anything else would
+// not be a record of this write, and a projectless event is readable by its own
+// actor and nobody else (see EventFilterSQL) - which for a message announcing a
+// change to a room's plan is the room never hearing.
+//
+// A NIL EVENT IS A CALLER'S MISTAKE AND IT NOW SAYS SO. Three writers had this
+// loop copied out and all three dereferenced whatever they were handed, so one
+// nil in the slice was a panic inside an http handler: the caller read an EOF
+// with nothing to go on while the trace sat in a log on whichever box served
+// the request. Measured on 2026-08-20 - ClaimTodo takes its extra event as a
+// variadic, handleTodoAssign passed the nil that claimHeardIn answers for a row
+// raised in NO ROOM, and a variadic cannot tell "I passed you nothing" from "I
+// passed you one nothing". Every guarded claim on an off-board row crashed.
+//
+// One function rather than the fix written out three times: this loop is one
+// rule about how a write records itself, and three copies of it are three
+// places for the next rule to be added to only two.
+func stampEvents(a *Artifact, at int64, events []*Event) error {
+	for i, e := range events {
+		if e == nil {
+			return fmt.Errorf("store: write %s: event %d is nil - an absent "+
+				"event is no element, not a nil one", a.ID, i)
+		}
+		if i == 0 {
+			e.SeqHLC = at
+		}
+		e.Artifact, e.Project = a.ID, a.Project
+	}
+	return nil
+}
+
 // writeArtifactFields is the one path all three take: stamp the row, sign it,
 // stamp the events, write.
 //
@@ -461,24 +501,8 @@ func (d *DB) writeArtifactFields(
 	if err := d.signArtifact(ctx, d.sql, a); err != nil {
 		return err
 	}
-	// Each event's artifact and project are taken from the item rather than from
-	// the caller, as WriteMemory takes them: an entry naming anything else
-	// would not be a record of this write, and a projectless event is readable
-	// by its own actor and nobody else (see EventFilterSQL) - which for a
-	// message announcing a change to a room's plan is the room never hearing.
-	//
-	// The FIRST event shares the row's reading, because it is the record OF this
-	// write and the two are one point in the order. Any event after it is left
-	// unstamped and takes the next reading in appendEvent, deliberately: a log
-	// cursor is a seq_hlc and it is exclusive, so two events sharing one reading
-	// are two events a page boundary can fall between - and the second of them
-	// would then be skipped by every reader paging forwards, silently and
-	// permanently.
-	for i, e := range events {
-		if i == 0 {
-			e.SeqHLC = at
-		}
-		e.Artifact, e.Project = a.ID, a.Project
+	if err := stampEvents(a, at, events); err != nil {
+		return err
 	}
 	return d.setArtifactFields(ctx, a, status != "", guard, events...)
 }
@@ -599,14 +623,8 @@ func (d *DB) SetArtifactWordsIf(
 	if err := d.signArtifact(ctx, d.sql, a); err != nil {
 		return err
 	}
-	// The first event shares the row's reading and the rest take their own, for
-	// the reason written down in SetArtifactFields: two events under one reading
-	// are two events a page boundary can fall between.
-	for i, e := range events {
-		if i == 0 {
-			e.SeqHLC = at
-		}
-		e.Artifact, e.Project = a.ID, a.Project
+	if err := stampEvents(a, at, events); err != nil {
+		return err
 	}
 
 	return d.inTx(ctx, "set words of "+a.ID, func(tx *sql.Tx) error {

@@ -131,7 +131,32 @@ func (d *DB) ClaimTodo(
 	if err != nil {
 		return nil, nil, err
 	}
-	events := append([]*Event{entry}, said...)
+	// NIL-AS-VALUE IS NOT NO-VALUE, and a variadic makes them the same call.
+	//
+	// said is `...*Event` so that an ordinary claim stays a one-argument
+	// decision. handleTodoAssign has one `*Event` to hand over and passes it
+	// unconditionally - and claimHeardIn answers nil for a row raised in NO
+	// ROOM, because there is no conversation for the handover to be announced
+	// in. That nil arrives here as one element rather than as none, and
+	// writeArtifactFields dereferences every event it is given.
+	//
+	// MEASURED on a scratch node, three arms: a roomless row claimed with expect
+	// panicked the handler and dropped the connection; the same row raised in a
+	// room was fine; the same roomless row assigned WITHOUT expect was fine -
+	// AssignTodo takes said as a plain parameter one branch over, where a nil
+	// simply means nothing to say. So the compare-and-set claim, which is the
+	// whole mechanism stopping two seats taking one row, was dead on every row
+	// filed off-board.
+	//
+	// Dropped here rather than at the door: every caller of a variadic gets to
+	// decide whether it has something to pass, and a nil said means the same
+	// thing at all of them.
+	events := []*Event{entry}
+	for _, e := range said {
+		if e != nil {
+			events = append(events, e)
+		}
+	}
 	// A CLAIM OF NOBODY IS A RELEASE, and it moves both facts for AssignTodo's
 	// reason: an unowned row cannot be `active`, so this write takes it back to
 	// `todo` and says so in the log. It is here as well as there because a
