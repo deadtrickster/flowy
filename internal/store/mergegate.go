@@ -71,6 +71,48 @@ const RedAtField = "red_at"
 // written, and a note that tried to be the log would be a copy that rots.
 const RedNoteField = "red_note"
 
+// supersededByADeclaration is every field that describes a run a NEW declaration
+// replaces, named once so that clearing them and testing that they are cleared
+// read the same list.
+//
+// IT IS A SET AND NOT A SEQUENCE OF DELETES because of how it failed. The
+// deletes were written when the fields were GatedTip, the red, and the block.
+// GateNoteField arrived later, in a different file's neighbourhood, and joined
+// the verdict set without joining the rule that clears it - so a green count
+// outlived the verdict it described and was read as a green run by somebody
+// looking into a suspected stall. Nobody misread it: a count is the only thing
+// that field can mean.
+//
+// The one-line fix was adding it here. The durable fix is that there is a HERE:
+// a field that describes a run either appears in this list, and is cleared, or
+// is provably outside the set - and TestADeclarationClearsTheNoteWithTheVerdict
+// walks this same list rather than repeating it.
+//
+// WHAT IS DELIBERATELY NOT IN IT: GateRunField, which the declaration REPLACES
+// rather than clears - the row must say which run is measuring it now - and
+// GateAtField, which applyGate stamps for the same reason. GatedBaseField is
+// rewritten by the declaring path in setMergeGate, where the base is read.
+var supersededByADeclaration = []string{
+	// A tip left behind admits the branch on evidence a new run is in the
+	// middle of replacing. It also broke the verb in both directions: a re-gate
+	// never read as gating, since GatingAt refuses a row that already carries a
+	// tip - so on a moving master, where nearly every gate is a re-gate, the
+	// queue's only collision guard was silently off.
+	GatedTipField,
+	// A red left behind would outlive the run that found it and describe a tree
+	// this one is not measuring.
+	RedTipField,
+	RedAtField,
+	RedNoteField,
+	// The green count, for the same sentence as the red's.
+	GateNoteField,
+	// A skip is the strongest case: a declaration is somebody TAKING the row, so
+	// whatever stopped the last caller taking it has just been disproved.
+	BlockedWhyField,
+	BlockedAtField,
+	BlockedByField,
+}
+
 // GateNoteField is what a run said about a verdict that PASSED - the same
 // sentence red_note carries for one that did not, and absent for a declaration.
 //
@@ -163,19 +205,11 @@ func applyGate(fields map[string]any, run, tip string, now time.Time) bool {
 	// queue's only collision guard was silently off. And a re-gate of a flaky run
 	// on the SAME tip left the superseded verdict admitting the branch while its
 	// replacement was still measuring.
-	delete(fields, GatedTipField)
-	// AND SO DOES THE RED, for exactly that reason and no other. A declaration
-	// says the old evidence is being replaced; a red left behind would outlive
-	// the run that found it and describe a tree this one is not measuring.
-	delete(fields, RedTipField)
-	delete(fields, RedAtField)
-	delete(fields, RedNoteField)
-	// AND THE SKIP, which is the strongest case of the three: a declaration is
-	// somebody TAKING the row, so whatever stopped the last caller taking it has
-	// just been disproved. See mergeblocked.go.
-	delete(fields, BlockedWhyField)
-	delete(fields, BlockedAtField)
-	delete(fields, BlockedByField)
+	// EVERY FIELD THAT DESCRIBES THE REPLACED RUN, by the set rather than by a
+	// list somebody has to remember to grow. See supersededByADeclaration.
+	for _, field := range supersededByADeclaration {
+		delete(fields, field)
+	}
 	return true
 }
 
