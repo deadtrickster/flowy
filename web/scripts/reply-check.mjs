@@ -29,7 +29,8 @@
  *     control that scripts can focus and a person cannot tab to is not
  *     keyboard reachable;
  *   - the row is not announced as a control it no longer is;
- *   - and dragging across a body still cites exactly that span, which is a
+ *   - and a span selected in a body, then CITED with the control beside it,
+ *     quotes exactly that span - which is a
  *     deliberate feature and was never what the complaint was about.
  */
 
@@ -255,10 +256,22 @@ control is reachable and does nothing when it is used`);
   if (dragged.length === 0) {
     die("dragging across the last message selected no text, so nothing about citing was tested");
   }
+
+  // SELECTING IS COPYING; CITING IS A CONTROL. This check used to assert that
+  // the drag itself armed the citation - the operator, 2026-08-20: "why
+  // whenever i select message text here it automatically becomes a citation? I
+  // just wanted to copy it." The span citation below is the feature and it
+  // survives; what changed is the gesture that starts it.
+  if (await armed(page)) {
+    die(`dragging across ${JSON.stringify(dragged)} armed a citation on its own. Selecting is how a
+reader copies - citing is the control beside it.`);
+  }
+  await page.locator(`[data-cite="${lastId}"]`).first().click();
+  await page.waitForTimeout(200);
   const bySpan = await armed(page);
   if (!bySpan || bySpan.message !== lastId) {
-    die(`dragging across ${JSON.stringify(dragged)} armed ${JSON.stringify(bySpan)}: selecting
-text no longer cites the message it was selected in`);
+    die(`with ${JSON.stringify(dragged)} selected, pressing cite armed ${JSON.stringify(bySpan)}:
+the control no longer cites the message the selection is in`);
   }
   if (bySpan.whole || bySpan.text === lastBody) {
     die(`dragging over ${JSON.stringify(dragged)} cited the WHOLE of the message. A span citation

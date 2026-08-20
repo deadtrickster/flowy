@@ -302,10 +302,29 @@ ${shown}${errors}`);
     die(`the fixture selected ${JSON.stringify(selected.got)} rather than ${JSON.stringify(SPAN)}`);
   }
   await page.waitForTimeout(200);
+
+  // SELECTING IS NOT CITING, and this check used to assert the opposite.
+  //
+  // It armed the citation from onMouseUp, so a reader who dragged across a
+  // message to COPY it cited it instead - the operator, 2026-08-20: "why
+  // whenever i select message text here it automatically becomes a citation? I
+  // just wanted to copy it." The old assertion here pinned that behaviour as
+  // the contract, so the fix could not land without changing this line.
+  //
+  // WHAT THE CHECK IS ACTUALLY FOR SURVIVES UNCHANGED: a span selected in a
+  // RENDERED markdown body has to map to the right offsets in the RAW body -
+  // the arithmetic that differs by the two backticks. That is asserted below,
+  // through the control instead of through the drag.
+  if (await armed(page)) {
+    die(`selecting text armed a citation. Selecting is how a reader COPIES; citing is a control
+  they press - see MessageList's cite button and cite-gesture-check.mjs.`);
+  }
+  await page.locator(`[data-cite="${codeId}"]`).first().click();
+  await page.waitForTimeout(200);
   const bySpan = await armed(page);
   if (!bySpan || bySpan.message !== codeId) {
-    die(`selecting text inside a markdown body armed ${JSON.stringify(bySpan)} - selecting no
-  longer cites the message it was selected in`);
+    die(`pressing cite with a span selected armed ${JSON.stringify(bySpan)} - the control no
+  longer cites the message the selection is in`);
   }
   if (bySpan.whole) {
     die(`selecting ${JSON.stringify(SPAN)} cited the WHOLE message. Every body is markdown now,
@@ -345,10 +364,16 @@ ${shown}${errors}`);
   const crossed = await select(page, codeId, ACROSS);
   if (!crossed.ok) die(`could not select across the code span: ${crossed.why}`);
   await page.waitForTimeout(200);
+  // Through the control, like the span case above: selecting is copying now,
+  // and pressing cite is what arms. What is being measured here is unchanged -
+  // a selection that CANNOT be placed in the raw body still cites the message
+  // rather than citing nothing.
+  await page.locator(`[data-cite="${codeId}"]`).first().click();
+  await page.waitForTimeout(200);
   const byCrossing = await armed(page);
   if (!byCrossing || byCrossing.message !== codeId) {
-    die(`selecting across a code span armed ${JSON.stringify(byCrossing)} - a drag over a body
-  must always arm a reply at that body, whatever grain it ends up citing`);
+    die(`pressing cite with a selection across a code span armed ${JSON.stringify(byCrossing)} -
+  the control must always cite that body, whatever grain it ends up citing`);
   }
   if (!byCrossing.whole) {
     die(`selecting ${JSON.stringify(ACROSS)}, which appears nowhere in the raw body

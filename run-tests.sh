@@ -13127,6 +13127,28 @@ check "the roster draws what each listener can do, distinctly, in a browser" \
 	browser_shows_what_a_listener_can_do
 check "a typed URL is a link, and the mention beside it survives" \
 	a_typed_url_is_a_link
+# SELECTING TEXT IS NOT CITING IT, and the selection has to survive.
+#
+# The operator: "why whenever i select message text here it automatically
+# becomes a citation? I just wanted to copy it." Citing was armed from onMouseUp
+# on the message body, so copying and citing were one gesture.
+#
+# The second half is the one a fix breaks: holding the selection in state
+# re-renders the message, rewrites its innerHTML and destroys the highlight the
+# reader is holding - fixing citing by breaking copying. So the check asserts
+# both, and then that pressing the control still cites.
+citing_is_a_choice_and_the_selection_survives() {
+	recall
+	cd "$ROOT/web" || return 1
+	# The room the GFM check writes into, because it is the one with bodies in it
+	# at this point in the run. Pointing this at an empty room measured nothing and
+	# said so - "the room drew no message bodies" - which is the failure mode a
+	# check should have when its fixture is missing.
+	node scripts/cite-gesture-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" gfm
+}
+
+check "selecting text cites nothing, and pressing cite does" \
+	citing_is_a_choice_and_the_selection_survives
 check "every chat body renders as GFM, keeping its mentions and its span citations" \
 	every_chat_body_is_markdown
 check "an @name is drawn as a mention, in their colour, in a browser" \

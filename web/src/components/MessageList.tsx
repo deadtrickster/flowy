@@ -6,7 +6,7 @@ import { CitedMessage } from "@/components/CitedMessage";
 import { RowCard } from "@/components/RowCard";
 import { Badge } from "@/components/ui/badge";
 import { type FlowyEvent, type Reaction, isAgent } from "@/lib/api";
-import { type Selected, selectedSpan } from "@/lib/cite";
+import { selectedSpan } from "@/lib/cite";
 import { renderChat } from "@/lib/markdown";
 import { speakerStyle } from "@/lib/speakercolour";
 import { clock, cn, shortId, speaker } from "@/lib/utils";
@@ -619,18 +619,49 @@ export function MessageList({
                   mentions={event.meta?.mentions}
                   user={me?.user}
                   agent={me?.agent}
-                  onSelected={(span) => {
-                    // A selection that cannot be placed in the raw body cites
-                    // the whole message. Dragging across a body always arms a
-                    // reply at it; what varies is the grain.
-                    if ("whole" in span) onSelect(event);
-                    else if (onCite) onCite(event, span.start, span.end);
-                  }}
                 />
                 {event.meta?.attachments ? (
                   <AttachmentCards ids={event.meta.attachments.split(" ").filter(Boolean)} />
                 ) : null}
                 <div className="flex gap-2 pt-1 font-mono text-[11px] text-muted-foreground">
+                  {/*
+                    CITING IS A CHOICE, and it used to be a side effect of
+                    selecting. The operator: "why whenever i select message text
+                    here it automatically becomes a citation? I just wanted to
+                    copy it."
+
+                    onMouseUp on the body armed the citation, so copying and
+                    citing were ONE GESTURE and the common one got the rare
+                    one's behaviour.
+
+                    THIS BUTTON IS ALWAYS RENDERED AND HOLDS NO STATE, which is
+                    the whole design. Storing the selection when it is made
+                    would re-render the message, and this file's own comment on
+                    MessageBody records what that does: the innerHTML is written
+                    again and the reader's highlight is destroyed under their
+                    pointer. That would have broken copying while fixing citing.
+                    So nothing happens until the button is pressed, and the
+                    selection is read from the browser at that moment.
+                  */}
+                  <button
+                    type="button"
+                    data-cite={event.id}
+                    title="cite what you have selected in this message, or the whole message"
+                    className="cursor-pointer text-muted-foreground underline decoration-dotted hover:text-foreground"
+                    onClick={() => {
+                      const container = document.querySelector<HTMLElement>(
+                        `[data-body="${CSS.escape(event.id)}"]`,
+                      );
+                      const span = container ? selectedSpan(container, event.body) : null;
+                      // NOTHING SELECTED CITES THE WHOLE MESSAGE, which is what
+                      // pressing "cite" on a message plainly means, and is the
+                      // behaviour reply has always had.
+                      if (!span || "whole" in span) onSelect(event);
+                      else if (onCite) onCite(event, span.start, span.end);
+                    }}
+                  >
+                    cite
+                  </button>
                   <span>#{shortId(event.id)}</span>
                   <span>thread {shortId(event.thread)}</span>
                   {event.parents.length > 0 ? (
@@ -690,14 +721,12 @@ const MessageBody = memo(function MessageBody({
   mentions,
   user,
   agent,
-  onSelected,
 }: {
   id: string;
   body: string;
   mentions?: string;
   user?: string;
   agent?: string;
-  onSelected: (span: NonNullable<Selected>) => void;
 }) {
   const html = useMemo(
     () => ({ __html: renderChat(body, mentions, { user, agent }) }),
@@ -707,10 +736,6 @@ const MessageBody = memo(function MessageBody({
     <div
       data-body={id}
       className="report-body select-text break-words text-sm"
-      onMouseUp={(released) => {
-        const span = selectedSpan(released.currentTarget, body);
-        if (span) onSelected(span);
-      }}
       // The sanitizer is in lib/markdown, which is why
       // noDangerouslySetInnerHtml is off for this file in biome.json - the
       // rule cannot see through DOMPurify, and the comment cannot sit inside
