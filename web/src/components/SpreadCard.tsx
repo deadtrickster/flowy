@@ -95,7 +95,16 @@ export function SpreadCard() {
           <Count label="yours, not started" value={nag.mine_todo} />
           <Count label="stale" value={nag.stale} />
         </div>
-        {w.shares.length === 0 ? (
+        {/*
+          THE LIST DRAWS WHENEVER THERE IS ANYTHING TO SAY, and "nobody is
+          carrying any of it" is something to say. The first version of the
+          unowned row below was inside the else-branch of `shares.length === 0`,
+          so on a board where NOTHING is claimed - every row unowned, which is
+          the state this card is most needed for - it fell back to the old
+          sentence and drew no slice at all. Caught by the check, on a scratch
+          node with open 1, unowned 1, shares 0.
+        */}
+        {w.shares.length === 0 && w.unowned === 0 ? (
           <p className="text-muted-foreground text-sm">nobody is carrying anything</p>
         ) : (
           <ul className="flex flex-col gap-1">
@@ -124,6 +133,44 @@ export function SpreadCard() {
                 </span>
               </li>
             ))}
+            {/*
+              AND THE SLICE NOBODY IS CARRYING, which is usually the largest.
+
+              The operator, looking at this card: "why it doesnt sum up to
+              100%?" Every percentage was right - each is a seat's share of ALL
+              open rows - and the bars summed to 51% because the list draws
+              `shares`, which is per assignee, and nothing carried the 17
+              unowned rows that made up the rest.
+              
+              The tempting fix was to divide by the assigned rows instead so the
+              bars add up. That would double every seat and delete the fact
+              being asked about. The number was never wrong; the row was missing.
+
+              It is drawn as ABSENCE rather than as a seat: no name colour, a
+              hollow bar, because a pile of unclaimed work is not somebody's
+              load. The card exists to answer "is the work spread evenly" and
+              until now it could not express the answer that is true most of the
+              time - it is not spread at all, it is sitting there.
+            */}
+            {w.unowned > 0 ? (
+              <li
+                data-spread-unowned={w.unowned}
+                className="flex items-center gap-2 border-border border-t pt-1 text-sm"
+              >
+                <span className="w-36 shrink-0 truncate text-muted-foreground italic">nobody</span>
+                <span className="h-2 min-w-0 flex-1 rounded bg-muted">
+                  <span
+                    className="block h-2 rounded border border-muted-foreground/40 bg-transparent"
+                    style={{
+                      width: `${Math.min(100, (w.unowned / Math.max(1, w.open) / w.rebalance) * 100)}%`,
+                    }}
+                  />
+                </span>
+                <span className="w-20 shrink-0 text-right font-mono text-muted-foreground text-xs">
+                  {w.unowned} · {Math.round((w.unowned / Math.max(1, w.open)) * 100)}%
+                </span>
+              </li>
+            ) : null}
           </ul>
         )}
       </CardContent>
