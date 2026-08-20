@@ -199,12 +199,49 @@ func shortSHA(sha string) string {
 	return sha
 }
 
+// reasonWidth is what one queue line can spend on why a row is not moving. The
+// rest of the line is an id and a branch name, both of which the reader needs
+// to act at all.
+const reasonWidth = 60
+
+// firstLine is a reason cut to fit a queue line, in the direction that leaves
+// it actionable, and MARKED so that a reader can tell it was cut.
+//
+// IT USED TO CUT SILENTLY, AND FROM THE WRONG END. Measured on a row that sat
+// blocked for eleven minutes:
+//
+//	BLOCKED feat/a-person-belongs-to-projects is checked out in /tmp/cla
+//
+// Two separate failures in one line. Nothing says that stopped early, so it
+// reads as a whole sentence about a directory that does not exist and the
+// reader has no reason to look for more. And the sixty bytes it kept were the
+// branch name - which the same line already prints - and the boilerplate, so
+// the path, the only part anybody can act on, is what fell off the end.
+//
+// So THE MIDDLE GOES, not the end. Keeping only the tail was the first fix I
+// wrote and it was wrong at the other call site: a red note reads
+// "passed: 699 failed: 9 - FAIL the tui..." and there the useful half is at the
+// FRONT. The two reasons this prints put their meaning at opposite ends, so a
+// cut that picks an end is right for one of them and a regression for the
+// other. Eliding the middle is what every terminal does to a long path, for
+// this reason.
 func firstLine(s string) string {
 	if i := strings.IndexByte(s, '\n'); i >= 0 {
 		s = s[:i]
 	}
-	if len(s) > 60 {
-		s = s[:60]
+	s = strings.TrimSpace(s)
+	// Counted in RUNES, not bytes. The old cut sliced a byte index straight
+	// through whatever was there, and a path with a non-ASCII character in it
+	// would come out ending in a replacement glyph - a corrupted reason that
+	// still looks like a reason.
+	r := []rune(s)
+	if len(r) <= reasonWidth {
+		return s
 	}
-	return strings.TrimSpace(s)
+	// The ellipsis costs one of the budget and is the whole point: a cut nobody
+	// can see is worse than a shorter reason. The head keeps the larger half,
+	// because what a reason leads with is usually what names the failure.
+	head := (reasonWidth - 1 + 1) / 2
+	tail := reasonWidth - 1 - head
+	return strings.TrimRight(string(r[:head]), " ") + "…" + strings.TrimLeft(string(r[len(r)-tail:]), " ")
 }

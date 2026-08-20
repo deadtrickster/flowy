@@ -80,3 +80,69 @@ func TestARowSaysWhyItIsNotMoving(t *testing.T) {
 		t.Errorf("a multi-line note put a newline in one row: %q", long)
 	}
 }
+
+// A CUT REASON SAYS IT WAS CUT, AND KEEPS BOTH ENDS.
+//
+// The queue printed this for a row that then sat blocked for eleven minutes:
+//
+//	BLOCKED feat/a-person-belongs-to-projects is checked out in /tmp/cla
+//
+// Nothing there says the sentence stopped early, so it reads as a complete
+// reason about a directory that does not exist, and the path - the only part
+// anybody can act on - is gone.
+//
+// Both ends, because the two reasons this prints put their meaning at opposite
+// ends. A blocked reason finishes with the path. A red note begins with the
+// counts and the first failing test. Keeping either end alone fixes one of them
+// and breaks the other, which is what the first version of this fix did.
+func TestACutReasonSaysSoAndKeepsBothEnds(t *testing.T) {
+	blocked := rowLine(mergeQueueItem{
+		ID: "01H", Branch: "feat/a-person-belongs-to-projects",
+		Blocked: &mergeQueueBlocked{
+			Why: "feat/a-person-belongs-to-projects is checked out in /tmp/claude-1000/scratchpad/wt-member",
+		},
+	})
+	if !strings.Contains(blocked, "…") {
+		t.Errorf("a cut reason read %q, with nothing saying it was cut", blocked)
+	}
+	// The tail is the whole point of this one: a path a person can go and free.
+	if !strings.Contains(blocked, "wt-member") {
+		t.Errorf("a blocked row read %q, dropping the path it is blocked on", blocked)
+	}
+
+	red := rowLine(mergeQueueItem{
+		ID: "01I", Branch: "b",
+		Red: &mergeQueueRed{
+			Tip:  "c58abd2000",
+			Note: "passed: 699 failed: 9 - FAIL the tui, driven headless by the keyboard against the live node",
+		},
+	})
+	// And the head is the whole point of this one: what failed and how much.
+	if !strings.Contains(red, "passed: 699 failed: 9") {
+		t.Errorf("a red row read %q, dropping the counts it leads with", red)
+	}
+	if !strings.Contains(red, "…") {
+		t.Errorf("a cut note read %q, with nothing saying it was cut", red)
+	}
+
+	// A reason that fits is not touched - no ellipsis on a whole sentence, which
+	// would be the same lie in the other direction.
+	whole := rowLine(mergeQueueItem{
+		ID: "01J", Branch: "b",
+		Blocked: &mergeQueueBlocked{Why: "the lock is held"},
+	})
+	if strings.Contains(whole, "…") {
+		t.Errorf("a reason that fits read %q, marked as cut", whole)
+	}
+
+	// Counted in runes. Slicing a byte index through a multi-byte character
+	// leaves a replacement glyph, which is a corrupted reason that still looks
+	// like a reason.
+	wide := firstLine(strings.Repeat("é", 200))
+	for _, r := range wide {
+		if r == '�' {
+			t.Errorf("cutting a reason of wide characters produced %q", wide)
+			break
+		}
+	}
+}
