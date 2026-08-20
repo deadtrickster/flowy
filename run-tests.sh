@@ -225,20 +225,88 @@ check() {
 }
 
 # find_pg_bin locates initdb and pg_ctl, which Debian keeps off PATH.
+#
+# COUNTED on 2026-08-20: five hand-typed launches of this suite in one session,
+# each carrying the same preamble -
+#
+#	env PATH=$HOME/.local/pg17-bin:$PATH LD_LIBRARY_PATH=$HOME/.local/pg17-libs ./run-tests.sh
+#
+# and one of the five was typed without it. That run refused at preflight, ran
+# ZERO checks, and was read as a pass because the launcher's own trailing
+# `; echo rc=$?` reported the echo's status. A preamble that has to be right
+# every time is a thing the script already knows: the search below is exactly
+# where that knowledge belongs.
+#
+# FLOWY_PG_BIN OVERRIDES EVERYTHING AND IS NEVER SILENTLY IGNORED. An override
+# that falls through to a search when it is wrong is worse than no override: the
+# caller believes they chose the postgres and the suite chose another.
+#
+# A LOCAL BUILD USUALLY NEEDS ITS OWN LIBRARIES. An unpackaged postgres under
+# $HOME links against libicu and friends beside it rather than against the
+# system's, so the sibling libs directory goes on LD_LIBRARY_PATH here - which
+# is the other half of the preamble, and the half that fails at run time rather
+# than at preflight.
 find_pg_bin() {
 	local candidate
+
+	if [ -n "${FLOWY_PG_BIN-}" ]; then
+		if [ -x "$FLOWY_PG_BIN/pg_ctl" ] && [ -x "$FLOWY_PG_BIN/initdb" ]; then
+			printf '%s\n' "$FLOWY_PG_BIN"
+			return 0
+		fi
+		printf 'FLOWY_PG_BIN=%s has no initdb/pg_ctl in it\n' "$FLOWY_PG_BIN" >&2
+		return 1
+	fi
+
 	if candidate="$(command -v pg_ctl 2>/dev/null)"; then
 		dirname "$candidate"
 		return 0
 	fi
-	for candidate in /usr/lib/postgresql/*/bin /usr/pgsql-*/bin /usr/local/pgsql/bin; do
+	for candidate in /usr/lib/postgresql/*/bin /usr/pgsql-*/bin /usr/local/pgsql/bin \
+		"$HOME"/.local/pg*-bin "$HOME"/.local/pgsql/bin; do
 		if [ -x "$candidate/pg_ctl" ] && [ -x "$candidate/initdb" ]; then
 			printf '%s\n' "$candidate"
 			return 0
 		fi
 	done
-	printf 'no initdb/pg_ctl found; install postgresql\n' >&2
+	printf 'no initdb/pg_ctl found; install postgresql, or point FLOWY_PG_BIN at one\n' >&2
 	return 1
+}
+
+# pg_libs_for BIN - put that install's own libraries on the path, when it ships
+# them. $FLOWY_PG_LIBS wins; otherwise a sibling directory named for the bin one
+# with -libs, or a lib/ under the same prefix.
+#
+# CALLED FROM THE CURRENT SHELL, NEVER FROM INSIDE find_pg_bin. find_pg_bin runs
+# in a command substitution, so an export inside it dies with the subshell that
+# made it. The first cut did exactly that and the
+# environment line failed with "libxml2.so.2: cannot open shared object file"
+# while every variable involved looked right.
+#
+# Silent when there is nothing to add: a packaged postgres has its libraries
+# where the loader already looks, and exporting an empty LD_LIBRARY_PATH would
+# change how every other binary in this run resolves symbols.
+pg_libs_for() {
+	local bin=$1 libs
+	for libs in "${FLOWY_PG_LIBS-}" "${bin%-bin}-libs" "$(dirname "$bin")/lib"; do
+		if [ -n "$libs" ] && [ -d "$libs" ]; then
+			export LD_LIBRARY_PATH="$libs${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+			return 0
+		fi
+	done
+	return 0
+}
+
+# a_run_that_measured_nothing_is_not_a_pass PASSED FAILED - the result line's
+# rule, as a function so it can be checked rather than described.
+#
+# MEASURED: a launch without the postgres preamble refused at preflight and ran
+# zero checks. That run exited non-zero, correctly - but "passed: 0 failed: 0"
+# satisfies `[ "$failed" -eq 0 ]`, so any path that reaches the summary having
+# measured nothing would print a line indistinguishable from a full green run
+# and exit 0. A suite that measured nothing has not passed; it has not run.
+a_run_that_measured_nothing_is_not_a_pass() {
+	[ $(($1 + $2)) -gt 0 ]
 }
 
 # free_port prints the first port at or above $1 that nothing is listening on.
@@ -11850,6 +11918,16 @@ if [ "$(id -u)" -eq 0 ]; then
 	exit 1
 fi
 PG_BIN="$(find_pg_bin)"
+# In the CURRENT shell: find_pg_bin ran in a command substitution, so anything
+# it exported went with the subshell. The first cut called it in there and the
+# line below printed "libxml2.so.2: cannot open shared object file" while every
+# variable involved looked right.
+pg_libs_for "$PG_BIN"
+# AND ON PATH, because the suite calls psql, createdb and friends by bare name -
+# 91 checks into the first run without the preamble, `psql: command not found`.
+# Finding pg_ctl is not the same as being able to talk to the server it starts,
+# and the preamble was doing both jobs.
+export PATH="$PG_BIN:$PATH"
 printf 'go:       %s\n' "$(go version)"
 printf 'node:     %s (npm %s)\n' "$(node -v)" "$(npm -v)"
 printf 'postgres: %s\n' "$("$PG_BIN/postgres" --version)"
@@ -19737,6 +19815,67 @@ handoff_runner_refuses_without_config() {
 }
 
 check "no check in this suite can reach the live node" no_check_reaches_the_live_node
+# The suite's own two rules about ITSELF, checked rather than described.
+#
+# Both come from one measurement on 2026-08-20: a launch typed without the
+# postgres preamble refused at preflight, ran zero checks, and was reported as
+# green by the launcher around it.
+the_suite_refuses_to_call_nothing_a_pass() {
+	recall
+
+	# A RUN THAT MEASURED NOTHING HAS NOT PASSED. "passed: 0 failed: 0"
+	# satisfies a failed-is-zero test, and reads exactly like a full green run
+	# to anything grepping the summary.
+	if a_run_that_measured_nothing_is_not_a_pass 0 0; then
+		printf 'a run with no checks in it is being treated as a pass\n' >&2
+		return 1
+	fi
+	if ! a_run_that_measured_nothing_is_not_a_pass 1 0; then
+		printf 'a run that measured one check is being treated as no run\n' >&2
+		return 1
+	fi
+	if ! a_run_that_measured_nothing_is_not_a_pass 0 1; then
+		printf 'a run that measured one failure is being treated as no run\n' >&2
+		return 1
+	fi
+
+	# AND AN OVERRIDE IS NEVER SILENTLY IGNORED. FLOWY_PG_BIN pointed at a
+	# directory with no postgres in it must refuse and say so, not fall through
+	# to a search: a caller who believes they chose the postgres and got
+	# another one has a green run about the wrong build.
+	local empty="$WORK/no-postgres-here"
+	mkdir -p "$empty"
+	local out status=0
+	out="$(FLOWY_PG_BIN="$empty" find_pg_bin 2>&1)" || status=$?
+	if [ "$status" -eq 0 ]; then
+		printf 'FLOWY_PG_BIN=%s has no postgres in it and find_pg_bin answered %s\n' \
+			"$empty" "$out" >&2
+		return 1
+	fi
+	case "$out" in
+	*"$empty"*) ;;
+	*)
+		printf 'the refusal does not name the directory it was pointed at: %s\n' "$out" >&2
+		return 1
+		;;
+	esac
+
+	# And it FINDS the one this run is using, so the search that removed the
+	# preamble is exercised rather than assumed.
+	out="$(find_pg_bin)" || {
+		printf 'find_pg_bin cannot find the postgres this very run is using\n' >&2
+		return 1
+	}
+	if [ ! -x "$out/initdb" ]; then
+		printf 'find_pg_bin answered %s, which has no initdb in it\n' "$out" >&2
+		return 1
+	fi
+	printf 'a run that measured nothing is not a pass, and a wrong FLOWY_PG_BIN refuses rather than searching past it (found %s)\n' \
+		"$out"
+}
+
+check "the suite refuses to call a run of nothing a pass" \
+	the_suite_refuses_to_call_nothing_a_pass
 check "the repo's shell scripts are all found" shell_scripts_enumerated
 check "the repo's shell scripts parse" shell_scripts_parse
 check "the repo's shell scripts are shellcheck clean" shell_scripts_lint
@@ -19782,6 +19921,10 @@ if [ "$failed" -ne 0 ]; then
 	done
 fi
 printf 'passed: %d failed: %d\n' "$passed" "$failed"
+if ! a_run_that_measured_nothing_is_not_a_pass "$passed" "$failed"; then
+	printf 'FAIL: this run measured nothing - it did not pass, it did not run\n' >&2
+	exit 1
+fi
 [ "$failed" -eq 0 ] || exit 1
 
 # The tree that gets copied out has to be the tree that was tested, so the last
