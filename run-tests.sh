@@ -11437,6 +11437,29 @@ the_console_shows_a_token_its_own_readers() {
 	node scripts/readers-panel-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" "$quiet" "$live"
 }
 
+# THE OVERVIEW'S INBOX FOLLOWS THE LOG, AND DOES NOT SPIN WHILE IT IS QUIET.
+#
+# MEASURED 2026-08-20 (01M0EE7B3J): Home.tsx read /api/inbox inside a single
+# useEffect keyed on [token], with no timer anywhere in the file. The card was
+# fetched once per sign-in and never again, so an overview left open showed the
+# inbox as it stood at sign-in for as long as the tab lived. Not an expensive
+# poll - a silent staleness, on the surface an agent sits in front of.
+#
+# TWO ARMS, and the second is the one the row asks for by name: "verify by the
+# ABSENCE of polling, not by the presence of a call". A waiter that never acks
+# returns its page instantly every time, which is a flood wearing the shape of a
+# long poll - measured at 3161 requests in 40 seconds with the ack removed - so
+# the count is a RATE and the failure names the doors it came from.
+#
+# The count runs LONGER THAN ONE WINDOW on purpose. A 15-second count against a
+# 25-second window reads zero for a loop that is working and zero for a loop
+# that has died, which are the two states this arm exists to tell apart.
+the_overview_inbox_follows_the_log() {
+	recall
+	cd "$ROOT/web" || return 1
+	node scripts/inbox-follows-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" "$TOKEN_OP" general
+}
+
 tui_needs_a_token() {
 	local out
 	mkdir -p "$WORK/no-config"
@@ -18765,6 +18788,8 @@ check "node B survived the authorship checks" kill -0 "$NODE5B_PID"
 say "the terminal client"
 check "the tui reaches the node only through the HTTP API" tui_talks_only_to_the_api
 check "flowy tui refuses to start with no token anywhere" tui_needs_a_token
+check "the overview's inbox follows the log, and does not spin while it is quiet" \
+	the_overview_inbox_follows_the_log
 check "a wait with no subject, or with two, is refused" a_wait_with_no_subject_is_refused
 check "the queue's tip belongs to the project its answer names" \
 	the_tip_belongs_to_the_project_the_answer_names

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
 import { SpreadCard } from "@/components/SpreadCard";
@@ -6,7 +6,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { type FlowyEvent, api, isAgent } from "@/lib/api";
+import { isAgent } from "@/lib/api";
+import { useInboxFeed } from "@/lib/inboxfeed";
 import { useSession } from "@/lib/session";
 import { clock, shortId } from "@/lib/utils";
 
@@ -17,35 +18,20 @@ import { clock, shortId } from "@/lib/utils";
  * The inbox is the node's, not the console's: /api/inbox is everything you may
  * read and did not write, so what is listed here is exactly what the permission
  * filter allows and nothing has to be hidden after the fact.
+ *
+ * AND IT IS KEPT CURRENT. This page used to read it once, inside an effect
+ * keyed on [token] with no timer in the file, so an overview left open showed
+ * the inbox as it was at sign-in for as long as the tab lived. The read is not
+ * expensive; the staleness was silent, which is worse.
  */
 export function Home() {
   const { token, whoami } = useSession();
-  const [inbox, setInbox] = useState<FlowyEvent[]>([]);
-  const [error, setError] = useState<string | null>(null);
+  // THE CARD FOLLOWS THE NODE'S WAITER now, rather than being read once per
+  // sign-in and never again - see lib/inboxfeed.ts for why the waiter is the
+  // signal and the snapshot is still the content.
+  const { events: inbox, error } = useInboxFeed(token);
   const [room, setRoom] = useState("general");
   const navigate = useNavigate();
-
-  useEffect(() => {
-    if (!token) {
-      setInbox([]);
-      return;
-    }
-    let stopped = false;
-    api
-      .inbox()
-      .then((page) => {
-        if (!stopped) {
-          setInbox(page.events);
-          setError(null);
-        }
-      })
-      .catch((err: Error) => {
-        if (!stopped) setError(err.message);
-      });
-    return () => {
-      stopped = true;
-    };
-  }, [token]);
 
   return (
     <div className="h-full overflow-y-auto p-6">

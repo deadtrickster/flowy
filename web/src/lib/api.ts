@@ -1593,6 +1593,32 @@ export const api = {
    * the mark is the node's, and another tab - or the same person's other
    * browser - moves it.
    */
+  /**
+   * inboxWait blocks on the node until something is said to this reader, or the
+   * window runs out, and answers what landed.
+   *
+   * IT IS NOT SHAPED LIKE chatWait AND THE DIFFERENCE MATTERS. The room's
+   * waiter takes a cursor the client holds; this one takes a NAME and reads
+   * from a durable reader row the node keeps. The two words are the same and
+   * the mechanisms are not: a name is a cursor with one owner, so a second
+   * consumer of one name is a second writer of one mark.
+   *
+   * WHICH IS WHY THE CONSOLE USES ITS OWN LABEL and never an agent's. A browser
+   * waiting under `flowy-claude` would be handed the same page as the agent's
+   * own waiter and could ack past messages that seat had not finished with -
+   * a silent drop with nothing recording it.
+   *
+   * The mark does NOT move on delivery. inbox.go:274: "A waiter that is handed
+   * messages and dies before it has written them out has lost them permanently
+   * if the server counted the handover as delivery." So a caller that does not
+   * ack simply sees the same page again, which is the safe direction.
+   */
+  inboxWait: (as: string, window = 25, signal?: AbortSignal) =>
+    request<{ reader: string; events: FlowyEvent[]; skipped: number; cursor: number }>(
+      `/api/inbox/wait?as=${encodeURIComponent(as)}&kind=cursor&window=${window}`,
+      { signal },
+    ),
+
   inboxReaders: () => request<{ readers: InboxReader[] }>("/api/inbox/readers"),
 
   /**
