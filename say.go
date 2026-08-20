@@ -109,8 +109,60 @@ func sayCmd(args []string) error {
 	// person reads goes to stderr, which keeps stdout parseable for the same
 	// reason inbox writes JSONL there and its re-arm line here.
 	fmt.Println(said.ID)
-	fmt.Fprintf(os.Stderr, "said in #%s\n", *room)
+	fmt.Fprintln(os.Stderr, saidWhere(&said))
 	return nil
+}
+
+// saidWhere is the line a person reads after a message lands: where it went and
+// who said it, taken FROM THE NODE'S ANSWER rather than from what this process
+// intended.
+//
+// MEASURED, and it is the whole reason this is not `"said in #" + *room`. Two
+// messages were sent from this machine without a token in the environment. The
+// CLI fell back to ~/.config/flowy/token, which is an operator credential in
+// project "pa", and both printed `said in #general` and exited 0. They were
+// written as the operator into pa's #general. Every seat reads flowy's
+// #general, so nobody saw them - including the sender, who spent ten minutes
+// looking for them in the wrong room.
+//
+// A ROOM NAME IS NOT AN ADDRESS once there is more than one project, and there
+// are five with rows on this node. `#general` exists in every one of them. So
+// the line names the project as well, and it names the speaker, because those
+// are the two things that were wrong and neither was visible.
+//
+// FROM THE ANSWER, not from the request: `*room` is what was asked for and
+// `said.Room` is what was written. A line built from the request can only ever
+// describe the attempt, which is exactly how a message that went somewhere else
+// reads as one that arrived.
+func saidWhere(said *store.Event) string {
+	where := "#" + said.Room
+	if said.Project != nil && *said.Project != "" {
+		where = *said.Project + "/#" + said.Room
+	}
+	if who := speakerOf(said); who != "" {
+		return "said in " + where + " as " + who
+	}
+	return "said in " + where
+}
+
+// speakerOf is the name the node recorded for whoever wrote the event, falling
+// back to the actor id.
+//
+// The id is a poor thing to read and it is still worth printing: it is what the
+// node says the speaker IS, and an unfamiliar id in that line is precisely the
+// signal that the credential was not the one the caller meant. A blank there
+// would hide it.
+func speakerOf(said *store.Event) string {
+	var meta struct {
+		ActorName string `json:"actor_name"`
+	}
+	if len(said.Meta) > 0 {
+		if err := json.Unmarshal(said.Meta, &meta); err == nil &&
+			strings.TrimSpace(meta.ActorName) != "" {
+			return meta.ActorName
+		}
+	}
+	return said.Actor
 }
 
 // sayBody takes the message from the arguments, or from stdin when there are

@@ -213,13 +213,25 @@ func cliTodoFile(args []string) error {
 		var answer struct {
 			Item struct {
 				ID string `json:"id"`
+				// The project the node filed it into, for the line below. It
+				// is a pointer because a personal row has none.
+				Project *string `json:"project"`
 			} `json:"item"`
 		}
 		if err := call(http.MethodPost, base+"/api/chat/"+name+"/todo", bearer, payload, &answer); err != nil {
 			return err
 		}
 		id = answer.Item.ID
-		defer fmt.Fprintf(os.Stderr, "raised %s in #%s\n", id, name)
+		// WHERE IT WENT, from the node's answer rather than from the argument -
+		// see saidWhere in say.go for the evening this comes from. A room name
+		// is unique within a project and this node holds five, so "#general"
+		// names a room in every one of them and says nothing about which
+		// credential just wrote.
+		where := "#" + name
+		if answer.Item.Project != nil && *answer.Item.Project != "" {
+			where = *answer.Item.Project + "/#" + name
+		}
+		defer fmt.Fprintf(os.Stderr, "raised %s in %s\n", id, where)
 	} else {
 		payload, err := json.Marshal(map[string]any{
 			"type": store.MemoryType, "kind": "todo",
