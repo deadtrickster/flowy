@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import { DocumentPanes, documentRoom } from "@/components/DocumentPanes";
+import { RelatedRows } from "@/components/RelatedRows";
 import { ReproPanel } from "@/components/ReproPanel";
 import { RowNotes } from "@/components/RowNotes";
 import { SeverityDot, StateChip } from "@/components/StateMarks";
@@ -833,18 +834,7 @@ function FindingSection({ artifact }: { artifact: Artifact }) {
       {artifact.related && artifact.related.length > 0 ? (
         <div>
           <div className="pb-1 font-medium text-muted-foreground text-xs">related</div>
-          <div className="flex flex-wrap gap-1">
-            {/* No link, unlike replaced_by above: related is a bare id with
-                no ref beside it to build one from, and a link guessed out of
-                this artifact's own project/type is exactly the mistake
-                refPath (lib/api.ts) exists to refuse - it would as often as
-                not point at the wrong row. */}
-            {artifact.related.map((relatedId) => (
-              <Badge key={relatedId} variant="outline" className="font-mono" title={relatedId}>
-                {shortId(relatedId)}
-              </Badge>
-            ))}
-          </div>
+          <RelatedRows ids={artifact.related} />
         </div>
       ) : null}
 
