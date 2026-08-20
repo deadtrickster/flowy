@@ -4986,6 +4986,39 @@ the_queue_is_worked_from_a_shell() {
 		;;
 	esac
 
+	# HANDING IT BACK, which is a different instruction from taking it and used
+	# to be spelled the same way. --as defaults to a sentinel rather than to the
+	# empty string, so an empty --as reaches the node as an empty assignee
+	# instead of being indistinguishable from not passing --as at all - which
+	# resolved to the caller's own handle and claimed the row FOR them. An
+	# argument that silently did the opposite of what it said.
+	local put
+	put="$(FLOWY_AGENT='' FLOWY_ADDR="http://127.0.0.1:$HTTP_PORT" FLOWY_TOKEN="$TOKEN_A" \
+		"$ROOT/flowy" todo claim --id "$board" --as "" --expect "$HANDLE_A" 2>&1)" || return 1
+	api GET "$TOKEN_A" "/api/artifact/$board" || return 1
+	want_eq "put back down, so the row is unowned" "$(jqv .fields.assignee)" "" || return 1
+	# And it SAYS so. The line used to print the answer's assignee straight
+	# through, so a released row read " is carrying <id>" - a sentence with a
+	# hole where the name goes, which reads as a failed answer rather than as a
+	# free row.
+	case "$put" in
+	*"nobody is carrying"*) ;;
+	*)
+		printf 'a released row does not say nobody has it:
+%s
+' "$put" >&2
+		return 1
+		;;
+	esac
+
+	# An ABSENT --as still means the caller, which is the half that must not
+	# have moved: the sentinel exists to tell absent from empty, not to stop
+	# taking a row.
+	FLOWY_AGENT='' FLOWY_ADDR="http://127.0.0.1:$HTTP_PORT" FLOWY_TOKEN="$TOKEN_A" \
+		"$ROOT/flowy" todo claim --id "$board" --expect "" >/dev/null 2>&1 || return 1
+	api GET "$TOKEN_A" "/api/artifact/$board" || return 1
+	want_eq "taken back by a claim that named nobody" "$(jqv .fields.assignee)" "$HANDLE_A" || return 1
+
 	FLOWY_AGENT='' FLOWY_ADDR="http://127.0.0.1:$HTTP_PORT" FLOWY_TOKEN="$TOKEN_A" \
 		"$ROOT/flowy" todo "done" --id "$board" >/dev/null 2>&1 || return 1
 	api GET "$TOKEN_A" "/api/artifact/$board" || return 1

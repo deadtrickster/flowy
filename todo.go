@@ -50,6 +50,9 @@ The body, and a note's text, is the argument or stdin.
   --category  bug, feature, chore or question - the closed set the queue counts.
   --scope     who may read it (default project). A queue row only its author can
               read is not on the queue.
+  --as        on claim: who takes it, defaulting to this token's own handle.
+              "" or "nobody" puts the row back on the unowned pile, which is how
+              work is handed back rather than handed to somebody.
   --expect    on claim: who you read as carrying it just before you decided to
               take it, "" for a row nobody held. The write is then refused,
               naming whoever got there first, if the row moved in between - so
@@ -327,7 +330,24 @@ func cliTodoNote(args []string) error {
 func cliTodoClaim(args []string) error {
 	fs := flag.NewFlagSet("todo claim", flag.ContinueOnError)
 	id := fs.String("id", "", "the row to take")
-	as := fs.String("as", "", "who is taking it (default the token's own handle)")
+	// A SENTINEL, for the same reason --expect has one: absent and empty are
+	// different instructions here. Absent means "I am taking it" and resolves to
+	// the token's own handle. --as "" means nobody carries this.
+	//
+	// RELEASING WAS ALREADY POSSIBLE and this is not the feature - `--as nobody`
+	// has always worked, because NormalizeAssignee collapses every one of
+	// store.nobodyWords ("nobody", "none", "unowned", "-", "?", "tbd", "n/a",
+	// "unassigned") to the empty assignee. What was wrong is what the EMPTY
+	// STRING did: it was the flag's default, so `--as ""` was indistinguishable
+	// from not passing --as at all, and the door quietly asked the node who this
+	// token was and claimed the row FOR THE CALLER. The opposite of what was
+	// typed, with no refusal to read. Measured on a row I was carrying and wanted
+	// to hand back: it answered "flowy-claude is carrying" and left it mine.
+	//
+	// An argument that silently means its own opposite is worse than one that is
+	// not accepted, so the empty string now says what a reader would expect and
+	// the word stays as the readable spelling of it.
+	as := fs.String("as", "\x00", `who is taking it (default the token's own handle), "" for nobody`)
 	expect := fs.String("expect", "\x00", `who you read as carrying it, "" for nobody`)
 	url, token, agent := doorFlags(fs)
 	if err := fs.Parse(args); err != nil {
@@ -340,8 +360,10 @@ func cliTodoClaim(args []string) error {
 	if err != nil {
 		return err
 	}
+	// An EMPTY --as is a release and goes to the node as it was typed. Only an
+	// absent one asks the node who this token is.
 	who := strings.TrimSpace(*as)
-	if who == "" {
+	if *as == "\x00" {
 		// The token's own name, ASKED OF THE NODE rather than assembled here.
 		// A handle this side reconstructed is a claim about a seat nobody
 		// read, and the board is a place where the name is the whole of who
@@ -382,6 +404,14 @@ func cliTodoClaim(args []string) error {
 		return err
 	}
 	fmt.Println(*id)
+	// A RELEASED ROW SAYS SO. The node answers an empty assignee and the old
+	// line printed " is carrying <id>" - a sentence with a hole where the name
+	// goes, which reads as an answer that failed rather than as the row being
+	// free.
+	if strings.TrimSpace(answer.Item.Fields.Assignee) == "" {
+		fmt.Fprintf(os.Stderr, "nobody is carrying %s\n", *id)
+		return nil
+	}
 	fmt.Fprintf(os.Stderr, "%s is carrying %s\n", answer.Item.Fields.Assignee, *id)
 	return nil
 }
