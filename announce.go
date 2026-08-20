@@ -209,7 +209,9 @@ func (s *server) handleListAnnouncements(w http.ResponseWriter, r *http.Request)
 			serverError(w, r, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"announcements": list})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"announcements": announcementViews(p, list),
+		})
 		return
 	}
 
@@ -222,7 +224,7 @@ func (s *server) handleListAnnouncements(w http.ResponseWriter, r *http.Request)
 		serverError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"announcements": list})
+	writeJSON(w, http.StatusOK, map[string]any{"announcements": announcementViews(p, list)})
 }
 
 // readAnnouncement reads one announcement, answering the request itself when it
@@ -375,6 +377,70 @@ func (s *server) handleAckAnnouncement(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"quiesce": q, "event": event})
 }
 
+// mayResolve says whether this principal may close an announcement's window.
+//
+// THE OWNER, because an announcement is somebody's statement and a stranger
+// silencing it is the failure an owner rule prevents. That stays.
+//
+// AND THIS NODE'S OPERATOR, on a node-scope announcement, which is the half
+// that was missing. Measured 2026-08-20: the land-guard bypass at 01:19 sat as
+// an active severity=warning banner on every page for four hours, and the
+// operator - whose node it is, and who was the one looking at it - got 403 from
+// this door. The author was an agent, and an agent is not always running; a
+// node-wide banner whose only key is held by a process that may be gone is a
+// banner that stays up.
+//
+// It is not "anybody who can read it". For a shared announcement that is
+// everybody, and then the owner rule means nothing. Scope is what makes the
+// operator not a stranger here: a scope=node announcement is a statement ABOUT
+// this node, on every reader's screen, and the operator is the person answerable
+// for it. A project-scope one is still its author's.
+func mayResolve(p *store.Principal, a *store.Artifact) bool {
+	if p == nil {
+		return false
+	}
+	if a.OwnerUser == p.UserID {
+		return true
+	}
+	return p.Operator && store.IsLocalAnnouncement(a)
+}
+
+// resolveRefusal says which of the two ways in the caller has neither, rather
+// than "not the owner" at an operator who is not trying to be one.
+func resolveRefusal(a *store.Artifact) string {
+	if store.IsLocalAnnouncement(a) {
+		return "not the owner of " + a.ID + ", and not this node's operator"
+	}
+	return "not the owner of " + a.ID + " - only the owner resolves an announcement " +
+		"that is not node-scope, whatever else they are on this node"
+}
+
+// announcementView is an announcement plus what THIS reader may do with it.
+//
+// may_resolve is answered by the node rather than worked out in the browser.
+// The console drew no control at all before this - AnnouncementBanner's one
+// button was ack, and it renders only for an announcement that names a
+// resource, so a plain warning had no affordance of any kind. The fix is a
+// button, and a button that appears and then 403s is worse than no button: the
+// rule has two limbs and one of them is "is this token the operator of this
+// node", which nothing in a browser can know.
+//
+// The artifact is embedded, so every field a reader had before is still where
+// it was and this is one key more.
+type announcementView struct {
+	*store.Artifact
+	MayResolve bool `json:"may_resolve"`
+}
+
+// announcementViews is the list as this reader may act on it.
+func announcementViews(p *store.Principal, list []*store.Artifact) []announcementView {
+	out := make([]announcementView, 0, len(list))
+	for _, a := range list {
+		out = append(out, announcementView{Artifact: a, MayResolve: mayResolve(p, a)})
+	}
+	return out
+}
+
 // handleResolveAnnouncement closes the window: the change is done, the banner
 // clears.
 //
@@ -391,8 +457,8 @@ func (s *server) handleResolveAnnouncement(w http.ResponseWriter, r *http.Reques
 	if !ok {
 		return
 	}
-	if art.OwnerUser != p.UserID {
-		writeJSON(w, http.StatusForbidden, errorBody("not the owner of "+art.ID))
+	if !mayResolve(p, art) {
+		writeJSON(w, http.StatusForbidden, errorBody(resolveRefusal(art)))
 		return
 	}
 	if art.Status == store.AnnouncementResolved {

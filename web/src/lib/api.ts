@@ -1133,6 +1133,20 @@ export interface AnnouncementFields {
 
 export interface Announcement extends Artifact {
   fields?: AnnouncementFields;
+  /**
+   * Whether THIS reader may resolve it, decided by the node.
+   *
+   * Not worked out here, because the rule has two limbs and one of them is "is
+   * this token the operator of this node", which nothing in a browser knows.
+   * A resolve button that appears and then answers 403 is worse than no button
+   * - and no button is what this surface had: the only control was ack, and it
+   * renders solely for an announcement that names a resource, so a plain
+   * warning sat on every page with no affordance at all.
+   *
+   * Optional because a node built before this key answers without it, and the
+   * honest reading of "the node did not say" is not "you may".
+   */
+  may_resolve?: boolean;
 }
 
 /** Quiesce is what an announcement is still waiting for before it may resolve. */
@@ -2087,6 +2101,20 @@ export const api = {
   ack: (id: string) =>
     request<{ quiesce: Quiesce; event: FlowyEvent }>(
       `/api/announcement/${encodeURIComponent(id)}/ack`,
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" },
+    ),
+
+  /**
+   * resolve closes an announcement's window, which is what clears the banner.
+   *
+   * There is no dismiss and there should not be: what takes an announcement off
+   * the screen is the announcement's own state, not this browser's, so a reader
+   * who clears it clears it for everybody and the next reader is not told
+   * something the last one hid.
+   */
+  resolve: (id: string) =>
+    request<{ announcement: Announcement; quiesce: Quiesce | null }>(
+      `/api/announcement/${encodeURIComponent(id)}/resolve`,
       { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" },
     ),
 

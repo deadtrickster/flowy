@@ -18038,6 +18038,81 @@ the_banner_clears_when_the_announcement_is_resolved() {
 	render_room "a system agent may say quibblenock" "the store goes down at grumblewick"
 }
 
+# A NODE-WIDE BANNER ITS AUTHOR IS NOT THE ONLY KEYHOLDER FOR.
+#
+# resolve was owner-only, and the console drew no resolve control at all - its
+# one button is ack, which renders solely for an announcement that names a
+# resource. Measured 2026-08-20: a land-guard bypass recorded at 01:19 sat as an
+# active severity=warning on every page for four hours after the condition was
+# over, the operator asked how to hide it, and the honest answer was that they
+# could not: no button, and 403 from the door on their own node.
+#
+# The rule now has two limbs and this check is both of them plus the one that
+# must NOT move - an announcement that is not node-scope is still its author's,
+# whoever else the caller is on this node. Without that arm "the operator may
+# resolve" is indistinguishable from "the owner rule is gone".
+the_operator_may_take_down_a_node_wide_banner() {
+	recall
+	want_status 200 POST "$TOKEN_A_SYSTEM" /api/announcements \
+		'{"scope":"node","severity":"warning","title":"the flimberwock is unlatched",
+		  "body":"somebody who is not its author has to be able to clear this"}' || return 1
+	local node_ann project_ann
+	node_ann="$(jqv .announcement.id)"
+
+	# A project-scope one by the same author, which is the control: the operator
+	# is a stranger to it and stays one.
+	want_status 200 POST "$TOKEN_A_SYSTEM" /api/announcements \
+		'{"scope":"project","severity":"warning","title":"the quibberdash is somebody else business"}' ||
+		return 1
+	project_ann="$(jqv .announcement.id)"
+
+	# WHAT THE NODE TELLS EACH READER, before anybody presses anything. The
+	# browser cannot work this out - one limb of the rule is "is this token the
+	# operator of this node" - so it is answered per caller or the button is a
+	# guess.
+	api GET "$TOKEN_OP" /api/announcements || return 1
+	want_eq "the operator is told they may clear the node-wide one" \
+		"$(printf '%s' "$API_BODY" | jq -r '.announcements[] | select(.id == "'"$node_ann"'") | .may_resolve')" \
+		true || return 1
+	want_eq "and told they may not clear the project one" \
+		"$(printf '%s' "$API_BODY" | jq -r '.announcements[] | select(.id == "'"$project_ann"'") | .may_resolve')" \
+		false || return 1
+	api GET "$TOKEN_A" /api/announcements || return 1
+	want_eq "the owner may clear their own project one" \
+		"$(printf '%s' "$API_BODY" | jq -r '.announcements[] | select(.id == "'"$project_ann"'") | .may_resolve')" \
+		true || return 1
+
+	# THE OWNER RULE, WHERE IT STILL BINDS. Refused first, so a pass here is not
+	# a door that stopped refusing anybody.
+	want_status 403 POST "$TOKEN_OP" "/api/announcement/$project_ann/resolve" '{}' || return 1
+	want_eq "and it is still open" \
+		"$(scalar "SELECT status FROM artifacts WHERE id = '$project_ann'")" active || return 1
+
+	# And the node-scope one goes down under the operator, who did not write it.
+	want_status 200 POST "$TOKEN_OP" "/api/announcement/$node_ann/resolve" '{}' || return 1
+	want_eq "the status it left in" "$(jqv .announcement.status)" resolved || return 1
+
+	# Tidy the control away so the banner check below is not reading it.
+	want_status 200 POST "$TOKEN_A" "/api/announcement/$project_ann/resolve" '{}' || return 1
+	printf 'the operator cleared %s and was refused %s\n' "$node_ann" "$project_ann"
+}
+
+# AND THE BUTTON EXISTS, driven in a browser as the operator rather than as the
+# author. The rule reaching the door is half of it; a rule with no control in
+# front of it is what the four hours were.
+the_banner_offers_a_control_to_whoever_may_use_it() {
+	recall
+	want_status 200 POST "$TOKEN_A_SYSTEM" /api/announcements \
+		'{"scope":"node","severity":"warning","title":"the grumblewick has come loose",
+		  "body":"press resolve"}' || return 1
+	local ann
+	ann="$(jqv .announcement.id)"
+	cd "$ROOT/web" || return 1
+	node scripts/banner-resolve-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_OP" "$ann" || return 1
+	want_eq "and the row says so afterwards" \
+		"$(scalar "SELECT status FROM artifacts WHERE id = '$ann'")" resolved || return 1
+}
+
 # The quiesce protocol, under ack-required: only an answer clears the resource.
 an_ack_required_announcement_holds_its_resource() {
 	recall
@@ -18251,6 +18326,10 @@ check "the console banner shows an active announcement above the room" \
 	the_console_banner_shows_an_active_announcement
 check "and clears when it is resolved, with the window on the row" \
 	the_banner_clears_when_the_announcement_is_resolved
+check "the operator may take down a node-wide banner they did not write" \
+	the_operator_may_take_down_a_node_wide_banner
+check "and the banner offers the control to whoever may use it" \
+	the_banner_offers_a_control_to_whoever_may_use_it
 
 say "quiesce: the change waits for the people it is about to affect"
 check "an ack-required maintenance announcement holds its resource" \

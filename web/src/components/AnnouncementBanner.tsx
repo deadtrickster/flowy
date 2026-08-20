@@ -27,6 +27,19 @@ const TONE: Record<string, string> = {
  * empties: there is no "dismiss", because the state that clears it is the
  * announcement's own and not this browser's.
  *
+ * RESOLVE IS THAT STATE CHANGE, and until now this file described it and never
+ * offered it. The one button here was ack, which renders only for an
+ * announcement that names a resource - so a plain warning drew no affordance of
+ * any kind, and the land-guard bypass of 2026-08-20 sat at the top of every page
+ * for four hours after the condition it warned about was over. A banner nobody
+ * can clear is a banner people learn to look past, which spends the surface the
+ * next real warning needs.
+ *
+ * WHO SEES THE BUTTON IS THE NODE'S ANSWER. may_resolve rides each
+ * announcement; this draws the control when it is true and nothing when it is
+ * not. The rule is "the owner, or this node's operator on a node-scope
+ * announcement", and the operator limb is unknowable from a browser.
+ *
  * A read that fails renders nothing at all. A banner is a thing that appears
  * over the top of what somebody is doing, and one that appears to say it could
  * not read itself is worse than one that stays quiet - the room below it is
@@ -36,7 +49,9 @@ const TONE: Record<string, string> = {
 export function AnnouncementBanner() {
   const { token } = useSession();
   const [active, setActive] = useState<Announcement[]>([]);
-  const [acking, setAcking] = useState("");
+  // One busy id for both controls: a row has one button in flight at a time,
+  // and two pieces of state for one fact is two chances for them to disagree.
+  const [busy, setBusy] = useState("");
 
   const read = useCallback(async () => {
     if (!token) {
@@ -65,16 +80,37 @@ export function AnnouncementBanner() {
     };
   }, [read]);
 
+  /**
+   * Resolving is not undoable from here and it clears the banner for everybody,
+   * so a failure must not look like a success. The re-read below is what the
+   * button reports: if the node refused, the announcement is still in the list
+   * and still on screen, which is the honest answer without a second place to
+   * keep an error.
+   */
+  const resolve = useCallback(
+    async (id: string) => {
+      setBusy(id);
+      try {
+        await api.resolve(id);
+      } catch {
+        // The node's refusal stands and the re-read shows what is actually true.
+      }
+      setBusy("");
+      await read();
+    },
+    [read],
+  );
+
   const ack = useCallback(
     async (id: string) => {
-      setAcking(id);
+      setBusy(id);
       try {
         await api.ack(id);
       } catch {
         // The refusal is the node's answer and the quiesce is unchanged. The
         // re-read below shows whatever is actually true.
       }
-      setAcking("");
+      setBusy("");
       await read();
     },
     [read],
@@ -110,10 +146,27 @@ export function AnnouncementBanner() {
                 size="sm"
                 variant="outline"
                 className="ml-auto h-6"
-                disabled={acking === item.id}
+                disabled={busy === item.id}
                 onClick={() => void ack(item.id)}
               >
-                {acking === item.id ? "acking" : "ack"}
+                {busy === item.id ? "acking" : "ack"}
+              </Button>
+            ) : null}
+            {/*
+              ml-auto on whichever control is leftmost, so the buttons sit at
+              the end whether there is one of them or two.
+            */}
+            {item.may_resolve ? (
+              <Button
+                size="sm"
+                variant="outline"
+                data-announcement-resolve={item.id}
+                className={cn("h-6", resource ? "" : "ml-auto")}
+                disabled={busy === item.id}
+                onClick={() => void resolve(item.id)}
+                title="the condition this warns about is over - clears it for everybody, and keeps it as a resolved record"
+              >
+                {busy === item.id ? "resolving" : "resolve"}
               </Button>
             ) : null}
           </div>
