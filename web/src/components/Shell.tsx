@@ -45,6 +45,12 @@ function UnreadDot({ room, n }: { room: string; n: number }) {
   return (
     <span
       data-unread={room}
+      // THE EXACT COUNT, beside the one a person reads. The text is capped at
+      // "99+" so a badge cannot grow the row, and anything summing these from
+      // the text would quietly lose the difference the moment a room passed a
+      // hundred - which on this node is a Tuesday. The attribute is what the
+      // rail's own totals are checked against.
+      data-unread-count={n}
       className="ml-auto inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 font-mono text-[10px] text-primary-foreground"
     >
       {n > 99 ? "99+" : n}
@@ -60,6 +66,16 @@ export function Shell({ children }: { children: ReactNode }) {
   const { counts } = useUnread();
   // The node's rooms, not this file's idea of them. See useRooms.
   const { shown: rooms, hidden, close, reopen } = useRoomList();
+  // THE TWO TOTALS, summed from the same per-room counts the dots are drawn
+  // from - so a reader who sees the heading move can find the room it moved
+  // for, and the three numbers can never disagree with each other.
+  //
+  // Summed over `counts` itself rather than over the room lists, because the
+  // node answers with what it has unread and the sidebar's two lists are a
+  // VIEW of that: a room the reader closed still receives, and a room the list
+  // has not caught up with yet would silently drop out of the total.
+  const allUnread = Object.values(counts).reduce((sum, n) => sum + n, 0);
+  const hiddenUnread = hidden.reduce((sum, room) => sum + (counts[room] ?? 0), 0);
   // For the create button below: a new room is somewhere to go, not just a row
   // in the list, so it navigates rather than leaving you where you were.
   const navigate = useNavigate();
@@ -189,6 +205,29 @@ export function Shell({ children }: { children: ReactNode }) {
             rooms
           </span>
           {/*
+            THE GLOBAL UNREAD, and the operator placed it here: "we can have
+            global unread counter at the right of ROOMS".
+
+            EVERY room, closed ones included - their ruling, "global is global".
+            That keeps closing purely visual, which is what closing already
+            means: a fact about what a reader looks at and never about what the
+            node delivers. It also means this number can ship without waiting on
+            an ignore verb.
+
+            Absent at zero rather than a "0". A badge that clears is a badge
+            that is gone from the document, which is UnreadDot's rule above and
+            is what makes the element itself the assertion.
+          */}
+          {allUnread > 0 ? (
+            <span
+              data-rooms-unread={allUnread}
+              title={`${allUnread} unread across every room, closed ones included`}
+              className="ml-auto mr-1 rounded-full bg-primary px-1.5 font-mono text-[10px] text-primary-foreground tabular-nums"
+            >
+              {allUnread}
+            </span>
+          ) : null}
+          {/*
               CREATING A ROOM IS A BUTTON NOW. POST /api/rooms has existed since
               rooms became objects and nothing in this console called it, so the
               operator could read rooms and not make one - which reads as a
@@ -293,7 +332,28 @@ export function Shell({ children }: { children: ReactNode }) {
           */}
           {hidden.length > 0 ? (
             <details className="mt-1 px-2 text-muted-foreground text-xs" data-closed-rooms="">
-              <summary className="cursor-pointer py-1">{hidden.length} closed</summary>
+              {/*
+                AND THE CLOSED PILE CARRIES ITS OWN, the operator's second
+                ruling: "closed accordeon tiitlle can have closed counter".
+
+                It is what makes the global number readable. A total that never
+                reaches zero says nothing on its own; beside this one a reader
+                can see WHICH HALF the noise is in and decide whether to go and
+                look. Drawn as absence rather than as a room, because a pile of
+                closed rooms is not a place - it is what is not in front of you.
+              */}
+              <summary className="cursor-pointer py-1">
+                {hidden.length} closed
+                {hiddenUnread > 0 ? (
+                  <span
+                    data-closed-unread={hiddenUnread}
+                    title={`${hiddenUnread} unread in rooms you have closed`}
+                    className="ml-1 font-mono tabular-nums text-foreground"
+                  >
+                    · {hiddenUnread} unread
+                  </span>
+                ) : null}
+              </summary>
               {hidden.map((room) => (
                 <button
                   key={room}
