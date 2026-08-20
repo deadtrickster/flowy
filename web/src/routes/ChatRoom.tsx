@@ -595,7 +595,7 @@ export function ChatRoom() {
   }, [room]);
 
   const send = useCallback(
-    async (body: string, to: string) => {
+    async (body: string, to: string, attachments: string[]) => {
       const said = await api.say(
         room,
         body,
@@ -603,6 +603,7 @@ export function ChatRoom() {
         selected?.thread,
         to,
         cite,
+        attachments,
       );
       // The poll will bring it back anyway; showing it now is what makes the
       // box feel like it did something.
@@ -779,7 +780,13 @@ export function ChatRoom() {
           </div>
         ) : null}
 
-        <MessageBox citation={citation} clearReply={unpoint} disabled={!token} onSend={send} />
+        <MessageBox
+          citation={citation}
+          clearReply={unpoint}
+          disabled={!token}
+          onSend={send}
+          room={room}
+        />
       </section>
 
       {/*

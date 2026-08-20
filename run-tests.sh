@@ -11787,6 +11787,26 @@ a_closed_room_leaves_the_sidebar_and_stays_closed() {
 	node scripts/close-room-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" general
 }
 
+# THE OPERATOR SAID "no way to post a screenshot", and they were right - the
+# node has had POST /api/attachment and a message's meta.attachments for weeks,
+# and the console had no way to reach either.
+#
+# A screenshot is in the CLIPBOARD, not on disk. The print-screen key exists so
+# that you never name a file, so paste is the gesture this has to answer and a
+# file picker alone would have missed it. The check dispatches a real paste of a
+# real File at the real textarea: a control that works when called and not when
+# used is the failure worth catching.
+#
+# The last arm is the cheapest one to skip and the one that matters: the bytes
+# that come back are compared to the bytes that went in. base64 out of the page,
+# base64 into the node, a type sniffed in between - an image that arrives subtly
+# corrupted looks exactly like an image that arrived.
+a_screenshot_pasted_into_a_room_arrives_whole() {
+	recall
+	cd "$ROOT/web" || return 1
+	node scripts/paste-attach-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" general
+}
+
 tui_needs_a_token() {
 	local out
 	mkdir -p "$WORK/no-config"
@@ -19215,6 +19235,7 @@ check "the tui reaches the node only through the HTTP API" tui_talks_only_to_the
 check "flowy tui refuses to start with no token anywhere" tui_needs_a_token
 check "a room the reader closed leaves the sidebar, and stays closed" \
 	a_closed_room_leaves_the_sidebar_and_stays_closed
+a_screenshot_pasted_into_a_room_arrives_whole
 check "the inbox door answers the end of the log it is asked for" \
 	the_inbox_answers_the_end_it_is_asked_for
 check "the overview's inbox follows the log, and does not spin while it is quiet" \

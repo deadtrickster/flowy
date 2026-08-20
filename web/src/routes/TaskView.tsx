@@ -102,7 +102,7 @@ export function TaskView() {
   }, [token, id, load, clear]);
 
   const send = useCallback(
-    async (body: string) => {
+    async (body: string, _to: string, attachments: string[]) => {
       if (!task) return;
       const said = await api.say(
         ASSIGN_ROOM,
@@ -111,6 +111,7 @@ export function TaskView() {
         task.thread,
         undefined,
         cite,
+        attachments,
       );
       setEvents((current) => merge(current, [said]));
     },
@@ -191,6 +192,7 @@ export function TaskView() {
           clearReply={clear}
           disabled={!token || !task}
           onSend={send}
+          room={ASSIGN_ROOM}
         />
       </section>
 

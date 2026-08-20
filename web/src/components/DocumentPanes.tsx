@@ -157,7 +157,7 @@ export function DocumentPanes({ room, quote }: Props) {
   }, [room, token, loadTodos, clear]);
 
   const send = useCallback(
-    async (body: string, to: string) => {
+    async (body: string, to: string, attachments: string[]) => {
       const said = await api.say(
         room,
         body,
@@ -165,6 +165,7 @@ export function DocumentPanes({ room, quote }: Props) {
         selected?.thread,
         to,
         cite,
+        attachments,
       );
       // The poll brings it back anyway; showing it now is what makes the box
       // feel like it did something.
@@ -247,6 +248,7 @@ export function DocumentPanes({ room, quote }: Props) {
           disabled={!token}
           onSend={send}
           quote={quote}
+          room={room}
         />
       </section>
 

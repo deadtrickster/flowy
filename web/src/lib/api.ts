@@ -1586,6 +1586,7 @@ export const api = {
     thread?: string,
     to?: string,
     cite?: { message: string; start?: number; end?: number },
+    attachments: string[] = [],
   ) =>
     request<FlowyEvent>(`/api/chat/${encodeURIComponent(room)}/say`, {
       method: "POST",
@@ -1596,7 +1597,50 @@ export const api = {
         ...(thread ? { thread } : {}),
         ...(to ? { to } : {}),
         ...(cite ? { cite } : {}),
+        ...(attachments.length > 0 ? { attachments } : {}),
       }),
+    }),
+
+  /**
+   * MAX_ATTACHMENT is the node's ceiling, mirrored here so the refusal arrives
+   * before the bytes do. 4 MiB, from maxAttachment in mcp_attachments.go.
+   *
+   * Mirrored rather than asked for, and that is a real cost: two numbers that
+   * must agree. It buys the one thing a person actually notices - a phone photo
+   * refused instantly instead of after uploading eight megabytes of it - and the
+   * node still refuses on its own, with its own sentence, so the copy here is an
+   * optimisation and never the rule.
+   */
+  MAX_ATTACHMENT: 4 << 20,
+
+  /**
+   * writeAttachment puts bytes in the project and answers with the artifact.
+   *
+   * The bytes go up base64 because that is what the node stores and hands back
+   * byte for byte; a multipart form would be smaller on the wire and would have
+   * to be undone at both ends.
+   *
+   * content_type is what the CALLER believes, and the node records it as a
+   * claim and decides the real type from the bytes. So nothing here needs to be
+   * trusted, and the render path reads the node's answer rather than this.
+   */
+  writeAttachment: (a: {
+    content_base64: string;
+    title?: string;
+    filename?: string;
+    content_type?: string;
+    room?: string;
+    body?: string;
+  }) =>
+    request<{
+      item: Artifact;
+      size_bytes: number;
+      digest_sha256: string;
+      content_type: string;
+    }>("/api/attachment", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(a),
     }),
 
   /**
