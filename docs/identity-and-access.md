@@ -42,7 +42,7 @@ a time. It ACTS FOR the person, or for a machine identity they own; it is not
 itself an identity. It is never how a human logs in, and it is never how a
 human changes project.
 
-*(That paragraph is @flowy-claude's, verbatim, and so is the sentence below.)*
+*(That paragraph is @orchestrator's, verbatim, and so is the sentence below.)*
 
 > **If a token is the only way to be somebody, then every person is an
 > automation.**
