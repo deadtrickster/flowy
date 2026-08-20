@@ -186,6 +186,13 @@ func main() {
 			fmt.Fprintf(os.Stderr, "flowy fuse: %v\n", err)
 			os.Exit(1)
 		}
+	case "get":
+		// One door's answer on stdout, through the client that already exists -
+		// see get.go for the 414 hand-built curls that bought this verb.
+		if err := getCmd(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "flowy get: %v\n", err)
+			os.Exit(1)
+		}
 	case "queue":
 		// `queue wait` has outcomes rather than only a result, so its codes are
 		// mapped here beside inbox's for the same reason: a script must tell
