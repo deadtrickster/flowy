@@ -55,8 +55,24 @@ try {
   // And the page it reaches is the one that takes a handle, not the token box
   // again - a link that lands somewhere without a password field would satisfy
   // the URL and not the person.
-  if ((await page.locator('input[type="password"]').count()) === 0) {
-    console.error("the login page has no password field, so the link goes somewhere else");
+  //
+  // WAITED FOR, NOT COUNTED. The first version counted the field the instant
+  // waitForURL returned, and those are two different moments: the URL changes
+  // when the router accepts the navigation, and the form exists once React has
+  // rendered it. On an idle laptop that gap is invisible; in a gate running a
+  // browser suite beside a database it is wide enough to fail in, which is what
+  // it did - "the login page has no password field" against a Login.tsx that
+  // has had one since it was written (line 115, type="password").
+  //
+  // Same defect as the runner race fixed in internal/repro tonight: an
+  // assertion hung on a signal that fires before the thing being asserted.
+  const field = page.locator('input[type="password"]').first();
+  try {
+    await field.waitFor({ state: "visible", timeout: 10_000 });
+  } catch {
+    console.error(
+      `the login page has no password field after 10s, so the link goes somewhere else: ${page.url()}`,
+    );
     process.exit(1);
   }
 
