@@ -11807,6 +11807,22 @@ a_screenshot_pasted_into_a_room_arrives_whole() {
 	node scripts/paste-attach-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" general
 }
 
+# THE OPERATOR SAID "cursor doens change on hover" - about the close x above,
+# twenty seconds after it landed. The x was what they were pointing at; the
+# cause was the whole console. Tailwind v4's preflight sets no cursor at all
+# (the only cursor line in preflight.css is a comment about Safari spinners), so
+# every button falls back to the UA arrow, and web/src carried four
+# cursor-pointer classes against dozens of buttons.
+#
+# Asked of the browser's COMPUTED cursor rather than of index.css, because a
+# rule that is present in the source and dropped by the build - or beaten by a
+# more specific class - is exactly the failure a text grep calls a pass.
+every_control_acknowledges_the_pointer() {
+	recall
+	cd "$ROOT/web" || return 1
+	node scripts/pointer-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A"
+}
+
 tui_needs_a_token() {
 	local out
 	mkdir -p "$WORK/no-config"
@@ -19237,6 +19253,7 @@ check "a room the reader closed leaves the sidebar, and stays closed" \
 	a_closed_room_leaves_the_sidebar_and_stays_closed
 check "a screenshot pasted into a room arrives whole" \
 	a_screenshot_pasted_into_a_room_arrives_whole
+every_control_acknowledges_the_pointer
 check "the inbox door answers the end of the log it is asked for" \
 	the_inbox_answers_the_end_it_is_asked_for
 check "the overview's inbox follows the log, and does not spin while it is quiet" \

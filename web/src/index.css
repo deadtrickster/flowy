@@ -55,6 +55,18 @@
     height: 100%;
   }
 
+  /* A control the pointer does not acknowledge reads as decoration. Tailwind
+     v4's preflight stopped setting this - buttons fall back to the UA default,
+     which is an arrow - so every button in this console was silent under the
+     pointer, not just the one the operator happened to point at.
+
+     :not(:disabled) because a control that refuses the click should not invite
+     it, which is the same reason the disabled ones are dimmed. */
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+
   body {
     background-color: var(--color-background);
     color: var(--color-foreground);
