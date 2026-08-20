@@ -42,6 +42,17 @@
 # Both are checked in the environment section below, which says so and stops
 # rather than letting the failure surface later as something else.
 
+# HANDLE_A, HANDLE_B, HANDLE_OP, TOKEN_A and the rest are not assigned in this
+# file. They come from `$WORK/ids`, which `cmd/smoke seed` writes and this
+# script sources - see the `. "$WORK/ids"` lines below. shellcheck cannot follow
+# a source whose file does not exist until the run creates it, so it reads them
+# as possible misspellings. Silenced for the file rather than at each use
+# because there are dozens and the reason is the same for every one.
+#
+# Only SC2153, which is about a name that looks like another name. `set -u`
+# below is what actually catches an unassigned variable, and it names the
+# variable at its first use.
+# shellcheck disable=SC2153
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -1790,11 +1801,23 @@ all_three_doors_refuse_a_ref_in_the_same_words() {
 # FLOWY_AGENT is cleared deliberately - resolveToken prefers a named seat over
 # an explicit token, so a suite inheriting one from whoever ran it would be
 # testing somebody else's credential.
+# ITS OWN ROOM, because #general belongs to the chat checks.
+#
+# `merge open` defaults --room to general, and a filed branch is now HEARD in
+# the room it was filed into - so this fixture, which is about the shell verb
+# writing what the console writes, was putting a message into the room 69 other
+# checks read. Three of them count it: "messages in the room is 3, want 2".
+#
+# The counts are not what is wrong. A check that asserts a room holds exactly
+# the two messages it just said is asserting the room is otherwise empty, and
+# that assumption was always fragile - this is simply the first feature to break
+# it. Raising the expected numbers would bake the coupling in and hand the same
+# failure to whatever announces next. So the fixture stops sharing the room.
 a_branch_is_filed_for_the_queue_from_the_shell() {
 	recall
 	local id out
 	id="$(FLOWY_AGENT='' FLOWY_ADDR="http://127.0.0.1:$HTTP_PORT" FLOWY_TOKEN="$TOKEN_A" \
-		"$ROOT/flowy" merge open --branch feat/from-the-shell --assignee alice \
+		"$ROOT/flowy" merge open --branch feat/from-the-shell --assignee alice --room queue-fixture \
 		"filed from the shell to prove the verb writes what the console writes" 2>/dev/null)" || return 1
 	if [ -z "$id" ]; then
 		printf 'flowy merge open printed no id on stdout\n' >&2
@@ -1808,6 +1831,20 @@ a_branch_is_filed_for_the_queue_from_the_shell() {
 		printf 'the row is personal - nobody but its author can read it, including whatever lands it\n' >&2
 		return 1
 	fi
+
+	# AND THE ROOM HEARD IT, over HTTP, which is the whole of this feature and
+	# was only covered by a unit test on the sentence until now. The room is
+	# this fixture's own, so exactly one message is the right assertion rather
+	# than a fragile one - and the id has to be IN it, because two agents once
+	# took a thread id out of a raise notification, called the row doors with
+	# it, and read the 404 as a row that had gone away.
+	api GET "$TOKEN_A" /api/chat/queue-fixture || return 1
+	want_eq "messages in the room the branch was filed into" "$(chat_len)" 1 || return 1
+	if ! printf '%s' "$(jqv '.events[0].body')" | grep -qF "$id"; then
+		printf 'the filing announcement does not name the row: %s\n' "$(jqv '.events[0].body')" >&2
+		return 1
+	fi
+	want_eq "and it is threaded on the row" "$(jqv '.events[0].thread')" "$id" || return 1
 
 	# And the refusal, because a merge request with no branch is the one that
 	# sits in the queue looking like work nobody can do.
@@ -10550,6 +10587,10 @@ a_signature_that_is_not_the_principals_is_not_authorship() {
 	hlc="$((N5_ALICE_EPOCH + 131072))"
 	wrong="stranger-signed-$$-$(date +%s)"
 	right="alice-signed-$$-$(date +%s)"
+	# shellcheck disable=SC2016  # $i, $a and $h are jq variables, bound by --arg
+	# below. Expanding them in the shell would put the VALUES into the jq program
+	# text, where a quote or a backslash in an id would break the program rather
+	# than the comparison it is building.
 	row='{id: $i, type: "chat", project: "pb", room: "pb/bugs", thread: $i, parents: [],
 	      actor: $a, artifact: "", seq_hlc: $h, node: "nodeA", body: "the same words either way"}'
 
@@ -10595,6 +10636,8 @@ a_rewrite_of_what_somebody_wrote_is_refused() {
 	# The same row, her name, her project, one changed sentence, at a later
 	# reading - which is all last-writer-wins needs to make it the truth here
 	# and on every node downstream.
+	# shellcheck disable=SC2016  # jq variables again, bound by --arg below - see
+	# the same note a few checks up.
 	rewrite='{id: $i, type: "bug", project: "pa", owner_user: $a, visibility: "project",
 	          title: "the drainer stops", body: "actually it was operator error",
 	          hlc: $h, node: "nodeA", tombstone: false}'
