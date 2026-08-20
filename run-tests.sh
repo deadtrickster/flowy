@@ -18738,11 +18738,38 @@ server.serve_forever()
 	return 1
 }
 
+# GUARD_GIT is where this fixture's bypass traces go, and it exists so that they
+# do not go into the checkout the suite is running in.
+#
+# land-guard.sh writes its local trace to $GIT_DIR/flowy-bypass.log, falling back
+# to `git rev-parse --git-dir` from the working directory. guard_says runs the
+# real hook with the hatch on, from inside the repo - so every gate pass appended
+# a line to the REAL bypass log of whatever checkout it ran in. Measured
+# 2026-08-20: the drainer's checkout had three of them in one night, against one
+# genuine entry, and that log is read exactly once, by somebody who has found
+# master somewhere they did not put it. At that moment it was mostly records of
+# moves that never happened, under a login name rather than a seat, with no
+# reason - which is the shape a careless real bypass has. The two were told apart
+# only by noticing that "aaa" is not a sha.
+#
+# So the fixture gets a git-dir of its own, and what it writes there is ASSERTED
+# rather than discarded: the same line that stops the pollution turns a side
+# effect into a measurement. See the hatch arm in
+# the_land_guard_refuses_what_it_should.
+GUARD_GIT="$WORK/guard-git"
+GUARD_TRACE="$GUARD_GIT/flowy-bypass.log"
+# The words this fixture's own bypasses carry, so an assertion about them cannot
+# match anybody else's line.
+GUARD_REASON="driven by the suite, in a git-dir of its own"
+
 # guard_says runs the hook on one ref update and answers with its exit status.
 guard_says() {
 	local addr="$1" ref="$2" token="${3-}" off="${4:-on}"
+	mkdir -p "$GUARD_GIT" || return 1
 	printf 'aaa bbb %s\n' "$ref" |
 		env FLOWY_ADDR="$addr" FLOWY_TOKEN="$token" FLOWY_LAND_GUARD="$off" \
+			GIT_DIR="$GUARD_GIT" FLOWY_AGENT=a-gate \
+			FLOWY_LAND_GUARD_REASON="$GUARD_REASON" \
 			bash "$ROOT/scripts/land-guard.sh" prepared >/dev/null 2>&1
 	printf '%s' "$?"
 }
@@ -18807,6 +18834,29 @@ the_land_guard_refuses_what_it_should() {
 	# uninstalled the first time it is wrong at three in the morning.
 	want_eq "the override lets it through" \
 		"$(guard_says "$dead" refs/heads/master tok off)" 0 || return 1
+
+	# WHERE THE TRACE WENT, which used to be the repo this suite is running in.
+	grep -q "$GUARD_REASON" "$GUARD_TRACE" 2>/dev/null || {
+		printf 'the hatch left no trace in its own git-dir: %s\n' \
+			"$(cat "$GUARD_TRACE" 2>/dev/null)" >&2
+		return 1
+	}
+	# AND NOT IN THE REAL ONE. This is the assertion the change is for, and it
+	# is written against the checkout's OWN git-dir rather than against a path,
+	# because a worktree's is under .git/worktrees and a fixture that looked in
+	# $ROOT/.git would pass everywhere the bug actually happened.
+	local real
+	real="$(git -C "$ROOT" rev-parse --git-dir 2>/dev/null || true)"
+	case "$real" in
+	/*) ;;
+	?*) real="$ROOT/$real" ;;
+	esac
+	if [ -n "$real" ] && grep -q "$GUARD_REASON" "$real/flowy-bypass.log" 2>/dev/null; then
+		printf 'the suite wrote a bypass into the checkout it is running in: %s\n' \
+			"$real/flowy-bypass.log" >&2
+		return 1
+	fi
+	printf 'the hatch trace is in %s and not in the checkout\n' "$GUARD_TRACE"
 }
 
 # The half that matters: GIT ITSELF refuses. The checks above measure a script;
