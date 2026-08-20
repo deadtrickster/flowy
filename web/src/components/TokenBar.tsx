@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -12,7 +13,7 @@ import { shortId } from "@/lib/utils";
  * can see is whatever that token resolves to on the other end.
  */
 export function TokenBar() {
-  const { token, whoami, error, loading, signIn } = useSession();
+  const { token, whoami, error, loading, signIn, logOut } = useSession();
   const [draft, setDraft] = useState(token);
 
   return (
@@ -70,6 +71,39 @@ export function TokenBar() {
         )
       ) : null}
       {error ? <div className="text-destructive text-xs">{error}</div> : null}
+      {/*
+        THE WAY IN, WHERE SOMEBODY LOOKS FOR IT.
+        The operator, blocked: "fyi, i cant login because there is no login
+        page". There is - App.tsx routes /login and it renders - and NOTHING IN
+        THE CONSOLE LINKED TO IT. Measured: zero occurrences of to="/login"
+        across web/src. A page reachable only by typing its URL is a page the
+        person it was built for does not have.
+        Login.tsx's own comment carries why it exists: "i dont want to bother
+        with token. token is for api, not for me". So the box above stays for
+        the seats that need it, and this is the door for the person - two
+        credentials, and the console prefers neither.
+        Both directions, because being unable to LEAVE is the same defect one
+        step later: the link says log in when nobody is signed in, and log out
+        when somebody is.
+      */}
+      {whoami ? (
+        <button
+          type="button"
+          data-log-out=""
+          className="cursor-pointer text-left text-muted-foreground text-xs underline decoration-dotted hover:text-foreground"
+          onClick={() => void logOut()}
+        >
+          log out
+        </button>
+      ) : (
+        <Link
+          to="/login"
+          data-log-in=""
+          className="text-muted-foreground text-xs underline decoration-dotted hover:text-foreground"
+        >
+          log in with a handle and password
+        </Link>
+      )}
     </form>
   );
 }

@@ -13158,6 +13158,24 @@ browser_offers_the_projects_a_person_may_work_in() {
 
 check "the console offers the projects a person may work in" \
 	browser_offers_the_projects_a_person_may_work_in
+
+# THE WAY IN IS ON THE PAGE, not only at a URL.
+#
+# The operator, blocked at 17:5x: "fyi, i cant login because there is no login
+# page". There was - /login has rendered since Login.tsx was written - and
+# nothing in the console linked to it. Zero occurrences of to="/login" across
+# web/src, measured.
+#
+# The check CLICKS rather than navigating, because "GET /login renders" was true
+# the whole time somebody could not get in.
+browser_offers_a_way_in_and_a_way_out() {
+	recall
+	cd "$ROOT/web" || return 1
+	node scripts/way-in-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A"
+}
+
+check "a person can find the way in, and a seat can find the way out" \
+	browser_offers_a_way_in_and_a_way_out
 check "the console says which project this token writes in, in a browser" \
 	browser_says_which_project_this_token_is_in
 check "the roster draws what each listener can do, distinctly, in a browser" \
