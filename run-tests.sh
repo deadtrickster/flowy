@@ -11254,6 +11254,62 @@ a_wait_with_no_subject_is_refused() {
 	esac
 }
 
+# THE TIP IS ANSWERED FOR THE PROJECT THE ANSWER SAYS IT IS ABOUT.
+#
+# MEASURED on the live node 2026-08-20, nine landings after the same symptom was
+# noticed, explained and attributed to a fix that had already landed:
+#
+#   /api/merge-queue                -> target_tip bbb3c16, tip_from landed
+#   /api/merge-queue?project=flowy  -> target_tip 0d90d93
+#   git master                      -> 0d90d93
+#
+# `flowy queue` states no project, and so does every seat reading it, so the
+# line at the top of every queue read was wrong for nine landings. Not merely
+# stale: LandedTipOf tries [project, ""], an unstated project matches the old
+# UNKEYED merge_lands row first, and nothing has written that row since lands
+# became project-keyed. It could never be current again.
+#
+# THE FIXTURE IS BOTH ROWS, planted in SQL, because the defect only exists when
+# they disagree - and on a node with one project and one land they agree, which
+# is how it survived. The unkeyed row is what the live node still carries.
+#
+# The scope=all arm is the other half and it is not symmetrical: an operator
+# asking about every project is asking about rows from several, and there is no
+# single sha that is "the target" for all of them. tipFrom already has a word
+# for that, and saying nothing is the honest answer where it cannot say one
+# thing.
+the_tip_belongs_to_the_project_the_answer_names() {
+	recall
+	scalar "INSERT INTO merge_lands (project, target, tip, actor, landed_at)
+	        VALUES ('$PROJECT_A', 'gatetip', 'feedface', 'a', now())
+	        ON CONFLICT (project, target) DO UPDATE SET tip = excluded.tip" >/dev/null || return 1
+	# The legacy row, which is the one an unstated project used to match first.
+	scalar "INSERT INTO merge_lands (project, target, tip, actor, landed_at)
+	        VALUES ('', 'gatetip', 'deadbeef', 'a', now() - interval '2 days')
+	        ON CONFLICT (project, target) DO UPDATE SET tip = excluded.tip" >/dev/null || return 1
+
+	api GET "$TOKEN_A" '/api/merge-queue?target=gatetip' || return 1
+	want_eq "an unstated project takes the tip of the project the answer names" \
+		"$(jqv .target_tip)" feedface || return 1
+	want_eq "and the answer names it" "$(jqv .project)" "$PROJECT_A" || return 1
+
+	# A STATED PROJECT STILL WINS - the scope is the fallback, not an override.
+	api GET "$TOKEN_A" "/api/merge-queue?target=gatetip&project=$PROJECT_A" || return 1
+	want_eq "a stated project is unchanged" "$(jqv .target_tip)" feedface || return 1
+
+	# EVERY PROJECT AT ONCE IS NO SINGLE TARGET, so there is no tip to name.
+	api GET "$TOKEN_OP" '/api/merge-queue?target=gatetip&scope=all' || return 1
+	want_eq "scope=all names no tip" "$(jqv .target_tip)" "" || return 1
+	want_eq "and says why rather than leaving it to be inferred" "$(jqv .tip_from)" none || return 1
+	want_eq "and is not judged against one" "$(jqv .decided)" false || return 1
+
+	# ... unless the operator names one, which is a question with an answer.
+	api GET "$TOKEN_OP" "/api/merge-queue?target=gatetip&scope=all&project=$PROJECT_A" || return 1
+	want_eq "an operator who names a project gets that project's tip" \
+		"$(jqv .target_tip)" feedface || return 1
+	printf 'the tip follows the project the answer declares, and scope=all declares none\n'
+}
+
 # ALREADY TRUE ANSWERS AT ONCE. A waiter that blocks on a condition already met
 # is a race: the caller writes `flowy wait` after the command that satisfies it,
 # and the fast case is the one that hangs.
@@ -18685,6 +18741,8 @@ say "the terminal client"
 check "the tui reaches the node only through the HTTP API" tui_talks_only_to_the_api
 check "flowy tui refuses to start with no token anywhere" tui_needs_a_token
 check "a wait with no subject, or with two, is refused" a_wait_with_no_subject_is_refused
+check "the queue's tip belongs to the project its answer names" \
+	the_tip_belongs_to_the_project_the_answer_names
 check "a wait for what is already true answers at once" \
 	a_wait_for_what_is_already_true_answers_at_once
 check "a wait gives up inside its deadline, not a blocking read later" \

@@ -180,12 +180,59 @@ func (s *server) readMergeQueue(r *http.Request) (mergeQueueAnswer, error) {
 		// MergeAdmissible refused correct work for a reason that was not true.
 		// A fallback that answers confidently is worse than one that says
 		// nothing.
-		if landed, err := s.db.LandedTipOf(r.Context(), q.Get("project"), target); err == nil && landed != nil {
-			tip, tipFrom = landed.Tip, "landed"
-		} else if bs := strings.TrimSpace(buildStamp); bs != "" && bs != "src" {
-			tip, tipFrom = bs, "deployed"
-		} else {
+		// THE PROJECT THIS ANSWER SAYS IT IS ABOUT, not only the one the
+		// caller typed. handleMergeQueue stamps scope.Project onto the answer
+		// from answerScopeOf, which is the caller's own project unless
+		// ?scope=all was asked for - so the page ALREADY declares which project
+		// it is about, and reading the tip from the query parameter alone made
+		// two readings of one question that disagreed exactly when the
+		// parameter was absent.
+		//
+		// MEASURED 2026-08-20, nine landings after the note above was written
+		// and still true then:
+		//
+		//   /api/merge-queue                -> target_tip bbb3c16, tip_from landed
+		//   /api/merge-queue?project=flowy  -> target_tip 0d90d93
+		//   git master                      -> 0d90d93
+		//
+		// `flowy queue` states no project, and so does every seat reading it,
+		// so the line at the top of every queue read was wrong for nine
+		// landings. It was not merely stale: LandedTipOf tries [project, ""],
+		// an unstated project matches the OLD UNKEYED merge_lands row first,
+		// and nothing has written that row since lands became project-keyed. It
+		// could never become current again.
+		//
+		// This is NOT "default to the caller's project", which would answer a
+		// different question quietly - and that objection was raised and is
+		// what led here. The page is single-project because the permission
+		// filter already made it so, and bd8d84f made it say which one; this
+		// reads what the page has already decided about itself.
+		//
+		// AND ?scope=all DECLARES NO PROJECT, so it declares no tip. An
+		// operator asking for everything is asking about rows from several
+		// projects, and there is no single sha that is "the target" for all of
+		// them - so the honest answer is the one tipFrom already has a word
+		// for. Saying nothing where it cannot say one thing.
+		// A STATED PROJECT STILL WINS. The scope is what to use when the
+		// caller named none; a caller who named one is asking about that one,
+		// and answering about their own instead would be the quiet substitution
+		// this change exists to remove, committed in the other direction.
+		scope := answerScopeOf(r, p)
+		forTip := strings.TrimSpace(q.Get("project"))
+		if forTip == "" {
+			forTip = scope.Project
+		}
+		switch {
+		case scope.All && strings.TrimSpace(q.Get("project")) == "":
 			tipFrom = "none"
+		default:
+			if landed, err := s.db.LandedTipOf(r.Context(), forTip, target); err == nil && landed != nil {
+				tip, tipFrom = landed.Tip, "landed"
+			} else if bs := strings.TrimSpace(buildStamp); bs != "" && bs != "src" {
+				tip, tipFrom = bs, "deployed"
+			} else {
+				tipFrom = "none"
+			}
 		}
 	}
 
