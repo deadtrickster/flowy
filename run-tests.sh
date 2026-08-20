@@ -58,6 +58,9 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 ROOT="$PWD"
+# Where the suite runs. check() puts the directory back here if something moved
+# it, so a stray call reports as itself instead of as every later test.
+SUITE_PWD="$PWD"
 
 # ONE SUITE PER MACHINE, AND THE SUITE IS WHAT ENFORCES IT.
 #
@@ -204,10 +207,29 @@ indent() { sed 's/^/     /'; }
 
 # check <name> <command...> - runs the command, prints PASS or FAIL with its
 # output, and keeps the tally.
+#
+# IT ALSO NOTICES WHEN SOMETHING RAN OUTSIDE IT. A test's own `cd` is contained,
+# because the command runs inside $( ) - a subshell. A registration written as a
+# BARE CALL is not, and one of those cost a whole gate run: a function that does
+# `cd "$ROOT/web"` was inserted after the CONTINUATION line of the preceding
+# check, where it looked exactly like its neighbours, and it moved the suite's
+# own directory. Nine later tests failed on relative paths, the report named the
+# tui block, and none of it was about the change under test.
+#
+# So the directory is compared before each check and PUT BACK. The first check
+# after the stray call says what happened, once, and the rest of the suite runs
+# where it is supposed to - the difference between one honest failure and nine
+# that point at the wrong file.
 check() {
 	local name="$1"
 	shift
 	local out status
+	if [ "$PWD" != "$SUITE_PWD" ]; then
+		printf 'FAIL the suite is running in %s, not %s\n' "$PWD" "$SUITE_PWD"
+		printf '%s\n' "something ran outside check() and changed the directory - look at the registration just above \"$name\", which is where a bare function call gets written by mistake. Directory restored; later tests are not to be trusted until this is fixed." | indent
+		failed=$((failed + 1))
+		cd "$SUITE_PWD" || return 1
+	fi
 	if out="$("$@" 2>&1)"; then
 		printf 'PASS %s\n' "$name"
 		if [ -n "$out" ]; then
@@ -11801,6 +11823,14 @@ a_closed_room_leaves_the_sidebar_and_stays_closed() {
 # that come back are compared to the bytes that went in. base64 out of the page,
 # base64 into the node, a type sniffed in between - an image that arrives subtly
 # corrupted looks exactly like an image that arrived.
+# The runner's own guard: a test's cd is contained because check runs it in a
+# subshell, and a BARE call is not. See scripts/stray-cd-check.sh for what that
+# cost and what this measures.
+a_stray_cd_reports_once() {
+	cd "$ROOT" || return 1
+	./scripts/stray-cd-check.sh run-tests.sh
+}
+
 a_screenshot_pasted_into_a_room_arrives_whole() {
 	recall
 	cd "$ROOT/web" || return 1
@@ -12021,6 +12051,12 @@ printf 'forge:    FLOWY_FORGE=mock, with a refusing gh at %s\n' "$WORK/bin/gh"
 # or missing build would be baked into the binary the rest of the run tests.
 
 say "console"
+# FIRST, because it is about the runner rather than the node. If check() has
+# stopped noticing a stray call, every number printed below it is worth less -
+# a gate run this morning reported nine failures in the tui block for a cause
+# eleven thousand lines away.
+check "a stray cd outside check() reports once, and the suite carries on" \
+	a_stray_cd_reports_once
 check "npm ci" npm_ci
 check "biome check web/" biome_check
 check "vite build" npm_build
