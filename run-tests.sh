@@ -11963,6 +11963,22 @@ the_spread_card_shows_the_unclaimed() {
 	node scripts/spread-unowned-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A"
 }
 
+# THE OPERATOR, TWICE: "no way to go from chat todo to full todo card", then "i
+# want a quick view for chat todo when I click on it - quick summary card + link
+# to the full todo card".
+#
+# The panel beside a conversation carried the id, the title, the status and the
+# assignee, and nothing else - so work raised out of a conversation was readable
+# there and nowhere else short of typing an id into a URL.
+#
+# THE CHECK RAISES TWO ROWS. With one, a link that always points at the first
+# todo in the list passes, and that is the bug worth catching.
+a_chat_todo_opens_where_it_sits() {
+	recall
+	cd "$ROOT/web" || return 1
+	node scripts/chat-todo-open-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" general
+}
+
 a_screenshot_pasted_into_a_room_arrives_whole() {
 	recall
 	cd "$ROOT/web" || return 1
@@ -19483,6 +19499,8 @@ check "a number in the rail means it is your turn, and the rest carry none" \
 	a_number_in_the_rail_means_it_is_your_turn
 check "the spread card accounts for every open row, unowned included" \
 	the_spread_card_shows_the_unclaimed
+check "a chat todo opens where it sits and links to its own full card" \
+	a_chat_todo_opens_where_it_sits
 check "a finding opens beside the list, and closing it leaves the list" \
 	a_finding_opens_beside_the_list
 check "a person can file a finding upstream from the console, and take it back" \
