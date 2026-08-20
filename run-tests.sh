@@ -86,14 +86,45 @@ if [ "$GATE_LOCK" != off ]; then
 		printf 'cannot open the gate lock at %s\n' "$GATE_LOCK" >&2
 		exit 2
 	}
+	# IT WAITS RATHER THAN REFUSING, and that is the whole of this change.
+	#
+	# COUNTED on 2026-08-19: one seat wrote
+	#     for i in $(seq 1 40); do ./run-tests.sh; grep ANOTHER SUITE && sleep 60; done
+	# eight times in one night, and the other two wrote their own versions. Every
+	# caller of a refusing lock writes the retry, each one gets the sleep, the
+	# cap and the give-up wrong differently, and none of them says anything while
+	# it waits. That fixed 40x60 cap silently abandons a gate after forty
+	# minutes and reports nothing at all.
+	#
+	# The lock already knows when it is free. flock -w does the waiting in one
+	# place, in the kernel, with no polling - so the loop disappears from every
+	# caller at once and the suite says what it is doing while it blocks.
+	#
+	# THE TIMEOUT IS LONG AND FINITE. Long, because a legitimate wait is one
+	# suite ahead of you and they take about five minutes each - a queue three
+	# deep is a quarter of an hour of honest waiting. Finite, because a lock
+	# held by something that died is a wait nobody ever ends, and this runs
+	# unattended in a drainer: at the deadline it says how long it waited and
+	# who held it, and exits 2 exactly as it did before. A caller that wants no
+	# wait at all sets FLOWY_GATE_WAIT=0 and gets the old refusal.
+	GATE_WAIT=${FLOWY_GATE_WAIT:-1800}
 	if ! flock -n 9; then
 		holder=$(cat "$GATE_LOCK" 2>/dev/null || true)
-		printf 'ANOTHER SUITE IS RUNNING ON THIS MACHINE%s\n' \
-			"${holder:+ (pid $holder)}" >&2
-		printf 'Two suites here take the same port and the second one measures the\n' >&2
-		printf 'first one node - red or green, whichever the borrowed answers give.\n' >&2
-		printf 'Wait for it, or FLOWY_GATE_LOCK=off if you mean to run two.\n' >&2
-		exit 2
+		if [ "$GATE_WAIT" != 0 ]; then
+			printf 'another suite is running%s - waiting up to %ss for the lock\n' \
+				"${holder:+ (pid $holder)}" "$GATE_WAIT" >&2
+		fi
+		if [ "$GATE_WAIT" = 0 ] || ! flock -w "$GATE_WAIT" 9; then
+			holder=$(cat "$GATE_LOCK" 2>/dev/null || true)
+			printf 'ANOTHER SUITE IS RUNNING ON THIS MACHINE%s\n' \
+				"${holder:+ (pid $holder)}" >&2
+			printf 'Two suites here take the same port and the second one measures the\n' >&2
+			printf 'first one node - red or green, whichever the borrowed answers give.\n' >&2
+			printf 'Waited %ss. Raise FLOWY_GATE_WAIT, or FLOWY_GATE_LOCK=off if you mean\n' "$GATE_WAIT" >&2
+			printf 'to run two.\n' >&2
+			exit 2
+		fi
+		printf 'lock acquired, starting\n' >&2
 	fi
 	printf '%s' "$$" >&9
 fi
