@@ -349,6 +349,24 @@ export interface Presence {
      * answer and not zero.
      */
     last_acted_at?: string | null;
+    /**
+     * WHICH PROCESS the waiter says holds this reader, so a repair can name it
+     * instead of hunting for it. Absent when the waiter has not claimed one,
+     * which is every waiter that predates the column - and that is a real
+     * answer rather than a missing one: this listener cannot be named, fall
+     * back to what you did before.
+     *
+     * The node cannot see the process, only the poll, so this is a CLAIM in
+     * the same standing as waiter_kind. It arrives all three parts or none:
+     * the pid alone is not an identity, because pids are reused, and the pid
+     * without its host is a number somebody might act on from the wrong
+     * machine.
+     */
+    process?: {
+      waiter_pid: number;
+      waiter_since: string;
+      waiter_host: string;
+    } | null;
     updated: string;
   }[];
 }

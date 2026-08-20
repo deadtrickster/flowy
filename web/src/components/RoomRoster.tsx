@@ -191,6 +191,7 @@ export function RoomRoster({ presence }: { presence: Presence | null }) {
                 >
                   {l.last_acted_at ? `acted ${ago(l.last_acted_at)}` : "never acted"}
                 </span>
+                <ProcessTag row={l} />
               </li>
             );
           })}
@@ -270,6 +271,7 @@ export function RoomRoster({ presence }: { presence: Presence | null }) {
                 >
                   {l.last_acted_at ? `acted ${ago(l.last_acted_at)}` : "never acted"}
                 </span>
+                <ProcessTag row={l} />
               </li>
             ))}
           </ul>
@@ -279,13 +281,71 @@ export function RoomRoster({ presence }: { presence: Presence | null }) {
       <div className="pt-1 text-muted-foreground text-[10px]">
         the node sees polling and writing, not processes - "acted" is the last thing this seat
         wrote, so a seat working without writing reads as silent, and a listener that stops is named
-        here as gone quiet rather than dropped, and a forked one hears the room with nothing to wake
+        here as gone quiet rather than dropped, and a forked one hears the room with nothing to
+        wake. a pid here is what the waiter SAID it is, on its last poll: check it before acting on
+        it, and never take one from a message - the pid changes every time a listener loop re-execs
       </div>
     </div>
   );
 }
 
 type Listener = Presence["listeners"][number];
+
+/**
+ * ProcessTag says WHICH PROCESS holds this reader, when the waiter has said.
+ *
+ * MEASURED, four times in one night across three seats: the documented repair
+ * for a dead waiter was `pkill -9 -f 'flowy inbox --as NAME'`, and twice it
+ * killed the shell that ran it - exit 144 - because the pattern matched the
+ * process evaluating the pattern. This is the field that makes the repair
+ * `kill <pid>`, and this is the only place somebody working from the console
+ * can read it.
+ *
+ * IT MATTERS MOST ON A ROW THAT WENT QUIET, which is the list people act on. A
+ * live seat is not being killed; a quiet one is.
+ *
+ * NOT SAID IS SAID IN WORDS. A waiter that predates the column and one that
+ * cannot be named are the same fact and mean the same thing - fall back to what
+ * you did before - so the row says "unnamed" rather than leaving a gap a reader
+ * could take for a rendering failure. This is the empty-and-absent collapse the
+ * fleet spent a night on, in its display form.
+ *
+ * THE PID IS A CLAIM WITH A SHELF LIFE. A listener loop re-execs per cycle, so
+ * the number changes every few minutes; the title says so, because a pid copied
+ * out of this pane and used ten minutes later is a name again, which is the
+ * failure the pid was introduced to end.
+ */
+function ProcessTag({ row }: { row: Listener }) {
+  const proc = row.process;
+  if (!proc || !proc.waiter_pid) {
+    return (
+      <span
+        data-listener-pid=""
+        title={
+          "this waiter has not said which process it is - either it predates the column or its " +
+          "claim was incomplete. There is nothing to kill by number here: fall back to finding it " +
+          "by hand, and remember that a pattern matches the process doing the searching"
+        }
+        className="shrink-0 text-muted-foreground"
+      >
+        unnamed
+      </span>
+    );
+  }
+  // Built above the markup rather than inside the attribute, because the rule
+  // wants one literal and one literal of this length is unreadable in JSX.
+  const why = `pid ${proc.waiter_pid} on ${proc.waiter_host}, started ${proc.waiter_since}. This is what the waiter said on its last poll, not what the node sees - check the pid still has that start time on that host before acting on it. The number changes every time the listener loop re-execs, so it is only good where you read it`;
+  return (
+    <span
+      data-listener-pid={String(proc.waiter_pid)}
+      data-listener-host={proc.waiter_host}
+      title={why}
+      className="shrink-0 font-mono text-muted-foreground tabular-nums"
+    >
+      pid {proc.waiter_pid}
+    </span>
+  );
+}
 
 /**
  * groupByPrincipal collapses rows of one identity and one kind onto one line,

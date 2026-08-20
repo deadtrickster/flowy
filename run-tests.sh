@@ -4173,7 +4173,12 @@ ROSTER_QUIET=roster-quiet
 # still stalled when the browser check reads it, because being SAID OUT LOUD on
 # the operator's own surface is the half of this that matters.
 ROSTER_STOPPED=roster-went-quiet
-readonly ROSTER_TRACKED ROSTER_FORKED ROSTER_QUIET ROSTER_STOPPED
+# The pid the tracked reader claims. A fixed, absurd number rather than a real
+# one: this must never be a pid on the machine running the gate, because the
+# whole point of the field is that somebody reads it and kills it.
+ROSTER_PID=4194303
+ROSTER_HOST=roster-check-host
+readonly ROSTER_TRACKED ROSTER_FORKED ROSTER_QUIET ROSTER_STOPPED ROSTER_PID ROSTER_HOST
 
 # presence_kind NAME - what /api/presence says that listener can do. Not listed
 # at all and listed with no kind are two different failures, and a jq default
@@ -4186,6 +4191,19 @@ presence_kind() {
 		 | if length == 0 then "<not listed>" else (.[0].waiter_kind // "<no kind on the row>") end'
 }
 
+# presence_process NAME FIELD - one part of the process claim that listener made,
+# or the marker for a listener that made none. NOT SAID IS ITS OWN ANSWER: a jq
+# default would turn "this waiter cannot be named" into "pid 0", and somebody
+# would kill process 0.
+presence_process() {
+	api GET "$TOKEN_A" /api/presence || return 1
+	printf '%s' "$API_BODY" | jq -r --arg r "$1" --arg f "$2" \
+		'[.listeners[] | select(.reader == $r)]
+		 | if length == 0 then "<not listed>"
+		   elif (.[0].process | not) then "<not said>"
+		   else (.[0].process[$f] | tostring) end'
+}
+
 # poll_as NAME [KIND] - one short poll of that reader's inbox, from a client
 # that says what it is, or - with no KIND - from one that says nothing, which
 # is every client written before this existed.
@@ -4193,6 +4211,12 @@ poll_as() {
 	local path="/api/inbox/wait?as=$1&window=1"
 	if [ -n "${2-}" ]; then
 		path="$path&kind=$2"
+	fi
+	# And, with a third argument, WHICH PROCESS is polling - the claim that
+	# turns the repair for a dead waiter from a pattern into a number. All
+	# three parts or none, which is what the node stores.
+	if [ -n "${3-}" ]; then
+		path="$path&pid=$3&since=$(date -u +%Y-%m-%dT%H:%M:%SZ)&host=$ROSTER_HOST"
 	fi
 	api GET "$TOKEN_A" "$path" || return 1
 	want_eq "poll status for $1" "$API_STATUS" 200 || return 1
@@ -4265,7 +4289,28 @@ presence_says_what_each_listener_can_do() {
 	# case for.
 	poll_as "$ROSTER_QUIET" wide-awake-honest || return 1
 	want_eq "a kind nobody can draw" "$(presence_kind "$ROSTER_QUIET")" unknown || return 1
-	printf 'presence: tracked, forked, and unknown for everything that has not said\n'
+
+	# AND WHICH PROCESS IS HOLDING IT, which is the field a repair acts on.
+	#
+	# MEASURED, four times in one night across three seats: the documented
+	# repair was `pkill -9 -f 'flowy inbox --as NAME'` and twice it killed the
+	# shell that ran it, exit 144, because the pattern matched the process
+	# evaluating the pattern. A pid the waiter hands over is exact where a
+	# pattern is not.
+	poll_as "$ROSTER_TRACKED" tracked "$ROSTER_PID" || return 1
+	want_eq "the pid a waiter claimed" "$(presence_process "$ROSTER_TRACKED" waiter_pid)" \
+		"$ROSTER_PID" || return 1
+	want_eq "the host it claimed it on" "$(presence_process "$ROSTER_TRACKED" waiter_host)" \
+		"$ROSTER_HOST" || return 1
+
+	# A POLL THAT CLAIMS NOTHING CLEARS WHAT THE LAST ONE CLAIMED, and this is
+	# the arm that matters: a row that keeps a dead process's pid hands the next
+	# operator a number that now names something else, which is the pkill
+	# failure with a database in front of it. The forked reader polled without a
+	# claim above and must be carrying nothing.
+	want_eq "a listener that claimed no process" "$(presence_process "$ROSTER_FORKED" waiter_pid)" \
+		"<not said>" || return 1
+	printf 'presence: tracked, forked, and unknown for everything that has not said, and the tracked one says which process it is\n'
 }
 
 # presence_field NAME FIELD - one field of that listener's row, or the marker
@@ -6897,7 +6942,8 @@ browser_shows_what_a_listener_can_do() {
 	cd "$ROOT/web" || return 1
 	node scripts/roster-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" \
 		"$ROSTER_TRACKED=tracked" "$ROSTER_FORKED=forked" "$ROSTER_QUIET=unknown" \
-		--went-quiet="$ROSTER_STOPPED"
+		--went-quiet="$ROSTER_STOPPED" \
+		--named="$ROSTER_TRACKED=$ROSTER_PID" --unnamed="$ROSTER_FORKED"
 }
 
 # Speakers are drawn in their own colour, and it is really applied. A palette

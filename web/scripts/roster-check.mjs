@@ -3,6 +3,7 @@
  * element rather than on the page's text.
  *
  *   node scripts/roster-check.mjs BASE_URL TOKEN reader=kind [reader=kind ...]
+ *     [--went-quiet=READER] [--named=READER=PID] [--unnamed=READER]
  *
  * A listener that hears the room and cannot wake anybody is the failure this
  * check exists for. It polls, it is attached, its last poll is seconds old, and
@@ -26,7 +27,7 @@ import { chromium } from "playwright";
 const [base, token, ...want] = process.argv.slice(2);
 if (!base || !token || want.length === 0) {
   console.error(
-    "usage: node scripts/roster-check.mjs BASE_URL TOKEN reader=kind [reader=kind ...] [--went-quiet=READER]",
+    "usage: node scripts/roster-check.mjs BASE_URL TOKEN reader=kind [reader=kind ...] [--went-quiet=READER] [--named=READER=PID] [--unnamed=READER]",
   );
   process.exit(2);
 }
@@ -37,6 +38,29 @@ if (!base || !token || want.length === 0) {
 const wentQuiet = want
   .filter((arg) => arg.startsWith("--went-quiet="))
   .map((arg) => arg.slice("--went-quiet=".length));
+
+// Which readers claimed a process, and which said nothing. `--named=READER=PID`
+// is a reader that polled with a claim and whose line must carry that exact
+// pid; `--unnamed=READER` is one that polled without, and whose line must SAY
+// SO in words rather than leaving a gap.
+//
+// Both halves are checked because they are the two things a repair does with
+// this pane: kill that number, or fall back to finding the process by hand. A
+// blank line answers neither and looks like a rendering failure.
+const named = want
+  .filter((arg) => arg.startsWith("--named="))
+  .map((arg) => {
+    const [reader, pid] = arg.slice("--named=".length).split("=");
+    if (!reader || !pid) {
+      console.error(`"${arg}" is not --named=reader=pid`);
+      process.exit(2);
+    }
+    return { reader, pid };
+  });
+
+const unnamed = want
+  .filter((arg) => arg.startsWith("--unnamed="))
+  .map((arg) => arg.slice("--unnamed=".length));
 
 const expected = want
   .filter((arg) => !arg.startsWith("--"))
@@ -158,6 +182,68 @@ ${JSON.stringify(await line.innerText())}`,
     process.exit(1);
   }
 
+  // WHICH PROCESS HOLDS THE READER, on the line, because this is the only place
+  // somebody working from the console can read it.
+  //
+  // MEASURED, four times in one night across three seats: the documented repair
+  // for a dead waiter was `pkill -9 -f 'flowy inbox --as NAME'`, and twice it
+  // killed the shell that ran it - exit 144 - because the pattern matched the
+  // process evaluating it. The pid is what makes the repair `kill <number>`,
+  // and a pane that has the pid and does not draw it leaves the operator with
+  // the pattern.
+  for (const { reader, pid } of named) {
+    const line = page.locator(`aside li[data-listener="${reader}"]`).first();
+    const tag = line.locator("[data-listener-pid]").first();
+    if ((await tag.count()) === 0) {
+      console.error(
+        `${reader} claimed a process and its roster line draws nothing for it.
+  It says: ${JSON.stringify(await line.innerText())}`,
+      );
+      process.exit(1);
+    }
+    const got = await tag.getAttribute("data-listener-pid");
+    if (got !== pid) {
+      console.error(`${reader} polled as pid ${pid} and the roster draws ${JSON.stringify(got)}`);
+      process.exit(1);
+    }
+    // On the screen, not only in the markup - the attribute is how this check
+    // finds the element, the words are the feature.
+    const said = (await tag.innerText()).trim();
+    if (!said.includes(pid)) {
+      console.error(
+        `${reader} carries pid ${pid} in the markup and the line reads ${JSON.stringify(said)}`,
+      );
+      process.exit(1);
+    }
+  }
+
+  // AND NOT-SAID IS SAID. A waiter that predates the column and one whose claim
+  // was incomplete are the same fact - this listener cannot be named - and the
+  // line has to carry that in words. An empty space would read as a rendering
+  // failure, and the reader would go looking for the pid somewhere else.
+  for (const reader of unnamed) {
+    const line = page.locator(`aside li[data-listener="${reader}"]`).first();
+    const tag = line.locator("[data-listener-pid]").first();
+    if ((await tag.count()) === 0) {
+      console.error(
+        `${reader} claimed no process and its line says nothing about that.
+  A gap where the pid goes is indistinguishable from a pane that failed to draw one.
+  It says: ${JSON.stringify(await line.innerText())}`,
+      );
+      process.exit(1);
+    }
+    const got = await tag.getAttribute("data-listener-pid");
+    if (got !== "") {
+      console.error(`${reader} claimed no process and the roster draws pid ${JSON.stringify(got)}`);
+      process.exit(1);
+    }
+    const said = (await tag.innerText()).trim();
+    if (said === "") {
+      console.error(`${reader} draws an empty pid element instead of saying it cannot be named`);
+      process.exit(1);
+    }
+  }
+
   // A BOOKMARK IS NOT AN EAR. The console declares a reader per room to keep a
   // human's unread place - console:general and friends - and those hold a
   // position without ever polling. They arrived in this pane as detached
@@ -258,7 +344,13 @@ ${JSON.stringify(await line.innerText())}`,
       .map((s) => `${s.kind} -> ${JSON.stringify(s.label)}`)
       .join(", ")}; no never-polled bookmarks drawn as listeners${
       doubled.length ? `; ${doubled.length} doubled identity named as doubled` : ""
-    }${wentQuiet.length ? `; ${wentQuiet.join(", ")} drawn as not answering` : ""}`,
+    }${wentQuiet.length ? `; ${wentQuiet.join(", ")} drawn as not answering` : ""}${
+      // The pids are NAMED in the evidence rather than counted, because a run
+      // that parsed no --named argument would skip the loop entirely and print
+      // the same line as one that checked it. An arm that can pass by not
+      // running is the failure this whole suite keeps finding.
+      named.length ? `; pid drawn for ${named.map((n) => `${n.reader}=${n.pid}`).join(", ")}` : ""
+    }${unnamed.length ? `; ${unnamed.join(", ")} says it cannot be named` : ""}`,
   );
 } finally {
   await browser.close();
