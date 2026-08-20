@@ -10438,8 +10438,31 @@ the_overview_renders_on_an_empty_board() {
 	# todo this check stops being about an empty board and nobody would notice.
 	napi "$N5_PORT_B" GET "$N5_TOKEN_B" /api/nag || return 1
 	want_eq "node B's board is empty" "$(jqv .open)" 0 || return 1
-	want_eq "and its shares are the null Go sends for an empty slice" \
-		"$(jqv .workload.shares)" null || return 1
+	# EITHER SHAPE, because this check is about the CLIENT and the shape is the
+	# server's business.
+	#
+	# It used to assert `null` exactly - "the null Go sends for an empty slice" -
+	# which wrote the defect into the check as its contract. The console guard
+	# below is what this exists to prove, and it is worth proving against null,
+	# missing AND empty: a client that only survives what today's server happens
+	# to send is a client that breaks on the next server. Pinning the wire shape
+	# meant the fix for the wire could not land while the check stood, which is
+	# what it did - a724287 made shares an empty slice and this failed on a tree
+	# where nothing was wrong.
+	#
+	# The server's property - a fresh node answers no nulls at all - is asserted
+	# where it belongs, by the empty-node walk in phase 1, which asks /api/nag
+	# among the rest - so null coming BACK is caught there rather than here. Two
+	# checks, neither one holding the other still.
+	local shares
+	shares="$(jqv .workload.shares)"
+	case "$shares" in
+	null | "[]") ;;
+	*)
+		printf 'node B has nothing on its board but its shares are %s\n' "$shares" >&2
+		return 1
+		;;
+	esac
 
 	cd "$ROOT/web" || return 1
 	node scripts/empty-board-check.mjs "http://127.0.0.1:$N5_PORT_B" "$N5_TOKEN_B"
