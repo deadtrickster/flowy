@@ -5134,6 +5134,35 @@ a_row_without_a_raiser_says_nothing_rather_than_nobody() {
 		pa "$RAISED_ID" "$bare"
 }
 
+# THE OVERVIEW RENDERS ON A BOARD WITH NOTHING ON IT.
+#
+# It did not, and the failure was the whole page rather than the card:
+# SpreadCard read w.shares.length, Go marshals an empty slice as null, and
+# WorkloadOf returns a nil Shares when nobody is carrying anything. So the
+# render threw, React unmounted the tree above it, and the overview was a blank
+# document with nothing said. Anybody standing up flowy for a new project saw a
+# white page on first load.
+#
+# It shipped and never showed, because the only board anybody looked at has
+# never been empty.
+#
+# RUN AGAINST NODE B, which is the one node in this suite with no queue on it.
+# Run against the seeded node this check would pass on the day it was written
+# and every day after, measuring the fixture rather than the code - and that is
+# exactly how the bug survived.
+the_overview_renders_on_an_empty_board() {
+	recall5
+	# The precondition, asserted rather than assumed: if node B ever gains a
+	# todo this check stops being about an empty board and nobody would notice.
+	napi "$N5_PORT_B" GET "$N5_TOKEN_B" /api/nag || return 1
+	want_eq "node B's board is empty" "$(jqv .open)" 0 || return 1
+	want_eq "and its shares are the null Go sends for an empty slice" \
+		"$(jqv .workload.shares)" null || return 1
+
+	cd "$ROOT/web" || return 1
+	node scripts/empty-board-check.mjs "http://127.0.0.1:$N5_PORT_B" "$N5_TOKEN_B"
+}
+
 # EVERY LIST ANSWER SAYS WHICH PROJECT IT IS ABOUT.
 #
 # Five doors - artifacts, search, the nag, the merge queue and a room read -
@@ -11875,6 +11904,8 @@ check "a row with no raiser says nothing about one, and still says who carries i
 	a_row_without_a_raiser_says_nothing_rather_than_nobody
 check "every list answer says which project it is about, and an operator's says all" \
 	every_list_answer_says_which_project
+check "the overview renders on a board with nothing on it, and says so" \
+	the_overview_renders_on_an_empty_board
 check "the scope helper is one helper, and stamping changes nothing else on an answer" \
 	go test -count=1 -run 'TestAnAnswerSaysWhichProjectItIsAbout|TestStampingAScopeDoesNotChangeWhatWasAlreadyThere|TestARoomsProjectComesFromItsRowsAndNotItsReader' .
 check "the distribution probe has a verb and a panel, and both name which line was crossed" \

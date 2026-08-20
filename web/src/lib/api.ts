@@ -211,7 +211,13 @@ export interface WorkloadShare {
 export interface Workload {
   open: number;
   unowned: number;
-  shares: WorkloadShare[];
+  /**
+   * The slice as the node sends it, WHICH IS null WHEN IT IS EMPTY - Go
+   * marshals an empty slice that way, and a board with nothing on it has one.
+   * Typed honestly so a reader has to deal with it; SpreadCard normalises it
+   * once. It blanked the whole overview before it was typed this way.
+   */
+  shares: WorkloadShare[] | null;
   top: string;
   top_share: number;
   /** ok, check, rebalance, alone, or empty. The node's word, never recomputed. */

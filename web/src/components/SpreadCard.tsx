@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { type NagView, api } from "@/lib/api";
+import { type NagView, type WorkloadShare, api } from "@/lib/api";
 import { speakerStyle } from "@/lib/speakercolour";
 
 /**
@@ -54,7 +54,23 @@ export function SpreadCard() {
   }
   if (!nag) return null;
 
-  const w = nag.workload;
+  // GO MARSHALS AN EMPTY SLICE AS null, AND A BOARD WITH NOTHING ON IT HAS ONE.
+  //
+  // This blanked the whole overview - not the card, the PAGE - on any node
+  // where nobody is carrying anything: `w.shares.length` on null throws during
+  // render and React unmounts the tree above it. It never showed on dogfood
+  // because that board has never been empty, which is exactly why it shipped.
+  //
+  // Normalised once here rather than guarded at each use, so a third reader of
+  // `shares` cannot reintroduce it. The same reason `?? []` sits on the pins
+  // read in ChatRoom, with the same comment - this file did not carry it and
+  // should have.
+  const w = {
+    ...nag.workload,
+    // Typed as a plain array here rather than as Workload, because Workload's
+    // own `shares` is honestly `| null` and a spread does not narrow it.
+    shares: (nag.workload?.shares ?? []) as WorkloadShare[],
+  };
   return (
     <Card>
       <CardHeader>
@@ -133,6 +149,7 @@ function Count({ label, value }: { label: string; value: number }) {
  */
 function verdictLine(nag: NagView): string {
   const w = nag.workload;
+  if (!w) return "the board is empty";
   const pct = (n: number) => `${Math.round(n * 100)}%`;
   switch (w.verdict) {
     case "rebalance":
