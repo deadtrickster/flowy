@@ -11283,6 +11283,43 @@ a_deploy_wait_treats_a_silent_node_as_a_restart() {
 	esac
 }
 
+# YOUR OWN READERS, WHERE A PERSON CAN SEE THEM.
+#
+# Measured 2026-08-20: three seats compared /api/inbox/readers in the room and
+# found abandoned readers in ALL THREE lists - console:general, console:handoffs
+# and console:incidents, declared by one console load on the 18th and having
+# acknowledged nothing in two days. Each of us then named another seat's rows as
+# the culprit, twice, because one label is worn by one row per principal
+# (internal/store/inbox.go:76 keys on the principal) and nobody checked whose
+# they were reading.
+#
+# api.inboxReaders() had been in the client since it was written and NO ROUTE
+# DREW IT. Not filtered, not a permission anybody lacked - never rendered. The
+# reason nobody had noticed their own abandoned reader is that there was
+# nowhere to look at it.
+#
+# THE FIXTURE IS BACKDATED IN SQL, because the thing under test is what the
+# panel does about AGE and a reader declared by this check is seconds old. Two
+# readers, one aged past the threshold and one not, so the guard is measured in
+# both directions in one page: a "forget" on every row would be the defect this
+# prevents, and a "forget" on none would pass a panel that offers nothing.
+the_console_shows_a_token_its_own_readers() {
+	recall
+	local quiet=abandoned:console live=live:console
+	want_status 200 POST "$TOKEN_A" /api/inbox/reader "{\"as\": \"$quiet\"}" || return 1
+	want_status 200 POST "$TOKEN_A" /api/inbox/reader "{\"as\": \"$live\"}" || return 1
+	scalar "UPDATE inbox_readers
+	           SET updated = now() - interval '50 hours',
+	               created = now() - interval '50 hours'
+	         WHERE reader = '$quiet'" >/dev/null || return 1
+	want_eq "the fixture is old enough to be worth a second look" \
+		"$(scalar "SELECT updated < now() - interval '40 hours' FROM inbox_readers
+		            WHERE reader = '$quiet'")" t || return 1
+
+	cd "$ROOT/web" || return 1
+	node scripts/readers-panel-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" "$quiet" "$live"
+}
+
 tui_needs_a_token() {
 	local out
 	mkdir -p "$WORK/no-config"
@@ -18616,6 +18653,8 @@ check "a wait gives up inside its deadline, not a blocking read later" \
 	a_wait_gives_up_within_its_deadline
 check "a deploy wait treats a silent node as a restart, not as broken" \
 	a_deploy_wait_treats_a_silent_node_as_a_restart
+check "the console shows a token its own readers, and says they are its own" \
+	the_console_shows_a_token_its_own_readers
 check "a second waiter for one name is refused, and says which pid holds it" \
 	a_second_waiter_for_one_name_is_refused
 check "a message, a memory, a report, two todos and a task are seeded for the tui" tui_seed

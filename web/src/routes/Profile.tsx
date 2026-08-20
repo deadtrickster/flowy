@@ -1,5 +1,6 @@
 import { type FormEvent, useCallback, useEffect, useState } from "react";
 
+import { YourReaders } from "@/components/YourReaders";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { type Me, api } from "@/lib/api";
@@ -215,6 +216,17 @@ export function Profile() {
             ) : null}
           </form>
         ) : null}
+
+        {/*
+          YOUR READERS, on the same page as your handle, because both answer
+          "what does this token have on the node". A reader is a durable row
+          that outlives the process that made it - three seats found abandoned
+          ones from a console load two days earlier - and until now there was
+          nowhere at all to look at them.
+        */}
+        <div className="border-border border-t pt-4">
+          <YourReaders />
+        </div>
       </div>
     </div>
   );
