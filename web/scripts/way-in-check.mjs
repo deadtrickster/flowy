@@ -38,6 +38,12 @@ try {
   await page.locator("[data-token-bar]").waitFor({ state: "visible", timeout: 20_000 });
 
   const link = page.locator("[data-log-in]");
+  // Waited for rather than counted, for the reason the other two are: the bar
+  // is rendered before the console has decided who is holding it.
+  await link
+    .first()
+    .waitFor({ state: "visible", timeout: 10_000 })
+    .catch(() => {});
   if ((await link.count()) === 0) {
     const errors = crashes.length ? `\npage errors:\n  ${crashes.join("\n  ")}` : "";
     console.error(
@@ -88,9 +94,16 @@ try {
   await seated.addInitScript((t) => localStorage.setItem("flowy.token", t), token);
   await seated.goto(`${base}/`, { timeout: 20_000 }).catch(() => {});
   await seated.locator("[data-token-bar]").waitFor({ state: "visible", timeout: 20_000 });
-  if ((await seated.locator("[data-log-out]").count()) === 0) {
+  // WAITED FOR, LIKE THE FIELD ABOVE. The bar renders at once; the log-out
+  // button renders on `whoami`, which arrives from /api/me afterwards - so the
+  // bar being visible says nothing about whether the button has been decided
+  // yet. This failed in the drainer the run AFTER the identical bug was fixed
+  // twenty lines up: same file, same evening, same sentence.
+  try {
+    await seated.locator("[data-log-out]").first().waitFor({ state: "visible", timeout: 10_000 });
+  } catch {
     console.error(
-      "a console holding a credential offers no way out: nothing matches [data-log-out]",
+      "a console holding a credential offers no way out: nothing matches [data-log-out] after 10s",
     );
     process.exit(1);
   }
