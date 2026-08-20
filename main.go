@@ -51,6 +51,13 @@ commands:
            carries the moment it was read, because a lock reading is a claim
            about the past (flowy queue [lock] [--target T]; env: FLOWY_ADDR,
            FLOWY_TOKEN, FLOWY_AGENT)
+  wait     block until a named thing has happened: a merge row lands, a target
+           moves, or the node comes back on a different build. One verb because
+           three seats counted the polling loop they had each written by hand,
+           and one of them had written it in seventy-six spellings
+           (flowy wait --row ID | --tip [TARGET] | --deploy [--sha S]
+           [--deadline N]; exit 0 it happened, 1 the deadline passed quietly,
+           2 broken, 3 red)
   tui      the terminal client: rooms, inbox, memory, timeline, metrics and
            announcements over the HTTP API, keyboard-driven and tmux-friendly
            (flowy tui [--url URL] [--token T] [--agent NAME]; env: FLOWY_ADDR,
@@ -206,6 +213,26 @@ func main() {
 			case errors.Is(err, errRowIsRed):
 				os.Exit(3)
 			}
+			os.Exit(2)
+		}
+	case "wait":
+		// The same codes as `queue wait`, because they are the same outcomes and
+		// a caller must not have to learn two vocabularies for one question.
+		//
+		// A QUIET DEADLINE IS NOT PRINTED HERE. The verb has already said how
+		// long it waited and what it last saw, in the words of whatever it was
+		// watching; "flowy wait: still queued" underneath that would be a second
+		// sentence, less accurate than the first, about a tip or a build that
+		// was never queued. See wait.go.
+		if err := cliWait(os.Args[2:]); err != nil {
+			switch {
+			case errors.Is(err, errWaitedOut):
+				os.Exit(1)
+			case errors.Is(err, errRowIsRed):
+				fmt.Fprintf(os.Stderr, "flowy wait: %v\n", err)
+				os.Exit(3)
+			}
+			fmt.Fprintf(os.Stderr, "flowy wait: %v\n", err)
 			os.Exit(2)
 		}
 	case "nag":

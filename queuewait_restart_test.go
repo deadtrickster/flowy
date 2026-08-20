@@ -63,7 +63,7 @@ func TestTheQueueWaitSurvivesARestart(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
 	answer, err := waitOnQueue(ctx, &http.Client{Timeout: 20 * time.Second},
-		"http://"+addr, "t-1", "", "", 1)
+		"http://"+addr, "t-1", "", "", "", 1)
 	if err != nil {
 		t.Fatalf("the wait did not survive a restart: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestAnAnswerThatIsNotAnErrorIsNotRetried(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := waitOnQueue(context.Background(), srv.Client(), srv.URL, "t-1", "", "", 1)
+	_, err := waitOnQueue(context.Background(), srv.Client(), srv.URL, "t-1", "", "", "", 1)
 	if err == nil || !strings.Contains(err.Error(), "401") {
 		t.Fatalf("a 401 should be answered at once, got %v", err)
 	}

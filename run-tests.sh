@@ -11175,6 +11175,114 @@ tui_talks_only_to_the_api() {
 # Every read it makes is a read the node has to attribute to somebody, so with
 # no token anywhere it refuses rather than starting up and rendering empty panes
 # that look like "you have nothing".
+# `flowy wait` - one verb for the polling loop three seats had each written by
+# hand, one of them in seventy-six spellings (01M0EVQCMY).
+#
+# THE FOUR ARMS HERE ARE THE FOUR THINGS A HAND-WRITTEN LOOP GOT WRONG, not a
+# tour of the flags:
+#
+#   the subject rule       a wait with none is a sleep and a wait with two
+#                          cannot say which one answered
+#   already true           answers immediately, so the verb is safe to put in a
+#                          script BEFORE the thing that would make it true -
+#                          otherwise there is a race the caller cannot see
+#   the cap is the cap     measured in wall-clock. The first cut checked the
+#                          deadline only BETWEEN blocking reads, so --deadline 12
+#                          returned after 25 seconds
+#   down is not broken     a --deploy wait started while the node is restarting
+#                          must WAIT, not exit 2. Measured against the live node:
+#                          it exited 2 at the exact moment somebody runs it
+a_wait_with_no_subject_is_refused() {
+	local out
+	if out="$(FLOWY_TOKEN=tok "$ROOT/flowy" wait 2>&1)"; then
+		printf 'a wait with no subject did not refuse:\n%s\n' "$out" >&2
+		return 1
+	fi
+	case "$out" in
+	*"no subject is a sleep"*) ;;
+	*)
+		printf 'it refused, but not for the reason it should have:\n%s\n' "$out" >&2
+		return 1
+		;;
+	esac
+	if out="$(FLOWY_TOKEN=tok "$ROOT/flowy" wait --row 01ROW --deploy 2>&1)"; then
+		printf 'a wait with two subjects did not refuse:\n%s\n' "$out" >&2
+		return 1
+	fi
+	case "$out" in
+	*"cannot say which one answered"*) printf 'refused with no subject and with two\n' ;;
+	*)
+		printf 'two subjects refused for the wrong reason:\n%s\n' "$out" >&2
+		return 1
+		;;
+	esac
+}
+
+# ALREADY TRUE ANSWERS AT ONCE. A waiter that blocks on a condition already met
+# is a race: the caller writes `flowy wait` after the command that satisfies it,
+# and the fast case is the one that hangs.
+a_wait_for_what_is_already_true_answers_at_once() {
+	recall
+	local tip out
+	api GET "$TOKEN_A" /api/merge-queue || return 1
+	tip="$(jqv .target_tip)"
+	[ -n "$tip" ] && [ "$tip" != null ] || {
+		printf 'the queue names no target tip, so this check has no fixture\n' >&2
+		return 1
+	}
+	out="$(FLOWY_ADDR="http://127.0.0.1:$HTTP_PORT" FLOWY_TOKEN="$TOKEN_A" FLOWY_AGENT='' \
+		"$ROOT/flowy" wait --tip master --sha "$tip" --deadline 30 2>&1)" || {
+		printf 'waiting for the tip it is already at did not answer:\n%s\n' "$out" >&2
+		return 1
+	}
+	case "$out" in
+	*"$tip"*) printf 'answered at once: %s\n' "$out" ;;
+	*)
+		printf 'it answered, but not about %s:\n%s\n' "$tip" "$out" >&2
+		return 1
+		;;
+	esac
+}
+
+# THE CAP IS THE CAP, in wall-clock. Asserted as an upper bound rather than an
+# equality: the point is that it does not OVERRUN, and a check that demanded an
+# exact second would be measuring the machine's load.
+a_wait_gives_up_within_its_deadline() {
+	recall
+	local started elapsed rc
+	started="$(date +%s)"
+	FLOWY_ADDR="http://127.0.0.1:$HTTP_PORT" FLOWY_TOKEN="$TOKEN_A" FLOWY_AGENT='' \
+		"$ROOT/flowy" wait --tip master --deadline 5 >/dev/null 2>&1
+	rc=$?
+	elapsed=$(($(date +%s) - started))
+	want_eq "a quiet deadline is exit 1, not a failure" "$rc" 1 || return 1
+	if [ "$elapsed" -gt 20 ]; then
+		printf 'asked for 5s and took %ss - the deadline is checked between blocking reads\n' \
+			"$elapsed" >&2
+		return 1
+	fi
+	printf 'asked for 5s, gave up after %ss, exit 1\n' "$elapsed"
+}
+
+# A NODE THAT IS NOT ANSWERING IS THE MIDDLE OF A DEPLOY, not a broken waiter.
+# Driven against a port nothing is on, which is the same thing the waiter sees
+# between the old process stopping and the new one listening.
+a_deploy_wait_treats_a_silent_node_as_a_restart() {
+	local out rc
+	out="$(FLOWY_TOKEN=tok "$ROOT/flowy" wait --deploy --url http://127.0.0.1:9 --deadline 5 2>&1)"
+	rc=$?
+	want_eq "a node that never answers is a quiet deadline, not broken" "$rc" 1 || return 1
+	case "$out" in
+	*"no build to compare against"*)
+		printf 'waited instead of exiting: %s\n' "$(printf '%s' "$out" | head -1)"
+		;;
+	*)
+		printf 'it did not say why it had no baseline:\n%s\n' "$out" >&2
+		return 1
+		;;
+	esac
+}
+
 tui_needs_a_token() {
 	local out
 	mkdir -p "$WORK/no-config"
@@ -18501,6 +18609,13 @@ check "node B survived the authorship checks" kill -0 "$NODE5B_PID"
 say "the terminal client"
 check "the tui reaches the node only through the HTTP API" tui_talks_only_to_the_api
 check "flowy tui refuses to start with no token anywhere" tui_needs_a_token
+check "a wait with no subject, or with two, is refused" a_wait_with_no_subject_is_refused
+check "a wait for what is already true answers at once" \
+	a_wait_for_what_is_already_true_answers_at_once
+check "a wait gives up inside its deadline, not a blocking read later" \
+	a_wait_gives_up_within_its_deadline
+check "a deploy wait treats a silent node as a restart, not as broken" \
+	a_deploy_wait_treats_a_silent_node_as_a_restart
 check "a second waiter for one name is refused, and says which pid holds it" \
 	a_second_waiter_for_one_name_is_refused
 check "a message, a memory, a report, two todos and a task are seeded for the tui" tui_seed

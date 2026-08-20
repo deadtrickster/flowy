@@ -111,7 +111,7 @@ func queueWaitCmd(rest []string) error {
 	cursor := ""
 	for {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(window+10)*time.Second)
-		answer, err := waitOnQueue(ctx, client, base, bearer, *target, cursor, window)
+		answer, err := waitOnQueue(ctx, client, base, bearer, *target, "", cursor, window)
 		cancel()
 		if err != nil {
 			return err
@@ -202,11 +202,18 @@ func queueWaitGone(client *http.Client, base, token, id string) error {
 
 // waitOnQueue is one held-open read of the queue.
 func waitOnQueue(
-	ctx context.Context, client *http.Client, base, token, target, since string, window int,
+	ctx context.Context, client *http.Client, base, token, target, project, since string, window int,
 ) (mergeQueueAnswer, error) {
 	path := fmt.Sprintf("%s/api/merge-queue/wait?window=%d", base, window)
 	if strings.TrimSpace(target) != "" {
 		path += "&target=" + target
+	}
+	// STATED WHEN THE CALLER STATED IT, and left off otherwise so this verb
+	// behaves exactly as it did. The door reads the landed tip per project and
+	// falls back to an unkeyed row that nothing writes any more, so a caller who
+	// can name their project gets an answer that moves. See wait.go's --project.
+	if strings.TrimSpace(project) != "" {
+		path += "&project=" + project
 	}
 	if since != "" {
 		path += "&since=" + since
