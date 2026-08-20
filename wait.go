@@ -245,10 +245,16 @@ func waitForTip(base, token, target, project, want string, deadline int) error {
 		if err == nil {
 			break
 		}
+		// NEVER HAVING READ IT AT ALL IS NOT A QUIET DEADLINE. This is the
+		// opening read, so a cancellation here means the question was never
+		// asked - and exit 1 promises the caller that it WAS asked and the
+		// answer was "not yet". Caught by my own check on the commit that
+		// introduced spentDeadline: "a node that never answered is broken, not
+		// a quiet deadline is 1, want 2". Two rules of mine collided and the
+		// gate held the older one, which was right.
 		if spentDeadline(err, give) {
-			waitSaid("gave up after %s without ever reading %s",
-				took(int(time.Since(started).Seconds())), target)
-			return errWaitedOut
+			return fmt.Errorf("gave up after %s without ever reading %s: %w",
+				took(int(time.Since(started).Seconds())), target, err)
 		}
 		if !waitOutRestart(err, give, target) {
 			return err

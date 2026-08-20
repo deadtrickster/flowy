@@ -133,6 +133,11 @@ func queueWaitCmd(rest []string) error {
 	// say what it was watching rather than only that it stopped.
 	var last mergeQueueItem
 	last.ID = want
+	// Whether this wait has ever had an answer from the node. A read cancelled
+	// by our own cap is the quiet deadline only once we have been TALKING to
+	// the node: before that, a cancellation means the question was never asked,
+	// and exit 1 would promise a caller that it was.
+	answered := false
 	for {
 		// BOUNDED BY THE CALLER'S DEADLINE AS WELL AS BY THE WINDOW. The
 		// request is not the only thing that can outlast a short wait:
@@ -151,7 +156,7 @@ func queueWaitCmd(rest []string) error {
 		ctx, cancel := context.WithTimeout(context.Background(), hold)
 		answer, err := waitOnQueue(ctx, client, base, bearer, *target, "", cursor, window)
 		cancel()
-		if err != nil && spentDeadline(err, give) {
+		if err != nil && answered && spentDeadline(err, give) {
 			// MY OWN CAP CANCELLING MY OWN REQUEST IS THE QUIET DEADLINE, not a
 			// broken node. Bounding the context by the caller's remaining time
 			// - which is what stops the dial retry overrunning a short wait -
@@ -192,6 +197,7 @@ func queueWaitCmd(rest []string) error {
 			}
 			continue
 		}
+		answered = true
 		cursor = answer.Cursor
 
 		// THE ROW'S OWN STATE, ASKED OF THE ANSWER WE JUST GOT rather than of a
