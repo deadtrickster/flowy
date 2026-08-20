@@ -75,7 +75,7 @@ import (
 const waitUsage = `flowy wait - block until a named thing has happened
 
 usage:
-  flowy wait --row ID [--deadline 3600]
+  flowy wait --row ID [--tip SHA] [--deadline 3600]
   flowy wait --tip [TARGET] [--sha SHA] [--deadline 3600]
   flowy wait --deploy [--sha SHA] [--deadline 900]
 
@@ -84,6 +84,8 @@ a question about which one answered.
 
   --row       a merge row: block until it lands, leaves the queue, or goes red.
               Handed to ` + "`flowy queue wait`" + `, which is where that case lives.
+              --tip goes with it: a red measured at another tip is not the
+              answer, which is what you want after re-tipping a red row.
   --tip       a landing target, "master" by default: block until its tip moves
               off what it is now, or reaches --sha if one is named.
   --deploy    block until the node is answering from a different build than the
@@ -154,8 +156,13 @@ func cliWait(args []string) error {
 
 	if strings.TrimSpace(*row) != "" {
 		if strings.TrimSpace(*sha) != "" {
-			return errors.New("--sha is a commit and --row is a row: `flowy queue wait --row` " +
-				"answers with the sha it landed as\n\n" + waitUsage)
+			// --sha names the commit to wait FOR; on a row the equivalent
+			// question is "whose verdict", which `queue wait --tip` answers.
+			// Pointed at rather than silently accepted, because the two flags
+			// look interchangeable and are not.
+			return errors.New("--sha is a commit and --row is a row: pass --tip to say which " +
+				"branch tip you want the verdict on, and `flowy queue wait --row` answers " +
+				"with the sha it landed as\n\n" + waitUsage)
 		}
 		// THE WHOLE ROW CASE, handed over unchanged. Its flags are its own, so
 		// what this verb was given is passed through rather than re-derived -
@@ -238,6 +245,11 @@ func waitForTip(base, token, target, project, want string, deadline int) error {
 		if err == nil {
 			break
 		}
+		if spentDeadline(err, give) {
+			waitSaid("gave up after %s without ever reading %s",
+				took(int(time.Since(started).Seconds())), target)
+			return errWaitedOut
+		}
 		if !waitOutRestart(err, give, target) {
 			return err
 		}
@@ -276,6 +288,14 @@ func waitForTip(base, token, target, project, want string, deadline int) error {
 			hold = left
 		}
 		answer, err := queueLook(client, base, token, target, project, cursor, hold, give)
+		if err != nil && spentDeadline(err, give) {
+			// The same as queue wait's: the last read of every wait is
+			// cancelled by this verb's own cap, and that is the quiet deadline
+			// rather than a node that broke.
+			waitSaid("gave up after %s - %s is still %s", took(int(time.Since(started).Seconds())),
+				target, shortSHA(was))
+			return errWaitedOut
+		}
 		if err != nil {
 			// A DEPLOY IS THE EXPECTED INTERRUPTION HERE, for the reason
 			// written out in queuewait.go: what this is waiting for is a

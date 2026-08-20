@@ -56,10 +56,14 @@ import (
 const queueWaitUsage = `flowy queue wait - block until a queued row stops waiting
 
 usage:
-  flowy queue wait --row ID [--deadline 3600]
+  flowy queue wait --row ID [--tip SHA] [--deadline 3600]
 
   --row       the merge row to watch. Required - a wait with no subject is a
               sleep.
+  --tip       the branch tip you are waiting for a verdict on. A red measured at
+              any other tip is not the answer and the wait carries on - which is
+              what you want after re-tipping a red row, because the node cannot
+              see that the branch moved.
   --deadline  seconds to wait before giving up (default 3600). The node is
               asked to hold each request open, so this is not a poll interval.
 
@@ -81,6 +85,19 @@ func queueWaitCmd(rest []string) error {
 	row := fs.String("row", "", "the merge row to watch")
 	deadline := fs.Int("deadline", 3600, "seconds to wait before giving up")
 	target := fs.String("target", "", "which target to ask about (default master)")
+	// THE TIP THE CALLER IS WAITING FOR, and only the caller knows it.
+	//
+	// The node holds red_tip (where a verdict was measured), gated_tip (the same
+	// for a green) and gated_base (where the target was) - and NOTHING that says
+	// where the branch points now, because nothing on the node ever reads a
+	// branch. Measured on 2026-08-20: a row re-tipped from fa0e9ea to aa30f5f is
+	// byte-identical on the node to one nobody touched.
+	//
+	// So a caller who has just fixed a red and wants the NEW verdict states the
+	// sha they are waiting for, and a red measured at any other tip is not the
+	// answer. `--tip $(git rev-parse --short HEAD)` is not a convenience: it is
+	// the only party in the exchange that has a git repository.
+	tip := fs.String("tip", "", "the branch tip you are waiting for a verdict on")
 	urlFlag := fs.String("url", "", "node to talk to (default $FLOWY_ADDR or "+defaultTUIAddr+")")
 	token := fs.String("token", "", "bearer token (default $FLOWY_TOKEN, then ~/.config/flowy/token)")
 	agent := fs.String("agent", "", agentFlagHelp)
@@ -109,6 +126,13 @@ func queueWaitCmd(rest []string) error {
 	give := time.Now().Add(time.Duration(*deadline) * time.Second)
 
 	cursor := ""
+	// Said once rather than on every return, so a wait across a long gate does
+	// not fill a terminal with the same sentence.
+	saidStale := false
+	// The row as it was last seen, so a wait that ends on its own cap can still
+	// say what it was watching rather than only that it stopped.
+	var last mergeQueueItem
+	last.ID = want
 	for {
 		// BOUNDED BY THE CALLER'S DEADLINE AS WELL AS BY THE WINDOW. The
 		// request is not the only thing that can outlast a short wait:
@@ -127,6 +151,20 @@ func queueWaitCmd(rest []string) error {
 		ctx, cancel := context.WithTimeout(context.Background(), hold)
 		answer, err := waitOnQueue(ctx, client, base, bearer, *target, "", cursor, window)
 		cancel()
+		if err != nil && spentDeadline(err, give) {
+			// MY OWN CAP CANCELLING MY OWN REQUEST IS THE QUIET DEADLINE, not a
+			// broken node. Bounding the context by the caller's remaining time
+			// - which is what stops the dial retry overrunning a short wait -
+			// means the LAST request of every wait is cancelled by this verb
+			// itself, and it surfaced as "context deadline exceeded" with exit
+			// 2. Measured on the deployed binary: `--deadline 12` on a queued
+			// row answered 2 in twelve seconds, where the whole point of 1 is
+			// that a wait which found nothing is not a failure. A script that
+			// retries on 2 would have retried a perfectly ordinary quiet
+			// deadline forever.
+			fmt.Println("still queued " + rowLine(last))
+			return errWaitedOut
+		}
 		if err != nil {
 			// A DEPLOY IS NOT A FAILURE OF THE WAIT, and for this verb it is
 			// the single most likely interruption there is: landing is what it
@@ -163,6 +201,7 @@ func queueWaitCmd(rest []string) error {
 		for i := range answer.Items {
 			if answer.Items[i].ID == want {
 				found = &answer.Items[i]
+				last = answer.Items[i]
 				break
 			}
 		}
@@ -172,6 +211,19 @@ func queueWaitCmd(rest []string) error {
 			// that knows whether it landed, was abandoned, or simply stopped
 			// being readable to this caller.
 			return queueWaitGone(client, base, bearer, want)
+		case found.Red != nil && staleRed(*tip, found.Red.Tip):
+			// A RED ABOUT A TREE THE CALLER HAS ALREADY REPLACED, said once and
+			// then waited past. Measured as the cost of not doing this: a
+			// re-tipped row answered exit 3 in under a second, about the verdict
+			// on the tree its fix replaced - and the row-waiter was therefore
+			// unusable on the single most likely row to be waiting on, which is
+			// a red one you have just fixed.
+			if !saidStale {
+				fmt.Fprintf(os.Stderr,
+					"a red at %s, which is not the %s you are waiting for - still waiting\n",
+					shortSHA(found.Red.Tip), *tip)
+				saidStale = true
+			}
 		case found.Red != nil:
 			fmt.Printf("red %s at %s", want, shortSHA(found.Red.Tip))
 			if found.Red.Note != "" {
@@ -209,6 +261,43 @@ func waitOutRestart(err error, give time.Time, what string) bool {
 		"and %s is still worth waiting for (%s left)\n", what, took(int(time.Until(give).Seconds())))
 	time.Sleep(time.Second)
 	return true
+}
+
+// spentDeadline reports whether a failed read failed because the caller's own
+// clock ran out.
+//
+// The context this verb builds is bounded by the remaining deadline, so the last
+// request of every wait is cancelled by the wait itself. That cancellation is
+// the QUIET DEADLINE - one of the two things a waiter is for - and reporting it
+// as a broken node turns an ordinary outcome into a retryable error.
+//
+// It asks the clock as well as the error: a context that was cancelled with time
+// still on it is something else's doing and belongs to the caller.
+func spentDeadline(err error, give time.Time) bool {
+	if err == nil {
+		return false
+	}
+	if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
+		return false
+	}
+	return !time.Now().Before(give.Add(-time.Second))
+}
+
+// staleRed reports whether a red is about a tree the caller is not waiting for.
+//
+// With no --tip nothing is stale: a caller who states no tip is asking about the
+// row as it stands, and the red IS the answer to that question. The flag is what
+// turns "is this row red" into "is the tree I just pushed red", and those are
+// different questions that used to share an exit code.
+//
+// The comparison is a prefix either way round, because one of the two is
+// usually short and which one varies.
+func staleRed(want, measured string) bool {
+	want, measured = strings.TrimSpace(want), strings.TrimSpace(measured)
+	if want == "" || measured == "" {
+		return false
+	}
+	return !strings.HasPrefix(measured, want) && !strings.HasPrefix(want, measured)
 }
 
 // queueWaitGone says what happened to a row that is no longer in the queue.

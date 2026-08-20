@@ -181,3 +181,70 @@ func TestTheQueueWaitOutlivesADeployLongerThanTheRestartWindow(t *testing.T) {
 		t.Fatalf("cursor is %q, want c1", answer.Cursor)
 	}
 }
+
+// A WAIT THAT RUNS OUT OF CLOCK IS EXIT 1, EVEN THOUGH ITS OWN CAP CANCELS THE
+// LAST REQUEST.
+//
+// Bounding the context by the caller's remaining time is what stops the dial
+// retry overrunning a short wait - and it means the final read of EVERY wait is
+// cancelled by this verb itself. That cancellation surfaced as "context
+// deadline exceeded" and exit 2. Measured on the deployed binary 2026-08-20:
+// `queue wait --row --deadline 12` on a queued row answered 2 in twelve
+// seconds. A script that retries on 2 - the sane thing to do about a node that
+// blinked - would retry an ordinary quiet deadline forever.
+//
+// The server here HOLDS the request rather than answering, which is what the
+// real wait door does, so the client meets its own cap the way it does in use.
+func TestAWaitThatRunsOutOfClockIsAQuietDeadline(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-time.After(10 * time.Second):
+		}
+	}))
+	defer srv.Close()
+
+	give := time.Now().Add(2 * time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, err := waitOnQueue(ctx, srv.Client(), srv.URL, "t-1", "", "", "", 1)
+	if err == nil {
+		t.Fatal("the held request answered, so this measured nothing")
+	}
+	if !spentDeadline(err, give) {
+		t.Fatalf("a read cancelled by the caller's own cap is the quiet deadline, got %v", err)
+	}
+	// And with time still on the clock it is NOT: a cancellation from anywhere
+	// else belongs to the caller.
+	if spentDeadline(err, time.Now().Add(time.Hour)) {
+		t.Fatal("a cancellation with an hour left was read as the deadline passing")
+	}
+	if spentDeadline(errors.New("the node answered 500"), give) {
+		t.Fatal("an answer that is not a cancellation was read as the deadline passing")
+	}
+}
+
+// A RED ABOUT A TREE THE CALLER HAS ALREADY REPLACED IS NOT THE ANSWER.
+//
+// The node holds red_tip - where a verdict was measured - and nothing that says
+// where the branch points now, because nothing on the node ever reads a branch.
+// So a caller who re-tipped a red row and waited was told about the tree their
+// fix replaced, in under a second, with the exit code of a fresh red.
+func TestAStaleRedIsNotTheAnswer(t *testing.T) {
+	// No tip stated: the row as it stands is the question, and the red is its
+	// answer.
+	if staleRed("", "fa0e9ea") {
+		t.Fatal("with no tip stated nothing is stale")
+	}
+	// The tip the caller is waiting for.
+	if staleRed("aa30f5f", "aa30f5f") {
+		t.Fatal("a red at the tip being waited for IS the answer")
+	}
+	// A prefix either way round, because one of the two is usually short.
+	if staleRed("aa30f5f", "aa30f5f1c2b3") || staleRed("aa30f5f1c2b3", "aa30f5f") {
+		t.Fatal("the comparison is a prefix, either way round")
+	}
+	if !staleRed("aa30f5f", "fa0e9ea") {
+		t.Fatal("a red at another tip is not the answer to this wait")
+	}
+}
