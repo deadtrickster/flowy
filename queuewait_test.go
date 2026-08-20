@@ -38,8 +38,11 @@ func TestWhatLeavingTheQueueMeans(t *testing.T) {
 		os.Stdout = out
 		gerr := queueWaitGone(srv.Client(), srv.URL, "t-1", "01ROW")
 		os.Stdout = old
+		// A row this seat cannot READ is now an error rather than a printed
+		// line, so the caller reports it as broken instead of exiting 0 - see
+		// the third arm below. The two readable outcomes still answer nil.
 		if gerr != nil {
-			t.Fatalf("queueWaitGone: %v", gerr)
+			return "ERR: " + gerr.Error()
 		}
 		if _, err := out.Seek(0, 0); err != nil {
 			t.Fatalf("seek: %v", err)
@@ -68,11 +71,28 @@ func TestWhatLeavingTheQueueMeans(t *testing.T) {
 		t.Errorf("a row that left without landing said %q - it must not read as a landing", closed)
 	}
 
-	// AND A ROW THIS SEAT CANNOT READ IS NOT A LANDING EITHER. A 404 here means
-	// the scope changed or the id was wrong, and reporting either as a landing
-	// is the failure this function exists for.
+	// AND A ROW THIS SEAT CANNOT READ IS NOT A LANDING EITHER - which this
+	// function has always said, and now says with the exit code as well as with
+	// the words.
+	//
+	// It used to print "left the queue and this seat cannot read it" and return
+	// nil, so a caller exited 0: the code that means "the thing you were waiting
+	// for happened". Measured on the live queue 2026-08-20 with a short id,
+	// which matched nothing and arrived here about a row that was gating at that
+	// moment. Landed, closed, and never-existed are three different facts behind
+	// one 404, and this is the only outcome in this function the verb does not
+	// know - so it is the one that goes back as broken, naming what it cannot
+	// tell apart.
 	hidden := answer(t, `{"error":"no such artifact"}`, 404)
+	if !strings.HasPrefix(hidden, "ERR: ") {
+		t.Errorf("an unreadable row answered %q - it must not be a success", hidden)
+	}
 	if strings.Contains(hidden, "landed 01ROW as") || !strings.Contains(hidden, "cannot read it") {
 		t.Errorf("an unreadable row said %q", hidden)
+	}
+	for _, want := range []string{"landed", "closed", "never existed"} {
+		if !strings.Contains(hidden, want) {
+			t.Errorf("the refusal does not name %q as a thing it cannot tell apart: %q", want, hidden)
+		}
 	}
 }
