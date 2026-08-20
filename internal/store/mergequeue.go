@@ -216,6 +216,39 @@ func MergeAdmissible(a *Artifact, targetTip string) error {
 			Reason: "the tip it would land on was not stated, and a comparison against nothing always passes",
 		}
 	}
+	// A ROW THAT HAS LANDED IS NOT A STALE ROW, and asking the staleness
+	// question of one produces an answer that is true and useless.
+	//
+	// Measured 2026-08-20 on 01M0ESQD8Q, status done, landed_tip e6f1121,
+	// master e6f1121:
+	//
+	//   not admissible: the target moved after its gate ran - it measured from
+	//   19daf10 - it was gated on e6f1121 and master is now at e6f1121, so
+	//   re-gate it on e6f1121
+	//
+	// The target did move: this row landed on it. gated_base is what master was
+	// before, so EVERY landed row satisfies the moved-target test by
+	// definition, and the advice is to spend five minutes re-gating something
+	// with nothing left to do. A reader took it as a stall in the queue and
+	// started diagnosing one.
+	//
+	// ASKED BEFORE THE GATE QUESTIONS, because "already landed" is true whether
+	// or not a verdict was recorded. A closed row with no gated tip would
+	// otherwise be refused as ungated, which is the same wrong answer wearing
+	// the other code - so the ORDER is part of the fix and is asserted.
+	if DoneAt(a) {
+		fields, _ := ArtifactFields(a)
+		landed, _ := fields[LandedTipField].(string)
+		reason := "it has already landed"
+		if landed != "" {
+			reason += " as " + landed
+		}
+		return &ErrMergeNotAdmissible{
+			Item: a.ID, Branch: BranchOf(a), Target: TargetOf(a), TargetTip: tip,
+			Code:   RefusalMergeLanded,
+			Reason: reason,
+		}
+	}
 	gated := GatedTipOf(a)
 	if gated == "" {
 		return &ErrMergeNotAdmissible{

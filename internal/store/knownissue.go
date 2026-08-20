@@ -83,6 +83,10 @@ const (
 	// RefusalMergeStaleGate is the one that costs the days: gated on a tip that
 	// is not the tip it would land on.
 	RefusalMergeStaleGate = "merge.stale_gate"
+	// RefusalMergeLanded is a row whose work is already in the target. Its own
+	// landing is what moved the tip, so the staleness arm would call it stale
+	// against a commit it wrote, and tell a caller to re-gate a closed row.
+	RefusalMergeLanded = "merge.already_landed"
 	// RefusalMergeTipDeployed is not a store refusal - it is the HTTP door's
 	// fallback, where nobody stated a tip and the node judged against the commit
 	// IT WAS BUILT FROM. Every verdict on that page is then a fact about when
