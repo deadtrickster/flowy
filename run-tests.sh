@@ -11831,6 +11831,23 @@ a_stray_cd_reports_once() {
 	./scripts/stray-cd-check.sh run-tests.sh
 }
 
+# THE OPERATOR SENT A SCREENSHOT captioned "note the fonts": room names at the
+# page's base size, with the hash and the name stacked one above the other.
+#
+# One call did it. navClass is a FUNCTION, because NavLink hands it isActive,
+# and it was passed to cn() as though it were a string. clsx ignores functions
+# silently, so the link kept the two classes written beside it and none of the
+# ones navClass carries - no text-sm, no flex.
+#
+# The check COMPARES a room against a nav item rather than asserting a class
+# list, because the class list is the thing that broke: a check reading it would
+# have been written from the same assumption that the string ever arrived.
+a_room_looks_like_the_sidebar() {
+	recall
+	cd "$ROOT/web" || return 1
+	node scripts/sidebar-consistent-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A"
+}
+
 a_screenshot_pasted_into_a_room_arrives_whole() {
 	recall
 	cd "$ROOT/web" || return 1
@@ -19287,6 +19304,8 @@ check "the tui reaches the node only through the HTTP API" tui_talks_only_to_the
 check "flowy tui refuses to start with no token anywhere" tui_needs_a_token
 check "a room the reader closed leaves the sidebar, and stays closed" \
 	a_closed_room_leaves_the_sidebar_and_stays_closed
+check "a room in the sidebar looks like the rest of the sidebar" \
+	a_room_looks_like_the_sidebar
 check "a screenshot pasted into a room arrives whole" \
 	a_screenshot_pasted_into_a_room_arrives_whole
 check "every control the console offers acknowledges the pointer" \

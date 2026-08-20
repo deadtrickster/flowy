@@ -233,7 +233,17 @@ export function Shell({ children }: { children: ReactNode }) {
         <div data-room-list="" className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto">
           {rooms.map((room) => (
             <div key={room} className="group relative flex items-center">
-              <NavLink to={`/chat/${room}`} className={cn(navClass, "flex-1 pr-7")}>
+              {/* navClass is a FUNCTION, because NavLink hands it isActive.
+                  cn(navClass, ...) silently dropped it - clsx ignores functions
+                  - so this link rendered with "flex-1 pr-7" and nothing else:
+                  no text-sm, so 16px instead of 14px, and no flex, so the hash
+                  and the room name stacked one above the other. The operator
+                  sent a screenshot of it. It is called with isActive here so
+                  the value, not the function, reaches cn. */}
+              <NavLink
+                to={`/chat/${room}`}
+                className={({ isActive }) => cn(navClass({ isActive }), "flex-1 pr-7")}
+              >
                 <Hash className="h-4 w-4" />
                 {room}
                 <UnreadDot room={room} n={counts[room] ?? 0} />
