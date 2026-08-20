@@ -11764,6 +11764,29 @@ the_overview_inbox_follows_the_log() {
 	node scripts/inbox-follows-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" "$TOKEN_OP" general
 }
 
+# A ROOM THE READER CLOSED LEAVES THEIR SIDEBAR, AND STAYS CLOSED.
+#
+# The operator asked twice: "I left the padesign room - 'you are not a member'
+# appeared. ok, how to remove it from ROOMS list now?" and then "all other chat
+# apps i know allow me to close the room".
+#
+# Leaving is a PERMISSION act - it empties your role - and the sidebar lists
+# every room in the project, so leaving changed nothing they could see.
+# Measured 2026-08-20: 28 rooms on this node, 2 declared, and #general itself
+# carries no membership row for any of the four seats talking in it. Filtering
+# the sidebar on membership would have emptied every sidebar including theirs.
+#
+# So closing is a fact about a READER and not about a room, kept as a personal
+# note on the node. The middle arm - still closed after a RELOAD - is the one
+# that says the preference reached the node rather than a variable in the page,
+# and it is why this is not localStorage: the operator runs more than one
+# machine.
+a_closed_room_leaves_the_sidebar_and_stays_closed() {
+	recall
+	cd "$ROOT/web" || return 1
+	node scripts/close-room-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" general
+}
+
 tui_needs_a_token() {
 	local out
 	mkdir -p "$WORK/no-config"
@@ -19104,6 +19127,8 @@ check "node B survived the authorship checks" kill -0 "$NODE5B_PID"
 say "the terminal client"
 check "the tui reaches the node only through the HTTP API" tui_talks_only_to_the_api
 check "flowy tui refuses to start with no token anywhere" tui_needs_a_token
+check "a room the reader closed leaves the sidebar, and stays closed" \
+	a_closed_room_leaves_the_sidebar_and_stays_closed
 check "the inbox door answers the end of the log it is asked for" \
 	the_inbox_answers_the_end_it_is_asked_for
 check "the overview's inbox follows the log, and does not spin while it is quiet" \

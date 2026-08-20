@@ -14,6 +14,7 @@ import {
   Lock,
   Shapes,
   UserRound,
+  X,
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
@@ -21,7 +22,7 @@ import { NavLink, useNavigate } from "react-router-dom";
 import { FreshBanner } from "@/components/FreshBanner";
 import { TokenBar } from "@/components/TokenBar";
 import { api } from "@/lib/api";
-import { useRooms, useUnread } from "@/lib/unread";
+import { useRoomList, useUnread } from "@/lib/unread";
 import { cn } from "@/lib/utils";
 
 function navClass({ isActive }: { isActive: boolean }) {
@@ -57,7 +58,7 @@ export function Shell({ children }: { children: ReactNode }) {
   // it, because the room view is what knows when something has been read.
   const { counts } = useUnread();
   // The node's rooms, not this file's idea of them. See useRooms.
-  const rooms = useRooms();
+  const { shown: rooms, hidden, close, reopen } = useRoomList();
   // For the create button below: a new room is somewhere to go, not just a row
   // in the list, so it navigates rather than leaving you where you were.
   const navigate = useNavigate();
@@ -212,12 +213,61 @@ export function Shell({ children }: { children: ReactNode }) {
         </div>
         <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto">
           {rooms.map((room) => (
-            <NavLink key={room} to={`/chat/${room}`} className={navClass}>
-              <Hash className="h-4 w-4" />
-              {room}
-              <UnreadDot room={room} n={counts[room] ?? 0} />
-            </NavLink>
+            <div key={room} className="group relative flex items-center">
+              <NavLink to={`/chat/${room}`} className={cn(navClass, "flex-1 pr-7")}>
+                <Hash className="h-4 w-4" />
+                {room}
+                <UnreadDot room={room} n={counts[room] ?? 0} />
+              </NavLink>
+              {/*
+                CLOSE, and it is deliberately not "leave". Leaving is a
+                permission act - it empties your role in the room - and the
+                operator did it, got "you are not a member", and watched the
+                sidebar not change, because the list is every room in the
+                project. Closing is a fact about this READER: which rooms they
+                want in front of them. The room stays readable and stays theirs
+                to reopen, which is why this needs no confirmation.
+
+                Shown on hover so a list of thirty rooms is not a list of thirty
+                buttons, and titled rather than labelled for the same reason.
+              */}
+              <button
+                type="button"
+                data-close-room={room}
+                title={`close ${room} - it stays readable, and reopens from the line below`}
+                aria-label={`close ${room}`}
+                className="absolute right-1 hidden rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground group-hover:block"
+                onClick={() => void close(room)}
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </div>
           ))}
+          {/*
+            WHAT WAS CLOSED IS NOT GONE, and the sidebar says so rather than
+            leaving a reader to wonder where a room went. A closed room with no
+            way back is a room somebody has to be told about; this is the way
+            back and it is one click.
+          */}
+          {hidden.length > 0 ? (
+            <details className="mt-1 px-2 text-muted-foreground text-xs" data-closed-rooms="">
+              <summary className="cursor-pointer py-1">
+                {hidden.length} closed
+              </summary>
+              {hidden.map((room) => (
+                <button
+                  key={room}
+                  type="button"
+                  data-reopen-room={room}
+                  className="flex w-full items-center gap-1 rounded px-1 py-0.5 text-left hover:bg-muted hover:text-foreground"
+                  onClick={() => void reopen(room)}
+                >
+                  <Hash className="h-3 w-3" />
+                  {room}
+                </button>
+              ))}
+            </details>
+          ) : null}
         </div>
 
         {/* shrink-0 so the rooms list cannot squeeze it away; mt-auto is gone

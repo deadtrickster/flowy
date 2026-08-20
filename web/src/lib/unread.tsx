@@ -79,7 +79,36 @@ export const ROOMS = ["general", "handoffs", "incidents"];
  * and this list is right about the three rooms that have existed all along.
  */
 export function useRooms(): string[] {
+  return useRoomList().shown;
+}
+
+/**
+ * The rooms the sidebar draws, the ones this reader has closed, and the two
+ * verbs that move a room between them.
+ *
+ * WHY CLOSING IS NOT LEAVING. The operator, twice: "I left the padesign room -
+ * 'you are not a member' appeared. ok, how to remove it from ROOMS list now?"
+ * and "all other chat apps i know allow me to close the room". Leaving is a
+ * PERMISSION act - it empties your role - and the sidebar lists every room in
+ * the project, so leaving changed nothing they could see.
+ *
+ * Closing is a fact about a READER, not about a room: which rooms I want in
+ * front of me. Mapping it onto membership would borrow a permission mechanism
+ * to store a preference, and measured on 2026-08-20 that mechanism is empty
+ * where it would have to work - 28 rooms on this node, 2 declared, and #general
+ * itself carries no membership for any of the four seats talking in it.
+ *
+ * A room you have closed is still READABLE and still yours to reopen: nothing
+ * about permission moved, which is exactly why this is safe to do from a
+ * sidebar without a confirmation.
+ */
+export function useRoomList() {
   const [rooms, setRooms] = useState<string[] | null>(null);
+  const [hidden, setHidden] = useState<string[]>([]);
+  // The note's id, so the second write updates the row the first one made
+  // rather than filing a new one each time.
+  const noteId = useRef("");
+
   useEffect(() => {
     let live = true;
     api
@@ -97,11 +126,57 @@ export function useRooms(): string[] {
         // honest render of that is what we knew before.
         if (live) setRooms(ROOMS);
       });
+    api
+      .hiddenRooms()
+      .then((answer) => {
+        if (!live) return;
+        noteId.current = answer.id;
+        setHidden(answer.rooms);
+      })
+      .catch(() => {
+        // A preference that cannot be read hides NOTHING. The failure that
+        // shows more is the one to fail towards: a sidebar missing rooms
+        // because a read failed is indistinguishable from rooms that were
+        // closed on purpose.
+      });
     return () => {
       live = false;
     };
   }, []);
-  return rooms ?? ROOMS;
+
+  const write = useCallback(async (next: string[]) => {
+    // On screen first, because this is a preference and not a transaction -
+    // and then re-read the id from the answer, so the row created by the first
+    // close is the row the second one updates.
+    setHidden(next);
+    try {
+      const row = await api.setHiddenRooms(noteId.current, next);
+      noteId.current = row.id;
+    } catch {
+      // The node refused. Put the sidebar back where the node still has it
+      // rather than showing a state nothing holds.
+      try {
+        const answer = await api.hiddenRooms();
+        noteId.current = answer.id;
+        setHidden(answer.rooms);
+      } catch {
+        // Nothing to reconcile against; leave the optimistic list, which errs
+        // towards what the reader just asked for.
+      }
+    }
+  }, []);
+
+  const all = rooms ?? ROOMS;
+  return {
+    /** Every room the node offers, closed or not. */
+    all,
+    /** The ones in the sidebar. */
+    shown: all.filter((room) => !hidden.includes(room)),
+    /** The ones this reader has closed, in the order the node lists them. */
+    hidden: all.filter((room) => hidden.includes(room)),
+    close: (room: string) => write([...hidden.filter((r) => r !== room), room]),
+    reopen: (room: string) => write(hidden.filter((r) => r !== room)),
+  };
 }
 
 /** The reader label this console keeps for one room, per principal. */

@@ -1142,6 +1142,14 @@ export interface ActivityPage {
  * of the row - so what the banner reads is what the posting node wrote, even
  * when the announcement arrived through a peer.
  */
+/**
+ * The title of the personal note that holds this reader's closed rooms. It is
+ * the KEY - the row is found by it - so it is a constant rather than a string
+ * typed in two places, and it says what it is for to anybody who finds the row
+ * in their own memory list.
+ */
+export const HIDDEN_ROOMS_TITLE = "console: rooms I have closed";
+
 export interface AnnouncementFields {
   scope: "node" | "project" | "federation";
   resource?: string;
@@ -1819,6 +1827,52 @@ export const api = {
 
   /** And out. Always 200, cookie cleared, whether or not one was sent. */
   logout: () => request<{ ok: boolean }>("/api/logout", { method: "POST" }),
+
+  /**
+   * The rooms this reader has closed, as a personal note on the node.
+   *
+   * PER PRINCIPAL AND NOT PER BROWSER. localStorage would have been smaller and
+   * it is the wrong shape: the operator runs more than one machine, and a room
+   * closed on one of them coming back on the next is the same "did that work?"
+   * that leaving a room already produced. lib/unread.tsx made the same call for
+   * the same reason - "THE NODE HOLDS IT, not localStorage".
+   *
+   * A NOTE RATHER THAN A NEW DOOR. visibility personal is a store rule, not a
+   * convention: nobody else can read it and nobody else can be confused by it.
+   * The title is the key - one row per principal, found by title, updated in
+   * place - so this costs no schema and no endpoint.
+   */
+  hiddenRooms: async (): Promise<{ id: string; rooms: string[] }> => {
+    const page = await request<{ artifacts?: Artifact[] }>(
+      `/api/artifacts?type=memory&kind=note&limit=200`,
+    );
+    const row = (page.artifacts ?? []).find((a) => a.title === HIDDEN_ROOMS_TITLE);
+    if (!row) return { id: "", rooms: [] };
+    // A body that will not parse is not a reason to lose the sidebar: an
+    // unreadable preference reads as "nothing hidden", which is the state that
+    // shows MORE rather than less.
+    try {
+      const rooms = JSON.parse(row.body || "[]");
+      return { id: row.id, rooms: Array.isArray(rooms) ? rooms.filter((r) => typeof r === "string") : [] };
+    } catch {
+      return { id: row.id, rooms: [] };
+    }
+  },
+
+  /** Write the closed list back, creating the note the first time. */
+  setHiddenRooms: (id: string, rooms: string[]) =>
+    request<Artifact>("/api/artifacts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...(id ? { id } : {}),
+        type: "memory",
+        kind: "note",
+        title: HIDDEN_ROOMS_TITLE,
+        body: JSON.stringify(rooms),
+        visibility: "personal",
+      }),
+    }),
 
   writeEntity: (opts: { type: string; title: string; body?: string }) =>
     request<Artifact>("/api/artifacts", {
