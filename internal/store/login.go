@@ -223,6 +223,167 @@ func (d *DB) UserForSession(ctx context.Context, id string) (*User, error) {
 	return d.GetUser(ctx, user)
 }
 
+// SessionProject is WHERE THIS BROWSER IS WORKING: the project the session has
+// been put into, or "" when it has not been put into one.
+//
+// MEASURED 2026-08-20: a cookie session resolved to a principal with no project
+// at all, so a logged-in person wrote nowhere and "switch projects" had nothing
+// to switch. This is the fact that was missing, and it lives on the session
+// rather than on the user because two windows may be in two projects and
+// neither is more true than the other.
+//
+// AN EXPIRED SESSION ANSWERS NOTHING rather than answering its last project: a
+// session that has ended is not somewhere, and a caller that got a project back
+// from a dead session would write with it.
+func (d *DB) SessionProject(ctx context.Context, id string) (string, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return "", nil
+	}
+	var project sql.NullString
+	err := d.sql.QueryRowContext(ctx,
+		`SELECT project FROM sessions WHERE id = $1 AND expires > now()`, id).Scan(&project)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("store: session project: %w", err)
+	}
+	return strings.TrimSpace(project.String), nil
+}
+
+// EnterProject puts a session into one of its user's projects.
+//
+// MEMBERSHIP IS THE WHOLE CHECK, and it is done here rather than at the door
+// for once, because there is nothing else this call could mean: entering a
+// project you do not belong to is not a narrower version of entering one, it is
+// a different act with no answer. A door checking it as well would be a second
+// implementation of the same question - the thing that made /api/rooms take its
+// permission from ReadableProjects rather than from a copy.
+//
+// A REFUSAL NAMES THE PROJECT AND SAYS WHICH FACT DECIDED. "You are not a member
+// of X" and "there is no project called X" send somebody to two different
+// people.
+func (d *DB) EnterProject(ctx context.Context, sessionID, userID, project string) error {
+	sessionID, project = strings.TrimSpace(sessionID), strings.TrimSpace(project)
+	if sessionID == "" {
+		return fmt.Errorf("store: no session to put into a project")
+	}
+	if project == "" {
+		// Leaving the active project unset is a real act: a person who has left
+		// every project should not be silently left writing into the last one.
+		_, err := d.sql.ExecContext(ctx,
+			`UPDATE sessions SET project = NULL WHERE id = $1`, sessionID)
+		if err != nil {
+			return fmt.Errorf("store: leave project: %w", err)
+		}
+		return nil
+	}
+
+	var exists bool
+	if err := d.sql.QueryRowContext(ctx,
+		`SELECT EXISTS (SELECT 1 FROM projects WHERE id = $1)`, project).Scan(&exists); err != nil {
+		return fmt.Errorf("store: enter project: %w", err)
+	}
+	if !exists {
+		return fmt.Errorf("store: there is no project called %q on this node", project)
+	}
+
+	var member bool
+	if err := d.sql.QueryRowContext(ctx,
+		`SELECT EXISTS (SELECT 1 FROM project_members WHERE user_id = $1 AND project = $2)`,
+		userID, project).Scan(&member); err != nil {
+		return fmt.Errorf("store: enter project: %w", err)
+	}
+	if !member {
+		return fmt.Errorf("store: you are not a member of %q, so you cannot work in it - "+
+			"which is not the same as that project not existing", project)
+	}
+
+	if _, err := d.sql.ExecContext(ctx,
+		`UPDATE sessions SET project = $2 WHERE id = $1 AND expires > now()`,
+		sessionID, project); err != nil {
+		return fmt.Errorf("store: enter project: %w", err)
+	}
+	return nil
+}
+
+// ProjectsOfUser is where this person works: their memberships, by name.
+//
+// SEPARATE FROM ReadableProjects, which is what a principal may READ. A person
+// reads more than they are a member of - a grant points at a project they have
+// never joined - and writing where you can read would put work in places nobody
+// is looking. Two questions, two answers, and the second one is not a filter of
+// the first.
+func (d *DB) ProjectsOfUser(ctx context.Context, userID string) ([]string, error) {
+	rows, err := d.sql.QueryContext(ctx,
+		`SELECT project FROM project_members WHERE user_id = $1 ORDER BY project`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("store: projects of user: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := []string{}
+	for rows.Next() {
+		var project string
+		if err := rows.Scan(&project); err != nil {
+			return nil, fmt.Errorf("store: projects of user: %w", err)
+		}
+		out = append(out, project)
+	}
+	return out, rows.Err()
+}
+
+// MayInvite says whether this user can put somebody else into that project.
+//
+// The operator, 2026-08-20: "normal ownership and collaboration - i will invite
+// other humans to projects." So it is not the node operator's act alone: the
+// people who own a project bring others into it, which is what every ordinary
+// control panel does and what this node did not have at all.
+//
+// WHO OWNS ONE: whoever declared it, and anybody they have made an owner. The
+// creator is read from the registry row rather than from a membership, because
+// a project can be declared before anybody is a member of it - including by the
+// person declaring it - and an owner who cannot invite is an owner in name.
+//
+// A MEMBER IS NOT AN OWNER. Being able to work somewhere and being able to
+// decide who else works there are different powers, and collapsing them is how
+// a project quietly becomes open to everybody who was ever added to it.
+func (d *DB) MayInvite(ctx context.Context, userID, project string) (bool, error) {
+	userID, project = strings.TrimSpace(userID), strings.TrimSpace(project)
+	if userID == "" || project == "" {
+		return false, nil
+	}
+	var yes bool
+	err := d.sql.QueryRowContext(ctx,
+		`SELECT EXISTS (SELECT 1 FROM projects WHERE id = $2 AND created_by = $1)
+		     OR EXISTS (SELECT 1 FROM project_members
+		                 WHERE user_id = $1 AND project = $2 AND role = 'owner')`,
+		userID, project).Scan(&yes)
+	if err != nil {
+		return false, fmt.Errorf("store: may invite: %w", err)
+	}
+	return yes, nil
+}
+
+// JoinProject makes somebody a member. The OPERATOR's act - see the door - and
+// idempotent, because "make sure they are in it" is the thing an operator
+// actually wants and a second call is not an error.
+func (d *DB) JoinProject(ctx context.Context, userID, project, role string) error {
+	role = strings.TrimSpace(role)
+	if role == "" {
+		role = "member"
+	}
+	_, err := d.sql.ExecContext(ctx,
+		`INSERT INTO project_members (user_id, project, role) VALUES ($1, $2, $3)
+		 ON CONFLICT (user_id, project) DO UPDATE SET role = EXCLUDED.role`,
+		strings.TrimSpace(userID), strings.TrimSpace(project), role)
+	if err != nil {
+		return fmt.Errorf("store: join project: %w", err)
+	}
+	return nil
+}
+
 // EndSession deletes one session. Deleting one that is already gone is not an
 // error: logging out twice is not a failure, and saying so would tell a caller
 // something about a session it no longer holds.

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 
@@ -216,7 +217,25 @@ func (s *server) principalFor(r *http.Request) (*store.Principal, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &store.Principal{UserID: user.ID}, nil
+	// WHERE THIS PERSON IS WORKING, which until 2026-08-20 was nowhere.
+	//
+	// A cookie session resolved to a principal with no project at all, so a
+	// logged-in person's writes had no home and "switch projects" had nothing to
+	// switch - every answer this fleet gave the operator about it was really
+	// "paste a different agent's token". The project is a fact about the
+	// SESSION: two windows may be in two projects and neither is more true.
+	//
+	// A FAILURE HERE IS NOT A FAILED REQUEST. The person is authenticated
+	// either way; what is unknown is where they are working, and the honest
+	// version of that is the empty project - the same state as a session that
+	// has not chosen one. Refusing the request instead would turn "I do not
+	// know where you are" into "you are nobody".
+	project, err := s.db.SessionProject(r.Context(), c.Value)
+	if err != nil {
+		log.Printf("session project: %v", err)
+		project = ""
+	}
+	return &store.Principal{UserID: user.ID, Project: project}, nil
 }
 
 // principalOf returns the principal the middleware resolved for r.

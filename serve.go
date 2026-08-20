@@ -382,6 +382,8 @@ var apiRoutes = []string{
 	// And the same answer waited on, because a nag that a seat has to remember
 	// to ask for is one an idle seat never asks for - see api_nagwait.go.
 	"GET /api/nag/wait",
+	"POST /api/projects/{project}/enter",
+	"POST /api/projects/{project}/members",
 	"GET /api/whoami",
 	"GET /api/node",
 	"GET /api/metrics",
@@ -712,6 +714,11 @@ func (s *server) routes() http.Handler {
 	api.HandleFunc("GET /api/sync/pull", s.handleSyncPull)
 	api.HandleFunc("POST /api/sync/push", s.handleSyncPush)
 	api.HandleFunc("GET /api/peers", s.handleListPeers)
+	// A PERSON'S PROJECTS: where they may work, and which one this browser is
+	// working in. See projects.go - a session act and an operator act, not a
+	// credential act, which is the whole point of them.
+	api.HandleFunc("POST /api/projects/{project}/enter", s.handleEnterProject)
+	api.HandleFunc("POST /api/projects/{project}/members", s.handleJoinProject)
 	api.HandleFunc("GET /api/whoami", s.handleWhoami)
 	api.HandleFunc("GET /api/node", s.handleNode)
 	// Phase 8. The fabric watching itself: what it holds, what it did, and what

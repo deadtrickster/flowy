@@ -33,6 +33,7 @@ import (
 	"os"
 	"os/exec"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -195,6 +196,142 @@ type whoamiResponse struct {
 	// nobody was shown when a day of real work went into `pa`.
 	Fixture bool   `json:"project_fixture"`
 	Origin  string `json:"project_origin,omitempty"`
+	// WHERE THIS PERSON MAY WORK, which is not the same question as what they
+	// may read.
+	//
+	// A person reads more than they are a member of - a grant points at a
+	// project they have never joined - so this is the list a switcher offers
+	// and `reads` on /api/projects is the list a reader may look into. Writing
+	// where you can read would put work in places nobody is looking.
+	//
+	// NOT omitempty, and it matters: a person who belongs to nothing must send
+	// [] rather than nothing at all, because "no memberships" and "this node
+	// does not report memberships" are different facts and a client cannot tell
+	// them apart from an absent key. That collapse has cost this fleet six
+	// separate defects in two days.
+	Memberships []string `json:"memberships"`
+}
+
+// handleEnterProject puts THIS SESSION into one of this person's projects.
+//
+// POST /api/projects/{project}/enter
+//
+// The operator, on 2026-08-20: "i as a user dont care about per project tokens
+// - i want a human thing - my own projects without logging out/in." Until this
+// existed a cookie session carried no project at all, so a person's writes had
+// nowhere to land and the only way to change project was to paste a different
+// agent's token - which is the machine's mechanism worn by a person.
+//
+// A SESSION ACT, NOT A CREDENTIAL ACT. Nothing about who you are changes; where
+// you are working does. That is why it needs no re-auth and why it is safe as a
+// control rather than as a login screen - and why an agent cannot call it: a
+// bearer token has no session to be put anywhere, and its reach is
+// token_projects, a different mechanism for a different kind of principal.
+//
+// THE ANSWER SAYS WHERE YOU NOW WRITE, not "ok". The rule that made this whole
+// area findable is `flowy say` printing the project it wrote into rather than
+// the one it was told to: anything that changes where writes land says so.
+func (s *server) handleEnterProject(w http.ResponseWriter, r *http.Request) {
+	p := principalOf(r)
+	if p == nil || p.UserID == "" {
+		writeJSON(w, http.StatusForbidden, errorBody("only a person has projects to work in"))
+		return
+	}
+	c, err := r.Cookie(sessionCookie)
+	if err != nil || strings.TrimSpace(c.Value) == "" {
+		// A bearer token reaches here with a real principal and no session.
+		// Saying "log in" would be wrong for an agent, so this names the actual
+		// difference rather than the symptom.
+		writeJSON(w, http.StatusForbidden, errorBody(
+			"this is a session act: a bearer token's projects are minted into it, "+
+				"and it has no session to put into one"))
+		return
+	}
+
+	project := strings.TrimSpace(r.PathValue("project"))
+	if err := s.db.EnterProject(r.Context(), c.Value, p.UserID, project); err != nil {
+		// The store's own sentence: it already tells "no such project" from
+		// "you are not a member of it", which are two different people to go
+		// and talk to.
+		writeJSON(w, http.StatusForbidden, errorBody(err.Error()))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"project":    project,
+		"writing_in": project,
+	})
+}
+
+// handleJoinProject makes somebody a member of one.
+//
+// POST /api/projects/{project}/members  {"user": "<id or handle>"}
+//
+// THE OPERATOR'S ACT. Membership decides where a person's work lands, so a
+// person who could grant it to themselves could put work anywhere - the same
+// reason a token cannot widen its own reach. It is idempotent: "make sure they
+// are in it" is what an operator means, and a second call is not a failure.
+func (s *server) handleJoinProject(w http.ResponseWriter, r *http.Request) {
+	p := principalOf(r)
+	if p == nil || p.UserID == "" {
+		writeJSON(w, http.StatusForbidden, errorBody("only a person invites people into a project"))
+		return
+	}
+	project := strings.TrimSpace(r.PathValue("project"))
+	// WHO MAY INVITE: the people who own the project, and this node's operator.
+	//
+	// The operator asked for exactly this - "normal ownership and collaboration
+	// - i will invite other humans to projects" - so it is not the node
+	// operator's act alone. Being a MEMBER is not enough: working somewhere and
+	// deciding who else works there are different powers.
+	if !p.Operator {
+		may, err := s.db.MayInvite(r.Context(), p.UserID, project)
+		if err != nil {
+			serverError(w, r, err)
+			return
+		}
+		if !may {
+			writeJSON(w, http.StatusForbidden, errorBody(
+				"you do not own "+strconv.Quote(project)+", so you cannot say who works in it - "+
+					"its owner or this node's operator can"))
+			return
+		}
+	}
+	var req struct {
+		User string `json:"user"`
+		Role string `json:"role"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody("bad request body: "+err.Error()))
+		return
+	}
+	// BY ID OR BY HANDLE, because an operator types a handle and a script has
+	// an id, and refusing one of them makes the door usable by half its
+	// callers. A handle that resolves to nobody is named in the refusal rather
+	// than answered as "bad request": the operator's next question is always
+	// which of the two they got wrong.
+	name := strings.TrimSpace(req.User)
+	user, err := s.db.GetUser(r.Context(), name)
+	if err != nil {
+		user, err = s.db.UserByHandle(r.Context(), name)
+	}
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest,
+			errorBody("no user called "+strconv.Quote(name)+" on this node, by id or by handle"))
+		return
+	}
+	if err := s.db.JoinProject(r.Context(), user.ID, project, req.Role); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody(err.Error()))
+		return
+	}
+	mine, err := s.db.ProjectsOfUser(r.Context(), user.ID)
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	// WHAT THEY CAN REACH AFTERWARDS, rather than "ok": the fact an operator
+	// wants is the new set, and a door that answers success makes them ask a
+	// second question to learn what they just did.
+	writeJSON(w, http.StatusOK, map[string]any{"user": user.ID, "memberships": mine})
 }
 
 // projectFacts is the registry's view of one project name, for a surface that

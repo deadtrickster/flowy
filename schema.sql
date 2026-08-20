@@ -1154,6 +1154,41 @@ CREATE TABLE IF NOT EXISTS token_projects (
     project text NOT NULL REFERENCES projects (id),
     PRIMARY KEY (token, project)
 );
+-- WHERE A PERSON WORKS, which until now was nowhere.
+--
+-- MEASURED 2026-08-20: a cookie session resolves to a principal with NO project
+-- (auth.go), token_projects is the set an AGENT reaches, and grants share
+-- artifacts and projects rather than saying who belongs to one. So a logged-in
+-- person had no project at all, and every answer the fleet gave the operator
+-- about "switching projects" was really "paste a different agent's token".
+--
+-- NAMED project_members TO MATCH room_members, which has said who is in a room
+-- since rooms became objects. Two tables answering "who belongs to this thing"
+-- under two different naming schemes is how a reader learns to grep for both.
+--
+-- MEMBERSHIP IS NOT A GRANT, and they are deliberately two tables. A grant says
+-- this thing may be seen over there; membership says this is where I work. One
+-- of them travels between nodes and is signed; the other is local and says
+-- nothing about what may be read - a member of a project reads it because the
+-- permission filter already lets them, not because this row says so.
+--
+-- EMPTY ON EVERY NODE TODAY, like token_projects before it: nobody is a member
+-- of anything until the operator says so, and nothing changes behaviour until
+-- then. The safe direction is a person who is in too few projects saying so out
+-- loud, rather than one in too many that nobody notices.
+CREATE TABLE IF NOT EXISTS project_members (
+    user_id text NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    project text NOT NULL REFERENCES projects (id),
+    -- What they are here, kept for the same reason room_members keeps a role:
+    -- the question "may they invite somebody else" arrives later, and a table
+    -- that has to grow a column to answer it answers it wrongly first.
+    role    text NOT NULL DEFAULT 'member',
+    added   timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, project)
+);
+CREATE INDEX IF NOT EXISTS project_members_project_idx ON project_members (project);
+
+
 ALTER TABLE agents DROP CONSTRAINT IF EXISTS agents_project_fkey;
 ALTER TABLE agents ADD  CONSTRAINT agents_project_fkey
     FOREIGN KEY (project) REFERENCES projects (id);
@@ -1380,5 +1415,18 @@ CREATE TABLE IF NOT EXISTS sessions (
 
 CREATE INDEX IF NOT EXISTS sessions_user_idx ON sessions (user_id);
 CREATE INDEX IF NOT EXISTS sessions_expires_idx ON sessions (expires);
+
+-- WHICH OF THEM THIS BROWSER IS WORKING IN.
+--
+-- On the SESSION rather than on the user, because a person can have two windows
+-- open in two projects and neither is more true than the other; and not in
+-- localStorage, because where writes land is a fact the node has to know - a
+-- client that decided it alone would be the only thing that knew where a row
+-- went.
+--
+-- NULL means "not chosen yet", which is a real state and reads as "you are in
+-- no project" rather than as a blank: a person with no membership has nowhere
+-- to write, and that has to be sayable.
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS project text REFERENCES projects (id);
 
 COMMIT;

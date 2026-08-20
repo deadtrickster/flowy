@@ -1359,12 +1359,27 @@ func (s *server) handleCreateGrant(w http.ResponseWriter, r *http.Request) {
 // GET /api/whoami
 func (s *server) handleWhoami(w http.ResponseWriter, r *http.Request) {
 	p := principalOf(r)
-	out := whoamiResponse{Principal: p}
+	out := whoamiResponse{Principal: p, Memberships: []string{}}
 	if p != nil {
 		declared, project := s.projectFacts(r.Context(), p.Project)
 		out.Declared = declared
 		if project != nil {
 			out.Fixture, out.Origin = project.Fixture, project.Origin
+		}
+		// A PERSON'S MEMBERSHIPS, which an agent does not have: a token's reach
+		// is token_projects and it is a different mechanism for a different
+		// kind of principal. Asking for an agent would answer [] and imply the
+		// question makes sense for it.
+		if p.UserID != "" && p.AgentID == "" {
+			if mine, err := s.db.ProjectsOfUser(r.Context(), p.UserID); err == nil {
+				out.Memberships = mine
+			} else {
+				// A list that could not be read is NOT an empty list - see the
+				// field's own comment - so it is logged and the answer says
+				// nothing rather than saying "you belong to nothing".
+				log.Printf("whoami: memberships for %s: %v", p.UserID, err)
+				out.Memberships = nil
+			}
 		}
 	}
 	writeJSON(w, http.StatusOK, out)
