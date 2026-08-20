@@ -1150,6 +1150,14 @@ export interface ActivityPage {
  */
 export const HIDDEN_ROOMS_TITLE = "console: rooms I have closed";
 
+/**
+ * The tag that FINDS that note. The title is for a person reading their own
+ * memory list; this is the key, because GET /api/artifacts filters on tag and
+ * not on title - so looking the row up is exact rather than a scan of a page
+ * that the row may have fallen off.
+ */
+export const HIDDEN_ROOMS_TAG = "console-hidden-rooms";
+
 export interface AnnouncementFields {
   scope: "node" | "project" | "federation";
   resource?: string;
@@ -1842,20 +1850,35 @@ export const api = {
    * The title is the key - one row per principal, found by title, updated in
    * place - so this costs no schema and no endpoint.
    */
-  hiddenRooms: async (): Promise<{ id: string; rooms: string[] }> => {
+  hiddenRooms: async (): Promise<{ id: string; rooms: string[]; read: boolean }> => {
+    // FOUND BY TAG, NOT BY SCANNING A PAGE FOR A TITLE. The first cut read
+    // `?type=memory&kind=note&limit=200` and looked for the title inside that
+    // page, which breaks in two silent ways past 200 personal notes: the row is
+    // not in the page, "not found" reads as "you have closed nothing", and the
+    // next close CREATES A SECOND ROW because the id is empty. Once there are
+    // two, `.find` takes whichever the page happens to order first and the
+    // preference flaps. Measured by @claude-host: 54 notes for one seat in one
+    // day, four agents, against a limit of 200.
+    //
+    // The door has no title filter but it has a tag one, and a tag is exact -
+    // so this is a lookup rather than a search, and absence means absence.
     const page = await request<{ artifacts?: Artifact[] }>(
-      `/api/artifacts?type=memory&kind=note&limit=200`,
+      `/api/artifacts?type=memory&kind=note&tag=${encodeURIComponent(HIDDEN_ROOMS_TAG)}`,
     );
-    const row = (page.artifacts ?? []).find((a) => a.title === HIDDEN_ROOMS_TITLE);
-    if (!row) return { id: "", rooms: [] };
+    const row = (page.artifacts ?? [])[0];
+    if (!row) return { id: "", rooms: [], read: true };
     // A body that will not parse is not a reason to lose the sidebar: an
     // unreadable preference reads as "nothing hidden", which is the state that
     // shows MORE rather than less.
     try {
       const rooms = JSON.parse(row.body || "[]");
-      return { id: row.id, rooms: Array.isArray(rooms) ? rooms.filter((r) => typeof r === "string") : [] };
+      return {
+        id: row.id,
+        rooms: Array.isArray(rooms) ? rooms.filter((r) => typeof r === "string") : [],
+        read: true,
+      };
     } catch {
-      return { id: row.id, rooms: [] };
+      return { id: row.id, rooms: [], read: true };
     }
   },
 
@@ -1871,6 +1894,9 @@ export const api = {
         title: HIDDEN_ROOMS_TITLE,
         body: JSON.stringify(rooms),
         visibility: "personal",
+        // The tag is how the row is found again. Without it the lookup is a
+        // scan of every note this principal has ever written.
+        tags: [HIDDEN_ROOMS_TAG],
       }),
     }),
 

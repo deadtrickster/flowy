@@ -43,6 +43,18 @@ try {
   const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
   const crashes = [];
   page.on("pageerror", (err) => crashes.push(String(err)));
+  // EVERY REFUSAL THE PAGE MET, so a failure says WHY rather than only that the
+  // room is still there. The first gate run of this check reported "#general is
+  // still in the sidebar after it was closed" and nothing else - true, and it
+  // named the symptom of a write nobody could see. A preference that fails to
+  // save looks exactly like a click that did nothing.
+  const refused = [];
+  page.on("response", (r) => {
+    if (r.url().includes("/api/") && r.status() >= 400) {
+      refused.push(`${r.request().method()} ${r.status()} ${r.url()}`);
+    }
+  });
+  const why = () => (refused.length > 0 ? `\n  the node refused: ${refused.join("; ")}` : "");
   await page.addInitScript((t) => localStorage.setItem("flowy.token", t), token);
   await page.goto(`${base}/`, { timeout: 20_000 }).catch(() => {});
 
@@ -52,9 +64,40 @@ try {
     .waitFor({ state: "visible", timeout: 20_000 })
     .catch(() => {});
   if (crashes.length > 0) die(`the shell threw: ${crashes.join("; ")}`);
-  if ((await link.count()) === 0) die(`#${room} is not in the sidebar to begin with`);
+  // START FROM A KNOWN STATE. This preference is per principal and lives on the
+  // node, so a room left closed by an earlier run - or by whoever holds this
+  // token - is still closed when the check arrives, and the check then fails at
+  // the first arm saying the sidebar "offers no way to close" it. True and
+  // useless: the room is not there to close. Measured by running this twice
+  // against one node.
+  if ((await link.count()) === 0) {
+    const closed = page.locator("[data-closed-rooms]");
+    if ((await closed.count()) === 0) {
+      die(`#${room} is not in the sidebar and nothing says it is closed`);
+    }
+    await closed.locator("summary").click();
+    const back = page.locator(`[data-reopen-room="${room}"]`);
+    if ((await back.count()) === 0) {
+      die(`#${room} is neither in the sidebar nor in the closed list`);
+    }
+    await back.click();
+    await page
+      .waitForFunction((r) => !!document.querySelector(`a[href="/chat/${r}"]`), room, {
+        timeout: 10_000,
+      })
+      .catch(() => die(`#${room} was already closed and would not reopen${why()}`));
+  }
 
   const closer = page.locator(`[data-close-room="${room}"]`);
+  // WAITED FOR, not counted once. When the room had to be reopened above, the
+  // link appears the instant React commits and this counted before the row it
+  // belongs to was in the document - so the first run against an already-closed
+  // room reported "the sidebar offers no way to close it" about a control that
+  // arrived a moment later. A count is a sample; a wait is a state.
+  await closer
+    .first()
+    .waitFor({ state: "attached", timeout: 10_000 })
+    .catch(() => {});
   if ((await closer.count()) === 0) die(`the sidebar offers no way to close #${room}`);
   // HOVER FIRST, because the control is revealed on hover and a click through
   // `force` is not the interaction a person has. The first version forced it
@@ -68,13 +111,13 @@ try {
     .waitForFunction((r) => !document.querySelector(`a[href="/chat/${r}"]`), room, {
       timeout: 10_000,
     })
-    .catch(() => die(`#${room} is still in the sidebar after it was closed`));
+    .catch(() => die(`#${room} is still in the sidebar after it was closed${why()}`));
 
   // IT SURVIVES A RELOAD, which is the arm that says the node holds it.
   await page.reload({ timeout: 20_000 }).catch(() => {});
   await page.waitForTimeout(3000);
   if ((await page.locator(`a[href="/chat/${room}"]`).count()) !== 0) {
-    die(`#${room} came back after a reload - the preference did not reach the node`);
+    die(`#${room} came back after a reload - the preference did not reach the node${why()}`);
   }
 
   const closed = page.locator("[data-closed-rooms]");

@@ -251,9 +251,7 @@ export function Shell({ children }: { children: ReactNode }) {
           */}
           {hidden.length > 0 ? (
             <details className="mt-1 px-2 text-muted-foreground text-xs" data-closed-rooms="">
-              <summary className="cursor-pointer py-1">
-                {hidden.length} closed
-              </summary>
+              <summary className="cursor-pointer py-1">{hidden.length} closed</summary>
               {hidden.map((room) => (
                 <button
                   key={room}

@@ -131,6 +131,7 @@ export function useRoomList() {
       .then((answer) => {
         if (!live) return;
         noteId.current = answer.id;
+        read.current = answer.read;
         setHidden(answer.rooms);
       })
       .catch(() => {
@@ -144,11 +145,32 @@ export function useRoomList() {
     };
   }, []);
 
+  // Whether the closed list was ever successfully READ. A write that creates
+  // because it did not find must have looked everywhere - and "the read failed"
+  // and "there is nothing to find" are the same empty list otherwise, so a
+  // failed read followed by a close would file a SECOND note and split the
+  // preference in two.
+  const read = useRef(false);
+
   const write = useCallback(async (next: string[]) => {
     // On screen first, because this is a preference and not a transaction -
     // and then re-read the id from the answer, so the row created by the first
     // close is the row the second one updates.
     setHidden(next);
+    if (!read.current) {
+      // Nothing has been read yet, so an empty id means "unknown" rather than
+      // "absent". Read first; only then is a create honest.
+      try {
+        const answer = await api.hiddenRooms();
+        noteId.current = answer.id;
+        read.current = answer.read;
+      } catch {
+        // Still unknown. Leave the sidebar where the reader just put it and do
+        // not write - a preference is worth less than a duplicate row is
+        // expensive.
+        return;
+      }
+    }
     try {
       const row = await api.setHiddenRooms(noteId.current, next);
       noteId.current = row.id;
@@ -158,6 +180,7 @@ export function useRoomList() {
       try {
         const answer = await api.hiddenRooms();
         noteId.current = answer.id;
+        read.current = answer.read;
         setHidden(answer.rooms);
       } catch {
         // Nothing to reconcile against; leave the optimistic list, which errs
