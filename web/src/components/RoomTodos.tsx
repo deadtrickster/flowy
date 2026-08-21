@@ -1,10 +1,13 @@
-import { type FormEvent, useRef, useState } from "react";
+import { Paperclip, X } from "lucide-react";
+import { type ClipboardEvent, type FormEvent, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
+import { AttachmentCards } from "@/components/AttachmentCards";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { type Artifact, type FlowyEvent, artifactPath } from "@/lib/api";
+import { type Attached, writeFile } from "@/lib/attach";
 import { speakerStyle } from "@/lib/speakercolour";
 import {
   TODO_KINDS,
@@ -16,6 +19,7 @@ import {
   statusStyle,
   todoAssignee,
   todoAssigneeClaimed,
+  todoAttachments,
   todoRaiser,
 } from "@/lib/todos";
 import { shortId } from "@/lib/utils";
@@ -28,7 +32,9 @@ interface Props {
   raiseFrom: FlowyEvent | null;
   disabled: boolean;
   error: string | null;
-  onRaise: (title: string, category?: string) => Promise<void>;
+  /** onRaise files one. attachments are ids already written to the node - see
+   * the paperclip below, and roomTodoRequest.Attachments on the other side. */
+  onRaise: (title: string, category?: string, attachments?: string[]) => Promise<void>;
   /** onAssign says who is carrying one. An empty name says nobody is. It has to
    * land on the node and come back from it - see the assignee cell below. */
   onAssign: (id: string, assignee: string, expect: string) => Promise<void>;
@@ -72,6 +78,53 @@ export function RoomTodos({ room, todos, raiseFrom, disabled, error, onRaise, on
   const [category, setCategory] = useState("");
   const [raising, setRaising] = useState(false);
   const [failed, setFailed] = useState<string | null>(null);
+  /**
+   * The files this todo will carry, written to the node ALREADY.
+   *
+   * The bytes go up when they are picked, not when the row is raised, because
+   * that is where the refusals are - a file over the ceiling, an empty one, a
+   * node that is not answering - and a person finds out while they are still
+   * looking at the file rather than after typing a title. What the raise sends
+   * is a list of ids.
+   *
+   * Taking one off this list does NOT delete it: the log is append-only and
+   * the bytes are written, so the X below is honestly "not this row".
+   */
+  const [carrying, setCarrying] = useState<Attached[]>([]);
+  const [uploading, setUploading] = useState(0);
+  const picker = useRef<HTMLInputElement>(null);
+
+  /**
+   * One file, up to the node, in the same three sentences the message box uses
+   * - literally the same, out of lib/attach, because a second ceiling and a
+   * second refusal wording drift apart on the day one of them is corrected.
+   */
+  const attach = async (file: File, pasted: boolean) => {
+    setUploading((n) => n + 1);
+    setFailed(null);
+    try {
+      const got = await writeFile(
+        file,
+        room,
+        pasted ? `pasted in #${room}` : file.name || undefined,
+      );
+      setCarrying((current) => [...current, got]);
+    } catch (err) {
+      setFailed(err instanceof Error ? err.message : String(err));
+    } finally {
+      setUploading((n) => n - 1);
+    }
+  };
+
+  /** A screenshot is pasted, not picked. The title field takes it because that
+   * is where the cursor is when somebody has just copied an image and is about
+   * to describe it. */
+  const onPaste = (event: ClipboardEvent<HTMLInputElement>) => {
+    const files = Array.from(event.clipboardData?.files ?? []);
+    if (files.length === 0) return;
+    event.preventDefault();
+    for (const file of files) void attach(file, true);
+  };
   // Which row is being edited, and what has been typed into it. The name being
   // typed is NOT the row's assignee: what a person has half-written is theirs
   // until they commit it, and the cell keeps showing the node's answer until
@@ -101,8 +154,16 @@ export function RoomTodos({ room, todos, raiseFrom, disabled, error, onRaise, on
     setRaising(true);
     setFailed(null);
     try {
-      await onRaise(said, category);
+      await onRaise(
+        said,
+        category,
+        carrying.map((c) => c.id),
+      );
       setTitle("");
+      // Cleared only once the node has the row. A raise that was refused still
+      // has its files in front of the person who picked them, so retrying is
+      // retyping a title rather than finding the file again.
+      setCarrying([]);
     } catch (err) {
       setFailed(err instanceof Error ? err.message : String(err));
     } finally {
@@ -359,10 +420,39 @@ export function RoomTodos({ room, todos, raiseFrom, disabled, error, onRaise, on
             name="todo-title"
             value={title}
             onChange={(event) => setTitle(event.target.value)}
+            onPaste={onPaste}
             placeholder={`raise a todo in #${room}`}
             disabled={disabled || raising}
             aria-label={`raise a todo in ${room}`}
           />
+          {/* The file the row is about. Hidden input, clicked by the button,
+              exactly as the message box does it - a bare file input styles
+              differently in every browser and this panel is narrow. */}
+          <input
+            ref={picker}
+            type="file"
+            multiple
+            className="hidden"
+            onChange={(event) => {
+              for (const file of Array.from(event.target.files ?? [])) void attach(file, false);
+              // So picking the same file twice in a row fires onChange the
+              // second time: the input reports a CHANGE of value.
+              event.target.value = "";
+            }}
+            aria-label="attach a file to this todo"
+          />
+          <Button
+            type="button"
+            size="icon"
+            variant="ghost"
+            className="h-7 w-7 shrink-0"
+            disabled={disabled || raising}
+            onClick={() => picker.current?.click()}
+            aria-label="attach a file to this todo"
+            data-todo-attach
+          >
+            <Paperclip className="h-3.5 w-3.5" />
+          </Button>
           {/* The kind, beside the title rather than after the fact. The closed
               set is the node's - anything outside it is refused there - so this
               offers exactly those four and "unclassified", which is legal and
@@ -386,6 +476,34 @@ export function RoomTodos({ room, todos, raiseFrom, disabled, error, onRaise, on
             raise
           </Button>
         </div>
+        {carrying.length > 0 ? (
+          <div className="flex flex-wrap gap-2" data-todo-carrying>
+            {carrying.map((c) => (
+              <span
+                key={c.id}
+                className="flex items-center gap-1 rounded bg-muted px-2 py-1 text-xs"
+                data-todo-carried={c.id}
+              >
+                <Paperclip className="h-3 w-3 shrink-0" />
+                <span className="max-w-40 truncate">{c.name}</span>
+                <span className="text-muted-foreground">{Math.ceil(c.bytes / 1024)}k</span>
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="ghost"
+                  className="h-4 w-4 shrink-0"
+                  onClick={() => setCarrying((current) => current.filter((x) => x.id !== c.id))}
+                  aria-label={`do not attach ${c.name}`}
+                >
+                  <X className="h-3 w-3" />
+                </Button>
+              </span>
+            ))}
+          </div>
+        ) : null}
+        {uploading > 0 ? (
+          <span className="text-muted-foreground text-xs">attaching {uploading}…</span>
+        ) : null}
         {/* Which message it will be raised out of. The link is the point of
             raising it here rather than filing it somewhere else, so the panel
             says which message it is about to keep. */}
@@ -432,6 +550,10 @@ function TodoSummary({ todo }: { todo?: Artifact }) {
   }
   const to = artifactPath(todo);
   const body = (todo.body ?? "").trim();
+  // What the row carries. The same cards the room draws under a message, so a
+  // screenshot raised into the queue is looked at where the queue is read
+  // instead of being an id somebody has to go and resolve.
+  const files = todoAttachments(todo);
   return (
     <li
       data-todo-summary={todo.id}
@@ -454,6 +576,11 @@ function TodoSummary({ todo }: { todo?: Artifact }) {
         <p className="pt-1 text-muted-foreground">
           … {body.length - 400} more characters on the full card
         </p>
+      ) : null}
+      {files.length > 0 ? (
+        <div className="pt-1" data-todo-files>
+          <AttachmentCards ids={files} />
+        </div>
       ) : null}
     </li>
   );

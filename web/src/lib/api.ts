@@ -2207,7 +2207,14 @@ export const api = {
       { method: "DELETE" },
     ),
 
-  raiseTodo: (room: string, title: string, body = "", message?: string, category = "") =>
+  raiseTodo: (
+    room: string,
+    title: string,
+    body = "",
+    message?: string,
+    category = "",
+    attachments: string[] = [],
+  ) =>
     request<{ item: Artifact; event: FlowyEvent }>(`/api/chat/${encodeURIComponent(room)}/todo`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -2219,6 +2226,10 @@ export const api = {
         body,
         ...(message ? { message } : {}),
         ...(category ? { category } : {}),
+        // Left out when empty for the same reason category is: the node reads
+        // a stated list as the list, and this control has nothing to say about
+        // attachments when nobody picked one.
+        ...(attachments.length > 0 ? { attachments } : {}),
       }),
     }),
 

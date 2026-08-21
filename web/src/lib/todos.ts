@@ -319,6 +319,17 @@ export function todoMessage(artifact: Artifact): string {
 }
 
 /**
+ * The files the row carries, in the order they were named.
+ *
+ * Space separated on the node, exactly as a message's are in meta - one
+ * encoding, one splitter, and a row and a message that carry the same file
+ * carry it the same way. See roomTodoRequest.Attachments.
+ */
+export function todoAttachments(artifact: Artifact): string[] {
+  return fieldOf(artifact, "attachments").split(" ").filter(Boolean);
+}
+
+/**
  * The colour a status is drawn in. Asked for directly: "I wanted colors for
  * Active Done and Todo".
  *

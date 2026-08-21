@@ -173,6 +173,44 @@ type roomTodoRequest struct {
 	// second copy of that answer would be inventing the fact this field exists
 	// to keep honest.
 	Raiser string `json:"raiser"`
+	// Attachments are ids of attachments already written, the same ids a
+	// message carries and validated by the same rule.
+	//
+	// A TODO RAISED IN A ROOM IS RAISED OUT OF SOMETHING SOMEBODY IS LOOKING
+	// AT - a screenshot, a log, a dump - and until this field the panel beside
+	// the conversation could take the sentence and not the thing the sentence
+	// was about. The file went into the room as a message and the row pointed
+	// at nothing, so whoever picked the row up a day later got the title and
+	// had to go back and read the room to find the evidence, which is the
+	// failure the panel exists to end.
+	//
+	// They ride in fields under the key a message's ride in meta under, and on
+	// the announcing message's meta as well, so the room draws the cards where
+	// the raise is announced and the ROW carries them where the work is picked
+	// up. Both, because they answer different questions: the message says what
+	// was in front of us, the row says what this work is about.
+	Attachments []string `json:"attachments"`
+}
+
+// carriedFiles is the one reading of the attachment ids a raise names: trimmed,
+// blanks dropped, order kept, and each id once.
+//
+// ORDER IS KEPT because the cards are drawn in it and somebody who attached the
+// before and the after screenshot in that order meant that order. EACH ID ONCE
+// because the same id twice draws the same card twice, which reads as two files
+// - and the space-joined field cannot tell the reader otherwise.
+func carriedFiles(ids []string) []string {
+	var files []string
+	seen := map[string]bool{}
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		files = append(files, id)
+	}
+	return files
 }
 
 // handleRoomTodoRaise files a todo out of a room, and says so in the room.
@@ -229,6 +267,22 @@ func (s *server) handleRoomTodoRaise(w http.ResponseWriter, r *http.Request) {
 		serverError(w, r, err)
 		return
 	}
+	// Every id named here has to be an attachment this principal can read, by
+	// the same rule and the same sentence a message carrying one gets: a card
+	// drawn for every reader of the room must name a row the raiser could have
+	// reached, or the raise laundered a reference into a room that could not
+	// have made it.
+	//
+	// Tidied FIRST and validated after, so the ids that go to the reader are
+	// the ids that were checked. An empty string reaching ReadArtifact would be
+	// refused as "attachment  is not an attachment you can read", which is a
+	// sentence about nothing.
+	files := carriedFiles(req.Attachments)
+	if !s.mayCarryAttachments(w, r, files) {
+		return
+	}
+	carried := strings.Join(files, " ")
+
 	// The status a queue reads: active, todo, done. An unstated one is todo -
 	// raising something is saying it has to happen, not that anybody started.
 	//
@@ -286,6 +340,15 @@ func (s *server) handleRoomTodoRaise(w http.ResponseWriter, r *http.Request) {
 		}
 		raised[store.RaiserField] = raiser
 	}
+	// Space separated, like a message's, so one reader reads both. A second
+	// encoding of the same list is a second thing to keep in step, and the
+	// console already splits this one on a space.
+	if carried != "" {
+		if raised == nil {
+			raised = map[string]any{}
+		}
+		raised[store.AttachmentsMetaKey] = carried
+	}
 	fields, err := json.Marshal(raised)
 	if err != nil {
 		serverError(w, r, err)
@@ -320,7 +383,14 @@ func (s *server) handleRoomTodoRaise(w http.ResponseWriter, r *http.Request) {
 	}
 
 	actor, kind := chatActor(p)
-	meta, err := json.Marshal(speakerMeta(p, kind, s.speakerName(r.Context(), p)))
+	said := speakerMeta(p, kind, s.speakerName(r.Context(), p))
+	// And on the announcement too, which is what makes the file visible in the
+	// room at the moment it is raised rather than only to whoever opens the
+	// row. MessageList draws a card per id off exactly this key.
+	if carried != "" {
+		said[store.AttachmentsMetaKey] = carried
+	}
+	meta, err := json.Marshal(said)
 	if err != nil {
 		serverError(w, r, err)
 		return

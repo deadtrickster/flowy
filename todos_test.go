@@ -147,3 +147,32 @@ func TestTheRoomIsToldWhoTookIt(t *testing.T) {
 		}
 	}
 }
+
+// What a raise carries, and the two things the list has to survive.
+//
+// The field is space joined, which is the message convention and the reason the
+// console has one splitter rather than two - so a blank entry is not a value
+// this encoding can hold, and an id repeated is a second card for one file. The
+// tidy happens BEFORE the ids are checked against the reader, so what is stored
+// is what was validated.
+func TestWhatARaiseCarriesIsTidiedBeforeItIsChecked(t *testing.T) {
+	got := carriedFiles([]string{" 01HONE ", "", "01HTWO", "01HONE", "   "})
+	want := []string{"01HONE", "01HTWO"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v, want %v - order is what the cards are drawn in", got, want)
+		}
+	}
+	// And a raise that named no file grows no field: a key written as "" is a
+	// row that carries an attachment with no id, which every reader that splits
+	// on a space would then have to special-case.
+	if files := carriedFiles(nil); files != nil {
+		t.Fatalf("a raise that attached nothing produced %v", files)
+	}
+	if files := carriedFiles([]string{"", "  "}); files != nil {
+		t.Fatalf("a raise that attached blanks produced %v", files)
+	}
+}

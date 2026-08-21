@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
+import { AttachmentCards } from "@/components/AttachmentCards";
 import { DocumentPanes, documentRoom } from "@/components/DocumentPanes";
 import { RelatedRows } from "@/components/RelatedRows";
 import { ReproPanel } from "@/components/ReproPanel";
@@ -25,7 +26,7 @@ import {
 import { renderDocument } from "@/lib/markdown";
 import { useSession } from "@/lib/session";
 import { evidenceTone, reproTone, severityTone, upstreamTone } from "@/lib/statecolour";
-import { isQueueItem, todoAssignee, todoRaiser } from "@/lib/todos";
+import { isQueueItem, todoAssignee, todoAttachments, todoRaiser } from "@/lib/todos";
 import { shortId } from "@/lib/utils";
 
 /**
@@ -58,6 +59,10 @@ export function ArtifactView() {
   // console digs into an artifact's fields for either.
   const raiser = artifact ? todoRaiser(artifact) : "";
   const assignee = artifact ? todoAssignee(artifact) : "";
+  // The files the row carries. Raised out of a room with a paperclip, or
+  // written by an agent onto the row - either way they are attachment ids in
+  // the same field, and this page is where somebody picking the work up looks.
+  const carried = artifact ? todoAttachments(artifact) : [];
   // The words somebody has selected in the document, and the ones they have
   // asked to quote. Two states rather than one: selecting is reading, and the
   // draft is only written when somebody says so.
@@ -360,6 +365,17 @@ export function ArtifactView() {
                     {artifact.body}
                   </pre>
                 )}
+                {/* WHAT THE ROW IS ABOUT, when it is about a file. Drawn here
+                    rather than only in the room where it was raised: the room
+                    scrolls and the row does not, and a screenshot nobody can
+                    find from the row is a screenshot that was never attached to
+                    anything. The cards are the room's own. */}
+                {carried.length > 0 ? (
+                  <div data-artifact-attachments={carried.length}>
+                    <div className="pb-1 font-medium text-muted-foreground text-xs">files</div>
+                    <AttachmentCards ids={carried} />
+                  </div>
+                ) : null}
                 {artifact.discovery ? (
                   <div>
                     <div className="pb-1 font-medium text-muted-foreground text-xs">discovery</div>

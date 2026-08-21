@@ -5,8 +5,9 @@ import { CitedMessage } from "@/components/CitedMessage";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { type Citation, api } from "@/lib/api";
+import type { Citation } from "@/lib/api";
 import { atFragment, matchNames, useRoster } from "@/lib/atname";
+import { writeFile } from "@/lib/attach";
 import { useSession } from "@/lib/session";
 
 interface Props {
@@ -162,42 +163,18 @@ export function MessageBox({ citation, clearReply, disabled, onSend, quote, room
    * is worth more than a uuid, and less than nothing is worth guessing.
    */
   const attach = async (file: File, pasted: boolean) => {
-    // The ceiling BEFORE the round trip, in the same sentence the node would
-    // have used. A four megabyte refusal that arrives after four megabytes have
-    // been uploaded is the same refusal, delivered at the worst moment.
-    if (file.size > api.MAX_ATTACHMENT) {
-      setError(
-        `${file.name || "that"} is ${file.size} bytes and the ceiling is ${api.MAX_ATTACHMENT}. Attach it as a file the node can keep, or cut it down.`,
-      );
-      return;
-    }
-    if (file.size === 0) {
-      setError(`${file.name || "that"} is empty - there is nothing to attach.`);
-      return;
-    }
     setUploading((n) => n + 1);
     setError(null);
     try {
-      const bytes = new Uint8Array(await file.arrayBuffer());
-      // Chunked because String.fromCharCode(...spread) on a multi-megabyte array
-      // overflows the argument list and throws - a four megabyte paste is the
-      // NORMAL case here, not the edge one.
-      let binary = "";
-      for (let i = 0; i < bytes.length; i += 0x8000) {
-        binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-      }
-      const name = file.name || (pasted ? "pasted" : "attachment");
-      const written = await api.writeAttachment({
-        content_base64: btoa(binary),
-        title: pasted ? `pasted in #${room}` : name,
-        filename: file.name || undefined,
-        content_type: file.type || undefined,
+      // The ceiling, the chunking and the refusal sentences live in lib/attach
+      // now - the todo panel needs the same three and a second copy of them is
+      // a second set of answers. See 01M0GGQ8D4.
+      const carried = await writeFile(
+        file,
         room,
-      });
-      setCarrying((current) => [
-        ...current,
-        { id: written.item.id, name, bytes: written.size_bytes },
-      ]);
+        pasted ? `pasted in #${room}` : file.name || undefined,
+      );
+      setCarrying((current) => [...current, carried]);
       box.current?.focus();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
