@@ -87,7 +87,15 @@ export function MergeQueue({
       </p>
       <ul className="flex flex-col">
         {items.map((m) => (
-          <li key={m.id} className="flex flex-col gap-1 border-border-soft border-b px-4 py-3">
+          // data-merge-row is the row's id, so a check can ask what THIS row is
+          // drawn as rather than counting badges across the pane. The three
+          // states this component now separates - nobody looked, the gate said
+          // no, it may land - are only distinguishable per row.
+          <li
+            key={m.id}
+            data-merge-row={m.id}
+            className="flex flex-col gap-1 border-border-soft border-b px-4 py-3"
+          >
             <div className="flex flex-wrap items-center gap-2">
               <Link
                 className="font-medium text-sm hover:underline"
