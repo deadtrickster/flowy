@@ -51,6 +51,22 @@ type nagView struct {
 	// moved the decisions here to end: a row a seat holds and is working is not
 	// work waiting for that seat, and a row it holds and has not started is.
 	MineTodo int `json:"mine_todo"`
+	// MineTodoIDs is WHICH rows those are, and it exists because a number that
+	// cannot be answered is a nag rather than a signal.
+	//
+	// The operator, 2026-08-21: "have one unread todo, went to todo list - no
+	// idea which one, fix". The rail drew MineTodo, the list drew every row,
+	// and nothing on the page connected them - so the only way to clear the
+	// dot was to open rows until it went away, which is the reader doing the
+	// node's job.
+	//
+	// IT IS FILLED BY THE SAME LOOP THAT COUNTS. A console that re-derived
+	// "assigned to me and not started" from the board would be a second
+	// implementation of this rule, and the first thing it would do is
+	// disagree with the number beside it - which is the defect being fixed,
+	// rebuilt one layer up. The ids and the count cannot drift because
+	// neither is computed twice.
+	MineTodoIDs []string `json:"mine_todo_ids"`
 	// Stale is rows the caller holds as `active` that nothing has written to
 	// for a while. It reports what was SEEN, never what it means - a session
 	// forty minutes into a gate looks exactly like an abandoned claim from
@@ -123,7 +139,10 @@ func (s *server) readNag(ctx context.Context, p *store.Principal, all bool) (nag
 		return nagView{}, err
 	}
 
-	view := nagView{StaleAfter: int(nagStaleAfter.Seconds())}
+	// EMPTY, NOT NIL. A nil slice serialises to null, and null would mean
+	// "this node does not report which rows" - a different answer from
+	// "none are waiting", and the one a console cannot tell apart.
+	view := nagView{StaleAfter: int(nagStaleAfter.Seconds()), MineTodoIDs: []string{}}
 	// Asked of the node rather than computed here, so the rule for "quiet" has
 	// one home - the same reason the workload moved out of four bash scripts.
 	quiet, err := s.db.QuietReaders(ctx, time.Now())
@@ -150,6 +169,7 @@ func (s *server) readNag(ctx context.Context, p *store.Principal, all bool) (nag
 			// to see or it wakes an agent every tick of its own job.
 			if a.Status != "active" {
 				view.MineTodo++
+				view.MineTodoIDs = append(view.MineTodoIDs, a.ID)
 			}
 			// ACTIVE IS A CLAIM, NOT AN OBSERVATION - the operator's own
 			// complaint, and the reason this counts rather than concludes.

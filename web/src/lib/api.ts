@@ -262,6 +262,14 @@ export interface NagView {
   unowned: number;
   open: number;
   mine_todo: number;
+  /**
+   * Which rows mine_todo counts, from the same loop that counts them.
+   *
+   * OPTIONAL BECAUSE A NODE MAY NOT SEND IT. An older node answers no key at
+   * all, which is not the same as an empty list - one means "cannot say which",
+   * the other means "none" - and the rail draws its dot either way.
+   */
+  mine_todo_ids?: string[];
   stale: number;
   stale_after_seconds: number;
   workload: Workload;

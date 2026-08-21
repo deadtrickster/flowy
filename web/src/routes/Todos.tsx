@@ -266,6 +266,39 @@ export function Todos() {
     };
   }, [token]);
 
+  /**
+   * The rows the rail's dot is counting, from the node.
+   *
+   * NOT DERIVED HERE, and that is the whole point. "Assigned to me and not
+   * started" is a rule api_nag.go applies while counting; re-applying it in the
+   * console would be a second implementation whose first act is to disagree
+   * with the number beside it - which is this page's complaint, rebuilt one
+   * layer up. An older node sends no ids and nothing is marked, which is the
+   * honest answer to "cannot say which".
+   */
+  const [waiting, setWaiting] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    if (!token) {
+      setWaiting(new Set());
+      return;
+    }
+    let stopped = false;
+    api
+      .nag()
+      .then((view) => {
+        if (!stopped) setWaiting(new Set(view.mine_todo_ids ?? []));
+      })
+      .catch(() => {
+        // Left unmarked rather than guessed. A nag that could not be read is
+        // not "nothing is waiting" - see the rail, which draws no dot for the
+        // same reason.
+        if (!stopped) setWaiting(new Set());
+      });
+    return () => {
+      stopped = true;
+    };
+  }, [token]);
+
   const shown = narrow(todos, kind, tag);
   const sorted = sortTodos(shown);
   const counts = countTodos(todos);
@@ -316,6 +349,16 @@ export function Todos() {
               <>
                 <Stat colour="#e0a03f" n={counts.active} what="active" />
                 <Stat colour="#8b93a7" n={counts.open} what="open" />
+                {/*
+                  THE RAIL'S NUMBER, ON THE PAGE THE RAIL SENDS YOU TO. It is
+                  drawn only when there is one, because "0 waiting" beside a
+                  rail with no dot is a sentence nobody needs - and it is the
+                  node's count of the ids marked below, so a reader can check
+                  the two against each other by eye.
+                */}
+                {waiting.size > 0 ? (
+                  <Stat colour="#5b8dd6" n={waiting.size} what="waiting on you" />
+                ) : null}
               </>
             ) : null
           }
@@ -588,7 +631,7 @@ and lands."
               </li>
             ) : null}
             {sorted.map((todo) => (
-              <Row key={todo.id} todo={todo} onTag={setTag} />
+              <Row key={todo.id} todo={todo} onTag={setTag} waiting={waiting.has(todo.id)} />
             ))}
           </ol>
         </>
@@ -756,7 +799,15 @@ function emptyReads({
  * cross-project list where those cannot be told apart is worse than no list -
  * somebody closes one believing they closed the other.
  */
-function Row({ todo, onTag }: { todo: Artifact; onTag: (tag: string) => void }) {
+function Row({
+  todo,
+  onTag,
+  waiting,
+}: {
+  todo: Artifact;
+  onTag: (tag: string) => void;
+  waiting: boolean;
+}) {
   const owner = todoAssignee(todo);
   const raiser = todoRaiser(todo);
   const room = todoRoom(todo);
@@ -767,7 +818,16 @@ function Row({ todo, onTag }: { todo: Artifact; onTag: (tag: string) => void }) 
     <li
       data-todo-row={todo.id}
       data-todo-kind={kind}
-      className="flex flex-wrap items-baseline gap-2 border-border/60 border-b px-4 py-2 text-sm"
+      /* WHICH ROW THE RAIL MEANS. The dot beside "todos" counts mine_todo -
+         assigned to you and not started - and until this nothing on the page
+         said which those were. The operator: "have one unread todo, went to
+         todo list - no idea which one, fix". The ids come from the node, from
+         the loop that produced the number, so the mark and the count are one
+         answer rather than two that can disagree. */
+      data-todo-waiting={waiting ? "" : undefined}
+      className={`flex flex-wrap items-baseline gap-2 border-border/60 border-b px-4 py-2 text-sm${
+        waiting ? " border-primary/40 border-l-2 bg-primary/5 pl-3.5" : ""
+      }`}
     >
       {/* The state on the element as well as in the badge, on the same terms as
           data-todo-kind beside it: a check that had to read the word back out of
