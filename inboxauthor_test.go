@@ -59,6 +59,66 @@ func TestADeliveryCarriesTheSpeakersName(t *testing.T) {
 	}
 }
 
+// AND THE FIELDS A LISTENER READS ARE A NAMED SET, not whichever one was
+// noticed last.
+//
+// This test asserted meta.actor_name and thread, because those are the two that
+// were missing the day it was written. That is the same defect the delivery
+// itself has - an enumerating renderer beside a lossless one - and asserting one
+// field at a time reproduces it in the check.
+//
+// The other writer of this same page is spoolEvents (inboxhandover.go), which
+// encodes the whole store.Event and therefore cannot lose a field. writeInbox
+// hand-builds a map and silently lacks anything added after it was written. So
+// what is guarded here is the SET a listener addresses a reply with: without any
+// one of these a delivered message cannot be answered where it was asked.
+func TestADeliveryCarriesWhatAReplyNeeds(t *testing.T) {
+	meta, err := json.Marshal(map[string]any{"actor_name": "orchestrator"})
+	if err != nil {
+		t.Fatalf("marshal meta: %v", err)
+	}
+	page := inboxWaitResponse{
+		Reader: "claude-host",
+		Events: []*store.Event{{
+			ID:     "01M0HQ0NMS16X5SZ87AGYAB5ZT",
+			Room:   "general",
+			Actor:  "01M05TQ76D8Q4Q6NGBJ0SKT0TB",
+			Thread: "01M0HPQTFJ417T7G0WFK4GEQJD",
+			Body:   "so in a way it is prefix branching",
+			Meta:   meta,
+		}},
+	}
+	line := captureDelivery(t, page)
+
+	// WHY EACH ONE, so a later reader can judge a removal rather than guess:
+	//
+	//	room    where to reply. Without it a reply goes to a default room.
+	//	thread  which conversation. Without it the reply lands in the room and
+	//	        reads as an agent ignoring the thread - 01M0HH6ANG.
+	//	body    what was said. A delivery with no body is not a message.
+	//	id      what is being answered, for a citation.
+	//	meta    who said it, at the path every listener already reads.
+	for _, want := range []struct {
+		key string
+		val string
+		why string
+	}{
+		{"room", "general", "a reply has nowhere to go"},
+		{"thread", "01M0HPQTFJ417T7G0WFK4GEQJD", "a reply lands in the room instead of the thread"},
+		{"body", "so in a way it is prefix branching", "there is no message"},
+		{"id", "01M0HQ0NMS16X5SZ87AGYAB5ZT", "nothing can be cited"},
+	} {
+		if got, _ := line[want.key].(string); got != want.val {
+			t.Errorf("the delivery carries %q = %q, want %q - without it %s",
+				want.key, got, want.val, want.why)
+		}
+	}
+	meta2, ok := line["meta"].(map[string]any)
+	if !ok || meta2["actor_name"] != "orchestrator" {
+		t.Errorf("the delivery carries meta = %v, want actor_name orchestrator - without it every author prints \"?\"", line["meta"])
+	}
+}
+
 // AND AN EVENT WITH NO META DOES NOT GROW AN EMPTY ONE. A key that is there is
 // a key that answers; `"meta": {}` makes a reader test two things instead of
 // one, and every consumer that checks presence would read it as a name.
