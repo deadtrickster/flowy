@@ -733,15 +733,18 @@ export function ChatRoom() {
    * for? That has no timing in it at all.
    */
   const wantsThreadBox = useRef(false);
-  const replyInThread = useCallback(
-    (event: FlowyEvent) => {
-      point(event);
-      setOpened(event.thread);
-      wantsThreadBox.current = true;
-      setPane("thread");
-    },
-    [point],
-  );
+  // A PLAIN FUNCTION, like point and setPane beside it, and deliberately not a
+  // useCallback: it calls both of those, neither is stable across a render, and
+  // a memo whose dependency list is rebuilt every render is a memo that memoises
+  // nothing while telling a reader it does. biome said so on the branch - "point
+  // changes on every re-render and should not be used as a hook dependency" -
+  // and the honest fix is to stop pretending, not to wrap two more functions.
+  const replyInThread = (event: FlowyEvent) => {
+    point(event);
+    setOpened(event.thread);
+    wantsThreadBox.current = true;
+    setPane("thread");
+  };
   useEffect(() => {
     if (!wantsThreadBox.current || pane !== "thread") return;
     const box = document.querySelector<HTMLTextAreaElement>(
