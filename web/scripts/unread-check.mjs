@@ -16,6 +16,13 @@
  * same number. So every clearing assertion below is paired with a read of
  * /api/inbox/readers, which is where the node says that mark actually is.
  *
+ * AND A RELOAD KEEPS THE MARK. The last section is 01M0HC38XD: the console
+ * deleted these reader rows on pagehide, which fires on any full navigation, so
+ * every reload re-declared them at the head and silently marked every room read.
+ * It is asserted here rather than in a file of its own because the bug is about
+ * this reader and this badge, and a second copy of the fixture would be a second
+ * idea of where the mark is.
+ *
  * OTHER_TOKEN is a second principal IN THE SAME PROJECT AS THE READER, for the
  * reason scroll-check.mjs learned it: rooms are per project, so a say on a
  * token from another project lands in that project's `general` and this waits
@@ -274,10 +281,59 @@ try {
   said two things in it themselves. Your own messages are not news to you.`);
   }
 
+  // ---- A RELOAD IS NOT A CLOSED TAB ----
+  //
+  // 01M0HC38XD, measured by the operator by accident: two screenshots ninety
+  // seconds apart, /chat/general with a badge of 1 and /profile with none, same
+  // browser and same node, nothing read in between. The second page was a full
+  // load, and the console deleted its reader rows on pagehide - "a closed tab
+  // takes its bookmarks with it" - so the next load re-declared them AT THE
+  // HEAD, where everything older is already read.
+  //
+  // A reload is the commonest thing a person does when a page looks wrong,
+  // which is exactly what they were doing while asking why nothing looked
+  // deployed. So the badge that would have answered them was cleared by the act
+  // of asking.
+  //
+  // ASSERTED ON BOTH HALVES, like everything else here: the badge is drawn from
+  // the mark, so a badge that survives while the mark jumps forward is the same
+  // bug wearing the next reload.
+  const kept = await mark();
+  let unreadAgain = 0;
+  for (let i = 0; i < 2; i++) {
+    unreadAgain = (await say(otherToken, `unread-check across a reload ${i}`)).seq_hlc;
+  }
+  if (!(await until(page, async () => (await badge.count()) > 0, 40_000))) {
+    fail(`two messages were said in #${ROOM} and no badge appeared, so the reload
+  below would assert nothing.`);
+  }
+  const showed = (await badge.first().textContent())?.trim();
+
+  const afterReload = inboxRead();
+  await page.reload({ timeout: 20_000 }).catch(() => {});
+  await afterReload;
+  await page.waitForTimeout(500);
+
+  const nowAt = await mark();
+  if (nowAt > kept) {
+    fail(`a reload moved ${READER} from ${kept} to ${nowAt}, past ${unreadAgain}.
+  Nothing was read: the page was loaded again. A mark that only a reader moves
+  is the whole of what a mark is for, and this one moved itself.`);
+  }
+  if ((await badge.count()) === 0) {
+    fail(`#${ROOM} showed ${showed} unread and showed nothing after a reload, with
+  nothing read in between. Reloading is what a person does when a page looks
+  wrong, and it silently marks every room read.`);
+  }
+  const still = (await badge.first().textContent())?.trim();
+  if (still !== showed) {
+    fail(`#${ROOM} showed ${showed} unread before the reload and ${still} after it.`);
+  }
+
   if (crashes.length > 0) fail(`the console threw while doing it:\n  ${crashes.join("\n  ")}`);
 
   console.log(
-    `ok  a first load counted nothing of the log up to ${backlog}, three arrivals counted 3, reading #${ROOM} cleared them and moved ${READER} to ${after}, an older ack moved nothing, and the reader's own two were not counted`,
+    `ok  a first load counted nothing of the log up to ${backlog}, three arrivals counted 3, reading #${ROOM} cleared them and moved ${READER} to ${after}, an older ack moved nothing, the reader's own two were not counted, and a reload kept ${showed} unread with the mark still at ${kept}`,
   );
 } finally {
   await browser.close();

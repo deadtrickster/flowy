@@ -13707,7 +13707,7 @@ check "a message arriving does not scroll a reader out of the history" \
 	browser_does_not_scroll_a_reader_away
 check "a room opens on a window, lands at the end, stays, and pages back without moving the reader" \
 	browser_leaves_a_room_load_at_the_end
-check "the unread badge counts, clears when the room is read, and ignores your own" \
+check "the unread badge counts, clears when the room is read, ignores your own, and survives a reload" \
 	browser_clears_the_unread_badge
 check "the console's own reader row is past what it read, and only moves forward" \
 	the_consoles_mark_is_a_reader_row_that_only_moves_forward

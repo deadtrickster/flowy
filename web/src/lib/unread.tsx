@@ -345,33 +345,43 @@ export function UnreadProvider({ children }: { children: ReactNode }) {
     tick();
     const every = setInterval(tick, REFRESH_MS);
 
-    // A CLOSED TAB TAKES ITS BOOKMARKS WITH IT.
+    // A RELOAD IS NOT A CLOSED TAB, AND NOTHING HERE DELETES A MARK ANY MORE.
     //
-    // The console readers never poll - they hold a mark and ack what the room
-    // shows - so a roster reads them as ghosts the moment their tab is gone,
-    // and before this they stayed forever: nothing but a person could delete
-    // them. pagehide with persisted false is the tab actually finishing, as
-    // against being stashed for a return (a back-forward restore, an app
-    // switch on a phone), and only that half deletes: a stashed tab that comes
-    // back would find its rows gone and re-declare them at the head, and
-    // everything said while it was away would arrive as read.
+    // This used to delete every console reader on pagehide with persisted
+    // false - "a closed tab takes its bookmarks with it" - written when those
+    // rows sat forever on a roster that read them as waiters about to get
+    // going, three of them half the listening pane, and nothing but a person
+    // could remove them.
     //
-    // TWO TABS still race, and deliberately: the closing one takes rows the
-    // open one keeps using, whose next refresh re-declares them at the head.
-    // The cost is one room's badge resetting in the seconds a second tab
-    // closed in, against rows that never die otherwise.
-    const bye = (leaving: PageTransitionEvent) => {
-      if (leaving.persisted) return;
-      for (const room of ROOMS) {
-        void api.deleteInboxReader(consoleReader(room), true).catch(() => {});
-      }
-      void api.deleteInboxReader(DIRECT_READER, true).catch(() => {});
-    };
-    window.addEventListener("pagehide", bye);
+    // pagehide CANNOT TELL A CLOSING TAB FROM A NAVIGATING ONE. `persisted`
+    // separates a stashed tab from a finished one and says nothing about this:
+    // a reload and a full navigation are both "not persisted", so every one of
+    // them threw the marks away and the next load re-declared them AT THE HEAD,
+    // where everything older is already read. Measured by the operator by
+    // accident, 01M0HC38XD: two screenshots ninety seconds apart, /chat/general
+    // with a badge of 1 and /profile with none - same browser, same node,
+    // nothing read in between. They were reloading because the console looked
+    // wrong, which is what a person does, and the badge that would have
+    // answered them was cleared by the asking.
+    //
+    // WHAT THE DELETION WAS FOR IS ALREADY FIXED, elsewhere and properly: the
+    // declare above says kind "cursor", and store.WaiterCursor is a row the
+    // roster knows holds a position and never polls, so it is no longer drawn
+    // as a waiter that has not started. The clutter was the complaint; the
+    // marks were never the problem.
+    //
+    // AND NOTHING ACCUMULATES. The label is `console:<room>` - one per token
+    // per room, deterministic - so a closed tab leaves the row its next tab
+    // reuses. It was never per-tab, which is why deleting it could only ever
+    // lose a position: the row the delete removed is the row the next load
+    // recreates, minus where the reader had got to. (The old handler also
+    // walked the ROOMS fallback rather than the node's room list, so a room
+    // made after this file was written was never deleted anyway - evidence,
+    // written down here rather than left to be re-derived, that nothing depends
+    // on the deletion happening.)
     return () => {
       stopped = true;
       clearInterval(every);
-      window.removeEventListener("pagehide", bye);
     };
   }, [token]);
 
