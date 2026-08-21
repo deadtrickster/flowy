@@ -248,7 +248,21 @@ export function Shell({ children }: { children: ReactNode }) {
           nav in the document and a check cannot pass against the copy that is
           not showing.
         */}
-        <nav className="order-3 flex flex-col gap-0.5 md:order-none">
+        {/*
+          THE LINKS CAN SHRINK, since this row added a fourteenth and the column
+          stopped fitting. Above the breakpoint the aside is overflow-y-visible
+          and the rooms list is the only bounded box, so the nav's natural
+          height was load-bearing: one more link made the ASIDE taller than the
+          viewport and the whole page scrolled. The rooms-scroll check caught
+          it - master green, this branch red, same check.
+
+          min-h-0 is what lets a flex child go below its content height at all;
+          without it overflow-y-auto never gets a box small enough to scroll.
+          This is the same pair the rooms list below already carries, and on any
+          screen tall enough for the links nothing changes - the box is its
+          natural size and no scrollbar appears.
+        */}
+        <nav className="order-3 flex flex-col gap-0.5 md:order-none md:min-h-0 md:overflow-y-auto">
           <NavLink to="/" className={navClass} end>
             <HomeIcon className="h-4 w-4" />
             overview
