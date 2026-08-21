@@ -188,23 +188,55 @@ way to answer a message does not answer it`);
     die(`focusing the reply control on ${prevId} left the focus on
 ${JSON.stringify(focusedPrev)} - it is not focusable`);
   }
-  // TAB UNTIL IT ARRIVES, bounded, rather than exactly once.
+  // TAB UNTIL IT ARRIVES, over a distance THE PAGE IS ASKED FOR.
   //
   // It was one press, on the assumption that a message carries exactly one
   // control. That stopped being true when reactions landed - a row now draws
   // `react` and a `row` chip beside `reply` - and the check failed for a
   // feature being added rather than for the property being broken, which is a
   // check measuring the count of controls when it means to measure the ORDER
-  // of them.
+  // of them. It was then raised to a typed six, and a row that draws `cite`,
+  // `todo`, `keep` and a thread chip is already past that - so the same
+  // failure arrived a second time, for the same reason, on a number that was
+  // one feature behind rather than five.
   //
-  // Bounded and not a loop-until-found: an unbounded walk would eventually
-  // reach the next message's reply through the browser chrome and the page
-  // furniture and call that a pass. Six is every control a row can draw plus
-  // room, and each stop is asserted to be INSIDE the transcript, so a stray tab
-  // stop between the two messages still fails.
+  // A TYPED BOUND CANNOT BE RIGHT HERE, and reactions are why: every reaction
+  // already on a message is its own button, so the number of controls on a row
+  // is a fact about the DATA and not only about the code. No constant survives
+  // that. The distance is therefore read off the document - how many focusable
+  // things lie between the two reply controls - and the walk asserts we arrive
+  // in exactly that many presses.
+  //
+  // Exactly, not at most, because that is the property the check is for: tab
+  // order IS document order. Arriving early would mean something in between is
+  // unreachable by keyboard, which the old bound would have passed. Each stop
+  // is still asserted to be INSIDE the transcript, so a stray tab stop between
+  // the two messages fails before the count does and says so in those words.
+  const expected = await page.evaluate(
+    ([from, to]) => {
+      const focusable = Array.from(
+        document.querySelectorAll(
+          'main button, main a[href], main input, main select, main textarea, main [tabindex]:not([tabindex="-1"])',
+        ),
+      ).filter((n) => !n.hasAttribute("disabled") && n.getAttribute("aria-hidden") !== "true");
+      const at = (id) => focusable.findIndex((n) => n.getAttribute("data-reply") === id);
+      return { from: at(from), to: at(to), total: focusable.length };
+    },
+    [prevId, lastId],
+  );
+  if (expected.from < 0 || expected.to < 0) {
+    die(`the reply controls are not both focusable in the transcript: found ${prevId} at
+${expected.from} and ${lastId} at ${expected.to} among ${expected.total} focusable elements.
+A control a keyboard reader cannot reach is not a control.`);
+  }
+  if (expected.to <= expected.from) {
+    die(`${lastId}'s reply control comes at ${expected.to}, before ${prevId}'s at
+${expected.from} - the transcript's focus order runs backwards against the order it is read in`);
+  }
+  const presses = expected.to - expected.from;
   const stops = [];
   let focusedLast = null;
-  for (let press = 0; press < 6 && focusedLast !== lastId; press += 1) {
+  for (let press = 0; press < presses && focusedLast !== lastId; press += 1) {
     await page.keyboard.press("Tab");
     const at = await page.evaluate(() => {
       const el = document.activeElement;
@@ -223,8 +255,21 @@ either of them, so a keyboard reader walking the room falls out of it`);
   }
   if (focusedLast !== lastId) {
     die(`tabbing forward from the reply control on ${prevId} reached
-${JSON.stringify(stops)} rather than ${lastId}: the controls are not in the tab order, so
+${JSON.stringify(stops)} rather than ${lastId} in ${presses} press(es), which is how many
+focusable elements the document puts between them: the controls are not in the tab order, so
 a keyboard reader cannot arrive at them however they are drawn`);
+  }
+  // ARRIVING EARLY IS ALSO A FAILURE, and it is the one a bound cannot see.
+  // The document puts `presses` focusable things between the two controls, so
+  // fewer presses than that means the browser skipped one - it is drawn, it is
+  // in the transcript, and no amount of tabbing reaches it. Under the old typed
+  // bound that read as a pass, because the walk stopped asking the moment it
+  // arrived.
+  if (stops.length !== presses) {
+    die(`tabbing forward from the reply control on ${prevId} reached ${lastId} in
+${stops.length} press(es) where the document puts ${presses} focusable elements between them:
+${JSON.stringify(stops)}. Something drawn between the two is skipped by the tab order, so a
+keyboard reader passes over a control a pointer can hit.`);
   }
   await page.keyboard.press("Enter");
   await page.waitForTimeout(300);
