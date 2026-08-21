@@ -1,0 +1,16 @@
+# THE VERSION THIS REPO IS FORMATTED WITH, stated rather than inherited.
+#
+# 01M0JW6GCY. `shfmt` was resolved from whatever was on the PATH of whoever ran
+# the gate, and two versions disagree about a file both of them call clean:
+#
+#   v3.13.1   run-tests.sh:13750   *"$theirs"*) ;;          exit 0
+#   3.8.0     the same line        *"$theirs"*)\n\t\t;;     a diff, and a red
+#
+# Neither is wrong. "shfmt clean" was simply not a property of the repo - it was
+# a property of the machine, and the gate was green because it runs as the one
+# person whose shim answers v3.13.1.
+#
+# The suite reads this file for the number rather than carrying a second copy of
+# it, so the pin and the check cannot drift apart. See shell_scripts_formatted.
+[tools]
+shfmt = "3.13.1"

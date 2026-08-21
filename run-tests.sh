@@ -20411,6 +20411,39 @@ shell_scripts_formatted() {
 		printf 'shfmt is not installed, so the scripts were NOT CHECKED - install it (mise) or this suite is lying about them\n'
 		return 1
 	fi
+	# AND IT IS THE VERSION THIS REPO IS FORMATTED WITH. 01M0JW6GCY.
+	#
+	# The line above refuses an ABSENT formatter and says why, which was the
+	# right instinct and stopped one question short: a formatter that is
+	# PRESENT and different is the same lie, and it passes. Measured, on one
+	# line of this file that neither version has ever edited:
+	#
+	#   v3.13.1   run-tests.sh:13750   *"$theirs"*) ;;            exit 0
+	#   3.8.0     the same line        *"$theirs"*)\n\t\t;;        a diff
+	#
+	# Neither is wrong, so "shfmt clean" was not a property of the repo - it
+	# was a property of the machine. The gate is green because it runs as the
+	# one person whose PATH answers v3.13.1, and every VM run today red on
+	# this and had to be identified as environmental by hand before the rest
+	# of the suite could be read.
+	#
+	# THE NUMBER IS READ OUT OF .mise.toml rather than typed here, so the pin
+	# and the check cannot drift - a version asserted against a copy of itself
+	# is a check that agrees with whoever edited it last.
+	local want have
+	want=$(sed -n 's/^shfmt *= *"\([^"]*\)".*/\1/p' "$ROOT/.mise.toml" | head -1)
+	have=$(shfmt --version 2>/dev/null | tr -d 'v')
+	if [ -z "$want" ]; then
+		printf 'no shfmt pin in .mise.toml, so this check has no version to hold anything to\n'
+		return 1
+	fi
+	if [ "$want" != "$have" ]; then
+		printf 'shfmt is %s and this repo is formatted with %s.\n' "${have:-unknown}" "$want"
+		printf 'Two versions disagree about files both of them call clean, so a diff here\n'
+		printf 'would say nothing about the scripts. Get the pinned one - run mise install\n'
+		printf 'in the repo, which reads .mise.toml - and run this again.\n'
+		return 1
+	fi
 	# -d prints the diff and exits non-zero, so a script somebody hand-edited
 	# out of shape fails with the change it needs attached rather than with a
 	# bare "reformat it".
