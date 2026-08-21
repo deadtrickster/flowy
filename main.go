@@ -167,6 +167,13 @@ func main() {
 			}
 			os.Exit(2)
 		}
+	case "dm":
+		// Same exit discipline as say: a refusal is 2, and there is no
+		// quiet-and-fine outcome for sending a message.
+		if err := dmCmd(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "flowy dm: %v\n", err)
+			os.Exit(2)
+		}
 	case "say":
 		// 2 rather than 1 for a refusal, to match inbox: there, 1 means the
 		// deadline passed quietly and only 2 means broken. Nothing about
