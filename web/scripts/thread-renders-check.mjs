@@ -132,9 +132,24 @@ feature and the other had none.`);
 operator wrote: "messages in threads dont show attachements".`);
   }
 
+  // ---- and clicking the words still selects the message ----
+  //
+  // The body moved OUT of the row's button so links and cards could work, and
+  // that took the click with it - reported in review rather than caught here,
+  // which is why the assertion exists now. The row keeps the click, guarded on
+  // what was clicked, and this is the half a reader notices.
+  await inThread.click();
+  const armed = page.locator(`[data-citation="${message}"]`);
+  await armed.waitFor({ state: "visible", timeout: 10_000 }).catch(() => {});
+  if ((await armed.count()) === 0) {
+    die(`clicking the words of a thread message selected nothing. The body sits
+outside the row's button now so that its links work; the row has to keep the
+click or a reader who clicks a message to answer it gets silence.`);
+  }
+
   if (crashes.length > 0) die(`the page threw: ${crashes.join("; ")}`);
   console.log(
-    `the thread pane draws ${message} with its markdown and its attachment, as the room does`,
+    `the thread pane draws ${message} with its markdown and its attachment, as the room does, and clicking its words selects it`,
   );
 } finally {
   await browser.close();

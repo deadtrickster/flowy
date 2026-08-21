@@ -61,16 +61,44 @@ export function ThreadList({
         const isMe = (id?: string) => !!id && (id === me?.user || id === me?.agent);
         const forMe = isMe(event.addressee) && !isMe(event.actor);
         return (
+          // THE WHOLE ROW STILL SELECTS, and this handler is what gives that
+          // back after the body moved out of the button.
+          //
+          // Reported in review by claude-host: "a reader who clicks the words
+          // of a thread message to reply to it gets nothing". Stating the
+          // regression in the commit message was not the same as accepting it,
+          // and this is the half I had left out.
+          //
+          // GUARDED ON THE ORIGIN, because the reason the body left the button
+          // has not gone away: the body has links in it and attachment cards
+          // have their own buttons, and a click on either of those is a click
+          // on THAT, never a selection. closest() answers exactly that question
+          // about the element the click started on.
+          //
+          // THE KEYBOARD PATH IS THE SPEAKER BUTTON BELOW - a real <button>, in
+          // the tab order, doing the same thing. A keydown here would be a
+          // second copy of it that also fires while somebody is tabbing through
+          // a link in the body.
+          //
+          // The suppression is one line because a biome-ignore has to be the
+          // LAST comment before the node it covers: the first version of this
+          // put four lines of reasoning after the directive and the rule fired
+          // anyway, with the explanation sitting right above it.
+          // biome-ignore lint/a11y/useKeyWithClickEvents: the speaker button below is the keyboard path
           <li
             key={event.id}
+            onClick={(clicked) => {
+              if ((clicked.target as HTMLElement).closest("a,button")) return;
+              onSelect(event);
+            }}
             data-thread-for-me={forMe ? "" : undefined}
             className={`flex flex-col gap-1 border-border/60 border-b px-4 py-2 text-xs ${
               forMe ? "border-l-2 border-l-primary bg-primary/5 " : ""
             }${selected?.id === event.id ? "bg-accent/60" : ""}`}
           >
             {/*
-              THE HEADER IS THE CONTROL AND THE BODY IS CONTENT, which is a
-              change forced by drawing the body properly.
+              THE HEADER IS THE KEYBOARD CONTROL AND THE BODY IS CONTENT, which
+              is a change forced by drawing the body properly.
 
               The whole row used to be one <button>, which is fine for a span of
               plain text and impossible for a rendered one: a link inside a
@@ -79,9 +107,17 @@ export function ThreadList({
               following it. Attachment cards are worse - they have their own
               buttons.
 
-              So the speaker line selects, and everything below it behaves like
-              what it is. What is lost is clicking anywhere on the row to select
-              it; what is gained is a body you can click, quote and open.
+              So the speaker line is the control that lives in the tab order,
+              the row keeps the click, and everything below behaves like what it
+              is: a body you can click, quote and open.
+
+              THE BODY IS text-sm IN BOTH LISTS, and that is a decision rather
+              than a leak from the extraction - raised in review, where it would
+              otherwise have arrived as an unexplained density change. The same
+              content is drawn at the same size wherever it appears, and the
+              speaker and the clock stay text-xs around it. That hierarchy is
+              what the room has and the pane had a flat one only because its
+              body was a span it had styled itself.
             */}
             <button
               type="button"
