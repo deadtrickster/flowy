@@ -218,6 +218,32 @@ function Verdict({ item, decided }: { item: MergeRequest; decided: boolean }) {
       </Badge>
     );
   }
+  // A RED IS NOT AN ABSENCE OF LOOKING, and the code cannot tell you which one
+  // this is. `applyRed` never writes gated_tip - deliberately, because a
+  // written tip is what MergeAdmissible reads as evidence FOR landing - so a
+  // row whose gate FAILED refuses with merge.ungated, the same token as a row
+  // nobody has ever measured. mergered_test.go:50-59 asserts that on master.
+  //
+  // So the arm below, read alone, draws "we looked and it failed" as "waiting
+  // for the gate". That is the same collapse this component exists to undo,
+  // pointing the other way: caught by @flowy-claude while writing the check for
+  // it, before either had landed.
+  //
+  // THE RED ITSELF IS THE DISCRIMINATOR, and it is already on the wire -
+  // api_mergequeue.go:59 sends `red` whenever RedTipOf is set. So this asks the
+  // row what happened rather than inferring it from a code that cannot say.
+  if (item.red?.tip) {
+    return (
+      <Badge
+        variant="secondary"
+        data-merge-verdict="red"
+        data-tone="bad"
+        style={toneStyle(verdictTone("refused"))}
+      >
+        the gate said no
+      </Badge>
+    );
+  }
   // NOBODY HAS LOOKED IS NOT A NO, and until 2026-08-21 this component could
   // not tell the difference: the node sends admissible:false for a row it has
   // simply never measured, so an ordinary queue waiting its turn was drawn as a

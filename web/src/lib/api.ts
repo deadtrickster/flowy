@@ -519,6 +519,18 @@ export interface Refused {
  * decided"; false means "decided, and no". Collapsing those two is how a page
  * ends up drawing a green light because nobody asked the question.
  */
+
+/**
+ * The last red a merge row carries, as the node sends it (api_mergequeue.go:405).
+ * A declaration clears it, so it always describes the current run rather than
+ * one three landings ago.
+ */
+export interface MergeRed {
+  tip: string;
+  base?: string;
+  at?: string;
+  note?: string;
+}
 export interface MergeRequest {
   id: string;
   /**
@@ -576,6 +588,21 @@ export interface MergeRequest {
    * a reason nobody has disproved by taking the row.
    */
   blocked?: MergeBlocked;
+  /**
+   * The last verdict that said no: the tip that was measured and found bad.
+   *
+   * IT IS HOW A RED ROW IS RECOGNISED AT ALL, because the refusal code does not
+   * say so. `applyRed` deliberately never writes gated_tip - a written tip is
+   * what MergeAdmissible reads as evidence FOR landing, so a red recorded there
+   * would make a broken branch landable - and a row with no gated_tip refuses
+   * as `merge.ungated`, the same code as a row nobody has ever looked at.
+   *
+   * mergered_test.go:50-59 asserts exactly that on master, so it is the
+   * repository's intent rather than an accident to be tidied away.
+   *
+   * Absent when the row has no red, which is the ordinary case.
+   */
+  red?: MergeRed;
 }
 
 /** Why a row was skipped, when it was skipped, and by which seat. */
