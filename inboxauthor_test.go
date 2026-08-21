@@ -203,7 +203,7 @@ func TestTheDeliveryDropsNothingByAccident(t *testing.T) {
 		"project":    "the reader's project is settled before delivery, by the same predicate the room read uses",
 		"private":    "its own comment forbids reading it to answer `may they see it` - by the time it is set that question is answered",
 		"citation":   "NOT dropped: writeInbox inlines the quote into body and puts the exact signed bytes in body_signed",
-		"disowned":   "OPEN QUESTION, not a justification. store.go says `a chat line nobody disowned and one its speaker has taken back must not read the same` - and a delivery cannot tell them apart. Answer it or carry the field.",
+		"disowned":   "OPEN QUESTION, not a justification, and it is FILED as 01M0J4FA3K. store.go says `a chat line nobody disowned and one its speaker has taken back must not read the same` - and a delivery cannot tell them apart. Carrying it here ALONE would be worse than dropping it: handleInboxWait never calls FillDisowned, so the field is nil on every waiter event and would render as `not disowned` whether anybody looked or not. The wait handler resolves it first, then this entry comes out.",
 	}
 
 	// EVERY FIELD POPULATED, because an absent value and a dropped one look
