@@ -1555,11 +1555,17 @@ export type Room = {
  * search was added to prevent, at a different boundary. Found by @orchestrator
  * reviewing the search.
  *
- * A NUMBER LARGER THAN ANY ROOM IS NOT A FIX BY ITSELF, which is why it is
- * paired with the truncation notice in RoomTodos: if a page ever comes back
- * full, the pane says so rather than pretending the window is the room. That
- * makes this a performance choice instead of a correctness one, which is the
- * only kind of number it is safe to pick.
+ * THIS IS THE DOOR'S CEILING, NOT A GUESS. store/artifacts.go: defaultLimit
+ * is 200 and maxLimit is 1000, and clampLimit silently reduces anything larger.
+ * So 1000 is the most this door will ever hand back, and "raise the limit" is
+ * not a fix available to a later reader - the parameter would be accepted and
+ * ignored, which is the worst of the three outcomes.
+ *
+ * WHICH IS WHY THE TRUNCATION NOTICE IS THE LOAD-BEARING HALF. A room with
+ * more than 1000 todos cannot be fully read through this door at all, and the
+ * pane then says what it searched instead of denying the rest exist. That
+ * makes this number a performance choice rather than a correctness one, which
+ * is the only kind of number it is safe to pick.
  */
 export const ROOM_TODO_LIMIT = 1000;
 
