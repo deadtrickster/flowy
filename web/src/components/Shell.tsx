@@ -17,6 +17,7 @@ import {
   ListTree,
   Lock,
   Menu,
+  Server,
   Shapes,
   UserRound,
   X,
@@ -375,6 +376,17 @@ export function Shell({ children }: { children: ReactNode }) {
           <NavLink to="/traces" className={navClass}>
             <GitBranch className="h-4 w-4" />
             traces
+          </NavLink>
+          {/*
+            SHOWN TO EVERYONE, not only the operator. The doors behind it are
+            operator-only and the page says so in as many words - which is a
+            better answer than a rail entry that appears and disappears with a
+            role, because a missing entry is indistinguishable from a console
+            that never had the feature.
+          */}
+          <NavLink to="/vms" className={navClass}>
+            <Server className="h-4 w-4" />
+            vms
           </NavLink>
           <NavLink to="/profile" className={navClass}>
             <UserRound className="h-4 w-4" />
