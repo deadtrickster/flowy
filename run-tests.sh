@@ -291,6 +291,40 @@ only=${ONLY:-}
 # and the drainer reads that line.
 skipped=0
 
+# THE CHECKS A FILTER MAY NOT SKIP, because the rest of the run is built on them.
+#
+# MEASURED 2026-08-21, by running ONLY= against one console check and reading a
+# failure that had nothing to do with the check:
+#
+#   FAIL seed principals
+#   ./run-tests.sh: line 12641: ./flowy: No such file or directory
+#   thread-count.sh: line 21: TOKEN_A: unbound variable
+#
+# The node every check talks to is BUILT BY A CHECK, the seeder by another, the
+# console by two more and the schema by a fifth. Filter those out and the suite
+# runs against a tree with no binary and a database with no tables: the node
+# never starts, the seed writes no ids, and the one check the filter selected
+# dies on an unbound variable - a sentence about that check, which was never
+# given anything to measure.
+#
+# A CHECK DECLARES ITSELF, rather than a list here declaring it. `preflight` is
+# `check` that a filter may not skip, so the fact lives beside the registration
+# where somebody adding the next fixture will see it - a list in this function
+# would be a second place to update, maintained by whoever edits a different
+# part of the file, which is the shape that goes stale.
+#
+# WHAT COUNTS AS ONE: it builds something the SUITE'S OWN MAIN FLOW then uses -
+# a binary, the console bundle, a schema, a cluster. Not "this check is
+# important", and not "another check depends on it": a filtered run is evidence
+# about one check either way, and the fixtures it needs are the ones the runner
+# itself walks into.
+preflight() {
+	only_exempt=yes
+	check "$@"
+	only_exempt=no
+}
+only_exempt=no
+
 check() {
 	local name="$1"
 	shift
@@ -301,8 +335,15 @@ check() {
 	# takes that check down with it. Measured: "defs.sh: line 47: only: unbound
 	# variable", and the check reporting " failures, want exactly 1".
 	if [ -n "${only:-}" ] && [ "${name#*"${only:-}"}" = "$name" ]; then
-		skipped=$((${skipped:-0} + 1))
-		return 0
+		# UNLESS THE SUITE IS BUILT ON IT - see preflight() above for the run
+		# that measured this. ${only_exempt:-no} and not $only_exempt, for the
+		# reason ${only:-} carries two lines up: check() is EXTRACTED and run
+		# alone by stray-cd-check, under set -u, in a script that has this
+		# function and not the variables around it.
+		if [ "${only_exempt:-no}" = no ]; then
+			skipped=$((${skipped:-0} + 1))
+			return 0
+		fi
 	fi
 	if [ "$PWD" != "$SUITE_PWD" ]; then
 		printf 'FAIL the suite is running in %s, not %s\n' "$PWD" "$SUITE_PWD"
@@ -12386,9 +12427,9 @@ check "a stray cd outside check() reports once, and the suite carries on" \
 	a_stray_cd_reports_once
 check "the console-check loader fails on a directory that is missing, empty, or silent" \
 	the_console_loader_refuses_to_lose_a_check
-check "npm ci" npm_ci
+preflight "npm ci" npm_ci
 check "biome check web/" biome_check
-check "vite build" npm_build
+preflight "vite build" npm_build
 check "the build is an index that loads a hashed bundle" console_build_is_hashed
 check "the console mounts in a dom and renders the room view" console_mounts
 check "signed out, the worklog says so instead of rendering an empty page" \
@@ -12437,10 +12478,10 @@ printf 'started on port %s\nDATABASE_URL=%s\n' "$PGPORT" "$DATABASE_URL"
 # --------------------------------------------------------------------- checks
 
 say "build and schema"
-check "schema.sql loads" psql -v ON_ERROR_STOP=1 -q -f "$ROOT/schema.sql"
+preflight "schema.sql loads" psql -v ON_ERROR_STOP=1 -q -f "$ROOT/schema.sql"
 check "schema.sql reloads cleanly" psql -v ON_ERROR_STOP=1 -q -f "$ROOT/schema.sql"
-check "go build" go_build
-check "go build ./cmd/smoke" go build -o "$WORK/smoke" ./cmd/smoke
+preflight "go build" go_build
+preflight "go build ./cmd/smoke" go build -o "$WORK/smoke" ./cmd/smoke
 # The trusted-host binary is built by the gate but never run by it: it needs a
 # Docker daemon and a source checkout, which is exactly why it is a second
 # deployable. Building it is what catches the case that matters here - a change
@@ -12517,9 +12558,9 @@ check "a run survives the runner being restarted" \
 
 say "an older database meets this binary"
 mkdir -p "$UPG"
-check "the baseline is a real, older revision of schema.sql" \
+preflight "the baseline is a real, older revision of schema.sql" \
 	upgrade_baseline_is_a_real_older_schema
-check "a database built from the baseline schema loads" \
+preflight "a database built from the baseline schema loads" \
 	upgrade_baseline_database_loads
 check "the fingerprint agrees with the database the rest of this run uses" \
 	upgrade_fingerprint_agrees_with_the_gates_own_database
@@ -13714,8 +13755,8 @@ PG5A_PORT="$(free_port 15440)"
 PG5B_PORT="$(free_port "$((PG5A_PORT + 1))")"
 DSN5A="postgres://$PGUSER@127.0.0.1:$PG5A_PORT/$DBNAME?sslmode=disable"
 DSN5B="postgres://$PGUSER@127.0.0.1:$PG5B_PORT/$DBNAME?sslmode=disable"
-check "a cluster and a schema for node A" start_pg5 A "$PGDATA5A" "$PGSOCK5A" "$PG5A_PORT"
-check "a cluster and a schema for node B" start_pg5 B "$PGDATA5B" "$PGSOCK5B" "$PG5B_PORT"
+preflight "a cluster and a schema for node A" start_pg5 A "$PGDATA5A" "$PGSOCK5A" "$PG5A_PORT"
+preflight "a cluster and a schema for node B" start_pg5 B "$PGDATA5B" "$PGSOCK5B" "$PG5B_PORT"
 
 : >"$WORK/ids5"
 if seed5_out="$(DATABASE_URL="$DSN5A" "$WORK/smoke" seed 2>&1)"; then
@@ -20828,6 +20869,8 @@ fi
 if [ -n "$only" ]; then
 	printf '\nONLY=%s - %d check(s) were SKIPPED. This is not a full run and cannot green a branch.\n' \
 		"$only" "$skipped"
+	printf 'The builds ran anyway - a filter narrows the checks, never the preflight the\n'
+	printf 'rest of them stand on. See preflight().\n'
 fi
 printf 'passed: %d failed: %d\n' "$passed" "$failed"
 if ! a_run_that_measured_nothing_is_not_a_pass "$passed" "$failed"; then
