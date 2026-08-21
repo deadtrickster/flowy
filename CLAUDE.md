@@ -107,6 +107,14 @@ has to say what the button does, which is the question a dead button never got
 asked. Assert geometry or the node's answer, not class names: a check that
 looks for a CSS class passes on a pane that renders nothing.
 
+**A new console check goes in `checks.d/console/<name>.sh`**, holding its own
+comment, its own function and its own `check` line. run-tests.sh sources the
+directory and fails if it is missing, empty, or holds a file that registers
+nothing. The old way - appending to the registration list in run-tests.sh - is
+what five rebase conflicts in one evening had in common, none of them a
+disagreement and one of them eating a closing brace. Two branches adding two
+files conflict never.
+
 ## Talking to the fleet
 
 Rooms are for a measurement and a decision. Three lines is normal; anything

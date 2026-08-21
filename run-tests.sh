@@ -7229,23 +7229,6 @@ a_thread_can_be_answered_where_it_is_read() {
 	node scripts/thread-answer-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A"
 }
 
-# THE TRANSCRIPT SAYS A MESSAGE HAS REPLIES, HOW MANY, AND OPENS THE THREAD.
-#
-# The other half of the same complaint - "impossible to track things here" - and
-# the half about READING rather than writing. A thread that can be answered but
-# is invisible in the room is still a conversation nobody can follow, which is
-# what #general was: 40 messages, 40 threads, none of them longer than one.
-#
-# The number is the node's, over the whole log, and the fixture is built to
-# catch the fold that would look right in every ordinary case: the console holds
-# a sixty-message window, so the check pushes the start of the thread out of it
-# and asserts the count is still four. A count taken from the screen would say
-# two, on a page where nothing looks wrong.
-the_transcript_counts_a_thread() {
-	cd "$ROOT/web" || return 1
-	node scripts/thread-count-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A"
-}
-
 # THE CONSOLE ON A PHONE, and unchanged on a desk.
 #
 # The operator, on their phone: "can open general room because not enough
@@ -11996,6 +11979,17 @@ a_stray_cd_reports_once() {
 	./scripts/stray-cd-check.sh run-tests.sh
 }
 
+# The loader's own guard, and it exists because moving console checks into a
+# directory buys a failure the shared list could not have. A line was either in
+# the file or it was not; a DIRECTORY can be missing, empty, or full of files
+# that define a function and never register it - and each of those looks in the
+# summary exactly like a suite where those checks passed. See
+# scripts/console-checks-check.sh, which drives the loader through all of them.
+the_console_loader_refuses_to_lose_a_check() {
+	cd "$ROOT" || return 1
+	./scripts/console-checks-check.sh run-tests.sh
+}
+
 # THE OPERATOR SENT A SCREENSHOT captioned "note the fonts": room names at the
 # page's base size, with the hash and the name stacked one above the other.
 #
@@ -12390,6 +12384,8 @@ say "console"
 # eleven thousand lines away.
 check "a stray cd outside check() reports once, and the suite carries on" \
 	a_stray_cd_reports_once
+check "the console-check loader fails on a directory that is missing, empty, or silent" \
+	the_console_loader_refuses_to_lose_a_check
 check "npm ci" npm_ci
 check "biome check web/" biome_check
 check "vite build" npm_build
@@ -13313,8 +13309,75 @@ check "the console is usable on a phone, and unchanged on a desk" \
 	the_console_works_on_a_phone
 check "a thread can be answered from the pane that shows it" \
 	a_thread_can_be_answered_where_it_is_read
-check "the transcript says how many replies a thread has, from the node's count" \
-	the_transcript_counts_a_thread
+# CONSOLE CHECKS THAT REGISTER THEMSELVES, one file each.
+#
+# WHY THERE IS A DIRECTORY. Counted by two seats on 2026-08-20, who filed the
+# same row seven seconds apart without seeing each other's: five rebase
+# conflicts in one evening, every one of them in this file, every one at the
+# line where a console check is registered. None was a disagreement - the
+# resolution was "keep both" every time. A shared append point conflicts BY
+# CONSTRUCTION, and the only branch that never hits it is the one that adds no
+# check.
+#
+# It is not merely slow. One of those resolutions ate a closing brace - both
+# sides of a hunk taken and the `}` between them going with the marker. `bash -n`
+# caught it, and a git diff of that resolution reads as correct: both checks
+# present, both spelled right. The habit that grew up around it was to verify a
+# resolution by COUNTING checks rather than by reading the hunk, which is the
+# right instinct and is a workaround for a structural problem.
+#
+# So: a new console check goes in checks.d/console/<name>.sh, holding its own
+# comment, its own function and its own `check` line. Two branches adding two
+# checks add two files, and git merges those without a conflict at all.
+#
+# THE CHECKS ALREADY IN THIS FILE STAY IN IT. Ninety-two of them reach for
+# scripts/*.mjs from a dozen places, and moving them all would be one enormous
+# rebase conflict in the name of avoiding small ones - a change that pays the
+# cost it is trying to remove, once, for everybody. They are also not the ones
+# colliding: a conflict needs two branches APPENDING, which is what a new check
+# does. The rule that matters is where the NEXT one goes.
+#
+# ORDER IS THE GLOB'S, which is alphabetical and is a real constraint: a check
+# in here may not depend on another one in here having run. They already may
+# not - every console check builds its own fixture, because a check that
+# depends on the suite's history is one that passes for the wrong reason.
+console_checks() {
+	local dir="$ROOT/checks.d/console" file before after found=0
+	if [ ! -d "$dir" ]; then
+		printf 'FAIL the console checks directory is missing: %s\n' "$dir"
+		printf '%s\n' "every check that lives in it has just not run, and a suite that says nothing about that is the silence this directory was made to remove" | indent
+		failed=$((failed + 1))
+		return 0
+	fi
+	for file in "$dir"/*.sh; do
+		# A GLOB THAT MATCHED NOTHING RETURNS ITSELF. Without this the loop runs
+		# once on a path that does not exist, and the arithmetic below would
+		# report it as a file that registered no check - a true sentence about
+		# the wrong thing.
+		[ -e "$file" ] || break
+		found=$((found + 1))
+		before=$((passed + failed + ${skipped:-0}))
+		# shellcheck source=/dev/null  # one file per check, found by the glob above
+		. "$file"
+		after=$((passed + failed + ${skipped:-0}))
+		# AND IT REGISTERED SOMETHING. A file that defines a function and never
+		# calls check is a check that silently does not run, which is exactly
+		# what the old shared list could not do - a line either was there or was
+		# not. Counting is how the habit of verifying registrations by count
+		# stops being a habit.
+		if [ "$after" = "$before" ]; then
+			printf 'FAIL %s registered no check\n' "${file##*/}"
+			printf '%s\n' "the file was sourced and the suite ran nothing new - it defines a function and never calls check, or it returned early" | indent
+			failed=$((failed + 1))
+		fi
+	done
+	if [ "$found" = 0 ]; then
+		printf 'FAIL %s holds no checks\n' "$dir"
+		printf '%s\n' "an empty directory and a directory whose checks all pass look identical in a summary line, so this says so" | indent
+		failed=$((failed + 1))
+	fi
+}
+console_checks
 check "the left and right columns can be dragged, keep their floors, and remember" \
 	the_columns_can_be_dragged
 check "the panel sets and overrides one, in a browser, and a poll does not wipe it" \
