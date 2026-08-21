@@ -169,6 +169,28 @@ func (d *DB) AppendTodoNote(
 	// ReadArtifact, and a client that reads `notes` off the answer would
 	// otherwise get the row as it was one entry ago and have no way to tell.
 	art.Notes = append(art.Notes, TodoNoteEntryOf(entry))
+
+	// AND A NOTE FROM THE HOLDER IS WORK - see holderWroteIt below for why this
+	// is not every note. A failure to touch is not a failure to note: the entry
+	// is already written and refusing here would throw away the measurement to
+	// protect a timestamp.
+	//
+	// A FAILURE HERE IS LOGGED AND NOT RETURNED, and that is a decision rather
+	// than laziness: the entry is already written, and refusing at this point
+	// would throw away the measurement to protect a timestamp. The caller asked
+	// to record what was learned; they got that. What they may not have got is a
+	// stale count that notices, and the attribute says so where a trace reader
+	// will find it.
+	if held, herr := d.holderWroteIt(ctx, p, art); herr != nil {
+		span.SetAttr("note.touch", "failed to resolve the holder: "+herr.Error())
+	} else if held {
+		if at, terr := d.touchUpdated(ctx, art.ID); terr != nil {
+			span.SetAttr("note.touch", "failed: "+terr.Error())
+		} else {
+			art.Updated = at
+			span.SetAttr("note.touch", "updated moved - the holder wrote it")
+		}
+	}
 	span.SetArtifact(art.ID)
 	return art, entry, nil
 }
@@ -326,4 +348,67 @@ func noteRoom(a *Artifact) string {
 		return room
 	}
 	return NoteRoom
+}
+
+// holderWroteIt reports whether the principal writing this note is the seat the
+// row is assigned to.
+//
+// WHY THE DISTINCTION EXISTS AT ALL. `updated` is what the stale count reads -
+// api_nag.go counts rows a seat holds as `active` that nothing has written to
+// for a while - and a note did not move it, so the one honest answer to "why is
+// this still open" could not quiet the number that asked. That is 01M0HRZM3N.
+//
+// AND THE BLANKET RULE IS WRONG, which is the half that took an afternoon to
+// settle. scripts/landed-to-live.sh writes a note on every landing; if any note
+// moved `updated`, a loop running every two minutes would keep every row it
+// touches permanently fresh, and the stale count would measure the loop rather
+// than the work. Worse in general: a note can be written by anybody who can
+// read the row, so a shared rule lets a STRANGER quiet a staleness that belongs
+// to its holder - and nothing about that is visible to the person it
+// misrepresents.
+//
+// So what each counter measures decides its evidence. The dot beside `todos`
+// asks "have you seen it" and a read is the evidence. `stale` asks "is anyone
+// working it" and a write BY THE HOLDER is the evidence. A note from anybody
+// else is a fact about the row, not activity on it.
+//
+// THE COMPARISON GOES THROUGH PrincipalsNamed, the same door a mention does, so
+// "which principal is this handle" has one implementation. An assignee that
+// resolves to nobody - a name nothing answers to, or one two principals share -
+// is not the writer by definition, and the ambiguity rule there means a shared
+// name resolves to neither rather than to a guess.
+func (d *DB) holderWroteIt(ctx context.Context, p *Principal, art *Artifact) (bool, error) {
+	held := strings.TrimSpace(AssigneeOf(art))
+	if held == "" || NobodyName(held) {
+		return false, nil
+	}
+	if p == nil || strings.TrimSpace(p.UserID) == "" {
+		return false, nil
+	}
+	named, err := d.PrincipalsNamed(ctx, []string{held})
+	if err != nil {
+		return false, err
+	}
+	who := named[strings.ToLower(held)]
+	if who == "" {
+		return false, nil
+	}
+	return who == p.UserID || who == p.AgentID, nil
+}
+
+// touchUpdated moves a row's `updated` and nothing else.
+//
+// NOT hlc, NOT sig, NOT the fields. `updated` is a local stamp - syncArtifacts
+// pages on hlc (sync.go:429) and the signature is over content - so moving it
+// changes what the board SORTS by and what the stale count reads, and changes
+// nothing another node will ever see. That is exactly the intended blast
+// radius: this is a fact about attention, not about the row's content.
+func (d *DB) touchUpdated(ctx context.Context, id string) (time.Time, error) {
+	var at time.Time
+	err := d.sql.QueryRowContext(ctx,
+		`UPDATE artifacts SET updated = now() WHERE id = $1 RETURNING updated`, id).Scan(&at)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("store: touch %s: %w", id, err)
+	}
+	return at, nil
 }
