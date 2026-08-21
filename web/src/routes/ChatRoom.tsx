@@ -1354,7 +1354,12 @@ export function ChatRoom() {
               {threadGraph ? (
                 <ThreadDag events={threadEvents} />
               ) : (
-                <ThreadList events={threadEvents} selected={selected} onSelect={point} />
+                <ThreadList
+                  events={threadEvents}
+                  selected={selected}
+                  onSelect={point}
+                  me={{ user: whoami?.user, agent: whoami?.agent }}
+                />
               )}
             </div>
             {/*

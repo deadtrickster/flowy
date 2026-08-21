@@ -21,32 +21,52 @@
 
 every_message_list_knows_who_is_reading() {
 	cd "$ROOT/web/src" || return 1
-	local sites missing=0 file
-	sites=$(grep -rl '<MessageList' . || true)
-	if [ -z "$sites" ]; then
-		printf 'no MessageList call sites found at all - this check is measuring nothing,\n' >&2
-		printf 'which is what it would report if the component were renamed\n' >&2
+	local missing=0 file renderer line block
+	# A NAMED SET, because the bug this check could not see was a SECOND
+	# renderer. It walked MessageList alone, so when the operator reported that
+	# mentions were not ringed in threads (01M0HHFF54) this check was green and
+	# correct to be: the thread pane draws a ThreadList, a different component
+	# over the same events, which never took `me`.
+	#
+	# Named rather than inferred - a wildcard over components would have to
+	# guess which lists are lists of messages, and would pass anything that
+	# happens to mention `me` for another reason. Adding a renderer is one word.
+	local renderers="MessageList ThreadList"
+	# PER RENDER, NOT PER FILE, and that distinction is the whole check now.
+	# ChatRoom.tsx draws BOTH - the room log and the thread pane - so a per-file
+	# test is satisfied by either one of them passing `me` and cannot see the
+	# other missing it. That is exactly the shape of the bug: two renderers in
+	# one file, one told who is reading and one not.
+	local seen=0
+	for renderer in $renderers; do
+		while read -r file; do
+			[ -n "$file" ] || continue
+			# Each render, from its opening tag to the first line that closes
+			# it. JSX here is either self-closing (/>) or a one-line render.
+			while read -r line; do
+				seen=$((seen + 1))
+				block=$(awk -v start="$line" 'NR>=start{print; if (/\/>/ || (NR>start && /^ *>/)) exit}' "$file")
+				if ! printf '%s' "$block" | grep -q 'me={'; then
+					printf '%s:%s draws a <%s and never passes me\n' \
+						"$file" "$line" "$renderer" >&2
+					missing=$((missing + 1))
+				fi
+			done < <(grep -n "<$renderer" "$file" | cut -d: -f1)
+		done < <(grep -rl "<$renderer" . || true)
+	done
+	if [ "$seen" -eq 0 ]; then
+		printf 'no message-list renders found at all - this check is measuring nothing,\n' >&2
+		printf 'which is what it would report if the components were renamed\n' >&2
 		return 1
 	fi
-	# Per FILE rather than per occurrence: a render can span several lines - the
-	# one this check was written for now does - so grepping a single line for
-	# both would have to know how the file is formatted. Every file that draws
-	# a MessageList must also name `me` somewhere in that render, and no file
-	# here draws two.
-	while read -r file; do
-		# The prop, in either shape: `me={{...}}` on a multi-line render or
-		# `me={me}` if a caller ever holds it in a variable.
-		if ! grep -q 'me={' "$file"; then
-			printf '%s draws a MessageList and never passes me\n' "$file" >&2
-			missing=$((missing + 1))
-		fi
-	done <<<"$sites"
 	if [ "$missing" -gt 0 ]; then
-		printf '\nme is what rings a mention of the reader - see lib/markdown. A list without\n' >&2
-		printf 'it draws a mention of YOU exactly like a mention of anybody else.\n' >&2
+		printf '\nme is what rings a mention of the reader - see lib/markdown and ThreadList.\n' >&2
+		printf 'A list without it draws a mention of YOU exactly like a mention of anybody\n' >&2
+		printf 'else, and a second renderer of the same events is where that hides.\n' >&2
 		return 1
 	fi
-	printf '%s message list call site(s), all of them told who is reading\n' "$(printf '%s\n' "$sites" | wc -l)"
+	printf '%s message-list render(s) across %s, all told who is reading\n' \
+		"$seen" "$(printf '%s' "$renderers" | tr ' ' ',')"
 }
 
 check "every message list is told who is reading, so a mention of you is ringed" \

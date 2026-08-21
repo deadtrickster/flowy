@@ -23,10 +23,22 @@ export function ThreadList({
   events,
   selected,
   onSelect,
+  me,
 }: {
   events: FlowyEvent[];
   selected: FlowyEvent | null;
   onSelect: (event: FlowyEvent) => void;
+  /**
+   * Who the reader is, so a message addressed to them is marked here as it is
+   * in the room. MessageList has taken this since the ring landed; this pane is
+   * a SECOND RENDERER of the same events and never took it, so a mention of you
+   * was ringed in the room and plain in the thread - 01M0HHFF54, raised by the
+   * operator the day after they started using threads.
+   *
+   * Optional, and absent means NO ring rather than a wrong one: a pane that
+   * cannot say who the reader is must not guess.
+   */
+  me?: { user?: string; agent?: string };
 }) {
   if (events.length === 0) {
     return (
@@ -40,14 +52,20 @@ export function ThreadList({
     <ul className="flex h-full flex-col overflow-auto">
       {events.map((event) => {
         const name = speaker(event);
+        // FOR YOU, AND NOT FROM YOU - the same rule MessageList applies, in the
+        // same words, because two renderers deciding this differently is how the
+        // ring came to mean one thing in the room and nothing here.
+        const isMe = (id?: string) => !!id && (id === me?.user || id === me?.agent);
+        const forMe = isMe(event.addressee) && !isMe(event.actor);
         return (
           <li key={event.id}>
             <button
               type="button"
               onClick={() => onSelect(event)}
+              data-thread-for-me={forMe ? "" : undefined}
               className={`flex w-full flex-col gap-1 border-border/60 border-b px-4 py-2 text-left text-xs hover:bg-accent/40 ${
-                selected?.id === event.id ? "bg-accent/60" : ""
-              }`}
+                forMe ? "border-l-2 border-l-primary bg-primary/5 " : ""
+              }${selected?.id === event.id ? "bg-accent/60" : ""}`}
             >
               <span className="flex items-center gap-2">
                 <span className="rounded px-1 font-mono" style={speakerStyle(name)}>
