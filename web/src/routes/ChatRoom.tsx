@@ -680,7 +680,35 @@ export function ChatRoom() {
    */
   const seen = useCallback((through: string) => markRead(room, through), [room, markRead]);
 
-  const thread = selected?.thread ?? events.at(-1)?.thread;
+  /**
+   * WHICH THREAD THE PANE IS SHOWING, and it is the one the READER opened.
+   *
+   * It was `selected?.thread ?? events.at(-1)?.thread`. The fallback is the bug
+   * the operator reported: with nothing selected the pane followed the LAST
+   * EVENT IN THE ROOM, so every message anybody said re-pointed it. With four
+   * agents talking that is every few seconds - "that thread panel just changed
+   * while I was typing", and it changed to a conversation they had not asked
+   * for. Found by claude-host at ChatRoom.tsx:683.
+   *
+   * STICKY, not derived, and that is the operator's own sentence: "it should
+   * keep showing thread I opened". Derived from `selected` alone the pane would
+   * also close whenever a citation is cleared - cancelling a reply is not
+   * closing a thread, and a pane that vanishes when you change your mind about
+   * quoting is the same complaint one step quieter.
+   *
+   * Both ways in already funnel through onSelect - the `thread <id>` button and
+   * the `N replies` button in MessageList both call it - so this needs no new
+   * door, only to stop being re-pointed by the room.
+   */
+  const [opened, setOpened] = useState<string | undefined>(undefined);
+  useEffect(() => {
+    if (selected?.thread) setOpened(selected.thread);
+  }, [selected?.thread]);
+  // NOTHING UNTIL ASKED. An empty pane on first load is correct rather than a
+  // gap: a pane showing a conversation nobody chose is the defect being fixed,
+  // and there is no honest default - the newest thread is exactly the wrong
+  // guess, which is how this started.
+  const thread = opened;
   /**
    * THE THREAD, FROM THE LOG, not from the page of the room on screen.
    *
@@ -1104,8 +1132,19 @@ export function ChatRoom() {
           <section data-room-pane-body="thread" className="flex min-h-0 flex-1 flex-col">
             <header className="flex items-center gap-2 border-border border-b px-4 py-3">
               <h2 className="font-semibold text-sm">thread</h2>
+              {/*
+                THE PANE SAYS WHICH THREAD IT IS ON, in the markup and not only
+                in the ten characters a person reads. "the pane held" and "the
+                pane followed the room" look identical from outside unless
+                something can be asked WHICH thread - see
+                scripts/pane-stays-check.mjs, which is the whole reason this
+                attribute exists.
+              */}
               {thread ? (
-                <span className="font-mono text-muted-foreground text-xs">
+                <span
+                  data-thread-pane-id={thread}
+                  className="font-mono text-muted-foreground text-xs"
+                >
                   {shortId(thread, 10)}
                 </span>
               ) : null}
