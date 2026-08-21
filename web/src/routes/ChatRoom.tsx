@@ -159,6 +159,11 @@ export function ChatRoom() {
   const [merges, setMerges] = useState<MergeRequest[]>([]);
   const [mergesDecided, setMergesDecided] = useState(false);
   const [mergeTip, setMergeTip] = useState("");
+  // "none" until a read says otherwise, which is what the node calls having no
+  // tip at all - not "deployed", which is a claim about where one came from.
+  const [mergeTipFrom, setMergeTipFrom] = useState<"stated" | "landed" | "deployed" | "none">(
+    "none",
+  );
   // See Todos.tsx: undefined means nobody told us, which is not "free".
   const [mergeLock, setMergeLock] = useState<MergeLock | undefined>(undefined);
   /**
@@ -380,6 +385,16 @@ export function ChatRoom() {
           setMerges(q.items ?? []);
           setMergesDecided(Boolean(q.decided));
           setMergeTip(q.target_tip ?? "");
+          // WHERE THE TIP CAME FROM, read rather than assumed. This was the
+          // literal "deployed" for as long as the pane has been in a room, and
+          // the node has answered "landed" the whole time - so the room drew
+          // "the commit this node was built from, not a live read of the
+          // target" over verdicts measured against the last sha to land
+          // through the merge door. That caveat is a real one and saying it
+          // where it is false teaches a reader to discount a verdict that was
+          // measured correctly. /todos/merge has read this all along; only this
+          // copy of the pane stated it.
+          setMergeTipFrom(q.tip_from ?? "none");
           setMergeLock(q.lock);
         })
         .catch(() => setMerges([]));
@@ -1381,7 +1396,7 @@ export function ChatRoom() {
             <MergeQueue
               items={merges}
               tip={mergeTip}
-              tipFrom="deployed"
+              tipFrom={mergeTipFrom}
               decided={mergesDecided}
               loaded={true}
               lock={mergeLock}

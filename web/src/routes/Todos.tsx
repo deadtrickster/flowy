@@ -137,7 +137,9 @@ export function Todos() {
   };
   const [merges, setMerges] = useState<MergeRequest[]>([]);
   const [mergeTip, setMergeTip] = useState("");
-  const [mergeTipFrom, setMergeTipFrom] = useState<"stated" | "deployed" | "none">("none");
+  const [mergeTipFrom, setMergeTipFrom] = useState<"stated" | "landed" | "deployed" | "none">(
+    "none",
+  );
   const [mergeDecided, setMergeDecided] = useState(false);
   const [mergesLoaded, setMergesLoaded] = useState(false);
   // undefined until a node answers, and undefined again if one stops answering:
