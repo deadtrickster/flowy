@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/deadtrickster/flowy/internal/otel"
@@ -97,6 +98,46 @@ func (d *DB) LandMerge(
 	if gated == "" {
 		return nil, nil, &ErrLandRefused{
 			Reason: "no gate has measured it - there is no verdict to land. Declare a run, wait for green, then land",
+		}
+	}
+
+	// A MERGE THAT DEPENDS ON ANOTHER MERGE WAITS FOR IT.
+	//
+	// The operator asked whether the queue implements a full DAG. It does not,
+	// and deliberately - mergequeue.go:29 says why: order between merges IS
+	// dependency, dependency is already an event with provenance, already
+	// permission-filtered, already computed per reader, and a second graph
+	// beside it would mean two answers to "what is ready" and no way to tell
+	// which is lying.
+	//
+	// That reasoning was right and nothing enforced it. `POST /api/todo/{id}/deps`
+	// would happily record that B waits for A, and B could then be gated and
+	// landed while A sat in the queue: the edge was advisory, so a stack landed
+	// bottom-up only if whoever drove it remembered the order. See 01M0G9GDS5.
+	//
+	// REFUSED AT THE LAND RATHER THAN AT THE GATE, on purpose. Gating a
+	// dependent branch early is not wrong - the measurement is still true of
+	// the tree it measured, and a stack whose lower half is green is worth
+	// knowing about. What must not happen is the ORDER being broken, and order
+	// is decided here.
+	//
+	// A BLOCKER THIS READER CANNOT SEE IS STILL A BLOCKER. liveDeps returns the
+	// edges permission-filtered for p, so a caller who cannot read the blocking
+	// row sees an id and Known=false. That is refused too: "I cannot see it" is
+	// not "it is finished", and the alternative is a land that succeeds or
+	// fails depending on who asked.
+	blockers, err := d.blockersOf(ctx, p, art.ID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(blockers) > 0 {
+		return nil, nil, &ErrLandRefused{
+			Reason: fmt.Sprintf(
+				"it waits for %s, which %s not landed - land those first, or drop the edge with "+
+					"DELETE /api/todo/%s/deps if the order no longer holds",
+				strings.Join(blockers, ", "),
+				map[bool]string{true: "is", false: "are"}[len(blockers) == 1],
+				art.ID),
 		}
 	}
 
@@ -249,4 +290,46 @@ func (d *DB) LandMerge(
 	}
 	span.SetArtifact(art.ID)
 	return art, entry, nil
+}
+
+// blockersOf is every live dep edge on a row whose blocker has not finished,
+// as ids the caller can put in a sentence.
+//
+// ONE ANSWER TO "WHAT BLOCKS THIS", which is the whole argument in
+// mergequeue.go:29 for not building a second graph: this reads the same edges
+// the readiness view reads, through the same permission filter, so the queue,
+// the console and this door cannot disagree about whether B waits for A.
+//
+// UNKNOWN COUNTS AS BLOCKING. liveDeps is filtered for the asking principal, so
+// a blocker in a project this caller cannot read comes back as an id with
+// nothing else known about it. Treating that as finished would make a land
+// succeed or fail depending on who asked, and the safe direction is obvious:
+// what cannot be shown to be done is not done.
+func (d *DB) blockersOf(ctx context.Context, p *Principal, id string) ([]string, error) {
+	live, err := d.liveDeps(ctx, p, []string{id}, false)
+	if err != nil {
+		return nil, err
+	}
+	ids := live[id]
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	// The blockers' own rows, to ask whether each is finished. Read one at a
+	// time through readWorkItem rather than in a batch: this path runs once per
+	// land, the list is a handful of ids, and readWorkItem is the function that
+	// already answers "may this principal see this row" correctly.
+	var waiting []string
+	for _, b := range ids {
+		art, err := d.readWorkItem(ctx, p, b)
+		if err != nil {
+			// Cannot read it - see the note above. Named, so the refusal says
+			// which id to go and look at.
+			waiting = append(waiting, b)
+			continue
+		}
+		if TodoStatusOf(art) != DoneStatus {
+			waiting = append(waiting, b)
+		}
+	}
+	return waiting, nil
 }
