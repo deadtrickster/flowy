@@ -24,6 +24,7 @@ import {
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 
+import { CredentialBanner } from "@/components/CredentialBanner";
 import { FreshBanner } from "@/components/FreshBanner";
 import { ResizeHandle } from "@/components/ResizeHandle";
 import { TokenBar } from "@/components/TokenBar";
@@ -688,6 +689,14 @@ export function Shell({ children }: { children: ReactNode }) {
           to be showing.
         */}
         <FreshBanner />
+        {/*
+          And the same argument for the credential: it is a fact about the tab
+          rather than about the page, and it is true of every pane at once.
+          Below the staleness bar because a tab that is BOTH behind and signed
+          out should reload first - the newer console may be the one that can
+          tell it so.
+        */}
+        <CredentialBanner />
         <div className="min-h-0 flex-1 overflow-hidden">{children}</div>
       </main>
     </div>

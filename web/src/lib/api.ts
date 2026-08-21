@@ -10,6 +10,69 @@
 const TOKEN_KEY = "flowy.token";
 
 /**
+ * WHETHER THE CREDENTIAL THIS TAB IS USING STILL WORKS. 01M0K76WY4.
+ *
+ * IT LIVES IN THIS FILE BECAUSE THIS FILE CANNOT IMPORT ANYTHING.
+ * scripts/api-error-check.mjs transforms api.ts and imports it AS A DATA URL,
+ * where no specifier resolves - so a `lib/credential` module beside this one
+ * could not be reached from here, and the gate says so. See lib/utils, which
+ * carries the same constraint for the same reason. I wrote that module first
+ * and deleted it.
+ *
+ * WHAT IT IS FOR. The operator's console "stopped working" and every check an
+ * agent could run said it was healthy - an agent authenticates with a bearer
+ * token, a person's browser with a session, and the session was the half nobody
+ * could see. Measured on the live console with a rejected credential:
+ *
+ *   with a good one   /memory 11521 chars, 30 rooms in the sidebar
+ *   with a dead one   /memory 454 chars, no rooms, every pane empty
+ *   what it says      NOTHING. Silent 401s in the browser console.
+ *
+ * The frame renders and everything inside is blank, which is indistinguishable
+ * from a node that lost its data. This console keeps EMPTY, FORBIDDEN and
+ * UNREACHABLE apart everywhere else; a blank page is how they become one.
+ *
+ * EXPIRED AND SWEPT ARE NOT TOLD APART, deliberately. The session behind the
+ * report had not expired - the surviving row's expiry was in the future. An
+ * EARLIER login reached its fourteen days, login.go:488 deleted the row
+ * (`DELETE FROM sessions WHERE expires <= now()`), and the cookie outlived it.
+ * Both give the identical 401, the browser cannot see which, and "no longer
+ * valid, sign in again" is true of both.
+ *
+ * 401 ONLY, NEVER 403. Unauthorized means the node does not know who you are;
+ * forbidden means it does, and the answer is no. A banner over the second tells
+ * somebody to sign in again to fix a permission - a wrong instruction that
+ * costs a login to disprove. api_vm.go answers 403 to every non-operator on a
+ * page they are allowed to open, so this is not hypothetical.
+ */
+let credentialDead = false;
+const credentialListeners = new Set<(dead: boolean) => void>();
+
+function publishCredential(next: boolean) {
+  if (next === credentialDead) return;
+  credentialDead = next;
+  for (const listener of credentialListeners) listener(credentialDead);
+}
+
+/**
+ * watchCredential calls back now and on every change, and returns an
+ * unsubscribe - the same shape lib/fresh uses for the staleness bar.
+ *
+ * The CLEAR is the half that keeps this honest. Somebody who signs in in
+ * another tab, or pastes a working token into the rail, has a credential again
+ * and nothing else would ever take the message down - and a warning that
+ * outlives its own cause is one people learn to ignore, including the time it
+ * is right.
+ */
+export function watchCredential(onChange: (dead: boolean) => void): () => void {
+  credentialListeners.add(onChange);
+  onChange(credentialDead);
+  return () => {
+    credentialListeners.delete(onChange);
+  };
+}
+
+/**
  * Citation is what a message says it is about, resolved by the node for the
  * token that read it: the message it cites, and - only when this reader may
  * read that message - who was quoted and the words themselves.
@@ -1494,8 +1557,20 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
   const text = await response.text();
   const body = parseBody(text, response);
   if (!response.ok) {
+    // THE ONE PLACE EVERY READ OF THIS NODE GOES THROUGH, which is why the
+    // credential's state is noticed here rather than at a hundred call sites: a
+    // credential that stops working stops working for all of them at once.
+    //
+    // THIS FUNCTION AND NOT reproRequest. That one talks to a different host
+    // with a different credential, and a 401 from the repro runner says nothing
+    // about whether you are signed in here - a banner over it would send
+    // somebody to sign in again to fix somebody else's service.
+    //
+    // 401 only. See the note at credentialDead for why a 403 must not raise it.
+    if (response.status === 401) publishCredential(true);
     throw new ApiError(response.status, body?.error ?? statusText(response));
   }
+  publishCredential(false);
   return body as T;
 }
 
