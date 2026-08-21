@@ -17,8 +17,8 @@ import (
 func TestAPersonBelongsToProjectsAndASessionHoldsOne(t *testing.T) {
 	ctx, db := open(t)
 	u := presenceUser(t, ctx, db, "member")
-	one := "member-a-" + ulid.NewString()[:6]
-	two := "member-b-" + ulid.NewString()[:6]
+	one := "member-a-" + ulid.Short()
+	two := "member-b-" + ulid.Short()
 	for _, id := range []string{one, two} {
 		if err := db.DeclareProject(ctx, &Project{ID: id, Name: id, CreatedBy: u.ID}); err != nil {
 			t.Fatalf("declare %s: %v", id, err)
@@ -86,7 +86,7 @@ func TestAPersonBelongsToProjectsAndASessionHoldsOne(t *testing.T) {
 	}
 
 	// A project that does not exist is a different sentence again.
-	err = db.EnterProject(ctx, session.ID, u.ID, "no-such-project-"+ulid.NewString()[:6])
+	err = db.EnterProject(ctx, session.ID, u.ID, "no-such-project-"+ulid.Short())
 	if err == nil || !strings.Contains(err.Error(), "no project called") {
 		t.Errorf("entering a project that does not exist said: %v", err)
 	}
@@ -109,7 +109,7 @@ func TestOnlyAnOwnerInvites(t *testing.T) {
 	ctx, db := open(t)
 	owner := presenceUser(t, ctx, db, "owner")
 	worker := presenceUser(t, ctx, db, "worker")
-	project := "owned-" + ulid.NewString()[:6]
+	project := "owned-" + ulid.Short()
 	if err := db.DeclareProject(ctx, &Project{ID: project, Name: project, CreatedBy: owner.ID}); err != nil {
 		t.Fatalf("declare: %v", err)
 	}

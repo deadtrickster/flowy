@@ -12103,6 +12103,17 @@ the_console_loader_refuses_to_lose_a_check() {
 	./scripts/console-checks-check.sh run-tests.sh
 }
 
+# A ULID SLICED FOR A NAME IS A CLOCK READING, not an id. `NewString()[:6]` is
+# thirty bits of the millisecond counter and repeats for four and a half
+# minutes, which is how four store tests came to pass on a fresh database and
+# red on the second run against the same one - 01M0HJ1M25, two nights of it
+# explained away as residue. The slice is gone from the tree; this stops it
+# being typed again, and proves it can still catch one on every run.
+a_ulid_is_not_sliced_for_a_name() {
+	cd "$ROOT" || return 1
+	./scripts/truncated-ulid-check.sh .
+}
+
 # And the suite's own last word: a refusal has to reach the reader BEFORE the
 # number, because the number is the line that gets pasted into a row and the one
 # the drainer greps for its note. Measured on another seat's gate, which printed
@@ -12510,6 +12521,8 @@ check "the console-check loader fails on a directory that is missing, empty, or 
 	the_console_loader_refuses_to_lose_a_check
 check "a refused run says so before it says the count" \
 	a_refused_run_says_so_before_it_says_the_count
+check "a ULID is not sliced for a name, because a prefix is a clock" \
+	a_ulid_is_not_sliced_for_a_name
 preflight "npm ci" npm_ci
 check "biome check web/" biome_check
 preflight "vite build" npm_build

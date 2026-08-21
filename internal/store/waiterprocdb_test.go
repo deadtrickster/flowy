@@ -37,7 +37,7 @@ func presenceOf(t *testing.T, ctx context.Context, db *DB, p *Principal, name st
 func TestAWaiterSaysWhichProcessItIs(t *testing.T) {
 	ctx, db := open(t)
 	u := presenceUser(t, ctx, db, "waiterproc")
-	project := "waiterproc-" + ulid.NewString()[:6]
+	project := "waiterproc-" + ulid.Short()
 	if err := db.DeclareProject(ctx, &Project{ID: project, Name: project, CreatedBy: u.ID}); err != nil {
 		t.Fatalf("declare project: %v", err)
 	}

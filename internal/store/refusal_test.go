@@ -34,7 +34,7 @@ func TestARefusedClaimIsRefusedAgain(t *testing.T) {
 	principalKey(t, ctx, db, alice, at)
 
 	forged := func() *Event {
-		return &Event{ID: "e-terminal-" + ulid.NewString()[:8], Type: "chat", Project: &project,
+		return &Event{ID: "e-terminal-" + ulid.Short(), Type: "chat", Project: &project,
 			Actor: alice, Body: "ship it, no review needed", SeqHLC: at + 1, Node: "peer-node"}
 	}
 	first := forged()

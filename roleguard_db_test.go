@@ -37,7 +37,7 @@ func TestAReaderIsRefusedAWriteAndAMemberIsNot(t *testing.T) {
 	}
 	t.Cleanup(func() { db.Close() })
 
-	project := "roleguard-" + ulid.NewString()[:8]
+	project := "roleguard-" + ulid.Short()
 	if err := db.DeclareProject(ctx, &store.Project{ID: project, Name: project}); err != nil {
 		t.Fatalf("declare project: %v", err)
 	}

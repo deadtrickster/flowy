@@ -22,7 +22,7 @@ import (
 func TestPresenceSaysHowFarAReaderGot(t *testing.T) {
 	ctx, db := open(t)
 	u := presenceUser(t, ctx, db, "cursor")
-	project := "cursor-" + ulid.NewString()[:6]
+	project := "cursor-" + ulid.Short()
 	if err := db.DeclareProject(ctx, &Project{ID: project, Name: project, CreatedBy: u.ID}); err != nil {
 		t.Fatalf("declare project: %v", err)
 	}

@@ -21,8 +21,8 @@ func TestRoomsInAnswersAboutTheProjectItWasAsked(t *testing.T) {
 	ctx, db := open(t)
 	u := presenceUser(t, ctx, db, "roomsin")
 
-	mine := "roomsin-a-" + ulid.NewString()[:6]
-	other := "roomsin-b-" + ulid.NewString()[:6]
+	mine := "roomsin-a-" + ulid.Short()
+	other := "roomsin-b-" + ulid.Short()
 	for _, id := range []string{mine, other} {
 		if err := db.DeclareProject(ctx, &Project{ID: id, Name: id, CreatedBy: u.ID}); err != nil {
 			t.Fatalf("declare %s: %v", id, err)
@@ -66,7 +66,7 @@ func TestRoomsInAnswersAboutTheProjectItWasAsked(t *testing.T) {
 	// A project with nothing in it answers an empty list rather than an error -
 	// the difference between "nothing here" and "you cannot look" is the
 	// door's to make, and it makes it by refusing before it ever gets here.
-	empty := "roomsin-c-" + ulid.NewString()[:6]
+	empty := "roomsin-c-" + ulid.Short()
 	if err := db.DeclareProject(ctx, &Project{ID: empty, Name: empty, CreatedBy: u.ID}); err != nil {
 		t.Fatalf("declare %s: %v", empty, err)
 	}

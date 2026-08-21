@@ -29,7 +29,7 @@ func presenceUser(t *testing.T, ctx context.Context, db *DB, handle string) *Use
 func TestPresenceTracksPollsNotAcks(t *testing.T) {
 	ctx, db := open(t)
 	u := presenceUser(t, ctx, db, "presence")
-	project := "presence-" + ulid.NewString()[:6]
+	project := "presence-" + ulid.Short()
 	if err := db.DeclareProject(ctx, &Project{ID: project, Name: project, CreatedBy: u.ID}); err != nil {
 		t.Fatalf("declare project: %v", err)
 	}
@@ -105,7 +105,7 @@ func TestPresenceTracksPollsNotAcks(t *testing.T) {
 func TestPresenceCarriesTheWaiterKind(t *testing.T) {
 	ctx, db := open(t)
 	u := presenceUser(t, ctx, db, "kinds")
-	project := "presence-" + ulid.NewString()[:6]
+	project := "presence-" + ulid.Short()
 	if err := db.DeclareProject(ctx, &Project{ID: project, Name: project, CreatedBy: u.ID}); err != nil {
 		t.Fatalf("declare project: %v", err)
 	}
@@ -200,7 +200,7 @@ func TestPresenceCarriesTheWaiterKind(t *testing.T) {
 func TestPresenceRetiresAReaderThatStoppedMidPoll(t *testing.T) {
 	ctx, db := open(t)
 	u := presenceUser(t, ctx, db, "stalled")
-	project := "presence-" + ulid.NewString()[:6]
+	project := "presence-" + ulid.Short()
 	if err := db.DeclareProject(ctx, &Project{ID: project, Name: project, CreatedBy: u.ID}); err != nil {
 		t.Fatalf("declare project: %v", err)
 	}
@@ -302,7 +302,7 @@ func TestPresenceRetiresAReaderThatStoppedMidPoll(t *testing.T) {
 func TestPresenceStartingIsJudgedByTheRowsAge(t *testing.T) {
 	ctx, db := open(t)
 	u := presenceUser(t, ctx, db, "bookmark")
-	project := "presence-" + ulid.NewString()[:6]
+	project := "presence-" + ulid.Short()
 	if err := db.DeclareProject(ctx, &Project{ID: project, Name: project, CreatedBy: u.ID}); err != nil {
 		t.Fatalf("declare project: %v", err)
 	}
@@ -361,7 +361,7 @@ func TestDeleteInboxReader(t *testing.T) {
 	ctx, db := open(t)
 	u := presenceUser(t, ctx, db, "gone")
 	other := presenceUser(t, ctx, db, "keeper")
-	project := "presence-" + ulid.NewString()[:6]
+	project := "presence-" + ulid.Short()
 	if err := db.DeclareProject(ctx, &Project{ID: project, Name: project, CreatedBy: u.ID}); err != nil {
 		t.Fatalf("declare project: %v", err)
 	}
@@ -393,7 +393,7 @@ func TestDeleteInboxReader(t *testing.T) {
 func TestRoomMembersNamesSpeakers(t *testing.T) {
 	ctx, db := open(t)
 	u := presenceUser(t, ctx, db, "speaker")
-	project := "presence-" + ulid.NewString()[:6]
+	project := "presence-" + ulid.Short()
 	if err := db.DeclareProject(ctx, &Project{ID: project, Name: project, CreatedBy: u.ID}); err != nil {
 		t.Fatalf("declare project: %v", err)
 	}
@@ -451,7 +451,7 @@ func TestRoomMembersNamesSpeakers(t *testing.T) {
 func TestACursorIsNotOnTheRosterAtAll(t *testing.T) {
 	ctx, db := open(t)
 	u := presenceUser(t, ctx, db, "cursor")
-	project := "presence-" + ulid.NewString()[:6]
+	project := "presence-" + ulid.Short()
 	if err := db.DeclareProject(ctx, &Project{ID: project, Name: project, CreatedBy: u.ID}); err != nil {
 		t.Fatalf("declare project: %v", err)
 	}

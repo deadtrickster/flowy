@@ -35,7 +35,7 @@ func TestClaimingAsMeStoresTheCallersHandle(t *testing.T) {
 	// A HANDLE NOBODY ELSE USES, for the same reason the id is fresh: this
 	// suite shares one database, and a fixed seat here is a seat every other
 	// test has to know about.
-	handle := "welder-" + ulid.NewString()[:8]
+	handle := "welder-" + ulid.Short()
 	if _, err := db.sql.ExecContext(ctx,
 		// Same shape claimtodo_test.go uses for a seat with a handle, and NO
 		// node column: setting one puts this row in front of tests that count

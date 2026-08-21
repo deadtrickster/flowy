@@ -24,7 +24,13 @@ func TestAssigningToASeatThatCannotSeeTheRowIsRefused(t *testing.T) {
 	author := &Principal{UserID: "u-" + ulid.NewString(), Project: here}
 	// The party being handed work: a user with a handle and a credential that
 	// reaches only the OTHER project.
-	stranger := &User{ID: "u-" + ulid.NewString(), Handle: "farside"}
+	// THE HANDLE CARRIES A ULID, and that is not decoration: `users_handle_key`
+	// is unique, so a fixture handle spelled as a literal inserts once per
+	// DATABASE rather than once per run. These three tests were the four that
+	// passed on a fresh database and red on the second run against the same
+	// one - see 01M0HJ1M25, where that cost three false diagnoses in a night.
+	farside := "farside-" + ulid.Short()
+	stranger := &User{ID: "u-" + ulid.NewString(), Handle: farside}
 	if err := db.InsertUser(ctx, stranger); err != nil {
 		t.Fatalf("insert user: %v", err)
 	}
@@ -36,7 +42,7 @@ func TestAssigningToASeatThatCannotSeeTheRowIsRefused(t *testing.T) {
 
 	todo := todoIn(t, ctx, db, author, "work in a project they cannot read", VisibilityProjectOnly, "")
 
-	_, _, err := db.AssignTodo(ctx, author, todo.ID, "farside", nil)
+	_, _, err := db.AssignTodo(ctx, author, todo.ID, farside, nil)
 	if err == nil {
 		t.Fatal("a row was handed to a seat whose every credential is in another project")
 	}
@@ -46,7 +52,7 @@ func TestAssigningToASeatThatCannotSeeTheRowIsRefused(t *testing.T) {
 	}
 	// BOTH SIDES IN THE SENTENCE: the caller has to decide whether the row is in
 	// the wrong project or the seat needs a credential.
-	for _, want := range []string{"farside", here, there} {
+	for _, want := range []string{farside, here, there} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("the refusal does not name %q: %v", want, err)
 		}
@@ -76,7 +82,8 @@ func TestASeatReachingTheProjectMayBeHandedTheWork(t *testing.T) {
 	elsewhere := declaredProject(t, ctx, db, "reachelse")
 
 	author := &Principal{UserID: "u-" + ulid.NewString(), Project: here}
-	worker := &User{ID: "u-" + ulid.NewString(), Handle: "twoproject"}
+	twoproject := "twoproject-" + ulid.Short()
+	worker := &User{ID: "u-" + ulid.NewString(), Handle: twoproject}
 	if err := db.InsertUser(ctx, worker); err != nil {
 		t.Fatalf("insert user: %v", err)
 	}
@@ -89,7 +96,7 @@ func TestASeatReachingTheProjectMayBeHandedTheWork(t *testing.T) {
 	}
 
 	todo := todoIn(t, ctx, db, author, "work they can reach", VisibilityProjectOnly, "")
-	if _, _, err := db.AssignTodo(ctx, author, todo.ID, "twoproject", nil); err != nil {
+	if _, _, err := db.AssignTodo(ctx, author, todo.ID, twoproject, nil); err != nil {
 		t.Fatalf("a seat whose credential reaches the project was refused: %v", err)
 	}
 }
@@ -108,12 +115,13 @@ func TestASeatWithNoCredentialIsNotRefused(t *testing.T) {
 	author := &Principal{UserID: "u-" + ulid.NewString(), Project: here}
 
 	// A person with a handle and no token at all.
-	nobody := &User{ID: "u-" + ulid.NewString(), Handle: "uncredentialed"}
+	uncredentialed := "uncredentialed-" + ulid.Short()
+	nobody := &User{ID: "u-" + ulid.NewString(), Handle: uncredentialed}
 	if err := db.InsertUser(ctx, nobody); err != nil {
 		t.Fatalf("insert user: %v", err)
 	}
 	todo := todoIn(t, ctx, db, author, "handed to somebody with no token", VisibilityProjectOnly, "")
-	if _, _, err := db.AssignTodo(ctx, author, todo.ID, "uncredentialed", nil); err != nil {
+	if _, _, err := db.AssignTodo(ctx, author, todo.ID, uncredentialed, nil); err != nil {
 		t.Fatalf("a seat with no credential was refused: %v", err)
 	}
 
