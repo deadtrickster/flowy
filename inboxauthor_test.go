@@ -249,20 +249,38 @@ func TestTheDeliveryDropsNothingByAccident(t *testing.T) {
 
 // eventJSONFields reads the json names off store.Event, so this check cannot
 // drift from the type it is about.
+// eventJSONFields reads the names encoding/json would emit for store.Event, so
+// this check cannot drift from the type it is about.
+//
+// AN UNTAGGED EXPORTED FIELD COUNTS, and that is not pedantry: encoding/json
+// falls back to the GO NAME when there is no tag, so spoolEvents would carry it
+// and a check that skipped it would be blind to exactly the case it exists for.
+// @flowy-claude named this limit; it is cheaper to close than to write down.
+//
+// `json:"-"` is skipped on purpose - the encoder omits it everywhere, so the
+// spool does not carry it either and the delivery is not losing anything.
+// Unexported fields likewise: they never reach either writer.
 func eventJSONFields(t *testing.T) []string {
 	t.Helper()
 	var out []string
 	rt := reflect.TypeOf(store.Event{})
 	for i := 0; i < rt.NumField(); i++ {
-		tag := rt.Field(i).Tag.Get("json")
-		name, _, _ := strings.Cut(tag, ",")
-		if name == "" || name == "-" {
+		f := rt.Field(i)
+		if !f.IsExported() {
 			continue
+		}
+		name, _, _ := strings.Cut(f.Tag.Get("json"), ",")
+		switch name {
+		case "-":
+			continue
+		case "":
+			// No tag: encoding/json uses the field name verbatim.
+			name = f.Name
 		}
 		out = append(out, name)
 	}
 	if len(out) == 0 {
-		t.Fatal("store.Event has no json tags, so this check asserts nothing")
+		t.Fatal("store.Event has no encodable fields, so this check asserts nothing")
 	}
 	return out
 }
