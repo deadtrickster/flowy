@@ -1037,6 +1037,12 @@ var mintedTypes = map[string]bool{
 	// exists, this reader can see it, and it was said in this room.
 	store.EventPinAdd:    true,
 	store.EventPinRemove: true,
+	// A bookmark and the entry that drops one. See store.writeBookmark: the
+	// readability refusal is on the verb, and the privacy is the SHAPE - no
+	// project, no room - which a client writing its own event could simply not
+	// use.
+	store.EventBookmarkAdd:    true,
+	store.EventBookmarkRemove: true,
 	// A vote, and the closure that stops them. Both are written by the verb
 	// that does the thing, because both refusals that make the record worth
 	// reading live there - see store.CastVote.

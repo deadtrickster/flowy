@@ -1531,6 +1531,14 @@ var mintedEventTypes = map[string]bool{
 	// room's readers may not be able to open.
 	EventPinAdd:    true,
 	EventPinRemove: true,
+	// A bookmark and the entry that drops one. Minted for the pin's first
+	// reason - the refusal that makes one honest, that the writer can READ the
+	// message, is on the verb - and for a second one that is about the shape:
+	// a bookmark is private because it carries no project and no room, and a
+	// hand-written one could carry both and put a reader's private list into
+	// somebody else's room.
+	EventBookmarkAdd:    true,
+	EventBookmarkRemove: true,
 	// An assignment. It is minted for the first reason - the claim is made by
 	// going through the verb - and because the refusal that makes it safe is on
 	// the verb: the writer has to be able to READ the todo. An entry a client

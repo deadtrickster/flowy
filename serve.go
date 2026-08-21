@@ -285,6 +285,9 @@ var apiRoutes = []string{
 	"GET /api/chat/{room}/wait",
 	"POST /api/chat/{room}/todo",
 	"POST /api/chat/{room}/react",
+	"POST /api/bookmark",
+	"DELETE /api/bookmark/{id}",
+	"GET /api/bookmarks",
 	"POST /api/chat/{room}/pin",
 	"DELETE /api/chat/{room}/pin/{id}",
 	"GET /api/chat/{room}/pins",
@@ -577,6 +580,12 @@ func (s *server) routes() http.Handler {
 	api.HandleFunc("POST /api/chat/{room}/pin", s.handleRoomPin)
 	api.HandleFunc("DELETE /api/chat/{room}/pin/{id}", s.handleRoomUnpin)
 	api.HandleFunc("GET /api/chat/{room}/pins", s.handleRoomPins)
+	// A reader's own list. No room in the path, deliberately: a bookmark is
+	// about a message, and the reader who kept it may have kept messages from
+	// four rooms. See bookmarks.go.
+	api.HandleFunc("POST /api/bookmark", s.handleBookmark)
+	api.HandleFunc("DELETE /api/bookmark/{id}", s.handleUnbookmark)
+	api.HandleFunc("GET /api/bookmarks", s.handleBookmarks)
 	// And who is carrying one, said in the room the same way raising it is.
 	api.HandleFunc("POST /api/chat/{room}/todo/{id}/assignee", s.handleRoomTodoAssign)
 	// What a room decided, as data: the proposal, the votes in the order they

@@ -12639,6 +12639,14 @@ check "a work item filed over MCP defaults to the project, and a memory does not
 # reproduced reads as never reproduced in the console's drawer.
 check "a run survives the runner being restarted" \
 	go test -count=1 -run 'TestRunsSurviveARestart' ./internal/repro
+# Named because the failure is a LEAK and leaks are silent: a bookmark is
+# private only because it carries no project and no room, which is a sentence
+# perm.go wrote about direct messages and this feature relies on. Nothing about
+# a bookmark that had grown a project would look wrong from the outside - the
+# reader's own list would still be right - and the person who finds out is
+# whoever reads somebody else's pile.
+check "one reader's bookmarks are invisible to another" \
+	go test -count=1 -run 'TestOneReadersBookmarksAreInvisibleToAnother' ./internal/store
 
 # ------------------------------------------ an older database meets this binary
 #

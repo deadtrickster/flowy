@@ -4,6 +4,7 @@ import { Shell } from "@/components/Shell";
 import { UnreadProvider } from "@/lib/unread";
 import { Activity } from "@/routes/Activity";
 import { ArtifactView } from "@/routes/ArtifactView";
+import { Bookmarks } from "@/routes/Bookmarks";
 import { ChatRoom } from "@/routes/ChatRoom";
 import { DiagramView } from "@/routes/DiagramView";
 import { Diagrams } from "@/routes/Diagrams";
@@ -118,6 +119,7 @@ export default function App() {
           shape is meant, and says so loudly when the shape is gone.
         */}
           <Route path="/diagrams/:id/:cell" element={<DiagramView />} />
+          <Route path="/bookmarks" element={<Bookmarks />} />
           <Route path="/worklog" element={<Worklog />} />
           <Route path="/task/:id" element={<TaskView />} />
           <Route path="/p/:project/:type/:id" element={<ArtifactView />} />

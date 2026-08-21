@@ -37,6 +37,16 @@ interface Props {
    */
   onOpenThread?: (event: FlowyEvent) => void;
   /**
+   * kept is the message ids this reader has bookmarked, and onKeep toggles one.
+   *
+   * The SET rather than a flag per message, because the control has to be able
+   * to say "kept" as well as "keep": a button that only ever adds is a list
+   * somebody can fill and not empty, and they would find that out on the page
+   * where it matters least.
+   */
+  kept?: string[];
+  onKeep?: (event: FlowyEvent, on: boolean) => void;
+  /**
    * onThreadReply is "answer this, in its thread" - one gesture that opens the
    * thread pane on this message and puts the caret in the pane's composer.
    *
@@ -155,6 +165,8 @@ export function MessageList({
   onSelect,
   onCite,
   onOpenThread,
+  kept,
+  onKeep,
   onThreadReply,
   onTodo,
   me,
@@ -167,6 +179,11 @@ export function MessageList({
   threads,
   onReact,
 }: Props) {
+  // A SET, built once per render rather than an .includes() per message: the
+  // room draws a bounded window, but the window is not small and the list is
+  // not either once somebody has been using it for a week.
+  const keeping = useMemo(() => new Set(kept ?? []), [kept]);
+
   // Whether an id is the person reading or the agent working for them, which
   // is the pair the node treats as one reader everywhere else.
   const isMe = (id?: string) => !!id && (id === me?.user || id === me?.agent);
@@ -780,6 +797,35 @@ export function MessageList({
                       }}
                     >
                       todo
+                    </button>
+                  ) : null}
+                  {/*
+                    KEEPING ONE FOR YOURSELF, which is the pin's private twin.
+                    01M0HGTV9B: "I should be able to bookmark messages".
+
+                    Beside cite and todo because it is the third thing a reader
+                    does with a message they care about, and deliberately NOT
+                    beside the pin: a pin rearranges what everybody in the room
+                    sees, and somebody who wants to find their own way back
+                    tomorrow should not have to make a claim about the
+                    conversation to do it.
+                  */}
+                  {onKeep ? (
+                    <button
+                      type="button"
+                      data-bookmark={event.id}
+                      data-kept={String(keeping.has(event.id))}
+                      title={
+                        keeping.has(event.id)
+                          ? "you are keeping this - drop it from your list"
+                          : "keep this message in your own list"
+                      }
+                      className={`cursor-pointer underline decoration-dotted hover:text-foreground ${
+                        keeping.has(event.id) ? "text-primary" : "text-muted-foreground"
+                      }`}
+                      onClick={() => onKeep(event, !keeping.has(event.id))}
+                    >
+                      {keeping.has(event.id) ? "kept" : "keep"}
                     </button>
                   ) : null}
                   <span>#{shortId(event.id)}</span>

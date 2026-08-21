@@ -64,6 +64,8 @@ var routeNeeds = map[string]string{
 	"POST /api/artifacts":                        needsWrite,
 	"POST /api/assign":                           needsWrite,
 	"POST /api/attachment":                       needsWrite,
+	"POST /api/bookmark":                         needsWrite,
+	"DELETE /api/bookmark/{id}":                  needsWrite,
 	"POST /api/chat/{room}/pin":                  needsWrite,
 	"POST /api/chat/{room}/react":                needsWrite,
 	"POST /api/chat/{room}/say":                  needsWrite,

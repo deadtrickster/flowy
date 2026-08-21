@@ -800,6 +800,48 @@ export function ChatRoom() {
    * navigate to the message either - the URL names a message so a reply can be
    * armed from a cold load, and nothing is being armed.
    */
+  /**
+   * WHAT THIS READER IS KEEPING. Loaded once per room open and kept in step by
+   * the writes below rather than by a poll: it is one person's list and this
+   * tab is the only thing that changes it, so a poll would be a request every
+   * twenty seconds to be told what this tab already did.
+   *
+   * The node's answer is what lands in state, never the optimistic guess. The
+   * assignee cell learned that the hard way an hour ago - an older read landing
+   * after a newer one repainted a value somebody had just set - and the same
+   * shape is here: a write, then the list the node hands back.
+   */
+  const [kept, setKept] = useState<string[]>([]);
+  useEffect(() => {
+    if (!token) {
+      setKept([]);
+      return;
+    }
+    let stopped = false;
+    api
+      .bookmarks()
+      .then((page) => {
+        if (!stopped) setKept(page.kept);
+      })
+      // Swallowed: a control that draws "keep" instead of "kept" is worth less
+      // than a banner over the transcript, and the next open asks again.
+      .catch(() => {});
+    return () => {
+      stopped = true;
+    };
+  }, [token]);
+
+  const keep = async (event: FlowyEvent, on: boolean) => {
+    try {
+      if (on) await api.bookmark(event.id);
+      else await api.unbookmark(event.id);
+      const page = await api.bookmarks();
+      setKept(page.kept);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
   const openThread = (event: FlowyEvent) => {
     // THE URL STILL NAMES IT, so the pane can be sent to somebody - measured by
     // the thread-count check, which failed the first cut of this with "opening
@@ -1046,6 +1088,8 @@ export function ChatRoom() {
           onSelect={point}
           onCite={citeSpan}
           onOpenThread={openThread}
+          kept={kept}
+          onKeep={keep}
           onThreadReply={replyInThread}
           onTodo={raiseFromMessage}
           me={{ user: whoami?.user, agent: whoami?.agent }}

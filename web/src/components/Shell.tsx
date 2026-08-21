@@ -1,5 +1,6 @@
 import {
   Activity as ActivityIcon,
+  Bookmark,
   Boxes,
   Brain,
   Bug,
@@ -303,6 +304,13 @@ export function Shell({ children }: { children: ReactNode }) {
             answers to one question before this, and only one of them was ever
             on screen.
           */}
+          {/* A reader's own pile, beside the queue rather than inside a room:
+              what somebody kept is theirs and spans every room they read. See
+              routes/Bookmarks. */}
+          <NavLink to="/bookmarks" className={navClass}>
+            <Bookmark className="h-4 w-4" />
+            kept
+          </NavLink>
           <NavLink to="/todos" className={navClass}>
             <ListChecks className="h-4 w-4" />
             todos

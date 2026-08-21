@@ -187,6 +187,28 @@ export interface PinsView {
   log: PinEntry[];
 }
 
+/** One line of a reader's own bookmark log. */
+export interface BookmarkEntry {
+  message: string;
+  verb: string;
+  at: string;
+  event: string;
+}
+
+/**
+ * What a reader is keeping, newest first.
+ *
+ * `kept` and `messages` are deliberately not the same length. A message that
+ * has stopped being readable is dropped from `messages` and stays in `kept` -
+ * the bookmark is a pointer and the node never kept a copy - so a list that is
+ * shorter than the count is telling the truth about what is still reachable.
+ */
+export interface BookmarksView {
+  kept: string[];
+  messages: FlowyEvent[];
+  log: BookmarkEntry[];
+}
+
 /**
  * WorkloadShare is one participant's slice of the open board.
  *
@@ -2208,6 +2230,31 @@ export const api = {
   nag: () => request<NagView>("/api/nag"),
 
   pins: (room: string) => request<PinsView>(`/api/chat/${encodeURIComponent(room)}/pins`),
+
+  /**
+   * A READER'S OWN LIST, which is the pin's private twin and not the same thing
+   * at all: a pin rearranges what four other seats see, and somebody who wants
+   * to find their own way back to a message tomorrow has no business doing
+   * that. 01M0HGTV9B.
+   *
+   * No room in any of these paths - a bookmark is about a message, and the
+   * reader who kept it may have kept messages from four rooms. The list comes
+   * back with the MESSAGES and not only their ids, because this is a page of
+   * its own rather than a strip over a transcript, and a page of twenty ULIDs
+   * is a page nobody can read.
+   */
+  bookmarks: () => request<BookmarksView>("/api/bookmarks"),
+
+  bookmark: (message: string) =>
+    request<FlowyEvent>("/api/bookmark", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message }),
+    }),
+
+  /** Drop one. The log still gains an entry - see the DELETE handler. */
+  unbookmark: (message: string) =>
+    request<FlowyEvent>(`/api/bookmark/${encodeURIComponent(message)}`, { method: "DELETE" }),
 
   /**
    * Put a message up in the room it was said in. The room is in the path as
