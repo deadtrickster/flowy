@@ -25,6 +25,7 @@ import {
   api,
 } from "@/lib/api";
 import { useCitation } from "@/lib/cite";
+import { openThreadIn, rememberOpenThread } from "@/lib/openthread";
 import { useSession } from "@/lib/session";
 import { useUnread } from "@/lib/unread";
 import { cn, shortId } from "@/lib/utils";
@@ -755,10 +756,53 @@ export function ChatRoom() {
    * the `N replies` button in MessageList both call it - so this needs no new
    * door, only to stop being re-pointed by the room.
    */
-  const [opened, setOpened] = useState<string | undefined>(undefined);
+  const [opened, setOpened] = useState<string | undefined>(() =>
+    linked ? undefined : openThreadIn(room),
+  );
+  /**
+   * REMEMBERED PER ROOM, so leaving and coming back puts the thread back.
+   *
+   * @deadtrickster, 01M0JPYYDZ: "visiting other panel and returned to room
+   * resets the thread panel". Switching PANES already worked - the pane is a
+   * route and this component stays mounted - but leaving the room unmounts it,
+   * `opened` goes with it, and the path the sidebar returns you to names no
+   * message. Nothing in the route can fix that, because the route is what was
+   * navigated away from.
+   *
+   * ONE FUNCTION FOR BOTH HALVES so the state and the store cannot disagree.
+   * The last time two places held one fact here - the selection and the URL -
+   * a dismissal put itself straight back; see unpoint.
+   */
+  const showThread = (id: string | undefined) => {
+    setOpened(id);
+    rememberOpenThread(room, id);
+  };
+  // showThread is rebuilt every render, so depending on it would run this on
+  // every one. The thread it points at is the dependency, and that is what is
+  // listed.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: see above
   useEffect(() => {
-    if (selected?.thread) setOpened(selected.thread);
+    if (selected?.thread) showThread(selected.thread);
   }, [selected?.thread]);
+  /**
+   * AND THE ROOM DECIDES WHAT THE PANE SHOWS, which is a second bug this fixes.
+   *
+   * /chat/:room is one component, so changing rooms does not remount it, and
+   * nothing depended on [room] - so a thread opened in one room stayed `opened`
+   * in the next. No event there matches that id, so the pane drew nothing and
+   * read as broken rather than as somebody else's state.
+   *
+   * Arriving with a message in the path is the cold-link case and wins: the
+   * effect further down selects it, and this must not overwrite that with a
+   * remembered one.
+   */
+  // Entering a room is the event, and `linked` is read at that moment rather
+  // than watched - adding it would re-run this when a reader opens a message,
+  // undoing the open.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: see above
+  useEffect(() => {
+    if (!linked) setOpened(openThreadIn(room));
+  }, [room]);
   // NOTHING UNTIL ASKED. An empty pane on first load is correct rather than a
   // gap: a pane showing a conversation nobody chose is the defect being fixed,
   // and there is no honest default - the newest thread is exactly the wrong
@@ -860,7 +904,7 @@ export function ChatRoom() {
     // untouched - `applied` is per tab, so the recipient's effect still runs
     // and still arms the reply that link was made to carry.
     applied.current = event.id;
-    setOpened(event.thread);
+    showThread(event.thread);
     navigate(`/chat/${encodeURIComponent(room)}/thread/${encodeURIComponent(event.id)}`);
   };
 
@@ -873,7 +917,7 @@ export function ChatRoom() {
   // and the honest fix is to stop pretending, not to wrap two more functions.
   const replyInThread = (event: FlowyEvent) => {
     point(event);
-    setOpened(event.thread);
+    showThread(event.thread);
     wantsThreadBox.current = true;
     setPane("thread");
   };
