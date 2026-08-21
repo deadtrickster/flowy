@@ -30,6 +30,9 @@
  * does, whenever something lands.
  */
 
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
+
 import { chromium } from "playwright";
 
 const [base, token] = process.argv.slice(2);
@@ -61,6 +64,46 @@ const call = async (path, init = {}) => {
   }
   return { ok: r.ok, status: r.status, body };
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FIRST, THE ARM THAT CANNOT BE HIDDEN BY THE FIXTURE.
+//
+// The browser arms below compare each pane against what the node told it, which
+// is the right assertion and is NOT DISCRIMINATING ON A FRESH NODE. A suite's
+// node has had nothing landed through the merge door, so LandedTipOf returns
+// nothing and api_mergequeue.go falls through to tip_from "deployed" - which is
+// exactly the literal this row is about. Both panes then agree, with and
+// without the fix, and the check passes either way.
+//
+// That is the same failure this fleet hit twice tonight: a check whose two arms
+// fail identically, which looks like coverage and is not. Making the fixture
+// discriminate would mean landing a row - declare, verdict, land - and that
+// writes node-wide state every later check would inherit, to test a console
+// literal. Not worth it.
+//
+// So the defect is asserted where it lives: nobody passes a CONSTANT for a
+// value the node answers. It reads the source rather than the screen, which is
+// weaker evidence about behaviour and stronger evidence about this bug - it
+// cannot pass because the fixture happened to match the constant.
+const routes = join(process.cwd(), "src", "routes");
+const literals = [];
+for (const name of readdirSync(routes)) {
+  if (!name.endsWith(".tsx")) continue;
+  const src = readFileSync(join(routes, name), "utf8");
+  // tipFrom={...} is a value from somewhere; tipFrom="..." is a decision this
+  // file made about a fact it does not own.
+  for (const m of src.matchAll(/tipFrom=("[^"]*")/g)) {
+    literals.push(`${name}: tipFrom=${m[1]}`);
+  }
+}
+if (literals.length > 0) {
+  die(`a route states the tip's provenance instead of reading it:
+  ${literals.join("\n  ")}
+/api/merge-queue answers tip_from on every read - "stated", "landed", "deployed"
+or "none" - and a route that hardcodes one is right only by luck. ChatRoom.tsx
+said "deployed" while this node answered "landed", so the room's pane drew "the
+commit this node was built from" over verdicts measured against something newer.`);
+}
 
 // ITS OWN ROOM. The room pane is narrowed by room, and a check that seeded into
 // a shared one would depend on what everybody else had filed there - the
