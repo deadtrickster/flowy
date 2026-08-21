@@ -31,6 +31,7 @@ NODE=${FLOWY_ADDR:-http://192.168.1.55:8787}
 REPO=${FLOWY_REPO:-/home/dead/Projects/flowy}
 STATE=${FLOWY_LIVE_STATE:-$HOME/.cache/flowy-live}
 EVERY=${FLOWY_LIVE_EVERY:-120}
+MERGE_WINDOW=${FLOWY_LIVE_WINDOW:-500}
 TOKEN=${FLOWY_TOKEN:-}
 [ -n "$TOKEN" ] || TOKEN=$(cat "$HOME/.config/flowy/agents/orchestrator" 2>/dev/null || true)
 [ -n "$TOKEN" ] || {
@@ -74,14 +75,35 @@ pass() {
 		return 1
 	fi
 
-	rows=$(api GET "/api/artifacts?kind=merge&limit=60" |
+	# THE WINDOW IS ASKED FOR, AND A FULL ONE SAYS SO.
+	#
+	# It was limit=60 with no reason written down, which is the shape flowy-claude
+	# named across three reads tonight: correct until the data passes it, and
+	# silent when it does. Measured 2026-08-21: this node holds 314 merge rows,
+	# so 60 was already five windows short of the board.
+	#
+	# It matters less here than it looks - the list is newest first and a landing
+	# is new - but "less than it looks" is not "never", and a burst of more than
+	# the window between two polls would drop landings with nothing said. So the
+	# number is explicit, and a window that comes back FULL is reported rather
+	# than assumed to be the whole board.
+	rows=$(api GET "/api/artifacts?kind=merge&limit=$MERGE_WINDOW" |
 		python3 -c '
 import json, sys
 try:
     page = json.load(sys.stdin)
 except Exception:
     raise SystemExit
-for a in page.get("artifacts") or []:
+page = page.get("artifacts") or []
+# THE FIRST LINE IS WHAT THE DOOR RETURNED, before any filtering. The
+# truncation question is about the PAGE and the filter is about landings, so
+# comparing a filtered count against the window is a test that cannot fail -
+# found by flowy-claude in review, after I had "controlled" it at window=5,
+# where it happened to fire because nearly every row in a five-row page was a
+# landing. A control that passes for the wrong reason is the defect this
+# script is written against.
+print("PAGE", len(page))
+for a in page:
     if (a.get("status") or "") != "done":
         continue
     tip = ((a.get("fields") or {}).get("landed_tip") or "").strip()
@@ -89,6 +111,13 @@ for a in page.get("artifacts") or []:
         continue
     print(a["id"], tip, (a.get("fields") or {}).get("branch") or "-")
 ') || return 1
+
+	# The page size rides on the first line and is taken off it here, so the
+	# loop below sees only landings.
+	local page_rows
+	page_rows=$(printf '%s\n' "$rows" | sed -n 's/^PAGE //p')
+	rows=$(printf '%s\n' "$rows" | grep -v '^PAGE ')
+	[ -n "$page_rows" ] || page_rows=0
 
 	# A WATCHER THAT STARTS MID-HISTORY MUST NOT REPLAY IT.
 	#
@@ -100,6 +129,14 @@ for a in page.get("artifacts") or []:
 	# So the first pass SEEDS: it marks what is already live and says how many,
 	# and writes nothing on a row. From the second pass on, a marker missing
 	# means the landing is new.
+	# A WINDOW THAT CAME BACK FULL is a window that may have cut something off,
+	# and the honest answer is to say which number was asked for rather than to
+	# report on a board this may not be all of.
+	if [ "$page_rows" -ge "$MERGE_WINDOW" ]; then
+		printf 'landed-to-live: the door returned %s merge row(s), which is the whole window - there may be more, raise FLOWY_LIVE_WINDOW\n' \
+			"$page_rows" >&2
+	fi
+
 	local seeded=0
 	local seeding=no
 	if [ -z "$(ls -A "$STATE" 2>/dev/null)" ]; then
@@ -109,7 +146,18 @@ for a in page.get("artifacts") or []:
 	local id tip branch marker
 	while read -r id tip branch; do
 		[ -n "$id" ] || continue
-		marker="$STATE/live-$id-$serving"
+		# KEYED ON THE ROW, NOT ON WHAT IS SERVING. It was live-$id-$serving,
+		# and $serving changes on every deploy - which here is every landing.
+		# Seeding only runs on an EMPTY state, so it fires once ever, and
+		# from the second deploy onward no old row had a marker for the new
+		# sha: every landing this node ever made would be announced again,
+		# every deploy. That is exactly the failure the seeding above is
+		# written against, rebuilt in the key. Found by flowy-claude in
+		# review, before it ran anywhere.
+		#
+		# "This row went live" is a fact about the ROW and it happens once.
+		# The sha it went live in belongs in the sentence, not in the key.
+		marker="$STATE/live-$id"
 		[ -e "$marker" ] && continue
 		# IS THIS LANDING IN WHAT IS SERVING? Ancestry, asked of git rather than
 		# of the strings: a short sha that is a prefix of another is not the
