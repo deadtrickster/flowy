@@ -334,6 +334,22 @@ export function RoomTodos({
   //
   // So the card closes when the ORDER changes rather than when the contents do:
   // a row arriving, leaving or moving all invalidate where it is pointing.
+  const order = sortTodos(drawn)
+    .map((t) => t.id)
+    .join(" ");
+  // IN AN EFFECT AND NOT DURING RENDER, which is measured rather than
+  // stylistic. The render-time version closed the card in the same commit that
+  // opened it whenever a poll landed in between, and the panel check red on it.
+  // After the paint the panel has settled, so the close is about the list the
+  // reader is actually looking at.
+  useEffect(() => {
+    // `order` is READ here rather than only named as a dependency. An effect
+    // that depends on something it never touches is the shape the
+    // exhaustive-deps rule exists to catch, and a biome-ignore whose reasoning
+    // ran onto a second line stopped being the last comment above the code and
+    // suppressed nothing - twice.
+    if (order !== "") setOpen("");
+  }, [order]);
 
   return (
     // flex-1 because this is a whole pane now rather than the top half of one:
@@ -456,7 +472,7 @@ export function RoomTodos({
               // appear anywhere but beside the thing it is about.
               <li
                 key={todo.id}
-                className="flex flex-wrap items-baseline gap-2 border-border/60 border-b px-4 py-2 text-xs"
+                className="relative flex items-baseline gap-2 border-border/60 border-b px-4 py-2 text-xs"
               >
                 {/*
                   Amber in flight, grey waiting, green finished - the three
@@ -778,7 +794,7 @@ function TodoSummary({
     // read as ON TOP rather than as another row, which is the whole complaint.
     <div
       data-todo-summary={todo.id}
-      className="mt-2 w-full rounded-md border border-border bg-background px-3 py-2 text-xs shadow-lg"
+      className="absolute top-full right-2 left-2 z-20 rounded-md border border-border bg-background px-3 py-2 text-xs shadow-lg"
     >
       <div className="flex items-baseline gap-2">
         <span className="font-mono text-muted-foreground">{shortId(todo.id)}</span>
