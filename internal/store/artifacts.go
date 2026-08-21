@@ -194,6 +194,12 @@ func (d *DB) upsertArtifact(ctx context.Context, q execer, a *Artifact) error {
 	if err := checkMergeRow(a); err != nil {
 		return err
 	}
+	// And an openspec row holds its own shape - asked here for the same reason:
+	// every surface writes through one of the same statements, and a rule kept
+	// per surface is a rule the next surface forgets. See checkOpenspecRow.
+	if err := checkOpenspecRow(a); err != nil {
+		return err
+	}
 	// The date the row will carry, decided before it is signed rather than by
 	// the column's default afterwards - see createdNow. An update keeps the date
 	// the row already has: an edit is not a new artifact, and the value has to
@@ -498,6 +504,12 @@ func (d *DB) writeArtifactFields(
 	if err := checkMergeRow(a); err != nil {
 		return err
 	}
+	// And an openspec row holds its own shape - asked here for the same reason:
+	// every surface writes through one of the same statements, and a rule kept
+	// per surface is a rule the next surface forgets. See checkOpenspecRow.
+	if err := checkOpenspecRow(a); err != nil {
+		return err
+	}
 	if err := d.signArtifact(ctx, d.sql, a); err != nil {
 		return err
 	}
@@ -704,6 +716,12 @@ func (d *DB) createArtifact(ctx context.Context, q execer, a *Artifact) error {
 	// same reason - the rule used to live at the memory door alone, and the
 	// HTTP door wrote rows the queue could never drain. See checkMergeRow.
 	if err := checkMergeRow(a); err != nil {
+		return err
+	}
+	// And an openspec row holds its own shape - asked here for the same reason:
+	// every surface writes through one of the same statements, and a rule kept
+	// per surface is a rule the next surface forgets. See checkOpenspecRow.
+	if err := checkOpenspecRow(a); err != nil {
 		return err
 	}
 	// Minted here and signed with the row, not left to the column - see
