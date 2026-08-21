@@ -13971,13 +13971,18 @@ an_ignored_room_stops_telling_you_and_stays_readable() {
 	local quiet loud note
 	# B's reader first: a cursor starts where it is created, so anything said
 	# before it exists is behind it and never delivered.
-	api POST "$TOKEN_B" /api/inbox/reader '{"as": "ignore-waiter"}' || return 1
+	# THE OPERATOR READS AND A SPEAKS, because both are in pa. The first version
+	# had B waiting on rooms A had spoken into: A's writes land in pa, B is in
+	# pb, and B could not read either room - so the CONTROL failed, "the open
+	# room still wakes the waiter is 0, want 1", which is the check telling me
+	# it had measured nothing rather than the feature being wrong.
+	api POST "$TOKEN_OP" /api/inbox/reader '{"as": "ignore-waiter"}' || return 1
 
 	# B ignores one room and not the other. Written the way the console writes
 	# it - a personal note under the tag the node looks the row up by - because
 	# a check that wrote it some other way would pass while the console's own
 	# row went unread.
-	api POST "$TOKEN_B" /api/artifacts \
+	api POST "$TOKEN_OP" /api/artifacts \
 		'{"type": "memory", "kind": "note", "title": "console: rooms I have ignored",
 		  "visibility": "personal", "tags": ["console-ignored-rooms"],
 		  "body": "[\"quietroom\"]"}' || return 1
@@ -13992,7 +13997,7 @@ an_ignored_room_stops_telling_you_and_stays_readable() {
 	api POST "$TOKEN_A" /api/chat/loudroom/say '{"body": "and this one is the control"}' || return 1
 	loud="$(jqv .id)"
 
-	api GET "$TOKEN_B" "/api/inbox/wait?as=ignore-waiter&window=1" || return 1
+	api GET "$TOKEN_OP" "/api/inbox/wait?as=ignore-waiter&window=1" || return 1
 	want_eq "the open room still wakes the waiter" \
 		"$(jqv "[.events[] | select(.id == \"$loud\")] | length")" 1 || return 1
 	want_eq "and the ignored room does not" \
@@ -14001,14 +14006,14 @@ an_ignored_room_stops_telling_you_and_stays_readable() {
 	# STILL READABLE, which is the half that separates ignore from leave. The
 	# operator's words are the requirement: they did not want to miss it, they
 	# wanted not to be told.
-	api GET "$TOKEN_B" "/api/chat/quietroom?limit=20" || return 1
-	want_eq "the message is there when B goes looking for it" \
+	api GET "$TOKEN_OP" "/api/chat/quietroom?limit=20" || return 1
+	want_eq "the message is there when the reader goes looking for it" \
 		"$(jqv "[.events[] | select(.id == \"$quiet\")] | length")" 1 || return 1
 
 	# AND A WAIT THAT NAMES THE ROOM IS SOMEBODY LOOKING AT IT. Answering
 	# "nothing" to a direct question because of a standing preference would be a
 	# wrong answer wearing the shape of a quiet room.
-	api GET "$TOKEN_B" "/api/inbox/wait?as=ignore-waiter&room=quietroom&window=1" || return 1
+	api GET "$TOKEN_OP" "/api/inbox/wait?as=ignore-waiter&room=quietroom&window=1" || return 1
 	want_eq "asked about that room by name, the waiter is answered" \
 		"$(jqv "[.events[] | select(.id == \"$quiet\")] | length")" 1 || return 1
 	printf 'ignored %s stayed silent and stayed readable; %s in the open room woke the waiter\n' \
