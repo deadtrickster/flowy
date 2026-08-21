@@ -493,7 +493,12 @@ export function Shell({ children }: { children: ReactNode }) {
                   the value, not the function, reaches cn. */}
               <NavLink
                 to={`/chat/${room}`}
-                className={({ isActive }) => cn(navClass({ isActive }), "flex-1 pr-7")}
+                // pr-14 AND NOT pr-7. The room name has to clear BOTH controls now -
+                // close at right-1 and ignore at right-7 - and a padding sized
+                // for one of them lets a long name run underneath the other.
+                // The previous value was correct for one button and became a
+                // lie the moment a second arrived beside it.
+                className={({ isActive }) => cn(navClass({ isActive }), "flex-1 pr-14")}
               >
                 <Hash className="h-4 w-4" />
                 {room}
