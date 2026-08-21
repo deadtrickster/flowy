@@ -98,8 +98,29 @@ try {
     await die(`${id} was set to ${priority} in the panel and the node never took it`);
   };
 
+  // AND THE CARD IS CLOSED AFTER EACH ONE, which is what a person does and
+  // what this check was not doing. The card is an overlay anchored on its
+  // row's bottom edge, so leaving one open puts it on top of the NEXT row's
+  // title - and the next thing this check does is click exactly that. It read
+  // as a flake, red in three of four VM runs and green on the box, because
+  // whether the card was still there when the click arrived was a race a
+  // slower machine lost. Escape rather than the close button: it is the
+  // dismissal that does not depend on where the card was drawn.
+  const closeCard = async (id) => {
+    await page.keyboard.press("Escape");
+    await page
+      .locator(`[data-todo-summary="${id}"]`)
+      .waitFor({ state: "detached", timeout: 10_000 })
+      .catch(() => {});
+    if ((await page.locator(`[data-todo-summary="${id}"]`).count()) > 0) {
+      await die(`the card for ${id} did not close on Escape, so it is still over the row below`);
+    }
+  };
+
   await rank(newest, "now");
+  await closeCard(newest);
   await rank(oldest, "later");
+  await closeCard(oldest);
 
   // AND THE QUEUE BELIEVES IT. Asked of the door the board reads, in queued
   // order, which is where the sort lives.
