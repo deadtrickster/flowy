@@ -45,6 +45,21 @@ func scanEvent(sc scanner) (*Event, error) {
 	if err != nil {
 		return nil, err
 	}
+	// IN UTC, WHATEVER ZONE THE DRIVER HANDED BACK.
+	//
+	// createdNow writes UTC, but the column is timestamptz and lib/pq returns
+	// it in the SESSION's zone - so the same row reads as ...Z on a node whose
+	// process runs in UTC and as ...+02:00 on one that does not. Measured on
+	// 2026-08-21 against a node started from a shell in CEST: the message read
+	// back as 06:10:22+02:00 while the same answer's `now` said 04:10:22Z, one
+	// instant with two faces in one JSON body.
+	//
+	// It is not cosmetic. Every renderer of a message time slices the string -
+	// chat-hook.sh takes created[11:16] to print "[06:10]" - so on a node that
+	// is not in UTC the fleet's signal disagrees with the fleet's logs by the
+	// offset, and nothing anywhere says which one is right. The zone of the
+	// machine the node happens to run on is not a fact about the message.
+	e.Created = e.Created.UTC()
 	// Whatever the column holds, a reader is told one of the two things this
 	// node can actually say - see authorshipOr. A row from a store written
 	// before the column existed reads as attributed, which is what it is.

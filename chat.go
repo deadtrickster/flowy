@@ -1106,6 +1106,7 @@ func writeChatWindow(
 		"project":   roomProjectOf(list),
 		"reactions": reactions,
 		"threads":   threads,
+		"now":       nodeNow(),
 	})
 }
 
@@ -1146,6 +1147,9 @@ func writeChatEvents(
 		// receives, and the two would have to agree forever. The console joins
 		// on the id it already has.
 		"reactions": reactions,
+		// WHAT TIME IT IS, by the clock the timestamps above came from. See
+		// nodeNow, and inboxWaitResponse.Now for the row this answers.
+		"now": nodeNow(),
 		// HOW BIG EACH THREAD ON THIS PAGE IS, keyed by thread id and beside
 		// the events for the same reason the reactions are: it is a fold of the
 		// log, not a property of the row that replicates.
@@ -1284,3 +1288,17 @@ func cursorParam(s string) (int64, error) {
 
 // errNotACursor is what a malformed cursor turns into.
 var errNotACursor = errors.New("since/cursor must be a packed hlc integer")
+
+// nodeNow is the node's own clock, RFC3339 in UTC, for the payloads a signal is
+// built from.
+//
+// ONE CLOCK FOR THE FLEET is the point. Every timestamp this node hands out -
+// `created` on a message, `at` on a verdict - is its own; a reader that prints
+// those beside a `date` of its own is comparing two clocks that have no reason
+// to agree, on two boxes. So the answer carries the time it was answered, and
+// every surface downstream can say "as of" without asking anybody.
+//
+// SECONDS, and UTC, deliberately: this is read by people and by agents in one
+// line beside a message time, and the room speaks UTC because the fleet is not
+// all in one place.
+func nodeNow() string { return time.Now().UTC().Format(time.RFC3339) }

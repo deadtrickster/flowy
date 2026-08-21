@@ -60,6 +60,26 @@ type inboxWaitResponse struct {
 	Skipped int            `json:"skipped"`
 	Since   int64          `json:"since"`
 	Cursor  int64          `json:"cursor"`
+	// Now is the NODE'S clock when it answered, RFC3339 in UTC.
+	//
+	// The operator, on the board: "change chat signal so it always includes the
+	// current time (messages should include theirs too). why? agents keep
+	// getting time wrong."
+	//
+	// Every message here already carries `created`, and every surface that
+	// draws one prints it. What none of them could say is what time it is NOW,
+	// so a reader handed "[03:10]" cannot tell whether that was a minute ago or
+	// fifty. An agent session is given a date when it starts and carries it for
+	// hours - this row was written on the 21st by a session whose prompt says
+	// the 20th - so "check the clock" is advice that only helps somebody who
+	// already suspects.
+	//
+	// FROM THE NODE AND NOT FROM THE READER, which is the whole reason this is
+	// a field rather than a `date -u` wherever the signal is rendered. The
+	// timestamps it sits beside are the node's. A now from a different clock is
+	// a comparison nobody can check, on two boxes whose clocks have no reason
+	// to agree - and comparisons like that are what this row is about.
+	Now string `json:"now"`
 }
 
 // inboxReaderRequest names a waiter. It is `as` and not `reader` because that
@@ -299,6 +319,7 @@ func (s *server) handleInboxWait(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, inboxWaitResponse{
 		Reader: name, Events: deliver, Skipped: skipped, Since: reader.Cursor, Cursor: at,
+		Now: nodeNow(),
 	})
 }
 
@@ -943,6 +964,14 @@ func waitOnInbox(ctx context.Context, client *http.Client, base, bearer, as, roo
 			// flushed, so the mark may move past them.
 			ackInbox(ctx, client, base, bearer, as, page.Cursor, true)
 			reportSkipped(skipped)
+			// WHAT TIME IT IS, BY THE CLOCK THE MESSAGES ARE STAMPED WITH.
+			//
+			// Every line on stdout carries `created`; none of them said what
+			// time it was when they arrived, so a reader with a stale idea of
+			// the hour - which is every agent session, since it is handed a
+			// date once and keeps it - had nothing to correct itself against.
+			// stderr, because stdout here is JSONL a program parses.
+			reportNow(page.Now)
 			return nil
 		}
 
@@ -1001,6 +1030,21 @@ func pollWindowLeft(until time.Time) int {
 //
 // The cursor is on every line rather than only at the end, so a consumer that
 // dies part way through resumes from exactly what it processed.
+// reportNow prints the node's clock beside a delivery, or says nothing when the
+// node did not send one.
+//
+// SILENT ON AN OLDER NODE rather than falling back to this machine's clock. A
+// waiter talks to one node and the timestamps it prints are that node's; a line
+// that said "now 04:12Z" from a different clock would be exactly the
+// unverifiable comparison this exists to remove, and it would look identical to
+// the real thing. Absent is honest; wrong is not.
+func reportNow(now string) {
+	if strings.TrimSpace(now) == "" {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "node clock: %s\n", now)
+}
+
 func writeInbox(page inboxWaitResponse) error {
 	out := bufio.NewWriter(os.Stdout)
 	enc := json.NewEncoder(out)
