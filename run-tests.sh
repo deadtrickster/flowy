@@ -372,6 +372,8 @@ only=${ONLY:-}
 # the same line a full run prints would be pasted as evidence a branch is green,
 # and the drainer reads that line.
 skipped=0
+# How many checks the filter SELECTED - see the verdict, where a zero refuses.
+matched=0
 
 # THE CHECKS A FILTER MAY NOT SKIP, because the rest of the run is built on them.
 #
@@ -426,6 +428,13 @@ check() {
 			skipped=$((${skipped:-0} + 1))
 			return 0
 		fi
+	elif [ -n "${only:-}" ] && [ "${only_exempt:-no}" = no ]; then
+		# WHAT THE FILTER ACTUALLY SELECTED, counted where the selection
+		# happens. Everything else about a filtered run is derivable from
+		# `skipped` EXCEPT this: a filter matching nothing and a filter matching
+		# everything both leave `passed` positive, because the preflights are
+		# exempt and always run. See the verdict for what it costs.
+		matched=$((${matched:-0} + 1))
 	fi
 	if [ "$PWD" != "$SUITE_PWD" ]; then
 		printf 'FAIL the suite is running in %s, not %s\n' "$PWD" "$SUITE_PWD"
@@ -543,6 +552,27 @@ pg_libs_for() {
 # and exit 0. A suite that measured nothing has not passed; it has not run.
 a_run_that_measured_nothing_is_not_a_pass() {
 	[ $(($1 + $2)) -gt 0 ]
+}
+
+# AND A FILTER THAT SELECTED NOTHING IS NOT A PASS EITHER, which the count above
+# cannot see.
+#
+# ONLY= narrows to checks whose name CONTAINS the string. preflight() checks are
+# exempt and run regardless, so a filter that matches no check still leaves
+# `passed` at about a dozen and `failed` at zero - a green, from a run that
+# measured nothing it was asked to measure.
+#
+# MEASURED 2026-08-21: three VM runs reported "743 skipped, passed: 11 failed: 0"
+# for ONLY="is no wider than the artifact" - a FUNCTION name, not a check title,
+# so it matched nothing. They were nearly reported as green. The only reason
+# they were not is that somebody grepped for the check's own sentence in the log
+# and did not find it, which is a habit rather than a guard.
+#
+# The pair is the point: passed+failed>0 answers "did anything run", and this
+# answers "did anything the FILTER NAMED run". The first was already here and
+# the second is the half a filtered run needs.
+a_filter_that_selected_nothing_is_not_a_pass() {
+	[ -z "${only:-}" ] || [ "${1:-0}" -gt 0 ]
 }
 
 # free_port prints the first port at or above $1 that nothing is listening on.
@@ -12254,6 +12284,16 @@ a_refused_run_says_so_before_it_says_the_count() {
 	./scripts/verdict-order-check.sh run-tests.sh
 }
 
+# A FILTER IS A CLAIM ABOUT WHAT WAS MEASURED, and ONLY= could not tell "I ran
+# the one check you named" from "I ran none of them". preflight checks are exempt
+# so the suite can still build, which leaves a filtered miss looking like a small
+# clean run: 743 skipped, passed: 11, failed: 0. Three VM runs reported exactly
+# that on 2026-08-21 and were nearly taken as green.
+a_filter_that_selected_nothing_reports_it() {
+	cd "$ROOT" || return 1
+	./scripts/only-filter-check.sh run-tests.sh
+}
+
 # THE GATE LOCK DIES WITH THE SUITE THAT TOOK IT - 01M0HN5GA0, which cost the
 # fleet an hour with fourteen rows queued and the drainer sitting in flock
 # behind a pid that no longer existed.
@@ -12666,6 +12706,8 @@ check "the console-check loader fails on a directory that is missing, empty, or 
 	the_console_loader_refuses_to_lose_a_check
 check "a refused run says so before it says the count" \
 	a_refused_run_says_so_before_it_says_the_count
+check "ONLY= refuses when it selects nothing, rather than reporting its preflights as a pass" \
+	a_filter_that_selected_nothing_reports_it
 check "a ULID is not sliced for a name, because a prefix is a clock" \
 	a_ulid_is_not_sliced_for_a_name
 check "the gate lock does not outlive the suite that took it" \
@@ -21168,6 +21210,12 @@ git rev-parse HEAD >/dev/null 2>&1 && git diff --quiet && git diff --cached --qu
 printf 'passed: %d failed: %d\n' "$passed" "$failed"
 if ! a_run_that_measured_nothing_is_not_a_pass "$passed" "$failed"; then
 	printf 'FAIL: this run measured nothing - it did not pass, it did not run\n' >&2
+	exit 1
+fi
+if ! a_filter_that_selected_nothing_is_not_a_pass "${matched:-0}"; then
+	printf 'FAIL: ONLY=%s matched no check - %d ran and every one of them was a preflight.\n' \
+		"$only" "$passed" >&2
+	printf '%s\n' "ONLY matches on a check's NAME, the sentence in quotes after \`check\`, not on the function that implements it. Nothing was measured for that filter, and this is a refusal rather than a green so it cannot be pasted as one." >&2
 	exit 1
 fi
 [ "$failed" -eq 0 ] || exit 1

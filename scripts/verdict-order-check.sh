@@ -43,11 +43,30 @@ if ! grep -q 'uncommitted tracked changes' "$work/tail.sh"; then
 	printf 'It is extracted by its leading comment - if that was reworded, reword this too\n' >&2
 	exit 2
 fi
-sed -n '/^a_run_that_measured_nothing_is_not_a_pass()/,/^}/p' "$src" >"$work/defs.sh"
-if [ ! -s "$work/defs.sh" ]; then
-	printf 'verdict-order-check: a_run_that_measured_nothing_is_not_a_pass is not in %s\n' "$src" >&2
-	exit 2
-fi
+# EVERY GUARD THE VERDICT CALLS, not just the first one.
+#
+# This lifted one function and the verdict grew a second: 2026-08-21 added
+# a_filter_that_selected_nothing_is_not_a_pass beside it, and the extracted
+# block then ran with that name undefined. Bash returns 127, `if ! <127>` is
+# TRUE, and the refusal branch fired - so this check reported "a clean tree was
+# refused" and printed the OTHER guard's sentence about a filter matching
+# nothing, on a run with no filter at all.
+#
+# A missing function reading as a failed test is the worst arrangement
+# available: the extraction is what broke and the message accuses the suite. So
+# the names are a list, each one required, and a guard added to the verdict
+# without being added here fails LOUDLY at extraction rather than quietly at run
+# time.
+: >"$work/defs.sh"
+for guard in a_run_that_measured_nothing_is_not_a_pass \
+	a_filter_that_selected_nothing_is_not_a_pass; do
+	sed -n "/^$guard()/,/^}/p" "$src" >>"$work/defs.sh"
+	grep -q "^$guard()" "$work/defs.sh" || {
+		printf 'verdict-order-check: %s is not in %s - the verdict calls it and this could not lift it\n' \
+			"$guard" "$src" >&2
+		exit 2
+	}
+done
 
 # A REPOSITORY OF ITS OWN, built with `git -c` for every setting the block
 # reads. Without that this inherits the caller's git config: the first draft
