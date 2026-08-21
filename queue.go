@@ -308,9 +308,27 @@ func reasonAfter(s string) string {
 // that column moves with the length of an id and a branch name.
 const reasonIndent = "         "
 
-// reasonWrapWidth is what a line holding nothing but a reason can spend. Wider
-// than reasonWidth by about the id and branch name that are not on it.
-const reasonWrapWidth = 110
+// reasonWrapWidth is what a line holding nothing but a reason can spend before
+// the last-resort elide takes over.
+//
+// MEASURED ON THE LIVE QUEUE, an hour after the wrap landed, on the first real
+// reason it was handed:
+//
+//	feat/wrap-probe-orch2 is checked out in /home/dead/Projects/flowy-wt-orchestrator, so it cannot be rebased here
+//
+// 111 characters. The budget was 110, so the wrapped line elided one character
+// out of the middle of the path - which is the exact failure the wrap exists to
+// end, moved one line down and made rarer, which is worse than obvious. The
+// number was picked as "reasonWidth plus about an id and a branch name" and
+// that reasoning was about the ROW line, not about this one, which carries
+// neither.
+//
+// 200 is picked from what these strings actually are: a sentence with a path in
+// it. Nothing this fleet has produced comes near it, and a reason that does is
+// a paste rather than a sentence. Past a terminal's width the terminal wraps
+// the line itself, which costs a row of screen and loses nothing - the elide
+// only bites where the alternative is pages.
+const reasonWrapWidth = 200
 
 // firstLineOnly is the first line of a reason. A note can be a whole log; the
 // queue prints one line per row and the rest belongs to whoever opens the run.

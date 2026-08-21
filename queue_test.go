@@ -170,7 +170,11 @@ func TestALongReasonGetsItsOwnLineWholeRatherThanBeingCut(t *testing.T) {
 	// AND THE LAST RESORT IS STILL THERE. A reason too long even for its own
 	// line is elided in the middle and says so - the old rule, kept as what it
 	// always should have been rather than as the rule.
-	huge := "x" + strings.Repeat(" and more words about it", 20) + " END"
+	// Past reasonWrapWidth, which is 200: this is about 500 characters, and it
+	// is deliberately built from the budget rather than typed to a length, so
+	// raising the budget again does not silently stop exercising the last
+	// resort - which is how the 110 that clipped a real path survived review.
+	huge := "x" + strings.Repeat(" and more words about it", (reasonWrapWidth/24)+8) + " END"
 	long := rowLine(mergeQueueItem{
 		ID: "01K", Branch: "b",
 		Blocked: &mergeQueueBlocked{Why: huge},
@@ -180,6 +184,20 @@ func TestALongReasonGetsItsOwnLineWholeRatherThanBeingCut(t *testing.T) {
 	}
 	if n := strings.Count(long, "\n"); n != 1 {
 		t.Errorf("a very long reason took %d extra lines, want 1:\n%s", n, long)
+	}
+
+	// AND A REAL ONE FROM THE LIVE QUEUE, which the first budget clipped. 111
+	// characters, a path in the middle, and the branch names in this fleet are
+	// longer than the row's example - so the case that was measured on the node
+	// is in here rather than only the case that was filed.
+	real := "feat/wrap-probe-orch2 is checked out in " +
+		"/home/dead/Projects/flowy-wt-orchestrator, so it cannot be rebased here"
+	live := rowLine(mergeQueueItem{
+		ID: "01L", Branch: "feat/wrap-probe-orch2",
+		Blocked: &mergeQueueBlocked{Why: real},
+	}, "")
+	if !strings.Contains(live, real) {
+		t.Errorf("a 111-character reason from the live queue did not survive:\n%s", live)
 	}
 
 	// Counted in runes. Slicing a byte index through a multi-byte character
