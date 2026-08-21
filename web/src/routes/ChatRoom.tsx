@@ -784,6 +784,27 @@ export function ChatRoom() {
    * the question the other way round: when the composer appears, was it asked
    * for? That has no timing in it at all.
    */
+  /**
+   * OPENING A THREAD IS NOT QUOTING A MESSAGE. 01M0HGRFN5, the operator:
+   * clicking `thread ...` at the bottom of a message opens the pane "|ANd cites
+   * the message shouldnt cite".
+   *
+   * The thread controls called onSelect, which here is point() - select() plus
+   * a navigate - and select() is what arms a citation. So "show me this
+   * conversation" and "quote this message" were one gesture, which is the exact
+   * collapse the operator had complained about for message clicks two days
+   * before. It came back in a new control because the control was wired to the
+   * handler that was already there.
+   *
+   * This one moves the pane and touches nothing else: no selection, and no
+   * navigate to the message either - the URL names a message so a reply can be
+   * armed from a cold load, and nothing is being armed.
+   */
+  const openThread = (event: FlowyEvent) => {
+    setOpened(event.thread);
+    setPane("thread");
+  };
+
   const wantsThreadBox = useRef(false);
   // A PLAIN FUNCTION, like point and setPane beside it, and deliberately not a
   // useCallback: it calls both of those, neither is stable across a render, and
@@ -1010,6 +1031,7 @@ export function ChatRoom() {
           selected={selected}
           onSelect={point}
           onCite={citeSpan}
+          onOpenThread={openThread}
           onThreadReply={replyInThread}
           onTodo={raiseFromMessage}
           me={{ user: whoami?.user, agent: whoami?.agent }}

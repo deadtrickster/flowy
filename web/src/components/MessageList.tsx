@@ -22,6 +22,21 @@ interface Props {
    */
   onCite?: (event: FlowyEvent, start: number, end: number) => void;
   /**
+   * onOpenThread shows the thread a message is in. It is NOT onSelect, and the
+   * difference is the whole of 01M0HGRFN5.
+   *
+   * Selecting a message is what arms a citation - it is how "reply" quotes what
+   * it is answering - and the two thread controls below called it, so opening a
+   * thread quoted the message you opened it from. The operator had complained
+   * about exactly that collapse for message clicks two days earlier; it came
+   * back in a new control because the control was wired to the handler that was
+   * already there.
+   *
+   * Falls back to onSelect when nothing is passed, so a view that only wants
+   * the old behaviour keeps it rather than losing the control.
+   */
+  onOpenThread?: (event: FlowyEvent) => void;
+  /**
    * onThreadReply is "answer this, in its thread" - one gesture that opens the
    * thread pane on this message and puts the caret in the pane's composer.
    *
@@ -139,6 +154,7 @@ export function MessageList({
   selected,
   onSelect,
   onCite,
+  onOpenThread,
   onThreadReply,
   onTodo,
   me,
@@ -791,7 +807,7 @@ export function MessageList({
                   <button
                     type="button"
                     data-thread-open={event.id}
-                    onClick={() => onSelect(event)}
+                    onClick={() => (onOpenThread ?? onSelect)(event)}
                     aria-label={`open the thread ${shortId(event.thread)} this message is in`}
                     className="cursor-pointer text-muted-foreground underline decoration-dotted hover:text-foreground"
                   >
@@ -814,7 +830,7 @@ export function MessageList({
                       type="button"
                       data-thread-replies={event.thread}
                       data-thread-count={threads?.[event.thread]}
-                      onClick={() => onSelect(event)}
+                      onClick={() => (onOpenThread ?? onSelect)(event)}
                       aria-label={`open this thread, ${(threads?.[event.thread] ?? 1) - 1} replies`}
                       className="cursor-pointer rounded border border-border px-1.5 text-[11px] text-primary transition hover:border-primary/50 hover:text-foreground"
                     >
