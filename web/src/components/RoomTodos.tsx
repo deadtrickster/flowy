@@ -189,6 +189,31 @@ export function RoomTodos({
    */
   const [hideDone, setHideDone] = useState(hideDonePreference);
 
+  /**
+   * WHAT IS BEING LOOKED FOR, and it is one box rather than a search field and
+   * an author menu.
+   *
+   * The operator, 06:47: "might be duplicates because of your stulls and the
+   * fact that it is impossible to filter by author or seaech on the todo pane
+   * of room" - and they were right about the consequence within the hour. Two
+   * of us filed the same row SECONDS APART that morning (01M0HPQASA and
+   * 01M0HPPY7G, one closed as the other's duplicate), each having decided
+   * independently that nothing covered it. Neither could check: 32 open rows,
+   * no search, no way to ask whether a thing had been raised.
+   *
+   * ONE CONTROL, because this panel is 26rem wide beside a live conversation
+   * and the header comment two lines down already says what a second menu costs.
+   * A bare word matches the title or the id; a word starting with "@" matches
+   * the people - raiser or assignee. So "seen mark" and "@deadtrickster" are
+   * both typed into the same box, which is the whole of the ask.
+   *
+   * NOT PERSISTED, unlike hide-done. Hiding finished work is how somebody reads
+   * this queue every day; a search is what they are doing for the next twenty
+   * seconds, and a box that still held "@orchestrator" tomorrow would look like
+   * a panel with rows missing.
+   */
+  const [find, setFind] = useState("");
+
   const raise = async (event: FormEvent) => {
     event.preventDefault();
     const said = title.trim();
@@ -259,8 +284,40 @@ export function RoomTodos({
   };
 
   const counts = countTodos(todos);
-  const drawn = hideDone ? todos.filter((todo) => !isTodoDone(todo)) : todos;
-  const withheld = todos.length - drawn.length;
+  /**
+   * MATCHING IS CASE-FOLDED AND SUBSTRING, because the alternative is a person
+   * typing a name correctly to find out that a row exists. "@dead" finds
+   * deadtrickster.
+   *
+   * The people arm reads BOTH raiser and assignee on purpose. "@deadtrickster"
+   * asked of this queue means "rows that are anything to do with them", and
+   * splitting it into two controls to keep the distinction would cost the space
+   * the single box exists to save. The row itself says which it was.
+   */
+  const wanted = find.trim().toLowerCase();
+  const matches = (todo: Artifact) => {
+    if (!wanted) return true;
+    if (wanted.startsWith("@")) {
+      const who = wanted.slice(1);
+      if (!who) return true;
+      return (
+        todoRaiser(todo).toLowerCase().includes(who) ||
+        todoAssignee(todo).toLowerCase().includes(who)
+      );
+    }
+    return (
+      (todo.title || "").toLowerCase().includes(wanted) || todo.id.toLowerCase().includes(wanted)
+    );
+  };
+  const drawn = todos.filter((todo) => (hideDone ? !isTodoDone(todo) : true) && matches(todo));
+  /**
+   * TWO REASONS A ROW IS NOT ON SCREEN, counted apart, because one line saying
+   * "16 done hidden" while a search is on would be a false statement about a
+   * queue somebody is trying to read. That is the failure this row is about
+   * pointing at itself.
+   */
+  const hiddenDone = hideDone ? todos.filter((todo) => isTodoDone(todo)).length : 0;
+  const unmatched = todos.length - hiddenDone - drawn.length;
 
   return (
     // flex-1 because this is a whole pane now rather than the top half of one:
@@ -299,13 +356,33 @@ export function RoomTodos({
           {/* Said whenever anything is being withheld, and never rounded or
               dropped. A panel showing four rows with no sign that sixteen are
               behind it lies about the size of the queue, and somebody reading it
-              concludes a todo does not exist. */}
-          {withheld > 0 ? (
+              concludes a todo does not exist - which is exactly how two of us
+              filed the same row seconds apart. The two reasons are named
+              separately because they answer different questions: one is a
+              setting somebody chose once, the other is what they are typing. */}
+          {hiddenDone > 0 || unmatched > 0 ? (
             <span data-hidden-count="" className="ml-auto text-muted-foreground text-xs">
-              {withheld} done hidden
+              {[
+                hiddenDone > 0 ? `${hiddenDone} done hidden` : "",
+                unmatched > 0 ? `${unmatched} not matching` : "",
+              ]
+                .filter(Boolean)
+                .join(", ")}
             </span>
           ) : null}
         </div>
+        {/* THE BOX, on its own line. It is under the counts rather than beside
+            them because at 26rem an input sharing a line with two numbers and a
+            checkbox is four things competing, and the input is the one that has
+            to be big enough to read what was typed into it. */}
+        <Input
+          data-todo-find=""
+          value={find}
+          onChange={(event) => setFind(event.target.value)}
+          placeholder="find a row, or @somebody"
+          className="h-7 text-xs"
+          aria-label="find a todo by title, id, or @person"
+        />
       </header>
 
       <div className="min-h-0 flex-1 overflow-auto">
@@ -317,7 +394,18 @@ export function RoomTodos({
             nothing raised in #{room} yet
           </div>
         ) : null}
-        {!error && todos.length > 0 && drawn.length === 0 ? (
+        {!error && todos.length > 0 && drawn.length === 0 && wanted ? (
+          // THE THIRD EMPTY, and it is the one this row exists for. A search
+          // that matches nothing must not read like a room that raised nothing
+          // or a room that finished everything - the whole point of typing into
+          // the box is to find out whether a thing has been raised, and all
+          // three empties would otherwise give the same answer to three
+          // different questions.
+          <div className="px-4 py-2 text-muted-foreground text-xs">
+            nothing in #{room} matches {find.trim()} - {todos.length} row(s) here
+          </div>
+        ) : null}
+        {!error && todos.length > 0 && drawn.length === 0 && !wanted ? (
           // The other empty panel, and a different fact: this room has written
           // things down and finished all of them. Without this line the filter
           // produces a view indistinguishable from a room that raised nothing,
