@@ -119,6 +119,64 @@ func mergeCmd(args []string) error {
 // of the branch, which is the same defect as a nil slice serialising to null:
 // a failure to know rendered as a successful no. Twelve of those were found in
 // this codebase in one day.
+// THE ADVICE DEPENDS ON WHICH TREE IS HOLDING IT, and getting that wrong froze
+// the whole queue for a gate.
+//
+// This message used to say "detach that worktree first" and print
+// `git checkout --detach`, whoever was holding the branch. 01M0HQKP0C: somebody
+// built a branch in the SHARED CHECKOUT, was told by this refusal to detach it,
+// did, filed - and the drainer then refused to land anything at all, because
+// deploying from a detached shared checkout is refused one layer down:
+// "/home/dead/Projects/flowy is on HEAD, not master". The advice created the
+// next failure, and it was my advice.
+//
+// A LINKED WORKTREE MAY BE DETACHED; THE MAIN ONE MUST GO BACK TO MASTER.
+// Nothing else in the fleet cares what a scratch worktree points at, and
+// everything cares what the main one points at - the drainer lands there.
+//
+// git answers this exactly rather than by convention: in the main working tree
+// the git-dir and the common git-dir are the same directory, and in a linked
+// one the git-dir is <common>/worktrees/<name>. Both are asked as absolute
+// paths so the comparison is not about how the question was phrased.
+func isLinkedWorktree(at string) bool {
+	dir, err := exec.Command("git", "-C", at, "rev-parse", "--absolute-git-dir").Output()
+	if err != nil {
+		return false
+	}
+	common, err := exec.Command("git", "-C", at,
+		"rev-parse", "--path-format=absolute", "--git-common-dir").Output()
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(dir)) != strings.TrimSpace(string(common))
+}
+
+// freeItBy is the sentence, and freeItWith is the command. Two functions rather
+// than one returning a pair, because they are read in two different places in
+// the format string and a pair would put the wrong half in the wrong slot the
+// first time somebody edits it.
+//
+// CANNOT-KNOW FALLS BACK TO THE SAFE ADVICE. isLinkedWorktree answers false
+// when git cannot be asked, and false means "treat it as the main tree", so an
+// unanswerable question produces "put it back on master" - which is harmless in
+// a scratch worktree and is the only correct thing in the shared one. The
+// dangerous advice is never the default.
+func freeItBy(at string) string {
+	if isLinkedWorktree(at) {
+		return "detach that worktree first:"
+	}
+	return "that is a main working tree, so put it back on master rather than " +
+		"detaching it - a detached checkout there is what the drainer lands from, " +
+		"and it refuses:"
+}
+
+func freeItWith(at string) string {
+	if isLinkedWorktree(at) {
+		return fmt.Sprintf("git -C %s checkout --detach", at)
+	}
+	return fmt.Sprintf("git -C %s checkout master", at)
+}
+
 func heldBy(branch string) (string, bool) {
 	// WHICH REPOSITORY TO ASK, and it is not always the one you are standing in.
 	//
@@ -280,10 +338,10 @@ func mergeOpen(args []string) error {
 	}
 	if known && at != "" {
 		return fmt.Errorf("%s is checked out in %s, so the drainer cannot rebase it - "+
-			"detach that worktree first:\n\n"+
-			"    git -C %s checkout --detach\n\n"+
+			"%s\n\n"+
+			"    %s\n\n"+
 			"then file this again. Filed as it stands, the row would be picked up, "+
-			"blocked, and left looking stalled", name, at, at)
+			"blocked, and left looking stalled", name, at, freeItBy(at), freeItWith(at))
 	}
 
 	body, err := bodyOrStdin(fs.Args(), "file", mergeUsage)
