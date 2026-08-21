@@ -190,6 +190,19 @@ export function DocumentPanes({ room, quote }: Props) {
     [room, loadTodos],
   );
 
+  /**
+   * WHAT TO DO FIRST, the same verb the room panel uses. A document's todo
+   * panel is the same component, so it takes the same handler rather than a
+   * second one that would drift.
+   */
+  const rank = useCallback(
+    async (id: string, priority: string) => {
+      await api.setPriority(id, priority);
+      await loadTodos();
+    },
+    [loadTodos],
+  );
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       <section className="flex min-h-0 flex-[3] flex-col border-border border-b">
@@ -261,6 +274,7 @@ export function DocumentPanes({ room, quote }: Props) {
           error={todoError}
           onRaise={raise}
           onAssign={assign}
+          onPriority={rank}
         />
       </section>
     </div>

@@ -2,6 +2,8 @@ package store
 
 import (
 	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -33,14 +35,36 @@ func fieldsJSON(t *testing.T, f map[string]any) json.RawMessage {
 // The sort itself, with no database: the whole content of the fix is which
 // column the ORDER BY names, and that must be checkable without a live
 // Postgres or it is checked by reading it.
+// PRIORITY LEADS, AND THE OLD RULE IS THE TIE-BREAK. The operator asked for
+// priorities on the board; the defect above is what must survive them, so this
+// asserts both halves of each order rather than being replaced by a new test.
+// Within a rank a queue is still oldest-first and a board is still
+// most-recently-written - so a board with nothing ranked reads exactly as it
+// did, which is the claim that keeps batch/orchestrator-evening off the bottom.
 func TestAQueuedOrderReadSortsByWhenTheRowWasQueued(t *testing.T) {
+	lead := priorityOrderSQL("ar")
+
 	browsing := ArtifactQuery{}
-	if got := browsing.order("ar"); got != "ar.updated DESC, ar.id DESC" {
-		t.Fatalf("a board read sorts by %q, want the most recently written first", got)
+	if got := browsing.order("ar"); got != lead+", ar.updated DESC, ar.id DESC" {
+		t.Fatalf("a board read sorts by %q, want priority then the most recently written", got)
 	}
 	queue := ArtifactQuery{QueuedOrder: true}
-	if got := queue.order("ar"); got != "ar.created ASC, ar.id ASC" {
-		t.Fatalf("a queue read sorts by %q, want the oldest queued first", got)
+	if got := queue.order("ar"); got != lead+", ar.created ASC, ar.id ASC" {
+		t.Fatalf("a queue read sorts by %q, want priority then the oldest queued", got)
+	}
+
+	// THE LEAD IS THE SAME EXPRESSION IN BOTH, and it is generated from the
+	// same map the Go side sorts by - so a fourth word cannot land in one and
+	// not the other, which is how a board comes to have two orders depending on
+	// who asked.
+	for _, word := range TodoPriorities {
+		if !strings.Contains(lead, "'"+word+"'") {
+			t.Errorf("the sort does not know %q, which the vocabulary does", word)
+		}
+	}
+	// And the unjudged sit where the Go side puts them: between next and later.
+	if !strings.Contains(lead, fmt.Sprintf("ELSE %d END", priorityRank[""])) {
+		t.Errorf("the sort does not place an unranked row where PriorityRankOf does: %s", lead)
 	}
 }
 

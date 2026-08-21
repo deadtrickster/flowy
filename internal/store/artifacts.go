@@ -1098,10 +1098,47 @@ func (q ArtifactQuery) limit() int { return clampLimit(q.Limit) }
 // on a long one, which is the version of this bug that would not have been
 // noticed.
 func (q ArtifactQuery) order(alias string) string {
+	// PRIORITY LEADS BOTH ORDERS, and that is a change to the DEFAULT list as
+	// well as to the queued one.
+	//
+	// Measured while building it: the room's todo panel and GET /api/artifacts
+	// take the default - most recently touched first - so a ranking applied only
+	// to the queued order was invisible in the two places anybody looks. A
+	// priority nothing sorts by is a label.
+	//
+	// Within a rank the existing order is untouched: recency for the default,
+	// age for the queue. So a board with nothing ranked reads exactly as it did.
 	if q.QueuedOrder {
-		return alias + ".created ASC, " + alias + ".id ASC"
+		// PRIORITY FIRST, THEN AGE. The queue was strictly oldest-first, which
+		// is a fair rule and not an answer to "what should I do next" - the
+		// operator asked for one on the board, with sixteen unowned rows on it
+		// and nothing saying which of them they wanted.
+		//
+		// The CASE is priorityRank in SQL, and the two must agree: now, next,
+		// UNJUDGED, later. An unranked row sorts above `later` deliberately -
+		// it may be the most urgent thing here and nobody has looked, while a
+		// `later` row has somebody's decision on it. An unknown word sorts with
+		// the unjudged for the same reason PriorityRankOf does: a value from a
+		// newer peer must not silently reorder this board.
+		//
+		// Age still breaks every tie, so within a rank the queue is exactly
+		// what it was.
+		return priorityOrderSQL(alias) + ", " + alias + ".created ASC, " + alias + ".id ASC"
 	}
-	return alias + ".updated DESC, " + alias + ".id DESC"
+	return priorityOrderSQL(alias) + ", " + alias + ".updated DESC, " + alias + ".id DESC"
+}
+
+// priorityOrderSQL is priorityRank as a sort key over the fields column. It is
+// generated from the same map the Go side reads, so a fourth word cannot be
+// added to one and forgotten in the other - which is how a board comes to have
+// two orders depending on who asked.
+func priorityOrderSQL(alias string) string {
+	col := "lower(trim(coalesce(" + alias + ".fields->>'" + PriorityField + "', '')))"
+	sql := "CASE " + col
+	for _, word := range TodoPriorities {
+		sql += fmt.Sprintf(" WHEN '%s' THEN %d", word, priorityRank[word])
+	}
+	return sql + fmt.Sprintf(" ELSE %d END ASC", priorityRank[""])
 }
 
 // PageLimit is that same number, for a caller that has to know whether a full

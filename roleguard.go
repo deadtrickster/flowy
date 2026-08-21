@@ -116,6 +116,7 @@ var routeNeeds = map[string]string{
 	"POST /api/task/{id}/state":            needsWrite,
 	"POST /api/todo/{id}/assignee":         needsWrite,
 	"POST /api/todo/{id}/category":         needsWrite,
+	"POST /api/todo/{id}/priority":         needsWrite,
 	"POST /api/todo/{id}/deps":             needsWrite,
 	"POST /api/todo/{id}/edit":             needsWrite,
 	"POST /api/todo/{id}/note":             needsWrite,

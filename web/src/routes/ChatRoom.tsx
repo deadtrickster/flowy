@@ -673,6 +673,23 @@ export function ChatRoom() {
   );
 
   /**
+   * WHAT TO DO FIRST. The operator asked for it with sixteen unowned rows on
+   * the board and nothing saying which they wanted.
+   *
+   * Same shape as the assignment above and for the same reason: the write goes
+   * to the node and the panel is refilled from the node's answer, so there is
+   * no second idea here of what a row is ranked. An empty string takes the
+   * ranking back, which the node treats as unjudged rather than as a word.
+   */
+  const rank = useCallback(
+    async (id: string, priority: string) => {
+      await api.setPriority(id, priority);
+      await loadTodos();
+    },
+    [loadTodos],
+  );
+
+  /**
    * What this room has been read to. The transcript decides when - it is the
    * one thing that knows whether the reader is at the bottom - and the mark it
    * moves is the node's, so the badge clears on every device rather than in
@@ -1163,6 +1180,7 @@ export function ChatRoom() {
               error={todoError}
               onRaise={raise}
               onAssign={assign}
+              onPriority={rank}
             />
           </div>
         ) : null}

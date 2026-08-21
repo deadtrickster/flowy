@@ -2283,6 +2283,24 @@ export const api = {
    * rather than overwritten, and a held row cannot be moved by a write that
    * never said whose it was.
    */
+  /**
+   * setPriority ranks a work item - a todo or a merge row - or takes its
+   * ranking away with "".
+   *
+   * The vocabulary comes back on every answer rather than being kept here: a
+   * console that carried its own copy would draw a control that is wrong the
+   * day a fourth word is added, and the node is the thing that refuses.
+   */
+  setPriority: (id: string, priority: string) =>
+    request<{ item: Artifact; priority: string; vocabulary: string[] }>(
+      `/api/todo/${encodeURIComponent(id)}/priority`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ priority }),
+      },
+    ),
+
   assignTodo: (room: string, id: string, assignee: string, expect: string) =>
     request<{ item: Artifact; event: FlowyEvent }>(
       `/api/chat/${encodeURIComponent(room)}/todo/${encodeURIComponent(id)}/assignee`,

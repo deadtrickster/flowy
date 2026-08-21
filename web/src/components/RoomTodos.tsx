@@ -24,6 +24,33 @@ import {
 } from "@/lib/todos";
 import { shortId } from "@/lib/utils";
 
+// WHAT TO DO FIRST, as the row shows it.
+//
+// The vocabulary is the node's - see store/todopriority.go - and this file draws
+// what it is given rather than keeping a list of its own: a console that carried
+// the words would draw a control that is wrong the day a fourth is added, and
+// the refusal comes from the node either way.
+function priorityOf(todo: Artifact): string {
+  const fields = todo.fields as Record<string, unknown> | undefined;
+  const value = fields?.priority;
+  return typeof value === "string" ? value.trim().toLowerCase() : "";
+}
+
+// now is loud, next is plain, later is quiet - which is the ORDER the field
+// sorts in, said in colour so a scan down the panel matches a scan down the
+// queue. An unknown word gets the plain treatment rather than no treatment: a
+// value this console has not heard of is still somebody's decision.
+function priorityClass(priority: string): string {
+  switch (priority) {
+    case "now":
+      return "border-primary/60 text-primary";
+    case "later":
+      return "border-border/50 text-muted-foreground";
+    default:
+      return "border-border text-foreground";
+  }
+}
+
 interface Props {
   room: string;
   todos: Artifact[];
@@ -38,6 +65,12 @@ interface Props {
   /** onAssign says who is carrying one. An empty name says nobody is. It has to
    * land on the node and come back from it - see the assignee cell below. */
   onAssign: (id: string, assignee: string, expect: string) => Promise<void>;
+  /**
+   * onPriority says what to do first, or takes the ranking away with "". Like
+   * onAssign it goes to the node and the panel is refilled from the node's
+   * answer - there is no second idea here of what a row is ranked.
+   */
+  onPriority: (id: string, priority: string) => Promise<void>;
 }
 
 /**
@@ -60,7 +93,16 @@ interface Props {
  * the whole reason the panel is here rather than a page away - and a queue you
  * can read and not answer is the surface this replaced.
  */
-export function RoomTodos({ room, todos, raiseFrom, disabled, error, onRaise, onAssign }: Props) {
+export function RoomTodos({
+  room,
+  todos,
+  raiseFrom,
+  disabled,
+  error,
+  onRaise,
+  onAssign,
+  onPriority,
+}: Props) {
   // WHICH ROW IS OPEN BENEATH ITS TITLE. An id rather than the row, so a reread
   // of the panel keeps the summary pointed at the same work instead of at a
   // stale copy of it.
@@ -305,6 +347,29 @@ export function RoomTodos({ room, todos, raiseFrom, disabled, error, onRaise, on
                   badge: colour alone would leave a queue with no states in it
                   for anybody who cannot separate amber from green.
                 */}
+                {/*
+                  WHAT TO DO FIRST, when somebody has said. The operator asked
+                  for priorities with sixteen unowned rows on the board and
+                  nothing on any of them saying which they wanted.
+
+                  DRAWN ONLY WHEN SET. A chip on every row saying "unjudged"
+                  would be a column of the same word, and the field's whole
+                  point is that unjudged and unimportant are different facts -
+                  see store/todopriority.go, where the unjudged sort ABOVE the
+                  shelved for that reason. The control to set it is in the
+                  summary, one click away, because this column is already four
+                  things wide beside a conversation.
+                */}
+                {priorityOf(todo) ? (
+                  <Badge
+                    variant="outline"
+                    data-todo-priority={todo.id}
+                    data-todo-priority-value={priorityOf(todo)}
+                    className={priorityClass(priorityOf(todo))}
+                  >
+                    {priorityOf(todo)}
+                  </Badge>
+                ) : null}
                 <Badge variant="secondary" style={statusStyle(todo.status)}>
                   {todo.status || "todo"}
                 </Badge>
@@ -399,7 +464,13 @@ export function RoomTodos({ room, todos, raiseFrom, disabled, error, onRaise, on
           {/* THE SUMMARY, under the row it belongs to rather than in a pane of
               its own: the panel is already a narrow column beside a
               conversation, and a second column would leave neither readable. */}
-          {open ? <TodoSummary todo={todos.find((t) => t.id === open)} /> : null}
+          {open ? (
+            <TodoSummary
+              todo={todos.find((t) => t.id === open)}
+              disabled={disabled}
+              onPriority={onPriority}
+            />
+          ) : null}
         </ul>
       </div>
 
@@ -536,7 +607,15 @@ export function RoomTodos({ room, todos, raiseFrom, disabled, error, onRaise, on
  * make a three-line panel out of a row that is meant to be glanceable. The full
  * card is one click away and renders it properly.
  */
-function TodoSummary({ todo }: { todo?: Artifact }) {
+function TodoSummary({
+  todo,
+  disabled,
+  onPriority,
+}: {
+  todo?: Artifact;
+  disabled: boolean;
+  onPriority: (id: string, priority: string) => Promise<void>;
+}) {
   // The row can vanish between the click and this render - a poll that drops it,
   // a filter that hides it, somebody closing it elsewhere. Saying so is better
   // than an empty box, and better than the panel silently forgetting what was
@@ -561,8 +640,40 @@ function TodoSummary({ todo }: { todo?: Artifact }) {
     >
       <div className="flex items-baseline gap-2">
         <span className="font-mono text-muted-foreground">{shortId(todo.id)}</span>
+        {/*
+          WHERE THE RANKING IS SET, one click from the row and not on it: the
+          panel is a narrow column beside a conversation and a control per row
+          would crowd out the titles, which are what somebody is reading.
+
+          A select rather than a cycling chip. Four states - unjudged, now,
+          next, later - and a chip that cycled would make "take it back" three
+          clicks and an accident on the way.
+        */}
+        <label className="ml-auto flex items-center gap-1 text-muted-foreground">
+          do first
+          <select
+            data-todo-priority-set={todo.id}
+            aria-label={`what to do first about ${todo.title || todo.id}`}
+            className="rounded border border-border bg-background px-1 py-0.5 text-foreground text-xs"
+            disabled={disabled}
+            value={priorityOf(todo)}
+            onChange={(event) => void onPriority(todo.id, event.target.value)}
+          >
+            {/*
+              The empty option is FIRST and is named. "unjudged" rather than
+              "none" or a blank line, because the whole distinction this field
+              keeps is that nobody having looked is a different fact from
+              somebody deciding it can wait - and a blank option reads as the
+              latter.
+            */}
+            <option value="">unjudged</option>
+            <option value="now">now</option>
+            <option value="next">next</option>
+            <option value="later">later</option>
+          </select>
+        </label>
         {to ? (
-          <Link to={to} data-todo-full-card={todo.id} className="ml-auto text-primary underline">
+          <Link to={to} data-todo-full-card={todo.id} className="text-primary underline">
             open the full card
           </Link>
         ) : null}

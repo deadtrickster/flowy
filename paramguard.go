@@ -180,6 +180,7 @@ var routeParams = map[string][]string{
 	"POST /api/task/{id}/state":       {},
 	"POST /api/todo/{id}/assignee":    {},
 	"POST /api/todo/{id}/category":    {},
+	"POST /api/todo/{id}/priority":    {},
 	"POST /api/todo/{id}/deps":        {},
 	"POST /api/todo/{id}/edit":        {},
 	"POST /api/todo/{id}/note":        {},
