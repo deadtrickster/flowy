@@ -19888,7 +19888,7 @@ check "the merge tab counts what the node says, and calls unjudged rows queued" 
 	the_merge_tab_says_queued_not_refused
 check "the spread card accounts for every open row, unowned included" \
 	the_spread_card_shows_the_unclaimed
-check "a chat todo opens where it sits and links to its own full card" \
+check "a chat todo opens a popup at its own row and links to its own full card" \
 	a_chat_todo_opens_where_it_sits
 check "a finding opens beside the list, and closing it leaves the list" \
 	a_finding_opens_beside_the_list

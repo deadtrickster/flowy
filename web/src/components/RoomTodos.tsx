@@ -1,5 +1,5 @@
 import { Paperclip, X } from "lucide-react";
-import { type ClipboardEvent, type FormEvent, useRef, useState } from "react";
+import { type ClipboardEvent, type FormEvent, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { AttachmentCards } from "@/components/AttachmentCards";
@@ -336,9 +336,12 @@ export function RoomTodos({
             // still here tomorrow.
             const raiser = todoRaiser(todo);
             return (
+              // RELATIVE, because the card is drawn OVER the list from here -
+              // see TodoSummary. The row is the anchor, so the popup cannot
+              // appear anywhere but beside the thing it is about.
               <li
                 key={todo.id}
-                className="flex items-baseline gap-2 border-border/60 border-b px-4 py-2 text-xs"
+                className="relative flex items-baseline gap-2 border-border/60 border-b px-4 py-2 text-xs"
               >
                 {/*
                   Amber in flight, grey waiting, green finished - the three
@@ -458,19 +461,27 @@ export function RoomTodos({
                 >
                   {todo.title || todo.id}
                 </button>
+                {/* THE CARD, OVER THE LIST AND BESIDE ITS OWN ROW.
+                    It used to be rendered after the whole map, so it opened at
+                    the BOTTOM of the list: click the third row of thirty and
+                    the card appears twenty-seven rows down, outside a narrow
+                    scrolling pane. The operator, 01M0HGX1S3: "some clumsy panel
+                    at the bottom that i know about only because scroll bar
+                    shrinks" - a feature that was live and unreachable, and the
+                    comment above it had claimed "under the row it belongs to"
+                    since the day it was written. So it is drawn by the row, and
+                    it floats rather than pushing thirty rows down the pane. */}
+                {open === todo.id ? (
+                  <TodoSummary
+                    todo={todo}
+                    onClose={() => setOpen("")}
+                    disabled={disabled}
+                    onPriority={onPriority}
+                  />
+                ) : null}
               </li>
             );
           })}
-          {/* THE SUMMARY, under the row it belongs to rather than in a pane of
-              its own: the panel is already a narrow column beside a
-              conversation, and a second column would leave neither readable. */}
-          {open ? (
-            <TodoSummary
-              todo={todos.find((t) => t.id === open)}
-              disabled={disabled}
-              onPriority={onPriority}
-            />
-          ) : null}
         </ul>
       </div>
 
@@ -609,24 +620,32 @@ export function RoomTodos({
  */
 function TodoSummary({
   todo,
+  onClose,
   disabled,
   onPriority,
 }: {
-  todo?: Artifact;
+  todo: Artifact;
+  onClose: () => void;
   disabled: boolean;
   onPriority: (id: string, priority: string) => Promise<void>;
 }) {
-  // The row can vanish between the click and this render - a poll that drops it,
-  // a filter that hides it, somebody closing it elsewhere. Saying so is better
-  // than an empty box, and better than the panel silently forgetting what was
-  // opened.
-  if (!todo) {
-    return (
-      <li className="px-4 py-2 text-muted-foreground text-xs" data-todo-summary="">
-        that row is no longer in this panel
-      </li>
-    );
-  }
+  // ESCAPE CLOSES IT, because a thing that floats over what you were reading
+  // has to be dismissable without hunting for the control that opened it. The
+  // listener is on the document rather than on the card: the card does not hold
+  // focus (the row's button still does), so a keydown here would never arrive.
+  useEffect(() => {
+    const key = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", key);
+    return () => document.removeEventListener("keydown", key);
+  }, [onClose]);
+
+  // NOT OPTIONAL ANY MORE, and the "that row is no longer in this panel" branch
+  // is gone with the reason for it. This used to be looked up by id out of the
+  // whole list, so it could be asked about a row a poll or a filter had dropped;
+  // it is now rendered BY that row, so a row that leaves takes its card with it
+  // and there is no state where one is drawn without the other.
   const to = artifactPath(todo);
   const body = (todo.body ?? "").trim();
   // What the row carries. The same cards the room draws under a message, so a
@@ -634,9 +653,17 @@ function TodoSummary({
   // instead of being an id somebody has to go and resolve.
   const files = todoAttachments(todo);
   return (
-    <li
+    // ABSOLUTE, over the rows below it, anchored on the row (which is relative).
+    // left-2/right-2 rather than a width: the pane is 26rem and a popup that
+    // guessed its own width would either overflow the column or waste half of
+    // it. top-full puts its top edge on the row's bottom edge, so the row it is
+    // about stays visible above it.
+    //
+    // z-20 clears the rows; the shadow and the solid background are what make it
+    // read as ON TOP rather than as another row, which is the whole complaint.
+    <div
       data-todo-summary={todo.id}
-      className="border-border/60 border-b bg-muted/30 px-4 py-2 text-xs"
+      className="absolute top-full right-2 left-2 z-20 rounded-md border border-border bg-background px-3 py-2 text-xs shadow-lg"
     >
       <div className="flex items-baseline gap-2">
         <span className="font-mono text-muted-foreground">{shortId(todo.id)}</span>
@@ -677,6 +704,16 @@ function TodoSummary({
             open the full card
           </Link>
         ) : null}
+        <Button
+          type="button"
+          size="icon"
+          variant="ghost"
+          className="-my-1 h-5 w-5 shrink-0"
+          onClick={onClose}
+          aria-label={`close the card for ${todo.title || todo.id}`}
+        >
+          <X className="h-3 w-3" />
+        </Button>
       </div>
       {body ? (
         <p className="whitespace-pre-wrap break-words pt-1">{body.slice(0, 400)}</p>
@@ -693,6 +730,6 @@ function TodoSummary({
           <AttachmentCards ids={files} />
         </div>
       ) : null}
-    </li>
+    </div>
   );
 }
