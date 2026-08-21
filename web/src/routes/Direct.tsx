@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { type FlowyEvent, api } from "@/lib/api";
 import { useSession } from "@/lib/session";
+import { useUnread } from "@/lib/unread";
 import { shortId } from "@/lib/utils";
 
 /** merge folds a page of new messages into the ones on screen, by id, in log order. */
@@ -37,6 +38,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
  */
 export function Direct() {
   const { token, whoami } = useSession();
+  const { markDirectRead } = useUnread();
   const [events, setEvents] = useState<FlowyEvent[]>([]);
   const [selected, setSelected] = useState<FlowyEvent | null>(null);
   const [live, setLive] = useState(false);
@@ -172,10 +174,22 @@ export function Direct() {
           </div>
         ) : null}
 
+        {/*
+          onSeen is the READ MARK, and it is the same one the rooms use rather
+          than a second idea of what read means: MessageList reports the newest
+          message on screen only while the transcript is at the bottom, so a
+          page opened and scrolled back through has not been read to the end.
+
+          Before this the private log had no mark anywhere - api.dms and
+          api.dmWait take a raw cursor that lived in this component's state, so
+          closing the tab forgot which messages had been read and the rail row
+          could not carry a number. 01M0GP1S0K.
+        */}
         <MessageList
           events={events}
           selected={selected}
           onSelect={pick}
+          onSeen={markDirectRead}
           me={{ user: whoami?.user, agent: whoami?.agent }}
         />
 

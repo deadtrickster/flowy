@@ -93,7 +93,7 @@ export function Shell({ children }: { children: ReactNode }) {
   // What the node's reader marks say is unread, per room. The counting and the
   // clearing both live in lib/unread - the sidebar draws it and does not own
   // it, because the room view is what knows when something has been read.
-  const { counts } = useUnread();
+  const { counts, direct } = useUnread();
   // The node's rooms, not this file's idea of them. See useRooms.
   const { shown: rooms, hidden, close, reopen } = useRoomList();
   // How much is waiting for this principal, for the two rows where "waiting"
@@ -266,18 +266,22 @@ export function Shell({ children }: { children: ReactNode }) {
             console where what you write is read by one named person, and it
             has to be told apart from a room at a glance.
 
-            NO BADGE, and it is the row that most deserves one. A private
-            message is exactly "waiting for you" - but /api/dm has no reader
-            mark. api.dms and api.dmWait both take a raw cursor the tab holds
-            in memory, so nothing on the node says which of these this person
-            has read, and the only number available is "how many DMs exist" -
-            a badge that would never clear. That is worse than no badge: it
-            teaches a reader to ignore the two above it that do clear. The
-            missing mark is filed as its own row rather than papered over here.
+            AND IT CARRIES A NUMBER NOW, which it could not before: /api/dm
+            takes a raw cursor that lived in the tab, so nothing on the node
+            said which private messages this person had read and the only
+            available number was "how many DMs exist" - a badge that never
+            clears, which is worse than none, because it teaches a reader to
+            ignore the two above it that do. 01M0GP1S0K put the mark where the
+            rooms already had theirs: a console reader over the private log,
+            moved forward when the page reports having reached a message.
+
+            Null and zero draw the same nothing here for two different reasons -
+            see WaitingDot, and lib/unread for which is which.
           */}
           <NavLink to="/direct" className={navClass}>
             <Lock className="h-4 w-4" />
             direct
+            <WaitingDot row="direct" n={direct} />
           </NavLink>
           {/*
             One row, not one per project: the page is the queue across every

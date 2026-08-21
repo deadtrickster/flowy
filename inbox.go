@@ -436,9 +436,31 @@ func (s *server) handleInboxUnread(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	room := q.Get("room")
+	// DIRECT IS A PLACE, NOT AN EMPTY ROOM, and that is why it is a parameter
+	// rather than a spelling of room.
+	//
+	// room="" already means "count everywhere" - the badge beside a room name
+	// asks with a room, and the one that wants everything asks with none - so a
+	// direct count could not be spelled by leaving the room out without taking
+	// the "everywhere" answer away from whoever asks for it. A DM has no room
+	// at all: it is a projectless chat event with an addressee, which is the
+	// shape store.EventQuery.Private already narrows to.
+	//
+	// The two together are a contradiction and are refused rather than resolved
+	// silently. A caller asking for the unread DMs "in #general" has a bug, and
+	// answering one of the two questions they asked would hide it - which is
+	// this node's oldest failure shape, one parameter along.
+	direct := boolParam(q.Get("direct"))
+	if direct && strings.TrimSpace(room) != "" {
+		writeJSON(w, http.StatusBadRequest, errorBody(
+			"direct and room name different places: a direct message has no room, "+
+				"so a count cannot be both"))
+		return
+	}
 	unread, err := s.db.CountEvents(r.Context(), p, store.EventQuery{
 		Type:      chatEventType,
 		Room:      room,
+		Private:   direct,
 		Since:     reader.Cursor,
 		NotActors: []string{p.UserID, p.AgentID},
 	})
@@ -449,6 +471,10 @@ func (s *server) handleInboxUnread(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"reader": reader.Reader,
 		"room":   room,
+		// Not omitempty, and false has to arrive as false: a caller reading this
+		// answer has to be able to tell "your direct count is 0" from "I counted
+		// the rooms instead", and those differ by this field alone.
+		"direct": direct,
 		"cursor": reader.Cursor,
 		"unread": unread,
 	})

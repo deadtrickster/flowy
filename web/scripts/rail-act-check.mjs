@@ -172,8 +172,15 @@ badge that does not clear is the one thing this whole design is against.`);
   // THE HALF THAT OUTLIVES THE OTHER. Each of these is a row that could carry a
   // count of what exists, and none of them may. Listed by href rather than by
   // position so reordering the rail does not silently drop one from the check.
+  // /direct WAS IN THIS LIST and has moved out, which is the door this file
+  // left open: "if one of these genuinely became waiting-for-you - a read mark
+  // per list would do it - then say so here and move it out of the list."
+  // 01M0GP1S0K put that mark on the node, so the row can now say how many
+  // private messages are waiting and clear when they are read. The count is
+  // asserted below, against the node's own answer, in the same shape the inbox
+  // row is - a row that may carry a badge and is never checked is how a badge
+  // that does not clear gets in.
   const bare = [
-    "/direct",
     "/new",
     "/projects",
     "/memory",
@@ -197,6 +204,42 @@ under it - fix the list in this file rather than deleting the assertion.`);
       wrong.push(href);
     }
   }
+  // THE PRIVATE ROW, against the node rather than against itself. The console
+  // declares its own reader on first load, so this waits for that row to exist
+  // instead of assuming it - and says which it was if it never turns up, since
+  // "no reader" and "no unread" are the two answers this must not confuse.
+  let dmUnread = null;
+  for (let i = 0; i < 40 && dmUnread === null; i++) {
+    const readers = (await json("/api/inbox/readers")).readers ?? [];
+    if (readers.some((reader) => reader.reader === "console-dm")) {
+      dmUnread = (await json("/api/inbox/unread?as=console-dm&direct=1")).unread;
+      break;
+    }
+    await page.waitForTimeout(250);
+  }
+  if (dmUnread === null) {
+    die(`the console never declared its console-dm reader, so the direct row cannot carry a
+number and nothing said so. See lib/unread: the label is declared on the first
+refresh, beside the one per room.`);
+  }
+  const dmBadge = page.locator('nav a[href="/direct"] [data-waiting="direct"]');
+  if (dmUnread > 0) {
+    await dmBadge.waitFor({ state: "visible", timeout: 20_000 }).catch(() => {});
+    if ((await dmBadge.count()) === 0) {
+      die(`the node says ${dmUnread} direct message(s) are unread and the direct row carries no
+badge - either the count is not being read or its failure is being drawn as
+"nothing waiting" rather than as nothing at all.`);
+    }
+    const shown = Number(await dmBadge.first().getAttribute("data-waiting-count"));
+    if (shown !== dmUnread) {
+      die(`the direct badge says ${shown} and the node says ${dmUnread} unread.`);
+    }
+  } else if ((await dmBadge.count()) > 0) {
+    const said = await dmBadge.first().getAttribute("data-waiting-count");
+    die(`no direct message is unread and the row carries a badge saying ${said} - a rail badge
+that does not clear is the one thing this whole design is against.`);
+  }
+
   if (wrong.length > 0) {
     die(`${wrong.join(", ")} carry a badge. A rail badge is a claim that work is waiting for
 this person and clears when they do it; a count of how many rows exist never

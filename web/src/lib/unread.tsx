@@ -207,6 +207,16 @@ export function consoleReader(room: string): string {
   return `console:${room}`;
 }
 
+/**
+ * DIRECT_READER is the same mark over direct messages, which have no room.
+ *
+ * Deliberately NOT `console:direct`: rooms are named by people, "direct" is a
+ * name a room may have, and a label that a room could also produce is two marks
+ * fighting over one row the first time somebody makes that room. The rail row
+ * is already called direct, so this is not a hypothetical.
+ */
+export const DIRECT_READER = "console-dm";
+
 /** How often the badges are refilled from the node. */
 const REFRESH_MS = 20_000;
 
@@ -214,19 +224,42 @@ interface Unread {
   /** How many unread messages each room holds, by room name. */
   counts: Record<string, number>;
   /**
+   * How many direct messages this principal has not read, or NULL when nobody
+   * has counted them yet - no token, or the first refresh has not returned.
+   *
+   * Null and zero are kept apart all the way to the rail, where they draw the
+   * same nothing for two different reasons: zero is "no private message is
+   * waiting", null is "this console has not been told". A badge means WORK IS
+   * HERE, and a read that did not happen is not work - see WaitingDot, which
+   * makes the same distinction for the rows above this one.
+   */
+  direct: number | null;
+  /**
    * markRead says the reader has REACHED this message in a room - the newest
    * one on screen with the transcript sitting at the bottom, not the fact that
    * the room was opened. A room that was opened and scrolled back through has
    * not been read to the end and does not clear.
    */
   markRead: (room: string, message: string) => void;
+  /**
+   * markDirectRead is markRead for the private log: the newest direct message
+   * on screen, said when the reader has actually reached it.
+   */
+  markDirectRead: (message: string) => void;
 }
 
-const UnreadContext = createContext<Unread>({ counts: {}, markRead: () => {} });
+const UnreadContext = createContext<Unread>({
+  counts: {},
+  direct: null,
+  markRead: () => {},
+  markDirectRead: () => {},
+});
 
 export function UnreadProvider({ children }: { children: ReactNode }) {
   const { token } = useSession();
   const [counts, setCounts] = useState<Record<string, number>>({});
+  // Null until the node has answered once. See Unread.direct.
+  const [direct, setDirect] = useState<number | null>(null);
   // The last message this console has read in each room, and the last one the
   // node has confirmed. They differ while an ack is in flight or has failed,
   // and the difference is what the refresh retries. Refs rather than state:
@@ -240,6 +273,7 @@ export function UnreadProvider({ children }: { children: ReactNode }) {
     acked.current = {};
     if (!token) {
       setCounts({});
+      setDirect(null);
       return;
     }
     let stopped = false;
@@ -281,6 +315,29 @@ export function UnreadProvider({ children }: { children: ReactNode }) {
         if (stopped) return;
       }
       setCounts(next);
+
+      // AND THE PRIVATE LOG, through the same three steps the rooms take:
+      // declare at the head if this token has never read from a console,
+      // re-ack anything read while the row did not exist, then count.
+      //
+      // It is the one row in the rail where the message was written to one
+      // named person, and it was the only one that could not carry a number:
+      // /api/dm takes a raw cursor and the tab held it in memory, so closing
+      // the tab forgot which private messages had been read. Filed as
+      // 01M0GP1S0K, and the mark it wanted is the one the rooms already had.
+      if (!declared.has(DIRECT_READER)) {
+        await api.declareInboxReader(DIRECT_READER, "cursor");
+        if (stopped) return;
+      }
+      const readDm = reached.current[DIRECT_READER];
+      if (readDm && readDm !== acked.current[DIRECT_READER]) {
+        await api.ackInbox(DIRECT_READER, readDm);
+        if (stopped) return;
+        acked.current[DIRECT_READER] = readDm;
+      }
+      const dm = (await api.unreadDirect(DIRECT_READER)).unread;
+      if (stopped) return;
+      setDirect(dm);
     };
 
     // Swallowed: a badge is not worth a banner, and the next tick tries again.
@@ -308,6 +365,7 @@ export function UnreadProvider({ children }: { children: ReactNode }) {
       for (const room of ROOMS) {
         void api.deleteInboxReader(consoleReader(room), true).catch(() => {});
       }
+      void api.deleteInboxReader(DIRECT_READER, true).catch(() => {});
     };
     window.addEventListener("pagehide", bye);
     return () => {
@@ -348,7 +406,38 @@ export function UnreadProvider({ children }: { children: ReactNode }) {
     [token],
   );
 
-  return <UnreadContext.Provider value={{ counts, markRead }}>{children}</UnreadContext.Provider>;
+  /**
+   * The private half of markRead, and the same rule: this says the reader has
+   * REACHED this message, not that they opened the page. The mark only ever
+   * moves forward on the node, so two tabs cannot fight over it.
+   */
+  const markDirectRead = useCallback(
+    (message: string) => {
+      if (!token || !message) return;
+      if (message === reached.current[DIRECT_READER]) return;
+      reached.current[DIRECT_READER] = message;
+
+      void (async () => {
+        try {
+          await api.ackInbox(DIRECT_READER, message);
+          acked.current[DIRECT_READER] = message;
+        } catch {
+          // Left for the refresh above to retry, as a room ack is.
+        }
+      })();
+
+      // Cleared now rather than on the next tick, so the rail does not look
+      // stuck for twenty seconds after somebody has plainly read the message.
+      setDirect((current) => (current ? 0 : current));
+    },
+    [token],
+  );
+
+  return (
+    <UnreadContext.Provider value={{ counts, direct, markRead, markDirectRead }}>
+      {children}
+    </UnreadContext.Provider>
+  );
 }
 
 /** The unread counts and the way to clear one, for the shell and the room. */

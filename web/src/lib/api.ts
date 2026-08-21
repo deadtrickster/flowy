@@ -1798,6 +1798,20 @@ export const api = {
    * asked with the mark it had just been handed was answered with five
    * messages it had already read.
    */
+  /**
+   * unreadDirect is the same count over DIRECT MESSAGES, which have no room.
+   *
+   * A separate call rather than unreadIn(as, "") because an empty room already
+   * means "everywhere" at that door - the badge beside a room name asks with
+   * one, the total asks with none - so spelling direct as an absent room would
+   * take the everywhere answer away from whoever asks for it. The node refuses
+   * direct and room together rather than resolving them.
+   */
+  unreadDirect: (as: string) =>
+    request<{ reader: string; direct: boolean; cursor: number; unread: number }>(
+      `/api/inbox/unread?as=${encodeURIComponent(as)}&direct=1`,
+    ),
+
   unreadIn: (as: string, room: string) =>
     request<{ reader: string; room: string; unread: number }>(
       `/api/inbox/unread?as=${encodeURIComponent(as)}&room=${encodeURIComponent(room)}`,

@@ -3895,6 +3895,65 @@ a_direct_message_reaches_both_parties() {
 	printf 'private between %s and %s, thread %s\n' "$USER_A" "$USER_B" "$thread"
 }
 
+# A PRIVATE MESSAGE CAN BE COUNTED AS UNREAD, which is what it could not be.
+#
+# 01M0GP1S0K: /api/dm takes a raw cursor and the only thing holding it was the
+# open tab, so nothing on the node said which private messages a person had read
+# and the rail's direct row - the one place in the console where what you write
+# is read by ONE NAMED PERSON - had to be shipped silent.
+#
+# The count is the inbox's count, narrowed to the private log: what this
+# principal may read and did not write. `direct` is a parameter rather than a
+# spelling of an absent room, because room="" already means EVERYWHERE at this
+# door - and the two together are refused rather than resolved, since a caller
+# asking for the unread DMs "in #general" has a bug that answering half of would
+# hide.
+a_private_message_is_counted_as_unread() {
+	recall
+	local mark=console-dm-suite
+	api POST "$TOKEN_B" /api/inbox/reader "{\"as\": \"$mark\", \"kind\": \"cursor\"}" || return 1
+	want_eq "declaring the mark" "$API_STATUS" 200 || return 1
+
+	# Declared at the head, so a log full of earlier messages is not unread.
+	api GET "$TOKEN_B" "/api/inbox/unread?as=$mark&direct=1" || return 1
+	want_eq "a fresh mark counts nothing" "$(jqv .unread)" 0 || return 1
+	want_eq "and says which count it is" "$(jqv .direct)" true || return 1
+
+	dm "$TOKEN_A" "$USER_B" "one for the count, $DM_PRIVATE_WORD" || return 1
+	want_eq "send status" "$API_STATUS" 200 || return 1
+	api GET "$TOKEN_B" "/api/inbox/unread?as=$mark&direct=1" || return 1
+	want_eq "a private message arrived" "$(jqv .unread)" 1 || return 1
+
+	# YOUR OWN WRITING IS NOT WAITING FOR YOU. Same rule the room badges have,
+	# and without it a person's own reply raises their own row.
+	dm "$TOKEN_B" "$USER_A" "an answer, which is not unread for its author" || return 1
+	api GET "$TOKEN_B" "/api/inbox/unread?as=$mark&direct=1" || return 1
+	want_eq "the answer did not raise its own author's count" "$(jqv .unread)" 1 || return 1
+
+	# AND IT IS THE PRIVATE LOG, not the whole log. A count that ignored the
+	# narrowing would rise on every room message in the node and read exactly
+	# like this feature working.
+	api POST "$TOKEN_A" /api/chat/general/say \
+		'{"body": "a room message, which is not a direct message"}' || return 1
+	api GET "$TOKEN_B" "/api/inbox/unread?as=$mark&direct=1" || return 1
+	want_eq "a room message did not raise the private count" "$(jqv .unread)" 1 || return 1
+
+	# Reading it moves the mark, and the count goes to nothing.
+	local newest
+	newest="$(scalar "SELECT id FROM events WHERE addressee = '$USER_B'
+	                    AND coalesce(room, '') = '' ORDER BY seq_hlc DESC LIMIT 1")" || return 1
+	api POST "$TOKEN_B" /api/inbox/ack "{\"as\": \"$mark\", \"event\": \"$newest\"}" || return 1
+	want_eq "acking to the newest private message" "$API_STATUS" 200 || return 1
+	api GET "$TOKEN_B" "/api/inbox/unread?as=$mark&direct=1" || return 1
+	want_eq "reading it cleared the count" "$(jqv .unread)" 0 || return 1
+
+	# TWO PLACES ARE NOT ONE. A direct message has no room, so asking for both
+	# is a contradiction and is refused rather than answered with whichever the
+	# handler happened to apply.
+	want_status 400 GET "$TOKEN_B" "/api/inbox/unread?as=$mark&direct=1&room=general" || return 1
+	printf 'the private log is counted, the room log is not, and direct+room is refused\n'
+}
+
 # THE ONE THAT DECIDES WHETHER THIS FEATURE SHIPS.
 #
 # The operator is a third principal in pa, which is A's project. They are not
@@ -12779,7 +12838,12 @@ its_our_node() {
 		return 1
 	fi
 }
-check "the node on our port is the one this suite started" its_our_node
+# PREFLIGHT: this is the wait, not merely a check. `flowy serve` is started a
+# few lines up and is still binding, and this retries for ten seconds - so a run
+# that skips it races every later check against a node that is not listening
+# yet. Measured under ONLY=: "curl: (7) Failed to connect to 127.0.0.1 port
+# 19787 after 0 ms", reported against the one check the filter had selected.
+preflight "the node on our port is the one this suite started" its_our_node
 check "flowy serve answers /healthz" "$WORK/smoke" healthz "http://127.0.0.1:$HTTP_PORT/healthz"
 check "healthz answers when counts are asked for" \
 	"$WORK/smoke" healthz "http://127.0.0.1:$HTTP_PORT/healthz?counts=1"
@@ -13065,6 +13129,8 @@ check "the addressee is inside what the node signs" \
 say "direct messages"
 check "a direct message reaches both parties, and carries no project or room" \
 	a_direct_message_reaches_both_parties
+check "a private message is counted as unread, and a room message is not" \
+	a_private_message_is_counted_as_unread
 check "A THIRD PRINCIPAL IN THE SAME PROJECT CANNOT READ IT" \
 	a_third_principal_in_the_project_cannot_read_a_dm
 check "and it is on none of their surfaces: room, events, inbox, timeline, search, thread" \
