@@ -1544,6 +1544,25 @@ export type Room = {
   declared: boolean;
 };
 
+/**
+ * How many todos of a room the pane asks for.
+ *
+ * THE DOOR'S DEFAULT IS 200 AND #general HAS 324. Measured 2026-08-21:
+ * `?kind=todo&room=general` returns 200, the same query with `limit=1000`
+ * returns 324. So the pane held a WINDOW, and every count and filter drawn from
+ * it described the window while reading as the room. A search box over that says
+ * "nothing matches" about rows that exist - which is the exact failure the
+ * search was added to prevent, at a different boundary. Found by @orchestrator
+ * reviewing the search.
+ *
+ * A NUMBER LARGER THAN ANY ROOM IS NOT A FIX BY ITSELF, which is why it is
+ * paired with the truncation notice in RoomTodos: if a page ever comes back
+ * full, the pane says so rather than pretending the window is the room. That
+ * makes this a performance choice instead of a correctness one, which is the
+ * only kind of number it is safe to pick.
+ */
+export const ROOM_TODO_LIMIT = 1000;
+
 export const api = {
   /**
    * The rooms this node has, rather than the three this file used to name.
@@ -2216,7 +2235,7 @@ export const api = {
    */
   roomTodos: (room: string) =>
     request<{ artifacts: Artifact[] }>(
-      `/api/artifacts?type=memory&kind=todo&room=${encodeURIComponent(room)}`,
+      `/api/artifacts?type=memory&kind=todo&room=${encodeURIComponent(room)}&limit=${ROOM_TODO_LIMIT}`,
     ),
   /**
    * Raise a todo out of a room. message is the id of the message it came out

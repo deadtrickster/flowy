@@ -6,7 +6,7 @@ import { AttachmentCards } from "@/components/AttachmentCards";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { type Artifact, type FlowyEvent, artifactPath } from "@/lib/api";
+import { type Artifact, type FlowyEvent, ROOM_TODO_LIMIT, artifactPath } from "@/lib/api";
 import { type Attached, writeFile } from "@/lib/attach";
 import { speakerStyle } from "@/lib/speakercolour";
 import {
@@ -402,7 +402,18 @@ export function RoomTodos({
           // three empties would otherwise give the same answer to three
           // different questions.
           <div className="px-4 py-2 text-muted-foreground text-xs">
-            nothing in #{room} matches {find.trim()} - {todos.length} row(s) here
+            {/* WHAT WAS SEARCHED, and whether that is the whole room.
+                A page that comes back FULL is the signal that there may be more
+                behind it - the door answers with a page and no total, so this is
+                the only truncation evidence a client has. Saying "nothing
+                matches" about a window while sounding like the room is the exact
+                failure this box was added to prevent, one boundary further out.
+                Measured 2026-08-21: the door's default is 200 and #general had
+                324. */}
+            nothing in #{room} matches {find.trim()} -{" "}
+            {todos.length >= ROOM_TODO_LIMIT
+              ? `searched the ${todos.length} row(s) this pane has loaded, and there may be more`
+              : `${todos.length} row(s) here`}
           </div>
         ) : null}
         {!error && todos.length > 0 && drawn.length === 0 && !wanted ? (
