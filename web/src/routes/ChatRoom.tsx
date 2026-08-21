@@ -82,6 +82,9 @@ const COUNT_ACTIVE = "#e0a03f"; // amber - somebody is on it
 const COUNT_OPEN = "#8b93a7"; // grey - waiting, and quiet on purpose
 const COUNT_LAND = "#4fae7a"; // green - the node says it may land
 const COUNT_REFUSED = "#d1585f"; // red - the node says it may not
+// grey - nobody has measured it yet, which is not a no. See the three-cause
+// note at the merges tab: this is the colour of "waiting", not of a verdict.
+const COUNT_WAITING = "#8b93a7";
 const COUNT_THREAD = "#3fa3c9"; // cyan - how much has been said in the thread
 const COUNT_WORKLOG = "#b07ae0"; // violet - how much the fleet has written down
 const COUNT_LISTENING = "#4fae7a"; // green - somebody has an ear on this room
@@ -1228,8 +1231,33 @@ export function ChatRoom() {
             <Count colour={COUNT_LAND}>
               {merges.filter((m) => m.admissible === true).length} may land
             </Count>
+            {/*
+              THREE COUNTS, BECAUSE `admissible === false` HAS THREE CAUSES and
+              this tab called them all refused. The operator read "0 may land,
+              4 refused" off a healthy queue - one row had a red, three had
+              simply never been gated against a master that had moved minutes
+              earlier - and could not tell that from four rejected branches.
+              01M0HFZ8XB fixed the badge on each row; this is the same fact one
+              layer up, and fixing only the badge would have left the number
+              they were actually reading unchanged.
+            */}
+            <Count colour={COUNT_WAITING}>
+              {
+                merges.filter((m) => m.code === "merge.ungated" || m.code === "merge.stale_gate")
+                  .length
+              }{" "}
+              waiting
+            </Count>
             <Count colour={COUNT_REFUSED}>
-              {merges.filter((m) => m.admissible === false).length} refused
+              {
+                merges.filter(
+                  (m) =>
+                    m.admissible === false &&
+                    m.code !== "merge.ungated" &&
+                    m.code !== "merge.stale_gate",
+                ).length
+              }{" "}
+              refused
             </Count>
           </PaneTab>
           {/*
