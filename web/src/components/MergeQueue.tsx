@@ -1,10 +1,11 @@
 import { Link } from "react-router-dom";
 
 import { Badge } from "@/components/ui/badge";
-import type { KnownIssue, MergeRequest } from "@/lib/api";
+import type { KnownIssue, MergeLock, MergeRequest } from "@/lib/api";
 import { artifactPath, refPath } from "@/lib/api";
 import { toneStyle, verdictTone } from "@/lib/statecolour";
 import { statusStyle } from "@/lib/todos";
+import { shortId } from "@/lib/utils";
 
 /**
  * The verdict colours now come from lib/statecolour.ts rather than from a
@@ -43,12 +44,19 @@ export function MergeQueue({
   tipFrom,
   decided,
   loaded,
+  lock,
 }: {
   items: MergeRequest[];
   tip: string;
   tipFrom: "stated" | "deployed" | "none";
   decided: boolean;
   loaded: boolean;
+  /**
+   * The state of the MACHINE, as against the state of each row. Optional
+   * because an older node does not send it and a page that has not read yet
+   * has none - both of which draw nothing, rather than drawing "free".
+   */
+  lock?: MergeLock;
 }) {
   if (!loaded) {
     return <p className="px-4 py-6 text-muted-foreground text-sm">reading the queue…</p>;
@@ -56,6 +64,17 @@ export function MergeQueue({
   if (items.length === 0) {
     return (
       <div className="px-4 py-6">
+        {/*
+          THE EMPTY QUEUE IS WHERE THIS MATTERS MOST, which is why the gate line
+          is drawn before the explanation rather than only above a list. At one
+          gate at a time and about twelve minutes a pass, the queue is empty or
+          unlandable for nearly all of its life - correctly - and every "is it
+          stuck?" this evening was somebody reading that and having no way to
+          tell a working drainer from a dead one. An empty list plus a running
+          gate is the single most reassuring thing this pane can say, and it
+          used to say nothing at all.
+        */}
+        <GateState lock={lock} items={items} />
         <p className="text-muted-foreground text-sm">
           nothing is waiting to land. A merge request is a work item of kind{" "}
           <code className="text-xs">merge</code>, filed with the branch it would land and the tip
@@ -67,6 +86,9 @@ export function MergeQueue({
 
   return (
     <div className="flex flex-col">
+      <div className="px-4 pt-3">
+        <GateState lock={lock} items={items} />
+      </div>
       {/*
         What the verdicts were measured against, said above the rows rather than
         left to be assumed. "deployed" is the honest hedge: nobody passed a tip,
@@ -175,6 +197,121 @@ export function MergeQueue({
         ))}
       </ul>
     </div>
+  );
+}
+
+/**
+ * A stamp that refuses the zero time.
+ *
+ * `until` and `taken_at` are on the wire even when nothing is held, as
+ * `0001-01-01T00:00:00Z`: their Go tags say omitempty and omitempty does not
+ * omit a time.Time. That string PARSES, so lib/utils clock() renders it happily
+ * as midnight and a reader is shown a deadline from the first century. Anything
+ * before 2000 here is a zero value that survived a marshal, not a date.
+ */
+function stamp(iso?: string) {
+  if (!iso) return "";
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime()) || at.getFullYear() < 2000) return "";
+  return at.toLocaleTimeString();
+}
+
+/** Whole minutes between two instants, or null when either is unusable. */
+function minutesSince(iso?: string) {
+  if (!iso) return null;
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime()) || at.getFullYear() < 2000) return null;
+  return Math.max(0, Math.round((Date.now() - at.getTime()) / 60000));
+}
+
+/**
+ * What the MACHINE is doing, above the rows rather than on any one of them.
+ *
+ * WHY THIS IS NOT A ROW BADGE. There is already a per-row `gating` badge, and
+ * it answers a different question: that one says this branch is being measured,
+ * this one says the target is reserved and by whom until when. The second is
+ * what a person wants when nothing on the list is landable, because it is the
+ * only thing on the page that distinguishes a queue that is working from one
+ * that is stopped.
+ *
+ * THREE STATES, and the middle one is the reason this component is worth
+ * writing rather than printing lock.held:
+ *
+ *   held                a gate is measuring. Everything else waits, correctly,
+ *                       and `until` is how long - which is the actionable
+ *                       number, not the elapsed one.
+ *   expired, still here  nobody gave the target back. ReleaseMergeLock DELETES
+ *                       the row, so a lock past its `until` means the holder
+ *                       died or overran rather than finished. IT BLOCKS
+ *                       NOTHING - WouldTake reads an expired lock as a free
+ *                       target - and a pane that showed this as a lock without
+ *                       saying so would manufacture the exact "we are stuck"
+ *                       reading it exists to prevent.
+ *   free                nothing holds it.
+ *
+ * The holder is named by handle when the node could resolve one and by
+ * principal id when it could not. Neither is dropped in favour of a blank: the
+ * question this answers is "who do I talk to", and an id is an answer to it.
+ */
+function GateState({ lock, items }: { lock?: MergeLock; items: MergeRequest[] }) {
+  // No lock on the answer at all is an older node or a page that has not read
+  // yet. Drawing "the target is free" there would be inventing a measurement,
+  // so this draws nothing - the one honest option when you were told nothing.
+  if (!lock) return null;
+
+  const holder = lock.holder_name || lock.holder || "";
+  // WHICH BRANCH, not merely which row id. The lock records the row, and the
+  // row is on the list in front of the reader most of the time - so name what
+  // they can see. A lock for a row that has already left the queue keeps the
+  // id, which is still enough to ask somebody about.
+  const forRow = lock.item ? items.find((m) => m.id === lock.item) : undefined;
+  const what = forRow?.branch || (lock.item ? shortId(lock.item, 8) : "");
+  const until = stamp(lock.until);
+  const took = stamp(lock.taken_at);
+  const running = minutesSince(lock.taken_at);
+
+  if (lock.held) {
+    return (
+      <p data-gate-state="running" className="text-muted-foreground text-xs">
+        <span data-tone="accent" style={toneStyle(verdictTone("gating"))} className="font-medium">
+          a gate is running
+        </span>
+        {holder ? <> — {holder} holds the target</> : <> — the target is held</>}
+        {what ? (
+          <>
+            {" "}
+            for <code className="text-xs">{what}</code>
+          </>
+        ) : null}
+        {took ? <> since {took}</> : null}
+        {running !== null ? <> ({running}m)</> : null}
+        {until ? <>, and nothing else can land until {until}</> : null}
+      </p>
+    );
+  }
+
+  // A lock row that is past its window. Present at all means it was never
+  // released, because releasing deletes it.
+  if (holder) {
+    return (
+      <p data-gate-state="stale" className="text-muted-foreground text-xs">
+        {holder} never gave the target back
+        {what ? (
+          <>
+            {" "}
+            after <code className="text-xs">{what}</code>
+          </>
+        ) : null}
+        {until ? <>: the reservation ran out at {until}</> : null}. Nothing is waiting on it — an
+        expired lock is a free target, and the next declaration takes it.
+      </p>
+    );
+  }
+
+  return (
+    <p data-gate-state="free" className="text-muted-foreground text-xs">
+      no gate is running — the target is free, so anything admissible here can land now
+    </p>
   );
 }
 

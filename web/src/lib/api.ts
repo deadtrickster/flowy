@@ -635,6 +635,45 @@ export interface MergeRequest {
   red?: MergeRed;
 }
 
+/**
+ * The landing lock: who has the target reserved, for which row, and until when.
+ *
+ * THREE STATES, NOT TWO, and the third is the one a reader is looking for when
+ * they ask whether the queue is stuck.
+ *
+ *   held, with a holder    a gate is measuring right now. Nothing else may
+ *                          land until `until`, and that is not a fault.
+ *   not held, with a holder the last holder never gave it back. Release
+ *                          DELETES the row (internal/store/mergelock.go
+ *                          ReleaseMergeLock), so a lock still here and past
+ *                          its `until` means the drainer died or overran. It
+ *                          BLOCKS NOTHING - MergeLock.WouldTake treats an
+ *                          expired lock as a free target - and saying so is
+ *                          the difference between waiting and stuck.
+ *   not held, no holder    the target is free.
+ *
+ * `until` and `taken_at` ARE ALWAYS ON THE WIRE, including as the zero time
+ * `0001-01-01T00:00:00Z`. Their Go tags say omitempty, which does not omit a
+ * time.Time - a struct is never empty to encoding/json - so a reader that
+ * treats presence as meaning is reading a date two thousand years past as a
+ * deadline. Key off `held` and `holder`, never off whether these are here.
+ */
+export interface MergeLock {
+  held: boolean;
+  /** The principal id. Present whenever a lock row exists, held or expired. */
+  holder?: string;
+  /**
+   * The handle that principal answers to NOW - resolved by join at read time,
+   * not snapshotted at take. Absent when the holder resolves to no user, which
+   * is why nothing here may assume a name is available to print.
+   */
+  holder_name?: string;
+  /** WHICH row the target is held for. Two sessions of one seat are two rows. */
+  item?: string;
+  until?: string;
+  taken_at?: string;
+}
+
 /** Why a row was skipped, when it was skipped, and by which seat. */
 export interface MergeBlocked {
   why: string;
@@ -2289,6 +2328,14 @@ export const api = {
       decided: boolean;
       gating: number;
       items: MergeRequest[];
+      /**
+       * Optional on the TYPE because an older node does not send it, not
+       * because a current one might omit it: api_mergequeue.go sets
+       * `response.Lock` unconditionally, as held:false when nothing is held,
+       * so that a caller gets "the target is free" as a fact rather than as
+       * the absence of a key it has to know the meaning of.
+       */
+      lock?: MergeLock;
     }>(`/api/merge-queue?room=${encodeURIComponent(room)}`),
   mergeQueue: () =>
     request<{
@@ -2298,6 +2345,8 @@ export const api = {
       decided: boolean;
       gating: number;
       items: MergeRequest[];
+      /** See roomMergeQueue: always sent by a current node, held:false when free. */
+      lock?: MergeLock;
     }>(`/api/merge-queue?limit=${TODO_PAGE}`),
   /**
    * The todos of one room: the same list, narrowed by the room the item was

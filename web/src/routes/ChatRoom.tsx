@@ -19,6 +19,7 @@ import {
   type ActivityItem,
   type Artifact,
   type FlowyEvent,
+  type MergeLock,
   type MergeRequest,
   type Presence,
   type Reaction,
@@ -158,6 +159,8 @@ export function ChatRoom() {
   const [merges, setMerges] = useState<MergeRequest[]>([]);
   const [mergesDecided, setMergesDecided] = useState(false);
   const [mergeTip, setMergeTip] = useState("");
+  // See Todos.tsx: undefined means nobody told us, which is not "free".
+  const [mergeLock, setMergeLock] = useState<MergeLock | undefined>(undefined);
   /**
    * WHICH PANE THE SIDE COLUMN IS SHOWING - five of them now, in one bar.
    *
@@ -377,6 +380,7 @@ export function ChatRoom() {
           setMerges(q.items ?? []);
           setMergesDecided(Boolean(q.decided));
           setMergeTip(q.target_tip ?? "");
+          setMergeLock(q.lock);
         })
         .catch(() => setMerges([]));
       const page = await api.roomTodos(room);
@@ -1380,6 +1384,7 @@ export function ChatRoom() {
               tipFrom="deployed"
               decided={mergesDecided}
               loaded={true}
+              lock={mergeLock}
             />
           </div>
         ) : null}

@@ -4,7 +4,7 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import { MergeQueue } from "@/components/MergeQueue";
 import { StreamAsOf } from "@/components/StreamAsOf";
 import { Badge } from "@/components/ui/badge";
-import type { Artifact, MergeRequest, Refused, Withheld } from "@/lib/api";
+import type { Artifact, MergeLock, MergeRequest, Refused, Withheld } from "@/lib/api";
 import { TODO_PAGE, api, artifactPath } from "@/lib/api";
 import { useSession } from "@/lib/session";
 import { speakerStyle } from "@/lib/speakercolour";
@@ -140,6 +140,10 @@ export function Todos() {
   const [mergeTipFrom, setMergeTipFrom] = useState<"stated" | "deployed" | "none">("none");
   const [mergeDecided, setMergeDecided] = useState(false);
   const [mergesLoaded, setMergesLoaded] = useState(false);
+  // undefined until a node answers, and undefined again if one stops answering:
+  // "no gate is running" is a measurement, and this page must not make it up
+  // from a read that never came back.
+  const [mergeLock, setMergeLock] = useState<MergeLock | undefined>(undefined);
 
   /**
    * WHICH READ IS THE NEWEST, so a slow answer never paints over a fast one.
@@ -203,6 +207,10 @@ export function Todos() {
           setMergeTip(merge.target_tip ?? "");
           setMergeTipFrom(merge.tip_from ?? "none");
           setMergeDecided(Boolean(merge.decided));
+          // An older node sends no lock. Undefined draws nothing rather than
+          // "free", which would be this page answering a question the node it
+          // is talking to never answered.
+          setMergeLock(merge.lock);
         } else if (!everHeard.current) {
           setMerges([]);
         }
@@ -429,6 +437,7 @@ export function Todos() {
           tipFrom={mergeTipFrom}
           decided={mergeDecided}
           loaded={mergesLoaded}
+          lock={mergeLock}
         />
       ) : (
         <>
