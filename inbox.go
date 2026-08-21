@@ -317,6 +317,31 @@ func (s *server) handleInboxWait(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// AND WHOSE WORD IT IS NOT. The room read resolves repudiations - chat.go
+	// calls FillDisowned on the function both its callers get their messages
+	// from - and this door never did, so a waiter could not tell a line its
+	// speaker had taken back from one that still stood.
+	//
+	// It matters MORE here than on the room read, not less, and the reason is
+	// who is on the other end. The console has a person reading; this is the
+	// door every agent on this fabric blocks on, and what arrives through it is
+	// acted on without anybody looking. A retraction that reaches the screen
+	// and not the waiter is a retraction that stops the humans and none of the
+	// machines.
+	//
+	// REFUSING RATHER THAN LOGGING, which is where this parts company with the
+	// room read. chat.go logs the failure and returns the page, because an
+	// unmarked line in front of a person is a page they can still judge. Here
+	// an unresolved page is delivered to something that will act on it, and
+	// "nothing is disowned" and "I could not ask whether anything is disowned"
+	// would arrive identically. So it fails the request, exactly as Citations
+	// above does: a waiter gets no page rather than a page whose marks were
+	// never resolved, and its next poll asks again.
+	if err := s.db.FillDisowned(r.Context(), nil, deliver); err != nil {
+		serverError(w, r, err)
+		return
+	}
+
 	writeJSON(w, http.StatusOK, inboxWaitResponse{
 		Reader: name, Events: deliver, Skipped: skipped, Since: reader.Cursor, Cursor: at,
 		Now: nodeNow(),
@@ -1095,6 +1120,23 @@ func writeInbox(page inboxWaitResponse) error {
 		// field for a reader to try.
 		if e.Artifact != "" {
 			line["artifact"] = e.Artifact
+		}
+
+		// AND THAT ITS SPEAKER HAS TAKEN IT BACK. Present only when the row is
+		// disowned, for the same reason `artifact` is conditional: a key that
+		// is there is a key that answers. A `"disowned": null` on every
+		// ordinary line would be a third thing for a reader to test and would
+		// read, wrongly, as this door having checked - which it did, but the
+		// absence says so more cheaply.
+		//
+		// The whole object rather than a flag, because "taken back" is not the
+		// end of the sentence. Subject says whose word it was, reason says what
+		// they said about it, and from/to are the window - so a waiter can see
+		// whether the line sits at the edge of a repudiation or in the middle
+		// of one, which is the difference between a slip and a key somebody
+		// lost. A bare boolean would make every one of those a second request.
+		if e.Disowned != nil {
+			line["disowned"] = e.Disowned
 		}
 		// THE QUOTE, INLINE, IN THE FIELD THE READER ALREADY READS.
 		//

@@ -11263,6 +11263,15 @@ the_overview_renders_on_an_empty_board() {
 a_disowned_message_says_so_and_the_one_before_it_does_not() {
 	recall5
 	local before inside from out
+	# THE WAITER'S READER BEFORE EITHER MESSAGE. A reader's cursor starts where
+	# it is created, so anything said before it exists is behind it and is never
+	# delivered - and both messages have to arrive on ONE page for the control to
+	# be a control. Registered here rather than in a check of its own so that the
+	# waiter is judged against the same repudiation, the same window and the same
+	# pair of messages the room read is judged against: two surfaces disagreeing
+	# about one fact is the thing being ruled out.
+	want_napi 200 "$N5_PORT_A" POST "$N5_TOKEN_A" /api/inbox/reader \
+		'{"as": "disown-waiter"}' || return 1
 	want_napi 200 "$N5_PORT_A" POST "$N5_TOKEN_A" /api/events \
 		'{"type":"chat","room":"disowned","body":"before the key was taken"}' || return 1
 	before="$(jqv .id)"
@@ -11296,6 +11305,30 @@ a_disowned_message_says_so_and_the_one_before_it_does_not() {
 	want_eq "and leaves the one before it alone" \
 		"$(printf '%s' "$API_BODY" | jq -r --arg i "$before" \
 			'[.events[] | select(.id == $i and .disowned != null)] | length')" 0 || return 1
+
+	# AND THE WAITER, which is the door with nobody reading. Every agent on this
+	# fabric blocks here and acts on what arrives without a person looking at it,
+	# so a retraction that reaches the screen and not this one stops the humans
+	# and none of the machines.
+	#
+	# THE SAME TWO ASSERTIONS AS THE ROOM READ ABOVE, deliberately, and on the
+	# same page: one message inside the window and one outside it, delivered
+	# together. Asserting only that the marked one is marked would pass on a door
+	# that marked everything, which is the confident failure - and the room read
+	# above already carries that argument, so this is it applied one door over.
+	want_napi 200 "$N5_PORT_A" GET "$N5_TOKEN_A" \
+		"/api/inbox/wait?as=disown-waiter&window=1" || return 1
+	want_eq "the waiter is told the message was taken back" \
+		"$(printf '%s' "$API_BODY" | jq -r --arg i "$inside" \
+			'[.events[] | select(.id == $i and .disowned != null)] | length')" 1 || return 1
+	want_eq "and the waiter is not told that about the one before the window" \
+		"$(printf '%s' "$API_BODY" | jq -r --arg i "$before" \
+			'[.events[] | select(.id == $i and .disowned != null)] | length')" 0 || return 1
+	# The mark names its speaker, because "somebody took this back" is not
+	# actionable and "its author took it back" is.
+	want_eq "and the mark says whose word it was" \
+		"$(printf '%s' "$API_BODY" | jq -r --arg i "$inside" \
+			'[.events[] | select(.id == $i) | select(.disowned.subject == "'"$N5_USER_A"'")] | length')" 1 || return 1
 
 	cd "$ROOT/web" || return 1
 	node scripts/disowned-check.mjs "http://127.0.0.1:$N5_PORT_A" "$N5_TOKEN_A" \
@@ -19976,7 +20009,7 @@ check "a reference is a triple everywhere it is drawn, and a wrong segment does 
 	a_reference_is_a_triple_everywhere_it_is_drawn
 check "one place builds a reference, and the pattern that says so can see one" \
 	only_one_place_builds_a_reference
-check "a disowned message says so on the screen, and the one before the window does not" \
+check "a disowned message says so on the screen and to a waiter, and the one before the window does not" \
 	a_disowned_message_says_so_and_the_one_before_it_does_not
 # HERE AND NOT IN PHASE 1, because it needs the one node in this suite with no
 # queue on it. Registered beside the phase-1 console checks first, where recall5

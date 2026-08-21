@@ -203,7 +203,6 @@ func TestTheDeliveryDropsNothingByAccident(t *testing.T) {
 		"project":    "the reader's project is settled before delivery, by the same predicate the room read uses",
 		"private":    "its own comment forbids reading it to answer `may they see it` - by the time it is set that question is answered",
 		"citation":   "NOT dropped: writeInbox inlines the quote into body and puts the exact signed bytes in body_signed",
-		"disowned":   "OPEN QUESTION, not a justification, and it is FILED as 01M0J4FA3K. store.go says `a chat line nobody disowned and one its speaker has taken back must not read the same` - and a delivery cannot tell them apart. Carrying it here ALONE would be worse than dropping it: handleInboxWait never calls FillDisowned, so the field is nil on every waiter event and would render as `not disowned` whether anybody looked or not. The wait handler resolves it first, then this entry comes out.",
 	}
 
 	// EVERY FIELD POPULATED, because an absent value and a dropped one look
@@ -224,6 +223,13 @@ func TestTheDeliveryDropsNothingByAccident(t *testing.T) {
 			Created:   time.Unix(1787305600, 0).UTC(),
 			Artifact:  "01M0HH6ANG7NF6G6X7RKQ4XWSR",
 			Meta:      json.RawMessage(`{"actor_name":"orchestrator"}`),
+			Disowned: &store.Disowned{
+				By:      "01M0J4FA3K2MKYXPPKV0EAN2MA",
+				Subject: "01M05TQ76D8Q4Q6NGBJ0SKT0TB",
+				Reason:  "not me",
+				From:    1,
+				To:      2,
+			},
 		}},
 	})
 
