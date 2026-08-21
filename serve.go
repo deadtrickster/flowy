@@ -192,6 +192,11 @@ func serve(args []string) error {
 		reproBase:  strings.TrimRight(strings.TrimSpace(*repro), "/"),
 	}
 	defer srv.tracer.Close()
+	// The bootstrap operator becomes a row before anything reads one - see
+	// adoptoperator.go. It runs here rather than lazily because everything that
+	// asks "who is the operator" of the STORE (a mention of @operator, the role
+	// the roster draws) would otherwise answer "nobody" on a node that has one.
+	adoptBootstrapOperator(ctx, db, srv.operator)
 	if len(srv.peers) > 0 {
 		log.Printf("peers: %d token holder(s) may push replication deltas here", len(srv.peers))
 	} else {

@@ -85,3 +85,34 @@ func (d *DB) SetRole(ctx context.Context, p *Principal, user, role string) error
 	}
 	return nil
 }
+
+// UsersWithRole is everybody the store says holds a role, ids only.
+//
+// A COUNT WOULD NOT DO. The two callers ask different questions of the same
+// answer - is there exactly one, and which one is it - and a count that says
+// "one" still leaves the second caller a query away. Returning the ids answers
+// both and cannot disagree with itself between two round trips.
+func (d *DB) UsersWithRole(ctx context.Context, role string) ([]string, error) {
+	role = strings.TrimSpace(role)
+	if role == "" {
+		return nil, nil
+	}
+	rows, err := d.sql.QueryContext(ctx, `SELECT id FROM users WHERE role = $1 ORDER BY id`, role)
+	if err != nil {
+		return nil, fmt.Errorf("store: users with role %s: %w", role, err)
+	}
+	defer rows.Close()
+
+	out := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("store: users with role %s: %w", role, err)
+		}
+		out = append(out, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: users with role %s: %w", role, err)
+	}
+	return out, nil
+}

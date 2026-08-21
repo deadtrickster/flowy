@@ -71,7 +71,26 @@ func (d *DB) PrincipalsNamed(ctx context.Context, names []string) (map[string]st
 		   FROM agents a
 		   LEFT JOIN users u ON u.id = a.user_id
 		  WHERE a.kind IS NOT NULL AND lower(a.kind) = ANY($1)
-		    AND coalesce(u.handle, '') = ''`, pq.Array(lowered))
+		    AND coalesce(u.handle, '') = ''
+		 UNION ALL
+		 -- THE ROLE ARM. A role is a name people already use for a person, and
+		 -- on this node it is the one they use most: four seats address the
+		 -- operator as @operator every day and the node resolved none of them,
+		 -- so the ring that says "this is for you" never appeared on the only
+		 -- surface the operator reads. 01M0GGSM99 listed three causes and this
+		 -- was a fourth - measured by seeding one message: @deadtrickster and
+		 -- @orchestrator resolved, @operator did not.
+		 --
+		 -- It is narrowed to roles the store DEFINES, not to any word in the
+		 -- column, so this cannot become a naming scheme by somebody writing a
+		 -- new value into a row. And it feeds the same map as the two arms
+		 -- above, so two operators collide there and the name resolves to
+		 -- neither - which is the rule this file already had, applied to a
+		 -- name that is now allowed to be shared.
+		 SELECT lower(u.role), u.id
+		   FROM users u
+		  WHERE u.role = $2 AND lower(u.role) = ANY($1)`,
+		pq.Array(lowered), RoleOperator)
 	if err != nil {
 		return nil, fmt.Errorf("store: resolve names: %w", err)
 	}

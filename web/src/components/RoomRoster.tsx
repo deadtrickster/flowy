@@ -103,8 +103,25 @@ export function RoomRoster({ presence }: { presence: Presence | null }) {
           <span className="text-muted-foreground text-xs">nobody has spoken yet</span>
         ) : (
           presence.members.map((m) => (
-            <Badge key={m.actor} variant="secondary" style={speakerStyle(named(m))}>
+            <Badge
+              key={m.actor}
+              variant="secondary"
+              data-member={m.actor}
+              data-member-role={m.role || undefined}
+              style={speakerStyle(named(m))}
+            >
               {named(m)}
+              {/*
+                THE ROLE, WHERE THE NAME IS. A mention of @operator resolves to
+                whoever holds the role, and until this the word appeared nowhere
+                on screen: the operator wrote "@operator is not highlighted in
+                the chat" about a name the node had no reason to know, and four
+                seats typed it at them daily. A name that resolves has to be
+                readable somewhere or it is a scheme only the source knows.
+              */}
+              {m.role ? (
+                <span className="pl-1 font-normal text-[10px] opacity-70">{m.role}</span>
+              ) : null}
             </Badge>
           ))
         )}

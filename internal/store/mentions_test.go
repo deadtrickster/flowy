@@ -127,3 +127,90 @@ func TestAnAgentWhosePersonHasAHandleIsNamedByTheHandle(t *testing.T) {
 		t.Fatalf("the handle did not reach the person: %v", found)
 	}
 }
+
+// A ROLE IS A NAME PEOPLE ALREADY USE, and on this node it is the one they use
+// most: four seats write @operator in the room every day.
+//
+// MEASURED 2026-08-21, one seeded message: "@operator and @deadtrickster and
+// @orchestrator" came back resolved as deadtrickster and orchestrator, and
+// @operator resolved to nobody. So the operator's report - "@operator is not
+// highlighted in the chat" - was literally true, and none of the three causes
+// on 01M0GGSM99 were it: the ring works, the reader is known, the name simply
+// was not a name here.
+//
+// THE TEST COUNTS FIRST. The role lives on users.role, which is global to the
+// node rather than scoped to a project, so an operator another test left behind
+// would make this one measure ambiguity while claiming to measure resolution.
+// It refuses on that instead of passing, and it puts both of its own back -
+// otherwise it is a fixture that passes once per database, which is the defect
+// 01M0HJ1M25 was.
+func TestAMentionOfTheRoleResolvesToTheOneWhoHoldsIt(t *testing.T) {
+	ctx, db := open(t)
+
+	var already int
+	if err := db.sql.QueryRowContext(ctx,
+		`SELECT count(*) FROM users WHERE role = $1`, RoleOperator).Scan(&already); err != nil {
+		t.Fatalf("count operators: %v", err)
+	}
+	if already != 0 {
+		t.Fatalf("this database already holds %d operator(s), so a mention of the role "+
+			"is ambiguous before this test does anything - it would measure the wrong arm", already)
+	}
+
+	one := &User{ID: "u-" + ulid.NewString(), Handle: "roleone-" + ulid.NewString()}
+	two := &User{ID: "u-" + ulid.NewString(), Handle: "roletwo-" + ulid.NewString()}
+	for _, u := range []*User{one, two} {
+		if err := db.InsertUser(ctx, u); err != nil {
+			t.Fatalf("insert user: %v", err)
+		}
+	}
+	demote := func(u *User) {
+		if err := db.SetRole(ctx, nil, u.ID, RoleUser); err != nil {
+			t.Errorf("putting %s back to %s: %v", u.Handle, RoleUser, err)
+		}
+	}
+	t.Cleanup(func() { demote(one); demote(two) })
+
+	if err := db.SetRole(ctx, nil, one.ID, RoleOperator); err != nil {
+		t.Fatalf("make an operator: %v", err)
+	}
+
+	got, err := db.PrincipalsNamed(ctx, []string{RoleOperator})
+	if err != nil {
+		t.Fatalf("resolve the role: %v", err)
+	}
+	if got[RoleOperator] != one.ID {
+		t.Fatalf("@%s resolved to %q, want the one operator %s", RoleOperator, got[RoleOperator], one.ID)
+	}
+
+	// AND A SECOND HOLDER MAKES IT NOBODY, which is this file's existing rule
+	// rather than a new one - a name two principals answer to is not a guess
+	// between them. It matters more here than for a handle: handles are unique
+	// in the schema, so the role is the FIRST name that can genuinely be shared.
+	if err := db.SetRole(ctx, nil, two.ID, RoleOperator); err != nil {
+		t.Fatalf("make a second operator: %v", err)
+	}
+	got, err = db.PrincipalsNamed(ctx, []string{RoleOperator})
+	if err != nil {
+		t.Fatalf("resolve the role with two holders: %v", err)
+	}
+	if id, found := got[RoleOperator]; found {
+		t.Fatalf("@%s resolved to %s while two people hold the role", RoleOperator, id)
+	}
+
+	// A ROLE THE STORE DOES NOT DEFINE IS NOT A NAME. The arm is narrowed to
+	// RoleOperator on purpose: without that, writing any word into users.role
+	// would mint a mention, and the naming scheme would be whatever somebody
+	// last typed into a column.
+	if _, err := db.sql.ExecContext(ctx,
+		`UPDATE users SET role = 'archivist' WHERE id = $1`, two.ID); err != nil {
+		t.Fatalf("write an undefined role: %v", err)
+	}
+	got, err = db.PrincipalsNamed(ctx, []string{"archivist"})
+	if err != nil {
+		t.Fatalf("resolve an undefined role: %v", err)
+	}
+	if id, found := got["archivist"]; found {
+		t.Fatalf("a word in the role column became a mention, resolving to %s", id)
+	}
+}

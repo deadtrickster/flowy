@@ -363,7 +363,7 @@ export interface InboxReader {
  * deaf, and dropping the row would have deleted the only record that it had.
  */
 export interface Presence {
-  members: { actor: string; name: string; kind: string }[];
+  members: { actor: string; name: string; kind: string; role?: string }[];
   listeners: {
     principal: string;
     project: string;

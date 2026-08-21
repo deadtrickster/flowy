@@ -732,6 +732,19 @@ type RoomMember struct {
 	Actor string `json:"actor"`
 	Name  string `json:"name"`
 	Kind  string `json:"kind"`
+	// Role is what the store says this person may do, empty for an agent and
+	// for anybody the role column holds nothing for.
+	//
+	// IT IS A SEPARATE FIELD RATHER THAN A THIRD VALUE OF Kind. Kind answers
+	// "person or agent", which the console switches on to draw the badge at
+	// all; folding a role into it would make an operator neither, on a surface
+	// that has no branch for that.
+	//
+	// It is here because a name has to be on screen to be a name. Mentions
+	// resolve @operator to the one person holding the role - see
+	// PrincipalsNamed - and a name the roster never shows is one only the
+	// people who read the source would know to type.
+	Role string `json:"role,omitempty"`
 }
 
 // RoomMembers is who is in the room: every distinct actor of a chat event the
@@ -753,12 +766,13 @@ func (d *DB) RoomMembers(ctx context.Context, p *Principal) ([]*RoomMember, erro
 		            ORDER BY e2.seq_hlc DESC LIMIT 1),
 		          u.handle, '') AS name,
 		        CASE WHEN a2.id IS NOT NULL THEN 'agent' ELSE 'user' END AS kind,
+		        coalesce(u.role, '') AS role,
 		        max(e.seq_hlc) AS last
 		   FROM events e
 		   LEFT JOIN agents a2 ON a2.id = e.actor
 		   LEFT JOIN users u  ON u.id = e.actor
 		  WHERE e.type = `+typeArg+` AND `+filter+`
-		  GROUP BY e.actor, u.handle, a2.id
+		  GROUP BY e.actor, u.handle, u.role, a2.id
 		  ORDER BY e.actor, last DESC`, a.vals...)
 	if err != nil {
 		return nil, fmt.Errorf("store: room members: %w", err)
@@ -769,7 +783,7 @@ func (d *DB) RoomMembers(ctx context.Context, p *Principal) ([]*RoomMember, erro
 	for rows.Next() {
 		m := &RoomMember{}
 		var last int64
-		if err := rows.Scan(&m.Actor, &m.Name, &m.Kind, &last); err != nil {
+		if err := rows.Scan(&m.Actor, &m.Name, &m.Kind, &m.Role, &last); err != nil {
 			return nil, fmt.Errorf("store: room members: %w", err)
 		}
 		out = append(out, m)
