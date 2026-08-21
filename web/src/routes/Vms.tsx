@@ -148,8 +148,13 @@ export function Vms() {
   };
 
   if (!loaded) {
+    // NAMED, like the others. This used to carry data-vm-panel and no state,
+    // which made "still reading" indistinguishable from "rendered with no
+    // state" to anything looking at the attribute - and the node is allowed
+    // twenty seconds for `firecode ps`, so this branch is on screen for
+    // longer than a reader, or a check, would assume.
     return (
-      <div className="p-6" data-vm-panel="">
+      <div className="p-6" data-vm-panel="" data-vm-state="reading">
         <p className="text-muted-foreground text-sm">reading the host…</p>
       </div>
     );
