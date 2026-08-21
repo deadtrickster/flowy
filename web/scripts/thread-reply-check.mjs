@@ -33,6 +33,30 @@ const die = (message, shown = "") => {
   process.exit(1);
 };
 
+// A ROOM OF ITS OWN MEANS SEEDING WHAT IT READS.
+//
+// This check asserts over the messages ALREADY in the room - every one that
+// offers "reply" must also offer "reply in thread" - and against #general that
+// was thousands of somebody else's. 01M0JR5K0D: what it measured depended on
+// what else had run, and a check that reads a shared room is measuring the
+// room.
+//
+// The other three checks moved to private rooms unchanged, because each seeds
+// its own rows or needs none. This one needed a population, so it makes one:
+// two messages, because the assertion is a RELATIONSHIP between two controls
+// and one message can satisfy it by accident of rendering.
+const bearer = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
+for (const body of ["a message to reply to", "and a second, so the pair is not one row's luck"]) {
+  const res = await fetch(`${base}/api/chat/${encodeURIComponent(room)}/say`, {
+    method: "POST",
+    headers: bearer,
+    body: JSON.stringify({ body }),
+  });
+  if (!res.ok) {
+    die(`seeding #${room} answered ${res.status}: ${await res.text()}`);
+  }
+}
+
 const browser = await chromium.launch();
 try {
   const page = await browser.newPage({ viewport: { width: 1500, height: 950 } });

@@ -19,11 +19,18 @@
 # It asserts the send by COUNTING THE ROOM, not by reading the DOM: a send is a
 # row on the node, so the check never has to trust the page about whether one
 # happened.
+#
+# IN ITS OWN ROOM. 01M0JR5K0D: this check used to run against #general, where
+# what it reads is whatever the rest of the suite happened to raise, so it was
+# measuring the room as much as the thing it names. A private room makes the
+# filtered and the full suite ask the same question - which is the property
+# that was missing, and how one of its siblings came to flip in BOTH directions
+# across six runs while a sidebar control was being added.
 
 an_at_offers_names_and_enter_takes_one() {
 	recall
 	cd "$ROOT/web" || return 1
-	node scripts/at-suggest-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" general
+	node scripts/at-suggest-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" atsuggestroom
 }
 
 check "typing @ offers names, and Enter takes one instead of sending" \
