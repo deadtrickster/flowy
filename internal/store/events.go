@@ -185,7 +185,10 @@ func (d *DB) UnreadableParents(ctx context.Context, p *Principal, parents []stri
 type EventQuery struct {
 	Thread string
 	Room   string
-	Type   string
+	// NotRooms excludes rooms from a count or a page that is otherwise
+	// everywhere. See narrow() for why it is not a spelling of Room.
+	NotRooms []string
+	Type     string
 	// Types is any of these types, ORed together and ANDed with the rest. It is
 	// what the activity timeline narrows by: a timeline showing turns and
 	// steers and nothing else is one read, not one read per kind.
@@ -253,6 +256,21 @@ func (q EventQuery) narrow(a *args, alias string) string {
 	for _, actor := range q.NotActors {
 		if actor != "" {
 			where += " AND coalesce(" + alias + ".actor, '') <> " + a.next(actor)
+		}
+	}
+	// NotRooms is the rooms a reader has asked not to be told about - see
+	// ignorerooms.go. It excludes rather than narrowing, which is why it is not
+	// spelled as a Room: Room answers "count this one" and this answers "count
+	// everywhere EXCEPT these", and a caller wanting the second cannot say it
+	// with the first however many times they ask.
+	//
+	// Empty is not a filter. A reader who ignores nothing gets the query they
+	// would have got before this existed, rather than one that excludes the
+	// empty string and quietly drops every event with no room - which is every
+	// direct message.
+	for _, room := range q.NotRooms {
+		if room != "" {
+			where += " AND coalesce(" + alias + ".room, '') <> " + a.next(room)
 		}
 	}
 	return where

@@ -37,6 +37,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -117,6 +118,15 @@ type inboxReaderRequest struct {
 type inboxFilter struct {
 	room      string
 	addressed bool
+	// ignored is the set of rooms this reader has asked not to be told about -
+	// see ignorerooms.go. Resolved once before the delivery loop and handed in,
+	// so every event on one page is judged against one reading of it.
+	//
+	// A nil map is "nothing ignored" and is the right answer for a reader who
+	// has never used the control, which is why this is not a pointer and needs
+	// no second field to say whether it was loaded: the zero value delivers
+	// everything, and delivering too much is the failure a reader can see.
+	ignored map[string]bool
 }
 
 // wakesFor decides whether a message this principal may read is one this waiter
@@ -144,6 +154,20 @@ func wakesFor(p *store.Principal, e *store.Event, want inboxFilter) bool {
 		return false
 	}
 	if want.room != "" && e.Room != want.room {
+		return false
+	}
+	// IGNORED IS A DELIVERY RULE, NOT A PERMISSION RULE, and it sits here with
+	// the other delivery rules for that reason. The reader may still read this
+	// room, may still open it, and may still find this message in it - what
+	// they asked for is not to be TOLD. 01M0GHF3JQ, the operator: "humans close
+	// windows to focus but dont want to miss. what would be a 'real close' is
+	// *ignoring*".
+	//
+	// ASKED-FOR BEATS IGNORED, which is the one case where silence would be
+	// wrong: a wait that names this room is somebody looking AT it, and
+	// answering "nothing" to a direct question because of a standing preference
+	// would be a wrong answer shaped like a quiet room.
+	if want.room == "" && want.ignored[e.Room] {
 		return false
 	}
 	if want.addressed {
@@ -218,6 +242,15 @@ func (s *server) handleInboxWait(w http.ResponseWriter, r *http.Request) {
 	}
 
 	want := inboxFilter{room: q.Get("room"), addressed: boolParam(q.Get("addressed"))}
+	// BEFORE THE LOOP, AND A FAILURE HERE IS NOT AN EMPTY LIST. If the note
+	// cannot be read this refuses rather than delivering as though nothing were
+	// ignored: "you have ignored nothing" and "I could not find out what you
+	// have ignored" are different answers, and the waiter acts on whichever it
+	// is handed without anybody looking.
+	if want.ignored, err = ignoredRooms(r.Context(), s.db, p); err != nil {
+		serverError(w, r, err)
+		return
+	}
 	limit := intParam(q.Get("limit"))
 	at, skipped := reader.Cursor, 0
 	deliver := []*store.Event{}
@@ -503,9 +536,40 @@ func (s *server) handleInboxUnread(w http.ResponseWriter, r *http.Request) {
 				"so a count cannot be both"))
 		return
 	}
+	// AN IGNORED ROOM DOES NOT RAISE A BADGE, which is the half of 01M0GHF3JQ a
+	// reader sees without opening anything.
+	//
+	// THE TWO QUESTIONS THIS DOOR ANSWERS TAKE IT DIFFERENTLY, and the
+	// difference is not a special case - it is what each question means.
+	//
+	//	room=X   "how many in THIS room". A badge. An ignored room's badge is
+	//	         the thing being asked for, so it is zero.
+	//	room=""  "how many anywhere". A total. Ignored rooms are excluded from
+	//	         it, because a total that counts what it will not tell you about
+	//	         is a number nobody can act on.
+	//
+	// It is the opposite of the wait, deliberately: there, naming a room is
+	// somebody LOOKING at it, and answering "nothing" to a direct question
+	// because of a standing preference would be a wrong answer wearing the
+	// shape of a quiet room. Here, naming a room is the badge itself.
+	ignored, err := ignoredRooms(r.Context(), s.db, p)
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	if room != "" && ignored[room] {
+		writeJSON(w, http.StatusOK, map[string]any{"unread": 0, "room": room, "ignored": true})
+		return
+	}
+	skip := make([]string, 0, len(ignored))
+	for name := range ignored {
+		skip = append(skip, name)
+	}
+	sort.Strings(skip) // a stable query, so two identical asks are one plan
 	unread, err := s.db.CountEvents(r.Context(), p, store.EventQuery{
 		Type:      chatEventType,
 		Room:      room,
+		NotRooms:  skip,
 		Private:   direct,
 		Since:     reader.Cursor,
 		NotActors: []string{p.UserID, p.AgentID},

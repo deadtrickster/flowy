@@ -13956,7 +13956,68 @@ check "a third party gets 404 on the task and cannot move it" a_third_party_sees
 # a citation reaching a reader who cannot read what it quotes hands them
 # nothing.
 say "message citations"
+# 01M0GHF3JQ. The operator, after saying something into a room they had closed:
+# "humans close windows to focus but dont want to miss. what would be a 'real
+# close' is *ignoring*". Close is a console fact and delivery never hears about
+# it; ignore is the other axis and the node is the only place it can live,
+# because a waiter, an unread count and a mention are all decided here.
+#
+# BOTH ARMS AND THE CONTROL IS THE SAME MESSAGE ELSEWHERE. A waiter that is
+# handed nothing passes an assertion about absence for free, which is the
+# failure this suite red on today in a security check - so the ignored room's
+# silence is only worth reading beside an open room's delivery in the same page.
+an_ignored_room_stops_telling_you_and_stays_readable() {
+	recall
+	local quiet loud note
+	# B's reader first: a cursor starts where it is created, so anything said
+	# before it exists is behind it and never delivered.
+	api POST "$TOKEN_B" /api/inbox/reader '{"as": "ignore-waiter"}' || return 1
+
+	# B ignores one room and not the other. Written the way the console writes
+	# it - a personal note under the tag the node looks the row up by - because
+	# a check that wrote it some other way would pass while the console's own
+	# row went unread.
+	api POST "$TOKEN_B" /api/artifacts \
+		'{"type": "memory", "kind": "note", "title": "console: rooms I have ignored",
+		  "visibility": "personal", "tags": ["console-ignored-rooms"],
+		  "body": "[\"quietroom\"]"}' || return 1
+	note="$(jqv .id)"
+	[ -n "$note" ] && [ "$note" != null ] || {
+		printf 'the ignored-rooms note came back with no id: %s\n' "$API_BODY" >&2
+		return 1
+	}
+
+	api POST "$TOKEN_A" /api/chat/quietroom/say '{"body": "nobody should be woken for this"}' || return 1
+	quiet="$(jqv .id)"
+	api POST "$TOKEN_A" /api/chat/loudroom/say '{"body": "and this one is the control"}' || return 1
+	loud="$(jqv .id)"
+
+	api GET "$TOKEN_B" "/api/inbox/wait?as=ignore-waiter&window=1" || return 1
+	want_eq "the open room still wakes the waiter" \
+		"$(jqv "[.events[] | select(.id == \"$loud\")] | length")" 1 || return 1
+	want_eq "and the ignored room does not" \
+		"$(jqv "[.events[] | select(.id == \"$quiet\")] | length")" 0 || return 1
+
+	# STILL READABLE, which is the half that separates ignore from leave. The
+	# operator's words are the requirement: they did not want to miss it, they
+	# wanted not to be told.
+	api GET "$TOKEN_B" "/api/chat/quietroom?limit=20" || return 1
+	want_eq "the message is there when B goes looking for it" \
+		"$(jqv "[.events[] | select(.id == \"$quiet\")] | length")" 1 || return 1
+
+	# AND A WAIT THAT NAMES THE ROOM IS SOMEBODY LOOKING AT IT. Answering
+	# "nothing" to a direct question because of a standing preference would be a
+	# wrong answer wearing the shape of a quiet room.
+	api GET "$TOKEN_B" "/api/inbox/wait?as=ignore-waiter&room=quietroom&window=1" || return 1
+	want_eq "asked about that room by name, the waiter is answered" \
+		"$(jqv "[.events[] | select(.id == \"$quiet\")] | length")" 1 || return 1
+	printf 'ignored %s stayed silent and stayed readable; %s in the open room woke the waiter\n' \
+		"$quiet" "$loud"
+}
+
 check "a waiter is handed the quote with the reply" a_waiter_is_handed_the_quote_with_the_reply
+check "an ignored room stops telling you, and stays readable and asked-for" \
+	an_ignored_room_stops_telling_you_and_stays_readable
 check "a citation of a message you cannot read hands over nothing" \
 	a_citation_of_a_message_you_cannot_read_hands_over_nothing
 check "a whole message and a span of one both round-trip" \

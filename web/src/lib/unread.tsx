@@ -102,6 +102,88 @@ export function useRooms(): string[] {
  * about permission moved, which is exactly why this is safe to do from a
  * sidebar without a confirmation.
  */
+/**
+ * The rooms this reader has asked not to be told about.
+ *
+ * A SECOND AXIS AND NOT A SECOND SPELLING OF CLOSE. 01M0GHF3JQ, the operator:
+ * "humans close windows to focus but dont want to miss. what would be a 'real
+ * close' is *ignoring*". Closing takes a room out of the sidebar and changes
+ * nothing about delivery; ignoring stops the badge, the wake and the mention
+ * and leaves the room where it is, readable, in the list.
+ *
+ * The four states are all reachable and none of them collapses into another: a
+ * closed room still counts unread, an ignored room still draws in the sidebar.
+ * Collapsing the two controls into one is the complaint the row is about.
+ *
+ * THE NODE READS THIS LIST, unlike the closed one - see ignorerooms.go. So the
+ * write here is not only a preference, it is what makes the waiter and the
+ * unread door go quiet, and the console is the thing that has to keep the two
+ * in step rather than the source of truth for either.
+ */
+export function useIgnoredRooms() {
+  const [ignored, setIgnored] = useState<string[]>([]);
+  const noteId = useRef("");
+  const read = useRef(false);
+
+  useEffect(() => {
+    let live = true;
+    api
+      .ignoredRooms()
+      .then((answer) => {
+        if (!live) return;
+        noteId.current = answer.id;
+        read.current = true;
+        setIgnored(answer.rooms);
+      })
+      .catch(() => {
+        // Unknown, not empty. Leaving `read` false means the first ignore
+        // reads before it writes, so a failed read cannot file a second note
+        // and split the preference in two.
+      });
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  const write = useCallback(async (next: string[]) => {
+    setIgnored(next);
+    if (!read.current) {
+      try {
+        const answer = await api.ignoredRooms();
+        noteId.current = answer.id;
+        read.current = true;
+      } catch {
+        return;
+      }
+    }
+    try {
+      const row = await api.setIgnoredRooms(noteId.current, next);
+      noteId.current = row.id;
+    } catch {
+      try {
+        const answer = await api.ignoredRooms();
+        noteId.current = answer.id;
+        setIgnored(answer.rooms);
+      } catch {
+        // Nothing to reconcile against; leave what the reader asked for.
+      }
+    }
+  }, []);
+
+  return {
+    ignored,
+    isIgnored: useCallback((room: string) => ignored.includes(room), [ignored]),
+    ignore: useCallback(
+      (room: string) => write(ignored.includes(room) ? ignored : [...ignored, room]),
+      [ignored, write],
+    ),
+    unignore: useCallback(
+      (room: string) => write(ignored.filter((r) => r !== room)),
+      [ignored, write],
+    ),
+  };
+}
+
 export function useRoomList() {
   const [rooms, setRooms] = useState<string[] | null>(null);
   const [hidden, setHidden] = useState<string[]>([]);

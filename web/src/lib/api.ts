@@ -1277,6 +1277,29 @@ export const HIDDEN_ROOMS_TITLE = "console: rooms I have closed";
  */
 export const HIDDEN_ROOMS_TAG = "console-hidden-rooms";
 
+/**
+ * The rooms this reader has asked not to be TOLD about, which is a different
+ * axis from the rooms they have taken out of their sidebar.
+ *
+ * 01M0GHF3JQ, the operator after saying something into a room they had closed:
+ * "humans close windows to focus but dont want to miss. what would be a 'real
+ * close' is *ignoring*".
+ *
+ *   close    not in front of me       sidebar only, delivery untouched
+ *   ignore   do not tell me about it  no badge, no wake, still readable
+ *   leave    I am not a member        a permission act, and the wrong
+ *                                     instrument for either of the first two
+ *
+ * THE NODE READS THIS ONE, and that is the whole reason it is a second note
+ * rather than a flag on the first. Closing is a fact about this browser's
+ * sidebar and nothing else consults it. Ignoring has to stop a delivery - the
+ * waiter that wakes an agent, the unread count, the mention that forces a turn
+ * - and all three are decided on the node. See ignorerooms.go, which finds this
+ * row by the same tag; a check asserts the two spellings agree.
+ */
+export const IGNORED_ROOMS_TITLE = "console: rooms I have ignored";
+export const IGNORED_ROOMS_TAG = "console-ignored-rooms";
+
 export interface AnnouncementFields {
   scope: "node" | "project" | "federation";
   resource?: string;
@@ -2120,6 +2143,50 @@ export const api = {
       return { id: row.id, rooms: [], read: true };
     }
   },
+
+  /**
+   * The ignored list, found by tag exactly as the closed one is - and for the
+   * same reason: a title has to be searched for inside a page, and past a
+   * couple of hundred personal notes the row falls off the end, where "not
+   * found" reads as "you have ignored nothing" and the next write files a
+   * SECOND row.
+   */
+  ignoredRooms: async (): Promise<{ id: string; rooms: string[] }> => {
+    const page = await request<{ artifacts?: Artifact[] }>(
+      `/api/artifacts?type=memory&kind=note&tag=${encodeURIComponent(IGNORED_ROOMS_TAG)}`,
+    );
+    const row = (page.artifacts ?? [])[0];
+    if (!row) return { id: "", rooms: [] };
+    try {
+      const rooms = JSON.parse(row.body || "[]");
+      return {
+        id: row.id,
+        rooms: Array.isArray(rooms) ? rooms.filter((r) => typeof r === "string") : [],
+      };
+    } catch {
+      // An unreadable preference reads as "nothing ignored", which delivers
+      // MORE than was asked for. The opposite default would silence a room on
+      // the strength of a corrupt note, and a reader cannot tell that from a
+      // room where nobody is talking.
+      return { id: row.id, rooms: [] };
+    }
+  },
+
+  /** Write the ignored list back, creating the note the first time. */
+  setIgnoredRooms: (id: string, rooms: string[]) =>
+    request<Artifact>("/api/artifacts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...(id ? { id } : {}),
+        type: "memory",
+        kind: "note",
+        title: IGNORED_ROOMS_TITLE,
+        body: JSON.stringify(rooms),
+        visibility: "personal",
+        tags: [IGNORED_ROOMS_TAG],
+      }),
+    }),
 
   /** Write the closed list back, creating the note the first time. */
   setHiddenRooms: (id: string, rooms: string[]) =>

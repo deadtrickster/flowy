@@ -1,5 +1,7 @@
 import {
   Activity as ActivityIcon,
+  Bell,
+  BellOff,
   Bookmark,
   Boxes,
   Brain,
@@ -26,7 +28,7 @@ import { FreshBanner } from "@/components/FreshBanner";
 import { ResizeHandle } from "@/components/ResizeHandle";
 import { TokenBar } from "@/components/TokenBar";
 import { api } from "@/lib/api";
-import { useRoomList, useUnread } from "@/lib/unread";
+import { useIgnoredRooms, useRoomList, useUnread } from "@/lib/unread";
 import { cn } from "@/lib/utils";
 import { useWaiting } from "@/lib/waiting";
 
@@ -97,6 +99,7 @@ export function Shell({ children }: { children: ReactNode }) {
   const { counts, direct } = useUnread();
   // The node's rooms, not this file's idea of them. See useRooms.
   const { shown: rooms, hidden, close, reopen } = useRoomList();
+  const { isIgnored, ignore, unignore } = useIgnoredRooms();
   // How much is waiting for this principal, for the two rows where "waiting"
   // has an answer that ever reaches zero. lib/waiting holds the reasoning for
   // which rows those are and why the other eleven carry nothing.
@@ -494,7 +497,14 @@ export function Shell({ children }: { children: ReactNode }) {
               >
                 <Hash className="h-4 w-4" />
                 {room}
-                <UnreadDot room={room} n={counts[room] ?? 0} />
+                {/* AN IGNORED ROOM DRAWS NO BADGE, and the node agrees rather
+                    than only the console: /api/inbox/unread answers 0 for a
+                    room on this list, so the two cannot disagree while a
+                    reader is looking at them. Suppressed here as well because
+                    the count in hand was read before the click and a reader
+                    should not watch a badge they just silenced sit there until
+                    the next poll. */}
+                <UnreadDot room={room} n={isIgnored(room) ? 0 : (counts[room] ?? 0)} />
               </NavLink>
               {/*
                 CLOSE, and it is deliberately not "leave". Leaving is a
@@ -508,6 +518,46 @@ export function Shell({ children }: { children: ReactNode }) {
                 Shown on hover so a list of thirty rooms is not a list of thirty
                 buttons, and titled rather than labelled for the same reason.
               */}
+              {/*
+                IGNORE, WHICH IS NOT CLOSE AND NOT LEAVE. 01M0GHF3JQ, the
+                operator: "humans close windows to focus but dont want to miss.
+                what would be a 'real close' is *ignoring*".
+
+                  close    not in front of me       sidebar only
+                  ignore   do not tell me about it  no badge, no wake, still
+                                                    in the list and still
+                                                    readable
+                  leave    I am not a member        a permission act
+
+                Beside close rather than replacing it, because the two are
+                different axes and a reader wants both: a room can be closed
+                and still shout, or sit in the sidebar and stay quiet. One
+                control for two states is the collapse this row is about.
+
+                It draws the state it is IN rather than the action it performs
+                - a struck bell means "you are not being told" - because the
+                row already reads as a list of rooms rather than a list of
+                verbs, and a reader scanning for the quiet ones is scanning for
+                a state.
+              */}
+              <button
+                type="button"
+                data-ignore-room={room}
+                data-ignored={isIgnored(room) ? "" : undefined}
+                title={
+                  isIgnored(room)
+                    ? `${room} is ignored - no badge and nothing wakes you. Click to hear it again`
+                    : `ignore ${room} - it stays in the list and stays readable, and stops telling you`
+                }
+                aria-label={isIgnored(room) ? `stop ignoring ${room}` : `ignore ${room}`}
+                className={cn(
+                  "absolute right-7 rounded p-1 hover:bg-muted hover:text-foreground hover:opacity-100",
+                  isIgnored(room) ? "text-primary opacity-100" : "text-muted-foreground opacity-40",
+                )}
+                onClick={() => void (isIgnored(room) ? unignore(room) : ignore(room))}
+              >
+                {isIgnored(room) ? <BellOff className="h-3 w-3" /> : <Bell className="h-3 w-3" />}
+              </button>
               <button
                 type="button"
                 data-close-room={room}
