@@ -40,8 +40,12 @@ const bearer = { Authorization: `Bearer ${token}` };
 // Takes a second argument on purpose: the sentence, and then what was on the
 // screen when it was false. A failure that only says "no badge" makes the next
 // person open a browser to find out what there WAS instead.
-const die = (message, shown = "") => {
+// die CLEARS BEFORE IT EXITS, and every call site awaits it: process.exit does
+// not run a finally block, so without this the runs that leave a claimed row on
+// somebody's board are exactly the failing ones.
+const die = async (message, shown = "") => {
   console.error(shown ? `${message}\n${shown}` : message);
+  await clearRaised();
   process.exit(1);
 };
 
@@ -54,8 +58,37 @@ const json = async (path, init = {}) => {
       ...init.headers,
     },
   });
-  if (!answer.ok) die(`${init.method ?? "GET"} ${path} answered ${answer.status}`);
+  if (!answer.ok) await die(`${init.method ?? "GET"} ${path} answered ${answer.status}`);
   return answer.json();
+};
+
+// THE ROW THIS CHECK FILES AND CLAIMS, so it can take it off the board again.
+//
+// It is the worst of the fixtures to leave behind: it is CLAIMED, so it lands in
+// mine_todo and the board nag reports it as work waiting for whoever ran the
+// check, forever. On the gate the database dies with the run; against a live
+// node - which is how a seat verifies a landing - it stays. Measured on the
+// dogfood board 2026-08-21: three fixture rows from two other checks, one of
+// them six hours old.
+//
+// By id, and reported rather than swallowed: fetch does not throw on a 4xx, so a
+// cleanup that fails quietly makes the board look tidy in the one place somebody
+// would check.
+let raisedRow = "";
+const clearRaised = async () => {
+  if (!raisedRow) return;
+  const res = await fetch(`${base}/api/artifact/${encodeURIComponent(raisedRow)}/status`, {
+    method: "POST",
+    headers: { ...bearer, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      status: "done",
+      // The node refuses a close with nothing said - "a row closed with nothing
+      // said reads in a week exactly like one closed with a measurement" - so
+      // the fixture says what it was.
+      note: "closed by rail-act-check: a fixture this check filed and claimed, cleaned up so the nag does not report it as work waiting",
+    }),
+  }).catch((err) => ({ ok: false, status: String(err) }));
+  if (!res.ok) console.error(`could not clear the fixture ${raisedRow}: ${res.status}`);
 };
 
 const before = (await json("/api/nag")).mine_todo;
@@ -69,7 +102,8 @@ const filed = await json(`/api/chat/${encodeURIComponent(room)}/todo`, {
 // fallbacks is how a check keeps passing after the shape it depends on moved,
 // having quietly picked up something else.
 const id = filed.item?.id;
-if (!id) die(`filing a todo answered without item.id: ${JSON.stringify(filed)}`);
+if (!id) await die(`filing a todo answered without item.id: ${JSON.stringify(filed)}`);
+raisedRow = id;
 
 // "me", NOT A HANDLE THIS FILE WORKED OUT. mine_todo compares the assignee
 // against store.seatHandle - the caller's users.handle - and a check that
@@ -84,7 +118,7 @@ await json(`/api/todo/${encodeURIComponent(id)}/assignee`, {
 
 const expected = (await json("/api/nag")).mine_todo;
 if (expected !== before + 1) {
-  die(`the node did not count the claimed row: mine_todo was ${before}, is ${expected}, and the
+  await die(`the node did not count the claimed row: mine_todo was ${before}, is ${expected}, and the
 check has nothing to look for in the sidebar. The row is ${id}, claimed as "me" -
 a seat with no users.handle cannot be resolved and the claim stays the literal
 word, which is the one way this fails without the console being involved.`);
@@ -103,7 +137,7 @@ try {
     .locator("[data-room-list]")
     .waitFor({ state: "visible", timeout: 20_000 })
     .catch(() => {});
-  if (crashes.length > 0) die(`the shell threw: ${crashes.join("; ")}`);
+  if (crashes.length > 0) await die(`the shell threw: ${crashes.join("; ")}`);
 
   // WAITED FOR, NOT READ AT ONCE. The counts arrive from two fetches after the
   // first paint, so reading the DOM the moment the room list appears is reading
@@ -117,7 +151,7 @@ try {
       .first()
       .innerText()
       .catch(() => "");
-    die(
+    await die(
       `the node says ${expected} row(s) are waiting for this seat and the todos row carries no
 badge. The rail reads:`,
       rail,
@@ -125,7 +159,7 @@ badge. The rail reads:`,
   }
   const shown = Number(await todos.first().getAttribute("data-waiting-count"));
   if (shown !== expected) {
-    die(`the todos badge says ${shown} and the node says ${expected} - the rail is counting
+    await die(`the todos badge says ${shown} and the node says ${expected} - the rail is counting
 something other than /api/nag's mine_todo, which is the number the board nag
 reports and the one the operator sees in two places.`);
   }
@@ -154,18 +188,18 @@ reports and the one the operator sees in two places.`);
   if (openTasks > 0) {
     await inboxBadge.waitFor({ state: "visible", timeout: 20_000 }).catch(() => {});
     if ((await inboxBadge.count()) === 0) {
-      die(`the node says ${openTasks} open task(s) are waiting for this seat and the inbox row
+      await die(`the node says ${openTasks} open task(s) are waiting for this seat and the inbox row
 carries no badge - either /api/inbox/tasks?state=open is not being read, or its
 failure is being drawn as "nothing waiting" rather than as nothing at all.`);
     }
     const inboxShown = Number(await inboxBadge.first().getAttribute("data-waiting-count"));
     if (inboxShown !== openTasks) {
-      die(`the inbox badge says ${inboxShown} and the node says ${openTasks} open - the rail is
+      await die(`the inbox badge says ${inboxShown} and the node says ${openTasks} open - the rail is
 counting tasks in some other state, and delegated work is somebody else's turn.`);
     }
   } else if ((await inboxBadge.count()) > 0) {
     const said = await inboxBadge.first().getAttribute("data-waiting-count");
-    die(`no task is open for this seat and the inbox row carries a badge saying ${said} - a rail
+    await die(`no task is open for this seat and the inbox row carries a badge saying ${said} - a rail
 badge that does not clear is the one thing this whole design is against.`);
   }
 
@@ -197,7 +231,7 @@ badge that does not clear is the one thing this whole design is against.`);
   for (const href of bare) {
     const link = page.locator(`nav a[href="${href}"]`);
     if ((await link.count()) === 0) {
-      die(`the rail has no ${href} row, so this check is asserting about a sidebar that changed
+      await die(`the rail has no ${href} row, so this check is asserting about a sidebar that changed
 under it - fix the list in this file rather than deleting the assertion.`);
     }
     if ((await link.locator("[data-waiting]").count()) > 0) {
@@ -218,7 +252,7 @@ under it - fix the list in this file rather than deleting the assertion.`);
     await page.waitForTimeout(250);
   }
   if (dmUnread === null) {
-    die(`the console never declared its console-dm reader, so the direct row cannot carry a
+    await die(`the console never declared its console-dm reader, so the direct row cannot carry a
 number and nothing said so. See lib/unread: the label is declared on the first
 refresh, beside the one per room.`);
   }
@@ -226,28 +260,30 @@ refresh, beside the one per room.`);
   if (dmUnread > 0) {
     await dmBadge.waitFor({ state: "visible", timeout: 20_000 }).catch(() => {});
     if ((await dmBadge.count()) === 0) {
-      die(`the node says ${dmUnread} direct message(s) are unread and the direct row carries no
+      await die(`the node says ${dmUnread} direct message(s) are unread and the direct row carries no
 badge - either the count is not being read or its failure is being drawn as
 "nothing waiting" rather than as nothing at all.`);
     }
     const shown = Number(await dmBadge.first().getAttribute("data-waiting-count"));
     if (shown !== dmUnread) {
-      die(`the direct badge says ${shown} and the node says ${dmUnread} unread.`);
+      await die(`the direct badge says ${shown} and the node says ${dmUnread} unread.`);
     }
   } else if ((await dmBadge.count()) > 0) {
     const said = await dmBadge.first().getAttribute("data-waiting-count");
-    die(`no direct message is unread and the row carries a badge saying ${said} - a rail badge
+    await die(`no direct message is unread and the row carries a badge saying ${said} - a rail badge
 that does not clear is the one thing this whole design is against.`);
   }
 
   if (wrong.length > 0) {
-    die(`${wrong.join(", ")} carry a badge. A rail badge is a claim that work is waiting for
+    await die(`${wrong.join(", ")} carry a badge. A rail badge is a claim that work is waiting for
 this person and clears when they do it; a count of how many rows exist never
 clears, and standing next to one that does it costs the reader both. If one of
 these genuinely became waiting-for-you - a read mark per list would do it - then
 say so here and move it out of the list.`);
   }
 } finally {
+  // In the finally as well as in die: a crash that is neither still filed a row.
+  await clearRaised();
   await browser.close();
 }
 console.log("the rail counts what is waiting and nothing else");
