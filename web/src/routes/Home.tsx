@@ -50,6 +50,35 @@ export function Home() {
             reachable only from a terminal until now. */}
         <SpreadCard />
 
+        {/*
+          THE WAY IN TO THE VMs, HERE RATHER THAN IN THE RAIL.
+
+          It belongs in the rail and cannot go there yet. The rail is at its
+          height budget: measured on this tree, master plus a fourteenth
+          top-level link fails two sidebar checks at 1400x900 - the document
+          starts scrolling, and the room-close control stops being clickable.
+          Both pass on master and both fail with the link alone, so it is the
+          row count and not this feature. 01M0K4MPHQ carries the measurement.
+
+          A page nothing links to is a page nobody finds, which is the failure
+          this console already has one example of, so the link goes where it
+          costs no rail height: this page scrolls, and one more card is free.
+          It moves to the rail when the rail can afford a row.
+        */}
+        <Card>
+          <CardHeader>
+            <CardTitle>
+              <Link className="hover:underline" data-home-vms="" to="/vms">
+                VMs
+              </Link>
+            </CardTitle>
+            <CardDescription>
+              start an agent in a firecracker VM over a copy of a project, read what it printed, and
+              send it another turn. The operator's, and it says so plainly to anyone else.
+            </CardDescription>
+          </CardHeader>
+        </Card>
+
         <Card>
           <CardHeader>
             <CardTitle>open a room</CardTitle>
