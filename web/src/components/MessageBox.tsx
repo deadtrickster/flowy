@@ -6,6 +6,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { type Citation, api } from "@/lib/api";
+import { atFragment, matchNames, useRoster } from "@/lib/atname";
+import { useSession } from "@/lib/session";
 
 interface Props {
   /**
@@ -77,6 +79,55 @@ export function MessageBox({ citation, clearReply, disabled, onSend, quote, room
   // element is still disabled at that point and focus() on a disabled element
   // is a no-op. It waits for the render that re-enables it.
   const box = useRef<HTMLTextAreaElement>(null);
+
+  // THE NAMES AN @ CAN MEAN, from the node's own roster. See lib/atname: a
+  // mention that does not resolve is prose, so this list is not decoration, it
+  // is the difference between addressing somebody and appearing to.
+  const { token } = useSession();
+  const { names } = useRoster(token);
+  // The @word the caret is inside, recomputed on every draft or caret move.
+  // Held rather than derived at render because the CARET is not state React
+  // knows about - a selection change with no text change still moves it.
+  const [at, setAt] = useState<{ fragment: string; from: number; to: number } | null>(null);
+  // Which suggestion the arrow keys are on. Reset whenever the fragment moves,
+  // so a list that reorders under the cursor cannot leave it pointing at a name
+  // the reader is no longer looking at.
+  const [pick, setPick] = useState(0);
+
+  const shown = at ? matchNames(names, at.fragment).slice(0, 6) : [];
+  const offering = shown.length > 0 && at !== null;
+
+  /** Where the caret is now, asked of the element rather than remembered. */
+  const lookAt = (el: HTMLTextAreaElement | null) => {
+    if (!el) return;
+    const found = atFragment(el.value, el.selectionStart ?? 0);
+    setAt(found);
+    setPick(0);
+  };
+
+  /**
+   * Put the chosen name in, replacing the fragment, and leave the caret after a
+   * trailing space so the next word is a word.
+   *
+   * SPLICED BY THE OFFSETS CAPTURED WITH THE FRAGMENT, not by searching the
+   * draft for the @ again: by the time this runs the text may have moved, and
+   * a second search would find a different @ in a message with two of them.
+   */
+  const choose = (name: string) => {
+    if (!at) return;
+    const next = `${draft.slice(0, at.from)}@${name} ${draft.slice(at.to)}`;
+    const caret = at.from + name.length + 2;
+    setDraft(next);
+    setAt(null);
+    setPick(0);
+    // After React writes the value, put the caret back where the writer is.
+    requestAnimationFrame(() => {
+      const el = box.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(caret, caret);
+    });
+  };
   const picker = useRef<HTMLInputElement>(null);
   const wasSending = useRef(false);
   useEffect(() => {
@@ -191,6 +242,34 @@ export function MessageBox({ citation, clearReply, disabled, onSend, quote, room
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    // THE LIST TAKES THE KEYS FIRST, and Enter is the one that matters: this
+    // box SENDS on Enter, so an open suggestion list that let Enter through
+    // would send a half-typed name the moment somebody tried to accept one -
+    // and a half-typed name resolves to nobody, which is exactly the failure
+    // the suggestions exist to prevent. Escape closes without choosing, so the
+    // list can never trap a writer who wants a literal @word.
+    if (offering) {
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        setPick((n) => (n + 1) % shown.length);
+        return;
+      }
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        setPick((n) => (n - 1 + shown.length) % shown.length);
+        return;
+      }
+      if (event.key === "Enter" || event.key === "Tab") {
+        event.preventDefault();
+        choose(shown[pick]?.name ?? "");
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setAt(null);
+        return;
+      }
+    }
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       void send();
@@ -233,11 +312,59 @@ export function MessageBox({ citation, clearReply, disabled, onSend, quote, room
         className="h-8 text-xs"
       />
 
+      {/*
+        THE LIST SITS ABOVE THE BOX, not below it: the composer is already at
+        the bottom of the room, so a list underneath would open off-screen or
+        push the box down under the writer's hands mid-sentence.
+
+        Rendered only while there is something to offer - an @ with no matches
+        shows nothing rather than an empty panel, because "no such person" is
+        already said by the name staying plain when the message lands.
+      */}
+      {offering ? (
+        <div
+          data-at-suggestions
+          className="flex flex-col gap-0.5 rounded-md border border-border bg-popover p-1"
+        >
+          {shown.map((n, i) => (
+            <button
+              key={n.name}
+              type="button"
+              data-at-name={n.name}
+              data-at-picked={i === pick ? "" : undefined}
+              // onMouseDown, not onClick: the textarea's onBlur clears the list,
+              // and blur fires before click - so a click would land on a list
+              // that had already gone. mousedown runs first and preventDefault
+              // keeps the focus in the box where the caret is.
+              onMouseDown={(event) => {
+                event.preventDefault();
+                choose(n.name);
+              }}
+              className={`flex items-center gap-2 rounded px-2 py-1 text-left text-sm ${
+                i === pick ? "bg-accent text-accent-foreground" : "hover:bg-accent/60"
+              }`}
+            >
+              <span className="font-medium">@{n.name}</span>
+              <span className="text-muted-foreground text-xs">{n.kind}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+
       <Textarea
         ref={box}
         value={draft}
         disabled={disabled || sending}
-        onChange={(event) => setDraft(event.target.value)}
+        onChange={(event) => {
+          setDraft(event.target.value);
+          lookAt(event.target);
+        }}
+        // A CARET MOVE IS NOT A TEXT CHANGE. Clicking into the middle of an
+        // @word, or arrowing back into one, changes what is being typed without
+        // changing the string - onChange never fires and the list would go on
+        // offering names for a fragment the caret has left.
+        onSelect={(event) => lookAt(event.currentTarget)}
+        onBlur={() => setAt(null)}
         onKeyDown={onKeyDown}
         onPaste={onPaste}
         placeholder={disabled ? "paste a token to say something" : "say something…"}
