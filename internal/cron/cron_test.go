@@ -34,6 +34,13 @@ func TestFebruaryHasNoThirtieth(t *testing.T) {
 	if !strings.Contains(err.Error(), "February") {
 		t.Errorf("the refusal does not name the month, so it does not say what to change: %v", err)
 	}
+	// The sentence has to be right as well as the verdict: February ends on
+	// the 29th, which is exactly why the 30th is refused and the 29th is
+	// not. Without this the reason is unchecked and can drift to 28 while
+	// every verdict stays correct - a negative control found that hole.
+	if !strings.Contains(err.Error(), "February has 29 days") {
+		t.Errorf("the refusal gives February the wrong length, so it explains the refusal wrongly: %v", err)
+	}
 	if _, err := Parse("0 0 31 4 *"); err == nil {
 		t.Error("April 31st was accepted")
 	}

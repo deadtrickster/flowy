@@ -221,9 +221,16 @@ func neverWhy(s *Spec) string {
 	return "can never fire: no day it names occurs in any month it names (" + strings.Join(dead, ", ") + ")"
 }
 
-// maxDayIn is the longest that month can be. February is 29 because leap years
-// exist and `0 0 29 2 *` is a spec that fires - a checker that writes 28 here
-// rejects a working schedule, which is the failure this package must not have.
+// maxDayIn is the longest that month can be. It is REASON-ONLY: nothing decides
+// with it. Reachability is a scan over real dates, so a wrong number here gives
+// a wrong SENTENCE rather than a wrong verdict - and that distinction is worth
+// stating, because the obvious reading of this function is that it IS the
+// check, and a negative control proved it is not: setting February to 28 left
+// every test passing until the reason itself was asserted.
+//
+// February is 29 because leap years exist and `0 0 29 2 *` fires. Writing 28
+// here refuses the 30th while telling a person February ends on the 28th - the
+// wrong reason for the right answer.
 func maxDayIn(m time.Month) int {
 	switch m {
 	case time.February:
