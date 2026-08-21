@@ -206,10 +206,25 @@ func chatRead(ctx context.Context, m *mcpServer, p *store.Principal, raw json.Ra
 	if err != nil {
 		return nil, err
 	}
+	// HOW LONG EACH THREAD ON THIS PAGE IS, keyed by thread id. An agent reads
+	// a bounded window exactly as the console does, so it has the same reason
+	// to be told and the same inability to work it out: counting the thread ids
+	// it can see answers "how much of this thread is on my page", which is not
+	// the question. Measured in #general on the dogfood node: 40 messages, 40
+	// distinct threads, and every seat talking past every other one.
+	threads := make([]string, 0, len(list))
+	for _, e := range list {
+		threads = append(threads, e.Thread)
+	}
+	sizes, err := m.db.ThreadSizes(ctx, p, threads, chatEventType, false)
+	if err != nil {
+		return nil, err
+	}
 	return map[string]any{
 		"room":      room,
 		"events":    list,
 		"reactions": reactions,
+		"threads":   sizes,
 		"cursor":    strconv.FormatInt(cursor, 10),
 		"before":    strconv.FormatInt(older, 10),
 	}, nil

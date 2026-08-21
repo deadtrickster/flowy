@@ -7229,6 +7229,23 @@ a_thread_can_be_answered_where_it_is_read() {
 	node scripts/thread-answer-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A"
 }
 
+# THE TRANSCRIPT SAYS A MESSAGE HAS REPLIES, HOW MANY, AND OPENS THE THREAD.
+#
+# The other half of the same complaint - "impossible to track things here" - and
+# the half about READING rather than writing. A thread that can be answered but
+# is invisible in the room is still a conversation nobody can follow, which is
+# what #general was: 40 messages, 40 threads, none of them longer than one.
+#
+# The number is the node's, over the whole log, and the fixture is built to
+# catch the fold that would look right in every ordinary case: the console holds
+# a sixty-message window, so the check pushes the start of the thread out of it
+# and asserts the count is still four. A count taken from the screen would say
+# two, on a page where nothing looks wrong.
+the_transcript_counts_a_thread() {
+	cd "$ROOT/web" || return 1
+	node scripts/thread-count-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A"
+}
+
 # THE CONSOLE ON A PHONE, and unchanged on a desk.
 #
 # The operator, on their phone: "can open general room because not enough
@@ -13296,6 +13313,8 @@ check "the console is usable on a phone, and unchanged on a desk" \
 	the_console_works_on_a_phone
 check "a thread can be answered from the pane that shows it" \
 	a_thread_can_be_answered_where_it_is_read
+check "the transcript says how many replies a thread has, from the node's count" \
+	the_transcript_counts_a_thread
 check "the left and right columns can be dragged, keep their floors, and remember" \
 	the_columns_can_be_dragged
 check "the panel sets and overrides one, in a browser, and a poll does not wipe it" \

@@ -111,6 +111,17 @@ export function ChatRoom() {
    * reader is looking at every time they scroll up.
    */
   const [reactions, setReactions] = useState<Record<string, Reaction[]>>({});
+  /**
+   * How long each thread on the page is, as the node counted it. Merged rather
+   * than replaced on every page, exactly like the reactions above: scrolling
+   * back brings counts for threads that are no longer in the newest window, and
+   * a reader who has both pages on screen wants both numbers.
+   *
+   * A thread missing from here is drawn as nothing at all. See ChatPage.threads
+   * - absent is "not counted", and turning it into a zero would put a number on
+   * screen that nobody worked out.
+   */
+  const [threadSizes, setThreadSizes] = useState<Record<string, number>>({});
   // What a reply attaches to and what it cites: the selected message, whole, or
   // the span of it somebody selected with the mouse. Selecting a message has
   // always named it as the parent here; now the reply says so on its face.
@@ -414,6 +425,7 @@ export function ChatRoom() {
         await api.react(room, message, emoji, on);
         const page = await api.roomWindow(room, CHAT_WINDOW);
         setReactions((current) => ({ ...current, ...(page.reactions ?? {}) }));
+        setThreadSizes((current) => ({ ...current, ...(page.threads ?? {}) }));
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       }
@@ -450,6 +462,7 @@ export function ChatRoom() {
   useEffect(() => {
     setEvents([]);
     setReactions({});
+    setThreadSizes({});
     clear();
     setLive(false);
     setError(null);
@@ -480,6 +493,7 @@ export function ChatRoom() {
         if (stopped) return;
         setEvents(page.events);
         setReactions(page.reactions ?? {});
+        setThreadSizes(page.threads ?? {});
         // Short of the window means the whole room fits on screen, so there is
         // nothing older to offer and the transcript says where it begins.
         older.current.before = page.before ?? 0;
@@ -507,6 +521,11 @@ export function ChatRoom() {
           // the next time anybody speaks.
           if (page.reactions) {
             setReactions((current) => ({ ...current, ...page.reactions }));
+          }
+          // And the thread counts with them: a reply is the event that wakes
+          // this poll, and the count it changed is the one on screen.
+          if (page.threads) {
+            setThreadSizes((current) => ({ ...current, ...page.threads }));
           }
           // Advance on every successful return, not only when something landed
           // on screen. The server answers `seq_hlc > cursor`, so a cursor that
@@ -589,6 +608,9 @@ export function ChatRoom() {
       if (page.reactions) {
         setReactions((current) => ({ ...current, ...page.reactions }));
       }
+      if (page.threads) {
+        setThreadSizes((current) => ({ ...current, ...page.threads }));
+      }
       older.current.before = page.before ?? 0;
       setMoreOlder(page.events.length >= CHAT_WINDOW && (page.before ?? 0) > 0);
     } catch (err) {
@@ -659,7 +681,50 @@ export function ChatRoom() {
   const seen = useCallback((through: string) => markRead(room, through), [room, markRead]);
 
   const thread = selected?.thread ?? events.at(-1)?.thread;
-  const threadEvents = thread ? events.filter((event) => event.thread === thread) : [];
+  /**
+   * THE THREAD, FROM THE LOG, not from the page of the room on screen.
+   *
+   * It was `events.filter(e => e.thread === thread)`, and that is only the
+   * thread when the whole thread happens to be inside the sixty-message window
+   * the room opens on. A conversation older than the window was drawn from its
+   * middle - opening line absent, nothing saying it was absent - which is the
+   * same window-as-the-world mistake the reply counts had, in the pane the
+   * counts are there to send people to. Measured by thread-count-check: it opens
+   * a thread whose root is sixty-one messages back and looks for the root.
+   *
+   * The fetched thread and the window are MERGED rather than one replacing the
+   * other, and the direction matters: a reply typed here appears in `events`
+   * immediately and would otherwise sit invisible until this read came round
+   * again.
+   */
+  const [threadPage, setThreadPage] = useState<FlowyEvent[]>([]);
+  useEffect(() => {
+    if (!thread) {
+      setThreadPage([]);
+      return;
+    }
+    let stopped = false;
+    api
+      .roomThread(room, thread)
+      .then((page) => {
+        if (!stopped) setThreadPage(page.events);
+      })
+      .catch(() => {
+        // Left to the window. A thread that could not be read is a pane drawn
+        // from what is on screen - which is what it was before this existed -
+        // and the room's own error line already carries an unreachable node.
+        if (!stopped) setThreadPage([]);
+      });
+    return () => {
+      stopped = true;
+    };
+  }, [room, thread]);
+  const threadEvents = thread
+    ? merge(
+        threadPage.filter((event) => event.thread === thread),
+        events.filter((event) => event.thread === thread),
+      )
+    : [];
 
   /**
    * ANSWERING THE THREAD, from the pane that shows it.
@@ -824,6 +889,7 @@ export function ChatRoom() {
           loadingOlder={loadingOlder}
           room={room}
           reactions={reactions}
+          threads={threadSizes}
           onReact={react}
         />
 

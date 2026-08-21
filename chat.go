@@ -803,14 +803,14 @@ func (s *server) handleChatRead(w http.ResponseWriter, r *http.Request) {
 			serverError(w, r, err)
 			return
 		}
-		writeChatEvents(w, room, since, list, s.reactionsFor(r, list))
+		writeChatEvents(w, room, since, list, s.reactionsFor(r, list), s.threadsFor(r, list))
 	case "recent":
 		list, err := s.readRoomBefore(r, room, q.Get("thread"), before, intParam(q.Get("limit")))
 		if err != nil {
 			serverError(w, r, err)
 			return
 		}
-		writeChatWindow(w, room, before, list, s.reactionsFor(r, list))
+		writeChatWindow(w, room, before, list, s.reactionsFor(r, list), s.threadsFor(r, list))
 	default:
 		writeJSON(w, http.StatusBadRequest, errorBody("order must be log or recent"))
 	}
@@ -849,7 +849,7 @@ func (s *server) handleChatWait(w http.ResponseWriter, r *http.Request) {
 		serverError(w, r, err)
 		return
 	}
-	writeChatEvents(w, room, cursor, list, s.reactionsFor(r, list))
+	writeChatEvents(w, room, cursor, list, s.reactionsFor(r, list), s.threadsFor(r, list))
 }
 
 // pollUntil is the watcher loop, and there is one of it. It calls look until
@@ -1094,7 +1094,7 @@ func roomBefore(
 // window filled its limit or it did not.
 func writeChatWindow(
 	w http.ResponseWriter, room string, before int64,
-	list []*store.Event, reactions map[string][]store.Reaction,
+	list []*store.Event, reactions map[string][]store.Reaction, threads map[string]int,
 ) {
 	cursor, older := chatWindowEnds(before, list)
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -1105,6 +1105,7 @@ func writeChatWindow(
 		"before":    older,
 		"project":   roomProjectOf(list),
 		"reactions": reactions,
+		"threads":   threads,
 	})
 }
 
@@ -1126,7 +1127,7 @@ func chatWindowEnds(before int64, list []*store.Event) (cursor, older int64) {
 // client never has to know that the cursor is a packed clock reading.
 func writeChatEvents(
 	w http.ResponseWriter, room string, since int64,
-	list []*store.Event, reactions map[string][]store.Reaction,
+	list []*store.Event, reactions map[string][]store.Reaction, threads map[string]int,
 ) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"room":   room,
@@ -1145,7 +1146,49 @@ func writeChatEvents(
 		// receives, and the two would have to agree forever. The console joins
 		// on the id it already has.
 		"reactions": reactions,
+		// HOW BIG EACH THREAD ON THIS PAGE IS, keyed by thread id and beside
+		// the events for the same reason the reactions are: it is a fold of the
+		// log, not a property of the row that replicates.
+		//
+		// It is here because the client cannot compute it. The console holds a
+		// window of the room, so a count taken from what is on screen is a
+		// number that is wrong whenever the thread is older than the window -
+		// and wrong in the direction nobody checks, since a reader shown a
+		// number stops asking.
+		"threads": threads,
 	})
+}
+
+// threadsFor is how long each thread on a page is, as this reader sees it.
+//
+// The same shape as reactionsFor below and for the same three reasons: one
+// query per page rather than one per message, keyed beside the events rather
+// than hung on them, and a failure that is logged and dropped rather than
+// failing the read. The messages are the answer; a transcript that will not
+// paint because a count could not be taken is worse than one that paints with
+// no counts.
+//
+// The DIFFERENCE from reactions is what a missing key means, and it matters
+// enough to say twice: no reactions on a message is drawn as no reactions,
+// which is right, and no COUNT for a thread must not be drawn as "0 replies".
+// Every thread here came off a message on this page, so it has at least that
+// message in it - a zero would be arithmetic nobody did. Absent is absent, and
+// the console draws nothing.
+func (s *server) threadsFor(r *http.Request, list []*store.Event) map[string]int {
+	if len(list) == 0 {
+		return map[string]int{}
+	}
+	threads := make([]string, 0, len(list))
+	for _, e := range list {
+		threads = append(threads, e.Thread)
+	}
+	p := principalOf(r)
+	sizes, err := s.db.ThreadSizes(r.Context(), p, threads, chatEventType, scopeAll(r, p))
+	if err != nil {
+		log.Printf("threads: could not count a page of %s: %v", r.URL.Path, err)
+		return map[string]int{}
+	}
+	return sizes
 }
 
 // reactionsFor is what is on a page of messages, as this reader sees it.

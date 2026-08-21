@@ -59,6 +59,17 @@ interface Props {
    * button.
    */
   onReact?: (message: string, emoji: string, on: boolean) => void;
+  /**
+   * How many messages each thread on this page holds, keyed by thread id, as
+   * the NODE counted them - see ChatPage.threads. Not derived from `events`,
+   * and that is the point: this list holds a window of the room, so a thread
+   * older than the window would be undercounted by exactly the part a reader
+   * cannot see.
+   *
+   * A thread with no entry is drawn as no entry. Absent is "not counted", not
+   * "no replies".
+   */
+  threads?: Record<string, number>;
 }
 
 /**
@@ -105,6 +116,7 @@ export function MessageList({
   loadingOlder,
   room,
   reactions,
+  threads,
   onReact,
 }: Props) {
   // Whether an id is the person reading or the agent working for them, which
@@ -663,7 +675,61 @@ export function MessageList({
                     cite
                   </button>
                   <span>#{shortId(event.id)}</span>
-                  <span>thread {shortId(event.thread)}</span>
+                  {/*
+                    THE THREAD, AS A DOOR RATHER THAN A LABEL.
+
+                    It was a plain span, and the operator's report is what a
+                    label costs: "i also miss normal slack/mattermost style
+                    threads. like why didnt you reply to my plans proposal in a
+                    thread. impossible to track things here." Measured before
+                    building any of this: threads WORK - events carry one, `flowy
+                    say --thread` continues one, and the pane draws one - and in
+                    the last 40 messages of #general there were 40 messages, 40
+                    distinct threads and not one with more than a single message
+                    in it. Four seats talked past each other all day in a room
+                    that already supported the thing they were missing.
+
+                    So this is the same id it always printed, wired to the
+                    control the reader wanted it to be: it opens the thread pane
+                    on this message's thread and arms the composer into it,
+                    which is what `reply` beside it does, reached from the place
+                    a reader is already looking when they wonder what a thread
+                    is.
+                  */}
+                  <button
+                    type="button"
+                    data-thread-open={event.id}
+                    onClick={() => onSelect(event)}
+                    aria-label={`open the thread ${shortId(event.thread)} this message is in`}
+                    className="cursor-pointer text-muted-foreground underline decoration-dotted hover:text-foreground"
+                  >
+                    thread {shortId(event.thread)}
+                  </button>
+                  {/*
+                    AND HOW MUCH IS IN IT, when the node has counted it and
+                    there is more than this message.
+
+                    The count is the node's, never a fold of what is on screen:
+                    this list is a window and a thread is not. `>1` rather than
+                    `>0` because every thread contains at least the message
+                    drawing it, so "1" is the number that says nothing - and it
+                    is drawn from a key being ABSENT versus present, so a thread
+                    the node could not count says nothing at all rather than
+                    claiming zero.
+                  */}
+                  {(threads?.[event.thread] ?? 0) > 1 ? (
+                    <button
+                      type="button"
+                      data-thread-replies={event.thread}
+                      data-thread-count={threads?.[event.thread]}
+                      onClick={() => onSelect(event)}
+                      aria-label={`open this thread, ${(threads?.[event.thread] ?? 1) - 1} replies`}
+                      className="cursor-pointer rounded border border-border px-1.5 text-[11px] text-primary transition hover:border-primary/50 hover:text-foreground"
+                    >
+                      {(threads?.[event.thread] ?? 1) - 1} repl
+                      {(threads?.[event.thread] ?? 1) - 1 === 1 ? "y" : "ies"}
+                    </button>
+                  ) : null}
                   {event.parents.length > 0 ? (
                     <span>← {event.parents.map((id) => shortId(id)).join(" ")}</span>
                   ) : (

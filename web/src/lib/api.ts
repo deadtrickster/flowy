@@ -276,6 +276,19 @@ export interface ChatPage {
    * inside the shape a peer receives.
    */
   reactions?: Record<string, Reaction[]>;
+  /**
+   * How many messages each thread on this page holds, keyed by thread id.
+   * Counted by the node over the whole log, because this client holds a WINDOW
+   * of the room: counting the thread ids on screen answers "how much of this
+   * thread did I happen to be sent", which is a different question and is wrong
+   * whenever the thread is older than the window.
+   *
+   * Optional, and a missing key is not a zero. Every thread here came off a
+   * message on this page, so it holds at least that message; absent means the
+   * count was not taken - an older node, or a fold the node dropped - and the
+   * reader is shown nothing rather than "0 replies".
+   */
+  threads?: Record<string, number>;
 }
 
 /**
@@ -1597,6 +1610,25 @@ export const api = {
       `/api/chat/${encodeURIComponent(room)}?order=recent&limit=${limit}${
         before > 0 ? `&before=${before}` : ""
       }`,
+    ),
+
+  /**
+   * roomThread is ONE thread of a room, from the log rather than from whatever
+   * page of the room a view happens to be holding.
+   *
+   * It exists because the pane that draws a thread was filtering the window:
+   * a thread whose first message is older than the sixty on screen was drawn
+   * from its middle, and the reader was shown a conversation with its opening
+   * missing and nothing saying so. Measured by thread-count-check, which opens
+   * a thread whose root is sixty-one messages back and looks for it.
+   *
+   * The same door the room read uses, with `thread` on it, so the filter, the
+   * message type and the citations are the room's and not a second idea of
+   * them.
+   */
+  roomThread: (room: string, thread: string, limit = 200) =>
+    request<ChatPage>(
+      `/api/chat/${encodeURIComponent(room)}?thread=${encodeURIComponent(thread)}&limit=${limit}`,
     ),
 
   /**
