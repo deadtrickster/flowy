@@ -154,10 +154,23 @@ function Card({ id }: { id: string }) {
         once.
       */}
       {whole && content !== null && sniffed?.startsWith("image/") ? (
-        <div
+        // A BACKDROP THAT CLOSES IS A CONTROL, so it is a button.
+        //
+        // It was a div with role="presentation" and an onClick, which biome
+        // refuses under a11y/useKeyWithClickEvents and is right to: a person on
+        // a keyboard had Escape and nothing else, and a person on a screen
+        // reader had an element announced as decoration that was the only way
+        // out. A button is the element that already means "press this and
+        // something happens" - it takes focus, it fires on Enter and Space, and
+        // the label says which image it closes.
+        //
+        // Escape stays, bound while the overlay is open: it is what a reader
+        // reaches for first and it does not require finding the backdrop.
+        <button
+          type="button"
           data-attachment-whole={id}
+          aria-label={`close ${item?.title || "the image"}`}
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4"
-          role="presentation"
           onClick={() => setWhole(false)}
         >
           {/* object-contain and max dimensions rather than natural size: an
@@ -169,7 +182,7 @@ function Card({ id }: { id: string }) {
             alt={item?.title || "attachment"}
             className="max-h-full max-w-full object-contain"
           />
-        </div>
+        </button>
       ) : null}
       {open && content !== null && !sniffed?.startsWith("image/") ? (
         <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-muted p-2 font-mono text-[10px]">
