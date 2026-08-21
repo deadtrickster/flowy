@@ -1,13 +1,13 @@
 import { AnimatePresence, motion } from "framer-motion";
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { AttachmentCards } from "@/components/AttachmentCards";
 import { CitedMessage } from "@/components/CitedMessage";
+import { MessageBody } from "@/components/MessageBody";
 import { RowCard } from "@/components/RowCard";
 import { Badge } from "@/components/ui/badge";
 import { type FlowyEvent, type Reaction, isAgent } from "@/lib/api";
 import { byteSlice, selectedSpan } from "@/lib/cite";
-import { renderChat } from "@/lib/markdown";
 import { speakerStyle } from "@/lib/speakercolour";
 import { clock, cn, shortId, speaker } from "@/lib/utils";
 
@@ -935,35 +935,6 @@ export function MessageList({
  * object for the same reason: the caller builds that object inline, so it is a
  * new identity every render and would defeat the memo it is a dependency of.
  */
-const MessageBody = memo(function MessageBody({
-  id,
-  body,
-  mentions,
-  user,
-  agent,
-}: {
-  id: string;
-  body: string;
-  mentions?: string;
-  user?: string;
-  agent?: string;
-}) {
-  const html = useMemo(
-    () => ({ __html: renderChat(body, mentions, { user, agent }) }),
-    [body, mentions, user, agent],
-  );
-  return (
-    <div
-      data-body={id}
-      className="report-body select-text break-words text-sm"
-      // The sanitizer is in lib/markdown, which is why
-      // noDangerouslySetInnerHtml is off for this file in biome.json - the
-      // rule cannot see through DOMPurify, and the comment cannot sit inside
-      // the tag where it fires.
-      dangerouslySetInnerHTML={html}
-    />
-  );
-});
 
 /**
  * The emoji a reader can put on a message without typing one.

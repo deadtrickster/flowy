@@ -79,7 +79,14 @@ function Card({ id }: { id: string }) {
     // pushed to the far side of the message with the caption floating at its
     // vertical middle. The operator sent a picture of it captioned "the layout
     // is broken". The caption belongs above the thing it captions.
-    <div className="flex flex-col gap-1 rounded-md border border-border bg-muted/40 px-2 py-1 text-xs">
+    // data-attachment is the id, so a check can ask WHICH card is drawn rather
+    // than how many. Counting was enough while one list drew these; two lists
+    // draw them now and "the room has a card" and "the thread has THAT card"
+    // are different questions.
+    <div
+      data-attachment={id}
+      className="flex flex-col gap-1 rounded-md border border-border bg-muted/40 px-2 py-1 text-xs"
+    >
       <div className="flex items-center gap-2">
         {err ? (
           <span className="text-muted-foreground">no such attachment: {shortId(id, 8)}</span>

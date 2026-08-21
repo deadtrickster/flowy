@@ -1,3 +1,6 @@
+import { AttachmentCards } from "@/components/AttachmentCards";
+import { CitedMessage } from "@/components/CitedMessage";
+import { MessageBody } from "@/components/MessageBody";
 import type { FlowyEvent } from "@/lib/api";
 import { speakerStyle } from "@/lib/speakercolour";
 import { clock, speaker } from "@/lib/utils";
@@ -58,34 +61,72 @@ export function ThreadList({
         const isMe = (id?: string) => !!id && (id === me?.user || id === me?.agent);
         const forMe = isMe(event.addressee) && !isMe(event.actor);
         return (
-          <li key={event.id}>
+          <li
+            key={event.id}
+            data-thread-for-me={forMe ? "" : undefined}
+            className={`flex flex-col gap-1 border-border/60 border-b px-4 py-2 text-xs ${
+              forMe ? "border-l-2 border-l-primary bg-primary/5 " : ""
+            }${selected?.id === event.id ? "bg-accent/60" : ""}`}
+          >
+            {/*
+              THE HEADER IS THE CONTROL AND THE BODY IS CONTENT, which is a
+              change forced by drawing the body properly.
+
+              The whole row used to be one <button>, which is fine for a span of
+              plain text and impossible for a rendered one: a link inside a
+              button is interactive content nested in interactive content, and
+              clicking a link would have selected the message instead of
+              following it. Attachment cards are worse - they have their own
+              buttons.
+
+              So the speaker line selects, and everything below it behaves like
+              what it is. What is lost is clicking anywhere on the row to select
+              it; what is gained is a body you can click, quote and open.
+            */}
             <button
               type="button"
               onClick={() => onSelect(event)}
-              data-thread-for-me={forMe ? "" : undefined}
-              className={`flex w-full flex-col gap-1 border-border/60 border-b px-4 py-2 text-left text-xs hover:bg-accent/40 ${
-                forMe ? "border-l-2 border-l-primary bg-primary/5 " : ""
-              }${selected?.id === event.id ? "bg-accent/60" : ""}`}
+              data-thread-select={event.id}
+              aria-label={`select ${name}'s message ${event.id}`}
+              className="flex w-full items-center gap-2 text-left hover:underline"
             >
-              <span className="flex items-center gap-2">
-                <span className="rounded px-1 font-mono" style={speakerStyle(name)}>
-                  {name}
-                </span>
-                <span className="ml-auto text-muted-foreground">{clock(event.created)}</span>
+              <span className="rounded px-1 font-mono" style={speakerStyle(name)}>
+                {name}
               </span>
-              <span className="whitespace-pre-wrap break-words">{event.body}</span>
-              {/*
+              <span className="ml-auto text-muted-foreground">{clock(event.created)}</span>
+            </button>
+            {/*
+              WHAT IT IS ANSWERING, drawn before the words that answer it, the
+              same order the room uses. A thread is where quoting happens most
+              and it was the one view that showed none of it.
+            */}
+            {event.citation ? <CitedMessage citation={event.citation} /> : null}
+            <MessageBody
+              id={event.id}
+              body={event.body}
+              mentions={event.meta?.mentions}
+              user={me?.user}
+              agent={me?.agent}
+            />
+            {/*
+              AND WHAT IT CARRIES. 01M0HP4N06, the operator: "messages in threads
+              dont show attachements". Same key, same splitter and the same cards
+              the room draws - the pane simply never drew them.
+            */}
+            {event.meta?.attachments ? (
+              <AttachmentCards ids={event.meta.attachments.split(" ").filter(Boolean)} />
+            ) : null}
+            {/*
                 A reply that names more than one parent is the case the linear
                 view cannot show, so it says so rather than pretending. That is
                 the whole reason the DAG stays: this line is a hint that the
                 other view has something to add, not decoration.
               */}
-              {event.parents.length > 1 ? (
-                <span className="font-mono text-[11px] text-muted-foreground">
-                  ← {event.parents.length} parents - press d for the graph
-                </span>
-              ) : null}
-            </button>
+            {event.parents.length > 1 ? (
+              <span className="font-mono text-[11px] text-muted-foreground">
+                ← {event.parents.length} parents - press d for the graph
+              </span>
+            ) : null}
           </li>
         );
       })}

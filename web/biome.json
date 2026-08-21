@@ -20,7 +20,7 @@
     {
       "include": [
         "src/routes/ArtifactView.tsx",
-        "src/components/MessageList.tsx",
+        "src/components/MessageBody.tsx",
         "src/components/FindingPane.tsx"
       ],
       "linter": {
