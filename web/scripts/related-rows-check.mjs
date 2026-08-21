@@ -93,6 +93,35 @@ try {
     die("a NOTE carrying related ids drew no related block - related is still finding-only");
   }
 
+  // WAIT FOR THE STATE THIS ASSERTS, not for the element that carries it.
+  //
+  // The block is visible as soon as it draws, and it draws its rows as
+  // `loading` while each id is fetched. Every assertion below is about the
+  // RESOLVED state, so reading straight after the block appears is a race that
+  // only ever loses when the machine is busy - which is the gate. Measured
+  // 2026-08-21: red on the gate with "a readable row rendered as loading", and
+  // flowy-claude got a red and a green from the same commit in one VM, ten
+  // minutes apart. Nothing about the code under test changed between them.
+  //
+  // `loading` is the only transient state - refused, unlinkable and linked are
+  // all answers - so the honest wait is "nothing is still loading" rather than
+  // "everything is linked", which would sit out the timeout on a row that
+  // correctly resolved to refused instead of asserting on it.
+  //
+  // BOUNDED AND CAUGHT ON PURPOSE. A row that never leaves loading is a real
+  // defect, and this must not hide it: the wait gives up after twenty seconds
+  // and the assertions run anyway, so such a row still dies at the line below.
+  // Controlled by making the predicate unsatisfiable - the wait then times out
+  // every run and the check still passes, which is the proof that it removes a
+  // race rather than manufacturing a pass.
+  await page
+    .waitForFunction(
+      () => document.querySelectorAll('[data-related-state="loading"]').length === 0,
+      null,
+      { timeout: 20_000 },
+    )
+    .catch(() => {});
+
   const rows = await page.evaluate(() =>
     Array.from(document.querySelectorAll("[data-related]")).map((el) => ({
       id: el.getAttribute("data-related"),
