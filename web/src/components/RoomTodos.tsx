@@ -318,6 +318,40 @@ export function RoomTodos({
    */
   const hiddenDone = hideDone ? todos.filter((todo) => isTodoDone(todo)).length : 0;
   const unmatched = todos.length - hiddenDone - drawn.length;
+  // A CARD ANCHORED TO A ROW THAT HAS MOVED IS ANCHORED TO THE WRONG PLACE.
+  //
+  // The summary is positioned against its own row - absolute, top-full - so it
+  // hangs over whatever is drawn below it. That is correct while the list holds
+  // still and wrong the moment it does not: setting a priority REORDERS the
+  // panel, sortTodos runs again, and the card stays open at a position that now
+  // belongs to somebody else's row, covering the control on it.
+  //
+  // Measured 2026-08-21: ranking one row and then reaching for another found
+  // the first row's card over the second one's opener, and a click that a
+  // person would have aimed at a title went into a card about a different todo.
+  // It is invisible in a short list and appears as the panel fills up, which is
+  // the shape of a defect that reaches a person and not a check.
+  //
+  // So the card closes when the ORDER changes rather than when the contents do:
+  // a row arriving, leaving or moving all invalidate where it is pointing.
+  const lastOrder = useRef("");
+  const order = sortTodos(drawn)
+    .map((t) => t.id)
+    .join(" ");
+  // ADJUSTED DURING RENDER RATHER THAN IN AN EFFECT, which is React's own
+  // shape for "this state is stale because its input changed" and is the
+  // honest description here: the open card is not a side effect of the list,
+  // it is a value that stops being valid when the list moves. An effect would
+  // paint the card at the wrong row first and correct it on the next frame.
+  //
+  // It also removes a suppression I got wrong twice: the rule fires on an
+  // effect that reads nothing and depends on something, and a biome-ignore
+  // whose reasoning ran onto a second line stopped being the last comment
+  // above the code and did not suppress anything.
+  if (lastOrder.current !== order) {
+    lastOrder.current = order;
+    if (open !== "") setOpen("");
+  }
 
   return (
     // flex-1 because this is a whole pane now rather than the top half of one:
