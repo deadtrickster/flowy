@@ -62,9 +62,19 @@ const panelWith = async (browser, token) => {
   await page.addInitScript((t) => localStorage.setItem("flowy.token", t), token);
   await page.goto(`${base}/vms`, { timeout: 30_000 }).catch(() => {});
   const panel = page.locator("[data-vm-panel]");
-  await panel
+  // WAIT FOR A RESOLVED STATE, not for the panel element. The panel is on
+  // screen from the first paint carrying data-vm-state="reading", so waiting
+  // for it returns instantly and the attribute is sampled mid-read - which is
+  // what this check did on its first two runs, reporting "drew no panel at all
+  // for the operator" about a page that was working and merely not finished.
+  //
+  // Longer than the node's own ceiling on purpose: api_vm.go gives `firecode
+  // ps` twenty seconds and `projects` fifteen, in parallel, so a host that is
+  // slow but fine can legitimately take most of that before either resolves.
+  await page
+    .locator('[data-vm-state]:not([data-vm-state="reading"])')
     .first()
-    .waitFor({ state: "visible", timeout: 20_000 })
+    .waitFor({ state: "visible", timeout: 45_000 })
     .catch(() => {});
   if ((await panel.count()) === 0) {
     // WHAT THE BROWSER ACTUALLY HAS, because "drew no panel" is a symptom with
@@ -82,8 +92,15 @@ const panelWith = async (browser, token) => {
     words: ((await panel.first().textContent()) ?? "").replace(/\s+/g, " ").trim(),
     empty: (await page.locator("[data-vm-empty]").count()) > 0,
     crashes,
+    url: page.url(),
   };
   await page.close();
+  // "reading" is not an answer, it is the absence of one arriving. Reported as
+  // its own sentence so a slow host reads as a slow host rather than as a pane
+  // drawing the wrong state.
+  if (got.state === "reading") {
+    return { ...got, state: null, seen: "the panel was still reading the host when time ran out" };
+  }
   return got;
 };
 
