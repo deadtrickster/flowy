@@ -78,7 +78,11 @@ try {
       title: "tipfrom-check seeded row",
       body: "seeded by tipfrom-check",
       visibility: "project",
-      room,
+      // THE ROOM RIDES fields, and only there. /api/artifacts is a strict
+      // decoder - a key it does not know is a 400 naming it, not a value
+      // dropped - and a top-level "room" is one of those. The store reads
+      // fields->>'room' (internal/store/artifacts.go:1020), which is the same
+      // place the room filter looks, so this is where it has to go.
       fields: { branch: "tipfrom-check/branch", target: "master", room },
     }),
   });
