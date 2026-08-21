@@ -393,6 +393,10 @@ var apiRoutes = []string{
 	// can find is a door everybody reimplements in jq, which is what it is
 	// being built out of.
 	"GET /api/nag",
+	"GET /api/schedules",
+	"PUT /api/schedules",
+	"DELETE /api/schedules/{signal}",
+	"GET /api/schedules/resolved",
 	// And the same answer waited on, because a nag that a seat has to remember
 	// to ask for is one an idle seat never asks for - see api_nagwait.go.
 	"GET /api/nag/wait",
@@ -618,6 +622,15 @@ func (s *server) routes() http.Handler {
 	// logic of the work nagger to the go side and the nagger then will be a
 	// simple http call".
 	api.HandleFunc("GET /api/nag", s.handleNag)
+	// THE SCHEDULE THE NODE HOLDS (01M0EW45RE). Listing what is SET at a
+	// scope and resolving what a reader RECEIVES are separate doors because
+	// they are separate questions - see api_schedules.go. Delete is its own
+	// verb: an off row and no row are different answers, and unchecking a
+	// box cannot get back to inheriting.
+	api.HandleFunc("GET /api/schedules", s.handleListSchedules)
+	api.HandleFunc("PUT /api/schedules", s.handlePutSchedule)
+	api.HandleFunc("DELETE /api/schedules/{signal}", s.handleDeleteSchedule)
+	api.HandleFunc("GET /api/schedules/resolved", s.handleResolvedSchedules)
 	api.HandleFunc("GET /api/nag/wait", s.handleNagWait)
 	// Who is carrying a todo - any todo the caller can read, wherever it was
 	// raised, and whoever wrote it. Read permission is the whole bar: the assignee

@@ -52,28 +52,36 @@ const (
 var routeNeeds = map[string]string{
 	"DELETE /api/artifact/{id}/origins/{origin}": needsWrite,
 	"DELETE /api/chat/{room}/pin/{id}":           needsWrite,
-	"DELETE /api/inbox/reader/{name}":            needsNothing,
-	"DELETE /api/todo/{id}/deps/{blocker}":       needsWrite,
-	"POST /api/agent/{id}/projects":              needsOperator,
-	"POST /api/announcement/{id}/ack":            needsNothing,
-	"POST /api/announcement/{id}/resolve":        needsOperator,
-	"POST /api/announcements":                    needsOperator,
-	"POST /api/artifact/{id}/delete":             needsWrite,
-	"POST /api/artifact/{id}/origins":            needsWrite,
-	"POST /api/artifact/{id}/status":             needsWrite,
-	"POST /api/artifacts":                        needsWrite,
-	"POST /api/assign":                           needsWrite,
-	"POST /api/attachment":                       needsWrite,
-	"POST /api/bookmark":                         needsWrite,
-	"DELETE /api/bookmark/{id}":                  needsWrite,
-	"POST /api/chat/{room}/pin":                  needsWrite,
-	"POST /api/chat/{room}/react":                needsWrite,
-	"POST /api/chat/{room}/say":                  needsWrite,
-	"POST /api/chat/{room}/todo":                 needsWrite,
-	"POST /api/chat/{room}/todo/{id}/assignee":   needsWrite,
-	"POST /api/dm/{to}":                          needsWrite,
-	"POST /api/events":                           needsWrite,
-	"POST /api/finding/{id}/evidence":            needsWrite,
+	// A schedule row changes what a reader receives, so writing one is a
+	// write. Reading the table and resolving it are plain reads, gated by
+	// the project reach every other read is gated by, and the FLEET scope
+	// carries its own operator check inside the handler - the scope is in
+	// the request rather than in the route, so a route-level needsOperator
+	// would refuse the project and room cases too.
+	"DELETE /api/schedules/{signal}":           needsWrite,
+	"PUT /api/schedules":                       needsWrite,
+	"DELETE /api/inbox/reader/{name}":          needsNothing,
+	"DELETE /api/todo/{id}/deps/{blocker}":     needsWrite,
+	"POST /api/agent/{id}/projects":            needsOperator,
+	"POST /api/announcement/{id}/ack":          needsNothing,
+	"POST /api/announcement/{id}/resolve":      needsOperator,
+	"POST /api/announcements":                  needsOperator,
+	"POST /api/artifact/{id}/delete":           needsWrite,
+	"POST /api/artifact/{id}/origins":          needsWrite,
+	"POST /api/artifact/{id}/status":           needsWrite,
+	"POST /api/artifacts":                      needsWrite,
+	"POST /api/assign":                         needsWrite,
+	"POST /api/attachment":                     needsWrite,
+	"POST /api/bookmark":                       needsWrite,
+	"DELETE /api/bookmark/{id}":                needsWrite,
+	"POST /api/chat/{room}/pin":                needsWrite,
+	"POST /api/chat/{room}/react":              needsWrite,
+	"POST /api/chat/{room}/say":                needsWrite,
+	"POST /api/chat/{room}/todo":               needsWrite,
+	"POST /api/chat/{room}/todo/{id}/assignee": needsWrite,
+	"POST /api/dm/{to}":                        needsWrite,
+	"POST /api/events":                         needsWrite,
+	"POST /api/finding/{id}/evidence":          needsWrite,
 	// Its twin beside it. Recording where a finding went is a change to the
 	// project's own row, which is what needsWrite means - and it is deliberately
 	// not needsOperator: somebody who filed the issue but could not say so would
