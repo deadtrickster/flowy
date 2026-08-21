@@ -431,6 +431,7 @@ var apiRoutes = []string{
 	"POST /api/lock/release",
 	"POST /api/merge/{id}/abandon",
 	"POST /api/merge/{id}/blocked",
+	"POST /api/merge/{id}/unblocked",
 	"POST /api/merge/{id}/gate",
 	"POST /api/merge/{id}/land",
 	"POST /api/merge/{id}/renew",
@@ -525,6 +526,7 @@ func (s *server) routes() http.Handler {
 	api.HandleFunc("POST /api/merge/{id}/land", s.handleMergeLand)
 	api.HandleFunc("POST /api/merge/{id}/abandon", s.handleMergeAbandon)
 	api.HandleFunc("POST /api/merge/{id}/blocked", s.handleMergeBlocked)
+	api.HandleFunc("POST /api/merge/{id}/unblocked", s.handleMergeUnblocked)
 	api.HandleFunc("POST /api/merge/{id}/renew", s.handleMergeRenew)
 	api.HandleFunc("GET /api/artifact/{id}", s.handleGetArtifact)
 	api.HandleFunc("POST /api/artifact/{id}/delete", s.handleDeleteArtifact)

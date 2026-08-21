@@ -63,6 +63,25 @@ var mergeTools = []tool{
 		call: mergeBlockedTool,
 	},
 	{
+		Name: "merge_unblocked",
+		Description: "Withdraw a skip: what stopped the last caller taking this row is " +
+			"gone. Use it the moment you have actually fixed the thing - rebased the " +
+			"branch, released the worktree - because until somebody says so the reason " +
+			"stands for fifteen minutes and every agent reading the queue to decide what " +
+			"to pick up reads a row as unpickable when it is not. It takes no lock, which " +
+			"is the whole point: declaring also clears a skip, but declaring needs the " +
+			"landing lock, so before this door the one act that retired a false reason was " +
+			"the one act you could not perform while somebody else was landing. Anybody " +
+			"may clear it, not only whoever set it - the seat that reports a skip has no " +
+			"repository to fix it in. Say what you fixed; it goes in the row's log, where " +
+			"a claim that turns out to be wrong is found.",
+		InputSchema: object(props{
+			"id":  str("The merge request whose skip you are withdrawing."),
+			"why": str("What you fixed, in a sentence somebody can check."),
+		}, []string{"id", "why"}),
+		call: mergeUnblockedTool,
+	},
+	{
 		Name: "merge_queue",
 		Description: "The merge queue: every merge request you can read that is not " +
 			"done, and whether each one may land on the target AS IT IS NOW. Pass the " +
@@ -323,6 +342,27 @@ func mergeBlockedTool(ctx context.Context, m *mcpServer, p *store.Principal, raw
 		return nil, errors.New("merge_blocked needs the request id")
 	}
 	art, entry, err := m.db.SetMergeBlocked(ctx, p, a.ID, a.Why)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"item": art, "event": entry}, nil
+}
+
+// mergeUnblockedTool withdraws one. Same store verb the HTTP door calls, for
+// the reason the gate gives: two implementations of "the block is gone" would
+// drift about the thing a reader believes.
+func mergeUnblockedTool(ctx context.Context, m *mcpServer, p *store.Principal, raw json.RawMessage) (any, error) {
+	var a struct {
+		ID  string `json:"id"`
+		Why string `json:"why"`
+	}
+	if err := decodeParams(raw, &a); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(a.ID) == "" {
+		return nil, errors.New("merge_unblocked needs the request id")
+	}
+	art, entry, err := m.db.SetMergeUnblocked(ctx, p, a.ID, a.Why)
 	if err != nil {
 		return nil, err
 	}

@@ -98,6 +98,7 @@ var routeNeeds = map[string]string{
 	"POST /api/lock/release":               needsWrite,
 	"POST /api/merge/{id}/abandon":         needsWrite,
 	"POST /api/merge/{id}/blocked":         needsWrite,
+	"POST /api/merge/{id}/unblocked":       needsWrite,
 	"POST /api/merge/{id}/gate":            needsWrite,
 	"POST /api/merge/{id}/land":            needsWrite,
 	"POST /api/merge/{id}/renew":           needsWrite,

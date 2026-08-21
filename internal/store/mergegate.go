@@ -92,7 +92,7 @@ const RedNoteField = "red_note"
 // rather than clears - the row must say which run is measuring it now - and
 // GateAtField, which applyGate stamps for the same reason. GatedBaseField is
 // rewritten by the declaring path in setMergeGate, where the base is read.
-var supersededByADeclaration = []string{
+var supersededByADeclaration = append([]string{
 	// A tip left behind admits the branch on evidence a new run is in the
 	// middle of replacing. It also broke the verb in both directions: a re-gate
 	// never read as gating, since GatingAt refuses a row that already carries a
@@ -108,10 +108,11 @@ var supersededByADeclaration = []string{
 	GateNoteField,
 	// A skip is the strongest case: a declaration is somebody TAKING the row, so
 	// whatever stopped the last caller taking it has just been disproved.
-	BlockedWhyField,
-	BlockedAtField,
-	BlockedByField,
-}
+	//
+	// Spread from mergeblocked.go rather than retyped, because SetMergeUnblocked
+	// deletes the same trio and two hand-written copies of one field list is how
+	// a fourth field gets added to one of them.
+}, blockedFields...)
 
 // GateNoteField is what a run said about a verdict that PASSED - the same
 // sentence red_note carries for one that did not, and absent for a declaration.

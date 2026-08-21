@@ -157,3 +157,117 @@ func TestAnUncheckedBlockIsNotAClearRow(t *testing.T) {
 		t.Errorf("BlockedAt lost a fresh skip")
 	}
 }
+
+// TestAFixedBlockIsWithdrawnByWhoeverFixedIt is the other half of a skip: the
+// caller that could not take the row records why, and the caller that fixes it
+// says so.
+//
+// MEASURED 2026-08-20, by walking into it. A row was blocked with "conflicts
+// with master as it is now - a person resolves this, the drainer cannot". The
+// person did: rebased, verified, released the worktree - and the row went on
+// saying it conflicted, because the only two things that retired a reason were
+// the fifteen-minute window and a declaration, and declaring takes the landing
+// lock, which another seat's gate held for another twelve minutes. So the fix
+// existed and there was nowhere to put it, through exactly the window when
+// other agents were reading the queue to decide what to pick up.
+//
+// The three properties this asserts are the three the door was written for: it
+// takes NO LOCK, ANY caller may clear a block somebody else reported, and the
+// withdrawn reason survives in the log after the fields have let go of it.
+func TestAFixedBlockIsWithdrawnByWhoeverFixedIt(t *testing.T) {
+	ctx, db, project := lockCtx(t)
+	target := ownTarget(t)
+
+	drainer := &Principal{UserID: "u-drainer", Project: project}
+	person := &Principal{UserID: "u-person", Project: project}
+	row := &Artifact{
+		ID: ulid.NewString(), Type: MemoryType, Kind: MergeKind, Project: &project,
+		OwnerUser: "u-author", Title: "a branch that conflicted until it did not",
+		Visibility: "project",
+		Fields:     marshalFields(t, map[string]any{BranchField: "feat-rebased", TargetField: target}),
+	}
+	if err := db.UpsertArtifact(ctx, row); err != nil {
+		t.Fatalf("file the merge request: %v", err)
+	}
+
+	// NOTHING TO CLEAR IS ITS OWN ANSWER. "There was no block on this row" and
+	// "the block is gone now" are different facts, and a door that returned
+	// success for both would let a caller believe it had withdrawn a reason that
+	// some other seat had just replaced with a fresher one.
+	if _, _, err := db.SetMergeUnblocked(ctx, person, row.ID, "rebased it"); err == nil {
+		t.Fatal("a row with no skip was unblocked anyway")
+	}
+
+	why := "conflicts with master as it is now - a person resolves this, the drainer cannot"
+	if _, _, err := db.SetMergeBlocked(ctx, drainer, row.ID, why); err != nil {
+		t.Fatalf("record the skip: %v", err)
+	}
+
+	// A withdrawal with no account of itself is the silence the block was
+	// written down to end, one field further along.
+	if _, _, err := db.SetMergeUnblocked(ctx, person, row.ID, "  "); err == nil {
+		t.Fatal("a block was cleared with no reason")
+	}
+
+	// A DIFFERENT SEAT CLEARS IT than the one that set it, deliberately: the
+	// drainer that reports a skip has no repository to fix anything in.
+	fixed := "rebased onto 0bf19e5 and released the worktree"
+	art, entry, err := db.SetMergeUnblocked(ctx, person, row.ID, fixed)
+	if err != nil {
+		t.Fatalf("clear the skip: %v", err)
+	}
+	now := time.Now().UTC()
+	if got, fresh := BlockedNow(art, now); got != "" || fresh {
+		t.Errorf("the row still reads as blocked: (%q, %v)", got, fresh)
+	}
+	for _, f := range blockedFields {
+		if v := strings.TrimSpace(artifactString(art, f)); v != "" {
+			t.Errorf("%s survived the withdrawal as %q", f, v)
+		}
+	}
+
+	// THE WITHDRAWN REASON SURVIVES IN THE LOG. The fields say what is true now
+	// and no longer hold it, so an entry recording only the fix would leave
+	// "what was it that stopped them" answerable only by hunting for the last
+	// merge.blocked and hoping it was the one.
+	if entry == nil || entry.Type != EventMergeUnblocked {
+		t.Fatalf("the withdrawal left no entry in the log: %+v", entry)
+	}
+	var meta map[string]string
+	if err := json.Unmarshal(entry.Meta, &meta); err != nil {
+		t.Fatalf("entry meta: %v", err)
+	}
+	if meta["unblocked_why"] != fixed {
+		t.Errorf("the entry does not say what was fixed: %v", meta)
+	}
+	if meta[BlockedWhyField] != why {
+		t.Errorf("the entry does not carry the reason it withdrew: %v", meta)
+	}
+	if meta[BlockedByField] != drainer.UserID {
+		t.Errorf("the entry does not say whose reason it withdrew: %v", meta)
+	}
+	if !strings.Contains(entry.Body, fixed) || !strings.Contains(entry.Body, why) {
+		t.Errorf("the entry body reads %q - it should carry both ends", entry.Body)
+	}
+
+	// AND IT TAKES NO LOCK, which is the reason the door exists at all: the act
+	// that retires a false reason must not require the thing whose absence is
+	// being reported. A person holding the lock is a person who could have
+	// declared instead.
+	lock, err := db.MergeLockOf(ctx, project, target)
+	if err != nil {
+		t.Fatalf("read the lock: %v", err)
+	}
+	if lock != nil && lock.Live(now) {
+		t.Errorf("clearing a skip took the target: held by %s", lock.Holder)
+	}
+
+	// It read back from the store, not only from the value the call returned.
+	after, err := db.GetArtifact(ctx, row.ID)
+	if err != nil {
+		t.Fatalf("read it back: %v", err)
+	}
+	if BlockedWhyOf(after) != "" {
+		t.Errorf("the skip is still on the stored row: %q", BlockedWhyOf(after))
+	}
+}

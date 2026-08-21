@@ -210,3 +210,132 @@ func (d *DB) SetMergeBlocked(
 	span.SetArtifact(art.ID)
 	return art, entry, nil
 }
+
+// EventMergeUnblocked is what clearing a skip leaves in the log.
+//
+// It exists as its own event rather than a second SetMergeBlocked with an empty
+// reason for the same argument the fields make: "I could not take this" and
+// "what stopped you is gone" are two statements, by two callers, about two
+// moments, and a reader asking how long a row was unpickable needs both ends of
+// it. An empty why would erase the first end while recording nothing about the
+// second.
+const EventMergeUnblocked = "merge.unblocked"
+
+// blockedFields is the trio a skip writes, in one place because two lists of
+// the same three field names is how one of them ends up short. mergegate.go
+// spreads it into supersededByADeclaration, and SetMergeUnblocked below deletes
+// it - the two ways a block ends.
+var blockedFields = []string{BlockedWhyField, BlockedAtField, BlockedByField}
+
+// SetMergeUnblocked withdraws the reason nothing could take this row.
+//
+// WHY THE DOOR EXISTS. Measured on 2026-08-20: a row was blocked with "feat/x
+// conflicts with master as it is now - a person resolves this, the drainer
+// cannot". A person did resolve it, rebased, verified and released the
+// worktree - and the row went on saying it conflicted, because the only two
+// things that retired a reason were the fifteen-minute window and a
+// declaration. Declaring takes the landing lock, and the lock was held by
+// another seat's gate for another twelve minutes. So the one act that would
+// retire a false reason was the one act you could not perform while somebody
+// else was landing, and the reason stayed on the board through exactly the
+// window when other agents were reading it to decide what to pick up.
+//
+// IT TAKES NO LOCK, and that is the mirror of SetMergeBlocked's rule rather
+// than a separate decision. Reporting a row you could not take must not require
+// the thing whose absence is being reported; withdrawing that report must not
+// either, or the fix is available only to whoever happens to be landing.
+//
+// ANYBODY MAY CLEAR IT, not only whoever set it. The seat that reports a skip
+// is usually a drainer with no repository to fix anything in, and the seat that
+// fixes it is usually a person at a worktree - so requiring the reporter to
+// withdraw the report would leave the two ends of every block on different
+// desks. Who cleared it, and on what grounds, goes in the event, which is where
+// a claim that turns out to be wrong is found.
+//
+// IT REFUSES A ROW WITH NOTHING TO CLEAR, and the refusal is the point: "there
+// was no block on this row" and "the block is gone now" are different answers,
+// and a door that returned 200 for both would let a caller believe it had
+// cleared a block that some other seat had already replaced with a fresher one.
+// A STALE block still counts as one - it is recorded, it is still in the
+// payload with stale set, and withdrawing it is exactly what this is for.
+//
+// It leaves the status and the assignee alone. Clearing a block says one thing
+// went away; it does not say the row is takeable, which is a question for
+// whoever next tries to take it.
+func (d *DB) SetMergeUnblocked(
+	ctx context.Context, p *Principal, id, why string,
+) (*Artifact, *Event, error) {
+	ctx, span := otel.Start(ctx, otel.KindIngest, "merge.unblocked")
+	defer span.End()
+
+	actor, actorKind := voteActor(p)
+	if actor == "" {
+		return nil, nil, fmt.Errorf("store: this token resolves to nobody, so it cannot clear a skip")
+	}
+	why = strings.TrimSpace(why)
+	if why == "" {
+		return nil, nil, fmt.Errorf("store: say what you fixed - a block that vanishes with no " +
+			"account of why is how a row gets picked up twice, and it is the reason " +
+			"the block was written down instead of kept in a log")
+	}
+	art, err := d.readWorkItem(ctx, p, strings.TrimSpace(id))
+	if err != nil {
+		return nil, nil, err
+	}
+	if art.Kind != MergeKind {
+		// The same answer as an id that is not here, and for the same reason
+		// SetMergeBlocked gives it.
+		return nil, nil, ErrNotFound
+	}
+
+	was := BlockedWhyOf(art)
+	if was == "" {
+		return nil, nil, fmt.Errorf("store: %s carries no skip to clear - nothing has reported "+
+			"being unable to take it", art.ID)
+	}
+	wasBy, wasAt := BlockedByOf(art), BlockedAtOf(art)
+
+	fields, err := ArtifactFields(art)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, f := range blockedFields {
+		delete(fields, f)
+	}
+
+	column, err := json.Marshal(fields)
+	if err != nil {
+		return nil, nil, fmt.Errorf("store: clear the skip on %s: %w", art.ID, err)
+	}
+	// THE WITHDRAWN REASON TRAVELS WITH THE WITHDRAWAL. The fields say what is
+	// true now and no longer hold it, so an event that recorded only the fix
+	// would leave "what was it that stopped them" answerable solely by finding
+	// the earlier merge.blocked and hoping it was the last one.
+	meta, err := json.Marshal(map[string]string{
+		"unblocked_why": why,
+		BlockedWhyField: was,
+		BlockedByField:  wasBy,
+		BlockedAtField:  wasAt,
+		BranchField:     BranchOf(art),
+		"actor_kind":    actorKind,
+		"actor_user":    p.UserID,
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("store: clear the skip on %s: %w", art.ID, err)
+	}
+	entry := &Event{
+		Type:     EventMergeUnblocked,
+		Project:  art.Project,
+		Room:     categoryRoom(art),
+		Thread:   art.ID,
+		Artifact: art.ID,
+		Actor:    actor,
+		Body:     fmt.Sprintf("%s can be taken again: %s (was: %s)", BranchOf(art), why, was),
+		Meta:     meta,
+	}
+	if err := d.SetArtifactFields(ctx, art, column, entry); err != nil {
+		return nil, nil, err
+	}
+	span.SetArtifact(art.ID)
+	return art, entry, nil
+}
