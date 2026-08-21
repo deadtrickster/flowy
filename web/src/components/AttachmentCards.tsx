@@ -18,6 +18,22 @@ import { shortId } from "@/lib/utils";
  */
 function Card({ id }: { id: string }) {
   const [item, setItem] = useState<Artifact | null>(null);
+  // Whether the full-size view is up. Per card, so two images in one message
+  // cannot both be open and fight over the overlay.
+  const [whole, setWhole] = useState(false);
+
+  // ESCAPE CLOSES IT, which is the first thing a person tries and the only
+  // thing a keyboard user has: the backdrop is a pointer target and nothing
+  // else dismisses this. Bound only while the overlay is up, so the transcript
+  // keeps its own key handling the rest of the time.
+  useEffect(() => {
+    if (!whole) return;
+    const shut = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setWhole(false);
+    };
+    window.addEventListener("keydown", shut);
+    return () => window.removeEventListener("keydown", shut);
+  }, [whole]);
   const [open, setOpen] = useState(false);
   const [content, setContent] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -101,12 +117,59 @@ function Card({ id }: { id: string }) {
       {/* Rendered from the SNIFFED type and never from the claim, which is the
           rule the field naming exists to keep: "image/png" on a payload of
           markup is how a render path becomes an injection surface. */}
+      {/*
+        THE PREVIEW IS A DOOR, not a picture.
+        
+        The operator, having just asked us to put screenshots in the room rather
+        than in a terminal only one of us reads: "hmm when i tap on the image it
+        stays small preview". It was capped at max-h-64 - 256 pixels - and
+        nothing made it bigger: the image was not clickable, and
+        GET /api/attachment/{id} answers JSON with base64 rather than bytes, so
+        a plain link would not open it in a tab either.
+        
+        A console screenshot is 1500 wide. At 256 tall the thing it was taken to
+        show is not in it, which made the agreement about posting them worthless.
+      */}
       {open && content !== null && sniffed?.startsWith("image/") ? (
-        <img
-          src={`data:${sniffed};base64,${content}`}
-          alt={item?.title || "attachment"}
-          className="max-h-64 max-w-full self-start rounded object-contain"
-        />
+        <button
+          type="button"
+          data-attachment-open={id}
+          aria-label={`see ${item?.title || "the attachment"} full size`}
+          className="cursor-zoom-in self-start"
+          onClick={() => setWhole(true)}
+        >
+          <img
+            src={`data:${sniffed};base64,${content}`}
+            alt={item?.title || "attachment"}
+            className="max-h-64 max-w-full rounded object-contain"
+          />
+        </button>
+      ) : null}
+      {/*
+        FULL SIZE, over the page, and dismissed by anything a person would try:
+        the backdrop, Escape, or the button that opened it. It is a fixed
+        overlay rather than an in-place expansion because the card lives in a
+        scrolling transcript - growing it in place moves every message under the
+        reader, which is the scrolling defect this console has already paid for
+        once.
+      */}
+      {whole && content !== null && sniffed?.startsWith("image/") ? (
+        <div
+          data-attachment-whole={id}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4"
+          role="presentation"
+          onClick={() => setWhole(false)}
+        >
+          {/* object-contain and max dimensions rather than natural size: an
+              image larger than the window would otherwise overflow it and the
+              reader would be looking at its top left corner with no way to
+              reach the rest. */}
+          <img
+            src={`data:${sniffed};base64,${content}`}
+            alt={item?.title || "attachment"}
+            className="max-h-full max-w-full object-contain"
+          />
+        </div>
       ) : null}
       {open && content !== null && !sniffed?.startsWith("image/") ? (
         <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-muted p-2 font-mono text-[10px]">
