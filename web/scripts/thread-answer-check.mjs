@@ -58,13 +58,35 @@ const browser = await chromium.launch();
 try {
   const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
   await page.addInitScript((t) => localStorage.setItem("flowy.token", t), token);
-  await page.goto(`${base}/chat/${room}/thread`, { timeout: 20_000 });
+  // OPENED THE WAY A READER OPENS ONE, by clicking the message. This used to
+  // go straight to /chat/<room>/thread and rely on the pane falling back to the
+  // newest message in the room - and that fallback is gone on purpose
+  // (01M0HCW3H8: the pane now waits to be asked, so it cannot be dragged off
+  // the conversation somebody is reading by whoever speaks next). Relying on it
+  // here made this check assert "a pane somebody was given" rather than "a pane
+  // somebody opened", which is the weaker of the two and not what it is named
+  // for.
+  await page.goto(`${base}/chat/${room}`, { timeout: 20_000 });
+  const open = page.locator(`[data-thread-open="${root.id}"]`);
+  await open.waitFor({ state: "visible", timeout: 20_000 });
+  await open.click();
 
   // WAITED FOR, like everything else in this file. The pane renders once the
   // room's events have arrived, and counting before that is the defect that
   // cost two gate passes in way-in-check tonight.
   const pane = page.locator('[data-room-pane-body="thread"]');
   await pane.waitFor({ state: "visible", timeout: 20_000 });
+
+  // And it is showing the thread that was opened, not some other one - without
+  // this the composer below could be answering anything.
+  const showing = await page
+    .locator("[data-thread-pane-id]")
+    .first()
+    .getAttribute("data-thread-pane-id")
+    .catch(() => null);
+  if (showing !== root.thread) {
+    die(`clicking the root of ${root.thread} left the pane showing ${showing ?? "nothing"}`);
+  }
 
   const compose = page.locator("[data-thread-compose] textarea");
   try {

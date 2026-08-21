@@ -33,18 +33,28 @@ const die = (message, shown = "") => {
 };
 
 const say = async (bearer, body) => {
-  const r = await fetch(`${base}/api/chat/${encodeURIComponent(room)}`, {
+  // /say, not the room path. GET on the room reads it and POST on it is not a
+  // door at all - the 404 that answers looks exactly like a room that is not
+  // there, and this check spent a gate pass saying so.
+  const r = await fetch(`${base}/api/chat/${encodeURIComponent(room)}/say`, {
     method: "POST",
     headers: { Authorization: `Bearer ${bearer}`, "Content-Type": "application/json" },
     body: JSON.stringify({ body }),
   });
-  if (!r.ok) die(`saying in #${room} answered ${r.status}`);
+  if (!r.ok) die(`saying in #${room} answered ${r.status} ${await r.text()}`);
   return r.json();
 };
 
-// Two messages from the other seat, so the room has a thread to open that the
-// reader did not start.
+// TWO THREADS OF ITS OWN, seeded here rather than found in the room.
+//
+// This needs at least two threads to open - "the pane held what I opened" and
+// "the pane followed the room" look identical when there is only one. It used
+// to say one message and rely on whatever else the suite had left in #general,
+// which is a check that passes because of its neighbours: measured under ONLY=,
+// where the room holds one message and this died reporting "only 1 thread
+// buttons" about a feature that was fine.
 await say(other, "pane-stays-check: a message to open a thread on");
+await say(other, "pane-stays-check: a second thread, so there are two to tell apart");
 
 const browser = await chromium.launch();
 try {
