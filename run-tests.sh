@@ -256,7 +256,11 @@ indent() { sed 's/^/     /'; }
 # The file is appended to rather than held in an array because a check that
 # kills the suite should still leave behind what it had timed.
 timed() { # name seconds
-	[ -n "$timings" ] || return 0
+	# ${timings:-} and not $timings, for the reason check() uses ${only:-}: this
+	# function is extracted and run standalone by stray-cd-check.sh under set -u,
+	# where the suite's variables do not exist. A guard that itself errors on the
+	# unset case is not a guard.
+	[ -n "${timings:-}" ] || return 0
 	printf '%s\t%s\n' "$2" "$1" >>"$timings"
 }
 
@@ -306,9 +310,17 @@ check() {
 		failed=$((failed + 1))
 		cd "$SUITE_PWD" || return 1
 	fi
+	# The clock is optional. secs_since and timed live beside check() in the
+	# suite and are NOT extracted with it, so a standalone check() must run
+	# without them rather than die on `command not found`. Measured: my first
+	# fix guarded `only` and left these two, and the check went red again for
+	# two more names - the same mistake as fixing the line that was red instead
+	# of the shape it belongs to.
 	started=${EPOCHREALTIME/./}
+	local clock=no
+	command -v secs_since >/dev/null 2>&1 && clock=yes
 	if out="$("$@" 2>&1)"; then
-		timed "$name" "$(secs_since "$started")"
+		[ "$clock" = yes ] && timed "$name" "$(secs_since "$started")"
 		printf 'PASS %s\n' "$name"
 		if [ -n "$out" ]; then
 			printf '%s\n' "$out" | indent
@@ -316,7 +328,7 @@ check() {
 		passed=$((passed + 1))
 	else
 		status=$?
-		timed "$name" "$(secs_since "$started")"
+		[ "$clock" = yes ] && timed "$name" "$(secs_since "$started")"
 		printf 'FAIL %s (exit %d)\n' "$name" "$status"
 		if [ -n "$out" ]; then
 			printf '%s\n' "$out" | indent
