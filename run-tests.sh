@@ -78,17 +78,54 @@ SUITE_PWD="$PWD"
 #
 # flock rather than the node's lock, deliberately: this must hold when the node
 # is down, when the token is missing, and for anybody who runs ./run-tests.sh by
-# hand without knowing about any of it. The lock is released when this process
-# exits, however it exits, because the kernel holds it against the descriptor.
+# hand without knowing about any of it.
+#
+# AND THE LOCK IS HELD BY A PROCESS OF ITS OWN, not by this shell. That is the
+# whole of 01M0HN5GA0 and it cost the fleet an hour with fourteen rows queued.
+#
+# What used to be here was `exec 9>"$GATE_LOCK"` and this sentence: "the lock is
+# released when this process exits, however it exits, because the kernel holds
+# it against the descriptor". True about the descriptor and wrong about the
+# process. A flock lives on the OPEN FILE DESCRIPTION, and every child inherits
+# the fd - so the lock outlives the shell that took it for as long as ANY
+# descendant survives. A suite that dies badly leaves exactly those descendants:
+# the postgres it started, the browser check it spawned.
+#
+# MEASURED 2026-08-21, both directions:
+#
+#   exec 9>lock        a child has fd 9 on the lock. So does a {var}> fd: bash
+#                      sets close-on-exec on neither.
+#   flock -o -c ...    the child has NO fd on the lock at all. Kill the flock
+#                      subtree, leave an orphan running, and the lock is FREE.
+#
+# On the day: /proc/locks named a holder that no longer existed, with the
+# drainer queued behind it for thirteen minutes while the queue said "gating".
+# It was freed by killing four inheritors by hand.
+#
+# A TRAP IS NOT THE FIX, and was the first thing suggested. SIGKILL runs no trap,
+# and SIGKILL is what took that suite - SIGTERM sat undelivered because bash
+# defers a trap until the current command returns and the command was a read
+# that never returned. The trap below is belt and braces for the ordinary exits;
+# --close is what holds when nothing gets to run.
+#
+# So this re-runs itself under flock. The outer process holds the lock and
+# nothing below it can, which is the property; the status and the messages are
+# preserved by NOT exec'ing - a timeout has to be explained, and after an exec
+# there is nobody left to explain it.
 #
 # FLOWY_GATE_LOCK=off is for the one honest exception - a second suite against a
 # different checkout on purpose, by somebody who has just read this paragraph.
 GATE_LOCK=${FLOWY_GATE_LOCK:-${TMPDIR:-/tmp}/flowy-gate.lock}
-if [ "$GATE_LOCK" != off ]; then
-	exec 9>"$GATE_LOCK" || {
+# 99 rather than 2: `flock -E` is the status for FAILING TO TAKE THE LOCK, and
+# the suite's own 2 means something else entirely. Sharing the number would make
+# "another suite is running" indistinguishable from a refusal the suite itself
+# decided on.
+GATE_TIMEOUT_STATUS=99
+if [ "$GATE_LOCK" != off ] && [ -z "${FLOWY_GATE_HELD:-}" ]; then
+	if ! : >>"$GATE_LOCK" 2>/dev/null; then
 		printf 'cannot open the gate lock at %s\n' "$GATE_LOCK" >&2
 		exit 2
-	}
+	fi
 	# IT WAITS RATHER THAN REFUSING, and that is the whole of this change.
 	#
 	# COUNTED on 2026-08-19: one seat wrote
@@ -111,26 +148,65 @@ if [ "$GATE_LOCK" != off ]; then
 	# who held it, and exits 2 exactly as it did before. A caller that wants no
 	# wait at all sets FLOWY_GATE_WAIT=0 and gets the old refusal.
 	GATE_WAIT=${FLOWY_GATE_WAIT:-1800}
-	if ! flock -n 9; then
-		holder=$(cat "$GATE_LOCK" 2>/dev/null || true)
-		if [ "$GATE_WAIT" != 0 ]; then
-			printf 'another suite is running%s - waiting up to %ss for the lock\n' \
-				"${holder:+ (pid $holder)}" "$GATE_WAIT" >&2
-		fi
-		if [ "$GATE_WAIT" = 0 ] || ! flock -w "$GATE_WAIT" 9; then
-			holder=$(cat "$GATE_LOCK" 2>/dev/null || true)
+	# SAID BEFORE THE WAIT, because the wait is where the silence used to be: a
+	# drainer blocked in flock and a queue reporting "gating" are the same
+	# picture from outside, and that is thirteen minutes nobody could account
+	# for. The holder is read from the sidecar - see below.
+	holder=$(cat "$GATE_LOCK.pid" 2>/dev/null || true)
+	if ! flock -n "$GATE_LOCK" -c true 2>/dev/null; then
+		if [ "$GATE_WAIT" = 0 ]; then
 			printf 'ANOTHER SUITE IS RUNNING ON THIS MACHINE%s\n' \
 				"${holder:+ (pid $holder)}" >&2
-			printf 'Two suites here take the same port and the second one measures the\n' >&2
-			printf 'first one node - red or green, whichever the borrowed answers give.\n' >&2
-			printf 'Waited %ss. Raise FLOWY_GATE_WAIT, or FLOWY_GATE_LOCK=off if you mean\n' "$GATE_WAIT" >&2
-			printf 'to run two.\n' >&2
 			exit 2
 		fi
-		printf 'lock acquired, starting\n' >&2
+		printf 'another suite is running%s - waiting up to %ss for the lock, since %s\n' \
+			"${holder:+ (pid $holder)}" "$GATE_WAIT" "$(date -u +%H:%M:%SZ)" >&2
 	fi
-	printf '%s' "$$" >&9
+	# THE RE-RUN. -o is the point: the lock is held by this flock process and the
+	# fd is closed before the suite starts, so nothing the suite spawns can hold
+	# the gate after the suite is gone.
+	#
+	# Not exec'd, so the timeout below still has somebody to explain it.
+	FLOWY_GATE_HELD=1 flock -w "$GATE_WAIT" -o -E "$GATE_TIMEOUT_STATUS" \
+		"$GATE_LOCK" "$0" "$@"
+	status=$?
+	if [ "$status" -eq "$GATE_TIMEOUT_STATUS" ]; then
+		holder=$(cat "$GATE_LOCK.pid" 2>/dev/null || true)
+		printf 'ANOTHER SUITE IS RUNNING ON THIS MACHINE%s\n' \
+			"${holder:+ (pid $holder)}" >&2
+		printf 'Two suites here take the same port and the second one measures the\n' >&2
+		printf 'first one node - red or green, whichever the borrowed answers give.\n' >&2
+		printf 'Waited %ss. Raise FLOWY_GATE_WAIT, or FLOWY_GATE_LOCK=off if you mean\n' "$GATE_WAIT" >&2
+		printf 'to run two. scripts/who-holds-the-gate.sh says who has it and whether\n' >&2
+		printf 'that process still exists.\n' >&2
+		exit 2
+	fi
+	exit "$status"
 fi
+
+# WHOSE PID IS IN THE LOCK, now that the lock file is not this shell's to write.
+#
+# A SIDECAR, because flock -o owns the lock file and the suite no longer holds a
+# descriptor on it. It is a courtesy for the message above and nothing depends
+# on it: a stale sidecar makes one line say the wrong pid, where a stale LOCK
+# used to stop the fleet. The trap removes it on any ordinary exit.
+if [ "$GATE_LOCK" != off ]; then
+	printf '%s' "$$" >"$GATE_LOCK.pid" 2>/dev/null || true
+fi
+
+# AND THE TIDYING IS cleanup()'s, NOT A SECOND TRAP.
+#
+# The first version of this installed `trap gate_reap EXIT` here, seventy lines
+# above `trap cleanup EXIT INT TERM`. A second trap on EXIT REPLACES the first,
+# so the reaper would never have run and the sidecar would never have been
+# removed - a guard that silently does nothing, which is worse than no guard,
+# and exactly the shape this suite exists to catch. Found by reading for the
+# existing trap before shipping the new one.
+#
+# cleanup() already stops the postgres instances, the nodes and the fuse mounts.
+# The sidecar removal goes there with them. What no trap can do is help on
+# SIGKILL, which is what took the suite that started all this - and that is why
+# the lock is held by a --close flock above rather than by a trap here.
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/flowy-gate.XXXXXX")"
 # The per-check clock's file. Declared beside WORK because timed() is a no-op
@@ -172,6 +248,12 @@ failed=0
 cleanup() {
 	local status=$?
 	set +e
+	# The pid sidecar beside the gate lock - see the lock preamble. Nothing
+	# depends on it: a stale one makes a message name the wrong pid, where a
+	# stale LOCK used to stop the fleet.
+	if [ "${GATE_LOCK:-off}" != off ]; then
+		rm -f "$GATE_LOCK.pid" 2>/dev/null
+	fi
 	local pid data mountpoint pidfile
 	# The fuse mounts first, and by reading /proc rather than by remembering:
 	# a mountpoint inside $WORK that is still attached when the rm -rf below
@@ -12123,6 +12205,20 @@ a_refused_run_says_so_before_it_says_the_count() {
 	./scripts/verdict-order-check.sh run-tests.sh
 }
 
+# THE GATE LOCK DIES WITH THE SUITE THAT TOOK IT - 01M0HN5GA0, which cost the
+# fleet an hour with fourteen rows queued and the drainer sitting in flock
+# behind a pid that no longer existed.
+#
+# It asserts a DIFFERENCE rather than the fix on its own, because one reading
+# cannot tell "released" from "never held": an orphan of a killed shell must
+# still hold an INHERITED flock, and must not hold a --close one. The first arm
+# is the positive control, and it fails loudly rather than passing quietly if
+# the kernel ever stops behaving that way.
+the_gate_lock_does_not_outlive_its_suite() {
+	cd "$ROOT" || return 1
+	./scripts/gate-lock-check.sh run-tests.sh
+}
+
 # THE OPERATOR SENT A SCREENSHOT captioned "note the fonts": room names at the
 # page's base size, with the hash and the name stacked one above the other.
 #
@@ -12523,6 +12619,8 @@ check "a refused run says so before it says the count" \
 	a_refused_run_says_so_before_it_says_the_count
 check "a ULID is not sliced for a name, because a prefix is a clock" \
 	a_ulid_is_not_sliced_for_a_name
+check "the gate lock does not outlive the suite that took it" \
+	the_gate_lock_does_not_outlive_its_suite
 preflight "npm ci" npm_ci
 check "biome check web/" biome_check
 preflight "vite build" npm_build
