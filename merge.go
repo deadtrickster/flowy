@@ -43,6 +43,7 @@ const mergeUsage = `flowy merge - file a branch for the queue to land
 usage:
   flowy merge open --branch B [--target master] [--title T] [--assignee A]
                    [--room R] [--scope S] [body]
+  flowy merge withdraw --id ID --note "why"
 
 The body is the argument, or stdin, and it is what the next reader has instead
 of you: what changed, what was measured, what is deliberately not in it.
@@ -63,6 +64,16 @@ of you: what changed, what was measured, what is deliberately not in it.
               to the door: three rows sat invisible for hours because a default
               decided this and nobody typed it.
 
+On withdraw:
+
+  --id        the merge row to take out of the queue. The queue filters on
+              status, so a withdrawn row is a done row - and abandon is a
+              different operation on a different thing: it gives back the
+              target LOCK and leaves the request in the queue.
+  --note      why. Required, and the only required note in this file: every
+              other queue event leaves an artifact behind - a landing leaves a
+              sha, a red leaves a verdict - and a withdrawal leaves an absence.
+
 It prints the row id on stdout and everything a person reads on stderr, so a
 script can hand the id straight on.
 
@@ -79,6 +90,8 @@ func mergeCmd(args []string) error {
 	switch sub {
 	case "open", "file":
 		return mergeOpen(args)
+	case "withdraw":
+		return mergeWithdraw(args)
 	case "help", "-h", "--help":
 		fmt.Print(mergeUsage)
 		return nil
@@ -356,3 +369,128 @@ func mergeOpen(args []string) error {
 // #general is where this fleet decides what to pick up, which makes it the room
 // a landing is least likely to be missed in.
 const mergeRoomDefault = "general"
+
+// mergeWithdraw takes a row OUT of the queue, and is the verb this file did not
+// have.
+//
+// WHY A VERB RATHER THAN A SENTENCE IN THE DOCS. Three withdrawals happened on
+// the live node before this existed and none of them used the same words:
+// `flowy todo done --id`, a raw `curl -X POST /api/artifact/{id}/status`, and an
+// attempt at `/api/merge/{id}/abandon` that was refused - correctly, about a
+// question the caller was not asking. Withdrawal is a normal part of running a
+// queue, and a normal operation whose verb lives under a different noun is one
+// every new seat rediscovers by being refused.
+//
+// THE TWO VERBS AND WHY THEY ARE NOT THE SAME ONE:
+//
+//	abandon    gives back the target LOCK and leaves the request at todo. The
+//	           row stays in the queue and can be gated again.
+//	withdraw   retires the ROW. The queue filters on status, so done is what
+//	           takes it out - and the lock, if this row holds one, is NOT
+//	           touched by that. Measured: nothing in the status path calls
+//	           MergeLockOf.
+//
+// which is why this refuses rather than closing a row that holds its target.
+// Closing it would take the row out of the queue and leave master reserved for
+// the full BlockBelievedFor window with no row left to explain why - a stuck
+// lock whose reason has been deleted, found by whoever declares next.
+func mergeWithdraw(args []string) error {
+	fs := flag.NewFlagSet("merge withdraw", flag.ContinueOnError)
+	id := fs.String("id", "", "the merge row to take out of the queue")
+	note := fs.String("note", "", "why it is being withdrawn")
+	urlFlag := fs.String("url", "", "node to talk to (default $FLOWY_ADDR or "+defaultTUIAddr+")")
+	token := fs.String("token", "", "bearer token (default $FLOWY_TOKEN, then ~/.config/flowy/token)")
+	agent := fs.String("agent", "", agentFlagHelp)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	row := strings.TrimSpace(*id)
+	if row == "" {
+		return errors.New("a withdrawal names a row: pass --id\n\n" + mergeUsage)
+	}
+	// THE REASON IS REQUIRED, and this is the one place in this file that
+	// demands one. A row leaving the queue is the only queue event with no
+	// artifact of its own: a landing leaves a sha, a block leaves a reason, a
+	// red leaves a verdict, and a withdrawal leaves an absence. Whoever wonders
+	// next week why that branch never landed has the note or has nothing.
+	if strings.TrimSpace(*note) == "" {
+		return errors.New("a withdrawal says why - a row that vanishes from the queue " +
+			"with nothing on it is indistinguishable from one that landed: pass --note\n\n" +
+			mergeUsage)
+	}
+
+	base, bearer, err := nodeFor(*urlFlag, *token, *agent)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	client := &http.Client{Timeout: 30 * time.Second}
+
+	// IS IT A MERGE ROW AT ALL. `todo done` and this write through the same
+	// door, so without this check `merge withdraw` on a todo id closes the todo
+	// and reports a withdrawal - the wrong noun accepted silently, which is how
+	// the abandon confusion started.
+	var art struct {
+		ID     string `json:"id"`
+		Kind   string `json:"kind"`
+		Title  string `json:"title"`
+		Status string `json:"status"`
+	}
+	if err := peerRequest(ctx, client, http.MethodGet, base+"/api/artifact/"+row,
+		bearer, nil, &art); err != nil {
+		return err
+	}
+	if art.Kind != store.MergeKind {
+		return fmt.Errorf("%s is a %s row, not a merge request - `flowy todo done --id %s "+
+			"--note \"...\"` is what closes one of those", row, art.Kind, row)
+	}
+	if art.Status == store.DoneStatus {
+		// NOT AN ERROR TO REPEAT, but not a silent success either: a caller
+		// that sees "withdrawn" for the second time has learnt nothing about
+		// whether their first call worked.
+		fmt.Println(row)
+		fmt.Fprintf(os.Stderr, "%s was already out of the queue - nothing to withdraw\n", row)
+		return nil
+	}
+
+	// DOES THIS ROW HOLD THE TARGET. The lock names the row it was taken for -
+	// see mergeQueueLock.Item, and 01M0DZP4HS for why an identity rather than a
+	// name. If it is this one, withdrawing would strand it.
+	answer, _, err := readQueue(ctx, client, base, bearer, "")
+	if err == nil && answer.Lock != nil && answer.Lock.Held && answer.Lock.Item == row {
+		return fmt.Errorf("%s is holding %s until %s, so withdrawing it now would leave the "+
+			"target reserved with no row left to say why - give the lock back first:\n\n"+
+			"    curl -X POST -H \"Authorization: Bearer $FLOWY_TOKEN\" \\\n"+
+			"      -d '{\"reason\":\"withdrawing the row\"}' \\\n"+
+			"      %s/api/merge/%s/abandon\n\n"+
+			"then withdraw it", row, answer.Target, answer.Lock.Until.Format(time.RFC3339),
+			base, row)
+	}
+	// A QUEUE THAT COULD NOT BE READ IS NOT A QUEUE WITH NO LOCK. The read
+	// above is a guard, not the operation, so a failure here must not refuse a
+	// legitimate withdrawal - but it must not be reported as a clean check
+	// either.
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "note: could not read the queue to check whether %s holds "+
+			"the target (%v) - withdrawing anyway. If it was gating, give the lock back.\n",
+			row, err)
+	}
+
+	payload, marshalErr := json.Marshal(map[string]string{
+		"status": store.DoneStatus, "note": "withdrawn from the queue: " + strings.TrimSpace(*note),
+	})
+	if marshalErr != nil {
+		return marshalErr
+	}
+	// Through call() rather than peerRequest directly: the status door answers
+	// with a body this verb has no use for, and peerRequest given a nil
+	// destination tries to decode into it anyway.
+	if err := call(http.MethodPost, base+"/api/artifact/"+row+"/status",
+		bearer, payload, nil); err != nil {
+		return err
+	}
+	fmt.Println(row)
+	fmt.Fprintf(os.Stderr, "withdrew %s - it is out of the queue and the note says why\n", row)
+	return nil
+}

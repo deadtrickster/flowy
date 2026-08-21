@@ -237,3 +237,32 @@ func TestAbandoningSomethingThatIsNotAMergeRequestIsNotFound(t *testing.T) {
 		t.Fatalf("abandoning a todo came back %v, want ErrNotFound", err)
 	}
 }
+
+// AND IT NAMES THE VERB THE CALLER ACTUALLY WANTED. Almost everybody who meets
+// that refusal was trying to take their row out of the queue - three times on
+// the live node, once by the agent who owns the drainer - because abandon was
+// the only verb the merge noun had. A refusal that is true about a question
+// nobody asked reads as a broken door. See 01M0G4FMK4.
+//
+// The row id is in the message rather than a bare verb name: a signpost that
+// still needs an argument looked up is half a signpost.
+func TestTheFreeTargetRefusalNamesTheWithdrawVerb(t *testing.T) {
+	ctx, db, project := lockCtx(t)
+	target := ownTarget(t)
+	row, holder := abandonRow(t, project, target)
+	if err := db.UpsertArtifact(ctx, row); err != nil {
+		t.Fatalf("file: %v", err)
+	}
+
+	_, _, err := db.AbandonMerge(ctx, holder, row.ID, "meant to withdraw it")
+	var refused *ErrAbandonRefused
+	if !errors.As(err, &refused) {
+		t.Fatalf("abandoning a free target came back %v, want ErrAbandonRefused", err)
+	}
+	if !strings.Contains(refused.Error(), "merge withdraw") {
+		t.Errorf("the refusal does not name the verb that takes a row out: %q", refused.Error())
+	}
+	if !strings.Contains(refused.Error(), row.ID) {
+		t.Errorf("the refusal names a verb but not the row to run it on: %q", refused.Error())
+	}
+}

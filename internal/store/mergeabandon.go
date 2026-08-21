@@ -95,9 +95,23 @@ func (d *DB) AbandonMerge(ctx context.Context, p *Principal, id, reason string) 
 	}
 	now := time.Now().UTC()
 	if lock == nil {
+		// A TRUE SENTENCE ABOUT A QUESTION THE CALLER WAS NOT ASKING.
+		//
+		// Almost everybody who meets this refusal was trying to take their row
+		// OUT of the queue, not to give back a lock - measured three times on
+		// the live node, once by the agent who owns the drainer. Abandon is the
+		// only verb the merge noun had, so it is the one they reach for, and it
+		// answers about the lock: correct, unhelpful, and easily read as "this
+		// door is broken" or "I am".
+		//
+		// So the refusal names the verb they wanted. It costs a clause and it
+		// turns the dead end into a signpost - see 01M0G4FMK4, filed after the
+		// third time.
 		return nil, nil, &ErrAbandonRefused{
-			Reason: fmt.Sprintf("%s is not held by anybody - there is nothing to give back", target),
-			Now:    now,
+			Reason: fmt.Sprintf("%s is not held by anybody - there is nothing to give back. "+
+				"If you meant to take this row out of the queue, that is a different verb: "+
+				"flowy merge withdraw --id %s --note \"why\"", target, art.ID),
+			Now: now,
 		}
 	}
 	if lock.Holder != actor {
