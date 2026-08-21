@@ -48,7 +48,7 @@ export function MergeQueue({
 }: {
   items: MergeRequest[];
   tip: string;
-  tipFrom: "stated" | "deployed" | "none";
+  tipFrom: "stated" | "landed" | "deployed" | "none";
   decided: boolean;
   loaded: boolean;
   /**
@@ -95,7 +95,14 @@ export function MergeQueue({
         so these answer "may this land on what is running here" - a real
         question, and not the same as "may this land on master right now".
       */}
-      <p className="px-4 pt-3 text-muted-foreground text-xs">
+      {/*
+        The provenance as a VALUE, beside the sentence built from it. The
+        sentence is prose and has been reworded twice; a check that read it
+        would be asserting the wording. What matters is that this pane and the
+        node agree about where the tip came from, and that two copies of this
+        pane agree with each other - which they did not, see 01M0JZ5VM8.
+      */}
+      <p data-merge-tipfrom={tipFrom} className="px-4 pt-3 text-muted-foreground text-xs">
         {decided ? (
           <>
             judged against <code className="text-xs">{tip}</code>

@@ -2356,7 +2356,7 @@ export const api = {
     request<{
       target: string;
       target_tip: string;
-      tip_from: "stated" | "deployed" | "none";
+      tip_from: "stated" | "landed" | "deployed" | "none";
       decided: boolean;
       gating: number;
       items: MergeRequest[];
@@ -2426,7 +2426,7 @@ export const api = {
     request<{
       target: string;
       target_tip: string;
-      tip_from: "stated" | "deployed" | "none";
+      tip_from: "stated" | "landed" | "deployed" | "none";
       decided: boolean;
       gating: number;
       items: MergeRequest[];
