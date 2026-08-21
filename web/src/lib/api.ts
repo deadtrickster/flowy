@@ -674,6 +674,38 @@ export interface MergeLock {
   taken_at?: string;
 }
 
+/**
+ * A project firecode may spawn a VM over.
+ *
+ * `exists` is false for a registered project whose directory has gone. The node
+ * treats those as unknown when resolving a spawn, so the panel must not offer
+ * them - an option that is refused on click is a dead button with extra steps.
+ */
+export interface VMProject {
+  name: string;
+  path: string;
+  exists: boolean;
+}
+
+/**
+ * A running VM, as `firecode ps --json` reports it and the node passes through.
+ *
+ * `probed` is false because `ps` deliberately does NOT ask each guest over
+ * vsock - that costs a 25s timeout per VM, so ten of them would be four minutes
+ * for one page refresh. So this is the host's view of what it started, and
+ * last_output_s is how long ago the run last printed anything, which is the
+ * closest thing to liveness available without paying for the probe.
+ */
+export interface VM {
+  id: string;
+  name: string;
+  project: string;
+  parent: string | null;
+  backend: string;
+  last_output_s: number;
+  probed: boolean;
+}
+
 /** Why a row was skipped, when it was skipped, and by which seat. */
 export interface MergeBlocked {
   why: string;
@@ -2337,6 +2369,59 @@ export const api = {
        */
       lock?: MergeLock;
     }>(`/api/merge-queue?room=${encodeURIComponent(room)}`),
+  /**
+   * THE VMs. Six doors, all of them operator-only (roleguard.go), all of them
+   * one exec of `firecode` away on the machine serving this node.
+   *
+   * FOUR ANSWERS THAT MUST NOT COLLAPSE INTO ONE EMPTY PAGE, which is the whole
+   * reason these are typed here rather than inlined at the call site:
+   *
+   *   403  this is the operator's and you are not the operator
+   *   503  this node has no firecode on its PATH - it CANNOT run VMs
+   *   502  firecode was there and refused
+   *   200 with an empty list  nothing is running
+   *
+   * The node is careful to keep these apart - api_vm.go returns 503 rather than
+   * an empty list precisely so a console cannot tell the operator "no VMs" when
+   * the truth is "this machine cannot start one". A caller that catches these
+   * into a blank panel undoes that at the last layer. ApiError carries .status,
+   * so the panel branches on it.
+   */
+  vmProjects: () => request<{ projects: VMProject[] }>("/api/vm/projects"),
+  vmList: () => request<{ vms: VM[] }>("/api/vm/list"),
+  /**
+   * Answers 202 the moment the process is STARTED, not when the agent is done -
+   * a run is minutes to hours. What happened next is `vmList` and `vmLog`.
+   *
+   * The project is a NAME from vmProjects, never a path: a caller that can name
+   * a directory can pack any directory into a VM that has the network. An
+   * unknown name is refused with the list that would have worked.
+   */
+  vmSpawn: (project: string, prompt: string) =>
+    request<{ project: string; workdir: string; started: boolean; prompt_given: boolean }>(
+      "/api/vm/spawn",
+      { method: "POST", body: JSON.stringify({ project, prompt }) },
+    ),
+  /** Console output, as text/plain - the node does not wrap it in a field. */
+  vmLog: async (name: string) => {
+    const r = await fetch(`/api/vm/${encodeURIComponent(name)}/log`, {
+      credentials: "same-origin",
+      headers: authHeader(),
+    });
+    const text = await r.text();
+    if (!r.ok) throw new ApiError(r.status, parseBody(text, r)?.error ?? statusText(r));
+    return text;
+  },
+  vmSay: (name: string, text: string) =>
+    request<{ vm: string; said: boolean }>(`/api/vm/${encodeURIComponent(name)}/say`, {
+      method: "POST",
+      body: JSON.stringify({ text }),
+    }),
+  /** Stops it AND copies the work back out, which is why the node allows it three minutes. */
+  vmDown: (name: string) =>
+    request<{ vm: string; stopped: boolean }>(`/api/vm/${encodeURIComponent(name)}/down`, {
+      method: "POST",
+    }),
   mergeQueue: () =>
     request<{
       target: string;

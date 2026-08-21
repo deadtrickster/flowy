@@ -23,6 +23,7 @@ import { Reports } from "@/routes/Reports";
 import { TaskView } from "@/routes/TaskView";
 import { Todos } from "@/routes/Todos";
 import { Traces } from "@/routes/Traces";
+import { Vms } from "@/routes/Vms";
 import { Worklog } from "@/routes/Worklog";
 
 /**
@@ -126,6 +127,12 @@ export default function App() {
           <Route path="/metrics" element={<Metrics />} />
           <Route path="/traces" element={<Traces />} />
           <Route path="/activity" element={<Activity />} />
+          {/*
+            Reachable by URL and from the rail. A panel with a route and no rail
+            entry is one the operator who asked for it has to be told about, and
+            the ask was "right from flow".
+          */}
+          <Route path="/vms" element={<Vms />} />
           <Route path="*" element={<NotFound />} />
         </Routes>
       </Shell>
