@@ -22,34 +22,49 @@ func TestALockBelongsToItsProject(t *testing.T) {
 	alpha := &Principal{UserID: "u-alpha", Project: "alpha"}
 	beta := &Principal{UserID: "u-beta", Project: "beta"}
 
-	if _, err := db.TakeMergeLock(ctx, alpha, "alpha", "master", "01ALPHA"); err != nil {
+	// THE NAME BOTH REPOSITORIES USE, and deliberately not the literal
+	// "master". This suite shares one database with a running node, and a lock
+	// taken on the real master here is never released - the test proves lock
+	// independence by releasing alpha's and leaving beta's - so it is held for
+	// MergeLockBelievedFor, fifteen minutes, by a test that finished in a
+	// second. /api/merge-queue asked with no project answers about the target,
+	// so from here to the end of the run every check that asks whether the gate
+	// is free is told u-beta is gating. One console check spent an hour being
+	// debugged for reporting exactly that.
+	//
+	// The property under test is that TWO PROJECTS SHARE ONE TARGET NAME and do
+	// not contend, which one name used twice states as exactly as "master" did.
+	// ownTarget is what every other lock test in this package already uses.
+	target := ownTarget(t)
+
+	if _, err := db.TakeMergeLock(ctx, alpha, "alpha", target, "01ALPHA"); err != nil {
 		t.Fatalf("alpha could not take its own master: %v", err)
 	}
 
 	// THE OTHER PROJECT'S MASTER IS A DIFFERENT TARGET. On the broken version
 	// this is refused with alpha's holder and alpha's item.
-	if _, err := db.TakeMergeLock(ctx, beta, "beta", "master", "01BETA"); err != nil {
+	if _, err := db.TakeMergeLock(ctx, beta, "beta", target, "01BETA"); err != nil {
 		t.Fatalf("beta was refused its own master by another project's lock: %v", err)
 	}
 
 	// AND THE SAME PROJECT STILL CONTENDS, which is the arm that fails if the
 	// key were made unique enough to stop locking anything at all.
 	other := &Principal{UserID: "u-other", Project: "alpha"}
-	if _, err := db.TakeMergeLock(ctx, other, "alpha", "master", "01OTHER"); err == nil {
+	if _, err := db.TakeMergeLock(ctx, other, "alpha", target, "01OTHER"); err == nil {
 		t.Error("a second declarer in the SAME project took a held target - the lock " +
 			"stopped locking rather than started scoping")
 	}
 
 	// EACH READS ITS OWN HOLDER. A read that crossed projects would report the
 	// wrong seat to whoever is deciding whether to wait.
-	a, err := db.MergeLockOf(ctx, "alpha", "master")
+	a, err := db.MergeLockOf(ctx, "alpha", target)
 	if err != nil || a == nil {
 		t.Fatalf("alpha's lock: %+v %v", a, err)
 	}
 	if a.Item != "01ALPHA" {
 		t.Errorf("alpha's master is held for %q", a.Item)
 	}
-	b, err := db.MergeLockOf(ctx, "beta", "master")
+	b, err := db.MergeLockOf(ctx, "beta", target)
 	if err != nil || b == nil {
 		t.Fatalf("beta's lock: %+v %v", b, err)
 	}
@@ -58,10 +73,10 @@ func TestALockBelongsToItsProject(t *testing.T) {
 	}
 
 	// RELEASING ONE DOES NOT RELEASE THE OTHER.
-	if _, err := db.ReleaseMergeLock(ctx, alpha, "alpha", "master", "01ALPHA"); err != nil {
+	if _, err := db.ReleaseMergeLock(ctx, alpha, "alpha", target, "01ALPHA"); err != nil {
 		t.Fatalf("alpha's release: %v", err)
 	}
-	still, err := db.MergeLockOf(ctx, "beta", "master")
+	still, err := db.MergeLockOf(ctx, "beta", target)
 	if err != nil || still == nil {
 		t.Fatalf("beta's lock did not survive alpha's release: %+v %v", still, err)
 	}
