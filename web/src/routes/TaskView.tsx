@@ -185,7 +185,22 @@ export function TaskView() {
           </div>
         ) : null}
 
-        <MessageList events={events} selected={selected} onSelect={select} onCite={citeSpan} />
+        {/*
+          me is what rings a mention of the reader - see lib/markdown - and
+          this call site did not pass it, so every chip on a handoff was drawn
+          unringed for everybody and a mention of YOU looked like a mention of
+          somebody else. On the one surface where a seat asks another seat for
+          something, the ring is the only thing on the page that says the ask
+          is yours. Found by flowy-claude while measuring 01M0GGSM99;
+          checks.d/console/mention-me.sh is what stops the fifth call site.
+        */}
+        <MessageList
+          events={events}
+          selected={selected}
+          onSelect={select}
+          onCite={citeSpan}
+          me={{ user: whoami?.user, agent: whoami?.agent }}
+        />
 
         <MessageBox
           citation={citation}
