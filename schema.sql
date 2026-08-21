@@ -1475,4 +1475,31 @@ CREATE TABLE IF NOT EXISTS schedules (
 
 CREATE INDEX IF NOT EXISTS schedules_signal_idx ON schedules (signal);
 
+-- WHEN A READER LAST GOT A CLOCK FIRING.
+--
+-- Chat has a cursor; a clock does not. Without a stamp a reader that restarts
+-- mid-task re-fires everything currently due, and a reader that was down for an
+-- afternoon comes back to one firing per missed boundary - the loop-detection
+-- ask arriving as the thing it detects.
+--
+-- THE KEY IS (READER, SIGNAL), and row 01M0EW45RE said (schedule, reader). The
+-- narrowing is deliberate and the reason is that A SCHEDULE IS NOT A STABLE
+-- IDENTITY: what fires is the RESOLVED answer, and which scope produced it
+-- changes the moment somebody edits a row or a room stops overriding. Keying
+-- the stamp on the scope that decided would mean a project-level edit silently
+-- resets every room's stamp and every reader gets one extra firing - a schedule
+-- change causing a delivery is precisely what a stamp exists to prevent.
+--
+-- A reader receives one stream per signal. Which scope decided is a property of
+-- the moment, not of the delivery.
+--
+-- reader is the waiter label, the same string inbox_readers keys on, so "which
+-- reader" means the same thing in both tables.
+CREATE TABLE IF NOT EXISTS schedule_fired (
+    reader    text NOT NULL,
+    signal    text NOT NULL,
+    fired_at  timestamptz NOT NULL,
+    PRIMARY KEY (reader, signal)
+);
+
 COMMIT;
