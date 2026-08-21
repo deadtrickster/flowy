@@ -801,8 +801,22 @@ export function ChatRoom() {
    * armed from a cold load, and nothing is being armed.
    */
   const openThread = (event: FlowyEvent) => {
+    // THE URL STILL NAMES IT, so the pane can be sent to somebody - measured by
+    // the thread-count check, which failed the first cut of this with "opening
+    // a thread left the url at /chat/<room>/thread, so it cannot be sent to
+    // anybody". Dropping the navigate was too blunt: the segment carries two
+    // different facts, "this pane was opened from that message" and "quote it",
+    // and only the second one is unwanted here.
+    //
+    // So the id is marked APPLIED before the navigate. The effect above selects
+    // the path's message once per id and skips one it has already handled, and
+    // this gesture has handled it: the pane is open on that message's thread
+    // and nothing was asked to be quoted. A link somebody else opens cold is
+    // untouched - `applied` is per tab, so the recipient's effect still runs
+    // and still arms the reply that link was made to carry.
+    applied.current = event.id;
     setOpened(event.thread);
-    setPane("thread");
+    navigate(`/chat/${encodeURIComponent(room)}/thread/${encodeURIComponent(event.id)}`);
   };
 
   const wantsThreadBox = useRef(false);

@@ -84,6 +84,17 @@ try {
     );
   }
 
+  // AND THE URL NAMES IT, so the pane can be sent to somebody. The first cut of
+  // this fix dropped the navigate altogether and the thread-count check caught
+  // it: "opening a thread left the url at /chat/<room>/thread, so it cannot be
+  // sent to anybody". Asserted here too, beside the rule it trades against, so
+  // the next person to remove the navigate finds out from the check that is
+  // about this gesture.
+  if (!page.url().includes(root.id)) {
+    die(`opening the thread left the url at ${page.url()}, which names no message -
+the pane cannot be sent to anybody.`);
+  }
+
   // AND IT QUOTED NOTHING.
   const armed = await page.locator("[data-citation]").count();
   if (armed > 0) {
