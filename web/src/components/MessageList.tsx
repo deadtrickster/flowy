@@ -21,6 +21,23 @@ interface Props {
    * because the node cuts the quote out of the source with the same offsets.
    */
   onCite?: (event: FlowyEvent, start: number, end: number) => void;
+  /**
+   * onThreadReply is "answer this, in its thread" - one gesture that opens the
+   * thread pane on this message and puts the caret in the pane's composer.
+   *
+   * SEPARATE FROM onSelect ON PURPOSE. Selecting a message and opening its
+   * thread have been the same call since this list was written, so `reply`,
+   * `thread <id>` and `N replies` all did the same thing and none of them said
+   * where the words would go. The operator asked for the pair spelled out:
+   * "like we have now reply - this is cited reply in the room. and then reply in
+   * thread is well in thread". A control that does not say where it puts your
+   * words is a control you have to try to understand.
+   *
+   * Optional, so a list without a thread pane beside it - TaskView, the
+   * document panes - simply does not draw the button rather than drawing one
+   * that goes nowhere.
+   */
+  onThreadReply?: (event: FlowyEvent) => void;
   /** me is the principal reading, so a message for them can say so. */
   me?: { user?: string; agent?: string };
   /**
@@ -109,6 +126,7 @@ export function MessageList({
   selected,
   onSelect,
   onCite,
+  onThreadReply,
   me,
   onSeen,
   onOlder,
@@ -578,6 +596,27 @@ export function MessageList({
                   >
                     reply
                   </button>
+                  {/*
+                    AND THE OTHER PLACE THE WORDS CAN GO. `reply` cites into the
+                    ROOM; this one answers inside the thread and leaves the pane
+                    where it put you - see ChatRoom, where the pane holds what a
+                    reader opened rather than following the newest message.
+
+                    Drawn only when there is a pane to open. A button that says
+                    "in thread" on a surface with no thread pane would be a
+                    promise nothing keeps.
+                  */}
+                  {onThreadReply ? (
+                    <button
+                      type="button"
+                      data-thread-reply={event.id}
+                      onClick={() => onThreadReply(event)}
+                      aria-label={`reply in the thread ${shortId(event.thread)}, message ${shortId(event.id)}`}
+                      className="rounded border border-border px-1.5 py-0.5 text-[11px] text-muted-foreground opacity-60 transition hover:border-primary/50 hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
+                    >
+                      reply in thread
+                    </button>
+                  ) : null}
                 </div>
                 {/*
                 What this message is answering, above what it says. The words

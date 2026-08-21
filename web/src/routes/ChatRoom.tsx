@@ -709,6 +709,51 @@ export function ChatRoom() {
   // and there is no honest default - the newest thread is exactly the wrong
   // guess, which is how this started.
   const thread = opened;
+
+  /**
+   * "Answer this, in its thread": open the pane on the message's thread and put
+   * the caret in the pane's own composer.
+   *
+   * THE OPERATOR ASKED FOR THE PAIR TO BE LEGIBLE - "like we have now reply -
+   * this is cited reply in the room. and then reply in thread is well in
+   * thread". Until now `reply`, `thread <id>` and `N replies` all called
+   * onSelect, so three controls did one thing and none of them said where the
+   * words would go.
+   *
+   * IT NAVIGATES, because the pane is a route - see setPane. A reader on the
+   * todos pane who presses this expects to arrive at the thread, not to have
+   * changed some state behind a pane they cannot see.
+   *
+   * THE FOCUS IS AN EFFECT, NOT A FRAME. The first cut called
+   * requestAnimationFrame after setPane and it did not work - measured in a
+   * browser, focus still on the button. The pane is a ROUTE, so the composer
+   * does not exist for however many frames the navigation takes, and one frame
+   * is a guess about a render this code cannot see. A flag plus an effect asks
+   * the question the other way round: when the composer appears, was it asked
+   * for? That has no timing in it at all.
+   */
+  const wantsThreadBox = useRef(false);
+  const replyInThread = useCallback(
+    (event: FlowyEvent) => {
+      point(event);
+      setOpened(event.thread);
+      wantsThreadBox.current = true;
+      setPane("thread");
+    },
+    [point],
+  );
+  useEffect(() => {
+    if (!wantsThreadBox.current || pane !== "thread") return;
+    const box = document.querySelector<HTMLTextAreaElement>(
+      '[data-thread-compose] textarea[aria-label="message"]',
+    );
+    if (!box) return;
+    // CLEARED ONLY ONCE THE CARET IS ACTUALLY THERE, so a render that arrives
+    // before the composer does not consume the intent and leave the reader
+    // typing into the room they just left.
+    wantsThreadBox.current = false;
+    box.focus();
+  });
   /**
    * THE THREAD, FROM THE LOG, not from the page of the room on screen.
    *
@@ -910,6 +955,7 @@ export function ChatRoom() {
           selected={selected}
           onSelect={point}
           onCite={citeSpan}
+          onThreadReply={replyInThread}
           me={{ user: whoami?.user, agent: whoami?.agent }}
           onSeen={seen}
           onOlder={loadOlder}
