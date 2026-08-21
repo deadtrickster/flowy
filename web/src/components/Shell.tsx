@@ -533,7 +533,7 @@ export function Shell({ children }: { children: ReactNode }) {
           */}
           {hidden.length > 0 ? (
             <details
-              className="order-2 mt-1 px-2 text-muted-foreground text-xs md:order-none"
+              className="order-2 mt-1 min-h-0 px-2 text-muted-foreground text-xs md:order-none"
               data-closed-rooms=""
             >
               {/*
@@ -558,18 +558,39 @@ export function Shell({ children }: { children: ReactNode }) {
                   </span>
                 ) : null}
               </summary>
-              {hidden.map((room) => (
-                <button
-                  key={room}
-                  type="button"
-                  data-reopen-room={room}
-                  className="flex w-full items-center gap-1 rounded px-1 py-0.5 text-left hover:bg-muted hover:text-foreground"
-                  onClick={() => void reopen(room)}
-                >
-                  <Hash className="h-3 w-3" />
-                  {room}
-                </button>
-              ))}
+              {/*
+                A BOTTOM ON THE PILE, and a scroll of its own.
+                
+                The open list already scrolls inside itself - see the note on
+                the nav column, and rooms-scroll-check - and the closed pile did
+                not: it rendered every closed room with no bound, so opening it
+                pushed the rail's footer, the token box and the log-out below
+                the fold. The reader's own list of rooms moved because they
+                looked at the rooms they had put away.
+                
+                MEASURED before choosing this over pagination, which is what the
+                row asked for: 29 rooms on this node and 29 buttons in the worst
+                case - not a rendering cost, a LAYOUT one. Virtualising 29 items
+                would be work with nothing to show; bounding the box fixes what
+                actually breaks and keeps working at 300.
+                
+                40vh rather than a pixel count: the rail is as tall as the
+                window and a fixed height is wrong on both a phone and a desk.
+              */}
+              <div className="max-h-[40vh] overflow-y-auto" data-closed-rooms-list="">
+                {hidden.map((room) => (
+                  <button
+                    key={room}
+                    type="button"
+                    data-reopen-room={room}
+                    className="flex w-full items-center gap-1 rounded px-1 py-0.5 text-left hover:bg-muted hover:text-foreground"
+                    onClick={() => void reopen(room)}
+                  >
+                    <Hash className="h-3 w-3" />
+                    {room}
+                  </button>
+                ))}
+              </div>
             </details>
           ) : null}
         </div>
