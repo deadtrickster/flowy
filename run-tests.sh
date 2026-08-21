@@ -291,8 +291,13 @@ check() {
 	local name="$1"
 	shift
 	local out status started
-	if [ -n "$only" ] && [ "${name#*"$only"}" = "$name" ]; then
-		skipped=$((skipped + 1))
+	# ${only:-} and not $only. This function is EXTRACTED and run on its own by
+	# the stray-cd check, in a script that does not have the suite's variables
+	# and does have `set -u` - so a bare $only is an unbound variable there and
+	# takes that check down with it. Measured: "defs.sh: line 47: only: unbound
+	# variable", and the check reporting " failures, want exactly 1".
+	if [ -n "${only:-}" ] && [ "${name#*"${only:-}"}" = "$name" ]; then
+		skipped=$((${skipped:-0} + 1))
 		return 0
 	fi
 	if [ "$PWD" != "$SUITE_PWD" ]; then

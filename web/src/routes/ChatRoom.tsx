@@ -1080,7 +1080,20 @@ export function ChatRoom() {
             */}
             {thread ? (
               <div className="shrink-0 border-border border-t" data-thread-compose="">
-                <MessageBox disabled={!token} onSend={answerThread} room={room} />
+                {/*
+                  citation={null} and a no-op clearReply, because this box is
+                  not the citing one. The composer under the TRANSCRIPT carries
+                  what you are answering; this one answers the thread it sits
+                  under, and giving it the same citation would let a reply
+                  quote a message from a different conversation.
+                */}
+                <MessageBox
+                  citation={null}
+                  clearReply={() => {}}
+                  disabled={!token}
+                  onSend={answerThread}
+                  room={room}
+                />
               </div>
             ) : null}
           </section>
