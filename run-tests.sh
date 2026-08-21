@@ -3848,7 +3848,11 @@ addressing_changes_nothing_about_who_reads() {
 # what an earlier check left in the log.
 DM_PRIVATE_WORD="wombatinairlock"
 DM_PUBLIC_WORD="wombatintheroom"
-readonly DM_PRIVATE_WORD DM_PUBLIC_WORD
+# And a third for the unread count, which sends its own messages: the checks
+# below SEARCH for the two words above and assert exact counts, so a check that
+# borrowed one would change a number it does not own. Measured, on the gate.
+DM_COUNT_WORD="wombatonthetally"
+readonly DM_PRIVATE_WORD DM_PUBLIC_WORD DM_COUNT_WORD
 
 # dm TOKEN TO BODY [THREAD] - send a direct message. The addressee is the path:
 # a private message with nobody to send it to is refused by the route itself.
@@ -3919,7 +3923,12 @@ a_private_message_is_counted_as_unread() {
 	want_eq "a fresh mark counts nothing" "$(jqv .unread)" 0 || return 1
 	want_eq "and says which count it is" "$(jqv .direct)" true || return 1
 
-	dm "$TOKEN_A" "$USER_B" "one for the count, $DM_PRIVATE_WORD" || return 1
+	# A WORD OF ITS OWN, and this is a scar. The first version of this check
+	# said $DM_PRIVATE_WORD, which is the fixture the privacy checks below
+	# search for and count - so this one's extra message made "the addressee's
+	# timeline search finds it" report 2 where it wants 1, and the gate went red
+	# on a check I had not touched. Counting fixtures do not share vocabulary.
+	dm "$TOKEN_A" "$USER_B" "one for the count, $DM_COUNT_WORD" || return 1
 	want_eq "send status" "$API_STATUS" 200 || return 1
 	api GET "$TOKEN_B" "/api/inbox/unread?as=$mark&direct=1" || return 1
 	want_eq "a private message arrived" "$(jqv .unread)" 1 || return 1
@@ -3933,7 +3942,11 @@ a_private_message_is_counted_as_unread() {
 	# AND IT IS THE PRIVATE LOG, not the whole log. A count that ignored the
 	# narrowing would rise on every room message in the node and read exactly
 	# like this feature working.
-	api POST "$TOKEN_A" /api/chat/general/say \
+	# IN A ROOM OF ITS OWN, for the same reason the word above is its own: the
+	# room checks count what is in #general, and a message this one adds there
+	# is a number somebody else owns. Any room answers the question - the point
+	# is that a ROOM message does not raise the PRIVATE count.
+	api POST "$TOKEN_A" /api/chat/dmcount/say \
 		'{"body": "a room message, which is not a direct message"}' || return 1
 	api GET "$TOKEN_B" "/api/inbox/unread?as=$mark&direct=1" || return 1
 	want_eq "a room message did not raise the private count" "$(jqv .unread)" 1 || return 1
