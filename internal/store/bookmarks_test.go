@@ -28,6 +28,34 @@ func TestTheNewestThingKeptIsFirst(t *testing.T) {
 	}
 }
 
+// KEEPING SOMETHING AGAIN MOVES IT TO THE TOP, which is the rule the ordering
+// above exists for and the one the first version of the fold broke: it recorded
+// a position on first sight, so a re-keep left the message wherever it had been.
+// Found in review rather than by this test, which is why the test is here now.
+func TestKeepingSomethingAgainMovesItToTheTop(t *testing.T) {
+	kept := LiveBookmarks([]BookmarkEntry{
+		{Message: "01HOLD", Verb: EventBookmarkAdd},
+		{Message: "01HNEWER", Verb: EventBookmarkAdd},
+		{Message: "01HOLD", Verb: EventBookmarkRemove},
+		{Message: "01HOLD", Verb: EventBookmarkAdd},
+	})
+	want := []string{"01HOLD", "01HNEWER"}
+	if len(kept) != len(want) || kept[0] != want[0] || kept[1] != want[1] {
+		t.Fatalf("got %v, want %v - re-keeping is a reader saying 'this one, again'", kept, want)
+	}
+
+	// And keeping one twice without dropping it is the same statement, so it
+	// moves too rather than staying put.
+	again := LiveBookmarks([]BookmarkEntry{
+		{Message: "01HFIRST", Verb: EventBookmarkAdd},
+		{Message: "01HSECOND", Verb: EventBookmarkAdd},
+		{Message: "01HFIRST", Verb: EventBookmarkAdd},
+	})
+	if len(again) != 2 || again[0] != "01HFIRST" {
+		t.Fatalf("got %v, want 01HFIRST first", again)
+	}
+}
+
 // Dropping and keeping again works, keeping twice is harmless, and an entry
 // with no message is not a bookmark of nothing.
 func TestTheLastEntryAboutAMessageWins(t *testing.T) {

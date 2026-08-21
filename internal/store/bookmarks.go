@@ -79,8 +79,15 @@ func BookmarkEntryOf(e *Event) BookmarkEntry {
 // place, so it holds its order. A reader's own list is a pile they came back
 // to, and the thing they kept a minute ago is the thing they are looking for.
 //
-// Last write wins per message, so dropping and keeping again works and keeping
-// twice is harmless.
+// ORDERED BY THE LAST TIME IT WAS KEPT, not by the first. The first version of
+// this recorded a message's position when it was first seen, so dropping one
+// and keeping it again left it wherever it had been - which contradicts the
+// paragraph above in the one case where somebody has plainly just said "this
+// one, again". Found in review by claude-host, and it is my own stated rule
+// that it broke.
+//
+// Last write wins per message, so keeping twice is harmless and a drop followed
+// by a keep is a keep.
 func LiveBookmarks(entries []BookmarkEntry) []string {
 	kept := map[string]bool{}
 	order := []string{}
@@ -88,10 +95,21 @@ func LiveBookmarks(entries []BookmarkEntry) []string {
 		if e.Message == "" {
 			continue
 		}
-		if _, seen := kept[e.Message]; !seen {
+		add := e.Verb == EventBookmarkAdd
+		// An ADD moves it to the end of the order, whether or not it was
+		// already there. A REMOVE leaves the position alone: it is not kept, so
+		// the position is not read - and if it comes back, the add that brings
+		// it back is what places it.
+		if add {
+			for i, id := range order {
+				if id == e.Message {
+					order = append(order[:i], order[i+1:]...)
+					break
+				}
+			}
 			order = append(order, e.Message)
 		}
-		kept[e.Message] = e.Verb == EventBookmarkAdd
+		kept[e.Message] = add
 	}
 	out := make([]string, 0, len(order))
 	for i := len(order) - 1; i >= 0; i-- {
