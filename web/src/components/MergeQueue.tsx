@@ -218,6 +218,28 @@ function Verdict({ item, decided }: { item: MergeRequest; decided: boolean }) {
       </Badge>
     );
   }
+  // NOBODY HAS LOOKED IS NOT A NO, and until 2026-08-21 this component could
+  // not tell the difference: the node sends admissible:false for a row it has
+  // simply never measured, so an ordinary queue waiting its turn was drawn as a
+  // wall of refusals. The operator read "0 may land, 4 refused" off a healthy
+  // queue and could not tell it from four rejected branches; of those four, one
+  // had a red and three had never been gated against the current master.
+  //
+  // The node states the cause and this reads it rather than inferring one from
+  // red and blocked being absent - which is inferring a fact somebody already
+  // holds, and is how "empty" comes to mean "absent".
+  if (item.code === "merge.ungated" || item.code === "merge.stale_gate") {
+    return (
+      <Badge
+        variant="secondary"
+        data-merge-verdict="waiting"
+        data-tone="mute"
+        style={toneStyle(verdictTone("undecided"))}
+      >
+        {item.code === "merge.stale_gate" ? "needs a re-gate" : "waiting for the gate"}
+      </Badge>
+    );
+  }
   if (item.admissible) {
     return (
       <Badge

@@ -146,7 +146,7 @@ func (s *server) handleMergeAdmissible(w http.ResponseWriter, r *http.Request) {
 	// same rule the page uses: the deploy-tip issue first when the tip came from
 	// the build stamp, because under that fallback a page of refusals can be
 	// entirely an artefact of the node being behind.
-	if code := answer.Item.code; code != "" {
+	if code := answer.Item.Code; code != "" {
 		codes := []string{code}
 		if tipFrom == "deployed" {
 			codes = append([]string{store.RefusalMergeTipDeployed}, codes...)

@@ -96,11 +96,30 @@ type mergeQueueItem struct {
 	// reaches the reader ATTACHED TO THE THING THAT PROVOKED THE QUESTION. A
 	// banner is a second announcement, and announcing is what already failed.
 	KnownIssue *store.KnownIssue `json:"known_issue,omitempty"`
-	// code is the refusal's own token, kept here only to resolve the above in
-	// one query after the page is built. Unexported, so it never reaches the
-	// wire: the client has the code inside known_issue when there is a row, and
-	// no use for it when there is not.
-	code string
+	// Code is the refusal's own token, and it REACHES THE WIRE, which it did not
+	// until 2026-08-21.
+	//
+	// It was unexported on the reasoning that a client has the code inside
+	// known_issue when there is a row and no use for it otherwise. That was true
+	// of the known-issue lookup and false of the only other question anybody
+	// asks of a refusal: WHICH KIND. `admissible: false` has three causes and
+	// the console drew them all as "refused":
+	//
+	//   merge.ungated       nobody has measured it yet - the ordinary state of
+	//                       every row for the minutes after the target moves
+	//   merge.stale_gate    measured, but against a tip that has since moved
+	//   a real refusal      somebody looked and said no
+	//
+	// So the operator read a healthy queue - four rows waiting their turn after
+	// master moved - as "0 may land, 4 refused", and could not tell it from four
+	// rejected branches. Measured on the live node 2026-08-21 06:35: of four
+	// rows drawn "refused", ONE had a red and three were merely unmeasured.
+	//
+	// The word is the console's to choose; the CAUSE is the node's to state, and
+	// a client that has to infer it from red and blocked being absent is
+	// inferring a fact the node already holds - which is how "empty" and
+	// "absent" get read as the same thing.
+	Code string `json:"code,omitempty"`
 }
 
 func (s *server) handleMergeQueue(w http.ResponseWriter, r *http.Request) {
@@ -291,8 +310,8 @@ func (s *server) readMergeQueue(r *http.Request) (mergeQueueAnswer, error) {
 	// deploy, this falls straight through to the item's own case.
 	codes := make([]string, 0, len(items)+1)
 	for _, it := range items {
-		if it.code != "" {
-			codes = append(codes, it.code)
+		if it.Code != "" {
+			codes = append(codes, it.Code)
 		}
 	}
 	// Nothing was refused, so nothing needs explaining, and the query does not
@@ -303,15 +322,15 @@ func (s *server) readMergeQueue(r *http.Request) (mergeQueueAnswer, error) {
 	}
 	if found := knownIssues(r.Context(), s.db, p, codes, scopeAll(r, p)); found != nil {
 		for i := range items {
-			if items[i].code == "" {
+			if items[i].Code == "" {
 				continue
 			}
 			if tipFrom == "deployed" {
 				items[i].KnownIssue = store.PickKnownIssue(found,
-					store.RefusalMergeTipDeployed, items[i].code)
+					store.RefusalMergeTipDeployed, items[i].Code)
 				continue
 			}
-			items[i].KnownIssue = store.PickKnownIssue(found, items[i].code)
+			items[i].KnownIssue = store.PickKnownIssue(found, items[i].Code)
 		}
 	}
 
@@ -507,7 +526,7 @@ func queueItemOf(
 		it.Admissible = &ok
 		if err != nil {
 			it.Reason = err.Error()
-			it.code = store.RefusalCodeOf(err)
+			it.Code = store.RefusalCodeOf(err)
 		}
 	}
 	// HELD IS NOT NOT-ADMISSIBLE, and the two must never share a boolean.

@@ -536,6 +536,15 @@ export interface MergeRequest {
   status: string;
   assignee?: string;
   admissible?: boolean;
+  /**
+   * WHY it is not admissible, as the node's own token rather than a word this
+   * page invents. `merge.ungated` and `merge.stale_gate` mean nobody has
+   * measured this row yet, or measured a tip that has since moved - neither is
+   * a refusal, and drawing them as one told the operator that four healthy rows
+   * waiting their turn had been rejected. Measured 2026-08-21: of four rows the
+   * pane called refused, one had a red and three were simply unmeasured.
+   */
+  code?: string;
   reason?: string;
   /** True while a run is measuring this branch and has not reported yet. */
   gating: boolean;
