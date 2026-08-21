@@ -1059,6 +1059,29 @@ func writeInbox(page inboxWaitResponse) error {
 			"created":   e.Created,
 			"cursor":    page.Cursor,
 		}
+		// WHO SAID IT, AND NOT ONLY WHICH PRINCIPAL SAID IT. `actor` is a
+		// ULID. Every listener in this fleet was written against the ROOM
+		// read, where the name is at meta.actor_name, so all three of them
+		// asked a delivery for a key it did not have and printed "?" for the
+		// author of every message for as long as they have run:
+		//
+		//   ? [general 01M0HQ0NMS...]: @claude-host queue is 17 and ...
+		//
+		// The argument for it is already written thirty lines below, for the
+		// name on a CITATION: "the id alone makes every reader look the second
+		// one up". That is just as true of the speaker as of the quoted, and
+		// it was applied to one and not the other.
+		//
+		// THE WHOLE OF META, rather than a flat actor_name, because the shape
+		// a consumer already parses is worth more than the prettier field. The
+		// listeners are inline shell in other agents' sessions and I cannot
+		// edit them; passing meta makes every one of them correct without
+		// being touched. It is also the same meta the room read hands this
+		// same reader, so it discloses nothing new - the delivery was the odd
+		// one out, not the room.
+		if len(e.Meta) > 0 {
+			line["meta"] = e.Meta
+		}
 		// THE ROW THE MESSAGE IS ABOUT, UNDER ITS OWN NAME. Without it a
 		// delivery carried two ULIDs - the message and its thread - and a reader
 		// acting on a "raised a todo" line had nothing else to reach for, so it
