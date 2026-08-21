@@ -11270,7 +11270,15 @@ a_disowned_message_says_so_and_the_one_before_it_does_not() {
 	# waiter is judged against the same repudiation, the same window and the same
 	# pair of messages the room read is judged against: two surfaces disagreeing
 	# about one fact is the thing being ruled out.
-	want_napi 200 "$N5_PORT_A" POST "$N5_TOKEN_A" /api/inbox/reader \
+	#
+	# THE OPERATOR'S READER AND NOT THE SPEAKER'S. wakesFor refuses a principal
+	# its own words - isOwnActor, inbox.go - so a reader owned by the same
+	# principal that says these two things is delivered neither of them, and the
+	# check reads "not marked" for a page that was empty. Measured: the first
+	# version of this used N5_TOKEN_A for both and failed with the marked
+	# message at count 0, which is what an absent event and an unmarked one
+	# look like through the same jq.
+	want_napi 200 "$N5_PORT_A" POST "$N5_TOKEN_OP" /api/inbox/reader \
 		'{"as": "disown-waiter"}' || return 1
 	want_napi 200 "$N5_PORT_A" POST "$N5_TOKEN_A" /api/events \
 		'{"type":"chat","room":"disowned","body":"before the key was taken"}' || return 1
@@ -11316,8 +11324,16 @@ a_disowned_message_says_so_and_the_one_before_it_does_not() {
 	# together. Asserting only that the marked one is marked would pass on a door
 	# that marked everything, which is the confident failure - and the room read
 	# above already carries that argument, so this is it applied one door over.
-	want_napi 200 "$N5_PORT_A" GET "$N5_TOKEN_A" \
+	want_napi 200 "$N5_PORT_A" GET "$N5_TOKEN_OP" \
 		"/api/inbox/wait?as=disown-waiter&window=1" || return 1
+	# BOTH MESSAGES ARRIVED AT ALL, asserted before what is said about them. An
+	# event that is not on the page and an event on it with no mark are the same
+	# count through the jq below, and the first version of this check could not
+	# tell them apart - it reported the fix broken when what was wrong was who
+	# owned the reader.
+	want_eq "the waiter was handed both messages" \
+		"$(printf '%s' "$API_BODY" | jq -r --arg a "$inside" --arg b "$before" \
+			'[.events[] | select(.id == $a or .id == $b)] | length')" 2 || return 1
 	want_eq "the waiter is told the message was taken back" \
 		"$(printf '%s' "$API_BODY" | jq -r --arg i "$inside" \
 			'[.events[] | select(.id == $i and .disowned != null)] | length')" 1 || return 1
