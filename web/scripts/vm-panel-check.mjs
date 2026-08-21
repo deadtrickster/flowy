@@ -67,8 +67,15 @@ const panelWith = async (browser, token) => {
     .waitFor({ state: "visible", timeout: 20_000 })
     .catch(() => {});
   if ((await panel.count()) === 0) {
+    // WHAT THE BROWSER ACTUALLY HAS, because "drew no panel" is a symptom with
+    // several causes - a route that did not match, a redirect to the login
+    // page, a shell that never finished its first read - and they are not
+    // distinguishable from the absence alone. The first run of this check said
+    // exactly that about the operator's arm and left nothing to reason from.
+    const url = page.url();
+    const seen = ((await page.locator("body").textContent()) ?? "").replace(/\s+/g, " ").trim();
     await page.close();
-    return { state: null, words: "", empty: false, crashes };
+    return { state: null, words: "", empty: false, crashes, url, seen: seen.slice(0, 400) };
   }
   const got = {
     state: await panel.first().getAttribute("data-vm-state"),
@@ -97,7 +104,11 @@ try {
   const other = await panelWith(browser, otherToken);
   if (other.crashes.length > 0)
     die(`the page threw for a non-operator: ${other.crashes.join("; ")}`);
-  if (!other.state) die("the VMs page drew no panel at all for a non-operator");
+  if (!other.state) {
+    die(`the VMs page drew no panel at all for a non-operator.
+  browser was at ${other.url}
+  page said      ${JSON.stringify(other.seen)}`);
+  }
   if (other.state !== "forbidden") {
     die(`a non-operator sees state=${other.state}: ${JSON.stringify(other.words)}
 The node answered 403. A console that renders that as anything other than "not
@@ -113,7 +124,12 @@ yours" is telling somebody the feature is broken, or absent, when it is neither.
   if (operator.crashes.length > 0) {
     die(`the page threw for the operator: ${operator.crashes.join("; ")}`);
   }
-  if (!operator.state) die("the VMs page drew no panel at all for the operator");
+  if (!operator.state) {
+    die(`the VMs page drew no panel at all for the operator.
+  node answered  ${asOperator.status} to this token
+  browser was at ${operator.url}
+  page said      ${JSON.stringify(operator.seen)}`);
+  }
 
   // THE OPERATOR'S ARM IS JUDGED AGAINST WHAT THE NODE SAID, not against a
   // fixed expectation: this suite runs on machines with firecode and on
