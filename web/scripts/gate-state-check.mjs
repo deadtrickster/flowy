@@ -22,15 +22,18 @@
  * chose, so a pane that draws nothing - which is what master does - fails, and
  * a pane that draws the wrong one of three states fails differently.
  *
- * WHY IT NO LONGER DEMANDS A FREE LOCK, which is the bug that made its first
- * full-suite run red at 759/1 while ONLY= passed. Recording a verdict does NOT
- * release the landing lock - api_mergegate.go has no ReleaseMergeLock in it,
- * and only land and abandon give a target back - so the checks that declare
- * runs earlier in a suite hold master for the full fifteen minutes of
- * MergeLockBelievedFor. A check that treated that as a fixture error was
- * refusing a NORMAL state of the suite it runs in, and reporting somebody
- * else's held lock as a defect in this pane. Waiting it out is not an option
- * either: nothing releases it.
+ * WHY IT DOES NOT DEMAND A FREE LOCK, which is the bug that made its first
+ * full-suite run red at 759/1 while ONLY= passed. A declaration takes the
+ * target for MergeLockBelievedFor - fifteen minutes, longer than the whole
+ * suite - and only three things give it back: a red verdict (internal/store/
+ * mergegate.go), a land, and abandon. An earlier check that declared a green
+ * and never landed held master for the rest of the run, and this one read that
+ * as a defect in the pane it was testing.
+ *
+ * The leak is fixed at the source now - merge-verdict-check abandons what it
+ * declared, as this one does - but the tolerance stays. A precondition here
+ * asserts something about every OTHER check in the suite, which is a reading
+ * this file cannot make and should not report as a verdict on the console.
  *
  * So the lock's state is an INPUT here rather than a precondition. The
  * transition arm - take it, watch the pane change - runs only when the target
@@ -54,9 +57,25 @@ if (!base || !token) {
   process.exit(2);
 }
 
+/**
+ * Stop, BEFORE the browser is up and the row is seeded. Exiting is right here:
+ * nothing is held and there is nothing to give back.
+ */
 const die = (message, shown = "") => {
   console.error(shown ? `${message}\n${shown}` : message);
   process.exit(1);
+};
+
+/**
+ * Stop, AFTER that - a different verb on purpose. `process.exit()` does not run
+ * a `finally`, measured rather than assumed, so a die() from inside the try
+ * walked straight past the abandon below and left the target held for fifteen
+ * minutes. The teardown existed and the failing run never reached it, which is
+ * the run somebody repeats. This throws instead, and the finally sets the code.
+ */
+class Died extends Error {}
+const fail = (message, shown = "") => {
+  throw new Died(shown ? `${message}\n${shown}` : message);
 };
 
 const call = async (path, init = {}) => {
@@ -132,24 +151,26 @@ const zeroTimeIsOnTheWire = String(first.body.lock?.until ?? "").startsWith("000
 
 let row = null;
 let declared = false;
+/** The check's own verdict, carried past the teardown the throw now runs. */
+let failed = false;
 const run = `gate-state-check-${Date.now()}`;
 const browser = await chromium.launch();
 try {
   const want = expectedFrom(first.body.lock);
   const pane = await readPane(browser);
-  if (pane.crashes.length > 0) die(`the page threw: ${pane.crashes.join("; ")}`);
+  if (pane.crashes.length > 0) fail(`the page threw: ${pane.crashes.join("; ")}`);
   if (!pane.state) {
-    die(`the pane says nothing about the gate, and the node says it is ${want}.
+    fail(`the pane says nothing about the gate, and the node says it is ${want}.
 Whether a run holds the target is the one fact that separates a queue that is
 working from one that is stopped, and the page a person opens to ask does not
 carry it.`);
   }
   if (pane.state !== want) {
-    die(`the node says the lock is ${want} and the pane drew ${pane.state}: ${JSON.stringify(pane.words)}
+    fail(`the node says the lock is ${want} and the pane drew ${pane.state}: ${JSON.stringify(pane.words)}
 lock: ${JSON.stringify(first.body.lock)}`);
   }
   if (zeroTimeIsOnTheWire && /\b0001\b|\b1\/1\/1\b/.test(pane.words)) {
-    die(`the pane printed the zero time as a real one: ${JSON.stringify(pane.words)}
+    fail(`the pane printed the zero time as a real one: ${JSON.stringify(pane.words)}
 lock.until arrives as 0001-01-01T00:00:00Z whenever nothing is held, because
 omitempty does not omit a time.Time. Key off lock.held, never off whether the
 stamp is present.`);
@@ -162,7 +183,7 @@ stamp is present.`);
   if (want !== "free") {
     const who = first.body.lock.holder_name;
     if (who && !pane.words.includes(who)) {
-      die(`the pane does not say who holds the target (${who}): ${JSON.stringify(pane.words)}
+      fail(`the pane does not say who holds the target (${who}): ${JSON.stringify(pane.words)}
 "who do I talk to" is half of why the lock records a holder.`);
     }
   }
@@ -176,7 +197,7 @@ stamp is present.`);
       `transition arm NOT run: the target is ${want}, held by ${first.body.lock.holder_name || first.body.lock.holder}.`,
     );
     console.log(
-      "  Nothing in a suite releases a declared lock - a verdict does not, only land and abandon do - so this is normal here and not worth failing over.",
+      "  Only a red, a land or an abandon gives a target back, so a lock held here is somebody else's run - the pane is still measured against it, just not the transition.",
     );
   } else {
     const made = await call("/api/artifacts", {
@@ -191,7 +212,7 @@ stamp is present.`);
       }),
     });
     if (!made.ok) {
-      die(`could not file the seed row: HTTP ${made.status} ${JSON.stringify(made.body)}`);
+      fail(`could not file the seed row: HTTP ${made.status} ${JSON.stringify(made.body)}`);
     }
     row = made.body.id;
 
@@ -200,35 +221,39 @@ stamp is present.`);
       body: JSON.stringify({ run }),
     });
     if (!said.ok) {
-      die(`could not declare a run on ${row}: HTTP ${said.status} ${JSON.stringify(said.body)}`);
+      fail(`could not declare a run on ${row}: HTTP ${said.status} ${JSON.stringify(said.body)}`);
     }
     declared = true;
 
     const during = await call("/api/merge-queue");
-    if (!during.ok) die(`/api/merge-queue answered ${during.status}`);
+    if (!during.ok) fail(`/api/merge-queue answered ${during.status}`);
     if (!during.body.lock?.held) {
-      die(`declaring a run did not take the landing lock, so the fixture never reached
+      fail(`declaring a run did not take the landing lock, so the fixture never reached
 the state this arm is about: ${JSON.stringify(during.body.lock)}`);
     }
 
     const held = await readPane(browser);
     if (held.crashes.length > 0)
-      die(`the page threw with a gate running: ${held.crashes.join("; ")}`);
+      fail(`the page threw with a gate running: ${held.crashes.join("; ")}`);
     if (held.state !== "running") {
-      die(`a run holds the target and the pane drew ${held.state}: ${JSON.stringify(held.words)}`);
+      fail(`a run holds the target and the pane drew ${held.state}: ${JSON.stringify(held.words)}`);
     }
     if (held.state === pane.state || held.words === pane.words) {
-      die(`the pane reads the same free and running: ${JSON.stringify(held.words)}
+      fail(`the pane reads the same free and running: ${JSON.stringify(held.words)}
 This is the whole point of the line - a reader cannot tell a working drainer
 from a stopped one.`);
     }
     if (!held.words.includes("gate-state-check/branch")) {
-      die(
+      fail(
         `the pane says a gate is running but not what it is measuring: ${JSON.stringify(held.words)}`,
       );
     }
     console.log(`and it follows the lock: free -> ${held.state} - ${held.words}`);
   }
+} catch (err) {
+  if (!(err instanceof Died)) throw err;
+  console.error(err.message);
+  failed = true;
 } finally {
   await browser.close();
   // GIVE THE LOCK BACK FIRST, and only the one this check took. A declaration
@@ -248,4 +273,5 @@ from a stopped one.`);
       body: JSON.stringify({ status: "abandoned" }),
     });
   }
+  if (failed) process.exit(1);
 }
