@@ -28,6 +28,25 @@ if (!base || !token) {
   process.exit(2);
 }
 
+/**
+ * The cursors a control is allowed to have, and it is a NAMED SET rather than
+ * "anything but default".
+ *
+ * The check exists because Tailwind v4's preflight sets no cursor at all, so a
+ * button reads as decoration unless somebody CHOSE otherwise. "Not default" is
+ * the wrong test for that: a control that inherited `text` or `auto` by accident
+ * would pass it, and an accident is exactly what this is looking for.
+ *
+ * col-resize and row-resize are here because a drag handle that says `pointer`
+ * is lying about what it does - this check refused a branch over one on
+ * 2026-08-21, and the handle was right and the check was wrong. ew-resize and
+ * ns-resize are the generic spellings of the same handle.
+ *
+ * Adding to this list is the correct response to a new kind of control. Widening
+ * it to a wildcard is not.
+ */
+const CHOSEN_CURSORS = ["pointer", "col-resize", "row-resize", "ew-resize", "ns-resize"];
+
 const die = (message) => {
   console.error(message);
   process.exit(1);
@@ -47,7 +66,12 @@ try {
   if (crashes.length > 0) die(`the shell threw: ${crashes.join("; ")}`);
 
   const read = () =>
-    page.evaluate(() => {
+    // CHOSEN IS PASSED IN, not closed over. This callback runs IN THE PAGE, so a
+    // module-level constant is simply not in scope there - it would arrive as a
+    // ReferenceError inside the browser, which surfaces as a crashed evaluate
+    // rather than as a failing assertion. Named by orchestrator before either of
+    // us ran it; the second argument is the only way across that boundary.
+    page.evaluate((chosen) => {
       const label = (el) =>
         (el.getAttribute("aria-label") || el.textContent || "")
           .trim()
@@ -60,14 +84,18 @@ try {
         const cursor = getComputedStyle(el).cursor;
         if (el.disabled) {
           out.disabled += 1;
+          // A DISABLED CONTROL STILL MUST NOT SAY "pointer", and that stays
+          // exact rather than becoming !dead(): `not-allowed` is the honest
+          // cursor for one, and this arm is about the one value that promises
+          // a click that will not happen.
           if (cursor === "pointer") out.disabledWrong.push(label(el));
           continue;
         }
         out.total += 1;
-        if (cursor !== "pointer") out.arrows.push(`${label(el)} [${cursor}]`);
+        if (!chosen.includes(cursor)) out.arrows.push(`${label(el)} [${cursor}]`);
       }
       return out;
-    });
+    }, CHOSEN_CURSORS);
 
   // THE POSITIVE CONTROL. A page with no buttons on it passes every assertion
   // below, and that is how a check reports green on a console that failed to
