@@ -166,18 +166,58 @@ func heldBy(branch string) (string, bool) {
 	return "", true
 }
 
-// repoHint says which directory was asked, when one was. It exists so the note
-// above names a PLACE rather than a condition: "no git repository here" sends
-// somebody looking at their shell, "no git repository at /x/y" tells them their
-// FLOWY_REPO is wrong, and those are different fixes.
-func repoHint() string {
+// whyCannotAsk says WHICH of the two cannot-know cases happened, in a sentence
+// somebody can act on.
+//
+// heldBy answers three things and the note that reads it answered two, so
+// "no git repository here at X" was printed for both of these:
+//
+//	X is not a repository at all          set FLOWY_REPO
+//	X is a repository without that branch  set FLOWY_REPO TO THE RIGHT TREE
+//
+// The second is claude-host's case, filing flowy branches from
+// ~/Projects/firecode - which IS a git repository, so the note was not merely
+// vague, it was FALSE, and it sent them to look for a repository they were
+// already standing in. Reported by them on 2026-08-21, the day after the note
+// was written to prevent exactly this class of thing.
+//
+// Same collapse as everything else this fix has been about: a function kept the
+// distinction carefully and its caller threw it away. Here the caller is the
+// only place the distinction is visible to a person.
+func whyCannotAsk(branch string) string {
+	where, from := repoAsked()
+	git := func(args ...string) *exec.Cmd {
+		cmd := exec.Command("git", args...)
+		if where != "" {
+			cmd.Dir = where
+		}
+		return cmd
+	}
+	at := where
+	if at == "" {
+		at = "here"
+	} else {
+		at = at + from
+	}
+	// Is it a repository at all? This is the cheap half and it is the half that
+	// decides which sentence to print.
+	if err := git("rev-parse", "--git-dir").Run(); err != nil {
+		return "there is no git repository at " + at
+	}
+	return at + " is a git repository but has no branch " + branch +
+		" - that is probably not the tree that owns it"
+}
+
+// repoAsked is the directory heldBy consults and where that came from, so every
+// message about it names the same place by the same rule.
+func repoAsked() (where, from string) {
 	if repo := strings.TrimSpace(os.Getenv("FLOWY_REPO")); repo != "" {
-		return " at " + repo + " (from $FLOWY_REPO)"
+		return repo, " (from $FLOWY_REPO)"
 	}
 	if wd, err := os.Getwd(); err == nil {
-		return " at " + wd
+		return wd, ""
 	}
-	return ""
+	return "", ""
 }
 
 func mergeOpen(args []string) error {
@@ -233,10 +273,10 @@ func mergeOpen(args []string) error {
 	// would otherwise read silence as a pass.
 	if !known {
 		fmt.Fprintf(os.Stderr,
-			"note: could not check whether %s is checked out somewhere - "+
-				"no git repository here%s. Set FLOWY_REPO to the tree that owns the "+
-				"branch to enable the check. Filing anyway.\n",
-			name, repoHint())
+			"note: could not check whether %s is checked out somewhere - %s. "+
+				"Set FLOWY_REPO to the tree that owns the branch to enable the "+
+				"check. Filing anyway.\n",
+			name, whyCannotAsk(name))
 	}
 	if known && at != "" {
 		return fmt.Errorf("%s is checked out in %s, so the drainer cannot rebase it - "+

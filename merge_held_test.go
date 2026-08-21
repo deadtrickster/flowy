@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -117,5 +118,62 @@ func TestHeldByTellsNotHeldFromCannotKnow(t *testing.T) {
 	t.Setenv("FLOWY_REPO", root)
 	if at, known := heldBy("loose"); known || at != "" {
 		t.Fatalf(`FLOWY_REPO pointing at a non-repo = %q, %v - want "", false`, at, known)
+	}
+}
+
+// THE TWO CANNOT-KNOW CASES GET DIFFERENT SENTENCES, because they have different
+// fixes and one of them used to be a lie.
+//
+// heldBy answers three things; the note that reads it answered two, printing
+// "no git repository here at X" for a repository that plainly was one. That is
+// claude-host's case - filing flowy branches from ~/Projects/firecode, a real
+// git repository that does not carry them - and the message sent them looking
+// for a repository they were standing in.
+//
+// Asserted on the SUBSTANCE rather than the exact wording: "no repository" must
+// not appear when there is one, and the branch name must, because that is what
+// tells somebody the tree is wrong rather than missing.
+func TestWhyCannotAskTellsNoRepoFromWrongRepo(t *testing.T) {
+	git := func(dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t",
+			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+
+	root := t.TempDir()
+	repo := filepath.Join(root, "repo")
+	bare := filepath.Join(root, "not-a-repo")
+	for _, d := range []string{repo, bare} {
+		if err := os.Mkdir(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git(repo, "init", "-q", "-b", "main")
+	if err := os.WriteFile(filepath.Join(repo, "f"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(repo, "add", "f")
+	git(repo, "commit", "-q", "--no-gpg-sign", "-m", "one")
+
+	t.Setenv("FLOWY_REPO", bare)
+	said := whyCannotAsk("some/branch")
+	if !strings.Contains(said, "no git repository") {
+		t.Fatalf("a directory that is not a repository should say so, got: %s", said)
+	}
+
+	t.Setenv("FLOWY_REPO", repo)
+	said = whyCannotAsk("some/branch")
+	if strings.Contains(said, "no git repository") {
+		t.Fatalf(`a real repository was told it is not one - this is the sentence that sent
+somebody looking for a repository they were standing in. Got: %s`, said)
+	}
+	if !strings.Contains(said, "some/branch") {
+		t.Fatalf(`the branch name is what says "wrong tree" rather than "no tree", got: %s`, said)
 	}
 }
