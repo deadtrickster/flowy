@@ -198,12 +198,9 @@ func rowLine(it mergeQueueItem, targetTip string) string {
 	spent := redIsSpent(it.Red, targetTip)
 	switch {
 	case it.Red != nil && !spent:
-		line += "  RED " + shortSHA(it.Red.Tip)
-		if it.Red.Note != "" {
-			line += " " + firstLine(it.Red.Note)
-		}
+		line += "  RED " + shortSHA(it.Red.Tip) + reasonAfter(it.Red.Note)
 	case it.Blocked != nil:
-		line += "  BLOCKED " + firstLine(it.Blocked.Why)
+		line += "  BLOCKED" + reasonAfter(it.Blocked.Why)
 	case it.Gating:
 		line += "  gating"
 	case it.Admissible != nil && *it.Admissible:
@@ -260,8 +257,72 @@ func shortSHA(sha string) string {
 // to act at all.
 const reasonWidth = 60
 
-// firstLine is a reason cut to fit a queue line, in the direction that leaves
-// it actionable, and MARKED so that a reader can tell it was cut.
+// reasonAfter is why a row is not moving, put where all of it survives: on the
+// same line when it fits, and on a line of its own when it does not.
+//
+// WHY IT STOPPED CHOOSING WHICH HALF TO KEEP. Three cutting rules have been
+// written for this one string and each was right for the reason in front of
+// whoever wrote it. Keeping the tail lost "passed: 699 failed: 9" off a red.
+// Keeping the head lost the path off a block. Keeping both ends and eliding the
+// middle - the rule this replaces - lost the middle of exactly the case that
+// was filed as 01M0G3Y16C:
+//
+//	stored   vm-door is checked out in /home/dead/Projects/flowy-vmdoor, so it cannot be rebased here
+//	shown    vm-door is checked out in /hom…so it cannot be rebased here
+//
+// The path is in the MIDDLE, so eliding the middle ate the only part anybody
+// could act on. The row's own conclusion is the right one: the useful part has
+// NO FIXED POSITION, and no rule over the string can find it.
+//
+// The row then asked every producer to end with the actionable thing. I am not
+// doing that, and the reason is where the producers are: both strings that
+// reach here are written by drain.sh, which is not in this repository. A style
+// rule this tree cannot enforce, aimed at a file another seat owns, holds until
+// the next person writes a sentence. The printer is one function and it is
+// here.
+//
+// SO NOTHING IS CHOSEN. A reason that does not fit gets its own line, whole,
+// under the row it belongs to - which is what a terminal does with anything too
+// long to fit and what nobody has to be taught to read. It costs one line, and
+// a queue is read fifteen rows at a time.
+//
+// ONE extra line, not as many as it takes. A reason long enough to wrap twice
+// is a paragraph in the wrong place, and a queue that can turn fifteen rows
+// into forty is a queue nobody scrolls. Past that it is elided in the middle,
+// with the mark, at the wider budget - the old rule kept as the last resort it
+// always should have been.
+func reasonAfter(s string) string {
+	s = strings.TrimSpace(firstLineOnly(s))
+	if s == "" {
+		return ""
+	}
+	if len([]rune(s)) <= reasonWidth {
+		return " " + s
+	}
+	return "\n" + reasonIndent + elide(s, reasonWrapWidth)
+}
+
+// reasonIndent is where a wrapped reason starts. Deep enough that it cannot be
+// read as another row - the rows this file prints begin with "req    " - and
+// fixed rather than aligned under wherever the reason would have gone, because
+// that column moves with the length of an id and a branch name.
+const reasonIndent = "         "
+
+// reasonWrapWidth is what a line holding nothing but a reason can spend. Wider
+// than reasonWidth by about the id and branch name that are not on it.
+const reasonWrapWidth = 110
+
+// firstLineOnly is the first line of a reason. A note can be a whole log; the
+// queue prints one line per row and the rest belongs to whoever opens the run.
+func firstLineOnly(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
+}
+
+// elide is a reason cut to fit, from the MIDDLE, and MARKED so that a reader
+// can tell it was cut.
 //
 // IT USED TO CUT SILENTLY, AND FROM THE WRONG END. Measured on a row that sat
 // blocked for eleven minutes:
@@ -281,23 +342,20 @@ const reasonWidth = 60
 // cut that picks an end is right for one of them and a regression for the
 // other. Eliding the middle is what every terminal does to a long path, for
 // this reason.
-func firstLine(s string) string {
-	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		s = s[:i]
-	}
-	s = strings.TrimSpace(s)
+func elide(s string, width int) string {
+	s = strings.TrimSpace(firstLineOnly(s))
 	// Counted in RUNES, not bytes. The old cut sliced a byte index straight
 	// through whatever was there, and a path with a non-ASCII character in it
 	// would come out ending in a replacement glyph - a corrupted reason that
 	// still looks like a reason.
 	r := []rune(s)
-	if len(r) <= reasonWidth {
+	if len(r) <= width {
 		return s
 	}
 	// The ellipsis costs one of the budget and is the whole point: a cut nobody
 	// can see is worse than a shorter reason. The head keeps the larger half,
 	// because what a reason leads with is usually what names the failure.
-	head := (reasonWidth - 1 + 1) / 2
-	tail := reasonWidth - 1 - head
+	head := (width - 1 + 1) / 2
+	tail := width - 1 - head
 	return strings.TrimRight(string(r[:head]), " ") + "…" + strings.TrimLeft(string(r[len(r)-tail:]), " ")
 }

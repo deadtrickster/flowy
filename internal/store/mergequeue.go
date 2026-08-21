@@ -212,8 +212,13 @@ func MergeAdmissible(a *Artifact, targetTip string) error {
 	if tip == "" {
 		return &ErrMergeNotAdmissible{
 			Item: a.ID, Branch: BranchOf(a), Target: TargetOf(a),
-			Code:   RefusalMergeTipUnstated,
-			Reason: "the tip it would land on was not stated, and a comparison against nothing always passes",
+			Code: RefusalMergeTipUnstated,
+			// ENDS WITH THE THING TO ACT ON - see 01M0G3Y16C. The clause this
+			// replaced, "and a comparison against nothing always passes", was
+			// the argument for the rule rather than the thing to do about it,
+			// and it is the half a narrow line keeps. The argument is in the
+			// comment above, where a reader who wants it can find it.
+			Reason: "the tip it would land on was not stated - read it from git and pass target_tip",
 		}
 	}
 	// A ROW THAT HAS LANDED IS NOT A STALE ROW, and asking the staleness
@@ -253,8 +258,13 @@ func MergeAdmissible(a *Artifact, targetTip string) error {
 	if gated == "" {
 		return &ErrMergeNotAdmissible{
 			Item: a.ID, Branch: BranchOf(a), Target: TargetOf(a), TargetTip: tip,
-			Code:   RefusalMergeUngated,
-			Reason: "no gate has measured it - there is no verdict to be stale",
+			Code: RefusalMergeUngated,
+			// The leading phrase is load-bearing beyond this line - the console
+			// draws its own copy and two store tests assert it - so what
+			// changed is the tail: "there is no verdict to be stale" restated
+			// the refusal, and the tip a run has to measure is what somebody
+			// reading this actually needs.
+			Reason: "no gate has measured it - gate it on " + tip,
 		}
 	}
 	// WHICH FACT IS COMPARED depends on which one the row carries.

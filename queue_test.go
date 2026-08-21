@@ -95,21 +95,53 @@ func TestARowSaysWhyItIsNotMoving(t *testing.T) {
 // ends. A blocked reason finishes with the path. A red note begins with the
 // counts and the first failing test. Keeping either end alone fixes one of them
 // and breaks the other, which is what the first version of this fix did.
-func TestACutReasonSaysSoAndKeepsBothEnds(t *testing.T) {
+// A REASON IS NOT CUT, because no rule over the string can find the part that
+// matters.
+//
+// This replaces TestACutReasonSaysSoAndKeepsBothEnds, whose property - "keeps
+// both ends" - is the third cutting rule this line has had and was wrong for
+// the case filed as 01M0G3Y16C:
+//
+//	stored   vm-door is checked out in /home/dead/Projects/flowy-vmdoor, so it cannot be rebased here
+//	shown    vm-door is checked out in /hom…so it cannot be rebased here
+//
+// Keeping the tail lost the counts off a red, keeping the head lost the path
+// off a block, and keeping both ends loses a path in the middle. Every rule is
+// right for the reason its author had in front of them, which is what says the
+// rule is the wrong instrument.
+func TestALongReasonGetsItsOwnLineWholeRatherThanBeingCut(t *testing.T) {
+	// THE EXACT REASON FROM THE ROW, at 88 characters, with the path in the
+	// middle where every cutting rule loses it.
+	why := "vm-door is checked out in /home/dead/Projects/flowy-vmdoor, so it cannot be rebased here"
 	blocked := rowLine(mergeQueueItem{
-		ID: "01H", Branch: "feat/a-person-belongs-to-projects",
-		Blocked: &mergeQueueBlocked{
-			Why: "feat/a-person-belongs-to-projects is checked out in /tmp/claude-1000/scratchpad/wt-member",
-		},
+		ID: "01H", Branch: "vm-door",
+		Blocked: &mergeQueueBlocked{Why: why},
 	}, "")
-	if !strings.Contains(blocked, "…") {
-		t.Errorf("a cut reason read %q, with nothing saying it was cut", blocked)
+	if !strings.Contains(blocked, why) {
+		t.Errorf("the reason did not survive whole:\n%s", blocked)
 	}
-	// The tail is the whole point of this one: a path a person can go and free.
-	if !strings.Contains(blocked, "wt-member") {
-		t.Errorf("a blocked row read %q, dropping the path it is blocked on", blocked)
+	if strings.Contains(blocked, "…") {
+		t.Errorf("the reason was cut rather than wrapped:\n%s", blocked)
+	}
+	head, rest, wrapped := strings.Cut(blocked, "\n")
+	if !wrapped {
+		t.Fatalf("an 88-character reason stayed on the row line:\n%s", blocked)
+	}
+	// The row still says WHAT IS TRUE at a glance - the state word is on the
+	// row, not on the wrapped line - which is what makes a queue scannable and
+	// is the thing the wrap must not cost.
+	if !strings.Contains(head, "BLOCKED") {
+		t.Errorf("the row line lost its state to the wrap: %q", head)
+	}
+	if !strings.HasPrefix(rest, reasonIndent) {
+		t.Errorf("the wrapped reason is not indented under its row: %q", rest)
+	}
+	if strings.Contains(rest, "\n") {
+		t.Errorf("one reason took more than one extra line:\n%s", blocked)
 	}
 
+	// A red note wraps the same way and keeps the counts it leads with, which
+	// the first cutting rule dropped.
 	red := rowLine(mergeQueueItem{
 		ID: "01I", Branch: "b",
 		Red: &mergeQueueRed{
@@ -117,30 +149,45 @@ func TestACutReasonSaysSoAndKeepsBothEnds(t *testing.T) {
 			Note: "passed: 699 failed: 9 - FAIL the tui, driven headless by the keyboard against the live node",
 		},
 	}, "")
-	// And the head is the whole point of this one: what failed and how much.
 	if !strings.Contains(red, "passed: 699 failed: 9") {
 		t.Errorf("a red row read %q, dropping the counts it leads with", red)
 	}
-	if !strings.Contains(red, "…") {
-		t.Errorf("a cut note read %q, with nothing saying it was cut", red)
+	if !strings.Contains(red, "against the live node") {
+		t.Errorf("a red row read %q, dropping the name of what failed", red)
 	}
 
-	// A reason that fits is not touched - no ellipsis on a whole sentence, which
-	// would be the same lie in the other direction.
+	// A reason that FITS is not moved and not marked. The wrap is for the ones
+	// that do not fit; a queue where every row takes two lines is the cost this
+	// change is bounded to avoid.
 	whole := rowLine(mergeQueueItem{
 		ID: "01J", Branch: "b",
 		Blocked: &mergeQueueBlocked{Why: "the lock is held"},
 	}, "")
-	if strings.Contains(whole, "…") {
-		t.Errorf("a reason that fits read %q, marked as cut", whole)
+	if strings.Contains(whole, "\n") || strings.Contains(whole, "…") {
+		t.Errorf("a reason that fits was wrapped or marked: %q", whole)
+	}
+
+	// AND THE LAST RESORT IS STILL THERE. A reason too long even for its own
+	// line is elided in the middle and says so - the old rule, kept as what it
+	// always should have been rather than as the rule.
+	huge := "x" + strings.Repeat(" and more words about it", 20) + " END"
+	long := rowLine(mergeQueueItem{
+		ID: "01K", Branch: "b",
+		Blocked: &mergeQueueBlocked{Why: huge},
+	}, "")
+	if !strings.Contains(long, "…") {
+		t.Errorf("a reason past the wrapped budget was not marked as cut:\n%s", long)
+	}
+	if n := strings.Count(long, "\n"); n != 1 {
+		t.Errorf("a very long reason took %d extra lines, want 1:\n%s", n, long)
 	}
 
 	// Counted in runes. Slicing a byte index through a multi-byte character
 	// leaves a replacement glyph, which is a corrupted reason that still looks
 	// like a reason.
-	wide := firstLine(strings.Repeat("é", 200))
+	wide := elide(strings.Repeat("é", 200), reasonWidth)
 	for _, r := range wide {
-		if r == '�' {
+		if r == '\uFFFD' {
 			t.Errorf("cutting a reason of wide characters produced %q", wide)
 			break
 		}

@@ -251,7 +251,11 @@ func queueWaitCmd(rest []string) error {
 		case found.Red != nil:
 			fmt.Printf("red %s at %s", want, shortSHA(found.Red.Tip))
 			if found.Red.Note != "" {
-				fmt.Printf(" - %s", firstLine(found.Red.Note))
+				// The wider budget, because this line carries one row rather
+				// than a listing: there is no id and branch column beside it
+				// spending the width. Still bounded and still marked - a note
+				// can be a whole run's output.
+				fmt.Printf(" - %s", elide(found.Red.Note, reasonWrapWidth))
 			}
 			fmt.Println()
 			return errRowIsRed
