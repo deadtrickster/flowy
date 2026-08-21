@@ -4,7 +4,10 @@ import (
 	"encoding/json"
 	"io"
 	"os"
+	"reflect"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/deadtrickster/flowy/internal/store"
 )
@@ -170,4 +173,96 @@ func captureDelivery(t *testing.T, page inboxWaitResponse) map[string]any {
 		t.Fatalf("the delivery is not one JSON object: %q (%v)", out, err)
 	}
 	return line
+}
+
+// EVERY FIELD OF THE EVENT REACHES THE DELIVERY, OR IS EXCLUDED ON PURPOSE.
+//
+// The test above is better than the one before it and is still an enumeration:
+// it lists what a reply needs, so a field added to store.Event next month is
+// covered by nobody. @flowy-claude's inversion is the fix - assert the delivery
+// carries everything the SPOOL carries, minus a named exclusion list - because
+// then the default for a new field is "carried", and dropping one becomes a
+// decision somebody writes down rather than an omission nobody sees.
+//
+// The two writers are the reason this is worth guarding. Both serialise the
+// same page: spoolEvents (inboxhandover.go) encodes the whole store.Event and
+// cannot lose a field; writeInbox hand-builds a map and loses whatever was added
+// after it was written. That is how meta.actor_name went missing for as long as
+// this fleet has had monitors.
+func TestTheDeliveryDropsNothingByAccident(t *testing.T) {
+	// WHY EACH ONE IS ABSENT. A reason that is not a reason is worse than no
+	// list, so anything here that reads as a shrug is a real open question.
+	excluded := map[string]string{
+		"sig":        "the signature is over the stored body; a delivery is a rendering, and body_signed carries the exact bytes when it differs",
+		"author_sig": "the owner's claim about a ROW, not about a chat line a waiter is answering",
+		"authorship": "this node's judgement of that claim, and it travels with the row",
+		"seq_hlc":    "a 57-bit reading; the delivery hands back `cursor` instead, because a browser cannot hold this one without rounding it",
+		"parents":    "structure for the log, not something a reply addresses",
+		"type":       "every event a waiter receives is a message; the field is for the store",
+		"node":       "which node stored it - routing, not content",
+		"project":    "the reader's project is settled before delivery, by the same predicate the room read uses",
+		"private":    "its own comment forbids reading it to answer `may they see it` - by the time it is set that question is answered",
+		"citation":   "NOT dropped: writeInbox inlines the quote into body and puts the exact signed bytes in body_signed",
+		"disowned":   "OPEN QUESTION, not a justification. store.go says `a chat line nobody disowned and one its speaker has taken back must not read the same` - and a delivery cannot tell them apart. Answer it or carry the field.",
+	}
+
+	// EVERY FIELD POPULATED, because an absent value and a dropped one look
+	// identical from here. writeInbox carries `artifact` and `meta` only when
+	// they are non-empty, so a fixture that leaves them zero accuses the code
+	// of dropping what it was never given - measured, this test failed that way
+	// first. A NEW conditional field will trip it the same way, which is the
+	// right outcome: populate the fixture or declare the exclusion.
+	line := captureDelivery(t, inboxWaitResponse{
+		Reader: "claude-host",
+		Events: []*store.Event{{
+			ID:        "01M0HQ0NMS16X5SZ87AGYAB5ZT",
+			Room:      "general",
+			Actor:     "01M05TQ76D8Q4Q6NGBJ0SKT0TB",
+			Addressee: "claude-host",
+			Thread:    "01M0HPQTFJ417T7G0WFK4GEQJD",
+			Body:      "hi",
+			Created:   time.Unix(1787305600, 0).UTC(),
+			Artifact:  "01M0HH6ANG7NF6G6X7RKQ4XWSR",
+			Meta:      json.RawMessage(`{"actor_name":"orchestrator"}`),
+		}},
+	})
+
+	// The event's own field names, read off the struct tags rather than typed
+	// here - a list typed here would rot the same way the delivery did.
+	for _, f := range eventJSONFields(t) {
+		if _, carried := line[f]; carried {
+			continue
+		}
+		why, stated := excluded[f]
+		if !stated {
+			t.Errorf("the delivery drops %q and nothing says why.\n"+
+				"Either carry it in writeInbox, or add it to `excluded` with the reason.\n"+
+				"A field that vanishes between spoolEvents and writeInbox is exactly how\n"+
+				"meta.actor_name was lost.", f)
+			continue
+		}
+		if strings.TrimSpace(why) == "" {
+			t.Errorf("the delivery drops %q with an empty reason", f)
+		}
+	}
+}
+
+// eventJSONFields reads the json names off store.Event, so this check cannot
+// drift from the type it is about.
+func eventJSONFields(t *testing.T) []string {
+	t.Helper()
+	var out []string
+	rt := reflect.TypeOf(store.Event{})
+	for i := 0; i < rt.NumField(); i++ {
+		tag := rt.Field(i).Tag.Get("json")
+		name, _, _ := strings.Cut(tag, ",")
+		if name == "" || name == "-" {
+			continue
+		}
+		out = append(out, name)
+	}
+	if len(out) == 0 {
+		t.Fatal("store.Event has no json tags, so this check asserts nothing")
+	}
+	return out
 }
