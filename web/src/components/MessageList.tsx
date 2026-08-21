@@ -6,7 +6,7 @@ import { CitedMessage } from "@/components/CitedMessage";
 import { RowCard } from "@/components/RowCard";
 import { Badge } from "@/components/ui/badge";
 import { type FlowyEvent, type Reaction, isAgent } from "@/lib/api";
-import { selectedSpan } from "@/lib/cite";
+import { byteSlice, selectedSpan } from "@/lib/cite";
 import { renderChat } from "@/lib/markdown";
 import { speakerStyle } from "@/lib/speakercolour";
 import { clock, cn, shortId, speaker } from "@/lib/utils";
@@ -38,6 +38,19 @@ interface Props {
    * that goes nowhere.
    */
   onThreadReply?: (event: FlowyEvent) => void;
+  /**
+   * onTodo raises a todo out of a message, carrying the words rather than a
+   * pointer to them: `quoted` is what was selected inside the message, or the
+   * whole body when nothing was.
+   *
+   * The TEXT and not the offsets, unlike onCite above, because the two answer
+   * different questions. A citation is a reference and is redrawn from the
+   * source every time it is read; a todo is a row somebody picks up tomorrow,
+   * and a row that says "see the span 40-96 of a message in #general" is a row
+   * whose reader has to go and look. The message id travels with it as
+   * provenance either way.
+   */
+  onTodo?: (event: FlowyEvent, quoted: string) => void;
   /** me is the principal reading, so a message for them can say so. */
   me?: { user?: string; agent?: string };
   /**
@@ -127,6 +140,7 @@ export function MessageList({
   onSelect,
   onCite,
   onThreadReply,
+  onTodo,
   me,
   onSeen,
   onOlder,
@@ -713,6 +727,45 @@ export function MessageList({
                   >
                     cite
                   </button>
+                  {/*
+                    AND THE SAME GESTURE INTO THE QUEUE. The operator,
+                    01M0HGVPFN: "I should be able to quickly turn a message or a
+                    selected part into a rodo".
+
+                    Beside cite and built the same way - always rendered,
+                    holding no state, reading the selection from the browser at
+                    the moment it is pressed. The reason is in cite's comment
+                    above and it applies here unchanged: storing a selection
+                    re-renders the message, the body's innerHTML is written
+                    again, and the reader's highlight is destroyed under their
+                    pointer. A control that broke copying to offer a todo would
+                    be a bad trade.
+
+                    Nothing selected raises the WHOLE message, which is what
+                    pressing "todo" on a message plainly means - cite and reply
+                    both already read a bare press that way.
+                  */}
+                  {onTodo ? (
+                    <button
+                      type="button"
+                      data-todo-from={event.id}
+                      title="raise a todo out of what you have selected, or out of the whole message"
+                      className="cursor-pointer text-muted-foreground underline decoration-dotted hover:text-foreground"
+                      onClick={() => {
+                        const container = document.querySelector<HTMLElement>(
+                          `[data-body="${CSS.escape(event.id)}"]`,
+                        );
+                        const span = container ? selectedSpan(container, event.body) : null;
+                        const quoted =
+                          span && !("whole" in span)
+                            ? byteSlice(event.body, span.start, span.end)
+                            : event.body;
+                        onTodo(event, quoted);
+                      }}
+                    >
+                      todo
+                    </button>
+                  ) : null}
                   <span>#{shortId(event.id)}</span>
                   {/*
                     THE THREAD, AS A DOOR RATHER THAN A LABEL.

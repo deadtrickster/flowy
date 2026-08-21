@@ -660,6 +660,41 @@ export function ChatRoom() {
   );
 
   /**
+   * A MESSAGE, OR THE PART OF IT SOMEBODY SELECTED, BECOMES A ROW.
+   *
+   * 01M0HGVPFN: "I should be able to quickly turn a message or a selected part
+   * into a rodo". Half of it existed - the panel raises out of the SELECTED
+   * message - and the half that did not is the one the ask is about: the words.
+   * A row titled "raised out of message 01M0H..." is a row whose reader has to
+   * go and find the conversation, which is the errand this ends.
+   *
+   * THE TITLE IS THE FIRST LINE and the body is the rest, because a queue is a
+   * list of one-line titles and a paragraph pasted into that column makes the
+   * whole panel unreadable. Nothing is lost: what does not fit in the title is
+   * the body of the row, and the message it came out of is on it either way -
+   * the node keeps that, and raisedBy takes the raiser from it.
+   *
+   * AND IT SHOWS THE QUEUE AFTERWARDS. A row raised into a pane nobody is
+   * looking at is indistinguishable from a button that did nothing, which is
+   * the same complaint the summary card just cost us.
+   */
+  // A plain function, for the reason the one beside replyInThread gives: it
+  // calls setPane, which is a plain function itself, so a memo here would
+  // rebuild its dependency list every render and memoise nothing.
+  const raiseFromMessage = async (event: FlowyEvent, quoted: string) => {
+    const said = quoted.trim();
+    if (!said) return;
+    const [head, ...rest] = said.split("\n");
+    // 120 is a title a panel 26rem wide can draw. A longer first line is cut
+    // and the WHOLE quote goes in the body, so the cut never loses a word.
+    const title = head.length > 120 ? `${head.slice(0, 119)}…` : head;
+    const body = rest.length > 0 || head.length > 120 ? said : "";
+    await api.raiseTodo(room, title, body, event.id);
+    await loadTodos();
+    setPane("todos");
+  };
+
+  /**
    * Who is carrying one of them. The write goes to the node and the panel is
    * refilled from the node's answer - the same list the long poll refills it
    * with - so there is no second idea of who has what for a poll to overwrite.
@@ -976,6 +1011,7 @@ export function ChatRoom() {
           onSelect={point}
           onCite={citeSpan}
           onThreadReply={replyInThread}
+          onTodo={raiseFromMessage}
           me={{ user: whoami?.user, agent: whoami?.agent }}
           onSeen={seen}
           onOlder={loadOlder}
