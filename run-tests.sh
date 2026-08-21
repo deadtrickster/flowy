@@ -16298,7 +16298,7 @@ check "the committed tree builds with no console build in it (ROBUSTNESS)" \
 # could never have pulled row by row.
 an_event_about_a_floored_artifact_stays_behind_the_floor() {
 	recall
-	local art word chatter open_id trail ids mine id
+	local art word chatter open_id trail ids mine id floor
 	word="grithersnap"
 	chatter="hollowmarch"
 
@@ -16318,6 +16318,19 @@ an_event_about_a_floored_artifact_stays_behind_the_floor() {
 	want_status 200 POST "$TOKEN_A" /api/events \
 		"$(jq -nc --arg a "$art" --arg w "$word" '{type: "chat", room: "padesign", artifact: $a,
 			body: ("about the " + $w + " design")}')" || return 1
+	# A FLOOR UNDER EVERY READ BELOW - the sibling of the one in
+	# an_event_in_your_project_is_no_wider_than_the_artifact, and here for the
+	# same reason. 01M0JGG1XB: /api/events is served ASCENDING with a ceiling of
+	# 1000, so an unfloored read is the first thousand events this node ever
+	# stored. The negative arm below then passes on a page that contains none of
+	# this check's writes - a refusal and a window are the same absence through
+	# grep, and only the positive control at the end can tell them apart.
+	floor="$(jqv .seq_hlc)"
+	[ -n "$floor" ] && [ "$floor" != null ] || {
+		printf 'the first event came back with no reading, so no floor can be set: %s\n' "$API_BODY" >&2
+		return 1
+	}
+	floor=$((floor - 1))
 	want_status 200 POST "$TOKEN_A" "/api/artifact/$art/status" '{"status": "triaged"}' || return 1
 	want_status 200 POST "$TOKEN_A" /api/events \
 		"$(jq -nc --arg a "$MEM_PERSONAL" --arg w "$word" '{type: "chat", room: "padesign",
@@ -16344,8 +16357,8 @@ an_event_about_a_floored_artifact_stays_behind_the_floor() {
 	# What B gets: the log, the inbox, the room and a replication pull. None of
 	# them carries an event about either floored artifact, by id or by word.
 	local path
-	for path in "/api/events?limit=1000" "/api/inbox?limit=1000" \
-		"/api/chat/padesign?limit=1000" "/api/sync/pull?since=0&limit=5000"; do
+	for path in "/api/events?since=$floor&limit=1000" "/api/inbox?since=$floor&limit=1000" \
+		"/api/chat/padesign?limit=1000" "/api/sync/pull?since=$floor&limit=5000"; do
 		api GET "$TOKEN_B" "$path" || return 1
 		want_eq "status of $path for B" "$API_STATUS" 200 || return 1
 		for id in $ids; do
@@ -16680,7 +16693,7 @@ check "the newly-visible rescan reads and writes in batches (MED 3)" \
 # person there and not a second token for the first.
 an_event_in_your_project_is_no_wider_than_the_artifact() {
 	recall
-	local word theirs ours ev ours_ev open_ev path id
+	local word theirs ours ev ours_ev open_ev path id floor
 	word="quillshadow"
 
 	# B's artifact, in pb, shared to A by name. Nothing joins pa to pb, so it is
@@ -16698,6 +16711,26 @@ an_event_in_your_project_is_no_wider_than_the_artifact() {
 			artifact: $a, body: ("what pb showed me: " + $w)}')" || return 1
 	ev="$(jqv .id)"
 	want_eq "the project the event landed in" "$(jqv .project)" pa || return 1
+	# A FLOOR, SO THE READS BELOW CANNOT BE A WINDOW THAT MISSES ALL OF THIS.
+	#
+	# 01M0JGG1XB. These paths were read as `?limit=1000` with no floor, and
+	# store/events.go:285 serves /api/events ASCENDING - oldest first, ceiling
+	# 1000 (artifacts.go:1068, and clampLimit reduces anything larger in
+	# silence). So the page is pinned to the first thousand events the node ever
+	# stored, and once a fixture passes that, nothing written by this check is in
+	# it. The positive control below broke the day it happened; the NEGATIVE arm
+	# above it passed, because an event nobody can see and an event outside the
+	# window are the same absence through grep.
+	#
+	# A security assertion that cannot fail is the defect here, not the count.
+	# `since` is the door's own answer: read from just under this event and
+	# every id this check writes is inside the page whatever the log's size.
+	floor="$(jqv .seq_hlc)"
+	[ -n "$floor" ] && [ "$floor" != null ] || {
+		printf 'the event came back with no reading, so no floor can be set: %s\n' "$API_BODY" >&2
+		return 1
+	}
+	floor=$((floor - 1))
 
 	# Two controls in the same room: an event about pa's own artifact, and one
 	# about nothing at all. The project is not narrowed by any of this.
@@ -16711,8 +16744,8 @@ an_event_in_your_project_is_no_wider_than_the_artifact() {
 	open_ev="$(jqv .id)"
 
 	# Every surface the log leaves by, read as the other person in pa.
-	for path in "/api/events?limit=1000" "/api/inbox?limit=1000" \
-		"/api/chat/quillroom?limit=1000" "/api/sync/pull?since=0&limit=5000"; do
+	for path in "/api/events?since=$floor&limit=1000" "/api/inbox?since=$floor&limit=1000" \
+		"/api/chat/quillroom?limit=1000" "/api/sync/pull?since=$floor&limit=5000"; do
 		api GET "$TOKEN_OP" "$path" || return 1
 		want_eq "status of $path for the operator" "$API_STATUS" 200 || return 1
 		if printf '%s' "$API_BODY" | grep -qF "$ev"; then
@@ -16727,7 +16760,7 @@ an_event_in_your_project_is_no_wider_than_the_artifact() {
 	done
 
 	# And the project still works: both controls cross to the same reader.
-	for path in "/api/events?limit=1000" "/api/chat/quillroom?limit=1000"; do
+	for path in "/api/events?since=$floor&limit=1000" "/api/chat/quillroom?limit=1000"; do
 		api GET "$TOKEN_OP" "$path" || return 1
 		for id in "$ours_ev" "$open_ev"; do
 			want_eq "the operator's read of $id over $path" \
