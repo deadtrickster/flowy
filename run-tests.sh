@@ -12294,6 +12294,19 @@ a_filter_that_selected_nothing_reports_it() {
 	./scripts/only-filter-check.sh run-tests.sh
 }
 
+# A REPORT ABOUT A VERDICT MUST NOT BE ABLE TO CHANGE IT - 01M0JV52WR. A full
+# suite measured 757 checks, failed only the two known image reds, and then died
+# in its own timings summary before printing the tally: `sort | head` under
+# pipefail, where head closes the pipe while sort is still writing. Exit with no
+# count is neither of the two answers the drainer reads.
+#
+# The hazard is a race, so this drives the lifted function against five thousand
+# lines and proves the form it replaced still dies on the same input.
+a_summary_cannot_fail_the_run_it_reports_on() {
+	cd "$ROOT" || return 1
+	./scripts/timings-summary-check.sh run-tests.sh
+}
+
 # THE GATE LOCK DIES WITH THE SUITE THAT TOOK IT - 01M0HN5GA0, which cost the
 # fleet an hour with fourteen rows queued and the drainer sitting in flock
 # behind a pid that no longer existed.
@@ -12708,6 +12721,8 @@ check "a refused run says so before it says the count" \
 	a_refused_run_says_so_before_it_says_the_count
 check "ONLY= refuses when it selects nothing, rather than reporting its preflights as a pass" \
 	a_filter_that_selected_nothing_reports_it
+check "the timings summary cannot fail the run it is reporting on" \
+	a_summary_cannot_fail_the_run_it_reports_on
 check "a ULID is not sliced for a name, because a prefix is a clock" \
 	a_ulid_is_not_sliced_for_a_name
 check "the gate lock does not outlive the suite that took it" \
@@ -21238,9 +21253,47 @@ fi
 # Printed on green as well as red, deliberately: the run somebody wants this
 # from is the ordinary one, and a number that only appears on failure is a
 # number nobody has for the normal case.
-if [ -s "$timings" ]; then
+# A REPORT ABOUT A VERDICT THAT IS ALREADY DECIDED MUST NOT BE ABLE TO CHANGE IT.
+#
+# MEASURED 2026-08-21 (01M0JV52WR): a full suite ran 757 checks, failed only the
+# two known image reds, and then reported NOTHING -
+#
+#	sort: write failed: 'standard output': Broken pipe
+#	sort: write error
+#	SUITE-EXIT 2
+#
+# `sort -rn "$timings" | head -10`. head closes the pipe after ten lines, sort
+# is still writing 757, sort takes SIGPIPE, and pipefail promotes it - after
+# every check has been measured and before the tally is printed. Exit 2 with no
+# count is NEITHER of the two answers the drainer knows how to read, and a green
+# run and that one are then distinguishable only by reading the log, which is
+# the thing the count exists to avoid.
+#
+# THIS FILE ALREADY KNEW. Two other sites carry the comment "NOT `| head -1`.
+# This script runs under `set -euo pipefail`..." - 3267 and 8040 - and a third
+# at 4659 says three seats made the mistake between them. A rule written in a
+# comment is not a control; the summary below is written so the mistake cannot
+# be made here again rather than so it is documented again.
+#
+# TWO INDEPENDENT GUARDS, because either alone would leave the other case:
+#
+#  1. NO PIPE. mapfile reads sort's whole output, so there is no reader that
+#     can close early and no writer that can take EPIPE. The slice is taken
+#     from an array afterwards, where "stop at ten" costs nothing.
+#  2. THE WHOLE BLOCK IS NON-FATAL. `timings_summary || true` suppresses set -e
+#     for the entire function body - bash's documented behaviour for a function
+#     in a || list - so anything that goes wrong while REPORTING a verdict
+#     cannot change it. That is the property the row asked for, and it holds for
+#     the awk below as well as the loop.
+timings_summary() {
 	printf '\nslowest checks:\n'
-	sort -rn "$timings" | head -10 | while IFS=$'\t' read -r secs name; do
+	local sorted=()
+	mapfile -t sorted < <(sort -rn "$timings")
+	local i line secs name
+	for ((i = 0; i < ${#sorted[@]} && i < 10; i++)); do
+		line=${sorted[i]}
+		secs=${line%%$'\t'*}
+		name=${line#*$'\t'}
 		printf '  %6ss  %s\n' "$secs" "$name"
 	done
 	# AND THE TOTAL THEY ACCOUNT FOR, which is the number that matters: the gap
@@ -21261,6 +21314,9 @@ if [ -s "$timings" ]; then
 			printf "  %6.1fs in %d checks\n", total, NR
 			printf "  %6ss wall, so %.1fs outside any check\n", wall, wall - total
 		}' "$timings"
+}
+if [ -s "$timings" ]; then
+	timings_summary || true
 fi
 # A FILTERED RUN IS NOT A RUN, and says so ABOVE the verdict rather than after
 # it. The line below is what gets pasted into a row as evidence; this one has to
