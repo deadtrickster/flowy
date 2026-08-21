@@ -1429,4 +1429,50 @@ CREATE INDEX IF NOT EXISTS sessions_expires_idx ON sessions (expires);
 -- to write, and that has to be sayable.
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS project text REFERENCES projects (id);
 
+-- THE SCHEDULE THE NODE HOLDS.
+--
+-- Row 01M0EW45RE: fold the per-signal monitors into one reader, and put the
+-- schedule where a person can edit it. Today every signal is its own persistent
+-- loop in every agent's harness - a schedule change means editing N harnesses,
+-- and each loop is an independent thing that can die quietly. This table is the
+-- one place, and the existing wait door is what delivers from it.
+--
+-- TWO CONTROLS PER SIGNAL, NOT THREE. `realtime` is the checkbox - return as
+-- soon as the underlying fact changes - and `cron` is the clock. They are NOT
+-- exclusive: chat realtime plus a 09:00 digest is a legitimate pair, and so is
+-- realtime off with a cron set. UNCHECKED WITH AN EMPTY CRON MEANS NEVER, and
+-- it means it explicitly rather than as a default nobody chose.
+--
+-- There is no `enabled` column, because it would be a third control that can
+-- disagree with the other two: enabled=false with a cron set has no meaning a
+-- person could predict, and every such column ends up read in one place and
+-- ignored in another.
+--
+-- SCOPE IS HIERARCHICAL AND RESOLUTION IS WHOLE-ROW. scope_kind is 'fleet',
+-- 'project' or 'room', and the most specific scope that HAS A ROW wins - both
+-- fields together. Mixing realtime from one scope with cron from another would
+-- be a resolution nobody can predict from the table.
+--
+-- A ROW EXISTING IS WHAT DECIDES, NOT A ROW BEING ON. Absent means inherit;
+-- present-with-realtime-false-and-empty-cron means OFF, and it has to override
+-- an inherited project default or a room could never turn a signal off. That is
+-- the empty-versus-absent distinction this fleet keeps finding collapsed into
+-- one code path, written into the primary key so it cannot collapse here.
+--
+-- scope_id is '' for fleet, the project id for project, and project + US + room
+-- for room - the same separator principals use, so a room named like a project
+-- id cannot be confused for one.
+CREATE TABLE IF NOT EXISTS schedules (
+    scope_kind text NOT NULL,
+    scope_id   text NOT NULL,
+    signal     text NOT NULL,
+    realtime   boolean NOT NULL DEFAULT false,
+    cron       text NOT NULL DEFAULT '',
+    updated_by text,
+    updated    timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (scope_kind, scope_id, signal)
+);
+
+CREATE INDEX IF NOT EXISTS schedules_signal_idx ON schedules (signal);
+
 COMMIT;
