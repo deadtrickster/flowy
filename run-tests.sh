@@ -12103,6 +12103,15 @@ the_console_loader_refuses_to_lose_a_check() {
 	./scripts/console-checks-check.sh run-tests.sh
 }
 
+# And the suite's own last word: a refusal has to reach the reader BEFORE the
+# number, because the number is the line that gets pasted into a row and the one
+# the drainer greps for its note. Measured on another seat's gate, which printed
+# "passed: 735 failed: 0" and then refused the tree.
+a_refused_run_says_so_before_it_says_the_count() {
+	cd "$ROOT" || return 1
+	./scripts/verdict-order-check.sh run-tests.sh
+}
+
 # THE OPERATOR SENT A SCREENSHOT captioned "note the fonts": room names at the
 # page's base size, with the hash and the name stacked one above the other.
 #
@@ -12499,6 +12508,8 @@ check "a stray cd outside check() reports once, and the suite carries on" \
 	a_stray_cd_reports_once
 check "the console-check loader fails on a directory that is missing, empty, or silent" \
 	the_console_loader_refuses_to_lose_a_check
+check "a refused run says so before it says the count" \
+	a_refused_run_says_so_before_it_says_the_count
 preflight "npm ci" npm_ci
 check "biome check web/" biome_check
 preflight "vite build" npm_build
@@ -20951,21 +20962,44 @@ if [ -n "$only" ]; then
 	printf 'The builds ran anyway - a filter narrows the checks, never the preflight the\n'
 	printf 'rest of them stand on. See preflight().\n'
 fi
+# THE TREE IS CHECKED BEFORE THE VERDICT IS PRINTED, and the order is the whole
+# point of this block sitting here rather than below the summary.
+#
+# The tree that gets copied out has to be the tree that was tested, so the last
+# word is git's. Two ways it can fail: nothing was ever committed, or a tracked
+# file was changed after the last commit and the run describes a tree that is
+# not the one on disk. Untracked files do not count - the harness writes its own
+# verify artifacts (.firecode-*) into the project root while this script is
+# running, and those are not part of what was tested.
+#
+# MEASURED 2026-08-21, on another seat's gate: it printed
+#
+#	passed: 735 failed: 0
+#	FAIL: uncommitted tracked changes
+#
+# and exited 1. Every number on that line is true and the run is a refusal.
+# "Had I read the summary line and filed, I would have filed a branch whose own
+# gate refused it." The summary is the line that gets pasted into a row as
+# evidence, which is the same argument the ONLY= banner won three hours ago -
+# and this refusal had not been given the same treatment. It is the one that
+# fires on a tree somebody is still editing, which is the ordinary case for an
+# agent running this suite by hand.
+#
+# THE COUNTS ARE KEPT rather than swallowed. They are the honest measurement of
+# what ran, and a refusal that hid them would send the reader looking for a
+# failure that is not there. They are printed WITH the refusal attached, so the
+# line cannot be pasted as a pass.
+# shellcheck disable=SC2015  # intended: the block runs if any of the three fails
+git rev-parse HEAD >/dev/null 2>&1 && git diff --quiet && git diff --cached --quiet || {
+	printf 'FAIL: uncommitted tracked changes\n'
+	printf 'passed: %d failed: %d - REFUSED: this run describes a tree that is not on disk\n' \
+		"$passed" "$failed"
+	exit 1
+}
+
 printf 'passed: %d failed: %d\n' "$passed" "$failed"
 if ! a_run_that_measured_nothing_is_not_a_pass "$passed" "$failed"; then
 	printf 'FAIL: this run measured nothing - it did not pass, it did not run\n' >&2
 	exit 1
 fi
 [ "$failed" -eq 0 ] || exit 1
-
-# The tree that gets copied out has to be the tree that was tested, so the last
-# word is git's. Two ways it can fail: nothing was ever committed, or a tracked
-# file was changed after the last commit and the green run above describes a
-# tree that is not the one on disk. Untracked files do not count - the harness
-# writes its own verify artifacts (.firecode-*) into the project root while this
-# script is running, and those are not part of what was tested.
-# shellcheck disable=SC2015  # intended: the block runs if any of the three fails
-git rev-parse HEAD >/dev/null 2>&1 && git diff --quiet && git diff --cached --quiet || {
-	echo "FAIL: uncommitted tracked changes"
-	exit 1
-}
