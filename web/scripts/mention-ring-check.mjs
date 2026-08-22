@@ -31,29 +31,27 @@ import { chromium } from "playwright";
 
 const [base, token, other] = process.argv.slice(2);
 if (!base || !token) {
-	console.error(
-		"usage: node scripts/mention-ring-check.mjs BASE_URL TOKEN OTHER_HANDLE",
-	);
-	process.exit(2);
+  console.error("usage: node scripts/mention-ring-check.mjs BASE_URL TOKEN OTHER_HANDLE");
+  process.exit(2);
 }
 
 const die = (message) => {
-	console.error(message);
-	process.exit(1);
+  console.error(message);
+  process.exit(1);
 };
 
 const room = "mentionring";
 const api = async (path, init) => {
-	const res = await fetch(`${base}${path}`, {
-		...init,
-		headers: {
-			Authorization: `Bearer ${token}`,
-			"Content-Type": "application/json",
-			...(init?.headers ?? {}),
-		},
-	});
-	if (!res.ok) die(`${path}: ${res.status} ${await res.text()}`);
-	return res.json();
+  const res = await fetch(`${base}${path}`, {
+    ...init,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+      ...(init?.headers ?? {}),
+    },
+  });
+  if (!res.ok) die(`${path}: ${res.status} ${await res.text()}`);
+  return res.json();
 };
 
 // WHO THIS TOKEN IS, asked rather than assumed: the ring turns on an id
@@ -84,21 +82,21 @@ const mine = await api("/api/me");
 const handle = mine.user?.handle;
 if (!handle) die("this token's user has no handle, so it cannot be mentioned");
 if (!other) {
-	die(`name the other principal: mention-ring-check.mjs BASE_URL TOKEN OTHER_HANDLE
+  die(`name the other principal: mention-ring-check.mjs BASE_URL TOKEN OTHER_HANDLE
 The negative arm needs somebody who is NOT the reader, and reading one off
 /api/presence makes this check depend on who happens to be around.`);
 }
 if (other === handle) {
-	die(`the other principal (${other}) is the reader, so the negative arm would
+  die(`the other principal (${other}) is the reader, so the negative arm would
 assert about the same person as the positive one and prove nothing.`);
 }
 
 const stamp = Date.now().toString(36);
 const say = (body) =>
-	api(`/api/chat/${room}/say`, {
-		method: "POST",
-		body: JSON.stringify({ body }),
-	});
+  api(`/api/chat/${room}/say`, {
+    method: "POST",
+    body: JSON.stringify({ body }),
+  });
 
 const forMe = await say(`ring check ${stamp} - @${handle} this one is yours`);
 const forThem = await say(`ring check ${stamp} - @${other} this one is theirs`);
@@ -108,16 +106,12 @@ const forThem = await say(`ring check ${stamp} - @${other} this one is theirs`);
 // not about the reader, so this fails as a fixture problem rather than as a
 // missing ring.
 const back = await api(`/api/chat/${room}?since=0`);
-const seen = (back.events ?? []).filter(
-	(e) => e.id === forMe.id || e.id === forThem.id,
-);
+const seen = (back.events ?? []).filter((e) => e.id === forMe.id || e.id === forThem.id);
 if (seen.length !== 2) die(`seeded 2 messages, read back ${seen.length}`);
 for (const e of seen) {
-	if (!(e.meta?.mentions ?? "").includes(":")) {
-		die(
-			`the node resolved no mention on ${e.id}: ${JSON.stringify(e.meta ?? {})}`,
-		);
-	}
+  if (!(e.meta?.mentions ?? "").includes(":")) {
+    die(`the node resolved no mention on ${e.id}: ${JSON.stringify(e.meta ?? {})}`);
+  }
 }
 
 // AND THE NAME THE ROOM ACTUALLY USES. @operator resolved to nobody until the
@@ -130,80 +124,71 @@ for (const e of seen) {
 const roles = await api("/api/presence");
 const operators = (roles.members ?? []).filter((m) => m.role === "operator");
 if (operators.length === 1) {
-	const probe = await say(
-		`ring check ${stamp} - @operator this one is for the role`,
-	);
-	const resolved = probe.meta?.mentions ?? "";
-	if (!resolved.includes(`operator:${operators[0].actor}`)) {
-		die(
-			`@operator did not resolve to the one operator (${operators[0].name}, ${operators[0].actor}): ` +
-				`mentions=${JSON.stringify(resolved)}`,
-		);
-	}
+  const probe = await say(`ring check ${stamp} - @operator this one is for the role`);
+  const resolved = probe.meta?.mentions ?? "";
+  if (!resolved.includes(`operator:${operators[0].actor}`)) {
+    die(
+      `@operator did not resolve to the one operator (${operators[0].name}, ${operators[0].actor}): ` +
+        `mentions=${JSON.stringify(resolved)}`,
+    );
+  }
 } else {
-	console.log(
-		`skipping the role arm: this node reports ${operators.length} operators in the roster`,
-	);
+  console.log(
+    `skipping the role arm: this node reports ${operators.length} operators in the roster`,
+  );
 }
 
 const browser = await chromium.launch();
 let failure = "";
 try {
-	const page = await browser.newPage({
-		viewport: { width: 1280, height: 900 },
-	});
-	await page.addInitScript(
-		(t) => localStorage.setItem("flowy.token", t),
-		token,
-	);
-	await page.goto(`${base}/chat/${room}`, { timeout: 20_000 });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 900 },
+  });
+  await page.addInitScript((t) => localStorage.setItem("flowy.token", t), token);
+  await page.goto(`${base}/chat/${room}`, { timeout: 20_000 });
 
-	// ANCHORED TO THE MESSAGE THIS CHECK WROTE, by id.
-	//
-	// 01M0KDXZHQ. This was `[data-mention="..."]` .last() - the last matching
-	// chip ON THE PAGE - and the page is the room "mentionring", which is a fixed
-	// name every run has ever seeded into. So the element under test could be:
-	//
-	//   a chip from a PREVIOUS RUN, still in the room, in either arm
-	//   the @operator probe this check seeds below, when the node happens to
-	//     report exactly one operator - a conditional fixture
-	//   a mention by whoever /api/presence returned as `other` that run
-	//
-	// Three inputs that vary without the tree changing, which is why it flipped
-	// on an unchanged tree and why re-running it settled nothing. @dead-claude
-	// lost a pass to it on a branch with no console files in it.
-	//
-	// data-message carries the event id (MessageList.tsx:482), so scoping to it
-	// makes the assertion about the message this run seeded and nothing else. It
-	// neutralises all three at once rather than removing them one at a time.
-	const chip = page
-		.locator(`[data-message="${forMe.id}"] [data-mention="${who.user}"]`)
-		.last();
-	await chip.waitFor({ state: "visible", timeout: 20_000 });
-	const ringed = await chip.evaluate((el) => el.className);
-	if (!/ring-1/.test(ringed)) {
-		failure = `a mention of the reader (${handle}, ${who.user}) is drawn without a ring: class=${ringed}`;
-	}
+  // ANCHORED TO THE MESSAGE THIS CHECK WROTE, by id.
+  //
+  // 01M0KDXZHQ. This was `[data-mention="..."]` .last() - the last matching
+  // chip ON THE PAGE - and the page is the room "mentionring", which is a fixed
+  // name every run has ever seeded into. So the element under test could be:
+  //
+  //   a chip from a PREVIOUS RUN, still in the room, in either arm
+  //   the @operator probe this check seeds below, when the node happens to
+  //     report exactly one operator - a conditional fixture
+  //   a mention by whoever /api/presence returned as `other` that run
+  //
+  // Three inputs that vary without the tree changing, which is why it flipped
+  // on an unchanged tree and why re-running it settled nothing. @dead-claude
+  // lost a pass to it on a branch with no console files in it.
+  //
+  // data-message carries the event id (MessageList.tsx:482), so scoping to it
+  // makes the assertion about the message this run seeded and nothing else. It
+  // neutralises all three at once rather than removing them one at a time.
+  const chip = page.locator(`[data-message="${forMe.id}"] [data-mention="${who.user}"]`).last();
+  await chip.waitFor({ state: "visible", timeout: 20_000 });
+  const ringed = await chip.evaluate((el) => el.className);
+  if (!/ring-1/.test(ringed)) {
+    failure = `a mention of the reader (${handle}, ${who.user}) is drawn without a ring: class=${ringed}`;
+  }
 
-	// The other arm, and it must be a DIFFERENT element: if both chips carried
-	// the same id the two assertions would be about one span and the negative
-	// control would be vacuous.
-	// Anchored the same way, and to the OTHER seeded message. The :not() stays -
-	// it is what keeps the two arms about two different spans, which the comment
-	// above is right that they must be - but it is no longer doing the work of
-	// finding the right message as well.
-	const theirs = page
-		.locator(
-			`[data-message="${forThem.id}"] [data-mention]:not([data-mention="${who.user}"])`,
-		)
-		.last();
-	await theirs.waitFor({ state: "visible", timeout: 20_000 });
-	const plain = await theirs.evaluate((el) => el.className);
-	if (/ring-1/.test(plain) && !failure) {
-		failure = `a mention of ${other} is ringed for a reader who is not them: class=${plain}`;
-	}
+  // The other arm, and it must be a DIFFERENT element: if both chips carried
+  // the same id the two assertions would be about one span and the negative
+  // control would be vacuous.
+  // Anchored the same way, and to the OTHER seeded message. The :not() stays -
+  // it is what keeps the two arms about two different spans, which the comment
+  // above is right that they must be - but it is no longer doing the work of
+  // finding the right message as well.
+  const theirs = page
+    .locator(`[data-message="${forThem.id}"] [data-mention]:not([data-mention="${who.user}"])`)
+    .last();
+  await theirs.waitFor({ state: "visible", timeout: 20_000 });
+  const plain = await theirs.evaluate((el) => el.className);
+  if (/ring-1/.test(plain) && !failure) {
+    failure = `a mention of ${other} is ringed for a reader who is not them: class=${plain}`;
+  }
 } finally {
-	await browser.close();
+  await browser.close();
 }
 
 if (failure) die(failure);
