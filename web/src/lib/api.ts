@@ -2740,6 +2740,23 @@ export const api = {
    * console that carried its own copy would draw a control that is wrong the
    * day a fourth word is added, and the node is the thing that refuses.
    */
+  /**
+   * WHOSE MOVE IT IS. An empty waitingOn takes the question back.
+   *
+   * It does not touch the assignee and there is no parameter here that could -
+   * the whole point of the field is that the carrier keeps carrying it while
+   * somebody else owes the next move. See internal/store/todowaiting.go.
+   */
+  setWaitingOn: (id: string, waitingOn: string, asked: string) =>
+    request<{ item: Artifact; waiting_on: string; asked: string }>(
+      `/api/todo/${encodeURIComponent(id)}/waiting-on`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ waiting_on: waitingOn, asked }),
+      },
+    ),
+
   setPriority: (id: string, priority: string) =>
     request<{ item: Artifact; priority: string; vocabulary: string[] }>(
       `/api/todo/${encodeURIComponent(id)}/priority`,

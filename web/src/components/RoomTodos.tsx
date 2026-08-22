@@ -18,10 +18,12 @@ import {
   setHideDonePreference,
   sortTodos,
   statusStyle,
+  todoAsked,
   todoAssignee,
   todoAssigneeClaimed,
   todoAttachments,
   todoRaiser,
+  todoWaitingOn,
 } from "@/lib/todos";
 import { shortId } from "@/lib/utils";
 
@@ -57,6 +59,13 @@ interface Props {
    * answer - there is no second idea here of what a row is ranked.
    */
   onPriority: (id: string, priority: string) => Promise<void>;
+  /**
+   * onWaitingOn says whose move it is, or takes the question back with an empty
+   * name. It never touches the assignee - that is onAssign's, and keeping them
+   * two calls is what stops a console control quietly reassigning a row
+   * somebody was only being asked about.
+   */
+  onWaitingOn: (id: string, who: string, asked: string) => Promise<void>;
 }
 
 /**
@@ -88,6 +97,7 @@ export function RoomTodos({
   onRaise,
   onAssign,
   onPriority,
+  onWaitingOn,
 }: Props) {
   // WHICH ROW IS OPEN BENEATH ITS TITLE. An id rather than the row, so a reread
   // of the panel keeps the summary pointed at the same work instead of at a
@@ -452,6 +462,10 @@ export function RoomTodos({
             // is four messages up the column beside it, and the row is what is
             // still here tomorrow.
             const raiser = todoRaiser(todo);
+            // Whose move it is, and what they were asked. Both read off the row
+            // rather than fetched - the panel already has the artifact.
+            const waiting = todoWaitingOn(todo);
+            const asked = todoAsked(todo);
             return (
               // RELATIVE, because the card is drawn OVER the list from here -
               // see TodoSummary. The row is the anchor, so the popup cannot
@@ -551,6 +565,28 @@ export function RoomTodos({
                   </span>
                 ) : null}
                 {/*
+                  WHOSE MOVE IT IS, beside who is carrying it and never instead
+                  of it. A row blocked on somebody else's answer drew exactly
+                  like a row nobody had touched - one appearance for two states,
+                  which is what 01M0K4MENH was raised on and what the nag stopped
+                  counting as one number in 088bef0. This is the same fact where
+                  a person reads it.
+
+                  "waiting on X" rather than a second name chip: the assignee
+                  control right there says who is CARRYING it, and two bare
+                  names side by side would be the confusion this field exists to
+                  end. The verb is what separates them.
+                */}
+                {waiting ? (
+                  <span
+                    data-todo-waiting-on={waiting}
+                    className="shrink-0 text-muted-foreground"
+                    title={asked || `waiting on ${waiting} to answer`}
+                  >
+                    waiting on <span style={speakerStyle(waiting)}>{waiting}</span>
+                  </span>
+                ) : null}
+                {/*
                   THE TITLE OPENS THE ROW. The operator: "no way to go from chat
                   todo to full todo card", and then "i want a quick view for
                   chat todo when I click on it - quick summary card + link to
@@ -594,6 +630,7 @@ export function RoomTodos({
                     onClose={() => setOpen("")}
                     disabled={disabled}
                     onPriority={onPriority}
+                    onWaitingOn={onWaitingOn}
                   />
                 ) : null}
               </li>
@@ -740,11 +777,13 @@ function TodoSummary({
   onClose,
   disabled,
   onPriority,
+  onWaitingOn,
 }: {
   todo: Artifact;
   onClose: () => void;
   disabled: boolean;
   onPriority: (id: string, priority: string) => Promise<void>;
+  onWaitingOn: (id: string, who: string, asked: string) => Promise<void>;
 }) {
   // ESCAPE CLOSES IT, because a thing that floats over what you were reading
   // has to be dismissable without hunting for the control that opened it. The
@@ -769,6 +808,11 @@ function TodoSummary({
   // screenshot raised into the queue is looked at where the queue is read
   // instead of being an id somebody has to go and resolve.
   const files = todoAttachments(todo);
+  // Whose move it is, as the row currently stands. The input is uncontrolled
+  // with this as its default: the panel refills from the node after a write, so
+  // a controlled value would fight the poll on every keystroke.
+  const waitingOn = todoWaitingOn(todo);
+  const asked = todoAsked(todo);
   return (
     // ABSOLUTE, over the rows below it, anchored on the row (which is relative).
     // left-2/right-2 rather than a width: the pane is 26rem and a popup that
@@ -832,6 +876,43 @@ function TodoSummary({
           <X className="h-3 w-3" />
         </Button>
       </div>
+      {/*
+        WHOSE MOVE IT IS, AND WHAT WAS ASKED - the question in full, which the
+        row chip has no room for and which is the half a person actually needs.
+        A name with no question is a row somebody has to open the artifact page
+        to understand, and this card exists to stop exactly that.
+
+        A TEXT BOX AND NOT A PICKER. The assignee control beside it is a picker
+        because a carrier is one of the seats on this board; a question can be
+        asked of anybody the roster knows, and a closed list would refuse the
+        operator - who is the party most often asked. The store resolves what is
+        typed and refuses a caller that resolves to nobody, so the vocabulary
+        stays in one place.
+
+        Blur rather than a button: the panel refills from the node afterwards,
+        so a save control would be a second way to do the one thing this does.
+      */}
+      <div className="flex items-baseline gap-1 pt-1 text-muted-foreground">
+        <span className="shrink-0">waiting on</span>
+        <input
+          data-todo-waiting-set={todo.id}
+          aria-label={`who owes the next move on ${todo.title || todo.id}`}
+          className="min-w-0 flex-1 rounded border border-border bg-background px-1 py-0.5 text-foreground text-xs"
+          placeholder="nobody"
+          defaultValue={waitingOn}
+          disabled={disabled}
+          onBlur={(event) => {
+            const who = event.target.value.trim();
+            if (who === waitingOn) return;
+            void onWaitingOn(todo.id, who, who === "" ? "" : asked);
+          }}
+        />
+      </div>
+      {asked ? (
+        <p data-todo-asked className="whitespace-pre-wrap break-words pt-1 text-muted-foreground">
+          asked: {asked}
+        </p>
+      ) : null}
       {body ? (
         <p className="whitespace-pre-wrap break-words pt-1">{body.slice(0, 400)}</p>
       ) : (

@@ -780,6 +780,19 @@ export function ChatRoom() {
   );
 
   /**
+   * Whose move it is, and refilled from the node for rank's reason: the panel
+   * must not hold a second idea of who owes an answer. An empty name takes the
+   * question back.
+   */
+  const waitOn = useCallback(
+    async (id: string, who: string, asked: string) => {
+      await api.setWaitingOn(id, who, asked);
+      await loadTodos();
+    },
+    [loadTodos],
+  );
+
+  /**
    * What this room has been read to. The transcript decides when - it is the
    * one thing that knows whether the reader is at the bottom - and the mark it
    * moves is the node's, so the badge clears on every device rather than in
@@ -1482,6 +1495,7 @@ export function ChatRoom() {
               onRaise={raise}
               onAssign={assign}
               onPriority={rank}
+              onWaitingOn={waitOn}
             />
           </div>
         ) : null}

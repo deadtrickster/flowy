@@ -202,6 +202,35 @@ export function todoRaiser(artifact: Artifact): string {
 }
 
 /**
+ * WHOSE MOVE IT IS, which is not who is carrying the row.
+ *
+ * A seat blocked on somebody else's answer and a seat sitting on its work read
+ * as the same row - that is the defect 01M0K4MENH was raised on, and the board
+ * has carried the fact since 088bef0 without any surface drawing it. The
+ * carrier is still todoAssignee's answer and is untouched by this.
+ *
+ * NOT normalised through NOBODY the way the assignee is, and deliberately: the
+ * store deletes the key when a question is withdrawn rather than writing a word
+ * for nobody, so there is no "unassigned" spelling to collapse here. A value
+ * present and empty would be a node writing something this one does not.
+ */
+export function todoWaitingOn(artifact: Artifact): string {
+  return fieldOf(artifact, "waiting_on").trim();
+}
+
+/**
+ * WHAT THEY WERE ASKED, in the asker's words, or "" when nothing was recorded.
+ *
+ * Separate from the pointer because they are read at different moments: a panel
+ * scanning rows wants the name, and a person who has seen the name wants the
+ * question. A name with no question is a row somebody has to open to find out
+ * what is wanted, which is the state this replaced.
+ */
+export function todoAsked(artifact: Artifact): string {
+  return fieldOf(artifact, "waiting_asked").trim();
+}
+
+/**
  * THE KIND OF WORK, which the node calls `category`.
  *
  * Two different things are labelled on a todo and they are not variants of each

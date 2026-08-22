@@ -240,6 +240,19 @@ export function DocumentPanes({ room, quote }: Props) {
     );
   })();
 
+  // THE SECOND PANEL, and it gets the same verb rather than a narrower one.
+  // This pane draws the same RoomTodos: a row waiting on somebody has to read
+  // the same here as it does beside a room, or the two surfaces disagree about
+  // what a row is. The compiler found this call site, which is the argument for
+  // the prop being required rather than optional.
+  const waitOn = useCallback(
+    async (id: string, who: string, asked: string) => {
+      await api.setWaitingOn(id, who, asked);
+      await loadTodos();
+    },
+    [loadTodos],
+  );
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       <section className="flex min-h-0 flex-[3] flex-col border-border border-b">
@@ -359,6 +372,7 @@ export function DocumentPanes({ room, quote }: Props) {
           onRaise={raise}
           onAssign={assign}
           onPriority={rank}
+          onWaitingOn={waitOn}
         />
       </section>
     </div>
