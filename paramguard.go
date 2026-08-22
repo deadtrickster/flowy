@@ -187,6 +187,7 @@ var routeParams = map[string][]string{
 	// query string.
 	"POST /api/openspec":                 {},
 	"POST /api/openspec/{id}/transition": {},
+	"POST /api/openspec/{id}/validate":   {},
 	"POST /api/projects":                 {},
 	"POST /api/quiesce/hold":             {},
 	"POST /api/quiesce/release":          {},

@@ -12877,6 +12877,23 @@ check "a change's derived todos are listed by the one door that names them, and 
 	go test -count=1 \
 	-run 'TestOpenspecTodosListsTheDerivedRows|TestOpenspecTodosRefusals' \
 	.
+# Named because a complete that outlived its verdict is a landed-looking row
+# that never earned it: the validate arm refuses absent, stale and red caches
+# with the door's own sentences, each check refuses in its own words, and the
+# hash is what a verdict can never outlive - the whole arm fails open or not
+# at all, and only these tests can see the difference.
+check "a complete refuses a verdict that is absent, stale or red, in the checks' own words" \
+	go test -count=1 \
+	-run 'TestOpenspecValidatePassesACleanChange|TestOpenspecValidateRefusalsInTheirOwnWords|TestOpenspecFilesHashFollowsTheFiles|TestOpenspecValidateVerdictTravelsToTheCompleteArm|TestOpenspecCompleteRefusesAStaleVerdict|TestOpenspecCompleteRefusesARedVerdict' \
+	./internal/store
+# Named because the validate door is the row's only honest reporter: it caches
+# its verdict through the ordinary path without moving the state, refuses what
+# is not a change, and the complete arm's wire refusals carry the door's own
+# sentences - a door that lies here would fake every gate that reads the cache.
+check "the validate door caches its verdict without touching the state, and complete says the cache's words" \
+	go test -count=1 \
+	-run 'TestOpenspecValidateCachesAVerdictAndPreservesTheState|TestOpenspecCompleteRefusesTheCachedRedVerdict|TestOpenspecCompleteRefusesAfterAnEditDroppedTheVerdict|TestOpenspecValidateRefusesANonChange|TestOpenspecValidateRefusesAnUnknownId' \
+	.
 
 # ------------------------------------------ an older database meets this binary
 #

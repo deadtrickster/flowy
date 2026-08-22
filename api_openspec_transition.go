@@ -85,9 +85,9 @@ func (s *server) handleOpenspecTransition(w http.ResponseWriter, r *http.Request
 	if err := s.db.CheckOpenspecTransition(ctx, art, to); err != nil {
 		// The store's sentence is the whole answer: it names the row's state,
 		// the move, and the reason - a backward edge says what the line
-		// allows, an open task says which one, validation says it is not
-		// wired. The caller is holding the row, so the sentence is about
-		// their move and not a generic refusal.
+		// allows, an open task says which one, validation says what failed
+		// or which door fixes it. The caller is holding the row, so the
+		// sentence is about their move and not a generic refusal.
 		writeJSON(w, http.StatusConflict, errorBody(err.Error()))
 		return
 	}

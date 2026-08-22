@@ -25,9 +25,8 @@ package store
 // one, so a change's trail reads as a thread in the event log.
 //
 // The complete arm is two checks: the derived todos off tasks.md must all be
-// done, and the change must validate. Validation fails closed until p4 wires
-// a real validator - ValidateChange - so in this slice complete is unreachable
-// through the door, which is the approved plan and not a bug.
+// done, and the change must validate - ValidateChange reads the verdict the
+// validate door cached on the row (openspec_validate.go, p4).
 
 import (
 	"context"
@@ -232,11 +231,30 @@ func (d *DB) CheckOpenspecTransition(
 	return nil
 }
 
-// ValidateChange is the validate arm, and it fails closed until p4 wires a
-// real validator: a change may not reach complete on the todos alone. p4
-// replaces this function - the arm's shape stays, the sentence goes.
+// ValidateChange is the validate arm: complete asks the verdict the validate
+// door cached on the row (fields.openspec.validation, p4). Absent means never
+// validated, a hash mismatch means the change was edited since, and a red
+// verdict says what is wrong - each in its own sentence, pointed at the door
+// that fixes it.
 var ValidateChange = func(d *DB, ctx context.Context, a *Artifact) error {
-	return fmt.Errorf("validation is not wired - the validate arm lands with p4")
+	files, err := OpenspecFilesOf(a)
+	if err != nil {
+		return err
+	}
+	cached, err := OpenspecValidationOf(a)
+	if err != nil {
+		return err
+	}
+	switch {
+	case cached == nil:
+		return errors.New("the change has not been validated - run POST /api/openspec/{id}/validate")
+	case cached.FilesHash != openspecFilesHash(files):
+		return errors.New("the change has been edited since it was validated - " +
+			"run POST /api/openspec/{id}/validate")
+	case !cached.Ok:
+		return fmt.Errorf("the change does not validate - %s", strings.Join(cached.Problems, "; "))
+	}
+	return nil
 }
 
 // checkOpenspecTasksDone is the todo arm: every todo the change derived off

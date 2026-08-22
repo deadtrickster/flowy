@@ -188,10 +188,10 @@ func TestOpenspecCompleteRefusesWhileTasksAreOpen(t *testing.T) {
 	}
 }
 
-// The validate arm: with every task done, complete is still refused because
-// validation fails closed until p4 wires a real validator - the approved
-// plan, and the refusal says exactly that.
-func TestOpenspecCompleteRefusesWhileValidationIsUnwired(t *testing.T) {
+// The validate arm: with every task done, complete is still refused while no
+// verdict is cached on the row, and the refusal names the door that fixes it
+// - the p4 cache is what the arm reads, absent included.
+func TestOpenspecCompleteRefusesWhileUnvalidated(t *testing.T) {
 	ctx, db := open(t)
 	project := declaredProject(t, ctx, db, "ospec-life-validate")
 	p := &Principal{UserID: "u-" + ulid.NewString(), Project: project}
@@ -219,9 +219,9 @@ func TestOpenspecCompleteRefusesWhileValidationIsUnwired(t *testing.T) {
 
 	err = db.CheckOpenspecTransition(ctx, art, OpenspecComplete)
 	if err == nil {
-		t.Fatal("complete was allowed while validation is not wired")
+		t.Fatal("complete was allowed while no verdict is cached")
 	}
-	if !strings.Contains(err.Error(), "validation is not wired - the validate arm lands with p4") {
+	if !strings.Contains(err.Error(), "has not been validated - run POST /api/openspec/{id}/validate") {
 		t.Fatalf("the refusal is %q, not the validate arm's own sentence", err)
 	}
 }

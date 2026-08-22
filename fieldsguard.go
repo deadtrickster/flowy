@@ -18,7 +18,8 @@ package main
 //   - preserves: can rewrite a change's row, and the funnel carries the state
 //     from the held row. The status door is in this class on a refusal - it
 //     turns a change away (a memory has no issue lifecycle), which is how its
-//     preservation happens.
+//     preservation happens. The validate door rewrites the row to cache its
+//     verdict, and the funnel carries the state on that edit like any other.
 //   - replicates: POST /api/sync/push. Incoming rows are owner-signed - the
 //     verifier checks canonicalArtifact and the authentic signature before the
 //     apply - so a state arriving here was written by the row's owner on
@@ -151,6 +152,7 @@ var openspecStateReach = map[string]string{
 	"POST /api/merge/{id}/unblocked":           "na",
 	"POST /api/openspec":                       "preserves",
 	"POST /api/openspec/{id}/transition":       "transitions",
+	"POST /api/openspec/{id}/validate":         "preserves",
 	"POST /api/projects":                       "na",
 	"POST /api/projects/{project}/enter":       "na",
 	"POST /api/projects/{project}/members":     "na",
