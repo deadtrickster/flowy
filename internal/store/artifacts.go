@@ -283,7 +283,7 @@ func (d *DB) upsertArtifact(ctx context.Context, q execer, a *Artifact) error {
 	// The row is stored; its derived todos now owe it a re-sync. On the
 	// caller's execer, so a write that is half of an operation derives as
 	// part of it.
-	return d.deriveChange(ctx, q, a)
+	return d.syncOpenspec(ctx, q, a)
 }
 
 // WriteMemory writes a memory item and the event that records the write, in one
@@ -584,7 +584,7 @@ func (d *DB) setArtifactFields(
 		// The row moved; its derived todos now owe it a re-sync, in this
 		// same transaction - a fields write that is also a tasks.md edit is
 		// one operation, not two. See deriveChange.
-		return d.deriveChange(ctx, tx, a)
+		return d.syncOpenspec(ctx, tx, a)
 	})
 }
 
@@ -786,7 +786,7 @@ func (d *DB) createArtifact(ctx context.Context, q execer, a *Artifact) error {
 	}
 	// The row is stored; its tasks.md now derives its todos. On the caller's
 	// execer, so a create that is half of an operation derives as part of it.
-	return d.deriveChange(ctx, q, a)
+	return d.syncOpenspec(ctx, q, a)
 }
 
 // fill is what both writes do to an artifact before it goes in: force the

@@ -421,6 +421,19 @@ func (d *DB) prepareChangeWrite(ctx context.Context, q execer, a *Artifact) erro
 	return setOpenspecFiles(a, files)
 }
 
+// syncOpenspec is what a stored change row owes its derived state: the todos
+// off tasks.md, and the conflict edges off its spec deltas. One hook, asked
+// of the same three statements the shape check guards, so every surface
+// derives both. It runs on the caller's execer - a transaction when the
+// write was half of an operation, so the change and its derived rows land as
+// one thing or not at all.
+func (d *DB) syncOpenspec(ctx context.Context, q execer, change *Artifact) error {
+	if err := d.deriveChange(ctx, q, change); err != nil {
+		return err
+	}
+	return d.recomputeConflicts(ctx, q, change)
+}
+
 // deriveChange re-syncs the derived todos after a change row was written. It
 // runs on the caller's execer - a transaction when the write was half of an
 // operation, so the change and its todos land as one thing or not at all.

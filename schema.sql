@@ -738,6 +738,8 @@ CREATE TABLE IF NOT EXISTS fs_intents (
     created    timestamptz DEFAULT now()
 );
 
+
+
 -- Phase 8. What the node saw itself do.
 --
 -- A span is one operation - an MCP call, a permission check, a query, an
@@ -1293,6 +1295,26 @@ CREATE INDEX IF NOT EXISTS artifacts_room_idx
 CREATE INDEX IF NOT EXISTS artifacts_openspec_change_idx
     ON artifacts ((fields -> 'origin' -> 'openspec' ->> 'change'))
  WHERE fields -> 'origin' -> 'openspec' ? 'change';
+
+-- CONFLICT EDGES between openspec changes: two changes whose spec deltas
+-- touch the same capability clash. A pair is stored twice, once per
+-- direction, so reading one change's edges is one indexed primary-key scan
+-- and recomputing on a write deletes both halves at once. The edge is a
+-- function of the rows - every write of a change rebuilds its own - so the
+-- rows stay inside the artifact lifecycle: a change that lands or is taken
+-- back loses its edges with it. See internal/store/openspec_conflict.go.
+--
+-- change and other are plain text ids, not foreign keys - the store
+-- validates them, the same as every other fabric id in this file, and an
+-- FK would break the outage check that drops artifacts to prove a missing
+-- relation is a 500 rather than a silent green.
+CREATE TABLE IF NOT EXISTS openspec_conflicts (
+    change text NOT NULL,
+    other  text NOT NULL,
+    spec   text NOT NULL,
+    at     timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (change, other, spec)
+);
 
 -- ------------------------------------------------------------------- SEARCH
 -- Everything below this line is Postgres full text and is expected to be

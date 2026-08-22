@@ -18,6 +18,7 @@ package main
 // the openspec plan (room message 01M0KA567A9GQTZH5650RA2V91).
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 
@@ -115,4 +116,48 @@ func (s *server) handleOpenspecList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, stampScope(map[string]any{"artifacts": list}, answerScopeOf(r, p)))
+}
+
+// handleOpenspecConflicts lists what one change clashes with: every other
+// change whose spec delta touches the same capability. The edges are kept by
+// the store on every write of a change (internal/store/openspec_conflict.go);
+// this is their read.
+//
+// GET /api/openspec/{id}/conflicts
+//
+// The answer names the other change and the capability, nothing more - the
+// caller reads the other row the way it reads any row. An edge whose other
+// end this principal cannot read is dropped rather than leaked: the edge is
+// a fact about two rows, and a reader that cannot see one of them gets the
+// half they can.
+func (s *server) handleOpenspecConflicts(w http.ResponseWriter, r *http.Request) {
+	p := principalOf(r)
+	id := r.PathValue("id")
+	art, err := s.db.ReadArtifact(r.Context(), p, id, scopeAll(r, p))
+	if errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound,
+			errorBody("no such artifact"+s.misreadIDNote(r, id)))
+		return
+	}
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	if !store.IsEntityType(art, store.ChangeKind) {
+		writeJSON(w, http.StatusBadRequest, errorBody(
+			"a spec edits nothing and clashes with nothing - conflicts are edges between changes"))
+		return
+	}
+	edges, err := s.db.ConflictsOf(r.Context(), id)
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	out := make([]store.OpenspecConflict, 0, len(edges))
+	for _, e := range edges {
+		if _, err := s.db.ReadArtifact(r.Context(), p, e.Change, scopeAll(r, p)); err == nil {
+			out = append(out, e)
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"conflicts": out})
 }
