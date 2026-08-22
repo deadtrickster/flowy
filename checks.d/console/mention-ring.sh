@@ -21,7 +21,7 @@
 
 a_mention_of_the_reader_is_ringed() {
 	cd "$ROOT/web" || return 1
-	node scripts/mention-ring-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A"
+	node scripts/mention-ring-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" "$HANDLE_B"
 }
 
 check "a mention of the reader is ringed, one of somebody else is not, and @operator resolves" \
