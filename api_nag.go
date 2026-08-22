@@ -71,8 +71,33 @@ type nagView struct {
 	// for a while. It reports what was SEEN, never what it means - a session
 	// forty minutes into a gate looks exactly like an abandoned claim from
 	// here, which is why the field is a count and the sentence is the reader's.
-	Stale      int `json:"stale"`
-	StaleAfter int `json:"stale_after_seconds"`
+	// MineWaiting is rows this seat carries that are waiting on SOMEBODY ELSE,
+	// and they are subtracted from MineTodo rather than added to it.
+	//
+	// The whole defect: "3 row(s) assigned to orchestrator, all open" while all
+	// three were questions for the operator and none was work it could do. A
+	// seat blocked on somebody else and a seat sitting on its work produced the
+	// same number, so the number was evidence for neither.
+	//
+	// A row is only counted here while the answer is still owed - the person
+	// named writing on it is their answer, and from that moment it is work
+	// again. See store.AnsweredWaiting, which asks the log rather than trusting
+	// anything to have cleared a flag.
+	MineWaiting int `json:"mine_waiting"`
+	// Which rows those are, for the reason MineTodoIDs exists: a count with no
+	// ids is a number somebody has to go and reconstruct.
+	MineWaitingIDs []string `json:"mine_waiting_ids"`
+	// AnswersOwed is rows - anybody's - that are waiting on THIS caller.
+	//
+	// A different word from work on purpose. Four rows landed on the operator in
+	// one evening because the only way to ask them something was to hand the row
+	// over, and the board then said they were carrying four pieces of work they
+	// were only being asked about. This says the true thing instead: somebody
+	// wants an answer, and the row stays with whoever is doing it.
+	AnswersOwed    int      `json:"answers_owed"`
+	AnswersOwedIDs []string `json:"answers_owed_ids"`
+	Stale          int      `json:"stale"`
+	StaleAfter     int      `json:"stale_after_seconds"`
 	// Workload is the distribution probe, whole, including its thresholds so
 	// that nobody re-derives them from the shares.
 	Workload store.Workload `json:"workload"`
@@ -142,7 +167,12 @@ func (s *server) readNag(ctx context.Context, p *store.Principal, all bool) (nag
 	// EMPTY, NOT NIL. A nil slice serialises to null, and null would mean
 	// "this node does not report which rows" - a different answer from
 	// "none are waiting", and the one a console cannot tell apart.
-	view := nagView{StaleAfter: int(nagStaleAfter.Seconds()), MineTodoIDs: []string{}}
+	view := nagView{
+		StaleAfter:     int(nagStaleAfter.Seconds()),
+		MineTodoIDs:    []string{},
+		MineWaitingIDs: []string{},
+		AnswersOwedIDs: []string{},
+	}
 	// Asked of the node rather than computed here, so the rule for "quiet" has
 	// one home - the same reason the workload moved out of four bash scripts.
 	quiet, err := s.db.QuietReaders(ctx, time.Now())
@@ -151,6 +181,13 @@ func (s *server) readNag(ctx context.Context, p *store.Principal, all bool) (nag
 	}
 	view.Quiet = quiet
 	me := s.db.SeatHandle(ctx, p)
+	// ASKED ONCE FOR THE WHOLE BOARD. Which waiting rows have been answered is
+	// a question about the log, and asking it per row would be a query per open
+	// row on every tick of every waiter.
+	answered, err := s.db.AnsweredWaiting(ctx, rows)
+	if err != nil {
+		return nagView{}, err
+	}
 	now := time.Now()
 	for _, a := range rows {
 		if store.DoneAt(a) {
@@ -167,7 +204,15 @@ func (s *server) readNag(ctx context.Context, p *store.Principal, all bool) (nag
 			// and is working is not work waiting for it; one it holds and has
 			// not begun is, and that is the difference a waiter has to be able
 			// to see or it wakes an agent every tick of its own job.
-			if a.Status != "active" {
+			//
+			// AND NOT MINE TO MOVE IS A THIRD STATE. A row I hold that is
+			// waiting on somebody else is neither started nor startable, and
+			// counting it as work waiting for me is what made a blocked seat
+			// and a stalled one read alike.
+			if waiting := store.WaitingOnOf(a); waiting != "" && waiting != me && !answered[a.ID] {
+				view.MineWaiting++
+				view.MineWaitingIDs = append(view.MineWaitingIDs, a.ID)
+			} else if a.Status != "active" {
 				view.MineTodo++
 				view.MineTodoIDs = append(view.MineTodoIDs, a.ID)
 			}
@@ -176,6 +221,13 @@ func (s *server) readNag(ctx context.Context, p *store.Principal, all bool) (nag
 			if a.Status == "active" && now.Sub(a.Updated) > nagStaleAfter {
 				view.Stale++
 			}
+		}
+		// OUTSIDE THE CARRIER SWITCH, because an answer can be owed on a row
+		// somebody else is carrying - which is the normal case. The operator is
+		// asked about rows they have never held.
+		if store.WaitingOnOf(a) == me && me != "" && !answered[a.ID] {
+			view.AnswersOwed++
+			view.AnswersOwedIDs = append(view.AnswersOwedIDs, a.ID)
 		}
 	}
 	view.Workload = store.WorkloadOf(rows)

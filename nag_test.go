@@ -79,6 +79,38 @@ func TestTheNagCountsAreTheCallersOwn(t *testing.T) {
 	if !strings.Contains(out, "nobody is carrying anything") {
 		t.Errorf("with no shares the nag prints %q", out)
 	}
+	// AND IT SAYS NOTHING ABOUT BLOCKED ROWS WHEN THERE ARE NONE. This is the
+	// half that makes the arm below a difference rather than a claim: a line
+	// that printed unconditionally would be found by any assertion that looks
+	// for it, on any board.
+	for _, no := range []string{"blocked", "answers owed"} {
+		if strings.Contains(out, no) {
+			t.Errorf("a board with nothing blocked still prints %q:\n%s", no, out)
+		}
+	}
+}
+
+// TestTheNagTellsBlockedApartFromWaiting.
+//
+// The defect, measured on a real board: "3 row(s) assigned to orchestrator, all
+// open", where all three were questions for the operator and none was work it
+// could do. A seat blocked on somebody else and a seat sitting on its work
+// produced the same number, so the number was evidence for neither.
+//
+// The two words are deliberately not the same word. "blocked" is work this seat
+// holds and cannot move; "answers owed by you" is what other people want FROM
+// it, which is not work and must not be counted as any - handing a row over to
+// ask a question is exactly how four rows landed on the operator looking like
+// their job.
+func TestTheNagTellsBlockedApartFromWaiting(t *testing.T) {
+	out := nagLines(nagView{
+		Open: 11, Unowned: 1, Mine: 3, MineTodo: 1, MineWaiting: 2, AnswersOwed: 4,
+	})
+	for _, want := range []string{"blocked 2", "answers owed by you 4", "todo 1"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the nag prints %q, which does not say %q", out, want)
+		}
+	}
 }
 
 // TestTheNagNamesQuietReadersWithoutTheirDurations.

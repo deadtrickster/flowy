@@ -944,6 +944,33 @@ ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS assignee text
 CREATE INDEX IF NOT EXISTS artifacts_assignee_idx ON artifacts (assignee)
     WHERE assignee IS NOT NULL;
 
+-- WHOSE MOVE IT IS, which is not the same fact as who is carrying it.
+--
+-- A seat blocked on somebody else's answer looked identical to a seat sitting
+-- on its work: both are "3 rows assigned to you, all open", one number moving
+-- for two reasons and therefore evidence for neither. Measured by orchestrator
+-- on its own board, where all three of its rows were questions for the operator
+-- and none of them was work it could do.
+--
+-- The only ways to say it before this were both wrong. Hand the row over, and
+-- the board says they are CARRYING work they are only answering - which is what
+-- put four rows on the operator in one evening. Or keep it and put the question
+-- in a note, which is what made them read four rows to discover they were being
+-- asked.
+--
+-- So it sits beside assignee rather than replacing it: the carrier still
+-- carries it, and this says who owes the next move. GENERATED from fields for
+-- assignee's reasons exactly - inside the row signature, unwritable from Go, and
+-- recomputed here from the payload when a row replicates, so a relay rewriting
+-- the column on the wire achieves nothing.
+ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS waiting_on text
+    GENERATED ALWAYS AS (fields->>'waiting_on') STORED;
+
+-- Answers owed by one person, which is the read the nag makes. Partial for the
+-- same reason: almost no row is waiting on anybody.
+CREATE INDEX IF NOT EXISTS artifacts_waiting_on_idx ON artifacts (waiting_on)
+    WHERE waiting_on IS NOT NULL;
+
 ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS started     timestamptz;
 ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS last_worked timestamptz;
 

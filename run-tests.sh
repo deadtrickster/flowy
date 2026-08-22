@@ -13510,6 +13510,113 @@ check "and the two lines are reported because both are applied, in Go" \
 	go test -count=1 -run 'TestBothLinesAreReportedBecauseBothAreApplied' ./internal/store
 check "the nag verb says which line, and its counts are the caller's own" \
 	go test -count=1 -run 'TestTheNagSaysWhichLineWasCrossed|TestTheNagCountsAreTheCallersOwn' .
+
+# A SEAT BLOCKED ON SOMEBODY ELSE IS NOT A SEAT SITTING ON ITS WORK, and until
+# now the nag gave them the same number.
+#
+# Measured by orchestrator on its own board: "3 row(s) assigned to orchestrator,
+# all open", where all three were questions for the operator. One figure moving
+# for two reasons is evidence for neither - the shape this suite has narrowed
+# four times in checks alone.
+#
+# ASSERTED AS A DIFFERENCE, never as an absolute. The same board is read twice
+# and only the waiting_on pointer changes between the readings, so a door that
+# ignored the field entirely - which is what every earlier version of this did -
+# gives two identical answers and fails. A single reading of "mine_waiting is 1"
+# would pass on a node that always says 1.
+a_blocked_row_is_not_counted_as_work_waiting_for_you() {
+	recall
+	local carried asked before_todo after_todo
+
+	# ONE ROW THIS SEAT CARRIES, so it lands in mine_todo to begin with.
+	api POST "$TOKEN_A" /api/artifacts "{
+		\"type\": \"memory\", \"kind\": \"todo\", \"visibility\": \"project\",
+		\"title\": \"waiting-check: carried by me\",
+		\"fields\": {\"assignee\": \"$HANDLE_A\"}
+	}" || return 1
+	want_eq "the carried row was filed" "$API_STATUS" 200 || return 1
+	carried="$(jqv .id)"
+
+	# AND ONE SOMEBODY ELSE CARRIES, which is where an answer can be owed by a
+	# seat that has never held the row - the operator's whole complaint.
+	#
+	# FILED BY A, CARRIED BY B. Not filed by B, and the difference is measured
+	# rather than stylistic: a row B files lives in B's project and A answers
+	# 404 for it, so it never reaches A's nag at all and answers_owed stayed 0.
+	# That is a real gap in the field and it is 01M0KEAJ2H, not this check -
+	# naming somebody hands them nothing, exactly as an assignee does, so a
+	# question asked on a row the answerer cannot read is one they are never
+	# told about. Here both rows are readable by the seat whose count is being
+	# asserted, which is the case the arithmetic is about.
+	api POST "$TOKEN_A" /api/artifacts "{
+		\"type\": \"memory\", \"kind\": \"todo\", \"visibility\": \"project\",
+		\"title\": \"waiting-check: carried by somebody else\",
+		\"fields\": {\"assignee\": \"$HANDLE_B\"}
+	}" || return 1
+	want_eq "the other row was filed" "$API_STATUS" 200 || return 1
+	asked="$(jqv .id)"
+
+	# READING ONE, before anything is waiting on anybody.
+	api GET "$TOKEN_A" /api/nag || return 1
+	before_todo="$(jqv .mine_todo)"
+	want_eq "nothing is blocked yet" "$(jqv .mine_waiting)" 0 || return 1
+	want_eq "no answers are owed yet" "$(jqv .answers_owed)" 0 || return 1
+
+	# THE ONLY THING THAT CHANGES between the two readings.
+	want_status 200 POST "$TOKEN_A" "/api/todo/$carried/waiting-on" \
+		"{\"waiting_on\": \"$HANDLE_OP\", \"asked\": \"does this go ahead\"}" || return 1
+	# ASKED BY THE OPERATOR, so the asker and the person asked are different
+	# seats - the real case, and the one that catches a query counting the
+	# question's own entry as its answer.
+	#
+	# THE OPERATOR AND NOT B, measured rather than chosen: A and B are in
+	# DIFFERENT PROJECTS in this fixture, so B answers 404 for a row A filed and
+	# cannot ask anything on it. The operator reads across projects, which is
+	# also who the whole row is about - four questions landed on them in one
+	# evening with no way to say so.
+	want_status 200 POST "$TOKEN_OP" "/api/todo/$asked/waiting-on" \
+		"{\"waiting_on\": \"$HANDLE_A\", \"asked\": \"which of the two\"}" || return 1
+
+	# READING TWO. The carried row left mine_todo rather than being added to it,
+	# and the other seat's row is an answer owed rather than work.
+	api GET "$TOKEN_A" /api/nag || return 1
+	after_todo="$(jqv .mine_todo)"
+	want_eq "the blocked row is counted once" "$(jqv .mine_waiting)" 1 || return 1
+	# THE ID, not just the count. A number with no ids is a number somebody has
+	# to go and reconstruct - MineTodoIDs exists for that reason and these two
+	# follow it. Matched with grep rather than a jq index() so the row id is
+	# never spliced into a jq program: an id in a program is a quoting bug
+	# waiting for a value with a character in it.
+	jqv '.mine_waiting_ids[]' | grep -qxF "$carried" || {
+		printf 'the blocked row %s is not in mine_waiting_ids\n' "$carried" >&2
+		return 1
+	}
+	want_eq "an answer is owed by this seat" "$(jqv .answers_owed)" 1 || return 1
+	jqv '.answers_owed_ids[]' | grep -qxF "$asked" || {
+		printf 'the row owed an answer %s is not in answers_owed_ids\n' "$asked" >&2
+		return 1
+	}
+	# THE SUBTRACTION, which is the defect: it must LEAVE mine_todo, not be
+	# reported beside a number that still counts it.
+	want_eq "the blocked row left the todo count" "$after_todo" "$((before_todo - 1))" || return 1
+	# AND THE CARRIER DID NOT MOVE. Handing the row over is the thing this
+	# exists to stop being the only way to ask somebody something.
+	api GET "$TOKEN_A" "/api/artifact/$carried" || return 1
+	want_eq "the carrier is unchanged" "$(jqv .fields.assignee)" "$HANDLE_A" || return 1
+
+	# AND THE ANSWER CLEARS IT, by being written rather than by anybody
+	# remembering to clear a flag. B writes on the row B was asked about.
+	want_status 200 POST "$TOKEN_OP" "/api/todo/$carried/note" \
+		'{"note": "yes, it goes ahead"}' || return 1
+	api GET "$TOKEN_A" /api/nag || return 1
+	want_eq "the answered row is work again" "$(jqv .mine_waiting)" 0 || return 1
+	want_eq "and it is back in the todo count" "$(jqv .mine_todo)" "$before_todo" || return 1
+
+	printf 'blocked %s left the todo count and came back when %s answered; %s is an answer owed\n' \
+		"${carried:0:10}" "$HANDLE_OP" "${asked:0:10}"
+}
+check "a row waiting on somebody else is not counted as work waiting for you" \
+	a_blocked_row_is_not_counted_as_work_waiting_for_you
 check "mem_write defaults one from the message and refuses to restate it" \
 	mem_write_takes_a_raiser_and_settles_it
 check "the raiser is a handle, is never inferred, and is settled at the raise, in Go" \

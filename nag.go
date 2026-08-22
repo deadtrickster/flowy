@@ -140,6 +140,18 @@ func nagLines(view nagView) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "board  open %d  unowned %d  mine %d (todo %d)  stale %d\n",
 		view.Open, view.Unowned, view.Mine, view.MineTodo, view.Stale)
+	// THE TWO NUMBERS THAT USED TO BE INSIDE `todo`, on their own line and only
+	// when they are not zero - a seat with nothing blocked and nothing asked of
+	// it should read the same board it always did.
+	//
+	// Separate words on purpose. "blocked" is work this seat holds and cannot
+	// move; "answers owed" is what other people are waiting on FROM it, which
+	// is not work and must not be counted as any. Reading them as one number is
+	// the defect this line exists to end.
+	if view.MineWaiting > 0 || view.AnswersOwed > 0 {
+		fmt.Fprintf(&b, "       blocked %d (waiting on somebody else)  answers owed by you %d\n",
+			view.MineWaiting, view.AnswersOwed)
+	}
 	// The spread, then who is not listening. The quiet line is NOT inside the
 	// spread block, and that is the fix for a bug this file had for one commit:
 	// an early return on an empty board skipped it, so the one board where a

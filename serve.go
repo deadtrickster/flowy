@@ -458,6 +458,7 @@ var apiRoutes = []string{
 	"POST /api/rooms/{room}/leave",
 	"POST /api/todo/{id}/category",
 	"POST /api/todo/{id}/priority",
+	"POST /api/todo/{id}/waiting-on",
 	"POST /api/todo/{id}/deps",
 	"POST /api/agent/{id}/projects",
 	"POST /api/user/{id}/role",
@@ -664,6 +665,7 @@ func (s *server) routes() http.Handler {
 	// internal/store/todocategory.go, and category.go for this door.
 	api.HandleFunc("POST /api/todo/{id}/category", s.handleTodoCategory)
 	api.HandleFunc("POST /api/todo/{id}/priority", s.handleTodoPriority)
+	api.HandleFunc("POST /api/todo/{id}/waiting-on", s.handleTodoWaiting)
 	api.HandleFunc("GET /api/todo/{id}/category", s.handleTodoCategoryRead)
 	// The words, which is the other half and the one with a race in it. An
 	// author may correct a todo NOBODY HAS STARTED, and the edit carries the
