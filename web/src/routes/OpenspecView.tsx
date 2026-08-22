@@ -135,7 +135,12 @@ export function OpenspecView() {
                 <div className="flex flex-wrap gap-1 pt-1">
                   <Badge variant="outline">{artifact.kind}</Badge>
                   {state ? (
-                    <Badge variant={state === "archived" ? "outline" : "default"}>{state}</Badge>
+                    <Badge
+                      variant={state === "archived" ? "outline" : "default"}
+                      data-openspec-state={state}
+                    >
+                      {state}
+                    </Badge>
                   ) : null}
                   {artifact.visibility ? (
                     <Badge variant="outline">{artifact.visibility}</Badge>

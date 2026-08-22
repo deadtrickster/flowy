@@ -36,10 +36,14 @@ export function openspecFilesOf(a: Artifact): Record<string, string> | null {
 }
 
 /** openspecStateOf reads fields.openspec.state: proposed, in-progress,
- * complete or archived - the lifecycle the transition door owns. */
+ * complete or archived - the lifecycle the transition door owns. Absent on a
+ * change is proposed: the store's OpenspecStateOf default, the state the row
+ * starts from, and the page must say it rather than draw nothing. A spec has
+ * no lifecycle and reads as none. */
 export function openspecStateOf(a: Artifact): string | undefined {
   const state = dig(a, ["openspec", "state"]);
-  return typeof state === "string" ? state : undefined;
+  if (typeof state === "string") return state;
+  return a.kind === "change" ? "proposed" : undefined;
 }
 
 /** openspecVerdictOf reads fields.openspec.validation. Null is an honest

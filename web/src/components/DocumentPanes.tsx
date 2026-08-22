@@ -108,6 +108,7 @@ export function DocumentPanes({ room, quote }: Props) {
   useEffect(() => {
     setEvents([]);
     setTodos([]);
+    setThreadSizes({});
     setLive(false);
     setError(null);
     clear();
@@ -213,10 +214,30 @@ export function DocumentPanes({ room, quote }: Props) {
     [loadTodos],
   );
 
-  // The messages that started their own thread, in log order. An event's
-  // thread field names the root it hangs off - a message answering nothing is
-  // its own root - so a root is the event whose thread is itself.
-  const threadRoots = events.filter((event) => event.thread === event.id);
+  // The messages that STARTED a thread, in log order. The say door hands a
+  // message answering nothing a fresh thread id, and a reply the thread of the
+  // message it answers - so a thread's starter is the OLDEST event in the
+  // window carrying that thread. Never the event whose thread is its own id:
+  // the store writes no such thing (chat.go's sayInRoom), and this pane's
+  // first cut looked for exactly that and listed nothing - the gate caught it
+  // in the check's own words, "the discussion pane lists no threads".
+  // A thread of one message is not listed - the empty state says what a
+  // thread is, a reply starts one - and the size is the node's own number
+  // when it has one, the window's otherwise.
+  const threadRoots = (() => {
+    const starters: FlowyEvent[] = [];
+    const seen = new Set<string>();
+    for (const event of events) {
+      if (seen.has(event.thread)) continue;
+      seen.add(event.thread);
+      starters.push(event);
+    }
+    return starters.filter(
+      (event) =>
+        (threadSizes[event.thread] ??
+          events.filter((candidate) => candidate.thread === event.thread).length) > 1,
+    );
+  })();
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -303,8 +324,8 @@ export function DocumentPanes({ room, quote }: Props) {
             threadRoots.map((event) => {
               const name = speaker(event);
               const count =
-                threadSizes[event.id] ??
-                events.filter((candidate) => candidate.thread === event.id).length;
+                threadSizes[event.thread] ??
+                events.filter((candidate) => candidate.thread === event.thread).length;
               return (
                 <li key={event.id} className="border-border/60 border-b px-4 py-2 text-xs">
                   <Link

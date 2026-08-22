@@ -217,7 +217,9 @@ export function Shell({ children }: { children: ReactNode }) {
           // drawer OPEN, which is the operator's complaint surviving the fix
           // that was supposed to answer it. Above the breakpoint the column
           // keeps its old shape, where the nav is fixed, the rooms scroll and
-          // the token bar stays put.
+          // the token bar stays put - until the fixed parts stop fitting. The
+          // nav keeps its height when there is room (md:min-h-0 below) and
+          // becomes a scroller itself when a live token bar leaves it less.
           "overflow-y-auto md:overflow-y-visible",
           // Off-canvas below the breakpoint, an ordinary column at and above it.
           // `fixed` takes it out of the flex row entirely, which is the point:
@@ -249,7 +251,7 @@ export function Shell({ children }: { children: ReactNode }) {
           nav in the document and a check cannot pass against the copy that is
           not showing.
         */}
-        <nav className="order-3 flex flex-col gap-0.5 md:order-none">
+        <nav className="order-3 flex flex-col gap-0.5 md:order-none md:min-h-0 md:overflow-y-auto">
           <NavLink to="/" className={navClass} end>
             <HomeIcon className="h-4 w-4" />
             overview
@@ -396,12 +398,16 @@ export function Shell({ children }: { children: ReactNode }) {
           the whole page scrolled - reported by the operator at 26 rooms, with
           the token bar pushed off the bottom.
 
-          min-h-0 is the half that is easy to leave out and does nothing
-          without: a flex child's default min-height is its content, so
-          overflow-y-auto on its own never gets a box smaller than the list and
-          never scrolls. flex-1 gives it the leftover height, min-h-0 lets it be
-          smaller than its contents, and only then does the overflow do
-          anything.
+          min-h-28 is the floor that keeps the rooms reachable: a flex child's
+          default min-height is its content, so overflow-y-auto on its own never
+          gets a box smaller than the list and never scrolls. flex-1 gives it
+          the leftover height, and min-h-28 - not min-h-0 - lets it shrink
+          under its contents but never to nothing. With no floor at all, a live
+          token bar taller than the spare room squeezes the list to height 0:
+          its rows render clipped, clicks on them land on the token bar, and
+          the fixed parts overflow the page. The floor is the part that says
+          the rooms win the last rows; the nav scrolls instead (its own
+          md:min-h-0 below).
 
           It sits on the rooms block rather than the aside so the nav above and
           the token bar below stay where they are - a sidebar that scrolls as
@@ -486,7 +492,7 @@ export function Shell({ children }: { children: ReactNode }) {
         */}
         <div
           data-room-list=""
-          className="order-2 flex flex-col gap-0.5 md:order-none md:min-h-0 md:flex-1 md:overflow-y-auto"
+          className="order-2 flex flex-col gap-0.5 md:order-none md:min-h-28 md:flex-1 md:overflow-y-auto"
         >
           {rooms.map((room) => (
             <div key={room} className="group relative flex items-center">

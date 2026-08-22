@@ -102,7 +102,10 @@ const changeB = await ask("/api/openspec", {
 });
 
 // A thread in the change's own room: a root, then a reply in its thread. The
-// pane's directory has to list one thread of two messages.
+// pane's directory has to list one thread of two messages. The reply names no
+// thread on purpose: the say door hands a parentless message a fresh thread id
+// and a reply that names none the thread of what it answers - seeding the
+// door's own shape, not a guess at it.
 const room = `doc-${changeA.id}`;
 const root = await ask(`/api/chat/${encodeURIComponent(room)}/say`, {
   method: "POST",
@@ -113,7 +116,6 @@ await ask(`/api/chat/${encodeURIComponent(room)}/say`, {
   body: JSON.stringify({
     body: `an answer in its thread ${stamp}`,
     parents: [root.id],
-    thread: root.id,
   }),
 });
 
@@ -208,8 +210,20 @@ try {
   } catch (err) {
     die(`the proposal's discuss button cannot be clicked: ${err}`);
   }
-  const draft = await page.locator('textarea[aria-label="message"]').inputValue();
-  if (!draft.includes("> proposal.md")) {
+  // The draft is the button's whole value, and it lands in the box one render
+  // after the click - read it as a state, not a sample. The first gate run
+  // read it immediately and got "", which is what the box holds for the one
+  // frame between the click and the effect.
+  const quoted = await page
+    .waitForFunction(
+      () =>
+        document.querySelector('textarea[aria-label="message"]')?.value.includes("> proposal.md") ??
+        false,
+      { timeout: 5_000 },
+    )
+    .catch(() => false);
+  if (!quoted) {
+    const draft = await page.locator('textarea[aria-label="message"]').inputValue();
     die(
       `after discuss, the draft holds ${JSON.stringify(draft)}, want it to quote the file's path - the discussion has to name what it is about`,
     );
@@ -228,19 +242,17 @@ try {
   }
 
   // THE CONFLICT EDGE, naming the other change. Both changes carry
-  // specs/foo/spec.md, so the door must list one edge and it must be B.
+  // specs/foo/spec.md, so the door must list an edge naming B. The wait is
+  // for B's id rather than any edge at all: a reused database accumulates
+  // pairs from earlier runs, and only an id minted this run can prove THIS
+  // pair - an any-edge wait would pass on somebody else's clash.
   try {
-    await page.locator("li[data-openspec-conflict]").waitFor({ state: "visible", timeout: 10_000 });
+    await page
+      .locator(`li[data-openspec-conflict="${changeB.id}"]`)
+      .waitFor({ state: "visible", timeout: 10_000 });
   } catch {
-    die("the row view lists no conflict - two changes were seeded over the same spec delta");
-  }
-  const edge = await page
-    .locator("li[data-openspec-conflict]")
-    .first()
-    .getAttribute("data-openspec-conflict");
-  if (edge !== changeB.id) {
     die(
-      `the conflict edge names ${JSON.stringify(edge)}, want ${changeB.id} - the pair was seeded over specs/foo/spec.md`,
+      `the row view lists no edge naming ${changeB.id} - the pair was seeded over specs/foo/spec.md`,
     );
   }
 
