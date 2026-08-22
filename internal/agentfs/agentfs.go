@@ -370,6 +370,16 @@ func (d *dirNode) entries(ctx context.Context) ([]fuse.DirEntry, error) {
 		seen := make(map[string]bool, len(names))
 		for i, name := range names {
 			seen[name] = true
+			// An openspec change is a DIRECTORY here: the row is the change
+			// and its files are the contents - see openspec.go. A spec stays
+			// a file; its body IS its spec.md.
+			if store.IsOpenspec(arts[i]) && arts[i].Kind == store.ChangeKind {
+				out = append(out, fuse.DirEntry{
+					Name: name, Mode: fuse.S_IFDIR,
+					Ino: ino(path.Join(d.path, name)),
+				})
+				continue
+			}
 			out = append(out, fuse.DirEntry{
 				Name: name, Mode: fuse.S_IFREG,
 				Ino: fileIno(path.Join(d.path, name), arts[i].ID),
@@ -547,6 +557,14 @@ func (d *dirNode) lookupFile(ctx context.Context, name string, out *fuse.EntryOu
 	if err != nil {
 		return nil, err
 	}
+	// A change is a directory at this depth: the row is the change and its
+	// files are the contents - see openspec.go.
+	if store.IsOpenspec(art) && art.Kind == store.ChangeKind {
+		childPath := path.Join(d.path, name)
+		child := &changeNode{f: d.f, scope: d.scope, artID: art.ID, path: childPath}
+		d.f.dirAttr(&out.Attr)
+		return d.NewInode(ctx, child, fs.StableAttr{Mode: fuse.S_IFDIR, Ino: ino(childPath)}), nil
+	}
 	body := render(art)
 	return d.fileInode(ctx, name, art.ID, uint64(len(body)), art.Updated, out), nil
 }
@@ -608,6 +626,15 @@ func (d *dirNode) Create(ctx context.Context, name string, flags, mode uint32, o
 		case err == nil && art.OwnerUser != d.f.p.UserID:
 			return fmt.Errorf("%w: %s belongs to somebody else", errRefused, name)
 		case err == nil:
+			// An openspec row is not rewritten through the single-file path:
+			// a change is a directory (openspec.go) and a spec's words are its
+			// row - a save that rewrote either through the generic path would
+			// husk it into a note, because the header decides the kind and the
+			// shape check only sees the row. The mount shows; the doors write.
+			if store.IsOpenspec(art) {
+				return fmt.Errorf("%w: %s is an openspec %s and read-only in the mount - "+
+					"POST /api/openspec writes it", errRefused, name, art.Kind)
+			}
 			id = art.ID
 		case errors.Is(err, store.ErrNotFound):
 			if known, ok := idFromName(name); ok {
@@ -684,6 +711,13 @@ func (d *dirNode) Unlink(ctx context.Context, name string) syscall.Errno {
 		}
 		if err != nil {
 			return err
+		}
+		// Openspec rows are not deleted through the mount - the same read-only
+		// rule Create applies, for the same reason: the mount shows, the doors
+		// (and their lifecycle, p3) write.
+		if store.IsOpenspec(art) {
+			return fmt.Errorf("%w: %s is an openspec %s and read-only in the mount",
+				errRefused, name, art.Kind)
 		}
 		d.f.dropPending(here)
 		if _, err := d.f.db.TombstoneArtifact(ctx, d.f.p, art.ID); err != nil {

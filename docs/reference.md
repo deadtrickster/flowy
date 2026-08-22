@@ -862,6 +862,8 @@ and deletes are tombstones.
 | `POST /api/artifact/{id}/delete` | tombstone it and bump the clock past the write it removes |
 | `POST /api/artifact/{id}/status` | move it through the lifecycle. Body: `status`. Returns `{artifact, event}`. `409` on a move the workflow does not allow, `404` on one you cannot read |
 | `GET /api/artifact/{id}/history` | `{"artifact","status","next":[...],"events":[...]}` - the status trail in order, and where it may go from here |
+| `POST /api/openspec` | file a spec or a change. Body: `kind` (required) - one of `spec`, `change`, and anything else is `400` naming the general door - `type` is `memory` or absent, plus the `POST /api/artifacts` fields. A spec needs `title` and `body` (its spec.md), a change needs `fields.openspec.files` carrying a non-empty `proposal.md` - a row that fails either is `400` with the store's sentence. The row is an ordinary memory artifact; every other artifact door reads and writes it the same |
+| `GET /api/openspec?status=&room=&limit=` | `{"artifacts":[...]}` - both kinds, spec and change, permission-filtered, newest first. One call for both because the two are one board: a change is read next to the capability it touches. **Any other parameter is `400` naming it** |
 | `GET /api/search?q=&type=&kind=&project=` | `{"query":..., "artifacts":[{..., "rank":...}]}`, ranked and permission-filtered |
 | `POST /api/events` | append. Body: `type` (required), `room`, `thread`, `parents`, `actor`, `artifact`, `body`, `meta`. `id` is a ULID, `seq_hlc` comes from the clock, the project is the principal's |
 | `GET /api/events?thread=&since=&room=&type=` | `{"events":[...]}` with `seq_hlc > since`, in log order, permission-filtered |

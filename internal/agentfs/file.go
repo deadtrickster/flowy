@@ -6,6 +6,7 @@ package agentfs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path"
 	"sync"
@@ -181,6 +182,24 @@ func (n *fileNode) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint3
 		wantsWrite := int(flags)&(syscall.O_WRONLY|syscall.O_RDWR) != 0
 		if wantsWrite && !n.f.writable(n.scope) {
 			return fmt.Errorf("%w: %s is not yours to write in", errRefused, path.Dir(n.path))
+		}
+		// An openspec row is not rewritten through the generic file path - the
+		// mount shows, the doors write; see the same refusal in Create. This is
+		// the one that keeps a spec a spec: a save without the front-matter
+		// header defaults the kind to "note" and the shape check only sees the
+		// row, so without this refusal the rewrite would husk it silently.
+		if wantsWrite {
+			art, err := n.f.db.FSFind(ctx, n.f.p, n.scope, n.id)
+			switch {
+			case errors.Is(err, store.ErrNotFound):
+				// A pending write: not in the store yet, and nothing openspec
+				// to refuse - the close-time checks decide.
+			case err != nil:
+				return err
+			case store.IsOpenspec(art):
+				return fmt.Errorf("%w: %s is an openspec %s and read-only in the mount - "+
+					"POST /api/openspec writes it", errRefused, n.name, art.Kind)
+			}
 		}
 		handle = &fileHandle{f: n.f, node: n, writable: wantsWrite}
 

@@ -278,6 +278,12 @@ var apiRoutes = []string{
 	"POST /api/artifact/{id}/delete",
 	"POST /api/artifact/{id}/status",
 	"GET /api/artifact/{id}/history",
+	// The openspec doors: spec and change rows filed and listed under their own
+	// names. The rows are ordinary memory artifacts - this is the narrowing,
+	// and the store's shape check is what makes a husk refuse. See
+	// api_openspec.go.
+	"POST /api/openspec",
+	"GET /api/openspec",
 	"GET /api/search",
 	"POST /api/events",
 	"GET /api/events",
@@ -545,6 +551,12 @@ func (s *server) routes() http.Handler {
 	api.HandleFunc("POST /api/artifact/{id}/delete", s.handleDeleteArtifact)
 	api.HandleFunc("POST /api/artifact/{id}/status", s.handleArtifactStatus)
 	api.HandleFunc("GET /api/artifact/{id}/history", s.handleArtifactHistory)
+	// The openspec doors. Same rows as the artifact doors above - the shape
+	// check lives in the store (internal/store/openspec.go) and every write
+	// path asks it - this is the surface that speaks the names. See
+	// api_openspec.go.
+	api.HandleFunc("POST /api/openspec", s.handleOpenspecCreate)
+	api.HandleFunc("GET /api/openspec", s.handleOpenspecList)
 
 	// How strong a finding's evidence is, and the log behind it. Over HTTP as
 	// well as MCP, for api_mergegate.go's reason: a door only agents can knock

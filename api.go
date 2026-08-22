@@ -123,8 +123,6 @@ func mergeRowSentAsAType(typ, kind string) string {
 }
 
 func (s *server) handleCreateArtifact(w http.ResponseWriter, r *http.Request) {
-	p := principalOf(r)
-
 	var req artifactRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, errorBody("bad request body: "+err.Error()))
@@ -151,6 +149,21 @@ func (s *server) handleCreateArtifact(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorBody(why))
 		return
 	}
+
+	// The write itself, shared with POST /api/openspec. What belongs to this
+	// door alone has been refused above; everything from here down is the one
+	// write path for any artifact row, whichever door wrote it - so the store's
+	// shape checks (checkQueueRow, checkMergeRow, checkOpenspecRow) run
+	// identically for every surface.
+	s.createArtifact(w, r, req)
+}
+
+// createArtifact is the write half of the artifact create door. The caller has
+// done its own narrowing - this door's announcement and merge-row refusals, the
+// openspec door's kind - and this is the shared rest: project resolution, the
+// update-vs-create decision, the write, and what a filed row says in its room.
+func (s *server) createArtifact(w http.ResponseWriter, r *http.Request, req artifactRequest) {
+	p := principalOf(r)
 
 	project, err := req.project(p)
 	if err != nil {
