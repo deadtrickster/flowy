@@ -90,6 +90,7 @@ var routeParams = map[string][]string{
 	"GET /api/node":                              {},
 	"GET /api/openspec":                          {"limit", "room", "scope", "status"},
 	"GET /api/openspec/{id}/conflicts":           {"scope"},
+	"GET /api/openspec/{id}/todos":               {"scope"},
 	"GET /api/peers":                             {},
 	"GET /api/presence":                          {},
 	"GET /api/projects":                          {"scope"},

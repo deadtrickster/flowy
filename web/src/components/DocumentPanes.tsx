@@ -8,6 +8,8 @@ import { Badge } from "@/components/ui/badge";
 import { type Artifact, type FlowyEvent, api } from "@/lib/api";
 import { useCitation } from "@/lib/cite";
 import { useSession } from "@/lib/session";
+import { speakerStyle } from "@/lib/speakercolour";
+import { clock, speaker } from "@/lib/utils";
 
 /**
  * The room a document owns.
@@ -60,10 +62,11 @@ interface Props {
  * The components are the room's own - MessageList, MessageBox, RoomTodos - so a
  * message here is selected, cited and answered exactly as it is in #general,
  * and a todo raised here is the same row the queue counts. What this does NOT
- * carry is the rest of the room view: presence, pins, merges and the thread
- * DAG. A document page is read to decide something about the document, and four
- * more panes in a 26rem column would push the two that matter off the screen.
- * They are one click away in the full room, which the header links to.
+ * carry is the rest of the room view: presence, pins and merges, and the full
+ * thread pane. Threads are here as a directory - roots with their counts, each
+ * one click from the room's list/DAG view and the composer that answers it -
+ * because four panes in a 26rem column would push the two that matter off the
+ * screen.
  */
 export function DocumentPanes({ room, quote }: Props) {
   const { token, whoami } = useSession();
@@ -72,6 +75,11 @@ export function DocumentPanes({ room, quote }: Props) {
   const [live, setLive] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [todoError, setTodoError] = useState<string | null>(null);
+  // How long each thread on this page is, as the node counted it - the same
+  // map the room's thread tab reads, merged over the same pages this pane
+  // polls. A thread missing from here is drawn with the events in the
+  // window, never as zero.
+  const [threadSizes, setThreadSizes] = useState<Record<string, number>>({});
   const { selected, citation, cite, select, citeSpan, clear } = useCitation();
 
   // Which read of the todos is the current one, for the room panel's reason:
@@ -114,6 +122,7 @@ export function DocumentPanes({ room, quote }: Props) {
         const page = await api.room(room);
         if (stopped) return;
         setEvents(page.events);
+        if (page.threads) setThreadSizes((current) => ({ ...current, ...page.threads }));
         cursor = page.cursor;
         setLive(true);
         void loadTodos();
@@ -128,6 +137,7 @@ export function DocumentPanes({ room, quote }: Props) {
           const page = await api.wait(room, cursor, controller.signal);
           if (stopped) return;
           if (page.events.length > 0) setEvents((current) => merge(current, page.events));
+          if (page.threads) setThreadSizes((current) => ({ ...current, ...page.threads }));
           // Advance on every successful return, not only when something landed
           // on screen: the server answers `seq_hlc > cursor`, so a cursor that
           // only moves when there is something to draw sticks, and a stuck
@@ -203,6 +213,11 @@ export function DocumentPanes({ room, quote }: Props) {
     [loadTodos],
   );
 
+  // The messages that started their own thread, in log order. An event's
+  // thread field names the root it hangs off - a message answering nothing is
+  // its own root - so a root is the event whose thread is itself.
+  const threadRoots = events.filter((event) => event.thread === event.id);
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       <section className="flex min-h-0 flex-[3] flex-col border-border border-b">
@@ -263,6 +278,53 @@ export function DocumentPanes({ room, quote }: Props) {
           quote={quote}
           room={room}
         />
+      </section>
+
+      {/*
+        WHAT THE CONVERSATION HAS BEEN, as a directory rather than the pane. The
+        full thread view - the reading list, the DAG, the composer that answers
+        it - lives in the room and is one click away per thread; the operator's
+        p5 answer put threads in this pane and said the rest of it stays a link.
+        The count is the node's own page.threads number when it has one, and the
+        window's otherwise - a root older than the window has no events to
+        count here, and drawing it as zero would be a lie about the thread.
+      */}
+      <section className="flex min-h-0 flex-[2] flex-col border-border border-b">
+        <header className="flex items-center gap-2 border-border border-b px-4 py-2">
+          <h2 className="font-semibold text-sm">threads</h2>
+          <span className="text-muted-foreground text-xs">{threadRoots.length}</span>
+        </header>
+        <ul className="min-h-0 flex-1 overflow-y-auto">
+          {threadRoots.length === 0 ? (
+            <li className="px-4 py-3 text-muted-foreground text-xs">
+              no threads yet - a reply starts one
+            </li>
+          ) : (
+            threadRoots.map((event) => {
+              const name = speaker(event);
+              const count =
+                threadSizes[event.id] ??
+                events.filter((candidate) => candidate.thread === event.id).length;
+              return (
+                <li key={event.id} className="border-border/60 border-b px-4 py-2 text-xs">
+                  <Link
+                    to={`/chat/${room}/thread/${event.id}`}
+                    data-thread-link={event.id}
+                    className="flex items-center gap-2 hover:underline"
+                  >
+                    <span className="rounded px-1 font-mono" style={speakerStyle(name)}>
+                      {name}
+                    </span>
+                    <span className="text-muted-foreground">
+                      {count} message{count === 1 ? "" : "s"}
+                    </span>
+                    <span className="ml-auto text-muted-foreground">{clock(event.created)}</span>
+                  </Link>
+                </li>
+              );
+            })
+          )}
+        </ul>
       </section>
 
       <section className="flex min-h-0 flex-[2] flex-col overflow-y-auto">

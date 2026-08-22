@@ -81,6 +81,7 @@ var openspecStateReach = map[string]string{
 	"GET /api/node":                      "na",
 	"GET /api/openspec":                  "na",
 	"GET /api/openspec/{id}/conflicts":   "na",
+	"GET /api/openspec/{id}/todos":       "na",
 	"GET /api/peers":                     "na",
 	"GET /api/presence":                  "na",
 	"GET /api/projects":                  "na",

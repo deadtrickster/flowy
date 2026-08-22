@@ -383,6 +383,14 @@ func (d *DB) derivedTodosOf(ctx context.Context, q execer, change string) ([]*Ar
 	return out, nil
 }
 
+// DerivedTodosOf is the console door's read of derivedTodosOf, over the
+// database itself. The caller decides what of the answer its reader may see -
+// the rows are todos in their own right and a permission filter belongs where
+// the principal is, not in here.
+func (d *DB) DerivedTodosOf(ctx context.Context, change string) ([]*Artifact, error) {
+	return d.derivedTodosOf(ctx, d.sql, change)
+}
+
 // prepareChangeWrite annotates a change's tasks.md before the row goes in, so
 // the stored file carries explicit line ids and the re-sync after the write
 // pairs lines to todos by id alone. It is asked of the same three write

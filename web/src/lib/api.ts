@@ -811,6 +811,20 @@ export interface NoteEntry {
   created: string;
 }
 
+/**
+ * OpenspecConflict is one clash between two changes over one capability,
+ * exactly as GET /api/openspec/{id}/conflicts answers it: the other change
+ * and the capability the two deltas both touch.
+ *
+ * Lives here rather than in lib/openspec because THIS FILE CANNOT IMPORT
+ * ANYTHING - scripts/api-error-check.mjs loads it as a data URL, where no
+ * specifier resolves - and the openspec methods answer this type.
+ */
+export interface OpenspecConflict {
+  change: string;
+  spec: string;
+}
+
 export interface Artifact {
   id: string;
   type: string;
@@ -2668,6 +2682,28 @@ export const api = {
     ),
 
   artifact: (id: string) => request<Artifact>(`/api/artifact/${encodeURIComponent(id)}`),
+
+  /**
+   * openspec is the openspec board: the spec and change rows, newest first,
+   * the same two kinds POST /api/openspec writes. The rows are ordinary
+   * artifacts - the fields that make them openspec are dug in lib/openspec.
+   */
+  openspec: () => request<{ artifacts: Artifact[] }>("/api/openspec"),
+
+  /**
+   * openspecConflicts is one change's clash edges: every other change whose
+   * spec delta touches the same capability, as the store keeps them (p2).
+   */
+  openspecConflicts: (id: string) =>
+    request<{ conflicts: OpenspecConflict[] }>(`/api/openspec/${encodeURIComponent(id)}/conflicts`),
+
+  /**
+   * openspecTodos is the todos a change's tasks.md derived (p2). The rows are
+   * ordinary todos - this door exists because no filter on GET /api/artifacts
+   * reaches a todo's origin fields.
+   */
+  openspecTodos: (id: string) =>
+    request<{ todos: Artifact[] }>(`/api/openspec/${encodeURIComponent(id)}/todos`),
 
   /**
    * fileUpstream records where a finding went upstream, or takes the filing

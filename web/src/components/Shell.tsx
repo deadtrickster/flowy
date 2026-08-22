@@ -13,6 +13,7 @@ import {
   History,
   Home as HomeIcon,
   Inbox as InboxIcon,
+  Layers,
   ListChecks,
   ListTree,
   Lock,
@@ -352,6 +353,10 @@ export function Shell({ children }: { children: ReactNode }) {
           <NavLink to="/reports" className={navClass}>
             <FileText className="h-4 w-4" />
             reports
+          </NavLink>
+          <NavLink to="/openspec" className={navClass}>
+            <Layers className="h-4 w-4" />
+            openspec
           </NavLink>
           <NavLink to="/findings" className={navClass}>
             <Bug className="h-4 w-4" />

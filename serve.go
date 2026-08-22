@@ -285,6 +285,7 @@ var apiRoutes = []string{
 	"POST /api/openspec",
 	"GET /api/openspec",
 	"GET /api/openspec/{id}/conflicts",
+	"GET /api/openspec/{id}/todos",
 	"POST /api/openspec/{id}/transition",
 	"GET /api/search",
 	"POST /api/events",
@@ -561,6 +562,7 @@ func (s *server) routes() http.Handler {
 	api.HandleFunc("POST /api/openspec", s.handleOpenspecCreate)
 	api.HandleFunc("GET /api/openspec", s.handleOpenspecList)
 	api.HandleFunc("GET /api/openspec/{id}/conflicts", s.handleOpenspecConflicts)
+	api.HandleFunc("GET /api/openspec/{id}/todos", s.handleOpenspecTodos)
 	api.HandleFunc("POST /api/openspec/{id}/transition", s.handleOpenspecTransition)
 
 	// How strong a finding's evidence is, and the log behind it. Over HTTP as

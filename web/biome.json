@@ -20,6 +20,7 @@
     {
       "include": [
         "src/routes/ArtifactView.tsx",
+        "src/routes/OpenspecView.tsx",
         "src/components/MessageBody.tsx",
         "src/components/FindingPane.tsx"
       ],

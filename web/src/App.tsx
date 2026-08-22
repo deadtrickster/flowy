@@ -17,6 +17,8 @@ import { Memory } from "@/routes/Memory";
 import { Metrics } from "@/routes/Metrics";
 import { NewEntity } from "@/routes/NewEntity";
 import { NotFound } from "@/routes/NotFound";
+import { Openspec } from "@/routes/Openspec";
+import { OpenspecView } from "@/routes/OpenspecView";
 import { Profile } from "@/routes/Profile";
 import { Projects } from "@/routes/Projects";
 import { Reports } from "@/routes/Reports";
@@ -120,6 +122,15 @@ export default function App() {
           shape is meant, and says so loudly when the shape is gone.
         */}
           <Route path="/diagrams/:id/:cell" element={<DiagramView />} />
+          {/*
+            The openspec board: the spec and change rows, and one row's files,
+            verdict, derived todos and clashes. The rows ARE artifacts - the
+            /p/ paths still open them - but a change is a directory of markdown
+            files in fields, and that shape wants a page of its own. See
+            routes/OpenspecView for what it draws.
+          */}
+          <Route path="/openspec" element={<Openspec />} />
+          <Route path="/openspec/:id" element={<OpenspecView />} />
           <Route path="/bookmarks" element={<Bookmarks />} />
           <Route path="/worklog" element={<Worklog />} />
           <Route path="/task/:id" element={<TaskView />} />
