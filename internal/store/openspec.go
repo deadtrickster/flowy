@@ -14,6 +14,12 @@ package store
 //	         openspec plan (room message 01M0KA567A9GQTZH5650RA2V91, thread
 //	         01M0K9WFBNBZ9V9XBK5NGD7D9K).
 //
+//	One consequence of that shape, read it before changing it: a change's
+//	history is per-ROW, not per-file. Editing proposal.md supersedes the whole
+//	change - tasks.md and design.md included - and one signature covers the
+//	set. If per-file history is ever wanted, it is a migration, not a
+//	feature. (Recorded at the operator's request on review of the p1 slice.)
+//
 // The lifecycle statuses ride the artifact status column (proposed,
 // in-progress, complete, archived). The doors and rules that move a row
 // between them are later siblings, not this file.
