@@ -885,14 +885,7 @@ function Row({
           raised by <span style={speakerStyle(raiser)}>{raiser}</span>
         </span>
       ) : null}
-      <span
-        data-todo-assignee={owner}
-        className="shrink-0 text-muted-foreground text-xs"
-        title="who is carrying this"
-        style={owner ? speakerStyle(owner) : undefined}
-      >
-        {owner || "unowned"}
-      </span>
+      <Owner id={todo.id} owner={owner} />
       <Link
         to={artifactPath({ project, type: todo.type, id: todo.id }) ?? "#"}
         className="min-w-0 flex-1 break-words hover:underline"
@@ -967,6 +960,117 @@ const UNCLASSIFIED = "-none-";
 /** The rows a filter leaves. Both narrowings are ANDed: two controls that meant
  * OR would make picking a second one WIDEN the list, which is not what a person
  * setting two filters is asking for. */
+/**
+ * Who is carrying this row, and the way to change it.
+ *
+ * 01M0KXZ6VT, the operator: "i cannot reassign / assign todos". They were
+ * right, and it was a gap rather than a regression - `git log -S'assignTodo'
+ * -- routes/Todos.tsx` is empty, so the board has never had a control. Every
+ * caller of assignTodo is inside a room's todo pane, which means the page you
+ * open to see EVERYTHING is the one page you cannot act on, and the 3 of 26
+ * open rows that carry no room could be assigned from nowhere at all.
+ *
+ * The door for this already existed and answered 200 before any of this was
+ * written: POST /api/todo/{id}/assignee, no room in the path. See api.assignRow.
+ *
+ * STILL A SPAN UNTIL IT IS CLICKED. The owner is a fact this page has always
+ * shown and most readers are only reading it; turning every row into a form
+ * would put thirteen inputs on a scan of the queue. So it stays the same text,
+ * and becomes an input on click.
+ *
+ * THE COMPARE-AND-SET IS THE OWNER THIS ROW WAS DRAWN WITH, not a re-read. If
+ * somebody else took the row while this page sat open, `expect` no longer
+ * matches and the node refuses - which is the correct answer and is the whole
+ * reason the door takes it. The refusal names who got there first; it is shown
+ * as it arrived rather than replaced with "failed".
+ */
+function Owner({ id, owner }: { id: string; owner: string }) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(owner);
+  const [busy, setBusy] = useState(false);
+  const [refused, setRefused] = useState("");
+
+  const commit = async () => {
+    const next = value.trim();
+    if (next === owner) {
+      setEditing(false);
+      return;
+    }
+    setBusy(true);
+    setRefused("");
+    try {
+      await api.assignRow(id, next, owner);
+      // No optimistic write: the stream watcher on this page re-reads the queue
+      // when the node says it changed, so the row will redraw from the node's
+      // answer rather than from what this component hoped. A local setState
+      // here would be the console reporting its own request back to itself.
+      setEditing(false);
+    } catch (err) {
+      setRefused(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!editing) {
+    return (
+      <button
+        type="button"
+        data-todo-assignee={owner}
+        data-todo-assign={id}
+        className="shrink-0 text-muted-foreground text-xs hover:underline"
+        title="who is carrying this - click to change"
+        style={owner ? speakerStyle(owner) : undefined}
+        onClick={() => {
+          setValue(owner);
+          setRefused("");
+          setEditing(true);
+        }}
+      >
+        {owner || "unowned"}
+      </button>
+    );
+  }
+
+  return (
+    <span className="flex shrink-0 items-center gap-1">
+      <input
+        // biome-ignore lint/a11y/noAutofocus: the click that opened it is the
+        // request to type in it, and a reader who has to click twice to change
+        // an owner will go back to the CLI.
+        autoFocus
+        data-todo-assign-input={id}
+        aria-label="who is carrying this"
+        className="w-28 rounded border border-border bg-transparent px-1 text-xs"
+        placeholder="handle, or empty"
+        value={value}
+        disabled={busy}
+        onChange={(e) => setValue(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") void commit();
+          // Escape leaves it exactly as it was, including a refusal still on
+          // screen - cancelling is not the same as being told it worked.
+          if (e.key === "Escape") setEditing(false);
+        }}
+      />
+      <button
+        type="button"
+        data-todo-assign-save={id}
+        disabled={busy}
+        className="rounded border border-border px-1 text-xs disabled:opacity-50"
+        onClick={() => void commit()}
+      >
+        {busy ? "…" : "set"}
+      </button>
+      {refused ? (
+        <span data-todo-assign-refused={id} className="text-destructive text-xs">
+          {refused}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
 function narrow(todos: Artifact[], kind: string, tag: string): Artifact[] {
   return todos.filter((todo) => {
     if (kind === UNCLASSIFIED && todoKind(todo) !== "") return false;

@@ -2667,6 +2667,38 @@ export const api = {
       },
     ),
 
+  /**
+   * assignRow says who is carrying a todo, from anywhere - no room needed.
+   *
+   * 01M0KXZ6VT, the operator: "i cannot reassign / assign todos". Two reasons,
+   * and this is the door for both. assignTodo above posts to
+   * /api/chat/{room}/todo/{id}/assignee, so it needs a room the caller is
+   * looking at; measured on the board, 3 of 26 open rows carry none and could
+   * be assigned from nowhere at all. And the board never had a control -
+   * `git log -S'assignTodo' -- routes/Todos.tsx` is empty, so this is a gap
+   * rather than a regression.
+   *
+   * THE ROOMLESS DOOR ALREADY EXISTED. assign.go serves POST
+   * /api/todo/{id}/assignee and it answered 200 when I tested it against the
+   * live node before writing any of this. Nothing new is being opened here.
+   *
+   * `expect` IS ALWAYS SENT, and that is the point of using this rather than a
+   * bare assign: the handler treats it as a pointer - present means
+   * compare-and-set through ClaimTodo, absent means an unconditional
+   * AssignTodo. Two people reassigning one row must not both come away
+   * believing they won, which is the same rule the CLI's --expect enforces.
+   * Pass the owner the caller was looking at, "" for a row nobody held.
+   */
+  assignRow: (id: string, assignee: string, expect: string) =>
+    request<{ assignment?: { assignee?: string }; item?: Artifact }>(
+      `/api/todo/${encodeURIComponent(id)}/assignee`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ assignee, expect }),
+      },
+    ),
+
   artifact: (id: string) => request<Artifact>(`/api/artifact/${encodeURIComponent(id)}`),
 
   /**
