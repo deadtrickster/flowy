@@ -285,6 +285,7 @@ var apiRoutes = []string{
 	"POST /api/openspec",
 	"GET /api/openspec",
 	"GET /api/openspec/{id}/conflicts",
+	"POST /api/openspec/{id}/transition",
 	"GET /api/search",
 	"POST /api/events",
 	"GET /api/events",
@@ -560,6 +561,7 @@ func (s *server) routes() http.Handler {
 	api.HandleFunc("POST /api/openspec", s.handleOpenspecCreate)
 	api.HandleFunc("GET /api/openspec", s.handleOpenspecList)
 	api.HandleFunc("GET /api/openspec/{id}/conflicts", s.handleOpenspecConflicts)
+	api.HandleFunc("POST /api/openspec/{id}/transition", s.handleOpenspecTransition)
 
 	// How strong a finding's evidence is, and the log behind it. Over HTTP as
 	// well as MCP, for api_mergegate.go's reason: a door only agents can knock

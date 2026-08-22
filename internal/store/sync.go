@@ -1558,6 +1558,14 @@ var mintedEventTypes = map[string]bool{
 	// records is written in the same transaction, so an entry handed over here
 	// would be a closure nobody made about work that never moved.
 	EventTodoStatus: true,
+	// And an openspec lifecycle move, for the same two reasons. Every refusal
+	// that makes the state trustworthy is on the verb - the edge must be on the
+	// line, and a move into complete must pass both arms - and the state is
+	// written in the same transaction as the entry, so a transition carried in
+	// here would be a lifecycle move nobody made about a state that never
+	// moved. A vouched peer still carries its own: the refusal is for a relay
+	// that is not a speaker, same as every other minted type.
+	EventOpenspecTransition: true,
 	// And a classification, for the same two reasons plus the one that is this
 	// field's own: the CLOSED SET is enforced by the verb. An entry a client
 	// could hand over would be a category outside the vocabulary with an entry

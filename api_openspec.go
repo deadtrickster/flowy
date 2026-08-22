@@ -86,10 +86,11 @@ func (s *server) handleOpenspecCreate(w http.ResponseWriter, r *http.Request) {
 //
 // GET /api/openspec?status=&room=&limit=
 //
-// status narrows the same way it does on GET /api/artifacts - the lifecycle
-// statuses proposed/in-progress/complete/archived ride the artifact status
-// column, which is p3's work, and until it lands the column carries what the
-// caller sent.
+// status narrows the same way it does on GET /api/artifacts - the artifact
+// status COLUMN, which is the issue and queue vocabulary. The openspec
+// lifecycle state (proposed/in-progress/complete/archived) lives in
+// fields.openspec.state, moved only by the transition door (p3); this filter
+// does not read it.
 func (s *server) handleOpenspecList(w http.ResponseWriter, r *http.Request) {
 	p := principalOf(r)
 	q := r.URL.Query()

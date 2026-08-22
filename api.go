@@ -1034,9 +1034,10 @@ type eventRequest struct {
 // it carries no authority beyond what POST /api/chat/{room}/say already gives
 // the same principal.
 var mintedTypes = map[string]bool{
-	statusEventType: true,
-	taskEventType:   true,
-	forgeEventType:  true,
+	statusEventType:             true,
+	openspecTransitionEventType: true,
+	taskEventType:               true,
+	forgeEventType:              true,
 	// The quiesce log. An ack is what releases a resource and lets a
 	// maintenance change proceed, so an ack anybody can type is a gate anybody
 	// can open - and a hold anybody can type is a way to stop somebody else's

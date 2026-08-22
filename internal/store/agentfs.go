@@ -569,6 +569,13 @@ func (d *DB) fsIntentWrite(ctx context.Context, tx *sql.Tx, in *FSIntent, f FSFi
 			return refuseDep("a file inside an openspec change writes %s, which is a %s - "+
 				"only a change has files to be views of", in.FileKey, held.Kind)
 		}
+		// The write starts from the held row's fields, so a view save keeps
+		// every key the row holds - the lifecycle state among them - and not
+		// only the one files-map key it edits. prepareChangeWrite carries the
+		// state again at the funnel (carryOpenspecState), which is the
+		// invariant's arm; this is what makes the save write the row's fields
+		// rather than rebuild them.
+		art.Fields = held.Fields
 		files, err := OpenspecFilesOf(held)
 		if err != nil {
 			return err

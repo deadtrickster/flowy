@@ -12851,6 +12851,24 @@ check "a run survives the runner being restarted" \
 # whoever reads somebody else's pile.
 check "one reader's bookmarks are invisible to another" \
 	go test -count=1 -run 'TestOneReadersBookmarksAreInvisibleToAnother' ./internal/store
+# Named because a lifecycle state that lies is invisible until it is trusted:
+# state rides the row's fields and moves only with a transition event in the
+# same clock reading, so a change that reads complete with open tasks, or
+# moves with no event behind it, would be a landed-looking row that never
+# earned it - and only these tests can see the difference.
+check "a change's state moves by the line, with tasks done and an event in the same reading" \
+	go test -count=1 \
+	-run 'TestOpenspecMoveWrites|TestOpenspecCheckRefuses|TestOpenspecCompleteRefuses|TestOpenspecArchivedReachable|TestOpenspecStateCarried|TestOpenspecViewWriteKeeps' \
+	./internal/store
+# Named because the door-only setter is a property of the whole route table,
+# and the route walk is the arm that catches a future fields-writing door BY
+# EXISTING: every route that can touch a change's fields declares its reach,
+# and the behavioral arms prove the generic writes preserve state and the
+# transition trail cannot be forged by hand.
+check "every route declares its reach to a change's state, and only the transition door moves it" \
+	go test -count=1 \
+	-run 'TestOpenspecTransition|TestGenericArtifactWritePreservesState|TestOpenspecDoorUpdatePreservesState|TestStatusDoorRefusesAChange|TestEveryRegisteredRouteDeclaresItsReach|TestOpenspecStateReach|TestOpenspecTransitionEventsAreMinted' \
+	.
 
 # ------------------------------------------ an older database meets this binary
 #

@@ -113,6 +113,7 @@ var routeNeeds = map[string]string{
 	"POST /api/merge/{id}/land":            needsWrite,
 	"POST /api/merge/{id}/renew":           needsWrite,
 	"POST /api/openspec":                   needsWrite,
+	"POST /api/openspec/{id}/transition":   needsWrite,
 	"POST /api/projects":                   needsWrite,
 	"POST /api/projects/{project}/enter":   needsNothing,
 	"POST /api/projects/{project}/members": needsOperator,

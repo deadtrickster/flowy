@@ -393,6 +393,12 @@ func (d *DB) prepareChangeWrite(ctx context.Context, q execer, a *Artifact) erro
 	if !IsEntityType(a, ChangeKind) {
 		return nil
 	}
+	// The lifecycle state travels with the held row, never with the caller.
+	// It runs first so the annotation below merges into fields that already
+	// carry the held state - see carryOpenspecState, the door-only setter.
+	if err := d.carryOpenspecState(ctx, q, a); err != nil {
+		return err
+	}
 	files, err := OpenspecFilesOf(a)
 	if err != nil {
 		return err
@@ -615,14 +621,20 @@ func setDerivedOrigin(art *Artifact, line taskLine, reopened bool) ([]byte, erro
 }
 
 // setOpenspecFiles rewrites a change row's fields with the files map given,
-// keeping every other key. It is what an annotation does to the row before
+// keeping every other key - including the lifecycle state, which lives in the
+// same sub-map as the files. It is what an annotation does to the row before
 // it is signed, so the signature covers the annotated file.
 func setOpenspecFiles(a *Artifact, files map[string]string) error {
 	fields, err := ArtifactFields(a)
 	if err != nil {
 		return err
 	}
-	fields["openspec"] = map[string]any{"files": files}
+	os, _ := fields["openspec"].(map[string]any)
+	if os == nil {
+		os = map[string]any{}
+	}
+	os["files"] = files
+	fields["openspec"] = os
 	raw, err := json.Marshal(fields)
 	if err != nil {
 		return fmt.Errorf("store: openspec fields of %s: %w", a.ID, err)

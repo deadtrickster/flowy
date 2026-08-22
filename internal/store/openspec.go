@@ -20,9 +20,10 @@ package store
 //	set. If per-file history is ever wanted, it is a migration, not a
 //	feature. (Recorded at the operator's request on review of the p1 slice.)
 //
-// The lifecycle statuses ride the artifact status column (proposed,
-// in-progress, complete, archived). The doors and rules that move a row
-// between them are later siblings, not this file.
+// The lifecycle state (proposed, in-progress, complete, archived) rides
+// fields.openspec.state, moved only by the transition door - see
+// openspec_lifecycle.go. It does not use the artifact status column, which
+// carries the issue and queue vocabularies.
 
 import (
 	"encoding/json"
