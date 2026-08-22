@@ -372,6 +372,7 @@ func (d *DB) ApplyFSIntent(ctx context.Context, in *FSIntent, f FSFields) (FSApp
 	}
 
 	outcome := FSApplied
+	refusal := ""
 	err = d.inTx(ctx, "apply fs intent "+in.ID, func(tx *sql.Tx) error {
 		decided, held, err := d.fsIntentDecision(ctx, tx, in)
 		if err != nil {
@@ -380,11 +381,28 @@ func (d *DB) ApplyFSIntent(ctx context.Context, in *FSIntent, f FSFields) (FSApp
 		outcome = decided
 		if decided == FSApplied {
 			if err := d.fsIntentWrite(ctx, tx, in, f, held, at); err != nil {
-				return err
+				// A refusal is the caller's mistake, and it will be the
+				// caller's mistake on every retry - the row is what it is.
+				// Retrying forever would wedge the drainer with every intent
+				// behind it never draining (the wedge the mount's read-only
+				// refusals stood in for until this arm). So the intent is
+				// dropped once, the refusal's own sentence recorded on the
+				// queue row, and the queue keeps draining. Everything else
+				// is a broken node or a broken database: the transaction
+				// rolls back and the intent stays pending for the next pass.
+				var ref DepRefusal
+				if errors.As(err, &ref) {
+					outcome = FSRefused
+					refusal = err.Error()
+				} else {
+					return err
+				}
 			}
 		}
 		res, err := tx.ExecContext(ctx,
-			`UPDATE fs_intents SET applied = now() WHERE id = $1 AND applied IS NULL`, in.ID)
+			`UPDATE fs_intents SET applied = now(), refusal = $2
+			  WHERE id = $1 AND applied IS NULL`,
+			in.ID, sql.NullString{String: refusal, Valid: refusal != ""})
 		if err != nil {
 			return fmt.Errorf("store: apply fs intent %s: %w", in.ID, err)
 		}
@@ -419,12 +437,12 @@ var errFSDrained = errors.New("store: fs intent was drained by somebody else")
 // there is none.
 func (d *DB) fsIntentDecision(ctx context.Context, tx *sql.Tx, in *FSIntent) (FSApplyResult, *Artifact, error) {
 	var (
-		owner, project, visibility sql.NullString
-		tombstone                  sql.NullBool
+		owner, project, visibility, typ, kind sql.NullString
+		tombstone                             sql.NullBool
 	)
 	err := tx.QueryRowContext(ctx,
-		`SELECT owner_user, project, visibility, tombstone FROM artifacts WHERE id = $1`,
-		in.Artifact).Scan(&owner, &project, &visibility, &tombstone)
+		`SELECT owner_user, project, visibility, type, kind, tombstone FROM artifacts WHERE id = $1`,
+		in.Artifact).Scan(&owner, &project, &visibility, &typ, &kind, &tombstone)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		// A new row. Nothing to be duplicate of and nothing to move.
@@ -438,6 +456,11 @@ func (d *DB) fsIntentDecision(ctx context.Context, tx *sql.Tx, in *FSIntent) (FS
 		p := project.String
 		held.Project = &p
 	}
+	// Type and kind ride along because the write consults what the row IS
+	// (fsIntentWrite, below): the row says what it is, and the header of the
+	// file being saved cannot argue.
+	held.Type = typ.String
+	held.Kind = kind.String
 	held.Tombstone = tombstone.Bool
 
 	if held.Tombstone {
@@ -501,6 +524,14 @@ func (d *DB) fsIntentWrite(ctx context.Context, tx *sql.Tx, in *FSIntent, f FSFi
 		// to show the file back under the name it was written as rather than
 		// under a ULID nobody typed.
 		FilePath: in.Name,
+	}
+	if held != nil && IsOpenspec(held) {
+		// The row says what it is; the header cannot argue. A spec saved
+		// without its front matter parses as a note and, without this, the
+		// rewrite would husk the row into one. What the file is a view of is
+		// decided by the row - the doors and the lifecycle move rows between
+		// kinds, a file save does not.
+		art.Kind = held.Kind
 	}
 	d.fillAt(art, at)
 	if err := d.upsertArtifact(ctx, tx, art); err != nil {

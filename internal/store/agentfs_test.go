@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/deadtrickster/flowy/internal/ulid"
@@ -514,5 +515,110 @@ func TestCancellingAQueuedWriteLeavesNothingToApply(t *testing.T) {
 	// And cancelling again is nothing, rather than an error.
 	if n, err := db.CancelFSIntents(ctx, in.Artifact, owner.ID); err != nil || n != 0 {
 		t.Fatalf("a second cancel took %d intent(s), %v", n, err)
+	}
+}
+
+// The husk arm: a queued rewrite of a spec keeps the row's kind. A save
+// without the front-matter header parses as a note - kindFor defaults it -
+// and the mount's read-only refusal stood in for this until the arm: the row
+// says what it is, and the header cannot argue. (Operator's arm on thread
+// 01M0K9WFBNBZ9V9XBK5NGD7D9K, message 01M0KENVHE554V04WN16B8M4RH.)
+func TestAnOpenspecRowKeepsItsKindAcrossAQueuedRewrite(t *testing.T) {
+	ctx, db := open(t)
+	owner := fsUser(t, ctx, db, "fs-spec")
+
+	spec := &Artifact{
+		ID: ulid.NewString(), Type: MemoryType, Kind: SpecKind,
+		OwnerUser: owner.ID, Title: "the-capability",
+		Body: "# the-capability\n\nthe words\n",
+	}
+	if err := db.UpsertArtifact(ctx, spec); err != nil {
+		t.Fatalf("file the spec: %v", err)
+	}
+
+	in := fsIntent(owner.ID, nil, "the-capability.md", "# the-capability\n\nnew words\n")
+	in.Artifact = spec.ID
+	if err := db.EnqueueFSIntent(ctx, in); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+
+	// The drainer parses the headerless content and defaults the kind to
+	// note - exactly the write that would husk the row.
+	result, err := db.ApplyFSIntent(ctx, in,
+		fsFields("the-capability", "# the-capability\n\nnew words\n"))
+	if err != nil || result != FSApplied {
+		t.Fatalf("apply gave %q, %v", result, err)
+	}
+
+	art, err := db.GetArtifact(ctx, spec.ID)
+	if err != nil {
+		t.Fatalf("the spec is not there: %v", err)
+	}
+	if art.Kind != SpecKind {
+		t.Fatalf("the row is kind %q after a headerless rewrite; the row decides, the header cannot husk it", art.Kind)
+	}
+	if art.Body != "# the-capability\n\nnew words\n" {
+		t.Fatalf("the body is %q, want the saved words", art.Body)
+	}
+}
+
+// The wedge arm: an apply the store refuses is dropped once, with the
+// refusal's own sentence recorded on the queue row, and the intents behind
+// it keep draining. Retrying it forever is the wedge the mount's read-only
+// refusals stood in for until this arm.
+func TestARefusedApplyIsDroppedOnceAndTheQueueKeepsDraining(t *testing.T) {
+	ctx, db := open(t)
+	owner := fsUser(t, ctx, db, "fs-refused")
+	project := declaredProject(t, ctx, db, "fs-refused")
+	p := &Principal{UserID: owner.ID, Project: project}
+
+	change := openspecChangeIn(t, ctx, db, p, project, map[string]string{
+		"proposal.md": "the change\n",
+	})
+	// Strip the change's files so the shape check refuses the next write:
+	// the write is the caller's mistake, and it stays the caller's mistake
+	// on every retry.
+	if _, err := db.sql.ExecContext(ctx,
+		`UPDATE artifacts SET fields = '{}'::jsonb WHERE id = $1`, change.ID); err != nil {
+		t.Fatalf("strip the change: %v", err)
+	}
+
+	refused := fsIntent(owner.ID, &project, "the-change.md", "rewritten without its files\n")
+	refused.Artifact = change.ID
+	if err := db.EnqueueFSIntent(ctx, refused); err != nil {
+		t.Fatalf("enqueue the refused write: %v", err)
+	}
+
+	after := fsIntent(owner.ID, &project, "after.md", "a later write\n")
+	if err := db.EnqueueFSIntent(ctx, after); err != nil {
+		t.Fatalf("enqueue the later write: %v", err)
+	}
+
+	result, err := db.ApplyFSIntent(ctx, refused, fsFields("the change", "rewritten without its files\n"))
+	if err != nil || result != FSRefused {
+		t.Fatalf("the refused apply gave %q, %v", result, err)
+	}
+	if applied, err := db.FSIntentApplied(ctx, refused.ID); err != nil || !applied {
+		t.Fatalf("the refused intent reports applied=%v, %v; it must be dropped, not retried", applied, err)
+	}
+	var reason string
+	if err := db.sql.QueryRowContext(ctx,
+		`SELECT coalesce(refusal, '') FROM fs_intents WHERE id = $1`, refused.ID).Scan(&reason); err != nil {
+		t.Fatalf("read the refusal: %v", err)
+	}
+	if !strings.Contains(reason, "proposal.md") {
+		t.Fatalf("the queue row records the store's own sentence, got %q", reason)
+	}
+	if _, err := db.GetArtifact(ctx, change.ID); err != nil {
+		t.Fatalf("the row was not written: %v", err)
+	}
+
+	// The queue keeps draining: the intent behind the refusal applies.
+	result, err = db.ApplyFSIntent(ctx, after, fsFields("after", "a later write\n"))
+	if err != nil || result != FSApplied {
+		t.Fatalf("the write behind the refusal gave %q, %v", result, err)
+	}
+	if _, err := db.GetArtifact(ctx, after.Artifact); err != nil {
+		t.Fatalf("the later write did not land: %v", err)
 	}
 }

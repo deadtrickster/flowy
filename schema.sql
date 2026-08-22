@@ -735,10 +735,18 @@ CREATE TABLE IF NOT EXISTS fs_intents (
     hash       text,
     content    text,
     applied    timestamptz,
+    -- Why the apply was refused, when it was: the store's own sentence, kept
+    -- on the queue row so a refusal that dropped the write still says what
+    -- was wrong and who to talk to. NULL when the intent was applied,
+    -- deduped, or superseded - those are outcomes, not refusals.
+    refusal    text,
     created    timestamptz DEFAULT now()
 );
 
-
+-- refusal was added after the table first shipped. The CREATE TABLE
+-- says IF NOT EXISTS, so its body is a no-op on a database that already
+-- has the table - the ALTER is what lands the column there.
+ALTER TABLE fs_intents ADD COLUMN IF NOT EXISTS refusal text;
 
 -- Phase 8. What the node saw itself do.
 --
