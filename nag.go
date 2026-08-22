@@ -152,6 +152,20 @@ func nagLines(view nagView) string {
 		fmt.Fprintf(&b, "       blocked %d (waiting on somebody else)  answers owed by you %d\n",
 			view.MineWaiting, view.AnswersOwed)
 	}
+	// AND THE OWED ONES ARE NAMED, which the blocked ones deliberately are not.
+	//
+	// Not symmetry for its own sake - the two counts are reconstructible by very
+	// different amounts of work. A blocked row is one this seat CARRIES, so
+	// `flowy todo` lists it and the id is a command away. A row that owes an
+	// answer is somebody else's, on a board this seat has no reason to have
+	// read, and there is no listing that finds it: the number alone says four
+	// people are waiting on you and gives you no way to find out who or about
+	// what. That is the shape MineTodoIDs was added for - "a count with no ids
+	// is a number somebody has to go and reconstruct" - in the one place where
+	// reconstructing it is not possible rather than merely tedious.
+	if len(view.AnswersOwedIDs) > 0 {
+		fmt.Fprintf(&b, "       owed on %s\n", strings.Join(view.AnswersOwedIDs, " "))
+	}
 	// The spread, then who is not listening. The quiet line is NOT inside the
 	// spread block, and that is the fix for a bug this file had for one commit:
 	// an early return on an empty board skipped it, so the one board where a

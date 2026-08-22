@@ -40,6 +40,7 @@ usage:
   flowy todo file  --title T [--room R] [--category C] [--assignee A] [--scope S] [body]
   flowy todo note  --id ID [text]
   flowy todo claim --id ID [--as WHO] [--expect WHO]
+  flowy todo waiting-on --id ID --of WHO [what you asked]
   flowy todo done  --id ID [--status S] [--note "what was measured"] [--duplicate-of ID]
 
 The body, and a note's text, is the argument or stdin.
@@ -57,6 +58,11 @@ The body, and a note's text, is the argument or stdin.
               take it, "" for a row nobody held. The write is then refused,
               naming whoever got there first, if the row moved in between - so
               of two agents claiming one row, exactly one comes away with it.
+  --of        on waiting-on: who owes the next move. It does NOT change who is
+              carrying the row - that is the whole point, and claim is the
+              verb that hands work over. "" takes the question back.
+              "me" resolves to this token's own handle rather than being stored
+              as a word no roster can answer for.
   --status    on done: todo, active or done (default done).
 
 Ids go to stdout and everything a person reads goes to stderr.
@@ -85,6 +91,8 @@ func todoCmd(args []string) error {
 		return cliTodoNote(args)
 	case "claim", "take":
 		return cliTodoClaim(args)
+	case "waiting-on", "waiting", "ask":
+		return cliTodoWaitingOn(args)
 	case "done", "close", "status":
 		return cliTodoDone(args)
 	case "help", "-h", "--help":
@@ -317,6 +325,74 @@ func cliTodoNote(args []string) error {
 	}
 	fmt.Println(*id)
 	fmt.Fprintf(os.Stderr, "noted on %s, %d note(s) on the row now\n", *id, len(answer.Notes))
+	return nil
+}
+
+// cliTodoWaitingOn says a row is waiting on somebody, or takes that back.
+//
+// IT IS NOT AN ASSIGNMENT AND MUST NOT LOOK LIKE ONE. The row it implements was
+// raised because the only two ways to say "I asked you" were handing the row
+// over - which tells the board they are CARRYING work they are only answering,
+// and put four rows on the operator in one evening - or writing a note, which
+// nothing counts. So this sets one field and the carrier does not move.
+//
+// EVERY RULE IS THE STORE'S. Resolving "me" to a handle, refusing a caller that
+// resolves to nobody, deleting the keys rather than storing empties: all of it
+// lives in internal/store/todowaiting.go, and this sends what it was given. A
+// client that normalised a name here would be a second idea of what waiting
+// means, which is priority.go's argument and the reason that file is thin.
+//
+// THE QUESTION IS THE BODY, like a note's text, because it is prose - and
+// because the alternative is a --asked flag holding a sentence, which is the
+// shape that ate two phrases to a backtick this week.
+func cliTodoWaitingOn(args []string) error {
+	fs := flag.NewFlagSet("todo waiting-on", flag.ContinueOnError)
+	id := fs.String("id", "", "the row this is about")
+	// A POINTER, so "not passed" and "passed empty" stay different. Empty is how
+	// a question is withdrawn and it has to be sayable; absent is a caller who
+	// forgot the flag, and answering those the same way would make `waiting-on
+	// --id X` silently clear a question somebody is waiting on.
+	of := fs.String("of", "\x00", "who owes the next move, \"\" to take it back")
+	url, token, agent := doorFlags(fs)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(*id) == "" {
+		return errors.New("waiting-on is about a row: pass --id\n\n" + todoUsage)
+	}
+	if *of == "\x00" {
+		return errors.New("waiting-on needs --of WHO, or --of \"\" to take the question back\n\n" +
+			todoUsage)
+	}
+	asked := strings.TrimSpace(strings.Join(fs.Args(), " "))
+	base, bearer, err := nodeFor(*url, *token, *agent)
+	if err != nil {
+		return err
+	}
+	payload, err := json.Marshal(map[string]string{"waiting_on": *of, "asked": asked})
+	if err != nil {
+		return err
+	}
+	// READ BACK OFF THE ANSWER, not echoed from the request: the store resolves
+	// a self-name, so "waiting on me" and "waiting on flowy-claude" are the same
+	// call and only one of them is what was stored. Printing the argument would
+	// report a name the board does not have.
+	var answer struct {
+		WaitingOn string `json:"waiting_on"`
+		Asked     string `json:"asked"`
+	}
+	if err := call(http.MethodPost, base+"/api/todo/"+*id+"/waiting-on", bearer, payload, &answer); err != nil {
+		return err
+	}
+	fmt.Println(*id)
+	switch {
+	case answer.WaitingOn == "":
+		fmt.Fprintf(os.Stderr, "%s is waiting on nobody now\n", *id)
+	case answer.Asked != "":
+		fmt.Fprintf(os.Stderr, "%s is waiting on %s: %s\n", *id, answer.WaitingOn, answer.Asked)
+	default:
+		fmt.Fprintf(os.Stderr, "%s is waiting on %s\n", *id, answer.WaitingOn)
+	}
 	return nil
 }
 

@@ -214,7 +214,7 @@ func toolSpecs() []tool { return allTools() }
 func allTools() []tool {
 	out := make([]tool, 0, len(tools)+len(reportTools)+len(proposalTools)+len(depTools)+
 		len(mergeTools)+len(assignTools)+len(stealTools)+len(chatTools)+len(categoryTools)+
-		len(noteTools)+len(attachmentTools)+len(worklogTools)+len(projectTools)+
+		len(noteTools)+len(waitingTools)+len(attachmentTools)+len(worklogTools)+len(projectTools)+
 		len(observabilityTools)+len(findingTools))
 	out = append(out, tools...)
 	out = append(out, reportTools...)
@@ -226,6 +226,7 @@ func allTools() []tool {
 	out = append(out, chatTools...)
 	out = append(out, categoryTools...)
 	out = append(out, noteTools...)
+	out = append(out, waitingTools...)
 	out = append(out, findingTools...)
 	out = append(out, attachmentTools...)
 	out = append(out, worklogTools...)

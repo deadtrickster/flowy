@@ -105,10 +105,28 @@ func TestTheNagCountsAreTheCallersOwn(t *testing.T) {
 func TestTheNagTellsBlockedApartFromWaiting(t *testing.T) {
 	out := nagLines(nagView{
 		Open: 11, Unowned: 1, Mine: 3, MineTodo: 1, MineWaiting: 2, AnswersOwed: 4,
+		MineWaitingIDs: []string{"01BLOCKEDA", "01BLOCKEDB"},
+		AnswersOwedIDs: []string{"01OWEDA", "01OWEDB", "01OWEDC", "01OWEDD"},
 	})
 	for _, want := range []string{"blocked 2", "answers owed by you 4", "todo 1"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("the nag prints %q, which does not say %q", out, want)
+		}
+	}
+	// THE OWED IDS ARE NAMED. Those rows are somebody else's, on a board this
+	// seat has no reason to have read, and no listing finds them - the number
+	// alone cannot be acted on.
+	for _, want := range []string{"01OWEDA", "01OWEDD"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the nag says four answers are owed and does not say which:\n%s", out)
+		}
+	}
+	// AND THE BLOCKED ONES ARE NOT, which is the arm that makes the line above
+	// a decision rather than a coincidence: those rows are this seat's own, so
+	// `flowy todo` lists them and repeating the ids here is noise on every tick.
+	for _, no := range []string{"01BLOCKEDA", "01BLOCKEDB"} {
+		if strings.Contains(out, no) {
+			t.Errorf("the nag lists a blocked row's id, which the caller can already list:\n%s", out)
 		}
 	}
 }

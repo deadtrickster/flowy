@@ -13486,6 +13486,80 @@ check "mem_write carries the assignee, and an empty one means nobody" \
 	mem_write_takes_an_assignee
 check "the queue is filed, noted, claimed and closed from a shell" \
 	the_queue_is_worked_from_a_shell
+
+# WHOSE MOVE IT IS, FROM A SHELL AND FROM MCP - the two surfaces that had no way
+# to say it.
+#
+# The field landed with one door, POST /api/todo/{id}/waiting-on, and the seats
+# that would use it every day reach the board through `flowy todo` and through
+# MCP. A door only curl can open is the shape the nag verb was raised on: a door
+# nobody uses is the same as no door.
+#
+# THREE THINGS ARE ASSERTED AND THE FIRST IS THE ONE THAT MATTERS. The carrier
+# must not move - if it did, this would be the assignment that 01M0K4MENH exists
+# to stop being the only way to ask somebody something. Then that both surfaces
+# reach the SAME store rule rather than each having its own idea: the CLI's "me"
+# resolves to a handle, and what MCP wrote is readable by the CLI and vice
+# versa. Then that the empty argument takes a question back rather than being
+# refused or stored as a seat called "".
+whose_move_it_is_from_a_shell_and_from_mcp() {
+	recall
+	local row shell_said
+
+	api POST "$TOKEN_A" /api/artifacts "{
+		\"type\": \"memory\", \"kind\": \"todo\", \"visibility\": \"project\",
+		\"title\": \"waiting-verbs: a row somebody asks about\",
+		\"fields\": {\"assignee\": \"$HANDLE_A\"}
+	}" || return 1
+	want_eq "the row was filed" "$API_STATUS" 200 || return 1
+	row="$(jqv .id)"
+
+	# THE CLI, and it prints what was STORED rather than what it was handed.
+	shell_said="$(FLOWY_AGENT='' FLOWY_ADDR="http://127.0.0.1:$HTTP_PORT" FLOWY_TOKEN="$TOKEN_A" \
+		"$ROOT/flowy" todo waiting-on --id "$row" --of "$HANDLE_OP" \
+		"does this go ahead" 2>&1 >/dev/null)" || return 1
+	printf '%s\n' "$shell_said" | grep -q "$HANDLE_OP" || {
+		printf 'the cli said %q, which does not name who is being waited on\n' "$shell_said" >&2
+		return 1
+	}
+	api GET "$TOKEN_A" "/api/artifact/$row" || return 1
+	want_eq "the node has who owes the move" "$(jqv .fields.waiting_on)" "$HANDLE_OP" || return 1
+	want_eq "and what was asked" "$(jqv .fields.waiting_asked)" "does this go ahead" || return 1
+	# THE ARM THIS WHOLE ROW TURNS ON.
+	want_eq "and the carrier did not move" "$(jqv .fields.assignee)" "$HANDLE_A" || return 1
+
+	# MCP, over the same store rule, writing a DIFFERENT name so the read below
+	# cannot pass on what the CLI left behind.
+	want_tool todo_waiting_on "$TOKEN_A" \
+		"{\"todo\": \"$row\", \"waiting_on\": \"me\", \"asked\": \"my own move now\"}" || return 1
+	# "me" IS RESOLVED, not stored - the board grew a seat called "me" once and
+	# no roster could explain it.
+	want_eq "MCP resolved the self-name" "$(tv .waiting_on)" "$HANDLE_A" || return 1
+	want_eq "and kept the question" "$(tv .asked)" "my own move now" || return 1
+	api GET "$TOKEN_A" "/api/artifact/$row" || return 1
+	want_eq "what MCP wrote is what the node holds" "$(jqv .fields.waiting_on)" "$HANDLE_A" || return 1
+
+	# AND THE EMPTY ARGUMENT TAKES IT BACK, through the shell, leaving neither
+	# the pointer nor the question behind.
+	FLOWY_AGENT='' FLOWY_ADDR="http://127.0.0.1:$HTTP_PORT" FLOWY_TOKEN="$TOKEN_A" \
+		"$ROOT/flowy" todo waiting-on --id "$row" --of "" >/dev/null 2>&1 || return 1
+	api GET "$TOKEN_A" "/api/artifact/$row" || return 1
+	want_eq "nobody owes a move now" "$(jqv '.fields.waiting_on // ""')" "" || return 1
+	want_eq "and the question went with it" "$(jqv '.fields.waiting_asked // ""')" "" || return 1
+
+	# THE REFUSALS A PERSON MEETS, because a verb that needs an argument and
+	# silently does something without it is worse than one that asks.
+	if FLOWY_ADDR="http://127.0.0.1:$HTTP_PORT" FLOWY_TOKEN="$TOKEN_A" \
+		"$ROOT/flowy" todo waiting-on --id "$row" >/dev/null 2>&1; then
+		printf 'waiting-on with no --of was accepted, so a missing flag clears a question\n' >&2
+		return 1
+	fi
+
+	printf 'shell and mcp both set whose move it is on %s, the carrier never moved, and "" took it back\n' \
+		"${row:0:10}"
+}
+check "whose move it is, said from a shell and from MCP, without moving the carrier" \
+	whose_move_it_is_from_a_shell_and_from_mcp
 check "the board answers who is carrying a row, and who is carrying nothing" \
 	the_board_answers_who_is_carrying_a_row
 
