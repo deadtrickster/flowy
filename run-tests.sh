@@ -12869,6 +12869,14 @@ check "every route declares its reach to a change's state, and only the transiti
 	go test -count=1 \
 	-run 'TestOpenspecTransition|TestGenericArtifactWritePreservesState|TestOpenspecDoorUpdatePreservesState|TestStatusDoorRefusesAChange|TestEveryRegisteredRouteDeclaresItsReach|TestOpenspecStateReach|TestOpenspecTransitionEventsAreMinted' \
 	.
+# Named because the derived todos are rows no artifact filter can reach: a
+# change's tasks.md derives them on the write (p2), and GET
+# /api/openspec/{id}/todos is the read that names them - the console's board
+# row stands on it. The refusal edges stay in the door's own words.
+check "a change's derived todos are listed by the one door that names them, and the refusals say why" \
+	go test -count=1 \
+	-run 'TestOpenspecTodosListsTheDerivedRows|TestOpenspecTodosRefusals' \
+	.
 
 # ------------------------------------------ an older database meets this binary
 #
@@ -19771,6 +19779,21 @@ a_person_can_type_into_the_box_beside_a_document() {
 say "documents: the conversation beside one, typed into"
 check "the message box beside a document is reachable at both lengths of transcript" \
 	a_person_can_type_into_the_box_beside_a_document
+
+# The openspec console, driven in a real browser: the board lists both kinds,
+# and the row view draws a change as the directory of files it is - each file a
+# section, the discuss button reaching the draft, the derived todos counted, the
+# conflict edge naming the other change - and the pane's thread directory lists
+# the seeded thread. The check makes its rows itself (a spec, two clashing
+# changes, a threaded pair in the change's room), so it owes nobody a board.
+the_openspec_console_draws_the_board_and_a_row() {
+	cd "$ROOT/web" || return 1
+	node scripts/openspec-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A"
+}
+
+say "openspec: the board and a row, in a browser"
+check "the openspec console draws both kinds, a change's files, its derived todos, its conflicts, and the pane's threads" \
+	the_openspec_console_draws_the_board_and_a_row
 
 say "metrics: what was measured, and for whom"
 check "every group is in the answer, and says whether it was measured" \
