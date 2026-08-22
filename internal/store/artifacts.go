@@ -197,6 +197,12 @@ func (d *DB) upsertArtifact(ctx context.Context, q execer, a *Artifact) error {
 	// And an openspec row holds its own shape - asked here for the same reason:
 	// every surface writes through one of the same statements, and a rule kept
 	// per surface is a rule the next surface forgets. See checkOpenspecRow.
+	// Its tasks.md is annotated with line ids first, so the shape check and
+	// the signature both cover the file as it will be stored. See
+	// prepareChangeWrite.
+	if err := d.prepareChangeWrite(ctx, q, a); err != nil {
+		return err
+	}
 	if err := checkOpenspecRow(a); err != nil {
 		return err
 	}
@@ -274,7 +280,10 @@ func (d *DB) upsertArtifact(ctx context.Context, q execer, a *Artifact) error {
 	if err != nil {
 		return fmt.Errorf("store: upsert artifact: %w", err)
 	}
-	return nil
+	// The row is stored; its derived todos now owe it a re-sync. On the
+	// caller's execer, so a write that is half of an operation derives as
+	// part of it.
+	return d.deriveChange(ctx, q, a)
 }
 
 // WriteMemory writes a memory item and the event that records the write, in one
@@ -507,6 +516,12 @@ func (d *DB) writeArtifactFields(
 	// And an openspec row holds its own shape - asked here for the same reason:
 	// every surface writes through one of the same statements, and a rule kept
 	// per surface is a rule the next surface forgets. See checkOpenspecRow.
+	// Its tasks.md is annotated with line ids first, so the shape check and
+	// the signature both cover the file as it will be stored. See
+	// prepareChangeWrite.
+	if err := d.prepareChangeWrite(ctx, d.sql, a); err != nil {
+		return err
+	}
 	if err := checkOpenspecRow(a); err != nil {
 		return err
 	}
@@ -566,7 +581,10 @@ func (d *DB) setArtifactFields(
 				return err
 			}
 		}
-		return nil
+		// The row moved; its derived todos now owe it a re-sync, in this
+		// same transaction - a fields write that is also a tasks.md edit is
+		// one operation, not two. See deriveChange.
+		return d.deriveChange(ctx, tx, a)
 	})
 }
 
@@ -721,6 +739,12 @@ func (d *DB) createArtifact(ctx context.Context, q execer, a *Artifact) error {
 	// And an openspec row holds its own shape - asked here for the same reason:
 	// every surface writes through one of the same statements, and a rule kept
 	// per surface is a rule the next surface forgets. See checkOpenspecRow.
+	// Its tasks.md is annotated with line ids first, so the shape check and
+	// the signature both cover the file as it will be stored. See
+	// prepareChangeWrite.
+	if err := d.prepareChangeWrite(ctx, q, a); err != nil {
+		return err
+	}
 	if err := checkOpenspecRow(a); err != nil {
 		return err
 	}
@@ -760,7 +784,9 @@ func (d *DB) createArtifact(ctx context.Context, q execer, a *Artifact) error {
 	if err != nil {
 		return fmt.Errorf("store: create artifact: %w", err)
 	}
-	return nil
+	// The row is stored; its tasks.md now derives its todos. On the caller's
+	// execer, so a create that is half of an operation derives as part of it.
+	return d.deriveChange(ctx, q, a)
 }
 
 // fill is what both writes do to an artifact before it goes in: force the

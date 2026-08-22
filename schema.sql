@@ -1284,6 +1284,16 @@ CREATE INDEX IF NOT EXISTS artifacts_room_idx
     ON artifacts ((fields ->> 'room'))
  WHERE fields ? 'room';
 
+-- WHICH CHANGE derived each todo, for the derivation re-sync: every write of a
+-- change's tasks.md asks which todos hang off that change, and the ask is a
+-- JSON extraction per row without this - the same reason supersedes, category
+-- and room carry one. Partial and in the fieldEq shape (existence test first,
+-- then the key), or the planner cannot use it; the lesson is written down in
+-- fieldEq in artifacts.go.
+CREATE INDEX IF NOT EXISTS artifacts_openspec_change_idx
+    ON artifacts ((fields -> 'origin' -> 'openspec' ->> 'change'))
+ WHERE fields -> 'origin' -> 'openspec' ? 'change';
+
 -- ------------------------------------------------------------------- SEARCH
 -- Everything below this line is Postgres full text and is expected to be
 -- deleted when the store moves to SereneDB and search becomes vector search.

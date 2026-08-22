@@ -101,6 +101,7 @@ func (d *DB) Ping(ctx context.Context) error { return d.sql.PingContext(ctx) }
 // that has to land whole.
 type execer interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
