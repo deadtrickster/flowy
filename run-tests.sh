@@ -12894,6 +12894,17 @@ check "the validate door caches its verdict without touching the state, and comp
 	go test -count=1 \
 	-run 'TestOpenspecValidateCachesAVerdictAndPreservesTheState|TestOpenspecCompleteRefusesTheCachedRedVerdict|TestOpenspecCompleteRefusesAfterAnEditDroppedTheVerdict|TestOpenspecValidateRefusesANonChange|TestOpenspecValidateRefusesAnUnknownId' \
 	.
+# Named because archived was the one ungated edge and p6 is the gate: a move
+# into archived asks the merge the change names in fields.openspec.merge, and
+# the answer has to be a decision - landed or decided-rejected, both terminal,
+# an open row is neither. Each refusal names what to do about it, and the
+# swapped-arm test proves the edge ASKS the arm rather than carrying it - an
+# archive that skips the gate would read like a landed change that never
+# landed.
+check "an archive asks the merge the change names, and only a decided merge admits" \
+	go test -count=1 \
+	-run 'TestOpenspecArchivedRefuses|TestOpenspecArchivedAllows|TestOpenspecArchiveGateIsAsked|TestOpenspecArchivedReachable' \
+	./internal/store
 
 # ------------------------------------------ an older database meets this binary
 #

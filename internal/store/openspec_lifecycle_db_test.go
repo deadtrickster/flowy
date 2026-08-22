@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -35,8 +36,216 @@ func openspecMove(t *testing.T, ctx context.Context, db *DB, art *Artifact,
 	return e
 }
 
-// storedChange reads the row back the way a reader would, so the assertions
-// are about what is stored and not what the test holds.
+// mergeRowIn writes a merge request the way merge open does: a memory row of
+// kind merge with a branch. Status is the caller's - done with a landed_tip
+// is a landed row, done without one is a decided-rejected row, anything else
+// is an open request. The archive gate reads exactly these two words.
+func mergeRowIn(t *testing.T, ctx context.Context, db *DB, p *Principal,
+	project, status string, fields map[string]any,
+) *Artifact {
+	t.Helper()
+	raw, err := json.Marshal(fields)
+	if err != nil {
+		t.Fatalf("merge fields: %v", err)
+	}
+	art := &Artifact{
+		ID: ulid.NewString(), Type: MemoryType, Kind: MergeKind,
+		Project: &project, OwnerUser: p.UserID, Title: "land a branch",
+		Fields: raw, Status: status,
+	}
+	if err := db.CreateArtifact(ctx, art); err != nil {
+		t.Fatalf("write merge row: %v", err)
+	}
+	return art
+}
+
+// openspecChangeNamedMergeIn is openspecChangeIn with the gate's field: the
+// change carries fields.openspec.merge naming the row it would land with.
+func openspecChangeNamedMergeIn(t *testing.T, ctx context.Context, db *DB, p *Principal,
+	project, merge string, files map[string]string,
+) *Artifact {
+	t.Helper()
+	raw, err := json.Marshal(map[string]any{
+		"openspec": map[string]any{"files": files, "merge": merge},
+	})
+	if err != nil {
+		t.Fatalf("fields: %v", err)
+	}
+	art := &Artifact{
+		ID: ulid.NewString(), Type: MemoryType, Kind: ChangeKind,
+		Project: &project, OwnerUser: p.UserID, Title: "the change", Fields: raw,
+	}
+	if err := db.CreateArtifact(ctx, art); err != nil {
+		t.Fatalf("write change: %v", err)
+	}
+	return art
+}
+
+// THE ARCHIVE GATE (p6). Archived was the one ungated edge - p3 built it
+// open and named p6 as the gate. The arm asks the merge the change names in
+// fields.openspec.merge: the row must exist, be a merge request, and be
+// decided (landed or decided-rejected - both terminal, both a real answer
+// for a dead change). Each refusal names what to do about it.
+
+func TestOpenspecArchivedRefusesWithoutAMergeName(t *testing.T) {
+	ctx, db := open(t)
+	project := declaredProject(t, ctx, db, "ospec-life-noname")
+	p := &Principal{UserID: "u-" + ulid.NewString(), Project: project}
+
+	art := openspecChangeIn(t, ctx, db, p, project, map[string]string{
+		"proposal.md": "# why\n",
+	})
+	openspecMove(t, ctx, db, art, OpenspecComplete)
+
+	err := db.CheckOpenspecTransition(ctx, art, OpenspecArchived)
+	if err == nil {
+		t.Fatal("complete -> archived was allowed with no merge named")
+	}
+	if !strings.Contains(err.Error(), "the change names no merge - set fields.openspec.merge") {
+		t.Fatalf("refused with %q, not the no-name sentence", err)
+	}
+}
+
+func TestOpenspecArchivedRefusesWhenTheMergeNamesNoRow(t *testing.T) {
+	ctx, db := open(t)
+	project := declaredProject(t, ctx, db, "ospec-life-norow")
+	p := &Principal{UserID: "u-" + ulid.NewString(), Project: project}
+
+	ghost := ulid.NewString()
+	art := openspecChangeNamedMergeIn(t, ctx, db, p, project, ghost, map[string]string{
+		"proposal.md": "# why\n",
+	})
+	openspecMove(t, ctx, db, art, OpenspecComplete)
+
+	err := db.CheckOpenspecTransition(ctx, art, OpenspecArchived)
+	if err == nil {
+		t.Fatal("complete -> archived was allowed naming a row that is not there")
+	}
+	if !strings.Contains(err.Error(), "its merge names no row") || !strings.Contains(err.Error(), ghost) {
+		t.Fatalf("refused with %q, not the no-row sentence naming %s", err, ghost)
+	}
+}
+
+func TestOpenspecArchivedRefusesWhenTheMergeNamesNotAMerge(t *testing.T) {
+	ctx, db := open(t)
+	project := declaredProject(t, ctx, db, "ospec-life-notmerge")
+	p := &Principal{UserID: "u-" + ulid.NewString(), Project: project}
+
+	// A spec row: real, decided, and not a merge request - the name must be
+	// the merge the change landed with, not any old row.
+	spec := &Artifact{
+		ID: ulid.NewString(), Type: MemoryType, Kind: SpecKind,
+		Project: &project, OwnerUser: p.UserID, Title: "a spec", Body: "# a\n",
+	}
+	if err := db.CreateArtifact(ctx, spec); err != nil {
+		t.Fatalf("write spec: %v", err)
+	}
+	art := openspecChangeNamedMergeIn(t, ctx, db, p, project, spec.ID, map[string]string{
+		"proposal.md": "# why\n",
+	})
+	openspecMove(t, ctx, db, art, OpenspecComplete)
+
+	err := db.CheckOpenspecTransition(ctx, art, OpenspecArchived)
+	if err == nil {
+		t.Fatal("complete -> archived was allowed naming a row that is not a merge request")
+	}
+	if !strings.Contains(err.Error(), "which is not a merge request") {
+		t.Fatalf("refused with %q, not the not-a-merge sentence", err)
+	}
+}
+
+func TestOpenspecArchivedRefusesWhileTheMergeIsOpen(t *testing.T) {
+	ctx, db := open(t)
+	project := declaredProject(t, ctx, db, "ospec-life-open")
+	p := &Principal{UserID: "u-" + ulid.NewString(), Project: project}
+
+	queued := mergeRowIn(t, ctx, db, p, project, "open", map[string]any{"branch": "notes-gfm"})
+	art := openspecChangeNamedMergeIn(t, ctx, db, p, project, queued.ID, map[string]string{
+		"proposal.md": "# why\n",
+	})
+	openspecMove(t, ctx, db, art, OpenspecComplete)
+
+	err := db.CheckOpenspecTransition(ctx, art, OpenspecArchived)
+	if err == nil {
+		t.Fatal("complete -> archived was allowed on an open merge row")
+	}
+	if !strings.Contains(err.Error(), "is not decided") || !strings.Contains(err.Error(), queued.ID) {
+		t.Fatalf("refused with %q, not the not-decided sentence naming %s", err, queued.ID)
+	}
+}
+
+func TestOpenspecArchivedAllowsWhenTheMergeLanded(t *testing.T) {
+	ctx, db := open(t)
+	project := declaredProject(t, ctx, db, "ospec-life-landed")
+	p := &Principal{UserID: "u-" + ulid.NewString(), Project: project}
+
+	landed := mergeRowIn(t, ctx, db, p, project, DoneStatus, map[string]any{
+		"branch":     "notes-gfm",
+		"landed_tip": "c0c15a4",
+	})
+	art := openspecChangeNamedMergeIn(t, ctx, db, p, project, landed.ID, map[string]string{
+		"proposal.md": "# why\n",
+	})
+	openspecMove(t, ctx, db, art, OpenspecComplete)
+
+	if err := db.CheckOpenspecTransition(ctx, art, OpenspecArchived); err != nil {
+		t.Fatalf("complete -> archived was refused on a landed merge: %v", err)
+	}
+	openspecMove(t, ctx, db, art, OpenspecArchived)
+	if state := stateOf(t, ctx, db, p, art.ID); state != OpenspecArchived {
+		t.Fatalf("the archived change reads %q", state)
+	}
+}
+
+func TestOpenspecArchivedAllowsWhenTheMergeWasDecidedRejected(t *testing.T) {
+	ctx, db := open(t)
+	project := declaredProject(t, ctx, db, "ospec-life-rejected")
+	p := &Principal{UserID: "u-" + ulid.NewString(), Project: project}
+
+	// Done with no landed_tip: the row was closed without landing, which is
+	// a decision against it. A dead change must still be archivable, and a
+	// rejected merge is a real answer - the gate passes.
+	rejected := mergeRowIn(t, ctx, db, p, project, DoneStatus, map[string]any{"branch": "notes-gfm"})
+	art := openspecChangeNamedMergeIn(t, ctx, db, p, project, rejected.ID, map[string]string{
+		"proposal.md": "# why\n",
+	})
+	openspecMove(t, ctx, db, art, OpenspecComplete)
+
+	if err := db.CheckOpenspecTransition(ctx, art, OpenspecArchived); err != nil {
+		t.Fatalf("complete -> archived was refused on a decided-rejected merge: %v", err)
+	}
+	openspecMove(t, ctx, db, art, OpenspecArchived)
+	if state := stateOf(t, ctx, db, p, art.ID); state != OpenspecArchived {
+		t.Fatalf("the archived change reads %q", state)
+	}
+}
+
+// THE ARM IS ASKED: swap CheckOpenspecMerge and prove the edge consults it -
+// a sentinel reaches the caller, and a satisfied arm lets a merge-less change
+// through. The arm is the only thing standing, so a future edit that stops
+// asking it fails this test by existing.
+func TestOpenspecArchiveGateIsAsked(t *testing.T) {
+	original := CheckOpenspecMerge
+	defer func() { CheckOpenspecMerge = original }()
+
+	art := &Artifact{
+		ID: ulid.NewString(), Type: MemoryType, Kind: ChangeKind,
+		Fields: json.RawMessage(`{"openspec":{"state":"complete"}}`),
+	}
+
+	CheckOpenspecMerge = func(d *DB, ctx context.Context, a *Artifact) error {
+		return errors.New("sentinel refusal")
+	}
+	err := (&DB{}).CheckOpenspecTransition(context.Background(), art, OpenspecArchived)
+	if err == nil || !strings.Contains(err.Error(), "sentinel refusal") {
+		t.Fatalf("the archived arm was not asked - got %v", err)
+	}
+
+	CheckOpenspecMerge = func(d *DB, ctx context.Context, a *Artifact) error { return nil }
+	if err := (&DB{}).CheckOpenspecTransition(context.Background(), art, OpenspecArchived); err != nil {
+		t.Fatalf("a satisfied arm refused the move: %v", err)
+	}
+}
 func storedChange(t *testing.T, ctx context.Context, db *DB, p *Principal, id string) *Artifact {
 	t.Helper()
 	art, err := db.ReadArtifact(ctx, p, id, false)
@@ -234,7 +443,14 @@ func TestOpenspecArchivedReachableFromSeededCompleteAndEventsChain(t *testing.T)
 	project := declaredProject(t, ctx, db, "ospec-life-chain")
 	p := &Principal{UserID: "u-" + ulid.NewString(), Project: project}
 
-	art := openspecChangeIn(t, ctx, db, p, project, map[string]string{
+	// The archive gate (p6): archived asks the change's merge, and the answer
+	// has to be a decision. The chain test seeds a landed one - the same
+	// shape a real archive names.
+	landed := mergeRowIn(t, ctx, db, p, project, DoneStatus, map[string]any{
+		"branch":     "notes-gfm",
+		"landed_tip": "c0c15a4",
+	})
+	art := openspecChangeNamedMergeIn(t, ctx, db, p, project, landed.ID, map[string]string{
 		"proposal.md": "# why\n",
 	})
 	first := openspecMove(t, ctx, db, art, OpenspecInProgress)

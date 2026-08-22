@@ -27,6 +27,13 @@ package store
 // The complete arm is two checks: the derived todos off tasks.md must all be
 // done, and the change must validate - ValidateChange reads the verdict the
 // validate door cached on the row (openspec_validate.go, p4).
+//
+// The archived arm is the archive gate (p6, the last ungated edge): the
+// change must name its merge in fields.openspec.merge, and that row must be
+// decided - landed or decided-rejected, both terminal. An open merge row is
+// not a decision, and a name that matches no row is not one either. The gate
+// is asked at transition time only: archived is terminal, and a merge row
+// that later re-gates does not pull the change back onto the line.
 
 import (
 	"context"
@@ -228,7 +235,75 @@ func (d *DB) CheckOpenspecTransition(
 			return fmt.Errorf("cannot move %s -> %s: %w", from, to, err)
 		}
 	}
+	if to == OpenspecArchived {
+		if err := CheckOpenspecMerge(d, ctx, a); err != nil {
+			return fmt.Errorf("cannot move %s -> %s: %w", from, to, err)
+		}
+	}
 	return nil
+}
+
+// CheckOpenspecMerge is the archive gate: archived asks the merge the change
+// names in fields.openspec.merge, and the answer has to be a decision. It is
+// a package var for the same reason ValidateChange is - a pure test swaps it
+// and proves the arm is ASKED, not just written.
+var CheckOpenspecMerge = func(d *DB, ctx context.Context, a *Artifact) error {
+	return d.checkOpenspecMergeDecided(ctx, a)
+}
+
+// checkOpenspecMergeDecided is the gate's rule. The named row must exist,
+// must be a merge request, and must be terminal - status done is the one
+// word every surface uses for a finished row (DoneAt). Landed and
+// decided-rejected are not distinguished here: both are decisions, and a
+// dead change must still be archivable. The sentences say what to do about
+// each refusal rather than only that it refused.
+func (d *DB) checkOpenspecMergeDecided(ctx context.Context, a *Artifact) error {
+	name, err := openspecMergeInFields(a.Fields)
+	if err != nil {
+		return err
+	}
+	if name == "" {
+		return errors.New("the change names no merge - set fields.openspec.merge to its merge row id, then archive")
+	}
+	var typ, kind, status string
+	err = d.sql.QueryRowContext(ctx,
+		`SELECT type, kind, status FROM artifacts WHERE id = $1 AND coalesce(tombstone, false) = false`,
+		name).Scan(&typ, &kind, &status)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return fmt.Errorf("its merge names no row - %s is not on this node", name)
+	case err != nil:
+		return fmt.Errorf("store: merge row of %s: %w", name, err)
+	}
+	if !IsEntityType(&Artifact{Type: typ, Kind: kind}, MergeKind) {
+		return fmt.Errorf("its merge names %s, which is not a merge request", name)
+	}
+	if status != DoneStatus {
+		return fmt.Errorf("its merge %s is not decided - an open merge request is not a decision: "+
+			"land it, or close it with `todo done`", name)
+	}
+	return nil
+}
+
+// openspecMergeInFields reads the merge name off a raw fields blob: the
+// empty string when absent, an error when the blob is not JSON. The sibling
+// of openspecStateInFields, same shape.
+func openspecMergeInFields(raw []byte) (string, error) {
+	if len(raw) == 0 {
+		return "", nil
+	}
+	var outer struct {
+		Openspec *struct {
+			Merge string `json:"merge"`
+		} `json:"openspec"`
+	}
+	if err := json.Unmarshal(raw, &outer); err != nil {
+		return "", fmt.Errorf("fields is not JSON: %w", err)
+	}
+	if outer.Openspec == nil {
+		return "", nil
+	}
+	return outer.Openspec.Merge, nil
 }
 
 // ValidateChange is the validate arm: complete asks the verdict the validate
