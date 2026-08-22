@@ -121,7 +121,25 @@ try {
   await page.addInitScript((t) => localStorage.setItem("flowy.token", t), token);
   await page.goto(`${base}/chat/${room}`, { timeout: 20_000 });
 
-  const chip = page.locator(`[data-mention="${who.user}"]`).last();
+  // ANCHORED TO THE MESSAGE THIS CHECK WROTE, by id.
+  //
+  // 01M0KDXZHQ. This was `[data-mention="..."]` .last() - the last matching
+  // chip ON THE PAGE - and the page is the room "mentionring", which is a fixed
+  // name every run has ever seeded into. So the element under test could be:
+  //
+  //   a chip from a PREVIOUS RUN, still in the room, in either arm
+  //   the @operator probe this check seeds below, when the node happens to
+  //     report exactly one operator - a conditional fixture
+  //   a mention by whoever /api/presence returned as `other` that run
+  //
+  // Three inputs that vary without the tree changing, which is why it flipped
+  // on an unchanged tree and why re-running it settled nothing. @dead-claude
+  // lost a pass to it on a branch with no console files in it.
+  //
+  // data-message carries the event id (MessageList.tsx:482), so scoping to it
+  // makes the assertion about the message this run seeded and nothing else. It
+  // neutralises all three at once rather than removing them one at a time.
+  const chip = page.locator(`[data-message="${forMe.id}"] [data-mention="${who.user}"]`).last();
   await chip.waitFor({ state: "visible", timeout: 20_000 });
   const ringed = await chip.evaluate((el) => el.className);
   if (!/ring-1/.test(ringed)) {
@@ -131,7 +149,13 @@ try {
   // The other arm, and it must be a DIFFERENT element: if both chips carried
   // the same id the two assertions would be about one span and the negative
   // control would be vacuous.
-  const theirs = page.locator(`[data-mention]:not([data-mention="${who.user}"])`).last();
+  // Anchored the same way, and to the OTHER seeded message. The :not() stays -
+  // it is what keeps the two arms about two different spans, which the comment
+  // above is right that they must be - but it is no longer doing the work of
+  // finding the right message as well.
+  const theirs = page
+    .locator(`[data-message="${forThem.id}"] [data-mention]:not([data-mention="${who.user}"])`)
+    .last();
   await theirs.waitFor({ state: "visible", timeout: 20_000 });
   const plain = await theirs.evaluate((el) => el.className);
   if (/ring-1/.test(plain) && !failure) {
