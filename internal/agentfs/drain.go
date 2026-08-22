@@ -123,16 +123,23 @@ func (d *Drainer) Reconcile(ctx context.Context) (DrainStats, error) {
 // write columns transactionally - and because a replay parses the bytes that
 // were written rather than trusting a parse that was recorded beside them.
 func (d *Drainer) apply(ctx context.Context, in *store.FSIntent) (store.FSApplyResult, error) {
-	fields, err := fieldsOf(in.Type, parse([]byte(in.Content)))
-	if err != nil {
-		// The file cannot be turned into an item, and it will never be able to
-		// be: retrying it forever would stop everything behind it in the queue.
-		// So it is marked refused and said out loud.
-		d.log.Printf("drain %s: %v; the file was not stored", in.Path, err)
-		if markErr := d.markUnstorable(ctx, in); markErr != nil {
-			return store.FSRefused, markErr
+	// A view write carries the file's bytes to the store raw: what a file
+	// inside a change parses as is nobody's business but the store's - the
+	// store edits the row's files map with the content, not with a parse.
+	fields := store.FSFields{}
+	if in.FileKey == "" {
+		var err error
+		fields, err = fieldsOf(in.Type, parse([]byte(in.Content)))
+		if err != nil {
+			// The file cannot be turned into an item, and it will never be
+			// able to be: retrying it forever would stop everything behind
+			// it in the queue. So it is marked refused and said out loud.
+			d.log.Printf("drain %s: %v; the file was not stored", in.Path, err)
+			if markErr := d.markUnstorable(ctx, in); markErr != nil {
+				return store.FSRefused, markErr
+			}
+			return store.FSRefused, nil
 		}
-		return store.FSRefused, nil
 	}
 
 	result, err := d.db.ApplyFSIntent(ctx, in, fields)

@@ -731,6 +731,11 @@ CREATE TABLE IF NOT EXISTS fs_intents (
     -- The name the file has in the mount, which is what artifacts.file_path
     -- holds for a row that came in through here.
     name       text,
+    -- The files-map key this write targets, when the file is a view over one
+    -- key of an openspec change's row (proposal.md, tasks.md,
+    -- specs/<cap>/spec.md). NULL is an ordinary file: one file, one row.
+    -- The artifact column then names the change the view belongs to.
+    file_key   text,
     -- sha256 of content, hex. The dedup key.
     hash       text,
     content    text,
@@ -743,9 +748,10 @@ CREATE TABLE IF NOT EXISTS fs_intents (
     created    timestamptz DEFAULT now()
 );
 
--- refusal was added after the table first shipped. The CREATE TABLE
--- says IF NOT EXISTS, so its body is a no-op on a database that already
--- has the table - the ALTER is what lands the column there.
+-- The two columns above were added after the table first shipped. The
+-- CREATE TABLE says IF NOT EXISTS, so its body is a no-op on a database
+-- that already has the table - the ALTER is what lands the column there.
+ALTER TABLE fs_intents ADD COLUMN IF NOT EXISTS file_key text;
 ALTER TABLE fs_intents ADD COLUMN IF NOT EXISTS refusal text;
 
 -- Phase 8. What the node saw itself do.

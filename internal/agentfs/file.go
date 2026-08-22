@@ -6,7 +6,6 @@ package agentfs
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"path"
 	"sync"
@@ -29,6 +28,10 @@ type fileNode struct {
 	name  string
 	id    string
 	path  string
+	// viewKey is non-empty when this file is a view over one key of an
+	// openspec change's files map rather than an ordinary file. The row it
+	// names is the change's; what it reads and writes is that key's value.
+	viewKey string
 
 	// mu guards the handles open on this node and the truncate below.
 	mu   sync.Mutex
@@ -173,6 +176,13 @@ func (n *fileNode) content(ctx context.Context) ([]byte, time.Time, error) {
 	if err != nil {
 		return nil, time.Time{}, err
 	}
+	if n.viewKey != "" {
+		files, err := store.OpenspecFilesOf(art)
+		if err != nil {
+			return nil, time.Time{}, err
+		}
+		return []byte(files[n.viewKey]), art.Updated, nil
+	}
 	return render(art), art.Updated, nil
 }
 
@@ -183,24 +193,12 @@ func (n *fileNode) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint3
 		if wantsWrite && !n.f.writable(n.scope) {
 			return fmt.Errorf("%w: %s is not yours to write in", errRefused, path.Dir(n.path))
 		}
-		// An openspec row is not rewritten through the generic file path - the
-		// mount shows, the doors write; see the same refusal in Create. This is
-		// the one that keeps a spec a spec: a save without the front-matter
-		// header defaults the kind to "note" and the shape check only sees the
-		// row, so without this refusal the rewrite would husk it silently.
-		if wantsWrite {
-			art, err := n.f.db.FSFind(ctx, n.f.p, n.scope, n.id)
-			switch {
-			case errors.Is(err, store.ErrNotFound):
-				// A pending write: not in the store yet, and nothing openspec
-				// to refuse - the close-time checks decide.
-			case err != nil:
-				return err
-			case store.IsOpenspec(art):
-				return fmt.Errorf("%w: %s is an openspec %s and read-only in the mount - "+
-					"POST /api/openspec writes it", errRefused, n.name, art.Kind)
-			}
-		}
+		// A write of a spec through here is an ordinary rewrite and is taken,
+		// where p1 refused it: the store's apply keeps an openspec row's kind
+		// whatever the header says (the husk arm), and an apply the store
+		// refuses is dropped once with its reason recorded rather than
+		// wedging the queue (the wedge arm). The two arms are what the
+		// read-only refusal stood in for.
 		handle = &fileHandle{f: n.f, node: n, writable: wantsWrite}
 
 		if wantsWrite && int(flags)&syscall.O_TRUNC != 0 {

@@ -622,3 +622,149 @@ func TestARefusedApplyIsDroppedOnceAndTheQueueKeepsDraining(t *testing.T) {
 		t.Fatalf("the later write did not land: %v", err)
 	}
 }
+
+// A view write: the file is one key of an openspec change's files map, and
+// the apply edits that key - the change's own words and kind stay the row's,
+// and the derivation re-syncs off the written tasks.md like any other write.
+func TestAViewWriteEditsTheChangesFilesMap(t *testing.T) {
+	ctx, db := open(t)
+	owner := fsUser(t, ctx, db, "fs-view")
+	project := declaredProject(t, ctx, db, "fs-view")
+	p := &Principal{UserID: owner.ID, Project: project}
+
+	change := openspecChangeIn(t, ctx, db, p, project, map[string]string{
+		"proposal.md": "the change\n",
+		"tasks.md":    "- [ ] one\n",
+	})
+
+	in := fsIntent(owner.ID, &project, "the-change.md", "- [x] one\n")
+	in.Artifact = change.ID
+	in.FileKey = "tasks.md"
+	if err := db.EnqueueFSIntent(ctx, in); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+
+	result, err := db.ApplyFSIntent(ctx, in, FSFields{})
+	if err != nil || result != FSApplied {
+		t.Fatalf("apply gave %q, %v", result, err)
+	}
+
+	art, err := db.GetArtifact(ctx, change.ID)
+	if err != nil {
+		t.Fatalf("the change is not there: %v", err)
+	}
+	if art.Kind != ChangeKind {
+		t.Fatalf("the row is kind %q; a view write edits the files, not the kind", art.Kind)
+	}
+	if art.Title != "the change" || art.Body != "" {
+		t.Fatalf("the row's own words moved: %q / %q", art.Title, art.Body)
+	}
+	files, err := OpenspecFilesOf(art)
+	if err != nil {
+		t.Fatalf("files: %v", err)
+	}
+	// Annotated with its line id: every write of tasks.md runs the
+	// derivation's prepare, which mints the marker the line identity rides.
+	if !strings.Contains(files["tasks.md"], "- [x] one") ||
+		!strings.Contains(files["tasks.md"], "<!-- flowy:") {
+		t.Fatalf("the written key holds %q", files["tasks.md"])
+	}
+	if files["proposal.md"] != "the change\n" {
+		t.Fatalf("a view write of one key does not touch the others: %q", files["proposal.md"])
+	}
+	// The derivation rode the write, the way it rides every write of the
+	// row: the checked box closed the derived todo.
+	todos, err := db.derivedTodosOf(ctx, db.sql, art.ID)
+	if err != nil {
+		t.Fatalf("derived todos: %v", err)
+	}
+	if len(todos) != 1 || todos[0].Status != DoneStatus {
+		t.Fatalf("the derived todo is %+v, want one, done", todos)
+	}
+}
+
+// The wedge arm's own shape, with a view write: emptying proposal.md is
+// refused by the shape check, the intent is dropped once with the check's
+// sentence recorded, and the queue behind it keeps draining.
+func TestAViewWriteThatStripsTheProposalIsRefusedAndDropped(t *testing.T) {
+	ctx, db := open(t)
+	owner := fsUser(t, ctx, db, "fs-view-refusal")
+	project := declaredProject(t, ctx, db, "fs-view-refusal")
+	p := &Principal{UserID: owner.ID, Project: project}
+
+	change := openspecChangeIn(t, ctx, db, p, project, map[string]string{
+		"proposal.md": "the change\n",
+	})
+
+	in := fsIntent(owner.ID, &project, "the-change.md", "   \n")
+	in.Artifact = change.ID
+	in.FileKey = "proposal.md"
+	if err := db.EnqueueFSIntent(ctx, in); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	after := fsIntent(owner.ID, &project, "after.md", "a later write\n")
+	if err := db.EnqueueFSIntent(ctx, after); err != nil {
+		t.Fatalf("enqueue the later write: %v", err)
+	}
+
+	result, err := db.ApplyFSIntent(ctx, in, FSFields{})
+	if err != nil || result != FSRefused {
+		t.Fatalf("the apply gave %q, %v", result, err)
+	}
+	var reason string
+	if err := db.sql.QueryRowContext(ctx,
+		`SELECT coalesce(refusal, '') FROM fs_intents WHERE id = $1`, in.ID).Scan(&reason); err != nil {
+		t.Fatalf("read the refusal: %v", err)
+	}
+	if !strings.Contains(reason, "proposal.md") {
+		t.Fatalf("the queue row records the shape check's sentence, got %q", reason)
+	}
+	if result, err := db.ApplyFSIntent(ctx, after, fsFields("after", "a later write\n")); err != nil || result != FSApplied {
+		t.Fatalf("the write behind the refusal gave %q, %v", result, err)
+	}
+}
+
+// A view write against something that is not a change is the caller's
+// mistake, refused with the store's sentence - a view has to view something.
+func TestAViewWriteRefusesAwayFromAChange(t *testing.T) {
+	ctx, db := open(t)
+	owner := fsUser(t, ctx, db, "fs-view-norow")
+
+	note := fsIntent(owner.ID, nil, "plain.md", "an ordinary note\n")
+	if err := db.EnqueueFSIntent(ctx, note); err != nil {
+		t.Fatalf("enqueue the note: %v", err)
+	}
+	if result, err := db.ApplyFSIntent(ctx, note, fsFields("plain", "an ordinary note\n")); err != nil || result != FSApplied {
+		t.Fatalf("the note gave %q, %v", result, err)
+	}
+
+	in := fsIntent(owner.ID, nil, "plain.md", "now a view?\n")
+	in.Artifact = note.Artifact
+	in.FileKey = "proposal.md"
+	if err := db.EnqueueFSIntent(ctx, in); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	result, err := db.ApplyFSIntent(ctx, in, FSFields{})
+	if err != nil || result != FSRefused {
+		t.Fatalf("a view of a note gave %q, %v", result, err)
+	}
+	var reason string
+	if err := db.sql.QueryRowContext(ctx,
+		`SELECT coalesce(refusal, '') FROM fs_intents WHERE id = $1`, in.ID).Scan(&reason); err != nil {
+		t.Fatalf("read the refusal: %v", err)
+	}
+	if !strings.Contains(reason, "only a change has files") {
+		t.Fatalf("the refusal names what is wrong, got %q", reason)
+	}
+
+	// And against no row at all.
+	gone := fsIntent(owner.ID, nil, "never.md", "a view of nothing\n")
+	gone.FileKey = "proposal.md"
+	if err := db.EnqueueFSIntent(ctx, gone); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	result, err = db.ApplyFSIntent(ctx, gone, FSFields{})
+	if err != nil || result != FSRefused {
+		t.Fatalf("a view of no row gave %q, %v", result, err)
+	}
+}

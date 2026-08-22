@@ -223,10 +223,14 @@ type FSIntent struct {
 	// mem_write keeps.
 	Visibility string
 	Name       string
-	Hash       string
-	Content    string
-	Applied    *time.Time
-	Created    time.Time
+	// FileKey is the files-map key this write targets when the file is a
+	// view over one key of an openspec change's row. Empty for an ordinary
+	// file, where the whole row is the file's content.
+	FileKey string
+	Hash    string
+	Content string
+	Applied *time.Time
+	Created time.Time
 }
 
 // FSFields is an intent's content once the caller has parsed it. The store does
@@ -274,11 +278,11 @@ func (d *DB) EnqueueFSIntent(ctx context.Context, in *FSIntent) error {
 	// signs it and nothing replicates it, so the column's default is fine.
 	err := d.sql.QueryRowContext(ctx,
 		`INSERT INTO fs_intents (id, node, path, artifact, owner_user, actor, project,
-		                         type, visibility, name, hash, content)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		                         type, visibility, name, file_key, hash, content)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 		 RETURNING created`,
 		in.ID, in.Node, in.Path, in.Artifact, in.OwnerUser, in.Actor, in.Project,
-		in.Type, in.Visibility, in.Name, in.Hash, in.Content).Scan(&in.Created)
+		in.Type, in.Visibility, in.Name, in.FileKey, in.Hash, in.Content).Scan(&in.Created)
 	if err != nil {
 		return fmt.Errorf("store: enqueue fs intent: %w", err)
 	}
@@ -292,8 +296,8 @@ func (d *DB) PendingFSIntents(ctx context.Context, limit int) ([]*FSIntent, erro
 	rows, err := d.sql.QueryContext(ctx,
 		`SELECT id, coalesce(node, ''), coalesce(path, ''), coalesce(artifact, ''),
 		        coalesce(owner_user, ''), coalesce(actor, ''), project, coalesce(type, ''),
-		        coalesce(visibility, ''), coalesce(name, ''), coalesce(hash, ''),
-		        coalesce(content, ''), created
+		        coalesce(visibility, ''), coalesce(name, ''), coalesce(file_key, ''),
+		        coalesce(hash, ''), coalesce(content, ''), created
 		   FROM fs_intents
 		  WHERE applied IS NULL
 		  ORDER BY created, id
@@ -310,8 +314,8 @@ func (d *DB) PendingFSIntents(ctx context.Context, limit int) ([]*FSIntent, erro
 			project sql.NullString
 		)
 		if err := rows.Scan(&in.ID, &in.Node, &in.Path, &in.Artifact, &in.OwnerUser,
-			&in.Actor, &project, &in.Type, &in.Visibility, &in.Name, &in.Hash,
-			&in.Content, &in.Created); err != nil {
+			&in.Actor, &project, &in.Type, &in.Visibility, &in.Name, &in.FileKey,
+			&in.Hash, &in.Content, &in.Created); err != nil {
 			return nil, fmt.Errorf("store: pending fs intents: %w", err)
 		}
 		if project.Valid {
@@ -438,11 +442,14 @@ var errFSDrained = errors.New("store: fs intent was drained by somebody else")
 func (d *DB) fsIntentDecision(ctx context.Context, tx *sql.Tx, in *FSIntent) (FSApplyResult, *Artifact, error) {
 	var (
 		owner, project, visibility, typ, kind sql.NullString
+		title, body, filePath, fields         sql.NullString
 		tombstone                             sql.NullBool
 	)
 	err := tx.QueryRowContext(ctx,
-		`SELECT owner_user, project, visibility, type, kind, tombstone FROM artifacts WHERE id = $1`,
-		in.Artifact).Scan(&owner, &project, &visibility, &typ, &kind, &tombstone)
+		`SELECT owner_user, project, visibility, type, kind, title, body,
+		        file_path, fields, tombstone FROM artifacts WHERE id = $1`,
+		in.Artifact).Scan(&owner, &project, &visibility, &typ, &kind,
+		&title, &body, &filePath, &fields, &tombstone)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		// A new row. Nothing to be duplicate of and nothing to move.
@@ -451,16 +458,28 @@ func (d *DB) fsIntentDecision(ctx context.Context, tx *sql.Tx, in *FSIntent) (FS
 		return FSRefused, nil, fmt.Errorf("store: apply fs intent %s: %w", in.ID, err)
 	}
 
-	held := &Artifact{ID: in.Artifact, OwnerUser: owner.String, Visibility: visibility.String}
+	held := &Artifact{
+		ID:         in.Artifact,
+		OwnerUser:  owner.String,
+		Visibility: visibility.String,
+		Title:      title.String,
+		Body:       body.String,
+		FilePath:   filePath.String,
+	}
 	if project.Valid {
 		p := project.String
 		held.Project = &p
 	}
 	// Type and kind ride along because the write consults what the row IS
 	// (fsIntentWrite, below): the row says what it is, and the header of the
-	// file being saved cannot argue.
+	// file being saved cannot argue. Fields too - a write of a view inside
+	// an openspec change edits the row's files map, and that map is the
+	// whole of what it writes.
 	held.Type = typ.String
 	held.Kind = kind.String
+	if fields.Valid {
+		held.Fields = []byte(fields.String)
+	}
 	held.Tombstone = tombstone.Bool
 
 	if held.Tombstone {
@@ -532,6 +551,42 @@ func (d *DB) fsIntentWrite(ctx context.Context, tx *sql.Tx, in *FSIntent, f FSFi
 		// decided by the row - the doors and the lifecycle move rows between
 		// kinds, a file save does not.
 		art.Kind = held.Kind
+	}
+
+	// A view write: the file is one key of an openspec change's files map,
+	// and the write is of that key, not of the row's own words. The change's
+	// title, kind and every other column stay what the row says - the files
+	// map is the whole of a change's content (openspec.go), so this is the
+	// write that edits it. What the content parses as is the mount's
+	// business and deliberately not consulted here: proposal.md is plain
+	// prose, and a header inside it is prose too.
+	if in.FileKey != "" {
+		if held == nil {
+			return refuseDep("a file inside an openspec change writes %s, which names no row - "+
+				"a view has to view something", in.FileKey)
+		}
+		if !IsEntityType(held, ChangeKind) {
+			return refuseDep("a file inside an openspec change writes %s, which is a %s - "+
+				"only a change has files to be views of", in.FileKey, held.Kind)
+		}
+		files, err := OpenspecFilesOf(held)
+		if err != nil {
+			return err
+		}
+		if files == nil {
+			files = map[string]string{}
+		}
+		files[in.FileKey] = in.Content
+		if err := setOpenspecFiles(art, files); err != nil {
+			return err
+		}
+		// The row's own words are not what this file views, so they are not
+		// what the write touches: everything but the files map comes off the
+		// held row, verbatim.
+		art.Kind = held.Kind
+		art.Title = held.Title
+		art.Body = held.Body
+		art.FilePath = held.FilePath
 	}
 	d.fillAt(art, at)
 	if err := d.upsertArtifact(ctx, tx, art); err != nil {

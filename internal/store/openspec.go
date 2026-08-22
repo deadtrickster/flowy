@@ -70,6 +70,14 @@ func OpenspecFilesOf(a *Artifact) (map[string]string, error) {
 	return outer.Openspec.Files, nil
 }
 
+// SetOpenspecFiles rewrites the files map on a row, keeping the rest of the
+// fields - the write-side sibling of OpenspecFilesOf, for the surfaces that
+// edit one view of the map rather than writing the row whole. The write
+// itself is the caller's; this only puts the map in the row's fields.
+func SetOpenspecFiles(a *Artifact, files map[string]string) error {
+	return setOpenspecFiles(a, files)
+}
+
 // OpenspecRowError is a refusal: the statement wanted to write a row that
 // says it is an openspec artifact but is not one. The caller can fix it, so
 // it is a 400 at the doors - it implements depRefusal, the same refusal

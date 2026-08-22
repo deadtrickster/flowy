@@ -6,16 +6,22 @@ package agentfs
 // own: reading proposal.md is reading the change. A spec stays a plain file,
 // because its body IS its spec.md and renders like any other memory row.
 //
-// The tree is READ-ONLY in this slice, deliberately, and the refusals say so
-// rather than pretending. Writing a file here would be writing the row it
-// views, and the rules for that write are the derivation work (p2: tasks.md
-// is authoritative, edits re-sync the derived todos). Until that lands, a
-// save through the mount has two ways to do damage: the drainer wedges on an
-// apply it keeps refusing (see drain.go - the intent is retried forever),
-// and a save of a spec without the front-matter header would husk it into an
-// ordinary note past the openspec check, because the check is on the row and
-// the header is what decides the kind. Both are worse than EPERM. The doors
-// (POST /api/openspec) write; the mount shows.
+// The tree is WRITABLE. A save of a view writes that key of the row's files
+// map, through the ordinary write-behind queue (the intent carries the key),
+// and the whole store write path rides behind it - the shape check, the
+// tasks.md line ids, the derived todos, the conflict edges. Two arms make
+// the writes safe, both in the store:
+//
+//   - the husk arm: an openspec row rewritten through the queue keeps its
+//     kind - a spec saved without its front matter stays a spec, because
+//     the ROW says what it is and the header cannot argue;
+//   - the wedge arm: an apply the store refuses (say, a save that strips
+//     proposal.md) is dropped once with the refusal's own sentence recorded
+//     on the queue row, and the queue behind it keeps draining - nothing
+//     wedges.
+//
+// Deletion is still refused: a change's end is the lifecycle (p3), not an
+// rm. A spec's either - see dirNode.Unlink.
 
 import (
 	"context"
@@ -23,9 +29,7 @@ import (
 	"path"
 	"sort"
 	"strings"
-	"sync"
 	"syscall"
-	"time"
 
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
@@ -162,9 +166,11 @@ func (n *changeNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut
 		key := openspecKey(n.rel, name)
 		if content, isFile := files[key]; isFile {
 			childPath := path.Join(n.path, name)
-			node := &openspecFileNode{f: n.f, scope: n.scope, artID: n.artID, rel: key, path: childPath}
+			// The literal rather than a made-up fileNode value: vet is right
+			// that copying a node copies its Inode's lock.
+			view := &openspecFileNode{fileNode: fileNode{f: n.f, scope: n.scope, name: name, id: n.artID, path: childPath, viewKey: key}}
 			n.f.fileAttr(&out.Attr, uint64(len(content)), art.Updated)
-			child = n.NewInode(ctx, node, fs.StableAttr{Mode: fuse.S_IFREG, Ino: fileIno(childPath, n.artID)})
+			child = n.NewInode(ctx, view, fs.StableAttr{Mode: fuse.S_IFREG, Ino: fileIno(childPath, n.artID)})
 			return nil
 		}
 		// A directory when any key lies under it.
@@ -186,129 +192,185 @@ func (n *changeNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut
 	return child, 0
 }
 
-// readOnly refuses a write into a change, and says why. It is called on every
-// mutating entry point so no write path can reach the queue without the
-// refusal - an intent the apply refuses wedges the drainer forever.
-func (n *changeNode) readOnly(ctx context.Context, what string) syscall.Errno {
-	return n.f.op(ctx, what, func(context.Context) error {
-		return fmt.Errorf("%w: an openspec change is read-only in the mount - its files "+
-			"are views over the row, and writing them is the derivation work (p2); "+
-			"POST /api/openspec writes the row", errRefused)
-	})
-}
-
-func (n *changeNode) Create(ctx context.Context, name string, _, _ uint32, _ *fuse.EntryOut) (*fs.Inode, fs.FileHandle, uint32, syscall.Errno) {
-	return nil, nil, 0, n.readOnly(ctx, "create "+path.Join(n.path, name))
-}
-
-func (n *changeNode) Unlink(ctx context.Context, name string) syscall.Errno {
-	return n.readOnly(ctx, "unlink "+path.Join(n.path, name))
-}
-
-func (n *changeNode) Mkdir(ctx context.Context, name string, _ uint32, _ *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
-	return nil, n.readOnly(ctx, "mkdir "+path.Join(n.path, name))
-}
-
-func (n *changeNode) Rmdir(ctx context.Context, name string) syscall.Errno {
-	return n.readOnly(ctx, "rmdir "+path.Join(n.path, name))
-}
-
-// openspecFileNode is one file inside a change: a view over one key of the
-// row's files map. Read-only for the reason the change is - Open refuses a
-// write flag before any buffer exists, so nothing can queue an intent the
-// apply would refuse.
-type openspecFileNode struct {
-	fs.Inode
-	f     *FS
-	scope store.FSScope
-	artID string
-	rel   string
-	path  string
-}
-
-var (
-	_ = (fs.NodeGetattrer)((*openspecFileNode)(nil))
-	_ = (fs.NodeOpener)((*openspecFileNode)(nil))
-)
-
-// content is the bytes this file views right now: the row's files map read
-// through the same permission filter every other read here goes through.
-func (n *openspecFileNode) content(ctx context.Context) ([]byte, time.Time, error) {
-	art, err := n.f.db.FSFind(ctx, n.f.p, n.scope, n.artID)
-	if err != nil {
-		return nil, time.Time{}, err
+// hasKeysUnder reports whether the files map holds any key under key+"/" -
+// which is what makes key a directory in the change's tree.
+func hasKeysUnder(files map[string]string, key string) bool {
+	prefix := key + "/"
+	for k := range files {
+		if strings.HasPrefix(k, prefix) {
+			return true
+		}
 	}
-	files, err := store.OpenspecFilesOf(art)
-	if err != nil {
-		return nil, time.Time{}, err
-	}
-	return []byte(files[n.rel]), art.Updated, nil
+	return false
 }
 
-func (n *openspecFileNode) Getattr(ctx context.Context, fh fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
-	if h, ok := fh.(*roHandle); ok && h != nil {
-		h.mu.Lock()
-		size := uint64(len(h.data))
-		h.mu.Unlock()
-		n.f.fileAttr(&out.Attr, size, h.mtime)
-		return 0
-	}
-	return n.f.op(ctx, "getattr "+n.path, func(ctx context.Context) error {
-		data, mtime, err := n.content(ctx)
+// Create is a new file inside the change: a new key of the row's files map.
+// Nothing is written to the row until the close that ends the write - the
+// same write-behind every file here has; a create that closes empty writes
+// nothing. The intent the close queues carries the key, and the store's
+// apply edits the map through the ordinary write path: shape check, line
+// ids, derived todos, conflict edges.
+func (n *changeNode) Create(ctx context.Context, name string, _, _ uint32, out *fuse.EntryOut) (*fs.Inode, fs.FileHandle, uint32, syscall.Errno) {
+	var (
+		child  *fs.Inode
+		handle fs.FileHandle
+	)
+	errno := n.f.op(ctx, "create "+path.Join(n.path, name), func(ctx context.Context) error {
+		if err := checkName(name); err != nil {
+			return err
+		}
+		if !n.f.writable(n.scope) {
+			return fmt.Errorf("%w: %s is not yours to write in", errRefused, n.path)
+		}
+		key := openspecKey(n.rel, name)
+		files, art, err := n.row(ctx)
 		if err != nil {
 			return err
 		}
-		n.f.fileAttr(&out.Attr, uint64(len(data)), mtime)
-		return nil
-	})
-}
-
-func (n *openspecFileNode) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint32, syscall.Errno) {
-	var handle *roHandle
-	errno := n.f.op(ctx, "open "+n.path, func(ctx context.Context) error {
-		if int(flags)&(syscall.O_WRONLY|syscall.O_RDWR) != 0 {
-			return fmt.Errorf("%w: %s views an openspec change and is read-only in "+
-				"the mount - the write is the derivation work (p2); POST /api/openspec "+
-				"writes the row", errRefused, n.path)
+		if art.OwnerUser != n.f.p.UserID {
+			return fmt.Errorf("%w: %s belongs to somebody else", errRefused, n.path)
 		}
-		data, mtime, err := n.content(ctx)
-		if err != nil {
-			return err
+		// A directory cannot share its name with a file - the directory wins
+		// in the tree (changeTree), and a create has to say so rather than
+		// write a file the directory hides.
+		if hasKeysUnder(files, key) {
+			return syscall.EISDIR
 		}
-		handle = &roHandle{data: data, mtime: mtime}
+		childPath := path.Join(n.path, name)
+		n.f.fileAttr(&out.Attr, 0, art.Updated)
+		// The literal rather than a made-up fileNode value: vet is right that
+		// copying a node copies its Inode's lock.
+		child = n.NewInode(ctx, &openspecFileNode{fileNode: fileNode{f: n.f, scope: n.scope, name: name, id: n.artID, path: childPath, viewKey: key}},
+			fs.StableAttr{Mode: fuse.S_IFREG, Ino: fileIno(childPath, n.artID)})
+		// Not dirty yet - a create is an open, not a write; see the same
+		// decision on dirNode.Create. The handle holds the inode's own node,
+		// for the same reason dirNode.Create does: truncate fan-out walks the
+		// node's open set, and a copy would miss it.
+		ops := child.Operations().(*openspecFileNode)
+		handle = &fileHandle{f: n.f, node: &ops.fileNode, writable: true}
 		return nil
 	})
 	if errno != 0 {
-		return nil, 0, errno
+		return nil, nil, 0, errno
 	}
-	// Direct IO, for the same reason Create gives: the store is the file, and
-	// a page cache in front of it would answer with what this mount said last.
-	return handle, fuse.FOPEN_DIRECT_IO, 0
+	return child, handle, fuse.FOPEN_DIRECT_IO, 0
 }
 
-// roHandle serves one buffer of bytes for reading. It is deliberately not a
-// fileHandle: that type exists to become an intent on close, and this file
-// must never have one.
-type roHandle struct {
-	mu    sync.Mutex
-	data  []byte
-	mtime time.Time
+// Unlink removes one key from the row's files map, and it does it now rather
+// than through the queue - the same choice dirNode.Unlink makes, for the
+// same reason: the caller is entitled to be told whether the thing is gone.
+// A pending write of this same view is dropped first; other views' pending
+// writes are their own and stay.
+func (n *changeNode) Unlink(ctx context.Context, name string) syscall.Errno {
+	return n.f.op(ctx, "unlink "+path.Join(n.path, name), func(ctx context.Context) error {
+		if err := checkName(name); err != nil {
+			return err
+		}
+		if !n.f.writable(n.scope) {
+			return fmt.Errorf("%w: %s is not yours to write in", errRefused, n.path)
+		}
+		key := openspecKey(n.rel, name)
+		files, art, err := n.row(ctx)
+		if err != nil {
+			return err
+		}
+		if art.OwnerUser != n.f.p.UserID {
+			return fmt.Errorf("%w: %s belongs to somebody else", errRefused, n.path)
+		}
+		if _, isFile := files[key]; !isFile {
+			if hasKeysUnder(files, key) {
+				return syscall.EISDIR
+			}
+			return store.ErrNotFound
+		}
+		here := path.Join(n.path, name)
+		if queued := n.f.pendingAt(here); queued != nil {
+			n.f.dropPending(here)
+			if err := n.f.db.DropFSIntent(ctx, queued.intent); err != nil {
+				return err
+			}
+		}
+		delete(files, key)
+		// The shape check rides this write like any other: unlinking
+		// proposal.md is refused with the check's own sentence, and a
+		// change is a proposal.
+		if err := store.SetOpenspecFiles(art, files); err != nil {
+			return err
+		}
+		return n.f.db.UpsertArtifact(ctx, art)
+	})
 }
 
-var _ = (fs.FileReader)((*roHandle)(nil))
+// Mkdir makes a directory inside the change - which is nothing to write:
+// directories are the keys' shape, not rows, and specs/cap exists as soon as
+// a file lands under it. A name a file already holds is refused - a
+// directory cannot share it.
+func (n *changeNode) Mkdir(ctx context.Context, name string, _ uint32, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
+	var child *fs.Inode
+	errno := n.f.op(ctx, "mkdir "+path.Join(n.path, name), func(ctx context.Context) error {
+		if err := checkName(name); err != nil {
+			return err
+		}
+		if !n.f.writable(n.scope) {
+			return fmt.Errorf("%w: %s is not yours to write in", errRefused, n.path)
+		}
+		key := openspecKey(n.rel, name)
+		files, art, err := n.row(ctx)
+		if err != nil {
+			return err
+		}
+		if art.OwnerUser != n.f.p.UserID {
+			return fmt.Errorf("%w: %s belongs to somebody else", errRefused, n.path)
+		}
+		if _, isFile := files[key]; isFile {
+			return syscall.EEXIST
+		}
+		childPath := path.Join(n.path, name)
+		n.f.dirAttr(&out.Attr)
+		child = n.NewInode(ctx, &changeNode{f: n.f, scope: n.scope, artID: n.artID, rel: key, path: childPath},
+			fs.StableAttr{Mode: fuse.S_IFDIR, Ino: ino(childPath)})
+		return nil
+	})
+	if errno != 0 {
+		return nil, errno
+	}
+	return child, 0
+}
 
-func (h *roHandle) Read(_ context.Context, dest []byte, off int64) (fuse.ReadResult, syscall.Errno) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if off < 0 {
-		return nil, syscall.EINVAL
-	}
-	if off >= int64(len(h.data)) {
-		return fuse.ReadResultData(nil), 0
-	}
-	end := off + int64(len(dest))
-	if end > int64(len(h.data)) {
-		end = int64(len(h.data))
-	}
-	return fuse.ReadResultData(h.data[off:end]), 0
+// Rmdir removes a directory inside the change. A directory that still holds
+// keys is not empty and is refused; an empty one goes away, which is nothing
+// to write.
+func (n *changeNode) Rmdir(ctx context.Context, name string) syscall.Errno {
+	return n.f.op(ctx, "rmdir "+path.Join(n.path, name), func(ctx context.Context) error {
+		if err := checkName(name); err != nil {
+			return err
+		}
+		if !n.f.writable(n.scope) {
+			return fmt.Errorf("%w: %s is not yours to write in", errRefused, n.path)
+		}
+		key := openspecKey(n.rel, name)
+		files, _, err := n.row(ctx)
+		if err != nil {
+			return err
+		}
+		if _, isFile := files[key]; isFile {
+			return syscall.ENOTDIR
+		}
+		if hasKeysUnder(files, key) {
+			return syscall.ENOTEMPTY
+		}
+		return nil
+	})
+}
+
+// openspecFileNode is one file inside a change: a view over one key of the
+// row's files map. It is a fileNode carrying a viewKey, and everything a
+// fileNode does it does - the buffer, the write-behind queue, the truncate
+// marks, the read through the pending cache. What the key changes is what a
+// read returns (that key of the map, not the rendered row) and what the
+// committed intent carries, so the store's apply edits the map rather than
+// writing a row whole.
+type openspecFileNode struct {
+	fs.Inode
+	fileNode
 }

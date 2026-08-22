@@ -119,3 +119,26 @@ func TestOpenspecKey(t *testing.T) {
 		t.Fatalf("nested key is %q, want specs/cap", got)
 	}
 }
+
+func TestHasKeysUnder(t *testing.T) {
+	files := map[string]string{
+		"proposal.md":        "# why\n",
+		"specs/cap/spec.md":  "# cap\n",
+		"specs/cap/tasks.md": "- [ ] one\n",
+	}
+	cases := []struct {
+		key  string
+		want bool
+	}{
+		{"proposal.md", false},       // a file name, no children
+		{"specs", true},              // specs/cap/... beneath it
+		{"specs/cap", true},          // two keys beneath it
+		{"specs/cap/spec.md", false}, // the file itself, nothing under
+		{"specification", false},     // the prefix match is on whole segments
+	}
+	for _, c := range cases {
+		if got := hasKeysUnder(files, c.key); got != c.want {
+			t.Fatalf("hasKeysUnder(%q) = %v, want %v", c.key, got, c.want)
+		}
+	}
+}

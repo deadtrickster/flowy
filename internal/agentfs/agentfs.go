@@ -626,14 +626,14 @@ func (d *dirNode) Create(ctx context.Context, name string, flags, mode uint32, o
 		case err == nil && art.OwnerUser != d.f.p.UserID:
 			return fmt.Errorf("%w: %s belongs to somebody else", errRefused, name)
 		case err == nil:
-			// An openspec row is not rewritten through the single-file path:
-			// a change is a directory (openspec.go) and a spec's words are its
-			// row - a save that rewrote either through the generic path would
-			// husk it into a note, because the header decides the kind and the
-			// shape check only sees the row. The mount shows; the doors write.
-			if store.IsOpenspec(art) {
-				return fmt.Errorf("%w: %s is an openspec %s and read-only in the mount - "+
-					"POST /api/openspec writes it", errRefused, name, art.Kind)
+			// A change is a directory in the mount - the row is the change
+			// and its files are views inside it (openspec.go) - so it is not
+			// rewritten as one file. A spec is a file, and its save here is
+			// an ordinary rewrite: the store's apply keeps an openspec row's
+			// kind whatever the header says (store.ApplyFSIntent).
+			if store.IsEntityType(art, store.ChangeKind) {
+				return fmt.Errorf("%w: %s is an openspec change - a directory in the mount; "+
+					"write its files inside it", errRefused, name)
 			}
 			id = art.ID
 		case errors.Is(err, store.ErrNotFound):
@@ -712,12 +712,13 @@ func (d *dirNode) Unlink(ctx context.Context, name string) syscall.Errno {
 		if err != nil {
 			return err
 		}
-		// Openspec rows are not deleted through the mount - the same read-only
-		// rule Create applies, for the same reason: the mount shows, the doors
-		// (and their lifecycle, p3) write.
+		// An openspec row is not deleted through the mount. Its writes are
+		// ordinary now - the store's apply keeps the kind and drops refusals
+		// once - but its END is the lifecycle's business (p3): a change
+		// archives, a spec is retired, and neither of those is an rm.
 		if store.IsOpenspec(art) {
-			return fmt.Errorf("%w: %s is an openspec %s and read-only in the mount",
-				errRefused, name, art.Kind)
+			return fmt.Errorf("%w: %s is an openspec %s, and its end is the lifecycle's "+
+				"business (p3), not an rm", errRefused, name, art.Kind)
 		}
 		d.f.dropPending(here)
 		if _, err := d.f.db.TombstoneArtifact(ctx, d.f.p, art.ID); err != nil {
@@ -817,16 +818,25 @@ func (f *FS) commit(ctx context.Context, n *fileNode, data []byte) error {
 		return nameError{"content that is not valid UTF-8; a memory item is text"}
 	}
 
-	d := parse(data)
-	if strings.TrimSpace(d.Title) == "" && strings.TrimSpace(d.Body) == "" {
-		return nameError{"an empty file; a memory item needs a title or a body, and unlink is how one goes away"}
-	}
+	// A view over a change's files map is not parsed at all: its content is
+	// the file's bytes, raw, and what a proposal.md's first lines look like
+	// is prose, not front matter. The store applies it with the content
+	// alone (store.ApplyFSIntent). Everything below the guard is the
+	// ordinary file's own checks.
+	d := doc{}
+	if n.viewKey == "" {
+		d = parse(data)
+		if strings.TrimSpace(d.Title) == "" && strings.TrimSpace(d.Body) == "" {
+			return nameError{"an empty file; a memory item needs a title or a body, and unlink is how one goes away"}
+		}
 
-	// Parsed and checked here as well as in the drainer, so a file with a kind
-	// or a scope that is not one gets an error on the close rather than sitting
-	// in the queue being refused by something the agent cannot see.
-	if _, err := fieldsOf(n.scope.Type, d); err != nil {
-		return err
+		// Parsed and checked here as well as in the drainer, so a file with a
+		// kind or a scope that is not one gets an error on the close rather
+		// than sitting in the queue being refused by something the agent
+		// cannot see.
+		if _, err := fieldsOf(n.scope.Type, d); err != nil {
+			return err
+		}
 	}
 
 	// What is in the store now, if anything: it decides whether this is a
@@ -864,6 +874,7 @@ func (f *FS) commit(ctx context.Context, n *fileNode, data []byte) error {
 		Type:       n.scope.Type,
 		Visibility: visibility,
 		Name:       n.name,
+		FileKey:    n.viewKey,
 		Hash:       hash,
 		Content:    string(data),
 	}
