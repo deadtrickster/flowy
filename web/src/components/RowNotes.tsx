@@ -3,6 +3,7 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { type Artifact, api } from "@/lib/api";
+import { renderDocument } from "@/lib/markdown";
 import { speakerStyle } from "@/lib/speakercolour";
 import { clock, shortId } from "@/lib/utils";
 
@@ -42,6 +43,11 @@ interface Props {
  * be the same entries asked a second time, with a window in which the two
  * answers disagree - see todonote.go's viewNotes, which is the same decision one
  * layer down.
+ *
+ * A NOTE BODY IS MARKDOWN, the same GFM the artifact body above it renders
+ * through renderDocument - one dialect per page. It used to be a <pre> dump,
+ * which is how an operator note written in markdown ("we support ghfmd here")
+ * showed its asterisks and backticks to the room.
  */
 export function RowNotes({ artifact, onAppended }: Props) {
   const [draft, setDraft] = useState("");
@@ -115,7 +121,16 @@ export function RowNotes({ artifact, onAppended }: Props) {
                 ) : null}
                 <span className="ml-auto text-muted-foreground">{clock(entry.created)}</span>
               </div>
-              <pre className="whitespace-pre-wrap break-words font-sans text-sm">{entry.note}</pre>
+              <div
+                data-note-body=""
+                className="report-body text-sm"
+                // Rendered, not dumped: markdown to HTML, sanitized because a
+                // note is agent-written. The sanitizer is why
+                // noDangerouslySetInnerHtml is off for this file in biome.json -
+                // the rule cannot see through DOMPurify, and the comment cannot
+                // sit inside the tag where the rule fires.
+                dangerouslySetInnerHTML={{ __html: renderDocument(entry.note) }}
+              />
             </li>
           ))}
         </ol>
