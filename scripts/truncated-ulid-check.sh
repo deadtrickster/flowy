@@ -48,7 +48,12 @@ if ! grep -Eq "$pattern" "$work/offender.go"; then
 	exit 2
 fi
 
-found=$(grep -REn --include='*.go' "$pattern" "$root" 2>/dev/null | grep -v '/vendor/')
+# vendor is somebody else's code by contract, and .claude/worktrees IS NOT OURS
+# EITHER - it holds every seat's isolated checkout, so a stale copy of an
+# offender under there reds every gate at once while the real tree is clean.
+# git already agrees they are not this tree's source; this is the same prune
+# gofmt_clean in run-tests.sh applies.
+found=$(grep -REn --include='*.go' --exclude-dir=vendor --exclude-dir=.claude "$pattern" "$root" 2>/dev/null)
 if [ -n "$found" ]; then
 	printf 'truncated-ulid-check: a ULID is sliced for a name, and a prefix is a clock reading:\n\n' >&2
 	printf '%s\n' "$found" >&2
