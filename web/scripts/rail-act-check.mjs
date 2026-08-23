@@ -221,6 +221,7 @@ badge that does not clear is the one thing this whole design is against.`);
     "/reports",
     "/findings",
     "/diagrams",
+    "/skills",
     "/worklog",
     "/activity",
     "/metrics",

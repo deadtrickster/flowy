@@ -2,6 +2,7 @@ import {
   Activity as ActivityIcon,
   Bell,
   BellOff,
+  BookOpen,
   Bookmark,
   Boxes,
   Brain,
@@ -367,6 +368,10 @@ export function Shell({ children }: { children: ReactNode }) {
           <NavLink to="/diagrams" className={navClass}>
             <Shapes className="h-4 w-4" />
             diagrams
+          </NavLink>
+          <NavLink to="/skills" className={navClass}>
+            <BookOpen className="h-4 w-4" />
+            skills
           </NavLink>
           <NavLink to="/worklog" className={navClass}>
             <History className="h-4 w-4" />

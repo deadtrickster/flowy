@@ -19518,6 +19518,22 @@ a_diagram_is_created_by_clicking_new() {
 	node scripts/diagram-new-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A"
 }
 
+# THE SKILLS SHELF, driven in a real browser. A skill is a memory row of kind
+# "skill" whose body is a procedure in GFM - see web/src/lib/skills.ts for the
+# ruling - and the shelf is the collection page plus that row opening rendered.
+#
+# The check drives the whole journey rather than the handler: click new with
+# both boxes EMPTY and it must answer loudly and write nothing (the diagrams
+# lesson - a disabled button and a dead page look the same from outside), then
+# click it filled and the row must land where BOTH its readers look: the
+# node's kind filter, which is what the shelf and any agent use, and the
+# artifact page, where the body must render as markdown - an h1 element, not a
+# <pre> dump. See scripts/skills-page-check.mjs for the failure sentences.
+a_skill_is_written_and_read_from_the_console() {
+	cd "$ROOT/web" || return 1
+	node scripts/skills-page-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A"
+}
+
 # WHERE A ROW CAME FROM, over the API, and the refusal that makes it worth
 # having a separate verb at all.
 #
@@ -19760,6 +19776,8 @@ a_person_writes_a_row_from_the_console() {
 say "diagrams: the new button, clicked"
 check "new with an empty name makes a diagram, opens the editor and can be renamed" \
 	a_diagram_is_created_by_clicking_new
+check "a skill written from the console renders as markdown and lands on the shelf" \
+	a_skill_is_written_and_read_from_the_console
 check "signed out, the diagrams page says so rather than looking empty" \
 	the_diagrams_page_says_it_is_signed_out
 check "a person writes a row from the console, and it lands where its list reads it" \

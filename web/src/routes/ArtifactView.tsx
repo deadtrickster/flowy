@@ -340,13 +340,16 @@ export function ArtifactView() {
                 {LIFECYCLE_TYPES.includes(artifact.type) ? (
                   <StatusControl artifact={artifact} onMoved={setArtifact} />
                 ) : null}
-                {artifact.type === "report" ? (
-                  // A report is a document somebody reads on purpose, so it is
-                  // rendered, not dumped: markdown to HTML, sanitized because
-                  // the body is agent-written. The sanitizer is why
-                  // noDangerouslySetInnerHtml is off for this file in biome.json -
-                  // the rule cannot see through DOMPurify, and the comment cannot
-                  // sit inside the tag where the rule fires.
+                {artifact.type === "report" ||
+                (artifact.type === "memory" && artifact.kind === "skill") ? (
+                  // A report is a document somebody reads on purpose, and a
+                  // skill is the same class of thing - a memory row of kind
+                  // "skill" whose body is a procedure in GFM (see lib/skills) -
+                  // so both are rendered, not dumped: markdown to HTML,
+                  // sanitized because the body is agent-written. The sanitizer
+                  // is why noDangerouslySetInnerHtml is off for this file in
+                  // biome.json - the rule cannot see through DOMPurify, and the
+                  // comment cannot sit inside the tag where the rule fires.
                   //
                   // Through lib/markdown, which is the same GFM the room
                   // renders. Two call sites parsing markdown with two sets of

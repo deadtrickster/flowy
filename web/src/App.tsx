@@ -22,6 +22,7 @@ import { OpenspecView } from "@/routes/OpenspecView";
 import { Profile } from "@/routes/Profile";
 import { Projects } from "@/routes/Projects";
 import { Reports } from "@/routes/Reports";
+import { Skills } from "@/routes/Skills";
 import { TaskView } from "@/routes/TaskView";
 import { Todos } from "@/routes/Todos";
 import { Traces } from "@/routes/Traces";
@@ -122,6 +123,12 @@ export default function App() {
           shape is meant, and says so loudly when the shape is gone.
         */}
           <Route path="/diagrams/:id/:cell" element={<DiagramView />} />
+          {/*
+            The skills shelf. A skill is a memory row of kind "skill" - the
+            list lives here, and the row itself opens on the ordinary artifact
+            page, where the body renders as markdown. See routes/Skills.tsx.
+          */}
+          <Route path="/skills" element={<Skills />} />
           {/*
             The openspec board: the spec and change rows, and one row's files,
             verdict, derived todos and clashes. The rows ARE artifacts - the
