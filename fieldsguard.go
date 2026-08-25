@@ -43,6 +43,7 @@ var openspecStateReach = map[string]string{
 	"DELETE /api/chat/{room}/pin/{id}":           "na",
 	"DELETE /api/inbox/reader/{name}":            "na",
 	"DELETE /api/schedules/{signal}":             "na",
+	"DELETE /api/thread-unfolded/{id}":           "na",
 	"DELETE /api/todo/{id}/deps/{blocker}":       "na",
 
 	"GET /api/activity":                  "na",
@@ -101,6 +102,7 @@ var openspecStateReach = map[string]string{
 	"GET /api/stream":                    "na",
 	"GET /api/sync/pull":                 "na",
 	"GET /api/task/{id}":                 "na",
+	"GET /api/threads-unfolded":          "na",
 	"GET /api/todo/{id}/assignee":        "na",
 	"GET /api/todo/{id}/category":        "na",
 	"GET /api/todo/{id}/deps":            "na",
@@ -165,6 +167,7 @@ var openspecStateReach = map[string]string{
 	"POST /api/sync/push":                      "replicates",
 	"POST /api/task/{id}/delegate":             "na",
 	"POST /api/task/{id}/state":                "na",
+	"POST /api/thread-unfolded":                "na",
 	"POST /api/todo/{id}/assignee":             "na",
 	"POST /api/todo/{id}/category":             "na",
 	"POST /api/todo/{id}/deps":                 "na",

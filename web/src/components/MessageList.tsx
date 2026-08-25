@@ -59,6 +59,13 @@ interface Props {
    * row even in a collapsed thread, because this fleet's recurring failure is
    * silence reading as absence. Everybody else sees that thread collapsed.
    *
+   * A RAISE is never hidden either, and for the same reason. Raising a row
+   * out of a thread puts the raise message in that thread - the row's page
+   * names the message it came out of - and a folded raise would read as work
+   * that was never filed: the room's stream is where the plan visibly grows a
+   * line. rowcard-check is the arm that holds this: its raise is a thread
+   * reply and the chip must still be in the stream.
+   *
    * OPTIONAL, and its absence turns the fold off: read-only surfaces that
    * reuse this list - TaskView, the document panes - draw every message they
    * hold, which is what they were doing before the fold existed.
@@ -216,10 +223,12 @@ export function MessageList({
   // message here - the root, whenever the root is on screen.
   //
   // A reply addressed to this reader is never hidden - it is drawn as its own
-  // row, see the comment on `unfolded` - so a block's count and its snippet
-  // cover the LATEST HIDDEN reply, not simply the thread's newest. The
-  // thread-collapse check seeds an addressed reply as the newest message on
-  // purpose to catch a block that just takes the newest one.
+  // row, see the comment on `unfolded` - and neither is a raise, which names
+  // the row it filed in its artifact column and must stay where the room can
+  // see the plan grow a line. So a block's count and its snippet cover the
+  // LATEST HIDDEN reply, not simply the thread's newest. The thread-collapse
+  // check seeds an addressed reply as the newest message on purpose to catch
+  // a block that just takes the newest one.
   const fold = useMemo(() => {
     if (!unfolded) return null;
     const open = new Set(unfolded);
@@ -238,7 +247,9 @@ export function MessageList({
     for (const [thread, held] of byThread) {
       const head = held[0];
       heads.set(thread, head);
-      const folded = held.filter((event) => event.id !== head.id && !mine(event.addressee));
+      const folded = held.filter(
+        (event) => event.id !== head.id && !mine(event.addressee) && !event.artifact,
+      );
       if (folded.length > 0) hidable.add(thread);
       if (open.has(thread)) continue;
       if (folded.length === 0) continue;

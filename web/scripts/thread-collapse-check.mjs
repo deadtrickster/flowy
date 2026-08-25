@@ -11,6 +11,9 @@
  *   - a reply ADDRESSED TO THE READER still surfaces in the stream - it does
  *     not disappear into the collapse, because this fleet's recurring failure
  *     is silence reading as absence;
+ *   - a RAISE stays in the stream too - a raise message joins the thread it
+ *     came out of, and a folded raise reads as work never filed. That arm
+ *     lives in rowcard-check, whose raise is exactly such a reply.
  *   - collapsing is PER-READER state, stored on the node, not a property of
  *     the room;
  *   - opening the thread shows everything, which already works.
