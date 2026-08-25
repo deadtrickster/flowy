@@ -241,6 +241,11 @@ try {
   if (crashes.length > 0) die(`the page threw: ${crashes.join("; ")}`);
 
   // ---- ARM 2, browser half: the outsider's page is a refusal, not a blank. ----
+  // The outsider's session mounts the console shell like any visit, and the
+  // shell declares its own console:<room> readers under the outsider's
+  // principal - the check wrapper deletes those rows when this script is
+  // done, so the shared database keeps one reader row per token (see
+  // checks.d/console/dashboard.sh).
   const outsiderPage = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
   const outsiderCrashes = [];
   outsiderPage.on("pageerror", (err) => outsiderCrashes.push(String(err)));
