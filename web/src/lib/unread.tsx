@@ -211,6 +211,7 @@ export function useRoomList() {
    */
   const project = useSession().whoami?.project ?? "";
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: project is a TRIGGER and not a read - the effect asks the node again when the project changes underneath a mounted tree, and the answer arrives in the response rather than being computed from it, so the body never mentions it. Removing it is what this commit fixes.
   useEffect(() => {
     let live = true;
     api
