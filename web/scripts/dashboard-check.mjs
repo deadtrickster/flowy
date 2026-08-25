@@ -49,28 +49,30 @@ import { refuseRemote } from "./localonly.mjs";
 
 const [base, author, outsider] = process.argv.slice(2);
 if (!base || !author || !outsider) {
-  console.error("usage: node scripts/dashboard-check.mjs BASE_URL AUTHOR_TOKEN OUTSIDER_TOKEN");
-  process.exit(2);
+	console.error(
+		"usage: node scripts/dashboard-check.mjs BASE_URL AUTHOR_TOKEN OUTSIDER_TOKEN",
+	);
+	process.exit(2);
 }
 
 refuseRemote(base, "dashboard-check");
 
 const die = (message, shown = "") => {
-  console.error(shown ? `${message}\n${shown}` : message);
-  process.exit(1);
+	console.error(shown ? `${message}\n${shown}` : message);
+	process.exit(1);
 };
 
 const api = async (path, init = {}, as = author) => {
-  const res = await fetch(`${base}${path}`, {
-    ...init,
-    headers: {
-      Authorization: `Bearer ${as}`,
-      "Content-Type": "application/json",
-      ...(init?.headers ?? {}),
-    },
-  });
-  if (!res.ok) die(`${path}: ${res.status} ${await res.text()}`);
-  return res.json();
+	const res = await fetch(`${base}${path}`, {
+		...init,
+		headers: {
+			Authorization: `Bearer ${as}`,
+			"Content-Type": "application/json",
+			...(init?.headers ?? {}),
+		},
+	});
+	if (!res.ok) die(`${path}: ${res.status} ${await res.text()}`);
+	return res.json();
 };
 
 // THE FIXTURE, written through the same door an agent uses, sequential on
@@ -80,43 +82,57 @@ const title = `dashboard-check ${stamp}`;
 const metricName = (n) => `dashcheck.${stamp}.${n}`;
 
 const post = async (body, as = author) =>
-  api("/api/artifacts", { method: "POST", body: JSON.stringify(body) }, as);
+	api("/api/artifacts", { method: "POST", body: JSON.stringify(body) }, as);
 
 const dash = await post({
-  type: "memory",
-  kind: "dashboard",
-  title,
-  fields: {
-    tiles: [
-      { kind: "number", label: "cells done", metric: metricName("cells"), stale_after_seconds: 5 },
-      { kind: "number", label: "rate", metric: metricName("rate"), stale_after_seconds: 86400 },
-      {
-        kind: "number",
-        label: "never pushed",
-        metric: metricName("missing"),
-        stale_after_seconds: 5,
-      },
-      { kind: "table", label: "cells, latest rows", metric: metricName("cells") },
-      {
-        kind: "grid",
-        label: "coverage",
-        metric: metricName("grid"),
-        stale_after_seconds: 5,
-      },
-      // A grid over a series that holds plain numbers: the honest wrong-shape
-      // state, drawn as a refusal rather than a matrix that lies.
-      { kind: "grid", label: "wrong shape", metric: metricName("cells") },
-    ],
-  },
+	type: "memory",
+	kind: "dashboard",
+	title,
+	fields: {
+		tiles: [
+			{
+				kind: "number",
+				label: "cells done",
+				metric: metricName("cells"),
+				stale_after_seconds: 5,
+			},
+			{
+				kind: "number",
+				label: "rate",
+				metric: metricName("rate"),
+				stale_after_seconds: 86400,
+			},
+			{
+				kind: "number",
+				label: "never pushed",
+				metric: metricName("missing"),
+				stale_after_seconds: 5,
+			},
+			{
+				kind: "table",
+				label: "cells, latest rows",
+				metric: metricName("cells"),
+			},
+			{
+				kind: "grid",
+				label: "coverage",
+				metric: metricName("grid"),
+				stale_after_seconds: 5,
+			},
+			// A grid over a series that holds plain numbers: the honest wrong-shape
+			// state, drawn as a refusal rather than a matrix that lies.
+			{ kind: "grid", label: "wrong shape", metric: metricName("cells") },
+		],
+	},
 });
 
 const mkMetric = (name, value, state) =>
-  post({
-    type: "memory",
-    kind: "metric",
-    title: `metric ${stamp} ${name}`,
-    fields: { name, value, ...(state ? { state } : {}) },
-  });
+	post({
+		type: "memory",
+		kind: "metric",
+		title: `metric ${stamp} ${name}`,
+		fields: { name, value, ...(state ? { state } : {}) },
+	});
 
 await mkMetric(metricName("cells"), 1200);
 await mkMetric(metricName("rate"), 4.2);
@@ -126,298 +142,363 @@ await mkMetric(metricName("cells"), 1350, "inferred");
 // The matrix ask: the store holds a nested value as-is, and a grid tile
 // draws it. The fixture grid is the coverage shape claude-host pushes.
 await mkMetric(metricName("grid"), {
-  cols: ["node", "pass", "fail"],
-  rows: [
-    { model: "lubuntu2", cells: [12, 0] },
-    { model: "lab2x1", cells: [55, 3] },
-  ],
+	cols: ["node", "pass", "fail"],
+	rows: [
+		{ label: "lubuntu2", cells: [12, 0] },
+		{ label: "lab2x1", cells: [55, 3] },
+	],
 });
 
 // WHAT THE NODE HOLDS, read back before the browser opens: if the fixture
 // seeded differently than intended, this fails as a fixture problem instead
 // of the page answering a question about the wrong data.
 const held = await api(
-  `/api/metrics/rows?name=${encodeURIComponent(metricName("cells"))}&limit=20`,
+	`/api/metrics/rows?name=${encodeURIComponent(metricName("cells"))}&limit=20`,
 );
 const cells = (held.metrics ?? []).map((m) => m.fields?.value);
 if (cells.length !== 2 || cells[0] !== 1350 || cells[1] !== 1200) {
-  die(`the node holds cells [${cells}], wanted [1350, 1200] newest-first - the seed is wrong`);
+	die(
+		`the node holds cells [${cells}], wanted [1350, 1200] newest-first - the seed is wrong`,
+	);
 }
 const heldDash = await api(`/api/artifact/${dash.id}`);
-if (!Array.isArray(heldDash.fields?.tiles) || heldDash.fields.tiles.length !== 6) {
-  die(
-    `the dashboard row's tiles read ${JSON.stringify(heldDash.fields?.tiles)} - the seed is wrong`,
-  );
+if (
+	!Array.isArray(heldDash.fields?.tiles) ||
+	heldDash.fields.tiles.length !== 6
+) {
+	die(
+		`the dashboard row's tiles read ${JSON.stringify(heldDash.fields?.tiles)} - the seed is wrong`,
+	);
 }
 
 // ---- ARM 2, API half first: the outsider is refused the row and reads no
 // metrics. An absence assertion against a door that answers the author is the
 // point - out of scope and missing look the same from the outside. ----
 const outsiderRow = await fetch(`${base}/api/artifact/${dash.id}`, {
-  headers: { Authorization: `Bearer ${outsider}` },
+	headers: { Authorization: `Bearer ${outsider}` },
 });
 if (outsiderRow.status !== 404) {
-  die(
-    `the outsider reads the dashboard row and gets ${outsiderRow.status}, wanted 404 - a dashboard is no more readable than the artifacts it names`,
-  );
+	die(
+		`the outsider reads the dashboard row and gets ${outsiderRow.status}, wanted 404 - a dashboard is no more readable than the artifacts it names`,
+	);
 }
 const outsiderMetrics = await fetch(
-  `${base}/api/metrics/rows?name=${encodeURIComponent(metricName("cells"))}`,
-  { headers: { Authorization: `Bearer ${outsider}` } },
+	`${base}/api/metrics/rows?name=${encodeURIComponent(metricName("cells"))}`,
+	{ headers: { Authorization: `Bearer ${outsider}` } },
 );
 if (!outsiderMetrics.ok) {
-  die(`the outsider's metrics read failed ${outsiderMetrics.status}, wanted an empty 200`);
+	die(
+		`the outsider's metrics read failed ${outsiderMetrics.status}, wanted an empty 200`,
+	);
 }
 const outsiderList = await outsiderMetrics.json();
 if ((outsiderList.metrics ?? []).length !== 0) {
-  die("the outsider reads the author's metric rows - the scope gate is open");
+	die("the outsider reads the author's metric rows - the scope gate is open");
 }
 
 const browser = await chromium.launch();
 try {
-  const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
-  const crashes = [];
-  page.on("pageerror", (err) => crashes.push(String(err)));
-  await page.addInitScript((t) => localStorage.setItem("flowy.token", t), author);
+	const page = await browser.newPage({
+		viewport: { width: 1600, height: 1000 },
+	});
+	const crashes = [];
+	page.on("pageerror", (err) => crashes.push(String(err)));
+	await page.addInitScript(
+		(t) => localStorage.setItem("flowy.token", t),
+		author,
+	);
 
-  const openDashboard = async () => {
-    await page.goto(`${base}/dashboards/${dash.id}`, { timeout: 30_000 }).catch(() => {});
-    await page
-      .locator(`[data-dashboard="${dash.id}"]`)
-      .waitFor({ state: "visible", timeout: 20_000 })
-      .catch(() => {});
-  };
+	const openDashboard = async () => {
+		await page
+			.goto(`${base}/dashboards/${dash.id}`, { timeout: 30_000 })
+			.catch(() => {});
+		await page
+			.locator(`[data-dashboard="${dash.id}"]`)
+			.waitFor({ state: "visible", timeout: 20_000 })
+			.catch(() => {});
+	};
 
-  const tile = (label) => page.locator(`[data-tile-label="${label}"]`);
+	const tile = (label) => page.locator(`[data-tile-label="${label}"]`);
 
-  // ---- ARM 1: the list names the dashboard, and the page renders every
-  // declared tile from the pushed rows, each number carrying its age. ----
-  await page.goto(`${base}/dashboards`, { timeout: 30_000 }).catch(() => {});
-  await page
-    .locator(`[data-dashboard-row="${dash.id}"]`)
-    .waitFor({ state: "visible", timeout: 20_000 })
-    .catch(() => {});
-  if ((await page.locator(`[data-dashboard-row="${dash.id}"]`).count()) !== 1) {
-    die("/dashboards does not list the authored dashboard");
-  }
+	// ---- ARM 1: the list names the dashboard, and the page renders every
+	// declared tile from the pushed rows, each number carrying its age. ----
+	await page.goto(`${base}/dashboards`, { timeout: 30_000 }).catch(() => {});
+	await page
+		.locator(`[data-dashboard-row="${dash.id}"]`)
+		.waitFor({ state: "visible", timeout: 20_000 })
+		.catch(() => {});
+	if ((await page.locator(`[data-dashboard-row="${dash.id}"]`).count()) !== 1) {
+		die("/dashboards does not list the authored dashboard");
+	}
 
-  await openDashboard();
-  const cellsTile = tile("cells done");
-  await cellsTile.waitFor({ state: "visible", timeout: 15_000 }).catch(() => {});
-  if ((await cellsTile.count()) !== 1) die(`the "cells done" tile did not render`);
+	await openDashboard();
+	const cellsTile = tile("cells done");
+	await cellsTile
+		.waitFor({ state: "visible", timeout: 15_000 })
+		.catch(() => {});
+	if ((await cellsTile.count()) !== 1)
+		die(`the "cells done" tile did not render`);
 
-  const value = await cellsTile.getAttribute("data-value");
-  if (value !== "1350") die(`the cells tile reads ${value}, wanted 1350 - the newest pushed row`);
-  const age = Number(await cellsTile.getAttribute("data-age"));
-  if (!Number.isFinite(age) || age < 0) {
-    die(`the cells tile's age reads ${age} - every number must say how old it is`);
-  }
-  const ageText = (await cellsTile.innerText()).trim();
-  if (!/<?\d+\s*(s|m|h|d)/.test(ageText)) {
-    die(`the cells tile's age is not in words a person reads:\n${ageText}`);
-  }
-  if (!ageText.includes("<1m")) {
-    die(
-      `the cells tile's fresh age does not read <1m - under a minute is coarse, not a ticking second count:\n${ageText}`,
-    );
-  }
+	const value = await cellsTile.getAttribute("data-value");
+	if (value !== "1350")
+		die(`the cells tile reads ${value}, wanted 1350 - the newest pushed row`);
+	const age = Number(await cellsTile.getAttribute("data-age"));
+	if (!Number.isFinite(age) || age < 0) {
+		die(
+			`the cells tile's age reads ${age} - every number must say how old it is`,
+		);
+	}
+	const ageText = (await cellsTile.innerText()).trim();
+	if (!/<?\d+\s*(s|m|h|d)/.test(ageText)) {
+		die(`the cells tile's age is not in words a person reads:\n${ageText}`);
+	}
+	if (!ageText.includes("<1m")) {
+		die(
+			`the cells tile's fresh age does not read <1m - under a minute is coarse, not a ticking second count:\n${ageText}`,
+		);
+	}
 
-  const rateTile = tile("rate");
-  if ((await rateTile.getAttribute("data-value")) !== "4.2") {
-    die(`the rate tile reads ${await rateTile.getAttribute("data-value")}, wanted 4.2`);
-  }
-  if ((await rateTile.getAttribute("data-stale")) !== null) {
-    die("the rate tile is styled stale with a day-wide threshold and a fresh row");
-  }
+	const rateTile = tile("rate");
+	if ((await rateTile.getAttribute("data-value")) !== "4.2") {
+		die(
+			`the rate tile reads ${await rateTile.getAttribute("data-value")}, wanted 4.2`,
+		);
+	}
+	if ((await rateTile.getAttribute("data-stale")) !== null) {
+		die(
+			"the rate tile is styled stale with a day-wide threshold and a fresh row",
+		);
+	}
 
-  // ---- THE SERENEDASH ARM: a reading says what it is, and numbers
-  // right-align. The newest cells row claims inferred; the rate row claims
-  // nothing, so it reads unknown. ----
-  if ((await cellsTile.getAttribute("data-state")) !== "inferred") {
-    die(
-      `the cells tile's state reads ${await cellsTile.getAttribute("data-state")}, wanted inferred - the newest row's claim`,
-    );
-  }
-  const cellsState = cellsTile.locator("[data-tile-state]");
-  if ((await cellsState.count()) !== 1 || (await cellsState.innerText()).trim() !== "inferred") {
-    die(`the cells tile does not say inferred in words:\n${await cellsTile.innerText()}`);
-  }
-  if ((await rateTile.getAttribute("data-state")) !== "unknown") {
-    die(
-      `the rate tile's state reads ${await rateTile.getAttribute("data-state")}, wanted unknown - an unclaimed reading must read as unknown, not as measured`,
-    );
-  }
-  const rateState = rateTile.locator("[data-tile-state]");
-  if ((await rateState.count()) !== 1 || (await rateState.innerText()).trim() !== "unknown") {
-    die(`the rate tile does not say unknown in words:\n${await rateTile.innerText()}`);
-  }
-  // The state is styled, not just spoken: its colour comes off the serenedash
-  // palette, not the tile's muted text.
-  const stateColour = await cellsState.evaluate((el) => getComputedStyle(el).color);
-  const mutedColour = await cellsTile
-    .locator("[data-tile-age] span")
-    .first()
-    .evaluate((el) => getComputedStyle(el).color);
-  if (stateColour === mutedColour) {
-    die(`the cells tile's state is not styled - its colour (${stateColour}) is the age line's`);
-  }
-  // Numbers right-align: the number tile's value and the grid's cells.
-  const valueAlign = await cellsTile
-    .locator("[data-tile-value]")
-    .evaluate((el) => getComputedStyle(el).textAlign);
-  if (valueAlign !== "right") {
-    die(`the cells tile's value text-aligns ${valueAlign}, wanted right - numbers right-align`);
-  }
-  // The palette exists as the framework's colour vocabulary: eight dim
-  // workhorse colours, none of them a verdict.
-  const palette = await page.evaluate(() => {
-    const cs = getComputedStyle(document.documentElement);
-    const slots = [];
-    for (let i = 1; i <= 8; i++) {
-      slots.push(cs.getPropertyValue(`--color-serenedash-${i}`).trim());
-    }
-    return slots;
-  });
-  if (palette.some((s) => s === "")) {
-    die(`the serenedash palette is not eight colours: ${JSON.stringify(palette)}`);
-  }
+	// ---- THE SERENEDASH ARM: a reading says what it is, and numbers
+	// right-align. The newest cells row claims inferred; the rate row claims
+	// nothing, so it reads unknown. ----
+	if ((await cellsTile.getAttribute("data-state")) !== "inferred") {
+		die(
+			`the cells tile's state reads ${await cellsTile.getAttribute("data-state")}, wanted inferred - the newest row's claim`,
+		);
+	}
+	const cellsState = cellsTile.locator("[data-tile-state]");
+	if (
+		(await cellsState.count()) !== 1 ||
+		(await cellsState.innerText()).trim() !== "inferred"
+	) {
+		die(
+			`the cells tile does not say inferred in words:\n${await cellsTile.innerText()}`,
+		);
+	}
+	if ((await rateTile.getAttribute("data-state")) !== "unknown") {
+		die(
+			`the rate tile's state reads ${await rateTile.getAttribute("data-state")}, wanted unknown - an unclaimed reading must read as unknown, not as measured`,
+		);
+	}
+	const rateState = rateTile.locator("[data-tile-state]");
+	if (
+		(await rateState.count()) !== 1 ||
+		(await rateState.innerText()).trim() !== "unknown"
+	) {
+		die(
+			`the rate tile does not say unknown in words:\n${await rateTile.innerText()}`,
+		);
+	}
+	// The state is styled, not just spoken: its colour comes off the serenedash
+	// palette, not the tile's muted text.
+	const stateColour = await cellsState.evaluate(
+		(el) => getComputedStyle(el).color,
+	);
+	const mutedColour = await cellsTile
+		.locator("[data-tile-age] span")
+		.first()
+		.evaluate((el) => getComputedStyle(el).color);
+	if (stateColour === mutedColour) {
+		die(
+			`the cells tile's state is not styled - its colour (${stateColour}) is the age line's`,
+		);
+	}
+	// Numbers right-align: the number tile's value and the grid's cells.
+	const valueAlign = await cellsTile
+		.locator("[data-tile-value]")
+		.evaluate((el) => getComputedStyle(el).textAlign);
+	if (valueAlign !== "right") {
+		die(
+			`the cells tile's value text-aligns ${valueAlign}, wanted right - numbers right-align`,
+		);
+	}
+	// The palette exists as the framework's colour vocabulary: eight dim
+	// workhorse colours, none of them a verdict.
+	const palette = await page.evaluate(() => {
+		const cs = getComputedStyle(document.documentElement);
+		const slots = [];
+		for (let i = 1; i <= 8; i++) {
+			slots.push(cs.getPropertyValue(`--color-serenedash-${i}`).trim());
+		}
+		return slots;
+	});
+	if (palette.some((s) => s === "")) {
+		die(
+			`the serenedash palette is not eight colours: ${JSON.stringify(palette)}`,
+		);
+	}
 
-  // The honest third state: a declared tile whose metric was never pushed says
-  // so, instead of drawing a plausible zero.
-  const missingTile = tile("never pushed");
-  if ((await missingTile.getAttribute("data-empty")) === null) {
-    die('the "never pushed" tile does not say its metric has no rows');
-  }
+	// The honest third state: a declared tile whose metric was never pushed says
+	// so, instead of drawing a plausible zero.
+	const missingTile = tile("never pushed");
+	if ((await missingTile.getAttribute("data-empty")) === null) {
+		die('the "never pushed" tile does not say its metric has no rows');
+	}
 
-  // The table tile lists the pushed rows with their values and ages.
-  const tableTile = tile("cells, latest rows");
-  const rows = tableTile.locator("[data-metric-row]");
-  if ((await rows.count()) !== 2) {
-    die(`the table tile lists ${await rows.count()} rows, wanted 2 - the two pushed cells rows`);
-  }
-  const firstRowValue = await rows.first().getAttribute("data-value");
-  if (firstRowValue !== "1350") {
-    die(`the table's newest row reads ${firstRowValue}, wanted 1350`);
-  }
-  if ((await rows.first().getAttribute("data-state")) !== "inferred") {
-    die(
-      `the table's newest cells row reads state ${await rows.first().getAttribute("data-state")}, wanted inferred`,
-    );
-  }
-  if ((await rows.nth(1).getAttribute("data-state")) !== "unknown") {
-    die(
-      `the table's older cells row reads state ${await rows.nth(1).getAttribute("data-state")}, wanted unknown`,
-    );
-  }
+	// The table tile lists the pushed rows with their values and ages.
+	const tableTile = tile("cells, latest rows");
+	const rows = tableTile.locator("[data-metric-row]");
+	if ((await rows.count()) !== 2) {
+		die(
+			`the table tile lists ${await rows.count()} rows, wanted 2 - the two pushed cells rows`,
+		);
+	}
+	const firstRowValue = await rows.first().getAttribute("data-value");
+	if (firstRowValue !== "1350") {
+		die(`the table's newest row reads ${firstRowValue}, wanted 1350`);
+	}
+	if ((await rows.first().getAttribute("data-state")) !== "inferred") {
+		die(
+			`the table's newest cells row reads state ${await rows.first().getAttribute("data-state")}, wanted inferred`,
+		);
+	}
+	if ((await rows.nth(1).getAttribute("data-state")) !== "unknown") {
+		die(
+			`the table's older cells row reads state ${await rows.nth(1).getAttribute("data-state")}, wanted unknown`,
+		);
+	}
 
-  // ---- THE GRID: the matrix ask - one vocabulary word plus a renderer over
-  // {cols, rows}, carrying its age and staleness like every other tile. ----
-  const gridTile = tile("coverage");
-  const headerCells = gridTile.locator("[data-grid-col]");
-  if ((await headerCells.count()) !== 3) {
-    die(`the coverage grid draws ${await headerCells.count()} column headers, wanted 3`);
-  }
-  const modelRows = gridTile.locator("[data-grid-model]");
-  if ((await modelRows.count()) !== 2) {
-    die(`the coverage grid draws ${await modelRows.count()} model rows, wanted 2`);
-  }
-  if ((await modelRows.first().getAttribute("data-grid-model")) !== "lubuntu2") {
-    die(
-      `the coverage grid's first row is ${await modelRows.first().getAttribute("data-grid-model")}, wanted lubuntu2`,
-    );
-  }
-  const cell = (rowIdx, colIdx) => gridTile.locator(`[data-grid-cell="${rowIdx * 3 + colIdx}"]`);
-  if ((await cell(0, 0).getAttribute("data-grid-value")) !== "12") {
-    die(
-      `the coverage grid's lubuntu2 pass cell reads ${await cell(0, 0).getAttribute("data-grid-value")}, wanted 12`,
-    );
-  }
-  if ((await cell(1, 1).getAttribute("data-grid-value")) !== "3") {
-    die(
-      `the coverage grid's lab2x1 fail cell reads ${await cell(1, 1).getAttribute("data-grid-value")}, wanted 3`,
-    );
-  }
-  if ((await gridTile.getAttribute("data-age")) === null) {
-    die(
-      "the coverage grid carries no age - a frozen grid reads as a sweep that covered everything",
-    );
-  }
-  if ((await gridTile.getAttribute("data-state")) !== "unknown") {
-    die(
-      `the coverage grid's state reads ${await gridTile.getAttribute("data-state")}, wanted unknown - the grid row claims nothing`,
-    );
-  }
-  const cellAlign = await cell(0, 0).evaluate((el) => getComputedStyle(el).textAlign);
-  if (cellAlign !== "right") {
-    die(`the grid's cells text-align ${cellAlign}, wanted right - numbers right-align`);
-  }
+	// ---- THE GRID: the matrix ask - one vocabulary word plus a renderer over
+	// {cols, rows}, carrying its age and staleness like every other tile. ----
+	const gridTile = tile("coverage");
+	const headerCells = gridTile.locator("[data-grid-col]");
+	if ((await headerCells.count()) !== 3) {
+		die(
+			`the coverage grid draws ${await headerCells.count()} column headers, wanted 3`,
+		);
+	}
+	const modelRows = gridTile.locator("[data-grid-label]");
+	if ((await modelRows.count()) !== 2) {
+		die(`the coverage grid draws ${await modelRows.count()} rows, wanted 2`);
+	}
+	if (
+		(await modelRows.first().getAttribute("data-grid-label")) !== "lubuntu2"
+	) {
+		die(
+			`the coverage grid's first row is ${await modelRows.first().getAttribute("data-grid-label")}, wanted lubuntu2`,
+		);
+	}
+	const cell = (rowIdx, colIdx) =>
+		gridTile.locator(`[data-grid-cell="${rowIdx * 3 + colIdx}"]`);
+	if ((await cell(0, 0).getAttribute("data-grid-value")) !== "12") {
+		die(
+			`the coverage grid's lubuntu2 pass cell reads ${await cell(0, 0).getAttribute("data-grid-value")}, wanted 12`,
+		);
+	}
+	if ((await cell(1, 1).getAttribute("data-grid-value")) !== "3") {
+		die(
+			`the coverage grid's lab2x1 fail cell reads ${await cell(1, 1).getAttribute("data-grid-value")}, wanted 3`,
+		);
+	}
+	if ((await gridTile.getAttribute("data-age")) === null) {
+		die(
+			"the coverage grid carries no age - a frozen grid reads as a sweep that covered everything",
+		);
+	}
+	if ((await gridTile.getAttribute("data-state")) !== "unknown") {
+		die(
+			`the coverage grid's state reads ${await gridTile.getAttribute("data-state")}, wanted unknown - the grid row claims nothing`,
+		);
+	}
+	const cellAlign = await cell(0, 0).evaluate(
+		(el) => getComputedStyle(el).textAlign,
+	);
+	if (cellAlign !== "right") {
+		die(
+			`the grid's cells text-align ${cellAlign}, wanted right - numbers right-align`,
+		);
+	}
 
-  // The honest wrong-shape state: a grid tile over a numeric series says so
-  // instead of drawing a matrix that lies.
-  const wrongTile = tile("wrong shape");
-  if ((await wrongTile.getAttribute("data-grid-bad")) === null) {
-    die('the "wrong shape" tile does not say its reading is not a grid');
-  }
+	// The honest wrong-shape state: a grid tile over a numeric series says so
+	// instead of drawing a matrix that lies.
+	const wrongTile = tile("wrong shape");
+	if ((await wrongTile.getAttribute("data-grid-bad")) === null) {
+		die('the "wrong shape" tile does not say its reading is not a grid');
+	}
 
-  // ---- THE STALENESS HALF: past its threshold, the tile is styled stale,
-  // not silently live. ----
-  await page.waitForTimeout(6000);
-  if ((await cellsTile.getAttribute("data-stale")) === null) {
-    die("the cells tile past its 5s threshold is not styled stale");
-  }
-  if ((await gridTile.getAttribute("data-stale")) === null) {
-    die("the coverage grid past its 5s threshold is not styled stale");
-  }
-  if (crashes.length > 0) die(`the page threw: ${crashes.join("; ")}`);
+	// ---- THE STALENESS HALF: past its threshold, the tile is styled stale,
+	// not silently live. ----
+	await page.waitForTimeout(6000);
+	if ((await cellsTile.getAttribute("data-stale")) === null) {
+		die("the cells tile past its 5s threshold is not styled stale");
+	}
+	if ((await gridTile.getAttribute("data-stale")) === null) {
+		die("the coverage grid past its 5s threshold is not styled stale");
+	}
+	if (crashes.length > 0) die(`the page threw: ${crashes.join("; ")}`);
 
-  // ---- ARM 3: a newer pushed row shows on reload, with a fresh age, and
-  // nothing is remembered between loads. ----
-  await mkMetric(metricName("cells"), 1400);
-  await openDashboard();
-  if ((await cellsTile.getAttribute("data-value")) !== "1400") {
-    die(
-      `after a reload the cells tile reads ${await cellsTile.getAttribute("data-value")}, wanted 1400 - the newest pushed row must win`,
-    );
-  }
-  if ((await cellsTile.getAttribute("data-stale")) !== null) {
-    die("the cells tile is styled stale against a row pushed seconds ago");
-  }
-  if ((await tableTile.locator("[data-metric-row]").count()) !== 3) {
-    die("the table tile does not list the newly pushed row after reload");
-  }
-  if (crashes.length > 0) die(`the page threw: ${crashes.join("; ")}`);
+	// ---- ARM 3: a newer pushed row shows on reload, with a fresh age, and
+	// nothing is remembered between loads. ----
+	await mkMetric(metricName("cells"), 1400);
+	await openDashboard();
+	if ((await cellsTile.getAttribute("data-value")) !== "1400") {
+		die(
+			`after a reload the cells tile reads ${await cellsTile.getAttribute("data-value")}, wanted 1400 - the newest pushed row must win`,
+		);
+	}
+	if ((await cellsTile.getAttribute("data-stale")) !== null) {
+		die("the cells tile is styled stale against a row pushed seconds ago");
+	}
+	if ((await tableTile.locator("[data-metric-row]").count()) !== 3) {
+		die("the table tile does not list the newly pushed row after reload");
+	}
+	if (crashes.length > 0) die(`the page threw: ${crashes.join("; ")}`);
 
-  // ---- ARM 2, browser half: the outsider's page is a refusal, not a blank. ----
-  // The outsider's session mounts the console shell like any visit, and the
-  // shell declares its own console:<room> readers under the outsider's
-  // principal - the check wrapper deletes those rows when this script is
-  // done, so the shared database keeps one reader row per token (see
-  // checks.d/console/dashboard.sh).
-  const outsiderPage = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
-  const outsiderCrashes = [];
-  outsiderPage.on("pageerror", (err) => outsiderCrashes.push(String(err)));
-  await outsiderPage.addInitScript((t) => localStorage.setItem("flowy.token", t), outsider);
-  await outsiderPage.goto(`${base}/dashboards/${dash.id}`, { timeout: 30_000 }).catch(() => {});
-  await outsiderPage
-    .locator("[data-dashboard-refused]")
-    .waitFor({ state: "visible", timeout: 20_000 })
-    .catch(() => {});
-  if ((await outsiderPage.locator("[data-dashboard-refused]").count()) !== 1) {
-    die("the outsider's page does not say it is refused - out of scope must not read as absent");
-  }
-  if ((await outsiderPage.locator(`[data-tile-label="cells done"]`).count()) !== 0) {
-    die("the outsider's page renders tiles - the scope gate is open");
-  }
-  if (outsiderCrashes.length > 0) die(`the outsider's page threw: ${outsiderCrashes.join("; ")}`);
+	// ---- ARM 2, browser half: the outsider's page is a refusal, not a blank. ----
+	// The outsider's session mounts the console shell like any visit, and the
+	// shell declares its own console:<room> readers under the outsider's
+	// principal - the check wrapper deletes those rows when this script is
+	// done, so the shared database keeps one reader row per token (see
+	// checks.d/console/dashboard.sh).
+	const outsiderPage = await browser.newPage({
+		viewport: { width: 1600, height: 1000 },
+	});
+	const outsiderCrashes = [];
+	outsiderPage.on("pageerror", (err) => outsiderCrashes.push(String(err)));
+	await outsiderPage.addInitScript(
+		(t) => localStorage.setItem("flowy.token", t),
+		outsider,
+	);
+	await outsiderPage
+		.goto(`${base}/dashboards/${dash.id}`, { timeout: 30_000 })
+		.catch(() => {});
+	await outsiderPage
+		.locator("[data-dashboard-refused]")
+		.waitFor({ state: "visible", timeout: 20_000 })
+		.catch(() => {});
+	if ((await outsiderPage.locator("[data-dashboard-refused]").count()) !== 1) {
+		die(
+			"the outsider's page does not say it is refused - out of scope must not read as absent",
+		);
+	}
+	if (
+		(await outsiderPage.locator(`[data-tile-label="cells done"]`).count()) !== 0
+	) {
+		die("the outsider's page renders tiles - the scope gate is open");
+	}
+	if (outsiderCrashes.length > 0)
+		die(`the outsider's page threw: ${outsiderCrashes.join("; ")}`);
 
-  console.log(
-    "the dashboard lists, renders its declared tiles from pushed rows with ages, " +
-      "draws the coverage grid from its nested reading and says so when a grid " +
-      "tile's reading is not one, styles a stale tile past its threshold, " +
-      "says what each reading is - inferred as claimed, unknown as unclaimed - " +
-      "right-aligns its numbers off the eight-colour palette, " +
-      "refuses an outsider, and a reload shows the newest row with a fresh age",
-  );
+	console.log(
+		"the dashboard lists, renders its declared tiles from pushed rows with ages, " +
+			"draws the coverage grid from its nested reading and says so when a grid " +
+			"tile's reading is not one, styles a stale tile past its threshold, " +
+			"says what each reading is - inferred as claimed, unknown as unclaimed - " +
+			"right-aligns its numbers off the eight-colour palette, " +
+			"refuses an outsider, and a reload shows the newest row with a fresh age",
+	);
 } finally {
-  await browser.close();
+	await browser.close();
 }

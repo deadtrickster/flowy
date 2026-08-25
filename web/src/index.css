@@ -36,11 +36,25 @@
   --color-agent: oklch(0.78 0.14 155);
   --color-human: oklch(0.76 0.13 250);
 
-  /* THE SERENEDASH PALETTE: eight dim, workhorse colours - low chroma, one
-     step of lightness, hues spread so series are told apart without any one
-     colour shouting. The finding, 01M0XCCQK19G4T03NBJDDDWFW1: "palette 8
-     colours dim-workhorse". A dashboard reading is a fact about a pushed row,
-     never a verdict, so nothing here is red or green. */
+  --radius-lg: 0.6rem;
+  --radius-md: 0.45rem;
+  --radius-sm: 0.3rem;
+
+  --font-sans: ui-sans-serif, system-ui, sans-serif;
+  --font-mono: ui-monospace, "JetBrains Mono", "SFMono-Regular", monospace;
+}
+
+/* THE SERENEDASH PALETTE: eight dim, workhorse colours - low chroma, one
+   step of lightness, hues spread so series are told apart without any one
+   colour shouting. The finding, 01M0XCCQK19G4T03NBJDDDWFW1: "palette 8
+   colours dim-workhorse". A dashboard reading is a fact about a pushed row,
+   never a verdict, so nothing here is red or green.
+   A plain :root block on purpose, NOT @theme: the build prunes @theme
+   variables nothing references, and a palette is a vocabulary - complete by
+   declaration, not by current use. The three the states use today emit, and
+   the five nothing uses yet must still be there when the first bar or line
+   lands, or the next colour arrives as a style nobody can name. */
+:root {
   --color-serenedash-1: oklch(0.72 0.05 250);
   --color-serenedash-2: oklch(0.72 0.05 155);
   --color-serenedash-3: oklch(0.72 0.05 15);
@@ -49,13 +63,6 @@
   --color-serenedash-6: oklch(0.72 0.05 200);
   --color-serenedash-7: oklch(0.72 0.05 45);
   --color-serenedash-8: oklch(0.72 0.05 265);
-
-  --radius-lg: 0.6rem;
-  --radius-md: 0.45rem;
-  --radius-sm: 0.3rem;
-
-  --font-sans: ui-sans-serif, system-ui, sans-serif;
-  --font-mono: ui-monospace, "JetBrains Mono", "SFMono-Regular", monospace;
 }
 
 @layer base {
