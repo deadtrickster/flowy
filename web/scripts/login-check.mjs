@@ -132,7 +132,18 @@ session cookie is the credential and something here is reading a stored flag ins
       );
     }
     await page.locator("[data-logout]").click();
-    const left = await page.evaluate(() => localStorage.getItem("flowy.token")).catch(() => null);
+    // WAITED FOR, NOT SAMPLED ONCE. logOut is async - it ends the session at the
+    // node and clears the token after that await resolves - so reading
+    // localStorage in the same tick as the click reads before the work is done.
+    // Measured: this arm failed against the FIXED build for that reason alone.
+    // A timeout keeps it honest: on the broken build the token never goes, so
+    // this still fails there, it just stops failing on the correct one.
+    let left = null;
+    for (let i = 0; i < 20; i++) {
+      left = await page.evaluate(() => localStorage.getItem("flowy.token")).catch(() => null);
+      if (!left) break;
+      await page.waitForTimeout(250);
+    }
     if (left) {
       die(`logging out left the bearer token in localStorage.
 The session ended at the node and the console is still signed in as the token, because
