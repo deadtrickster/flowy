@@ -19810,14 +19810,22 @@ a_rail_follows_a_project_switch() {
 the_series_door_answers_per_name_oldest_first() {
 	recall
 	local a="gate.series.a.$$" b="gate.series.b.$$"
-	local i
-	for i in 1 2 3; do
+	# INTERLEAVED, so that a shared limit fails the PER-NAME arm and nothing else.
+	#
+	# Written a,a,a then b,b, a limit of 2 shared across both names returns the two
+	# newest rows overall - both of them b's - and name a vanishes from the answer
+	# entirely. That trips "two series come back", which is a different assertion,
+	# and leaves the per-name arm untested against the defect it exists for.
+	#
+	# Interleaved a,b,a,b,a the two newest overall are one a and one b, so both
+	# names still appear and each carries ONE point where it should carry two.
+	# The per-name arm goes red on its own words and the count arm stays green.
+	local n v
+	for n in "$a:1" "$b:7" "$a:2" "$b:8" "$a:3"; do
+		v=${n##*:}
+		n=${n%:*}
 		api POST "$TOKEN_A" "/api/artifacts" \
-			"{\"type\":\"memory\",\"kind\":\"metric\",\"title\":\"$a\",\"fields\":{\"name\":\"$a\",\"value\":$i}}" || return 1
-	done
-	for i in 7 8; do
-		api POST "$TOKEN_A" "/api/artifacts" \
-			"{\"type\":\"memory\",\"kind\":\"metric\",\"title\":\"$b\",\"fields\":{\"name\":\"$b\",\"value\":$i}}" || return 1
+			"{\"type\":\"memory\",\"kind\":\"metric\",\"title\":\"$n\",\"fields\":{\"name\":\"$n\",\"value\":$v}}" || return 1
 	done
 
 	api GET "$TOKEN_A" "/api/metrics/series?name=$a&name=$b&points=2" || return 1
