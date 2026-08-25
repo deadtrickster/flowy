@@ -320,6 +320,44 @@ extra: ${extra.join(", ") || "none"}`,
   }
   if (crashes.length > 0) die(`the page threw: ${crashes.join("; ")}`);
 
+  // ---- THE PHONE: the operator reads the live console at phone width, and a
+  // footer that cannot wrap spills the fold block out of its card - a control
+  // drawn outside its row reads as "two rows somehow" (01M0X5EZT). At phone
+  // width the control must still be exactly one per thread and inside its
+  // head card. ----
+  const phone = await browser.newPage({ viewport: { width: 390, height: 664 } });
+  const phoneCrashes = [];
+  phone.on("pageerror", (err) => phoneCrashes.push(String(err)));
+  await phone.addInitScript((t) => localStorage.setItem("flowy.token", t), token);
+  await phone
+    .goto(`${base}/chat/${encodeURIComponent(room)}`, { timeout: 30_000 })
+    .catch(() => {});
+  await phone
+    .locator(`[data-message="${rootA.id}"]`)
+    .waitFor({ state: "visible", timeout: 20_000 })
+    .catch(() => {});
+  const phoneShow = phone.locator(`[data-fold-show="${rootA.thread}"]`);
+  if ((await phoneShow.count()) !== 1) {
+    die(
+      `at phone width thread A draws ${await phoneShow.count()} show-replies controls, wanted exactly 1`,
+    );
+  }
+  const btn = await phoneShow.first().boundingBox();
+  const card = await phone.locator(`[data-message="${rootA.id}"]`).boundingBox();
+  if (!btn || !card) die("the fold control or its head card has no box at phone width");
+  if (
+    btn.x < card.x - 1 ||
+    btn.x + btn.width > card.x + card.width + 1 ||
+    btn.y < card.y - 1 ||
+    btn.y + btn.height > card.y + card.height + 1
+  ) {
+    die(
+      `at phone width the fold control spills its head card: button ${JSON.stringify(btn)} outside card ${JSON.stringify(card)}`,
+    );
+  }
+  if (phoneCrashes.length > 0) die(`the page threw at phone width: ${phoneCrashes.join("; ")}`);
+  await phone.close();
+
   console.log(
     `the room stream draws ${rootA.thread.slice(-6)} as one row of eight, ${rootB.thread.slice(-6)} as its head plus the addressed reply with the block counting six, the pane shows all eight, and an unfold sticks on the node until hidden`,
   );
