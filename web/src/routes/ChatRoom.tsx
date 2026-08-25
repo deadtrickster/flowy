@@ -104,8 +104,40 @@ const COUNT_LISTENING = "#4fae7a"; // green - somebody has an ear on this room
 export function ChatRoom() {
   const { room = "general", pane: asked, message: linked } = useParams();
   const navigate = useNavigate();
-  const { token, whoami } = useSession();
+  const { whoami } = useSession();
   const { markRead } = useUnread();
+  /**
+   * SIGNED IN IS WHOAMI ANSWERING, NOT A TOKEN IN localStorage.
+   *
+   * The operator, 2026-08-25, having just cleared their token so the project
+   * switcher would work: "cant post to chat - that red cirlce pointer". Every
+   * read of the credential in this room asked for the BEARER and meant "is
+   * anybody here" - presence, the worklog, the message load, the bookmarks, the
+   * composer, the room's todos and the roster behind the @ list - so a person
+   * holding a session got a half-empty room and a dead box. The placeholder
+   * even read "paste a token to say something", which asks a signed-in person
+   * for the one credential that would take the switcher away from them again:
+   * `enter` is a session act and a bearer has no session, so the console had no
+   * state in which both worked.
+   *
+   * session.tsx has said which of the two is the question since cookies landed
+   * - "whoami answering is the console's whole idea of being signed in" - and
+   * these now follow it. A token still signs in exactly as it did; it is no
+   * longer the only way to be somebody.
+   */
+  const signedIn = whoami != null;
+  /**
+   * And a WRITE additionally needs somewhere to land. A message goes into the
+   * principal's home project (chat.go: "A message lands in the principal's home
+   * project, like every other write"), so a session that has entered nothing
+   * has nowhere to put one - and saying which of the two is missing is the
+   * difference between a person fixing it in one click and a person guessing.
+   */
+  const cannotPost = !signedIn
+    ? "log in, or paste a token, to say something"
+    : !whoami?.project
+      ? "choose a project on /projects to say something"
+      : "";
   const [events, setEvents] = useState<FlowyEvent[]>([]);
   /**
    * What is on each message, keyed by message id.
@@ -290,7 +322,7 @@ export function ChatRoom() {
   // room the only place the roster ever updates - the exact conflation the
   // poll-based signal exists to avoid.
   useEffect(() => {
-    if (!token) {
+    if (!signedIn) {
       setPresence(null);
       return;
     }
@@ -309,7 +341,7 @@ export function ChatRoom() {
       stopped = true;
       clearInterval(every);
     };
-  }, [token]);
+  }, [signedIn]);
 
   /**
    * The worklog, on a clock of its own, and NOT narrowed to this room.
@@ -328,7 +360,7 @@ export function ChatRoom() {
    * returning wait.
    */
   useEffect(() => {
-    if (!token) {
+    if (!signedIn) {
       setWorklog([]);
       setWorklogLoaded(false);
       return;
@@ -361,7 +393,7 @@ export function ChatRoom() {
       stopped = true;
       clearInterval(every);
     };
-  }, [token]);
+  }, [signedIn]);
 
   // Which read of the todos is the current one. Two of them are in flight at
   // once whenever somebody edits the panel - the write's own reload, and the
@@ -499,7 +531,7 @@ export function ChatRoom() {
     older.current = { before: 0, loading: false, read: older.current.read + 1 };
     setMoreOlder(false);
     setLoadingOlder(false);
-    if (!token) return;
+    if (!signedIn) return;
 
     let stopped = false;
     const controller = new AbortController();
@@ -592,7 +624,7 @@ export function ChatRoom() {
       stopped = true;
       controller.abort();
     };
-  }, [room, token, loadTodos, loadPins, clear]);
+  }, [room, signedIn, loadTodos, loadPins, clear]);
 
   /**
    * The page before the one on screen, asked for because somebody scrolled up
@@ -879,7 +911,7 @@ export function ChatRoom() {
    */
   const [kept, setKept] = useState<string[]>([]);
   useEffect(() => {
-    if (!token) {
+    if (!signedIn) {
       setKept([]);
       return;
     }
@@ -895,7 +927,7 @@ export function ChatRoom() {
     return () => {
       stopped = true;
     };
-  }, [token]);
+  }, [signedIn]);
 
   const keep = async (event: FlowyEvent, on: boolean) => {
     try {
@@ -1195,7 +1227,8 @@ export function ChatRoom() {
         <MessageBox
           citation={citation}
           clearReply={unpoint}
-          disabled={!token}
+          disabled={cannotPost !== ""}
+          disabledReason={cannotPost}
           onSend={send}
           room={room}
         />
@@ -1383,7 +1416,7 @@ export function ChatRoom() {
               room={room}
               todos={todos}
               raiseFrom={selected}
-              disabled={!token}
+              disabled={!signedIn}
               error={todoError}
               onRaise={raise}
               onAssign={assign}
@@ -1475,7 +1508,8 @@ export function ChatRoom() {
                 <MessageBox
                   citation={null}
                   clearReply={() => {}}
-                  disabled={!token}
+                  disabled={cannotPost !== ""}
+                  disabledReason={cannotPost}
                   onSend={answerThread}
                   room={room}
                 />
@@ -1494,7 +1528,7 @@ export function ChatRoom() {
               items={worklog}
               error={worklogError}
               loaded={worklogLoaded}
-              token={Boolean(token)}
+              signedIn={signedIn}
             />
           </div>
         ) : null}

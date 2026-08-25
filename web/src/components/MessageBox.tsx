@@ -25,6 +25,18 @@ interface Props {
   citation: Citation | null;
   clearReply: () => void;
   disabled: boolean;
+  /**
+   * WHY the box is dead, in the placeholder, as words the reader can act on.
+   *
+   * It read "paste a token to say something" for every disabled state, which is
+   * one cause named for what turned out to be several. On 2026-08-25 the
+   * operator hit the one where that sentence is actively wrong: they had
+   * cleared their token so the project switcher would let them in, and the
+   * console then asked a signed-in person to paste back the credential that
+   * takes the switcher away. Left empty this falls back to the old sentence, so
+   * a caller that says nothing loses nothing.
+   */
+  disabledReason?: string;
   onSend: (body: string, to: string, attachments: string[]) => Promise<void>;
   /**
    * quote is words from OUTSIDE the transcript to drop into the draft as a
@@ -54,7 +66,15 @@ interface Props {
  * Enter sends, shift-enter is a newline: the thing being written is usually one
  * line to an agent that is waiting.
  */
-export function MessageBox({ citation, clearReply, disabled, onSend, quote, room }: Props) {
+export function MessageBox({
+  citation,
+  clearReply,
+  disabled,
+  disabledReason,
+  onSend,
+  quote,
+  room,
+}: Props) {
   const [draft, setDraft] = useState("");
   // to is who the message is for, and it is a field of its own rather than a
   // convention inside the body: an @name in prose is a name somebody typed,
@@ -84,8 +104,8 @@ export function MessageBox({ citation, clearReply, disabled, onSend, quote, room
   // THE NAMES AN @ CAN MEAN, from the node's own roster. See lib/atname: a
   // mention that does not resolve is prose, so this list is not decoration, it
   // is the difference between addressing somebody and appearing to.
-  const { token } = useSession();
-  const { names } = useRoster(token);
+  const { whoami } = useSession();
+  const { names } = useRoster(whoami != null);
   // The @word the caret is inside, recomputed on every draft or caret move.
   // Held rather than derived at render because the CARET is not state React
   // knows about - a selection change with no text change still moves it.
@@ -344,7 +364,9 @@ export function MessageBox({ citation, clearReply, disabled, onSend, quote, room
         onBlur={() => setAt(null)}
         onKeyDown={onKeyDown}
         onPaste={onPaste}
-        placeholder={disabled ? "paste a token to say something" : "say something…"}
+        placeholder={
+          disabled ? disabledReason || "paste a token to say something" : "say something…"
+        }
         aria-label="message"
       />
 

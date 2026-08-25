@@ -24,7 +24,9 @@ import { useSession } from "@/lib/session";
  * missing.
  */
 export function Worklog() {
-  const { token } = useSession();
+  const { whoami } = useSession();
+  // Signed in is whoami answering, not a bearer in localStorage - see ChatRoom.
+  const signedIn = whoami != null;
   const [params, setParams] = useSearchParams();
   const [items, setItems] = useState<ActivityItem[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -37,7 +39,7 @@ export function Worklog() {
   const branch = params.get("branch") ?? "";
 
   const load = useCallback(async () => {
-    if (!token) {
+    if (!signedIn) {
       setItems([]);
       setLoaded(false);
       return;
@@ -51,7 +53,7 @@ export function Worklog() {
     } finally {
       setLoaded(true);
     }
-  }, [token]);
+  }, [signedIn]);
 
   useEffect(() => {
     void load();
@@ -101,7 +103,7 @@ export function Worklog() {
         {shown.length === 0 ? (
           <li className="p-4 text-muted-foreground text-sm">
             {emptyReads({
-              token: Boolean(token),
+              signedIn,
               loaded,
               failed: Boolean(error),
               branch,

@@ -24,18 +24,18 @@ import { shortId } from "@/lib/utils";
  * missing one.
  */
 export function emptyReads({
-  token,
+  signedIn,
   loaded,
   failed,
   branch,
 }: {
-  token: boolean;
+  signedIn: boolean;
   loaded: boolean;
   failed: boolean;
   branch: string;
 }) {
-  if (!token) {
-    return "paste a token to read the worklog - signed out, there is nothing to read it with";
+  if (!signedIn) {
+    return "log in, or paste a token, to read the worklog - signed out, there is nothing to read it with";
   }
   if (failed) {
     return "the worklog could not be read, so this page is not saying that nothing happened";
@@ -214,12 +214,12 @@ export function RoomWorklog({
   items,
   error,
   loaded,
-  token,
+  signedIn,
 }: {
   items: ActivityItem[];
   error: string | null;
   loaded: boolean;
-  token: boolean;
+  signedIn: boolean;
 }) {
   return (
     <section className="flex min-h-0 flex-1 flex-col">
@@ -237,7 +237,7 @@ export function RoomWorklog({
       <ol aria-label="room worklog entries" className="min-h-0 flex-1 overflow-y-auto">
         {items.length === 0 ? (
           <li className="p-4 text-muted-foreground text-sm">
-            {emptyReads({ token, loaded, failed: Boolean(error), branch: "" })}
+            {emptyReads({ signedIn, loaded, failed: Boolean(error), branch: "" })}
           </li>
         ) : null}
         {items.map((item) => (

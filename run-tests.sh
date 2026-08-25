@@ -19717,6 +19717,38 @@ the_diagrams_page_says_it_is_signed_out() {
 # asserted at the store where it lives - and its queue metadata moves for
 # anybody who can read it. What a browser adds is that the CONTROL is not
 # offered to somebody the node would refuse.
+# A PERSON WHO IS LOGGED IN CAN SAY SOMETHING, which was not true for a day.
+#
+# The operator, 2026-08-25, minutes after being told to clear their token so the
+# project switcher would let them into a project: "cant post to chat - that red
+# cirlce pointer". The composer was gated on the BEARER in localStorage while
+# `enter` is a session act a bearer cannot perform, so the console had no state
+# in which both worked - token and you cannot switch, cookie and you cannot
+# speak - and the dead box's placeholder read "paste a token to say something",
+# asking a signed-in person for the credential that would lock them out again.
+#
+# WHY NO OTHER CONSOLE CHECK CAUGHT IT: every one of them pastes a token, which
+# is the arm that always worked. The credential IS the defect, so this check
+# logs in and puts nothing in localStorage at all.
+#
+# GIVEN ITS FIXTURE RATHER THAN FINDING ONE. A write lands in the principal's
+# home project, so a person who belongs to nothing has nowhere to put a message
+# and a disabled box would be correct. The membership is arranged here, through
+# the operator door, so what the browser measures is the composer and not a
+# state somebody else happened to leave behind.
+#
+# BEFORE a_person_sets_their_own_handle_and_password on purpose: that check
+# changes HANDLE_A, and a fixture read from ids afterwards would name somebody
+# who no longer exists.
+a_logged_in_person_can_post_in_a_room() {
+	recall
+	local pw="a-password-the-gate-picked"
+	printf '%s\n' "$pw" | "$ROOT/flowy" passwd --handle "$HANDLE_A" >/dev/null || return 1
+	api POST "$TOKEN_OP" "/api/projects/$PROJECT_A/members" "{\"user\": \"$HANDLE_A\"}" || return 1
+	cd "$ROOT/web" || return 1
+	node scripts/person-can-post-check.mjs "http://127.0.0.1:$HTTP_PORT" "$HANDLE_A" "$pw" "$PROJECT_A"
+}
+
 a_person_fixes_the_words_they_wrote() {
 	cd "$ROOT/web" || return 1
 	node scripts/editwords-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A"
@@ -19784,6 +19816,8 @@ check "a person writes a row from the console, and it lands where its list reads
 	a_person_writes_a_row_from_the_console
 check "a person logs in with a password, and the session survives a reload with nothing stored" \
 	a_person_logs_in_from_the_console
+check "a person who is logged in, with no token anywhere, can post in a room" \
+	a_logged_in_person_can_post_in_a_room
 check "the author of a row can fix its words, and the node holds the new ones" \
 	a_person_fixes_the_words_they_wrote
 check "a person sets their own handle and password from the console" \

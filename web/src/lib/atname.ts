@@ -32,12 +32,22 @@ export interface AtName {
  */
 const REFRESH_MS = 60_000;
 
-/** useRoster keeps the mentionable names current for a composer. */
-export function useRoster(token: string | null): AtName {
+/**
+ * useRoster keeps the mentionable names current for a composer.
+ *
+ * It takes WHETHER THERE IS A CREDENTIAL, not the token itself, and the
+ * distinction is the whole of 2026-08-25's report. It was passed the bearer
+ * from localStorage and read it as "am I signed in", so a person holding a
+ * session cookie - the credential the project switcher requires - got an empty
+ * roster and no @ suggestions, alongside a dead composer for the same reason.
+ * The token was never used here for anything but its truthiness; api.presence
+ * carries whichever credential the request has.
+ */
+export function useRoster(signedIn: boolean): AtName {
   const [names, setNames] = useState<{ name: string; kind: string }[]>([]);
 
   useEffect(() => {
-    if (!token) {
+    if (!signedIn) {
       setNames([]);
       return;
     }
@@ -59,7 +69,7 @@ export function useRoster(token: string | null): AtName {
       stopped = true;
       clearInterval(every);
     };
-  }, [token]);
+  }, [signedIn]);
 
   return { names };
 }
