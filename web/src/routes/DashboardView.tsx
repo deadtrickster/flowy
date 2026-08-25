@@ -15,6 +15,13 @@ import { useSignedIn } from "@/lib/session";
  * threshold is styled stale rather than silently live: the operator reading
  * prose somebody typed is exactly the failure this exists to fix.
  *
+ * Every reading also says what it is - measured, inferred, unknown - in the
+ * producer's own words from fields.state, and absent is unknown. A number
+ * that does not say what it is must read as unknown, not as measured:
+ * measured is a claim, and the claim is the producer's to make. Numbers
+ * right-align, per the serenedash finding (01M0XCCQK19G4T03NBJDDDWFW1):
+ * digits line up, so a column of readings reads as a column.
+ *
  * The age recomputes on a second tick, not only on load, because a page left
  * open is where a stale reading does its damage - a number that looked fresh
  * at open and has gone quietly stale is a lie with a timestamp.
@@ -38,6 +45,15 @@ function ageSeconds(row: Artifact, now: number): number {
   const at = Date.parse(row.created);
   if (!Number.isFinite(at)) return 0;
   return Math.max(0, Math.floor((now - at) / 1000));
+}
+
+/** Which of measured, inferred, unknown a reading claims to be. The claim is
+ * the producer's, carried on the row; absent or unrecognised is unknown. */
+function stateOf(row: Artifact | undefined): string {
+  const fields = row?.fields as { state?: unknown } | undefined;
+  const state = fields?.state;
+  if (state === "measured" || state === "inferred" || state === "unknown") return state;
+  return "unknown";
 }
 
 /** The value a tile draws, in the words a person reads. */
@@ -67,6 +83,7 @@ function NumberTile({
       data-tile-kind="number"
       data-empty={row ? undefined : "true"}
       data-stale={stale ? "true" : undefined}
+      data-state={stateOf(row)}
       data-value={row ? readingOf(row) : undefined}
       data-age={row ? age : undefined}
       className="flex flex-col justify-between rounded-md border border-border p-4"
@@ -74,10 +91,13 @@ function NumberTile({
       <div className="text-muted-foreground text-xs">{tile.label}</div>
       {row ? (
         <>
-          <div className="py-1 font-semibold text-2xl tabular-nums">{readingOf(row)}</div>
-          <div className="text-muted-foreground text-xs" data-tile-age>
-            {ageWords(age)}
-            {stale ? ", stale" : ""}
+          <div data-tile-value className="py-1 font-semibold text-2xl tabular-nums text-right">
+            {readingOf(row)}
+          </div>
+          <div className="flex items-baseline gap-2 text-muted-foreground text-xs" data-tile-age>
+            <span>{ageWords(age)}</span>
+            <span data-tile-state={stateOf(row)}>{stateOf(row)}</span>
+            {stale ? <span>, stale</span> : null}
           </div>
         </>
       ) : (
@@ -130,6 +150,7 @@ function GridTile({
       data-empty={row ? undefined : "true"}
       data-grid-bad={row && !grid ? "true" : undefined}
       data-stale={stale ? "true" : undefined}
+      data-state={stateOf(row)}
       data-age={row ? age : undefined}
       className="flex flex-col gap-1 rounded-md border border-border p-4 sm:col-span-2 lg:col-span-4"
     >
@@ -180,7 +201,7 @@ function GridTile({
                       key={j}
                       data-grid-cell={i * grid.cols.length + j}
                       data-grid-value={cell}
-                      className="px-2 py-1 tabular-nums"
+                      className="px-2 py-1 tabular-nums text-right"
                     >
                       {cell}
                     </td>
@@ -189,9 +210,10 @@ function GridTile({
               ))}
             </tbody>
           </table>
-          <div className="text-muted-foreground text-xs" data-tile-age>
-            {ageWords(age)}
-            {stale ? ", stale" : ""}
+          <div className="flex items-baseline gap-2 text-muted-foreground text-xs" data-tile-age>
+            <span>{ageWords(age)}</span>
+            <span data-tile-state={stateOf(row)}>{stateOf(row)}</span>
+            {stale ? <span>, stale</span> : null}
           </div>
         </>
       )}
@@ -220,12 +242,14 @@ function TableTile({ tile, rows, now }: { tile: DashboardTile; rows: Artifact[];
               key={row.id}
               data-metric-row={row.id}
               data-value={readingOf(row)}
+              data-state={stateOf(row)}
               className="flex items-baseline justify-between gap-3 border-border border-b py-1 last:border-b-0"
             >
-              <span className="font-medium tabular-nums">{readingOf(row)}</span>
-              <span className="text-muted-foreground text-xs">
-                {ageWords(ageSeconds(row, now))}
+              <span className="flex items-baseline gap-2 text-muted-foreground text-xs">
+                <span>{ageWords(ageSeconds(row, now))}</span>
+                <span data-tile-state={stateOf(row)}>{stateOf(row)}</span>
               </span>
+              <span className="ml-auto font-medium tabular-nums text-right">{readingOf(row)}</span>
             </li>
           ))}
         </ul>

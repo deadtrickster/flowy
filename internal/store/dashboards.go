@@ -16,11 +16,13 @@ package store
 //	            signs every row a dashboard reads.)
 //
 //	metric     - one reading of one series. fields.name names the series,
-//	            fields.value is the reading, and the row's own clock is its
-//	            timestamp: a dashboard never asks a producer for a value, so a
-//	            number on a dashboard is always a number somebody already
-//	            pushed, with the age of the row it came from. Scope decides
-//	            who reads it, exactly as it does every other row.
+//	            fields.value is the reading, fields.state is the producer's
+//	            word for which of measured, inferred, unknown it is (absent
+//	            is unknown), and the row's own clock is its timestamp: a
+//	            dashboard never asks a producer for a value, so a number on
+//	            a dashboard is always a number somebody already pushed, with
+//	            the age of the row it came from. Scope decides who reads it,
+//	            exactly as it does every other row.
 //
 // A dashboard row is no more readable than the metrics it names - the
 // permission filter on the read door is the same one every list goes through -
@@ -44,7 +46,8 @@ import (
 
 const (
 	// MetricKind is one reading of one metric series. fields.name names the
-	// series, fields.value is the reading.
+	// series, fields.value is the reading, and fields.state says which of
+	// measured, inferred, unknown the reading is - absent is unknown.
 	MetricKind = "metric"
 	// DashboardKind is one page of declared tiles. fields.tiles is the whole
 	// of the declaration.
@@ -123,6 +126,27 @@ func (e DashboardRowError) Error() string {
 
 func (e DashboardRowError) depRefusal() {}
 
+// MetricStateOf reads fields.state off a metric row: which of measured,
+// inferred, unknown the reading is. Absent or unrecognised is unknown - a
+// number that does not say what it is must read as unknown, not as measured,
+// because measured is a claim and the claim is the producer's to make.
+func MetricStateOf(a *Artifact) string {
+	if a == nil || len(a.Fields) == 0 {
+		return "unknown"
+	}
+	var outer struct {
+		State string `json:"state"`
+	}
+	if err := json.Unmarshal(a.Fields, &outer); err != nil {
+		return "unknown"
+	}
+	switch outer.State {
+	case "measured", "inferred", "unknown":
+		return outer.State
+	}
+	return "unknown"
+}
+
 // MetricRowError is the metric-row twin of DashboardRowError.
 type MetricRowError struct {
 	Row string
@@ -188,6 +212,7 @@ func checkMetricRow(a *Artifact) error {
 	var outer struct {
 		Name  string          `json:"name"`
 		Value json.RawMessage `json:"value"`
+		State string          `json:"state"`
 	}
 	if err := json.Unmarshal(a.Fields, &outer); err != nil {
 		return MetricRowError{Row: a.ID, Why: "fields is not JSON: " + err.Error()}
@@ -197,6 +222,11 @@ func checkMetricRow(a *Artifact) error {
 	}
 	if len(outer.Value) == 0 || string(outer.Value) == "null" {
 		return MetricRowError{Row: a.ID, Why: "a metric is its reading - fields.value must carry it"}
+	}
+	if outer.State != "" && outer.State != "measured" && outer.State != "inferred" && outer.State != "unknown" {
+		return MetricRowError{Row: a.ID, Why: fmt.Sprintf(
+			"a metric says what its reading is - fields.state is %q, and the states are measured, inferred, unknown",
+			outer.State)}
 	}
 	return nil
 }

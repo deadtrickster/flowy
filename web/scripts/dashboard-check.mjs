@@ -17,6 +17,11 @@
  *   - an age under a minute reads <1m, not a ticking second count - coarse
  *     formatting is stable formatting, and a page that recomputes its age
  *     every second must not redraw it differently every second;
+ *   - a reading says what it is - measured, inferred, unknown - in the
+ *     producer's own words from fields.state, and absent is unknown: a number
+ *     that does not say what it is must read as unknown, not as measured;
+ *   - numbers right-align - digits line up, so a column of readings reads as
+ *     a column (the serenedash finding, 01M0XCCQK19G4T03NBJDDDWFW1);
  *   - a dashboard is no more readable than the artifacts it names: a reader
  *     outside the rows' scope is refused;
  *   - reopening the page shows the newest rows and the newest ages - nothing
@@ -105,17 +110,19 @@ const dash = await post({
   },
 });
 
-const mkMetric = (name, value) =>
+const mkMetric = (name, value, state) =>
   post({
     type: "memory",
     kind: "metric",
     title: `metric ${stamp} ${name}`,
-    fields: { name, value },
+    fields: { name, value, ...(state ? { state } : {}) },
   });
 
 await mkMetric(metricName("cells"), 1200);
 await mkMetric(metricName("rate"), 4.2);
-await mkMetric(metricName("cells"), 1350);
+// The newest cells row claims inferred; the older one and the rate row claim
+// nothing, so they read unknown - the serenedash states arm needs both.
+await mkMetric(metricName("cells"), 1350, "inferred");
 // The matrix ask: the store holds a nested value as-is, and a grid tile
 // draws it. The fixture grid is the coverage shape claude-host pushes.
 await mkMetric(metricName("grid"), {
@@ -223,6 +230,58 @@ try {
     die("the rate tile is styled stale with a day-wide threshold and a fresh row");
   }
 
+  // ---- THE SERENEDASH ARM: a reading says what it is, and numbers
+  // right-align. The newest cells row claims inferred; the rate row claims
+  // nothing, so it reads unknown. ----
+  if ((await cellsTile.getAttribute("data-state")) !== "inferred") {
+    die(
+      `the cells tile's state reads ${await cellsTile.getAttribute("data-state")}, wanted inferred - the newest row's claim`,
+    );
+  }
+  const cellsState = cellsTile.locator("[data-tile-state]");
+  if ((await cellsState.count()) !== 1 || (await cellsState.innerText()).trim() !== "inferred") {
+    die(`the cells tile does not say inferred in words:\n${await cellsTile.innerText()}`);
+  }
+  if ((await rateTile.getAttribute("data-state")) !== "unknown") {
+    die(
+      `the rate tile's state reads ${await rateTile.getAttribute("data-state")}, wanted unknown - an unclaimed reading must read as unknown, not as measured`,
+    );
+  }
+  const rateState = rateTile.locator("[data-tile-state]");
+  if ((await rateState.count()) !== 1 || (await rateState.innerText()).trim() !== "unknown") {
+    die(`the rate tile does not say unknown in words:\n${await rateTile.innerText()}`);
+  }
+  // The state is styled, not just spoken: its colour comes off the serenedash
+  // palette, not the tile's muted text.
+  const stateColour = await cellsState.evaluate((el) => getComputedStyle(el).color);
+  const mutedColour = await cellsTile
+    .locator("[data-tile-age] span")
+    .first()
+    .evaluate((el) => getComputedStyle(el).color);
+  if (stateColour === mutedColour) {
+    die(`the cells tile's state is not styled - its colour (${stateColour}) is the age line's`);
+  }
+  // Numbers right-align: the number tile's value and the grid's cells.
+  const valueAlign = await cellsTile
+    .locator("[data-tile-value]")
+    .evaluate((el) => getComputedStyle(el).textAlign);
+  if (valueAlign !== "right") {
+    die(`the cells tile's value text-aligns ${valueAlign}, wanted right - numbers right-align`);
+  }
+  // The palette exists as the framework's colour vocabulary: eight dim
+  // workhorse colours, none of them a verdict.
+  const palette = await page.evaluate(() => {
+    const cs = getComputedStyle(document.documentElement);
+    const slots = [];
+    for (let i = 1; i <= 8; i++) {
+      slots.push(cs.getPropertyValue(`--color-serenedash-${i}`).trim());
+    }
+    return slots;
+  });
+  if (palette.some((s) => s === "")) {
+    die(`the serenedash palette is not eight colours: ${JSON.stringify(palette)}`);
+  }
+
   // The honest third state: a declared tile whose metric was never pushed says
   // so, instead of drawing a plausible zero.
   const missingTile = tile("never pushed");
@@ -239,6 +298,16 @@ try {
   const firstRowValue = await rows.first().getAttribute("data-value");
   if (firstRowValue !== "1350") {
     die(`the table's newest row reads ${firstRowValue}, wanted 1350`);
+  }
+  if ((await rows.first().getAttribute("data-state")) !== "inferred") {
+    die(
+      `the table's newest cells row reads state ${await rows.first().getAttribute("data-state")}, wanted inferred`,
+    );
+  }
+  if ((await rows.nth(1).getAttribute("data-state")) !== "unknown") {
+    die(
+      `the table's older cells row reads state ${await rows.nth(1).getAttribute("data-state")}, wanted unknown`,
+    );
   }
 
   // ---- THE GRID: the matrix ask - one vocabulary word plus a renderer over
@@ -272,6 +341,15 @@ try {
     die(
       "the coverage grid carries no age - a frozen grid reads as a sweep that covered everything",
     );
+  }
+  if ((await gridTile.getAttribute("data-state")) !== "unknown") {
+    die(
+      `the coverage grid's state reads ${await gridTile.getAttribute("data-state")}, wanted unknown - the grid row claims nothing`,
+    );
+  }
+  const cellAlign = await cell(0, 0).evaluate((el) => getComputedStyle(el).textAlign);
+  if (cellAlign !== "right") {
+    die(`the grid's cells text-align ${cellAlign}, wanted right - numbers right-align`);
   }
 
   // The honest wrong-shape state: a grid tile over a numeric series says so
@@ -336,6 +414,8 @@ try {
     "the dashboard lists, renders its declared tiles from pushed rows with ages, " +
       "draws the coverage grid from its nested reading and says so when a grid " +
       "tile's reading is not one, styles a stale tile past its threshold, " +
+      "says what each reading is - inferred as claimed, unknown as unclaimed - " +
+      "right-aligns its numbers off the eight-colour palette, " +
       "refuses an outsider, and a reload shows the newest row with a fresh age",
   );
 } finally {

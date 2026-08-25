@@ -36,6 +36,20 @@
   --color-agent: oklch(0.78 0.14 155);
   --color-human: oklch(0.76 0.13 250);
 
+  /* THE SERENEDASH PALETTE: eight dim, workhorse colours - low chroma, one
+     step of lightness, hues spread so series are told apart without any one
+     colour shouting. The finding, 01M0XCCQK19G4T03NBJDDDWFW1: "palette 8
+     colours dim-workhorse". A dashboard reading is a fact about a pushed row,
+     never a verdict, so nothing here is red or green. */
+  --color-serenedash-1: oklch(0.72 0.05 250);
+  --color-serenedash-2: oklch(0.72 0.05 155);
+  --color-serenedash-3: oklch(0.72 0.05 15);
+  --color-serenedash-4: oklch(0.72 0.05 85);
+  --color-serenedash-5: oklch(0.72 0.05 300);
+  --color-serenedash-6: oklch(0.72 0.05 200);
+  --color-serenedash-7: oklch(0.72 0.05 45);
+  --color-serenedash-8: oklch(0.72 0.05 265);
+
   --radius-lg: 0.6rem;
   --radius-md: 0.45rem;
   --radius-sm: 0.3rem;
@@ -73,6 +87,20 @@
     font-family: var(--font-sans);
     -webkit-font-smoothing: antialiased;
   }
+}
+
+/* A reading says what it is - the producer's word, from fields.state: measured
+   is the plain fact (slate), inferred is the producer's guess (amber), unknown
+   is the honest absence (violet). The states are epistemic, never verdicts, so
+   none of them borrows red or green from the rest of the console. */
+[data-tile-state="measured"] {
+  color: var(--color-serenedash-8);
+}
+[data-tile-state="inferred"] {
+  color: var(--color-serenedash-4);
+}
+[data-tile-state="unknown"] {
+  color: var(--color-serenedash-5);
 }
 
 /* react-flow draws the thread DAG. Its own stylesheet assumes a light page, so

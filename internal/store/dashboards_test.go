@@ -98,6 +98,40 @@ func TestCheckMetricRowShape(t *testing.T) {
 	if err := checkMetricRow(metricRow("cells", nil)); err == nil {
 		t.Fatal("a metric whose value key is absent carries no reading - must be refused")
 	}
+	stated := func(state string) *Artifact {
+		return &Artifact{ID: "01TEST00000000000000000014",
+			Type: MemoryType, Kind: MetricKind,
+			Fields: json.RawMessage(`{"name":"cells","value":1200,"state":"` + state + `"}`)}
+	}
+	for _, ok := range []string{"measured", "inferred", "unknown"} {
+		if err := checkMetricRow(stated(ok)); err != nil {
+			t.Fatalf("a reading that claims to be %s is a metric: %v", ok, err)
+		}
+	}
+	if err := checkMetricRow(stated("guessed")); err == nil {
+		t.Fatal("a reading claiming a state outside the three must be refused by name - measured, inferred, unknown are the states, nothing else")
+	}
+	if err := checkMetricRow(metricRow("cells", 1200)); err != nil {
+		t.Fatalf("a reading that claims no state is a metric - absent is unknown, not an error: %v", err)
+	}
+}
+
+func TestMetricStateOf(t *testing.T) {
+	if got := MetricStateOf(&Artifact{Type: MemoryType, Kind: MetricKind,
+		Fields: json.RawMessage(`{"name":"cells","value":1200}`)}); got != "unknown" {
+		t.Fatalf("a reading that claims no state reads as unknown, got %q", got)
+	}
+	if got := MetricStateOf(&Artifact{Type: MemoryType, Kind: MetricKind,
+		Fields: json.RawMessage(`{"name":"cells","value":1200,"state":"inferred"}`)}); got != "inferred" {
+		t.Fatalf("a claimed state reads back, got %q", got)
+	}
+	if got := MetricStateOf(&Artifact{Type: MemoryType, Kind: MetricKind,
+		Fields: json.RawMessage(`{"name":"cells","value":1200,"state":"GUESSED"}`)}); got != "unknown" {
+		t.Fatalf("an unrecognised state reads as unknown, got %q", got)
+	}
+	if got := MetricStateOf(nil); got != "unknown" {
+		t.Fatalf("no row reads as unknown, got %q", got)
+	}
 }
 
 func TestDashboardTilesOfIsLenientForReaders(t *testing.T) {
