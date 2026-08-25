@@ -1035,9 +1035,7 @@ function Owner({ id, owner }: { id: string; owner: string }) {
   return (
     <span className="flex shrink-0 items-center gap-1">
       <input
-        // biome-ignore lint/a11y/noAutofocus: the click that opened it is the
-        // request to type in it, and a reader who has to click twice to change
-        // an owner will go back to the CLI.
+        // biome-ignore lint/a11y/noAutofocus: the click that opened this input IS the request to type in it, and a reader who has to click twice to change an owner goes back to the CLI
         autoFocus
         data-todo-assign-input={id}
         aria-label="who is carrying this"
