@@ -1139,7 +1139,34 @@ func writeInbox(page inboxWaitResponse) error {
 	enc := json.NewEncoder(out)
 	for _, e := range page.Events {
 		line := map[string]any{
-			"room":      e.Room,
+			"room": e.Room,
+			// AND WHICH PROJECT'S ROOM, because a room name is not an address.
+			//
+			// #general in flowy and #general in Lab are two rooms with one
+			// name and neither reads the other. A seat whose token reaches
+			// both hears both on one reader, and this line said only
+			// "general" - so the woken agent could not tell where a message
+			// came from, and its reply went wherever its own seat writes.
+			//
+			// Measured 2026-08-25: claude-host answered two Lab agents in
+			// flowy three times, and the operator said so twice - "you keep
+			// addressing lab machines in flowy project #general". The agent
+			// had written that exact rule into both remote seats' briefs an
+			// hour earlier. Remembering a rule cannot supply a fact the input
+			// does not carry.
+			//
+			// It is the same defect as actor_name below, which this function
+			// already fixed once for the same reason: a listener asked a
+			// delivery for a key it did not have. One field, and the reply
+			// stops needing a second question to reach the right room.
+			//
+			// A nil Project is a message in no project at all, which is a real
+			// state - it serialises as null and a reader can tell it from a
+			// project called "null" only because one is a JSON literal. Left
+			// as the pointer rather than flattened to "" for exactly that
+			// reason: "no project" and "a project whose name is empty" are
+			// different, and this fleet has paid for collapsing that pair.
+			"project":   e.Project,
 			"actor":     e.Actor,
 			"addressee": e.Addressee,
 			"body":      e.Body,

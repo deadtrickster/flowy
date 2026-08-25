@@ -76,6 +76,7 @@ func TestADeliveryCarriesTheSpeakersName(t *testing.T) {
 // what is guarded here is the SET a listener addresses a reply with: without any
 // one of these a delivered message cannot be answered where it was asked.
 func TestADeliveryCarriesWhatAReplyNeeds(t *testing.T) {
+	project := "flowy"
 	meta, err := json.Marshal(map[string]any{"actor_name": "orchestrator"})
 	if err != nil {
 		t.Fatalf("marshal meta: %v", err)
@@ -83,12 +84,13 @@ func TestADeliveryCarriesWhatAReplyNeeds(t *testing.T) {
 	page := inboxWaitResponse{
 		Reader: "claude-host",
 		Events: []*store.Event{{
-			ID:     "01M0HQ0NMS16X5SZ87AGYAB5ZT",
-			Room:   "general",
-			Actor:  "01M05TQ76D8Q4Q6NGBJ0SKT0TB",
-			Thread: "01M0HPQTFJ417T7G0WFK4GEQJD",
-			Body:   "so in a way it is prefix branching",
-			Meta:   meta,
+			ID:      "01M0HQ0NMS16X5SZ87AGYAB5ZT",
+			Room:    "general",
+			Actor:   "01M05TQ76D8Q4Q6NGBJ0SKT0TB",
+			Thread:  "01M0HPQTFJ417T7G0WFK4GEQJD",
+			Body:    "so in a way it is prefix branching",
+			Meta:    meta,
+			Project: &project,
 		}},
 	}
 	line := captureDelivery(t, page)
@@ -101,6 +103,11 @@ func TestADeliveryCarriesWhatAReplyNeeds(t *testing.T) {
 	//	body    what was said. A delivery with no body is not a message.
 	//	id      what is being answered, for a citation.
 	//	meta    who said it, at the path every listener already reads.
+	//	project WHICH room of that name. #general in flowy and #general in Lab are
+	//	        two rooms and neither reads the other; without this a reply goes
+	//	        to whichever one the ANSWERING seat writes in. Measured
+	//	        2026-08-25, three times in one hour, by an agent that knew the
+	//	        rule and was answering lines that did not carry the fact.
 	for _, want := range []struct {
 		key string
 		val string
@@ -110,6 +117,7 @@ func TestADeliveryCarriesWhatAReplyNeeds(t *testing.T) {
 		{"thread", "01M0HPQTFJ417T7G0WFK4GEQJD", "a reply lands in the room instead of the thread"},
 		{"body", "so in a way it is prefix branching", "there is no message"},
 		{"id", "01M0HQ0NMS16X5SZ87AGYAB5ZT", "nothing can be cited"},
+		{"project", "flowy", "a reply goes to the room of that name in the ANSWERING seat's project, which is a different room"},
 	} {
 		if got, _ := line[want.key].(string); got != want.val {
 			t.Errorf("the delivery carries %q = %q, want %q - without it %s",
