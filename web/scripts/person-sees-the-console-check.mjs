@@ -80,6 +80,48 @@ try {
   await page.locator("[data-login-submit]").click();
   await page.waitForURL((url) => url.pathname === "/", { timeout: 15_000 }).catch(() => {});
 
+  // DID THE LOGIN ACTUALLY WORK. Asked of the node, and it is not a formality.
+  //
+  // In the full suite this check failed with "/projects offers no way into pa",
+  // which reads as a broken switcher and was nothing of the sort: /api/login
+  // rate limits, several checks in this gate log in, and mine was refused. The
+  // page then sat signed out, whoami had no memberships, and the switcher drew
+  // nothing - a true statement about a person who is not logged in, reported as
+  // a defect in the page.
+  //
+  // Everything below this line is about what a SIGNED-IN person sees, so a
+  // failure to sign in has to stop here and say so in its own words rather than
+  // become a confusing failure three steps later.
+  const signedInAs = async () => {
+    return await page.evaluate(async () => {
+      const res = await fetch("/api/whoami", { credentials: "same-origin" });
+      if (!res.ok) return "";
+      const who = await res.json();
+      return who?.user ?? "";
+    });
+  };
+  if (!(await signedInAs())) {
+    const refused = await page
+      .locator("[data-login-refused]")
+      .first()
+      .innerText()
+      .catch(() => "");
+    // The limiter is a minute wide and other checks in this gate spend it, so
+    // one wait is worth it before calling the run lost. See profile-check.
+    if (/rate|429|too many/i.test(refused)) {
+      console.log("  (waiting out the login limiter, 62s)");
+      await page.waitForTimeout(62_000);
+      await page.locator("[data-login-password]").fill(password);
+      await page.locator("[data-login-submit]").click();
+      await page.waitForURL((url) => url.pathname === "/", { timeout: 15_000 }).catch(() => {});
+    }
+    if (!(await signedInAs())) {
+      die(`could not log ${handle} in, so nothing below was measured.
+The page said ${JSON.stringify(refused || "nothing at all")}. This is not a finding about
+any console page - it is this check failing to reach the state it tests.`);
+    }
+  }
+
   const stored = await page.evaluate(() => localStorage.getItem("flowy.token"));
   if (stored) die("this check is meant to run with no bearer token and localStorage holds one");
 

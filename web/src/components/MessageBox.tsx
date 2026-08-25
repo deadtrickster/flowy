@@ -28,7 +28,7 @@ interface Props {
   /**
    * WHY the box is dead, in the placeholder, as words the reader can act on.
    *
-   * It read "paste a token to say something" for every disabled state, which is
+   * It read "log in, or paste a token, to say something" for every disabled state, which is
    * one cause named for what turned out to be several. On 2026-08-25 the
    * operator hit the one where that sentence is actively wrong: they had
    * cleared their token so the project switcher would let them in, and the
@@ -365,7 +365,9 @@ export function MessageBox({
         onKeyDown={onKeyDown}
         onPaste={onPaste}
         placeholder={
-          disabled ? disabledReason || "paste a token to say something" : "say something…"
+          disabled
+            ? disabledReason || "log in, or paste a token, to say something"
+            : "say something…"
         }
         aria-label="message"
       />

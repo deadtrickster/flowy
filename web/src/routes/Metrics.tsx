@@ -78,7 +78,9 @@ export function Metrics() {
         </div>
 
         {!signedIn ? (
-          <p className="text-muted-foreground text-sm">paste a token to see your numbers</p>
+          <p className="text-muted-foreground text-sm">
+            log in, or paste a token, to see your numbers
+          </p>
         ) : null}
         {error ? <div className="text-destructive text-sm">{error}</div> : null}
 

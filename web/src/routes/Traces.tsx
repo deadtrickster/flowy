@@ -74,7 +74,9 @@ export function Traces() {
           <span className="ml-auto text-muted-foreground text-xs">{list.length} recent</span>
         </header>
         {!signedIn ? (
-          <p className="p-4 text-muted-foreground text-sm">paste a token to see traces</p>
+          <p className="p-4 text-muted-foreground text-sm">
+            log in, or paste a token, to see traces
+          </p>
         ) : null}
         {error ? <p className="p-4 text-destructive text-sm">{error}</p> : null}
         <ul className="min-h-0 flex-1 overflow-y-auto">

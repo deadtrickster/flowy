@@ -68,7 +68,9 @@ export function NewEntity() {
 
   if (!signedIn) {
     return (
-      <div className="p-6 text-muted-foreground text-sm">paste a token to write anything down</div>
+      <div className="p-6 text-muted-foreground text-sm">
+        log in, or paste a token, to write anything down
+      </div>
     );
   }
 

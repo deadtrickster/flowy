@@ -81,7 +81,9 @@ export function Bookmarks() {
       {error ? <div className="text-destructive text-sm">{error}</div> : null}
 
       {!signedIn ? (
-        <div className="text-muted-foreground text-sm">paste a token to see what you kept</div>
+        <div className="text-muted-foreground text-sm">
+          log in, or paste a token, to see what you kept
+        </div>
       ) : messages.length === 0 && gone <= 0 ? (
         <div className="rounded-md border border-dashed border-border p-3 text-muted-foreground text-sm">
           nothing kept yet. `keep` under any message in a room puts it here, and it stays private to

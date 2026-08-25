@@ -223,7 +223,9 @@ export function Direct() {
             disabled={!signedIn || sending}
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={onKeyDown}
-            placeholder={signedIn ? "say something private…" : "log in, or paste a token, to say something"}
+            placeholder={
+              signedIn ? "say something private…" : "log in, or paste a token, to say something"
+            }
             aria-label="message"
           />
 

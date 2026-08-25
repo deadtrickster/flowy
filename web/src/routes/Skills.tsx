@@ -113,7 +113,8 @@ export function Skills() {
 
       {!signedIn ? (
         <p className="px-4 py-6 text-muted-foreground text-sm">
-          paste a token to see the skills - signed out this is a locked shelf, not an empty one
+          log in, or paste a token, to see the skills - signed out this is a locked shelf, not an
+          empty one
         </p>
       ) : !loaded ? (
         <p className="px-4 py-6 text-muted-foreground text-sm">reading the skills…</p>

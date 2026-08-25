@@ -313,7 +313,9 @@ function PostBox({
         value={body}
         disabled={disabled || sending}
         onChange={(event) => setBody(event.target.value)}
-        placeholder={disabled ? "log in, or paste a token, to post" : "say something into this run, or a room…"}
+        placeholder={
+          disabled ? "log in, or paste a token, to post" : "say something into this run, or a room…"
+        }
         aria-label="post into the timeline"
       />
       <Button type="submit" size="sm" className="self-end" disabled={disabled || sending}>

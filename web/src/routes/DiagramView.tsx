@@ -214,7 +214,11 @@ export function DiagramView() {
   }
 
   if (!signedIn) {
-    return <p className="p-6 text-muted-foreground text-sm">paste a token to open this diagram</p>;
+    return (
+      <p className="p-6 text-muted-foreground text-sm">
+        log in, or paste a token, to open this diagram
+      </p>
+    );
   }
   if (error && !artifact) {
     return <p className="p-6 text-destructive text-sm">{error}</p>;
