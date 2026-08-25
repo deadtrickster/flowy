@@ -53,9 +53,10 @@ func TestCheckDashboardRowShape(t *testing.T) {
 	ok := dashboardRow([]map[string]any{
 		{"kind": "number", "label": "cells done", "metric": "cells", "stale_after_seconds": 5},
 		{"kind": "table", "label": "cells, latest rows", "metric": "cells"},
+		{"kind": "grid", "label": "coverage", "metric": "cells", "stale_after_seconds": 5},
 	})
 	if err := checkDashboardRow(ok); err != nil {
-		t.Fatalf("a dashboard declaring number and table tiles is a dashboard: %v", err)
+		t.Fatalf("a dashboard declaring number, table and grid tiles is a dashboard: %v", err)
 	}
 	if err := checkDashboardRow(dashboardRow(nil)); err == nil {
 		t.Fatal("a dashboard with no tiles declares nothing - must be refused")

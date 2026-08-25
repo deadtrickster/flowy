@@ -84,6 +84,116 @@ function NumberTile({
   );
 }
 
+/** The grid a grid tile draws: cols as headers, rows as model plus cells.
+ * Any reading that is not this shape is null, and the tile says so - a grid
+ * drawn from a wrong-shaped reading is a matrix that lies with confidence. */
+function gridOf(
+  row: Artifact,
+): { cols: string[]; rows: { model: string; cells: (string | number)[] }[] } | null {
+  const fields = row.fields as { value?: unknown } | undefined;
+  const value = fields?.value;
+  if (typeof value !== "object" || value === null) return null;
+  const v = value as { cols?: unknown; rows?: unknown };
+  if (!Array.isArray(v.cols) || !Array.isArray(v.rows)) return null;
+  const cols = v.cols.map(String);
+  const rows = v.rows.map((r) => {
+    const o = r as { model?: unknown; cells?: unknown } | null;
+    return {
+      model: o?.model === undefined || o?.model === null ? "" : String(o.model),
+      cells: Array.isArray(o?.cells) ? o.cells.map(String) : [],
+    };
+  });
+  return { cols, rows };
+}
+
+/** One grid tile: the newest reading of its series, drawn as its matrix. It
+ * carries its age and staleness exactly like a number tile - a coverage grid
+ * frozen at its last pass looks like a sweep that covered everything, which
+ * is the most confident-looking wrong answer available on the page. */
+function GridTile({
+  tile,
+  row,
+  now,
+}: { tile: DashboardTile; row: Artifact | undefined; now: number }) {
+  const age = row ? ageSeconds(row, now) : 0;
+  const stale = row && (tile.stale_after_seconds ?? 0) > 0 && age > (tile.stale_after_seconds ?? 0);
+  const grid = row ? gridOf(row) : null;
+  return (
+    <div
+      data-tile-label={tile.label}
+      data-tile-kind="grid"
+      data-empty={row ? undefined : "true"}
+      data-grid-bad={row && !grid ? "true" : undefined}
+      data-stale={stale ? "true" : undefined}
+      data-age={row ? age : undefined}
+      className="flex flex-col gap-1 rounded-md border border-border p-4 sm:col-span-2 lg:col-span-4"
+    >
+      <div className="text-muted-foreground text-xs">{tile.label}</div>
+      {row && !grid ? (
+        <div className="py-1 text-muted-foreground text-sm">
+          its newest reading is not a grid of {"{cols, rows}"} - the tile says so rather than
+          drawing a wrong-shaped matrix
+        </div>
+      ) : !row || !grid ? (
+        <div className="py-1 text-muted-foreground text-sm">
+          its metric has no rows pushed yet - not zero, just nothing
+        </div>
+      ) : (
+        <>
+          <table className="mt-1 border-collapse text-sm">
+            <thead>
+              <tr>
+                <th className="border-border border-b px-2 py-1 text-muted-foreground text-xs font-medium" />
+                {grid.cols.map((col, i) => (
+                  <th
+                    // biome-ignore lint/suspicious/noArrayIndexKey: a grid's columns are positional - names can repeat, and the pushed value carries no ids, so the index is the identity
+                    key={i}
+                    data-grid-col={i}
+                    className="border-border border-b px-2 py-1 text-muted-foreground text-xs font-medium"
+                  >
+                    {col}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {grid.rows.map((r, i) => (
+                <tr
+                  // biome-ignore lint/suspicious/noArrayIndexKey: a grid's rows are positional - model names can repeat, and the pushed value carries no ids, so the index is the identity
+                  key={i}
+                  data-grid-model={r.model}
+                >
+                  <th
+                    className="px-2 py-1 text-muted-foreground text-xs font-medium"
+                    data-grid-model-cell
+                  >
+                    {r.model}
+                  </th>
+                  {r.cells.map((cell, j) => (
+                    <td
+                      // biome-ignore lint/suspicious/noArrayIndexKey: a row's cells are positional - the pushed value carries no ids, so the index is the identity
+                      key={j}
+                      data-grid-cell={i * grid.cols.length + j}
+                      data-grid-value={cell}
+                      className="px-2 py-1 tabular-nums"
+                    >
+                      {cell}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div className="text-muted-foreground text-xs" data-tile-age>
+            {ageWords(age)}
+            {stale ? ", stale" : ""}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 /** One table tile: the series' rows, newest first, each with its age. */
 function TableTile({ tile, rows, now }: { tile: DashboardTile; rows: Artifact[]; now: number }) {
   return (
@@ -235,6 +345,9 @@ export function DashboardView() {
         {tiles.map((tile) => {
           if (tile.kind === "table") {
             return <TableTile key={tile.label} tile={tile} rows={rowsOf(tile.metric)} now={now} />;
+          }
+          if (tile.kind === "grid") {
+            return <GridTile key={tile.label} tile={tile} row={rowsOf(tile.metric)[0]} now={now} />;
           }
           if (tile.kind === "number") {
             return (

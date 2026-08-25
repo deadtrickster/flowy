@@ -8,9 +8,9 @@
  * stop pause and monitor", asap. The contract, answered on the row:
  *
  *   - a dashboard is a memory row of kind `dashboard` whose fields declare
- *     tiles - a fixed vocabulary (number, table) over a named metric - and the
- *     console renders the declaration. It RUNS nothing: the data is metric
- *     rows producers push through the ordinary artifact door;
+ *     tiles - a fixed vocabulary (number, table, grid) over a named metric -
+ *     and the console renders the declaration. It RUNS nothing: the data is
+ *     metric rows producers push through the ordinary artifact door;
  *   - every number shows its age from the row it reads, and a datum older than
  *     its tile's threshold is visibly stale, not silently live - the operator
  *     reading prose today is exactly the failure this exists to fix;
@@ -89,6 +89,15 @@ const dash = await post({
         stale_after_seconds: 5,
       },
       { kind: "table", label: "cells, latest rows", metric: metricName("cells") },
+      {
+        kind: "grid",
+        label: "coverage",
+        metric: metricName("grid"),
+        stale_after_seconds: 5,
+      },
+      // A grid over a series that holds plain numbers: the honest wrong-shape
+      // state, drawn as a refusal rather than a matrix that lies.
+      { kind: "grid", label: "wrong shape", metric: metricName("cells") },
     ],
   },
 });
@@ -104,6 +113,15 @@ const mkMetric = (name, value) =>
 await mkMetric(metricName("cells"), 1200);
 await mkMetric(metricName("rate"), 4.2);
 await mkMetric(metricName("cells"), 1350);
+// The matrix ask: the store holds a nested value as-is, and a grid tile
+// draws it. The fixture grid is the coverage shape claude-host pushes.
+await mkMetric(metricName("grid"), {
+  cols: ["node", "pass", "fail"],
+  rows: [
+    { model: "lubuntu2", cells: [12, 0] },
+    { model: "lab2x1", cells: [55, 3] },
+  ],
+});
 
 // WHAT THE NODE HOLDS, read back before the browser opens: if the fixture
 // seeded differently than intended, this fails as a fixture problem instead
@@ -116,7 +134,7 @@ if (cells.length !== 2 || cells[0] !== 1350 || cells[1] !== 1200) {
   die(`the node holds cells [${cells}], wanted [1350, 1200] newest-first - the seed is wrong`);
 }
 const heldDash = await api(`/api/artifact/${dash.id}`);
-if (!Array.isArray(heldDash.fields?.tiles) || heldDash.fields.tiles.length !== 4) {
+if (!Array.isArray(heldDash.fields?.tiles) || heldDash.fields.tiles.length !== 6) {
   die(
     `the dashboard row's tiles read ${JSON.stringify(heldDash.fields?.tiles)} - the seed is wrong`,
   );
@@ -215,11 +233,54 @@ try {
     die(`the table's newest row reads ${firstRowValue}, wanted 1350`);
   }
 
+  // ---- THE GRID: the matrix ask - one vocabulary word plus a renderer over
+  // {cols, rows}, carrying its age and staleness like every other tile. ----
+  const gridTile = tile("coverage");
+  const headerCells = gridTile.locator("[data-grid-col]");
+  if ((await headerCells.count()) !== 3) {
+    die(`the coverage grid draws ${await headerCells.count()} column headers, wanted 3`);
+  }
+  const modelRows = gridTile.locator("[data-grid-model]");
+  if ((await modelRows.count()) !== 2) {
+    die(`the coverage grid draws ${await modelRows.count()} model rows, wanted 2`);
+  }
+  if ((await modelRows.first().getAttribute("data-grid-model")) !== "lubuntu2") {
+    die(
+      `the coverage grid's first row is ${await modelRows.first().getAttribute("data-grid-model")}, wanted lubuntu2`,
+    );
+  }
+  const cell = (rowIdx, colIdx) => gridTile.locator(`[data-grid-cell="${rowIdx * 3 + colIdx}"]`);
+  if ((await cell(0, 0).getAttribute("data-grid-value")) !== "12") {
+    die(
+      `the coverage grid's lubuntu2 pass cell reads ${await cell(0, 0).getAttribute("data-grid-value")}, wanted 12`,
+    );
+  }
+  if ((await cell(1, 1).getAttribute("data-grid-value")) !== "3") {
+    die(
+      `the coverage grid's lab2x1 fail cell reads ${await cell(1, 1).getAttribute("data-grid-value")}, wanted 3`,
+    );
+  }
+  if ((await gridTile.getAttribute("data-age")) === null) {
+    die(
+      "the coverage grid carries no age - a frozen grid reads as a sweep that covered everything",
+    );
+  }
+
+  // The honest wrong-shape state: a grid tile over a numeric series says so
+  // instead of drawing a matrix that lies.
+  const wrongTile = tile("wrong shape");
+  if ((await wrongTile.getAttribute("data-grid-bad")) === null) {
+    die('the "wrong shape" tile does not say its reading is not a grid');
+  }
+
   // ---- THE STALENESS HALF: past its threshold, the tile is styled stale,
   // not silently live. ----
   await page.waitForTimeout(6000);
   if ((await cellsTile.getAttribute("data-stale")) === null) {
     die("the cells tile past its 5s threshold is not styled stale");
+  }
+  if ((await gridTile.getAttribute("data-stale")) === null) {
+    die("the coverage grid past its 5s threshold is not styled stale");
   }
   if (crashes.length > 0) die(`the page threw: ${crashes.join("; ")}`);
 
@@ -264,9 +325,10 @@ try {
   if (outsiderCrashes.length > 0) die(`the outsider's page threw: ${outsiderCrashes.join("; ")}`);
 
   console.log(
-    "the dashboard lists, renders four declared tiles from pushed rows with ages, " +
-      "styles a stale tile past its threshold, refuses an outsider, and a reload " +
-      "shows the newest row with a fresh age",
+    "the dashboard lists, renders its declared tiles from pushed rows with ages, " +
+      "draws the coverage grid from its nested reading and says so when a grid " +
+      "tile's reading is not one, styles a stale tile past its threshold, " +
+      "refuses an outsider, and a reload shows the newest row with a fresh age",
   );
 } finally {
   await browser.close();
