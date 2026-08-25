@@ -1539,6 +1539,13 @@ var mintedEventTypes = map[string]bool{
 	// somebody else's room.
 	EventBookmarkAdd:    true,
 	EventBookmarkRemove: true,
+	// A thread unfold and the entry that folds it back, for the bookmark's
+	// two reasons: the refusal that makes one honest - the reader can READ the
+	// thread - is on the verb, and the entry is private because it carries no
+	// project and no room, which a hand-written one could carry and leak a
+	// reader's own state into somebody else's room.
+	EventThreadUnfold: true,
+	EventThreadFold:   true,
 	// An assignment. It is minted for the first reason - the claim is made by
 	// going through the verb - and because the refusal that makes it safe is on
 	// the verb: the writer has to be able to READ the todo. An entry a client

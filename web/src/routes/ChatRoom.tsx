@@ -940,6 +940,51 @@ export function ChatRoom() {
     }
   };
 
+  /**
+   * WHAT THIS READER HAS UNFOLDED IN THE STREAM, the kept block's twin and
+   * with the same shape for the same reason: one reader's own list, loaded
+   * once per room open and kept in step by the writes below rather than by a
+   * poll. The node's answer lands in state, never the optimistic guess -
+   * unfold writes go to the same log the load reads, so the write-then-read
+   * round trip is the state and a guess would only be a second one.
+   *
+   * The toggle is UNFOLD and not "fold": collapsing replies is the default
+   * the operator asked for, and the exception a reader records is the thing
+   * the node stores. A fold verb is still written on hide - see the store -
+   * so the log tells the whole story either way.
+   */
+  const [unfolded, setUnfolded] = useState<string[]>([]);
+  useEffect(() => {
+    if (!signedIn) {
+      setUnfolded([]);
+      return;
+    }
+    let stopped = false;
+    api
+      .threadsUnfolded()
+      .then((page) => {
+        if (!stopped) setUnfolded(page.threads);
+      })
+      // Swallowed for kept's reason: a stream that draws folded instead of
+      // unfolded is worth less than a banner over the transcript, and the
+      // next open asks again.
+      .catch(() => {});
+    return () => {
+      stopped = true;
+    };
+  }, [signedIn]);
+
+  const unfold = async (thread: string, on: boolean) => {
+    try {
+      if (on) await api.threadUnfold(thread);
+      else await api.threadFold(thread);
+      const page = await api.threadsUnfolded();
+      setUnfolded(page.threads);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
   const openThread = (event: FlowyEvent) => {
     // THE URL STILL NAMES IT, so the pane can be sent to somebody - measured by
     // the thread-count check, which failed the first cut of this with "opening
@@ -1188,6 +1233,8 @@ export function ChatRoom() {
           onOpenThread={openThread}
           kept={kept}
           onKeep={keep}
+          unfolded={unfolded}
+          onUnfold={unfold}
           onThreadReply={replyInThread}
           onTodo={raiseFromMessage}
           me={{ user: whoami?.user, agent: whoami?.agent }}

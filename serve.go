@@ -303,6 +303,9 @@ var apiRoutes = []string{
 	"POST /api/bookmark",
 	"DELETE /api/bookmark/{id}",
 	"GET /api/bookmarks",
+	"POST /api/thread-unfolded",
+	"DELETE /api/thread-unfolded/{id}",
+	"GET /api/threads-unfolded",
 	"POST /api/chat/{room}/pin",
 	"DELETE /api/chat/{room}/pin/{id}",
 	"GET /api/chat/{room}/pins",
@@ -616,6 +619,12 @@ func (s *server) routes() http.Handler {
 	api.HandleFunc("POST /api/bookmark", s.handleBookmark)
 	api.HandleFunc("DELETE /api/bookmark/{id}", s.handleUnbookmark)
 	api.HandleFunc("GET /api/bookmarks", s.handleBookmarks)
+	// One reader's unfolded threads. No room in the path for the bookmark's
+	// reason: a thread id is global, and this state is exactly one reader's
+	// view of the stream. See threadfolds.go.
+	api.HandleFunc("POST /api/thread-unfolded", s.handleThreadUnfold)
+	api.HandleFunc("DELETE /api/thread-unfolded/{id}", s.handleThreadFold)
+	api.HandleFunc("GET /api/threads-unfolded", s.handleThreadsUnfolded)
 	// And who is carrying one, said in the room the same way raising it is.
 	api.HandleFunc("POST /api/chat/{room}/todo/{id}/assignee", s.handleRoomTodoAssign)
 	// What a room decided, as data: the proposal, the votes in the order they

@@ -80,16 +80,22 @@ const stamp = `${Date.now().toString(36)}`;
 const word = (n) => `collapse ${stamp} ${n}`;
 
 const say = async (body, extra = {}, as = token) =>
-  api(`/api/chat/${encodeURIComponent(room)}/say`, {
-    method: "POST",
-    body: JSON.stringify({ body, ...extra }),
-  }, as);
+  api(
+    `/api/chat/${encodeURIComponent(room)}/say`,
+    {
+      method: "POST",
+      body: JSON.stringify({ body, ...extra }),
+    },
+    as,
+  );
 
 // Thread A: a root and seven replies, none addressed to anybody.
 const rootA = await say(`thread-collapse-check: root A ${word("a0")}`);
 const aReplies = [];
 for (let i = 1; i <= 7; i++) {
-  aReplies.push(await say(`thread-collapse-check: reply A${i} ${word(`a${i}`)}`, { thread: rootA.thread }));
+  aReplies.push(
+    await say(`thread-collapse-check: reply A${i} ${word(`a${i}`)}`, { thread: rootA.thread }),
+  );
 }
 
 // Thread B: a root, six plain replies spoken by the other principal, and one
@@ -97,7 +103,13 @@ for (let i = 1; i <= 7; i++) {
 const rootB = await say(`thread-collapse-check: root B ${word("b0")}`);
 const bReplies = [];
 for (let i = 1; i <= 6; i++) {
-  bReplies.push(await say(`thread-collapse-check: reply B${i} ${word(`b${i}`)}`, { thread: rootB.thread }, speaker));
+  bReplies.push(
+    await say(
+      `thread-collapse-check: reply B${i} ${word(`b${i}`)}`,
+      { thread: rootB.thread },
+      speaker,
+    ),
+  );
 }
 const bAddr = await say(
   `thread-collapse-check: reply B7 for the reader ${word("b7")}`,
@@ -112,13 +124,15 @@ for (const [name, thread, wanted] of [
   ["A", rootA.thread, 8],
   ["B", rootB.thread, 8],
 ]) {
-  const back = await api(`/api/chat/${encodeURIComponent(room)}?thread=${encodeURIComponent(thread)}`);
+  const back = await api(
+    `/api/chat/${encodeURIComponent(room)}?thread=${encodeURIComponent(thread)}`,
+  );
   const got = (back.events ?? []).length;
   if (got !== wanted) die(`thread ${name} holds ${got} messages on the node, wanted ${wanted}`);
 }
-const bAddrBack = (await api(`/api/chat/${encodeURIComponent(room)}?thread=${encodeURIComponent(rootB.thread)}`))
-  .events
-  .find((e) => e.id === bAddr.id);
+const bAddrBack = (
+  await api(`/api/chat/${encodeURIComponent(room)}?thread=${encodeURIComponent(rootB.thread)}`)
+).events.find((e) => e.id === bAddr.id);
 if (!bAddrBack?.addressee || ![who.user, who.agent].includes(bAddrBack.addressee)) {
   die(
     `the addressed reply's addressee is ${bAddrBack?.addressee ?? "unset"}, not this token's user ${who.user} or agent ${who.agent} - the node resolved "to: ${handle}" to nobody this reader is`,
@@ -139,7 +153,9 @@ try {
   await page.addInitScript((t) => localStorage.setItem("flowy.token", t), token);
 
   const openRoom = async () => {
-    await page.goto(`${base}/chat/${encodeURIComponent(room)}`, { timeout: 30_000 }).catch(() => {});
+    await page
+      .goto(`${base}/chat/${encodeURIComponent(room)}`, { timeout: 30_000 })
+      .catch(() => {});
     await page
       .locator(`[data-message="${rootA.id}"]`)
       .waitFor({ state: "visible", timeout: 20_000 })
@@ -191,7 +207,9 @@ extra: ${extra.join(", ") || "none"}`,
   if ((await foldB.count()) === 0) die(`thread B's head row carries no fold block`);
   const countB = await foldB.first().getAttribute("data-fold-count");
   if (countB !== "6") {
-    die(`thread B's fold block says ${countB} hidden - the addressed reply is visible as a row, so the count is 6`);
+    die(
+      `thread B's fold block says ${countB} hidden - the addressed reply is visible as a row, so the count is 6`,
+    );
   }
   const foldBText = await foldB.first().innerText();
   if (!foldBText.includes(word("b6"))) {
@@ -217,7 +235,10 @@ extra: ${extra.join(", ") || "none"}`,
   }
   for (const e of [rootB, ...bReplies, bAddr]) {
     const n = await pane.locator(`[data-body="${e.id}"]`).count();
-    if (n !== 1) die(`the thread pane shows ${e.id} ${n} times - the collapsed stream must not leak into the pane`);
+    if (n !== 1)
+      die(
+        `the thread pane shows ${e.id} ${n} times - the collapsed stream must not leak into the pane`,
+      );
   }
   if (crashes.length > 0) die(`the page threw: ${crashes.join("; ")}`);
 
@@ -245,7 +266,9 @@ extra: ${extra.join(", ") || "none"}`,
       .waitFor({ state: "visible", timeout: 10_000 })
       .catch(() => {});
     if ((await page.locator(`[data-message="${e.id}"]`).count()) !== 1) {
-      die(`after a reload, thread A's replies are folded again - the unfold did not stick on the node`);
+      die(
+        `after a reload, thread A's replies are folded again - the unfold did not stick on the node`,
+      );
     }
   }
 

@@ -47,6 +47,25 @@ interface Props {
   kept?: string[];
   onKeep?: (event: FlowyEvent, on: boolean) => void;
   /**
+   * unfolded is the thread ids this reader has unfolded in the stream, and
+   * onUnfold toggles one.
+   *
+   * COLLAPSING REPLIES INTO THEIR HEAD ROW IS THE DEFAULT, which is the
+   * operator's ask on 01M0WF2T2: a room holding a threaded conversation reads
+   * as one row per thread rather than eight. The unfold is the exception a
+   * reader records, stored on the node so it survives a reload.
+   *
+   * A reply ADDRESSED TO THE READER is never hidden: it surfaces as its own
+   * row even in a collapsed thread, because this fleet's recurring failure is
+   * silence reading as absence. Everybody else sees that thread collapsed.
+   *
+   * OPTIONAL, and its absence turns the fold off: read-only surfaces that
+   * reuse this list - TaskView, the document panes - draw every message they
+   * hold, which is what they were doing before the fold existed.
+   */
+  unfolded?: string[];
+  onUnfold?: (thread: string, on: boolean) => void;
+  /**
    * onThreadReply is "answer this, in its thread" - one gesture that opens the
    * thread pane on this message and puts the caret in the pane's composer.
    *
@@ -167,6 +186,8 @@ export function MessageList({
   onOpenThread,
   kept,
   onKeep,
+  unfolded,
+  onUnfold,
   onThreadReply,
   onTodo,
   me,
@@ -187,6 +208,45 @@ export function MessageList({
   // Whether an id is the person reading or the agent working for them, which
   // is the pair the node treats as one reader everywhere else.
   const isMe = (id?: string) => !!id && (id === me?.user || id === me?.agent);
+
+  // WHAT EACH THREAD FOLDS TO, computed once per render from the events in
+  // hand. Nothing asks the node: the room opens on the newest window of
+  // messages and a reply is always newer than its root, so a root on screen
+  // has every reply on screen, and the head of each thread is its oldest
+  // message here - the root, whenever the root is on screen.
+  //
+  // A reply addressed to this reader is never hidden - it is drawn as its own
+  // row, see the comment on `unfolded` - so a block's count and its snippet
+  // cover the LATEST HIDDEN reply, not simply the thread's newest. The
+  // thread-collapse check seeds an addressed reply as the newest message on
+  // purpose to catch a block that just takes the newest one.
+  const fold = useMemo(() => {
+    if (!unfolded) return null;
+    const open = new Set(unfolded);
+    const mine = (id?: string) => !!id && (id === me?.user || id === me?.agent);
+    const byThread = new Map<string, FlowyEvent[]>();
+    for (const event of events) {
+      if (!event.thread) continue;
+      const held = byThread.get(event.thread);
+      if (held) held.push(event);
+      else byThread.set(event.thread, [event]);
+    }
+    const hidden = new Set<string>();
+    const heads = new Map<string, FlowyEvent>();
+    const blocks = new Map<string, { count: number; latest: FlowyEvent }>();
+    const hidable = new Set<string>();
+    for (const [thread, held] of byThread) {
+      const head = held[0];
+      heads.set(thread, head);
+      const folded = held.filter((event) => event.id !== head.id && !mine(event.addressee));
+      if (folded.length > 0) hidable.add(thread);
+      if (open.has(thread)) continue;
+      if (folded.length === 0) continue;
+      for (const event of folded) hidden.add(event.id);
+      blocks.set(thread, { count: folded.length, latest: folded[folded.length - 1] });
+    }
+    return { open, hidden, heads, blocks, hidable };
+  }, [events, unfolded, me?.user, me?.agent]);
 
   /**
    * The row a reader has opened a card on, or nothing.
@@ -462,6 +522,19 @@ export function MessageList({
         ) : null}
         <AnimatePresence initial={false}>
           {events.map((event) => {
+            // A collapsed reply is not drawn at all - its words sit behind the
+            // block on its thread's head row, and "show replies" there puts the
+            // rows back. AnimatePresence sees one leave and animates it out,
+            // which is the one bit of feedback folding needs.
+            if (fold?.hidden.has(event.id)) return null;
+            // THE FOLD LIVES ON A THREAD'S HEAD ROW, whichever message of the
+            // thread that is on this screen: its oldest message here, which is
+            // the root whenever the root is on screen.
+            const isHead = fold ? fold.heads.get(event.thread)?.id === event.id : false;
+            const block =
+              isHead && fold && !fold.open.has(event.thread)
+                ? fold.blocks.get(event.thread)
+                : undefined;
             const agent = isAgent(event);
             // For you, and not from you. An addressed message is still an
             // ordinary message in the room - the same people read it, it sits in
@@ -884,6 +957,50 @@ export function MessageList({
                       {(threads?.[event.thread] ?? 1) - 1 === 1 ? "y" : "ies"}
                     </button>
                   ) : null}
+                  {/*
+                    THE FOLD, per reader, on the head row. The count is of what
+                    is hidden from THIS reader - an addressed reply is drawn as
+                    its own row and never counted - and the snippet is the
+                    latest HIDDEN reply's words, which is what a reader uses to
+                    decide whether to open the thread. The whole row is still a
+                    click away through `thread` beside it; this block is the
+                    summary the operator asked for, not a door to hide behind.
+                  */}
+                  {block && onUnfold ? (
+                    <span className="flex min-w-0 items-center gap-1.5">
+                      <button
+                        type="button"
+                        data-fold-show={event.thread}
+                        onClick={() => onUnfold(event.thread, true)}
+                        className="cursor-pointer rounded border border-border px-1.5 text-[11px] text-primary transition hover:border-primary/50 hover:text-foreground"
+                      >
+                        show replies
+                      </button>
+                      <span
+                        data-fold={event.thread}
+                        data-fold-count={block.count}
+                        className="min-w-0 truncate text-muted-foreground"
+                        title={`${block.count} repl${block.count === 1 ? "y" : "ies"} folded - latest: ${speaker(block.latest)}: ${plainCut(block.latest.body)}`}
+                      >
+                        {block.count} hidden - {speaker(block.latest)}:{" "}
+                        {plainCut(block.latest.body)}
+                      </span>
+                    </span>
+                  ) : null}
+                  {isHead &&
+                  fold &&
+                  fold.open.has(event.thread) &&
+                  fold.hidable.has(event.thread) &&
+                  onUnfold ? (
+                    <button
+                      type="button"
+                      data-fold-hide={event.thread}
+                      onClick={() => onUnfold(event.thread, false)}
+                      className="cursor-pointer rounded border border-border px-1.5 text-[11px] text-muted-foreground transition hover:border-primary/50 hover:text-foreground"
+                    >
+                      hide replies
+                    </button>
+                  ) : null}
                   {event.parents.length > 0 ? (
                     <span>← {event.parents.map((id) => shortId(id)).join(" ")}</span>
                   ) : (
@@ -912,6 +1029,29 @@ export function MessageList({
       {cardFor ? <RowCard id={cardFor} onClose={() => setCardFor(null)} /> : null}
     </div>
   );
+}
+
+/**
+ * Enough of a body, as plain text, to decide whether to open the thread.
+ *
+ * CRUDE BY DESIGN. The fold block is a label over the stream, not a rendering
+ * of the message - the message itself is one click away - and a markdown
+ * parser here would be a second one in the bundle that answers a question the
+ * label does not ask. The cuts are the decorations that would otherwise read
+ * as part of the words: code fences, link syntax, heading hashes, emphasis
+ * marks, quotes, table pipes and list bullets.
+ */
+function plainCut(body: string, limit = 96): string {
+  const plain = body
+    .replace(/`{1,3}[^`]*`{1,3}/g, "")
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/[*_>|]/g, "")
+    .replace(/^\s*[-+*]\s+/gm, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const cut = plain.slice(0, limit);
+  return plain.length > limit ? `${cut}…` : cut;
 }
 
 /**

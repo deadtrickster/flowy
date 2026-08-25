@@ -15,6 +15,14 @@
  * that only looked at the thread would pass on a console where the room had
  * quietly lost the feature too, and would have to be rewritten every time a
  * fifth thing is added to a message.
+ *
+ * THE ROOM FOLDS A THREAD'S REPLIES INTO ITS HEAD ROW NOW, per reader - see
+ * thread-collapse-check - and this reply is not addressed to the reader. So
+ * the room half unfolds the thread first, the way a reader who wants the
+ * reply in the stream would, and then measures what the room draws. The fold
+ * has its own check; this one is the renderer's, and a room that drew nothing
+ * would fail the room half without saying whether the fold ate the row or the
+ * renderer did.
  */
 
 import { chromium } from "playwright";
@@ -98,6 +106,14 @@ try {
 
   // ---- what the ROOM shows, which is the standard the pane is held to ----
   await page.goto(`${base}/chat/${encodeURIComponent(room)}`, { timeout: 30_000 }).catch(() => {});
+  const show = page.locator(`[data-fold-show="${root.body.thread}"]`);
+  await show.waitFor({ state: "visible", timeout: 15_000 }).catch(() => {});
+  if ((await show.count()) === 0) {
+    die(
+      `the room offered no way to unfold ${root.body.thread}, so the reply cannot reach the stream to be measured against`,
+    );
+  }
+  await show.click();
   const inRoom = page.locator(`[data-body="${message}"]`);
   await inRoom.waitFor({ state: "visible", timeout: 20_000 }).catch(() => {});
   if ((await inRoom.count()) === 0) die(`the room did not draw ${message}`);

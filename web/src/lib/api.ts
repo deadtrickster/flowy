@@ -273,6 +273,19 @@ export interface BookmarksView {
 }
 
 /**
+ * What threads this reader has unfolded, newest unfold first.
+ *
+ * The same shape as BookmarksView's `kept` and for the same reason: the set is
+ * the state, and the log is how it got here. There is no `messages` twin - an
+ * unfold is a pointer to a thread the stream is already drawing, so nothing is
+ * fetched on its behalf.
+ */
+export interface ThreadsUnfoldedView {
+  threads: string[];
+  log: { thread: string; verb: string; at: string; event: string }[];
+}
+
+/**
  * WorkloadShare is one participant's slice of the open board.
  *
  * The denominator is every open row, unowned included: they are work in flight,
@@ -2578,6 +2591,31 @@ export const api = {
   /** Drop one. The log still gains an entry - see the DELETE handler. */
   unbookmark: (message: string) =>
     request<FlowyEvent>(`/api/bookmark/${encodeURIComponent(message)}`, { method: "DELETE" }),
+
+  /**
+   * WHICH THREADS THIS READER HAS UNFOLDED IN THE STREAM, the bookmark's
+   * private twin for the other piece of per-reader state. Collapsing replies
+   * into their head row is the default; the unfold is the exception a reader
+   * records, and it is theirs alone - nobody else's stream is this reader's
+   * business to rearrange.
+   *
+   * No room in any of these paths, for the bookmark's reason: a thread a
+   * reader unfolded may be in any room they have been in, and the state is
+   * about the reader, not the room.
+   */
+  threadsUnfolded: () => request<ThreadsUnfoldedView>("/api/threads-unfolded"),
+
+  /** Unfold one thread in this reader's stream. */
+  threadUnfold: (thread: string) =>
+    request<FlowyEvent>("/api/thread-unfolded", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ thread }),
+    }),
+
+  /** Fold it back. The log still gains an entry - see the DELETE handler. */
+  threadFold: (thread: string) =>
+    request<FlowyEvent>(`/api/thread-unfolded/${encodeURIComponent(thread)}`, { method: "DELETE" }),
 
   /**
    * Put a message up in the room it was said in. The room is in the path as

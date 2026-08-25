@@ -1057,6 +1057,12 @@ var mintedTypes = map[string]bool{
 	// use.
 	store.EventBookmarkAdd:    true,
 	store.EventBookmarkRemove: true,
+	// A thread unfold and the entry that folds it back. See
+	// store.writeUnfold: the readability refusal is on the verb, and the
+	// privacy is the SHAPE - no project, no room - which a client writing its
+	// own event could simply not use.
+	store.EventThreadUnfold: true,
+	store.EventThreadFold:   true,
 	// A vote, and the closure that stops them. Both are written by the verb
 	// that does the thing, because both refusals that make the record worth
 	// reading live there - see store.CastVote.
