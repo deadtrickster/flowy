@@ -19941,9 +19941,9 @@ check "a person logs in with a password, and the session survives a reload with 
 check "a person who is logged in, with no token anywhere, can post in a room" \
 	a_logged_in_person_can_post_in_a_room
 check "a person who is logged in, with no token, sees the console instead of the locked shelf" \
-	check "the series door answers per name, oldest first" \
+	a_logged_in_person_sees_the_console
+check "the series door answers per name, oldest first" \
 	the_series_door_answers_per_name_oldest_first
-a_logged_in_person_sees_the_console
 check "the rooms rail follows a project switch, with no reload" \
 	a_rail_follows_a_project_switch
 check "the author of a row can fix its words, and the node holds the new ones" \
