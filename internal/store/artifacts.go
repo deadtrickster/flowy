@@ -206,6 +206,15 @@ func (d *DB) upsertArtifact(ctx context.Context, q execer, a *Artifact) error {
 	if err := checkOpenspecRow(a); err != nil {
 		return err
 	}
+	// And a dashboard declares tiles the renderer can draw, and a metric is a
+	// reading with a name - asked here for the same reason: every surface
+	// writes through one of the same statements. See dashboards.go.
+	if err := checkDashboardRow(a); err != nil {
+		return err
+	}
+	if err := checkMetricRow(a); err != nil {
+		return err
+	}
 	// The date the row will carry, decided before it is signed rather than by
 	// the column's default afterwards - see createdNow. An update keeps the date
 	// the row already has: an edit is not a new artifact, and the value has to
@@ -525,6 +534,15 @@ func (d *DB) writeArtifactFields(
 	if err := checkOpenspecRow(a); err != nil {
 		return err
 	}
+	// And a dashboard declares tiles the renderer can draw, and a metric is a
+	// reading with a name - asked here for the same reason: every surface
+	// writes through one of the same statements. See dashboards.go.
+	if err := checkDashboardRow(a); err != nil {
+		return err
+	}
+	if err := checkMetricRow(a); err != nil {
+		return err
+	}
 	if err := d.signArtifact(ctx, d.sql, a); err != nil {
 		return err
 	}
@@ -746,6 +764,15 @@ func (d *DB) createArtifact(ctx context.Context, q execer, a *Artifact) error {
 		return err
 	}
 	if err := checkOpenspecRow(a); err != nil {
+		return err
+	}
+	// And a dashboard declares tiles the renderer can draw, and a metric is a
+	// reading with a name - asked here for the same reason: every surface
+	// writes through one of the same statements. See dashboards.go.
+	if err := checkDashboardRow(a); err != nil {
+		return err
+	}
+	if err := checkMetricRow(a); err != nil {
 		return err
 	}
 	// Minted here and signed with the row, not left to the column - see

@@ -15,6 +15,7 @@ import {
   Home as HomeIcon,
   Inbox as InboxIcon,
   Layers,
+  LayoutDashboard,
   ListChecks,
   ListTree,
   Lock,
@@ -368,6 +369,10 @@ export function Shell({ children }: { children: ReactNode }) {
           <NavLink to="/diagrams" className={navClass}>
             <Shapes className="h-4 w-4" />
             diagrams
+          </NavLink>
+          <NavLink to="/dashboards" className={navClass}>
+            <LayoutDashboard className="h-4 w-4" />
+            dashboards
           </NavLink>
           <NavLink to="/skills" className={navClass}>
             <BookOpen className="h-4 w-4" />
