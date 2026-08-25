@@ -1,7 +1,7 @@
 /**
  * A person logs in, in a browser, and the console believes the node.
  *
- *   node scripts/login-check.mjs BASE_URL HANDLE PASSWORD
+ *   node scripts/login-check.mjs BASE_URL HANDLE PASSWORD [TOKEN]
  *
  * The operator's words were "i dont want to bother with token. token is for
  * api, not for me". The node answers a session cookie now; this is the screen
@@ -22,9 +22,9 @@
 
 import { chromium } from "playwright";
 
-const [base, handle, password] = process.argv.slice(2);
+const [base, handle, password, token] = process.argv.slice(2);
 if (!base || !handle || !password) {
-  console.error("usage: node scripts/login-check.mjs BASE_URL HANDLE PASSWORD");
+  console.error("usage: node scripts/login-check.mjs BASE_URL HANDLE PASSWORD [TOKEN]");
   process.exit(2);
 }
 
@@ -104,9 +104,51 @@ session cookie is the credential and something here is reading a stored flag ins
     die("after logging out the page still says somebody is signed in");
   }
 
+  // 5. AND LOGGING OUT WITH A TOKEN IN HAND CLEARS THAT TOO.
+  //
+  // The operator, 2026-08-25: "logout doesnt work and i cant clean cache on
+  // android". Step 4 above passed throughout, because it never stores a token -
+  // it logs in with a password and out again, and the only credential in play
+  // is the cookie the button was already ending. A browser holding BOTH signed
+  // out of the half it was not using and stayed signed in as the bearer, since
+  // authenticate() tries the bearer first.
+  //
+  // On a desktop that is recoverable by clearing localStorage by hand. On a
+  // phone it is not reachable at all, so the only signed-out state available
+  // was one this console would not produce.
+  //
+  // This arm is the difference between the two, and it is why the whole check
+  // now takes a token: an assertion about logging out that never logs in the
+  // other way is an assertion about one of the two doors.
+  if (token) {
+    await page.goto(`${base}/login`, { timeout: 20_000 }).catch(() => {});
+    await page.evaluate((t) => localStorage.setItem("flowy.token", t), token);
+    await page.reload({ timeout: 20_000 });
+    try {
+      await page.locator("[data-login-as]").waitFor({ state: "visible", timeout: 15_000 });
+    } catch {
+      die(
+        "a pasted token did not sign the console in, so the logout arm below would prove nothing",
+      );
+    }
+    await page.locator("[data-logout]").click();
+    const left = await page.evaluate(() => localStorage.getItem("flowy.token")).catch(() => null);
+    if (left) {
+      die(`logging out left the bearer token in localStorage.
+The session ended at the node and the console is still signed in as the token, because
+authenticate() tries the bearer first - so the button appears to do nothing. There is no
+way to clear it on a phone, which is where this was reported.`);
+    }
+    try {
+      await page.locator("[data-login-as]").waitFor({ state: "detached", timeout: 15_000 });
+    } catch {
+      die("after logging out with a token in hand the page still says somebody is signed in");
+    }
+  }
+
   if (crashes.length) die(`the console threw during the login journey: ${crashes.join("; ")}`);
   console.log(
-    "a person logs in: a wrong password is refused in the node's words, the right one signs in, it survives a reload with nothing stored, and logging out ends it",
+    "a person logs in: a wrong password is refused in the node's words, the right one signs in, it survives a reload with nothing stored, logging out ends it, and logging out with a token in hand clears that too",
   );
 } finally {
   await browser.close();

@@ -106,8 +106,36 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     setAsked((n) => n + 1);
   }, []);
 
+  /**
+   * OUT OF BOTH, because there are two ways in and the button says "log out".
+   *
+   * The operator, 2026-08-25: "logout doesnt work and i cant clean cache on
+   * android". It ended the SESSION and left the bearer token in localStorage,
+   * so a browser holding both signed out of the half it was not using and
+   * stayed signed in as the token - and authenticate() tries the bearer FIRST,
+   * so the console looked exactly as it had before the click.
+   *
+   * On a desktop this is recoverable by hand. On a phone there is no way to
+   * reach localStorage at all, so the only signed-out state available to the
+   * operator was one this console would not produce. That is what "doesnt
+   * work" meant.
+   *
+   * THE ORDER MATTERS. The token is cleared FIRST: api.logout() sends whichever
+   * credential the browser has, and clearing the token before the request would
+   * send the cookie alone - which is the one the node is being asked to end, so
+   * it still works, but only by accident of which credential happens to be
+   * left. Ending the session with the credential in hand and then dropping the
+   * other is the order that does not depend on that.
+   *
+   * setStateToken as well as setToken, because the first writes localStorage
+   * and the second is what this tree renders from; leaving the state behind
+   * would show a token that is no longer stored, and the next whoami would
+   * disagree with the screen.
+   */
   const logOut = useCallback(async () => {
     await api.logout();
+    setToken("");
+    setStateToken("");
     setAsked((n) => n + 1);
   }, []);
 

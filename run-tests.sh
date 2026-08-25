@@ -19813,7 +19813,7 @@ a_person_logs_in_from_the_console() {
 	local pw="a-password-the-gate-picked"
 	printf '%s\n' "$pw" | "$ROOT/flowy" passwd --handle "$HANDLE_A" >/dev/null || return 1
 	cd "$ROOT/web" || return 1
-	node scripts/login-check.mjs "http://127.0.0.1:$HTTP_PORT" "$HANDLE_A" "$pw"
+	node scripts/login-check.mjs "http://127.0.0.1:$HTTP_PORT" "$HANDLE_A" "$pw" "$TOKEN_A"
 }
 
 # And they change it from the console, which is where the operator asked for it:
