@@ -19757,6 +19757,34 @@ the_diagrams_page_says_it_is_signed_out() {
 # Shares the fixture with the check below it and runs first, because both call
 # flowy passwd on HANDLE_A and neither may run after
 # a_person_sets_their_own_handle_and_password, which changes that handle.
+
+# AND THE RAIL FOLLOWS A PROJECT SWITCH, without a reload.
+#
+# The operator, 2026-08-25: "it worked except rooms list didnt restore to the
+# flowy project". useRoomList's effect carried `[]`, so the rooms were fetched
+# once at mount and never again - right when a console had one project for the
+# life of a page, wrong from the day `enter` made the project change underneath
+# a mounted tree.
+#
+# NOT COSMETIC: a room belongs to a project, so a rail left on the previous one
+# offers links into rooms this session cannot write in.
+#
+# ITS OWN SECOND PROJECT, declared here rather than borrowed. The fixture has
+# one project, and this check is entirely about the difference between two - a
+# check that shared PROJECT_A with everything else would be asserting on rooms
+# other checks create and would pass or fail on their traffic.
+a_rail_follows_a_project_switch() {
+	recall
+	local pw="a-password-the-gate-picked"
+	local other="railswitch"
+	printf '%s\n' "$pw" | "$ROOT/flowy" passwd --handle "$HANDLE_A" >/dev/null || return 1
+	api POST "$TOKEN_OP" "/api/projects" "{\"id\": \"$other\"}" || return 1
+	api POST "$TOKEN_OP" "/api/projects/$PROJECT_A/members" "{\"user\": \"$HANDLE_A\"}" || return 1
+	api POST "$TOKEN_OP" "/api/projects/$other/members" "{\"user\": \"$HANDLE_A\"}" || return 1
+	cd "$ROOT/web" || return 1
+	node scripts/rooms-follow-project-check.mjs "http://127.0.0.1:$HTTP_PORT" \
+		"$HANDLE_A" "$pw" "$PROJECT_A" "$other"
+}
 a_logged_in_person_sees_the_console() {
 	recall
 	local pw="a-password-the-gate-picked"
@@ -19846,6 +19874,8 @@ check "a person who is logged in, with no token anywhere, can post in a room" \
 	a_logged_in_person_can_post_in_a_room
 check "a person who is logged in, with no token, sees the console instead of the locked shelf" \
 	a_logged_in_person_sees_the_console
+check "the rooms rail follows a project switch, with no reload" \
+	a_rail_follows_a_project_switch
 check "the author of a row can fix its words, and the node holds the new ones" \
 	a_person_fixes_the_words_they_wrote
 check "a person sets their own handle and password from the console" \

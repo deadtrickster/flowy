@@ -9,7 +9,7 @@ import {
 } from "react";
 
 import { api } from "@/lib/api";
-import { useSignedIn } from "@/lib/session";
+import { useSession, useSignedIn } from "@/lib/session";
 
 /**
  * THE CONSOLE IS A READER IN ITS OWN RIGHT.
@@ -190,6 +190,26 @@ export function useRoomList() {
   // The note's id, so the second write updates the row the first one made
   // rather than filing a new one each time.
   const noteId = useRef("");
+  /**
+   * WHICH PROJECT THIS LIST IS OF, and the reason it is a dependency below.
+   *
+   * The operator, 2026-08-25, having just switched project from the console:
+   * "it worked except rooms list didnt restore to the flowy project". The
+   * switch worked; the sidebar did not follow it. This effect carried `[]`, so
+   * the rooms were fetched once at mount and never again, and entering another
+   * project left the previous project's rooms in the rail until a full reload.
+   *
+   * A room is scoped to a project - `#general` in flowy and `#general` in Lab
+   * are two rooms with one name, and neither reads the other's - so a rail
+   * showing the wrong project's rooms is not stale decoration. It offers links
+   * into rooms this session cannot write in.
+   *
+   * `[]` was right when a console had one project for the life of a page.
+   * `enter` made the project a thing that changes underneath a mounted tree,
+   * and every read keyed on nothing at all became wrong on that day - the same
+   * shape as the credential sweep in the previous commit, one dimension over.
+   */
+  const project = useSession().whoami?.project ?? "";
 
   useEffect(() => {
     let live = true;
@@ -225,7 +245,8 @@ export function useRoomList() {
     return () => {
       live = false;
     };
-  }, []);
+    // project, so entering another one refetches - see the note above.
+  }, [project]);
 
   // Whether the closed list was ever successfully READ. A write that creates
   // because it did not find must have looked everywhere - and "the read failed"
