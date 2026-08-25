@@ -63,3 +63,47 @@ func (s *server) handleMetricsRows(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"metrics": list})
 }
+
+// metricsSeriesParams is the door's vocabulary. `points` rather than `limit`
+// because it bounds points PER SERIES, and limit already means something else on
+// the neighbouring door - one word, one meaning.
+var metricsSeriesParams = map[string]bool{"name": true, "points": true}
+
+// handleMetricsSeries answers the last N readings of each named series, oldest
+// first.
+//
+// GET /api/metrics/series?name=A&name=B&points=60
+//
+// WHY A SECOND DOOR RATHER THAN A FLAG ON THE FIRST. /api/metrics/rows answers
+// "what do these metrics say now" and takes one limit across every name, so
+// three series at limit 200 can come back as 200 points of the busiest and none
+// of the others. That is the right answer to its own question and cannot be the
+// right answer to this one. A flag would make one door answer two questions and
+// the caller guess which it got.
+//
+// OLDEST FIRST, said here and in the store, because a sparkline is read left to
+// right. Every other list on this node is newest-first; a series drawn backwards
+// looks like a trend reversing, which is a wrong answer that renders beautifully
+// and is exactly the class this fleet keeps paying for.
+func (s *server) handleMetricsSeries(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	if why := refuseUnknownParams(q, metricsSeriesParams); why != "" {
+		writeJSON(w, http.StatusBadRequest, errorBody(why))
+		return
+	}
+	names := q["name"]
+	if len(names) == 0 {
+		writeJSON(w, http.StatusBadRequest,
+			errorBody("name is required - the door answers the points of the series it is asked for"))
+		return
+	}
+	list, err := s.db.SeriesOf(r.Context(), principalOf(r), names, intParam(q.Get("points")))
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	// asked is echoed so a caller can tell "this series has no rows" from "I
+	// misspelled its name": the series array carries only names that exist, and
+	// without the ask there is nothing to diff it against.
+	writeJSON(w, http.StatusOK, map[string]any{"series": list, "asked": names})
+}

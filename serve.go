@@ -419,6 +419,7 @@ var apiRoutes = []string{
 	"GET /api/node",
 	"GET /api/metrics",
 	"GET /api/metrics/rows",
+	"GET /api/metrics/series",
 	"GET /api/activity",
 	"POST /api/activity",
 	"GET /api/traces",
@@ -810,6 +811,7 @@ func (s *server) routes() http.Handler {
 	// The dashboard read: the rows of the named metric series. NOT the node's
 	// own measurements above - see api_dashboards.go for why the routes differ.
 	api.HandleFunc("GET /api/metrics/rows", s.handleMetricsRows)
+	api.HandleFunc("GET /api/metrics/series", s.handleMetricsSeries)
 	api.HandleFunc("GET /api/activity", s.handleActivity)
 	api.HandleFunc("POST /api/activity", s.handlePostActivity)
 	// The worklog's own write verb, because the agents doing the work are given

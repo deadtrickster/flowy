@@ -19785,6 +19785,66 @@ a_rail_follows_a_project_switch() {
 	node scripts/rooms-follow-project-check.mjs "http://127.0.0.1:$HTTP_PORT" \
 		"$HANDLE_A" "$pw" "$PROJECT_A" "$other"
 }
+
+# THE SERIES DOOR ANSWERS PER NAME, OLDEST FIRST.
+#
+# /api/metrics/rows answers "what do these metrics say now": one limit across
+# every name, newest first. Three series at limit 200 can come back as 200 points
+# of the busiest and none of the others, which is the right answer to its own
+# question and cannot be the right answer to "the last N of each".
+#
+# So this asserts the three things that make a series a series and not a list:
+#
+#   PER NAME. Two series, points=2, and each must come back with its own two.
+#   A shared limit passes every other assertion here and fails this one.
+#
+#   OLDEST FIRST. A sparkline is read left to right, and every other list on
+#   this node is newest-first - so the order is the thing most likely to be
+#   wrong and least likely to look wrong. A series drawn backwards renders
+#   beautifully and reverses every trend on the page.
+#
+#   ABSENT IS NOT EMPTY. A name nobody pushed comes back with no entry rather
+#   than an entry with no points, and `asked` echoes what was requested so a
+#   caller can tell "nothing pushed" from "I misspelled it". Collapsing that
+#   pair has cost this fleet more than any other single mistake.
+the_series_door_answers_per_name_oldest_first() {
+	recall
+	local a="gate.series.a.$$" b="gate.series.b.$$"
+	local i
+	for i in 1 2 3; do
+		api POST "$TOKEN_A" "/api/artifacts" \
+			"{\"type\":\"memory\",\"kind\":\"metric\",\"title\":\"$a\",\"fields\":{\"name\":\"$a\",\"value\":$i}}" || return 1
+	done
+	for i in 7 8; do
+		api POST "$TOKEN_A" "/api/artifacts" \
+			"{\"type\":\"memory\",\"kind\":\"metric\",\"title\":\"$b\",\"fields\":{\"name\":\"$b\",\"value\":$i}}" || return 1
+	done
+
+	api GET "$TOKEN_A" "/api/metrics/series?name=$a&name=$b&points=2" || return 1
+	want_eq "two series come back" "$(jqv '.series | length')" "2" || return 1
+	# PER NAME: a shared limit would give one series both slots.
+	want_eq "series a has its own two points" \
+		"$(jqv ".series[] | select(.name==\"$a\") | .points | length")" "2" || return 1
+	want_eq "series b has its own two points" \
+		"$(jqv ".series[] | select(.name==\"$b\") | .points | length")" "2" || return 1
+	# OLDEST FIRST: a has 1,2,3 written in that order, so the last two are 2 then 3.
+	want_eq "a's points are oldest first" \
+		"$(jqv ".series[] | select(.name==\"$a\") | [.points[].value] | join(\",\")")" "2,3" || return 1
+	# TRUNCATED says the window is not the whole series.
+	want_eq "a says it truncated" \
+		"$(jqv ".series[] | select(.name==\"$a\") | .truncated")" "true" || return 1
+	want_eq "b did not truncate" \
+		"$(jqv ".series[] | select(.name==\"$b\") | .truncated // false")" "false" || return 1
+
+	# ABSENT IS NOT EMPTY.
+	api GET "$TOKEN_A" "/api/metrics/series?name=gate.series.nobody.$$" || return 1
+	want_eq "a name nobody pushed has no entry" "$(jqv '.series | length')" "0" || return 1
+	want_eq "and the ask is echoed so the caller can tell which" "$(jqv '.asked | length')" "1" || return 1
+
+	api GET "$TOKEN_A" "/api/metrics/series" || return 1
+	want_eq "no name at all is refused" "$API_STATUS" "400" || return 1
+	printf 'the series door answers per name, oldest first, and says when it truncated\n'
+}
 a_logged_in_person_sees_the_console() {
 	recall
 	local pw="a-password-the-gate-picked"
@@ -19873,7 +19933,9 @@ check "a person logs in with a password, and the session survives a reload with 
 check "a person who is logged in, with no token anywhere, can post in a room" \
 	a_logged_in_person_can_post_in_a_room
 check "a person who is logged in, with no token, sees the console instead of the locked shelf" \
-	a_logged_in_person_sees_the_console
+	check "the series door answers per name, oldest first" \
+	the_series_door_answers_per_name_oldest_first
+a_logged_in_person_sees_the_console
 check "the rooms rail follows a project switch, with no reload" \
 	a_rail_follows_a_project_switch
 check "the author of a row can fix its words, and the node holds the new ones" \

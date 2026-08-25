@@ -275,3 +275,116 @@ func (d *DB) Metrics(ctx context.Context, p *Principal, names []string, limit in
 	}
 	return out, nil
 }
+
+// SeriesPoint is one reading of one series: when it was written, and what it said.
+//
+// `At` is the hlc rather than a wall clock, for the reason every other ordering
+// on this node uses it: two nodes' clocks disagree and the log does not.
+type SeriesPoint struct {
+	At    int64           `json:"at"`
+	Value json.RawMessage `json:"value"`
+}
+
+// Series is one named series and its points, OLDEST FIRST.
+type Series struct {
+	Name   string        `json:"name"`
+	Points []SeriesPoint `json:"points"`
+	// Truncated says the ring was full: there are older points than these.
+	// A caller drawing a sparkline needs to know its window is not the whole
+	// history, and "the series starts here" and "this is where I stopped
+	// looking" are different facts.
+	Truncated bool `json:"truncated"`
+}
+
+// SeriesOf reads the last `points` readings of each named series, oldest first.
+//
+// WHY THIS IS NOT Metrics() WITH A LIMIT. Metrics takes one limit across every
+// name it is asked for and returns them interleaved, newest first. That answers
+// "what is the current value" perfectly and cannot answer "the last 60 of each",
+// which is what a sparkline is: three series at limit 200 can come back as 200
+// points of the busiest one and none of the others.
+//
+// A WINDOW PER NAME, therefore, and the retention is the CALLER'S window rather
+// than a policy here. The operator's rule: "we dont need to store historical
+// data beyond what is on the screen, same as tui (mind reflows so up to some max
+// width/height)". So this door bounds what it RETURNS and says when it truncated;
+// what the store keeps is a separate question from what a panel can draw.
+//
+// OLDEST FIRST because that is the direction a sparkline is read. Every other
+// door here answers newest-first, so this one says so in its name and its doc
+// rather than leaving a caller to discover the order from the data - a series
+// drawn backwards looks like a trend reversing, which is a wrong answer that
+// renders beautifully.
+func (d *DB) SeriesOf(ctx context.Context, p *Principal, names []string, points int) ([]*Series, error) {
+	ctx, span := otel.Start(ctx, otel.KindQuery, "metrics.series")
+	defer span.End()
+	if points <= 0 {
+		points = 60
+	}
+	if points > 4096 {
+		// serenedash's history.py keeps 4096 samples and says why: enough for an
+		// overnight comparison without turning into something that needs
+		// managing. A panel cannot draw more columns than that either.
+		points = 4096
+	}
+	a := &args{}
+	filter := ArtifactFilterSQL(p, "ar", a, false)
+	// One window per name, so a busy series cannot crowd out a quiet one. The
+	// extra row per name is what tells the caller it truncated.
+	query := `SELECT name, hlc, value FROM (
+	            SELECT ar.fields->>'name' AS name, ar.hlc AS hlc, ar.fields->'value' AS value,
+	                   row_number() OVER (PARTITION BY ar.fields->>'name' ORDER BY ar.hlc DESC, ar.id DESC) AS rn
+	              FROM artifacts ar
+	             WHERE coalesce(ar.tombstone, false) = false
+	               AND ` + filter + `
+	               AND ar.kind = '` + MetricKind + `'
+	               AND ar.fields ? 'name'
+	               AND ar.fields->>'name' = ANY(` + a.next(pq.Array(names)) + `)
+	          ) w
+	         WHERE w.rn <= ` + a.next(points+1) + `
+	         ORDER BY w.name, w.hlc ASC`
+
+	rows, err := d.sql.QueryContext(ctx, query, a.vals...)
+	if err != nil {
+		span.Fail("the series read did not run")
+		return nil, fmt.Errorf("store: read series: %w", err)
+	}
+	defer rows.Close()
+
+	byName := map[string]*Series{}
+	order := []string{}
+	for rows.Next() {
+		var name string
+		var hlc int64
+		var raw []byte
+		if err := rows.Scan(&name, &hlc, &raw); err != nil {
+			return nil, fmt.Errorf("store: read series: %w", err)
+		}
+		s := byName[name]
+		if s == nil {
+			s = &Series{Name: name, Points: []SeriesPoint{}}
+			byName[name] = s
+			order = append(order, name)
+		}
+		s.Points = append(s.Points, SeriesPoint{At: hlc, Value: json.RawMessage(raw)})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: read series: %w", err)
+	}
+	out := make([]*Series, 0, len(order))
+	for _, n := range order {
+		s := byName[n]
+		// The extra row was only ever a probe for "is there more"; drop it from
+		// the OLDEST end, because the newest points are the ones being drawn.
+		if len(s.Points) > points {
+			s.Truncated = true
+			s.Points = s.Points[len(s.Points)-points:]
+		}
+		out = append(out, s)
+	}
+	// A NAME WITH NO ROWS IS ABSENT, NOT EMPTY, and the caller is told which by
+	// getting no entry rather than an entry with no points. "nothing has been
+	// pushed" and "this series does not exist" are different, and collapsing
+	// that pair has cost this fleet more than any other single mistake.
+	return out, nil
+}

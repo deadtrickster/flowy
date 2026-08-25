@@ -91,6 +91,7 @@ var routeParams = map[string][]string{
 	"GET /api/merge/{id}/admissible":             {"scope", "target_tip"},
 	"GET /api/metrics":                           {"scope"},
 	"GET /api/metrics/rows":                      {"limit", "name"},
+	"GET /api/metrics/series":                    {"name", "points"},
 	"GET /api/node":                              {},
 	"GET /api/openspec":                          {"limit", "room", "scope", "status"},
 	"GET /api/openspec/{id}/conflicts":           {"scope"},
