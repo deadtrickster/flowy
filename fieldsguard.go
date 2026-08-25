@@ -78,6 +78,7 @@ var openspecStateReach = map[string]string{
 	"GET /api/merge-queue":               "na",
 	"GET /api/merge-queue/wait":          "na",
 	"GET /api/metrics":                   "na",
+	"GET /api/metrics/rows":              "na",
 	"GET /api/nag":                       "na",
 	"GET /api/nag/wait":                  "na",
 	"GET /api/node":                      "na",

@@ -6,6 +6,8 @@ import { Activity } from "@/routes/Activity";
 import { ArtifactView } from "@/routes/ArtifactView";
 import { Bookmarks } from "@/routes/Bookmarks";
 import { ChatRoom } from "@/routes/ChatRoom";
+import { DashboardView } from "@/routes/DashboardView";
+import { Dashboards } from "@/routes/Dashboards";
 import { DiagramView } from "@/routes/DiagramView";
 import { Diagrams } from "@/routes/Diagrams";
 import { Direct } from "@/routes/Direct";
@@ -116,6 +118,14 @@ export default function App() {
           */}
           <Route path="/diagrams" element={<Diagrams />} />
           <Route path="/diagrams/:id" element={<DiagramView />} />
+          {/*
+            A dashboard is a declaration, not a program: agents author the
+            row through the artifact door, and these pages render whatever
+            the tiles declare over the metric rows producers pushed. See
+            routes/Dashboards.tsx and routes/DashboardView.tsx.
+          */}
+          <Route path="/dashboards" element={<Dashboards />} />
+          <Route path="/dashboards/:id" element={<DashboardView />} />
           {/*
           A shape inside one. (project, type, id) addresses every artifact in
           this store; a cell is that plus the mxCell id, which is the id that
