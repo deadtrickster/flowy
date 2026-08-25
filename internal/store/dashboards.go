@@ -181,6 +181,10 @@ func checkMetricRow(a *Artifact) error {
 	if a == nil || !IsMetric(a) {
 		return nil
 	}
+	if len(a.Fields) == 0 {
+		return MetricRowError{Row: a.ID,
+			Why: "a metric is a named reading - fields.name and fields.value must carry them"}
+	}
 	var outer struct {
 		Name  string          `json:"name"`
 		Value json.RawMessage `json:"value"`
@@ -191,7 +195,7 @@ func checkMetricRow(a *Artifact) error {
 	if strings.TrimSpace(outer.Name) == "" {
 		return MetricRowError{Row: a.ID, Why: "a metric names its series - fields.name must carry it"}
 	}
-	if len(outer.Value) == 0 {
+	if len(outer.Value) == 0 || string(outer.Value) == "null" {
 		return MetricRowError{Row: a.ID, Why: "a metric is its reading - fields.value must carry it"}
 	}
 	return nil
