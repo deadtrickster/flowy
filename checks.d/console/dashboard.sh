@@ -32,7 +32,17 @@
 a_dashboard_renders_declared_tiles_from_pushed_rows() {
 	cd "$ROOT/web" || return 1
 	node scripts/dashboard-check.mjs "http://127.0.0.1:$HTTP_PORT" \
-		"$TOKEN_A" "$TOKEN_A_PC"
+		"$TOKEN_A" "$TOKEN_A_PC" || return 1
+	# The outsider's browser session mounts the console shell like any visit,
+	# and the shell declares its own console:<room> readers - one row per
+	# token, keyed by principal, so this check leaves A-in-pc's reader behind.
+	# The unread reader-row check queries A's rows without naming a project,
+	# so a second row reads as one two-line mark and breaks its arithmetic.
+	# A check leaves the shared database as it found it: delete what it made.
+	scalar "DELETE FROM inbox_readers
+	         WHERE reader LIKE 'console:%'
+	           AND principal = '$USER_A' || chr(31) || chr(31) || 'pc'" \
+		>/dev/null || return 1
 }
 
 check "a dashboard renders declared tiles over pushed metric rows, refuses outsiders, and shows ages" \
