@@ -204,14 +204,21 @@ extra: ${extra.join(", ") || "none"}`,
   const foldA = page.locator(`[data-message="${rootA.id}"] [data-fold="${rootA.thread}"]`);
   await foldA.waitFor({ state: "visible", timeout: 10_000 }).catch(() => {});
   if ((await foldA.count()) === 0) die(`thread A's head row carries no fold block`);
+  if ((await foldA.count()) !== 1) {
+    die(`thread A's head row draws ${await foldA.count()} fold blocks, wanted exactly 1`);
+  }
   const countA = await foldA.first().getAttribute("data-fold-count");
   if (countA !== "7") die(`thread A's fold block says ${countA} hidden, the node holds 7`);
   const foldATitle = (await foldA.first().getAttribute("title")) ?? "";
   if (!foldATitle.includes(word("a7"))) {
     die(`thread A's fold control does not offer the latest reply's words:\n${foldATitle}`);
   }
-  if ((await page.locator(`[data-fold-show="${rootA.thread}"]`).count()) === 0) {
-    die("thread A's fold block offers no way to show the replies in the stream");
+  // The control itself, counted exactly: the operator's report 01M0X5EZT is
+  // "show replies" drawing as two rows, and a check that only asked "is there
+  // one" would pass a head row that draws the control twice.
+  const showA = page.locator(`[data-fold-show="${rootA.thread}"]`);
+  if ((await showA.count()) !== 1) {
+    die(`thread A draws ${await showA.count()} show-replies controls, wanted exactly 1`);
   }
 
   // ---- ARM 3: the addressed reply is IN the stream while its thread stays
@@ -220,6 +227,13 @@ extra: ${extra.join(", ") || "none"}`,
   const foldB = page.locator(`[data-message="${rootB.id}"] [data-fold="${rootB.thread}"]`);
   await foldB.waitFor({ state: "visible", timeout: 10_000 }).catch(() => {});
   if ((await foldB.count()) === 0) die(`thread B's head row carries no fold block`);
+  if ((await foldB.count()) !== 1) {
+    die(`thread B's head row draws ${await foldB.count()} fold blocks, wanted exactly 1`);
+  }
+  const showB = page.locator(`[data-fold-show="${rootB.thread}"]`);
+  if ((await showB.count()) !== 1) {
+    die(`thread B draws ${await showB.count()} show-replies controls, wanted exactly 1`);
+  }
   const countB = await foldB.first().getAttribute("data-fold-count");
   if (countB !== "6") {
     die(
