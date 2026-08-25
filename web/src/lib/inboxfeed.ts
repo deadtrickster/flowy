@@ -77,7 +77,7 @@ const FAIL_PAUSE = 5_000;
  * than swallowed because an inbox that cannot be read and an inbox with nothing
  * in it are different facts, and the card says so.
  */
-export function useInboxFeed(token: string | null) {
+export function useInboxFeed(signedIn: boolean) {
   const [events, setEvents] = useState<FlowyEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
 
@@ -98,7 +98,7 @@ export function useInboxFeed(token: string | null) {
   }, []);
 
   useEffect(() => {
-    if (!token) {
+    if (!signedIn) {
       setEvents([]);
       setError(null);
       return;
@@ -166,7 +166,7 @@ export function useInboxFeed(token: string | null) {
       // hold a request open on a node it is no longer showing.
       controller.abort();
     };
-  }, [token, readNow]);
+  }, [signedIn, readNow]);
 
   return { events, error };
 }

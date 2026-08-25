@@ -47,6 +47,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [whoami, setWhoami] = useState<Whoami | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  // Whether the FIRST whoami has come back. Its own flag rather than
+  // (whoami === null && loading), because those two are false together both
+  // before the effect runs and after a genuine signed-out answer, and telling
+  // those apart is the entire point.
+  const [settling, setSettling] = useState(true);
 
   // Bumped whenever the credential changes in a way the node decides - a login
   // or a logout - so the ask below runs again without this file keeping its own
@@ -78,7 +83,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         setError(err.message);
       })
       .finally(() => {
-        if (!stopped) setLoading(false);
+        if (stopped) return;
+        setLoading(false);
+        setSettling(false);
       });
     return () => {
       stopped = true;
@@ -104,6 +111,37 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     setAsked((n) => n + 1);
   }, []);
 
+  // NOTHING CREDENTIAL-SHAPED IS PAINTED BEFORE THE CREDENTIAL IS KNOWN.
+  //
+  // whoami arrives over the network; a token was read out of localStorage
+  // synchronously. So the moment the pages below stopped asking `token` and
+  // started asking whoami - which is the point of this change - they gained a
+  // first frame in which nobody is signed in yet, and every one of them says so
+  // in words: "log in, or paste a token, to read the worklog". A person who IS
+  // signed in was shown the signed-out screen for the length of one round trip,
+  // on every page load.
+  //
+  // Caught by person-sees-the-console-check.mjs on its first run, which is the
+  // whole argument for having written it: the sweep was correct and introduced
+  // this, and no amount of reading the diff would have shown it.
+  //
+  // "Not asked yet" is a third state and it is not "signed out". This holds the
+  // tree until the first answer settles - once, not on every refresh, because
+  // later asks have a previous answer to keep showing and only the first has
+  // nothing. The alternative was a fourth argument threaded through two dozen
+  // empty-state helpers, which is the shape that produced the original defect.
+  if (settling) {
+    return (
+      <SessionContext.Provider
+        value={{ token, whoami, error, loading, signIn, logIn, logOut, refresh }}
+      >
+        <div className="p-6 text-muted-foreground text-sm" data-session-settling>
+          asking the node who you are…
+        </div>
+      </SessionContext.Provider>
+    );
+  }
+
   return (
     <SessionContext.Provider
       value={{ token, whoami, error, loading, signIn, logIn, logOut, refresh }}
@@ -119,4 +157,30 @@ export function useSession(): Session {
     throw new Error("useSession must be used inside a SessionProvider");
   }
   return session;
+}
+
+/**
+ * Whether anybody is signed in - which is whoami answering, not a bearer token
+ * sitting in localStorage.
+ *
+ * IT EXISTS AS A HOOK RATHER THAN AS `whoami != null` IN TWENTY-FIVE FILES
+ * because that is exactly how the previous rule spread and then rotted. Every
+ * page reached for `token` and meant "is anybody here", each one defensibly,
+ * and the day a second way to be somebody arrived - a session cookie, so a
+ * person need not hold a token - all twenty-five were wrong at once and nothing
+ * connected them. The operator found it as a chat box that would not accept
+ * typing: "cant post to chat - that red cirlce pointer".
+ *
+ * A named hook makes the next such change one edit rather than twenty-five, and
+ * makes the question askable: `grep useSignedIn` says which surfaces gate on
+ * being signed in, which `grep token` never could, because token is also a
+ * value that three files legitimately handle.
+ *
+ * NOT THE SAME QUESTION AS "MAY I WRITE HERE". A write lands in the principal's
+ * home project, so a person with a session and no project entered has nowhere
+ * to put one - see ChatRoom's cannotPost, which asks both and says which is
+ * missing. This hook answers only the first.
+ */
+export function useSignedIn(): boolean {
+  return useSession().whoami != null;
 }

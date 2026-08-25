@@ -26,13 +26,14 @@ import { useSession } from "@/lib/session";
  * node is empty.
  */
 export function Metrics() {
-  const { token, whoami } = useSession();
+  const { whoami } = useSession();
+  const signedIn = whoami != null;
   const [metrics, setMetrics] = useState<MetricsPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [asNode, setAsNode] = useState(false);
 
   useEffect(() => {
-    if (!token) {
+    if (!signedIn) {
       setMetrics(null);
       return;
     }
@@ -49,7 +50,7 @@ export function Metrics() {
     return () => {
       stopped = true;
     };
-  }, [token, asNode]);
+  }, [signedIn, asNode]);
 
   const groups = metrics?.groups;
 
@@ -76,7 +77,7 @@ export function Metrics() {
           ) : null}
         </div>
 
-        {!token ? (
+        {!signedIn ? (
           <p className="text-muted-foreground text-sm">paste a token to see your numbers</p>
         ) : null}
         {error ? <div className="text-destructive text-sm">{error}</div> : null}

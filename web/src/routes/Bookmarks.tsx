@@ -4,7 +4,7 @@ import { Link } from "react-router-dom";
 
 import { Button } from "@/components/ui/button";
 import { type BookmarksView, type FlowyEvent, api } from "@/lib/api";
-import { useSession } from "@/lib/session";
+import { useSignedIn } from "@/lib/session";
 import { speakerStyle } from "@/lib/speakercolour";
 import { shortId } from "@/lib/utils";
 
@@ -28,12 +28,12 @@ import { shortId } from "@/lib/utils";
  * they had unkept something they did not.
  */
 export function Bookmarks() {
-  const { token } = useSession();
+  const signedIn = useSignedIn();
   const [page, setPage] = useState<BookmarksView | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
-    if (!token) {
+    if (!signedIn) {
       setPage(null);
       return;
     }
@@ -43,7 +43,7 @@ export function Bookmarks() {
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
-  }, [token]);
+  }, [signedIn]);
 
   useEffect(() => {
     void load();
@@ -80,7 +80,7 @@ export function Bookmarks() {
 
       {error ? <div className="text-destructive text-sm">{error}</div> : null}
 
-      {!token ? (
+      {!signedIn ? (
         <div className="text-muted-foreground text-sm">paste a token to see what you kept</div>
       ) : messages.length === 0 && gone <= 0 ? (
         <div className="rounded-md border border-dashed border-border p-3 text-muted-foreground text-sm">

@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import type { Artifact } from "@/lib/api";
 import { EMPTY_DIAGRAM, diagrams } from "@/lib/diagrams";
-import { useSession } from "@/lib/session";
+import { useSignedIn } from "@/lib/session";
 
 /**
  * What a diagram nobody named is called. It is a real title rather than an
@@ -26,7 +26,7 @@ const UNTITLED = "untitled diagram";
  * shapes that point at the entities it draws.
  */
 export function Diagrams() {
-  const { token } = useSession();
+  const signedIn = useSignedIn();
   const nav = useNavigate();
   const [items, setItems] = useState<Artifact[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -35,7 +35,7 @@ export function Diagrams() {
   const [making, setMaking] = useState(false);
 
   useEffect(() => {
-    if (!token) {
+    if (!signedIn) {
       setItems([]);
       setLoaded(false);
       return;
@@ -55,7 +55,7 @@ export function Diagrams() {
     return () => {
       stopped = true;
     };
-  }, [token]);
+  }, [signedIn]);
 
   // A new diagram is written before it is opened, rather than opened and
   // written on first edit. An editor holding a document with no id is a
@@ -109,7 +109,7 @@ export function Diagrams() {
             to write with, and the page says so under the header. An empty name
             is not a reason to refuse - see create().
           */}
-          <Button type="submit" size="sm" disabled={!token || making}>
+          <Button type="submit" size="sm" disabled={!signedIn || making}>
             {making ? "creating…" : "new"}
           </Button>
         </form>
@@ -117,7 +117,7 @@ export function Diagrams() {
 
       {error ? <p className="px-4 pt-3 text-destructive text-sm">{error}</p> : null}
 
-      {!token ? (
+      {!signedIn ? (
         <p className="px-4 py-6 text-muted-foreground text-sm">
           paste a token to see the diagrams - signed out this is a locked shelf, not an empty one
         </p>

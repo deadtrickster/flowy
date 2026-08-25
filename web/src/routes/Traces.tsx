@@ -22,7 +22,8 @@ import { cn, shortId } from "@/lib/utils";
  * not have. Red is kept for the one thing it should mean - a span that failed.
  */
 export function Traces() {
-  const { token, whoami } = useSession();
+  const { whoami } = useSession();
+  const signedIn = whoami != null;
   const [params, setParams] = useSearchParams();
   const [list, setList] = useState<TraceSummary[]>([]);
   const [trace, setTrace] = useState<Trace | null>(null);
@@ -31,7 +32,7 @@ export function Traces() {
   const asNode = params.get("scope") === "all" && Boolean(whoami?.operator);
 
   useEffect(() => {
-    if (!token) return;
+    if (!signedIn) return;
     let stopped = false;
     api
       .traces(asNode)
@@ -44,10 +45,10 @@ export function Traces() {
     return () => {
       stopped = true;
     };
-  }, [token, asNode]);
+  }, [signedIn, asNode]);
 
   useEffect(() => {
-    if (!token || !selected) {
+    if (!signedIn || !selected) {
       setTrace(null);
       return;
     }
@@ -63,7 +64,7 @@ export function Traces() {
     return () => {
       stopped = true;
     };
-  }, [token, selected, asNode]);
+  }, [signedIn, selected, asNode]);
 
   return (
     <div className="flex h-full">
@@ -72,7 +73,7 @@ export function Traces() {
           <h1 className="font-semibold text-base">traces</h1>
           <span className="ml-auto text-muted-foreground text-xs">{list.length} recent</span>
         </header>
-        {!token ? (
+        {!signedIn ? (
           <p className="p-4 text-muted-foreground text-sm">paste a token to see traces</p>
         ) : null}
         {error ? <p className="p-4 text-destructive text-sm">{error}</p> : null}

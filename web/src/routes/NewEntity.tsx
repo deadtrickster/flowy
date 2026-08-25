@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { api, artifactPath } from "@/lib/api";
-import { useSession } from "@/lib/session";
+import { useSignedIn } from "@/lib/session";
 
 /**
  * The one place a person makes a row.
@@ -36,7 +36,7 @@ const WRITABLE = [
 ];
 
 export function NewEntity() {
-  const { token } = useSession();
+  const signedIn = useSignedIn();
   const navigate = useNavigate();
   const [type, setType] = useState("todo");
   const [title, setTitle] = useState("");
@@ -66,7 +66,7 @@ export function NewEntity() {
     }
   };
 
-  if (!token) {
+  if (!signedIn) {
     return (
       <div className="p-6 text-muted-foreground text-sm">paste a token to write anything down</div>
     );

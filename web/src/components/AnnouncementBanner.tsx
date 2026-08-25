@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { type Announcement, api } from "@/lib/api";
-import { useSession } from "@/lib/session";
+import { useSignedIn } from "@/lib/session";
 import { cn } from "@/lib/utils";
 
 /** How often the banner re-reads. An announcement is not chat: a minute is soon enough. */
@@ -47,14 +47,14 @@ const TONE: Record<string, string> = {
  * shows already.
  */
 export function AnnouncementBanner() {
-  const { token } = useSession();
+  const signedIn = useSignedIn();
   const [active, setActive] = useState<Announcement[]>([]);
   // One busy id for both controls: a row has one button in flight at a time,
   // and two pieces of state for one fact is two chances for them to disagree.
   const [busy, setBusy] = useState("");
 
   const read = useCallback(async () => {
-    if (!token) {
+    if (!signedIn) {
       setActive([]);
       return;
     }
@@ -64,7 +64,7 @@ export function AnnouncementBanner() {
     } catch {
       setActive([]);
     }
-  }, [token]);
+  }, [signedIn]);
 
   useEffect(() => {
     let stopped = false;

@@ -25,11 +25,12 @@ import { clock, shortId } from "@/lib/utils";
  * expensive; the staleness was silent, which is worse.
  */
 export function Home() {
-  const { token, whoami } = useSession();
+  const { whoami } = useSession();
+  const signedIn = whoami != null;
   // THE CARD FOLLOWS THE NODE'S WAITER now, rather than being read once per
   // sign-in and never again - see lib/inboxfeed.ts for why the waiter is the
   // signal and the snapshot is still the content.
-  const { events: inbox, error } = useInboxFeed(token);
+  const { events: inbox, error } = useInboxFeed(signedIn);
   const [room, setRoom] = useState("general");
   const navigate = useNavigate();
 
@@ -41,7 +42,7 @@ export function Home() {
           <p className="text-muted-foreground text-sm">
             {whoami
               ? `signed in as ${shortId(whoami.user, 10)}${whoami.project ? ` in ${whoami.project}` : ""}`
-              : "paste a bearer token to see anything"}
+              : "log in, or paste a token, to see anything"}
           </p>
         </div>
 

@@ -4,7 +4,7 @@ import { Link } from "react-router-dom";
 import { Badge } from "@/components/ui/badge";
 import { type Artifact, api } from "@/lib/api";
 import { openspecStateOf } from "@/lib/openspec";
-import { useSession } from "@/lib/session";
+import { useSignedIn } from "@/lib/session";
 
 /**
  * The openspec board: the spec and change rows, newest first.
@@ -17,13 +17,13 @@ import { useSession } from "@/lib/session";
  * they are found without knowing an id first.
  */
 export function Openspec() {
-  const { token } = useSession();
+  const signedIn = useSignedIn();
   const [items, setItems] = useState<Artifact[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!token) {
+    if (!signedIn) {
       setItems([]);
       setLoaded(false);
       return;
@@ -43,7 +43,7 @@ export function Openspec() {
     return () => {
       stopped = true;
     };
-  }, [token]);
+  }, [signedIn]);
 
   return (
     <div className="flex h-full flex-col">
@@ -56,7 +56,7 @@ export function Openspec() {
 
       {error ? <p className="px-4 pt-3 text-destructive text-sm">{error}</p> : null}
 
-      {!token ? (
+      {!signedIn ? (
         <p className="px-4 py-6 text-muted-foreground text-sm">
           paste a token to see the openspec board - signed out this is a locked shelf, not an empty
           one

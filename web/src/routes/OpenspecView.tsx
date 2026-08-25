@@ -7,7 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { type Artifact, type OpenspecConflict, api, artifactPath } from "@/lib/api";
 import { renderDocument } from "@/lib/markdown";
 import { openspecFilesOf, openspecStateOf, openspecVerdictOf } from "@/lib/openspec";
-import { useSession } from "@/lib/session";
+import { useSignedIn } from "@/lib/session";
 
 /**
  * One openspec row, at /openspec/:id.
@@ -29,7 +29,7 @@ import { useSession } from "@/lib/session";
  */
 export function OpenspecView() {
   const { id = "" } = useParams();
-  const { token } = useSession();
+  const signedIn = useSignedIn();
   const [artifact, setArtifact] = useState<Artifact | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [todos, setTodos] = useState<Artifact[]>([]);
@@ -47,7 +47,7 @@ export function OpenspecView() {
   };
 
   useEffect(() => {
-    if (!token || !id) return;
+    if (!signedIn || !id) return;
     let stopped = false;
     api
       .artifact(id)
@@ -88,7 +88,7 @@ export function OpenspecView() {
     return () => {
       stopped = true;
     };
-  }, [token, id]);
+  }, [signedIn, id]);
 
   const files = artifact ? openspecFilesOf(artifact) : null;
   const state = artifact ? openspecStateOf(artifact) : undefined;
@@ -120,7 +120,7 @@ export function OpenspecView() {
           </div>
 
           {error ? <div className="text-destructive text-sm">{error}</div> : null}
-          {!token ? <div className="text-muted-foreground text-sm">no token</div> : null}
+          {!signedIn ? <div className="text-muted-foreground text-sm">no token</div> : null}
 
           {artifact ? (
             <Card>

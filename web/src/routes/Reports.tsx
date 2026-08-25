@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { type Artifact, api, artifactPath, refPath } from "@/lib/api";
-import { useSession } from "@/lib/session";
+import { useSignedIn } from "@/lib/session";
 import { reportTone } from "@/lib/statecolour";
 import { shortId } from "@/lib/utils";
 
@@ -31,7 +31,7 @@ import { shortId } from "@/lib/utils";
  *     to prevent, and a list is where it happens.
  */
 export function Reports() {
-  const { token } = useSession();
+  const signedIn = useSignedIn();
   const [reports, setReports] = useState<Artifact[]>([]);
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -46,7 +46,7 @@ export function Reports() {
   // stopped flag is what keeps a slow early response from painting over a fast
   // later one.
   useEffect(() => {
-    if (!token) {
+    if (!signedIn) {
       setReports([]);
       setLoaded(false);
       return;
@@ -75,7 +75,7 @@ export function Reports() {
       stopped = true;
       clearTimeout(timer);
     };
-  }, [token, query]);
+  }, [signedIn, query]);
 
   return (
     // FULL HEIGHT, AND THE LIST IS WHAT SCROLLS. This page grew a column that
@@ -110,7 +110,7 @@ export function Reports() {
         {reports.length === 0 ? (
           <li className="text-muted-foreground text-sm">
             {emptyReads({
-              token: Boolean(token),
+              signedIn,
               loaded,
               failed: Boolean(error),
               query: query.trim(),
@@ -136,18 +136,18 @@ export function Reports() {
  * told nothing at all, and the sentence has to say so and say what to do.
  */
 function emptyReads({
-  token,
+  signedIn,
   loaded,
   failed,
   query,
 }: {
-  token: boolean;
+  signedIn: boolean;
   loaded: boolean;
   failed: boolean;
   query: string;
 }) {
-  if (!token) {
-    return "paste a token to see the reports - signed out, this is not an empty shelf, it is a locked one";
+  if (!signedIn) {
+    return "log in, or paste a token, to see the reports - signed out, this is not an empty shelf, it is a locked one";
   }
   if (failed) {
     return "the reports could not be read, so this page is not saying there are none";

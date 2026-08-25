@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 
 import { Badge } from "@/components/ui/badge";
 import { type ActivityItem, api } from "@/lib/api";
-import { useSession } from "@/lib/session";
+import { useSignedIn } from "@/lib/session";
 import { clock } from "@/lib/utils";
 
 /**
@@ -15,7 +15,7 @@ import { clock } from "@/lib/utils";
  * click goes there - searching a conversation should end in the conversation.
  */
 export function RoomSearch() {
-  const { token } = useSession();
+  const signedIn = useSignedIn();
   const [q, setQ] = useState("");
   const [hits, setHits] = useState<ActivityItem[]>([]);
   const [open, setOpen] = useState(false);
@@ -23,7 +23,7 @@ export function RoomSearch() {
   const navigate = useNavigate();
 
   useEffect(() => {
-    if (!token || q.trim().length < 2) {
+    if (!signedIn || q.trim().length < 2) {
       setHits([]);
       return;
     }
@@ -34,7 +34,7 @@ export function RoomSearch() {
         .catch(() => setHits([]));
     }, 200);
     return () => clearTimeout(timer);
-  }, [q, token]);
+  }, [q, signedIn]);
 
   useEffect(() => {
     const away = (e: MouseEvent) => {

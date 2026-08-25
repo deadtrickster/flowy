@@ -30,7 +30,8 @@ function stateVariant(state: TaskState) {
  * switch decides is the default, not what is possible.
  */
 export function Inbox() {
-  const { token, whoami } = useSession();
+  const { whoami } = useSession();
+  const signedIn = whoami != null;
   const [tasks, setTasks] = useState<Task[]>([]);
   const [auto, setAuto] = useState<boolean | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -43,12 +44,12 @@ export function Inbox() {
   }, []);
 
   useEffect(() => {
-    if (!token) {
+    if (!signedIn) {
       setTasks([]);
       return;
     }
     load().catch((err: Error) => setError(err.message));
-  }, [token, load]);
+  }, [signedIn, load]);
 
   const act = async (id: string, what: "delegate" | TaskState) => {
     setBusy(id);
@@ -85,7 +86,7 @@ export function Inbox() {
           <p className="text-muted-foreground text-sm">
             {whoami
               ? `work assigned to ${shortId(whoami.user, 10)}`
-              : "paste a bearer token to see anything"}
+              : "log in, or paste a token, to see anything"}
           </p>
         </div>
 

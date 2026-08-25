@@ -69,7 +69,8 @@ interface Props {
  * screen.
  */
 export function DocumentPanes({ room, quote }: Props) {
-  const { token, whoami } = useSession();
+  const { whoami } = useSession();
+  const signedIn = whoami != null;
   const [events, setEvents] = useState<FlowyEvent[]>([]);
   const [todos, setTodos] = useState<Artifact[]>([]);
   const [live, setLive] = useState(false);
@@ -112,7 +113,7 @@ export function DocumentPanes({ room, quote }: Props) {
     setLive(false);
     setError(null);
     clear();
-    if (!token) return;
+    if (!signedIn) return;
 
     let stopped = false;
     const controller = new AbortController();
@@ -165,7 +166,7 @@ export function DocumentPanes({ room, quote }: Props) {
       stopped = true;
       controller.abort();
     };
-  }, [room, token, loadTodos, clear]);
+  }, [room, signedIn, loadTodos, clear]);
 
   const send = useCallback(
     async (body: string, to: string, attachments: string[]) => {
@@ -294,7 +295,7 @@ export function DocumentPanes({ room, quote }: Props) {
         <MessageBox
           citation={citation}
           clearReply={clear}
-          disabled={!token}
+          disabled={!signedIn}
           onSend={send}
           quote={quote}
           room={room}
@@ -353,7 +354,7 @@ export function DocumentPanes({ room, quote }: Props) {
           room={room}
           todos={todos}
           raiseFrom={selected}
-          disabled={!token}
+          disabled={!signedIn}
           error={todoError}
           onRaise={raise}
           onAssign={assign}

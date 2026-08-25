@@ -9,7 +9,7 @@ import {
 } from "react";
 
 import { api } from "@/lib/api";
-import { useSession } from "@/lib/session";
+import { useSignedIn } from "@/lib/session";
 
 /**
  * THE CONSOLE IS A READER IN ITS OWN RIGHT.
@@ -338,7 +338,7 @@ const UnreadContext = createContext<Unread>({
 });
 
 export function UnreadProvider({ children }: { children: ReactNode }) {
-  const { token } = useSession();
+  const signedIn = useSignedIn();
   const [counts, setCounts] = useState<Record<string, number>>({});
   // Null until the node has answered once. See Unread.direct.
   const [direct, setDirect] = useState<number | null>(null);
@@ -353,7 +353,7 @@ export function UnreadProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     reached.current = {};
     acked.current = {};
-    if (!token) {
+    if (!signedIn) {
       setCounts({});
       setDirect(null);
       return;
@@ -465,11 +465,11 @@ export function UnreadProvider({ children }: { children: ReactNode }) {
       stopped = true;
       clearInterval(every);
     };
-  }, [token]);
+  }, [signedIn]);
 
   const markRead = useCallback(
     (room: string, message: string) => {
-      if (!token || !message || !ROOMS.includes(room)) return;
+      if (!signedIn || !message || !ROOMS.includes(room)) return;
       // Never the same message twice: in a room being read as it fills this
       // fires on every arrival. Going backwards is not a case that has to be
       // handled here - the node only ever moves a mark forward, which is what
@@ -495,7 +495,7 @@ export function UnreadProvider({ children }: { children: ReactNode }) {
       // seconds - and the refresh is what corrects it if the ack did not land.
       setCounts((current) => (current[room] ? { ...current, [room]: 0 } : current));
     },
-    [token],
+    [signedIn],
   );
 
   /**
@@ -505,7 +505,7 @@ export function UnreadProvider({ children }: { children: ReactNode }) {
    */
   const markDirectRead = useCallback(
     (message: string) => {
-      if (!token || !message) return;
+      if (!signedIn || !message) return;
       if (message === reached.current[DIRECT_READER]) return;
       reached.current[DIRECT_READER] = message;
 
@@ -522,7 +522,7 @@ export function UnreadProvider({ children }: { children: ReactNode }) {
       // stuck for twenty seconds after somebody has plainly read the message.
       setDirect((current) => (current ? 0 : current));
     },
-    [token],
+    [signedIn],
   );
 
   return (

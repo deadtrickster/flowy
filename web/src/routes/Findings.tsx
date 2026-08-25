@@ -19,7 +19,7 @@ import {
   reproOf,
   upstreamOf,
 } from "@/lib/findings";
-import { useSession } from "@/lib/session";
+import { useSignedIn } from "@/lib/session";
 import { evidenceTone, reproTone, severityTone, upstreamTone } from "@/lib/statecolour";
 
 /**
@@ -67,7 +67,7 @@ import { evidenceTone, reproTone, severityTone, upstreamTone } from "@/lib/state
  * filter that stops offering the question the page is for.
  */
 export function Findings() {
-  const { token } = useSession();
+  const signedIn = useSignedIn();
   const [findings, setFindings] = useState<Artifact[]>([]);
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -90,7 +90,7 @@ export function Findings() {
   // debounce, same "last answer to arrive is not necessarily the last one
   // asked for" guard as Reports.tsx. See that file for why `stopped` exists.
   useEffect(() => {
-    if (!token) {
+    if (!signedIn) {
       setFindings([]);
       setLoaded(false);
       return;
@@ -119,7 +119,7 @@ export function Findings() {
       stopped = true;
       clearTimeout(timer);
     };
-  }, [token, query]);
+  }, [signedIn, query]);
 
   const statusOptions = optionsIn(findings, (f) => f.status);
   const kindOptions = optionsIn(findings, (f) => f.kind);
@@ -390,7 +390,7 @@ export function Findings() {
             {shown.length === 0 ? (
               <li className="text-muted-foreground text-sm">
                 {emptyReads({
-                  token: Boolean(token),
+                  signedIn,
                   loaded,
                   failed: Boolean(error),
                   query: query.trim(),
@@ -675,20 +675,20 @@ function FilterSelect({
  * to widen the filter rather than go looking for a bug in the read.
  */
 function emptyReads({
-  token,
+  signedIn,
   loaded,
   failed,
   query,
   filtered,
 }: {
-  token: boolean;
+  signedIn: boolean;
   loaded: boolean;
   failed: boolean;
   query: string;
   filtered: boolean;
 }) {
-  if (!token) {
-    return "paste a token to see the findings - signed out, this is not an empty shelf, it is a locked one";
+  if (!signedIn) {
+    return "log in, or paste a token, to see the findings - signed out, this is not an empty shelf, it is a locked one";
   }
   if (failed) {
     return "the findings could not be read, so this page is not saying there are none";

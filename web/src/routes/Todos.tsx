@@ -6,7 +6,7 @@ import { StreamAsOf } from "@/components/StreamAsOf";
 import { Badge } from "@/components/ui/badge";
 import type { Artifact, MergeLock, MergeRequest, Refused, Withheld } from "@/lib/api";
 import { TODO_PAGE, api, artifactPath } from "@/lib/api";
-import { useSession } from "@/lib/session";
+import { useSignedIn } from "@/lib/session";
 import { speakerStyle } from "@/lib/speakercolour";
 import { watch } from "@/lib/stream";
 import {
@@ -84,7 +84,7 @@ const BACKSTOP_MS = 60_000;
  */
 
 export function Todos() {
-  const { token } = useSession();
+  const signedIn = useSignedIn();
   const [todos, setTodos] = useState<Artifact[]>([]);
   /** The projects this token can read a row in, whether or not any todo is in
    * them. It is what makes an empty answer a statement rather than a blank. */
@@ -168,7 +168,7 @@ export function Todos() {
   const everHeard = useRef(false);
 
   useEffect(() => {
-    if (!token) {
+    if (!signedIn) {
       setTodos([]);
       setReach([]);
       setWithheld(null);
@@ -274,7 +274,7 @@ export function Todos() {
       stopWatching();
       clearInterval(backstop);
     };
-  }, [token]);
+  }, [signedIn]);
 
   /**
    * The rows the rail's dot is counting, from the node.
@@ -288,7 +288,7 @@ export function Todos() {
    */
   const [waiting, setWaiting] = useState<Set<string>>(new Set());
   useEffect(() => {
-    if (!token) {
+    if (!signedIn) {
       setWaiting(new Set());
       return;
     }
@@ -307,7 +307,7 @@ export function Todos() {
     return () => {
       stopped = true;
     };
-  }, [token]);
+  }, [signedIn]);
 
   const shown = narrow(todos, kind, tag);
   const sorted = sortTodos(shown);
@@ -339,7 +339,7 @@ export function Todos() {
    * false sentence rather than an empty one - which is the sentence this page
    * exists to not print. The list underneath says it is still reading.
    */
-  const answered = Boolean(token) && loaded && !error;
+  const answered = signedIn && loaded && !error;
 
   return (
     <div className="flex h-full flex-col">
@@ -632,7 +632,7 @@ and lands."
                 {filtered && loaded && !error && todos.length > 0
                   ? `none of the ${todos.length} todos here are ${describe(kind, tag)} - the rest of the queue is behind the filter, not missing`
                   : emptyReads({
-                      token: Boolean(token),
+                      signedIn,
                       loaded,
                       failed: Boolean(error),
                       projects: projects.length,
@@ -760,22 +760,22 @@ function scopeLine({
  * that had one looks like.
  */
 function emptyReads({
-  token,
+  signedIn,
   loaded,
   failed,
   projects,
   withheld,
   refused,
 }: {
-  token: boolean;
+  signedIn: boolean;
   loaded: boolean;
   failed: boolean;
   projects: number;
   withheld: Withheld | null;
   refused: Refused | null;
 }) {
-  if (!token) {
-    return "paste a token to read the queue - signed out, there is no reader to scope it to";
+  if (!signedIn) {
+    return "log in, or paste a token, to read the queue - signed out, there is no reader to scope it to";
   }
   if (failed) {
     return "the queue could not be read, so this page is not saying there is no work";

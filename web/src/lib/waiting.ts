@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { api } from "@/lib/api";
-import { useSession } from "@/lib/session";
+import { useSignedIn } from "@/lib/session";
 
 /**
  * How much is waiting for THIS principal, for the two rail rows where that
@@ -79,11 +79,11 @@ const REFRESH_MS = 20_000;
  * count - a whole badge gone for a fault that had nothing to do with it.
  */
 export function useWaiting(): Waiting {
-  const { token } = useSession();
+  const signedIn = useSignedIn();
   const [waiting, setWaiting] = useState<Waiting>({ tasks: null, todos: null });
 
   useEffect(() => {
-    if (!token) {
+    if (!signedIn) {
       setWaiting({ tasks: null, todos: null });
       return;
     }
@@ -116,7 +116,7 @@ export function useWaiting(): Waiting {
       stopped = true;
       clearInterval(every);
     };
-  }, [token]);
+  }, [signedIn]);
 
   return waiting;
 }

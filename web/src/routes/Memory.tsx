@@ -4,7 +4,7 @@ import { Link } from "react-router-dom";
 import { Badge } from "@/components/ui/badge";
 import type { Artifact } from "@/lib/api";
 import { api, artifactPath } from "@/lib/api";
-import { useSession } from "@/lib/session";
+import { useSignedIn } from "@/lib/session";
 
 /**
  * The memory page.
@@ -21,12 +21,12 @@ import { useSession } from "@/lib/session";
  * searched by an agent, and never seen by the person who asked for it.
  */
 export function Memory() {
-  const { token } = useSession();
+  const signedIn = useSignedIn();
   const [items, setItems] = useState<Artifact[]>([]);
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
-    if (!token) {
+    if (!signedIn) {
       setItems([]);
       setLoaded(false);
       return;
@@ -46,7 +46,7 @@ export function Memory() {
     return () => {
       stopped = true;
     };
-  }, [token]);
+  }, [signedIn]);
 
   return (
     <div className="flex h-full flex-col">

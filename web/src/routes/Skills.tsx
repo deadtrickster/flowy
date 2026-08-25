@@ -5,7 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { type Artifact, artifactPath } from "@/lib/api";
-import { useSession } from "@/lib/session";
+import { useSignedIn } from "@/lib/session";
 import { skills } from "@/lib/skills";
 
 /**
@@ -19,7 +19,7 @@ import { skills } from "@/lib/skills";
  * a shelf entry here and a document there, not a second document system.
  */
 export function Skills() {
-  const { token } = useSession();
+  const signedIn = useSignedIn();
   const nav = useNavigate();
   const [items, setItems] = useState<Artifact[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -29,7 +29,7 @@ export function Skills() {
   const [making, setMaking] = useState(false);
 
   useEffect(() => {
-    if (!token) {
+    if (!signedIn) {
       setItems([]);
       setLoaded(false);
       return;
@@ -49,7 +49,7 @@ export function Skills() {
     return () => {
       stopped = true;
     };
-  }, [token]);
+  }, [signedIn]);
 
   // The button is never disabled - the diagrams page learned that a disabled
   // button and a dead page look the same from outside. A skill without a name
@@ -103,7 +103,7 @@ export function Skills() {
             onChange={(event) => setBody(event.target.value)}
             className="w-96 rounded border border-border bg-background px-2 py-1 font-mono text-foreground text-xs"
           />
-          <Button type="submit" size="sm" disabled={!token || making}>
+          <Button type="submit" size="sm" disabled={!signedIn || making}>
             {making ? "creating…" : "new"}
           </Button>
         </form>
@@ -111,7 +111,7 @@ export function Skills() {
 
       {error ? <p className="px-4 pt-3 text-destructive text-sm">{error}</p> : null}
 
-      {!token ? (
+      {!signedIn ? (
         <p className="px-4 py-6 text-muted-foreground text-sm">
           paste a token to see the skills - signed out this is a locked shelf, not an empty one
         </p>

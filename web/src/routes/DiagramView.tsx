@@ -16,7 +16,7 @@ import {
   withShape,
   xmlOf,
 } from "@/lib/diagrams";
-import { useSession } from "@/lib/session";
+import { useSignedIn } from "@/lib/session";
 import { useRooms } from "@/lib/unread";
 
 /** How long after the last edit the diagram is written. */
@@ -35,7 +35,7 @@ const SAVE_AFTER_MS = 1200;
  */
 export function DiagramView() {
   const { id = "", cell = "" } = useParams();
-  const { token } = useSession();
+  const signedIn = useSignedIn();
   // The node's rooms, so a diagram can be filed in one this file never named.
   const rooms = useRooms();
   const [artifact, setArtifact] = useState<Artifact | null>(null);
@@ -62,7 +62,7 @@ export function DiagramView() {
   const [revision, setRevision] = useState(0);
 
   useEffect(() => {
-    if (!token || !id) return;
+    if (!signedIn || !id) return;
     let stopped = false;
     diagrams
       .read(id)
@@ -79,10 +79,10 @@ export function DiagramView() {
     return () => {
       stopped = true;
     };
-  }, [token, id]);
+  }, [signedIn, id]);
 
   useEffect(() => {
-    if (!token) return;
+    if (!signedIn) return;
     let stopped = false;
     api
       .todos()
@@ -96,7 +96,7 @@ export function DiagramView() {
     return () => {
       stopped = true;
     };
-  }, [token]);
+  }, [signedIn]);
 
   const save = useCallback(async () => {
     if (!artifact) return;
@@ -213,7 +213,7 @@ export function DiagramView() {
     timer.current = window.setTimeout(() => void save(), SAVE_AFTER_MS);
   }
 
-  if (!token) {
+  if (!signedIn) {
     return <p className="p-6 text-muted-foreground text-sm">paste a token to open this diagram</p>;
   }
   if (error && !artifact) {

@@ -46,7 +46,8 @@ import { shortId } from "@/lib/utils";
  */
 export function ArtifactView() {
   const { project, type, id = "" } = useParams();
-  const { token, whoami } = useSession();
+  const { whoami } = useSession();
+  const signedIn = whoami != null;
   const [artifact, setArtifact] = useState<Artifact | null>(null);
   const [error, setError] = useState<string | null>(null);
   // Where the replacement lives, from ITS OWN ref rather than from the row on
@@ -111,7 +112,7 @@ export function ArtifactView() {
   };
 
   useEffect(() => {
-    if (!token || !id) return;
+    if (!signedIn || !id) return;
     let stopped = false;
     api
       .origins(id)
@@ -141,7 +142,7 @@ export function ArtifactView() {
     return () => {
       stopped = true;
     };
-  }, [token, id]);
+  }, [signedIn, id]);
 
   return (
     /*
@@ -192,7 +193,7 @@ export function ArtifactView() {
           </div>
 
           {error ? <div className="text-destructive text-sm">{error}</div> : null}
-          {!token ? <div className="text-muted-foreground text-sm">no token</div> : null}
+          {!signedIn ? <div className="text-muted-foreground text-sm">no token</div> : null}
 
           {/*
            * A report that has been superseded says so where somebody reads it,

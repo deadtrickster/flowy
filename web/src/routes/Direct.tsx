@@ -37,7 +37,8 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
  * that would be quiet - the room routes fall back to the room, and this must not.
  */
 export function Direct() {
-  const { token, whoami } = useSession();
+  const { whoami } = useSession();
+  const signedIn = whoami != null;
   const { markDirectRead } = useUnread();
   const [events, setEvents] = useState<FlowyEvent[]>([]);
   const [selected, setSelected] = useState<FlowyEvent | null>(null);
@@ -53,7 +54,7 @@ export function Direct() {
     setSelected(null);
     setLive(false);
     setError(null);
-    if (!token) return;
+    if (!signedIn) return;
 
     let stopped = false;
     const controller = new AbortController();
@@ -97,7 +98,7 @@ export function Direct() {
       stopped = true;
       controller.abort();
     };
-  }, [token]);
+  }, [signedIn]);
 
   const send = useCallback(async () => {
     const body = draft.trim();
@@ -210,7 +211,7 @@ export function Direct() {
 
           <Input
             value={to}
-            disabled={!token || sending}
+            disabled={!signedIn || sending}
             onChange={(event) => setTo(event.target.value)}
             placeholder="to (a user or agent id) - required, this is not a room"
             aria-label="addressee"
@@ -219,10 +220,10 @@ export function Direct() {
 
           <Textarea
             value={draft}
-            disabled={!token || sending}
+            disabled={!signedIn || sending}
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={onKeyDown}
-            placeholder={token ? "say something private…" : "paste a token to say something"}
+            placeholder={signedIn ? "say something private…" : "log in, or paste a token, to say something"}
             aria-label="message"
           />
 
@@ -230,7 +231,7 @@ export function Direct() {
             <span className="text-muted-foreground text-xs">
               only you and the person you name can read this
             </span>
-            <Button type="submit" size="sm" className="ml-auto" disabled={!token || sending}>
+            <Button type="submit" size="sm" className="ml-auto" disabled={!signedIn || sending}>
               <CornerDownLeft className="h-3.5 w-3.5" />
               {sending ? "sending…" : "send privately"}
             </Button>

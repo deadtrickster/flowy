@@ -8,7 +8,7 @@ import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import type { ActivityItem } from "@/lib/api";
 import { api } from "@/lib/api";
-import { useSession } from "@/lib/session";
+import { useSignedIn } from "@/lib/session";
 import { clock, shortId } from "@/lib/utils";
 
 /**
@@ -35,7 +35,7 @@ import { clock, shortId } from "@/lib/utils";
  * into log order so it still reads top to bottom the way a log does.
  */
 export function Activity() {
-  const { token } = useSession();
+  const signedIn = useSignedIn();
   const [params, setParams] = useSearchParams();
   const [items, setItems] = useState<ActivityItem[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -47,7 +47,7 @@ export function Activity() {
   const [draft, setDraft] = useState(q);
 
   const load = useCallback(async () => {
-    if (!token) return;
+    if (!signedIn) return;
     try {
       const page = await api.activity({ q, kind, thread, order: "recent" });
       // The node hands recent back newest first; the page reads oldest first.
@@ -56,7 +56,7 @@ export function Activity() {
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
-  }, [token, q, kind, thread]);
+  }, [signedIn, q, kind, thread]);
 
   useEffect(() => {
     void load();
@@ -128,9 +128,9 @@ export function Activity() {
       <ol className="min-h-0 flex-1 overflow-y-auto">
         {items.length === 0 ? (
           <li className="p-4 text-muted-foreground text-sm">
-            {token
+            {signedIn
               ? "nothing you may read matches - which is not the same as nothing having happened"
-              : "paste a token to see the timeline"}
+              : "log in, or paste a token, to see the timeline"}
           </li>
         ) : null}
         {items.map((item) => (
@@ -200,7 +200,7 @@ export function Activity() {
       <PostBox
         into={selected}
         clear={() => setSelected(null)}
-        disabled={!token}
+        disabled={!signedIn}
         onPosted={() => void load()}
       />
     </div>
@@ -313,7 +313,7 @@ function PostBox({
         value={body}
         disabled={disabled || sending}
         onChange={(event) => setBody(event.target.value)}
-        placeholder={disabled ? "paste a token to post" : "say something into this run, or a room…"}
+        placeholder={disabled ? "log in, or paste a token, to post" : "say something into this run, or a room…"}
         aria-label="post into the timeline"
       />
       <Button type="submit" size="sm" className="self-end" disabled={disabled || sending}>

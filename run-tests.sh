@@ -8318,7 +8318,7 @@ console_says_the_worklog_needs_a_token() {
 # statement about the fleet made by a page that asked nobody.
 console_todos_signed_out() {
 	cd "$ROOT/web" || return 1
-	node scripts/render-check.mjs "" "" "paste a token to read the queue" /todos
+	node scripts/render-check.mjs "" "" "log in, or paste a token, to read the queue" /todos
 }
 
 # A real browser for the two checks below, downloaded once per machine and
@@ -19204,7 +19204,7 @@ browser_marks_a_superseded_report() {
 # state a browser is in when somebody opens the link for the first time.
 the_reports_page_says_it_is_signed_out() {
 	cd "$ROOT/web" || return 1
-	node scripts/render-check.mjs "" "" "paste a token to see the reports" /reports
+	node scripts/render-check.mjs "" "" "log in, or paste a token, to see the reports" /reports
 }
 
 say "reports: the search, and what replaced what"
@@ -19697,7 +19697,7 @@ the_diagram_editor_matches_the_console() {
 # browser is in when somebody opens the link for the first time.
 the_diagrams_page_says_it_is_signed_out() {
 	cd "$ROOT/web" || return 1
-	node scripts/render-check.mjs "" "" "paste a token to see the diagrams" /diagrams
+	node scripts/render-check.mjs "" "" "log in, or paste a token, to see the diagrams" /diagrams
 }
 
 # A PERSON LOGS IN, in a browser, with a password set the only way one can be
@@ -19740,6 +19740,32 @@ the_diagrams_page_says_it_is_signed_out() {
 # BEFORE a_person_sets_their_own_handle_and_password on purpose: that check
 # changes HANDLE_A, and a fixture read from ids afterwards would name somebody
 # who no longer exists.
+# AND SEES THE REST OF THE CONSOLE, which is the other twenty-four files.
+#
+# 01M0W7BADY. The composer was the one the operator hit; every page around it
+# had the same defect - const { token } = useSession(), read as "is anybody
+# signed in". A person holding a session got the locked-shelf screen on Todos,
+# Memory, Inbox, Activity, Diagrams and Worklog while being perfectly well
+# signed in.
+#
+# THE ASSERTION IS THE SENTENCE. These pages say WHICH empty they are - an
+# empty board and a board you may not see are indistinguishable by row count -
+# so the signed-out sentence appearing to somebody who is signed in is the
+# defect itself, and its absence is what this checks. A page with no rows still
+# passes.
+#
+# Shares the fixture with the check below it and runs first, because both call
+# flowy passwd on HANDLE_A and neither may run after
+# a_person_sets_their_own_handle_and_password, which changes that handle.
+a_logged_in_person_sees_the_console() {
+	recall
+	local pw="a-password-the-gate-picked"
+	printf '%s\n' "$pw" | "$ROOT/flowy" passwd --handle "$HANDLE_A" >/dev/null || return 1
+	api POST "$TOKEN_OP" "/api/projects/$PROJECT_A/members" "{\"user\": \"$HANDLE_A\"}" || return 1
+	cd "$ROOT/web" || return 1
+	node scripts/person-sees-the-console-check.mjs "http://127.0.0.1:$HTTP_PORT" "$HANDLE_A" "$pw" "$PROJECT_A"
+}
+
 a_logged_in_person_can_post_in_a_room() {
 	recall
 	local pw="a-password-the-gate-picked"
@@ -19818,6 +19844,8 @@ check "a person logs in with a password, and the session survives a reload with 
 	a_person_logs_in_from_the_console
 check "a person who is logged in, with no token anywhere, can post in a room" \
 	a_logged_in_person_can_post_in_a_room
+check "a person who is logged in, with no token, sees the console instead of the locked shelf" \
+	a_logged_in_person_sees_the_console
 check "the author of a row can fix its words, and the node holds the new ones" \
 	a_person_fixes_the_words_they_wrote
 check "a person sets their own handle and password from the console" \

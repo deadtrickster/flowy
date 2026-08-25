@@ -39,7 +39,8 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
  */
 export function TaskView() {
   const { id = "" } = useParams();
-  const { token, whoami } = useSession();
+  const { whoami } = useSession();
+  const signedIn = whoami != null;
   const [task, setTask] = useState<Task | null>(null);
   const [events, setEvents] = useState<FlowyEvent[]>([]);
   // The same citation state the room has, from the same place: this view is a
@@ -62,7 +63,7 @@ export function TaskView() {
     setTask(null);
     setEvents([]);
     clear();
-    if (!token || !id) return;
+    if (!signedIn || !id) return;
 
     let stopped = false;
     const controller = new AbortController();
@@ -99,7 +100,7 @@ export function TaskView() {
       stopped = true;
       controller.abort();
     };
-  }, [token, id, load, clear]);
+  }, [signedIn, id, load, clear]);
 
   const send = useCallback(
     async (body: string, _to: string, attachments: string[]) => {
@@ -205,7 +206,7 @@ export function TaskView() {
         <MessageBox
           citation={citation}
           clearReply={clear}
-          disabled={!token || !task}
+          disabled={!signedIn || !task}
           onSend={send}
           room={ASSIGN_ROOM}
         />
