@@ -104,8 +104,17 @@ answering, not a token sitting in localStorage.`);
   // THE NODE IS THE WITNESS, read through this browser's own cookie.
   let landed = false;
   for (let i = 0; i < 20; i++) {
+    // order=recent, AND IT IS NOT A PREFERENCE. The default is order=log, which
+    // pages FORWARDS from since=0 - the OLDEST rows in the room. With a limit
+    // of 30 that read the first thirty messages ever said in #general and
+    // never the one just sent, so this check passed against a room the gate had
+    // barely used and failed in the full suite, where hundreds of messages come
+    // first. See chat.go: "recent" is the only order that takes the newest
+    // Limit rows.
     const said = await page.evaluate(async (r) => {
-      const res = await fetch(`/api/chat/${r}?limit=30`, { credentials: "same-origin" });
+      const res = await fetch(`/api/chat/${r}?order=recent&limit=30`, {
+        credentials: "same-origin",
+      });
       if (!res.ok) return { error: res.status };
       return await res.json();
     }, room);
