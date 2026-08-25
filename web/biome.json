@@ -1,9 +1,18 @@
 {
   "$schema": "https://biomejs.dev/schemas/1.9.4/schema.json",
-  "vcs": { "enabled": false, "clientKind": "git", "useIgnoreFile": false },
+  "vcs": {
+    "enabled": false,
+    "clientKind": "git",
+    "useIgnoreFile": false
+  },
   "files": {
     "ignoreUnknown": false,
-    "ignore": ["dist", "node_modules", "package-lock.json", "public/drawio"]
+    "ignore": [
+      "dist",
+      "node_modules",
+      "package-lock.json",
+      "public/drawio"
+    ]
   },
   "formatter": {
     "enabled": true,
@@ -11,10 +20,14 @@
     "indentWidth": 2,
     "lineWidth": 100
   },
-  "organizeImports": { "enabled": true },
+  "organizeImports": {
+    "enabled": true
+  },
   "linter": {
     "enabled": true,
-    "rules": { "recommended": true }
+    "rules": {
+      "recommended": true
+    }
   },
   "overrides": [
     {
@@ -23,7 +36,8 @@
         "src/routes/OpenspecView.tsx",
         "src/components/MessageBody.tsx",
         "src/components/FindingPane.tsx",
-        "src/components/RowNotes.tsx"
+        "src/components/RowNotes.tsx",
+        "src/routes/DashboardView.tsx"
       ],
       "linter": {
         "rules": {

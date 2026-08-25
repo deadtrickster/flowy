@@ -1,8 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import { ApiError, type Artifact } from "@/lib/api";
 import { type DashboardTile, dashboards, tilesOf } from "@/lib/dashboards";
+import { CW, LH, PAD, frameOf, frameSvg } from "@/lib/frame";
+import { type CursorTip, describe, place } from "@/lib/frame-cursor";
 import { useSignedIn } from "@/lib/session";
 
 /**
@@ -261,6 +263,167 @@ function TableTile({ tile, rows, now }: { tile: DashboardTile; rows: Artifact[];
   );
 }
 
+/** One frame tile: the newest reading of its series, drawn as its terminal
+ * frame. The SVG is the frameSvg port of export.py - byte-identical to the
+ * producer's own export - and the pointer answers from the frame's own prose
+ * through describe(), the hover.py port: panel, row, legend term. A
+ * keyboard cursor walks the same answers - j/k move a row, pgup/pgdn by
+ * ten, home/end to the ends, esc clears - because a cursor key must answer
+ * the same question as a pointer at the same cell, or the keyboard is a
+ * second vocabulary to keep in agreement with the first.
+ *
+ * The frame renders at its natural cell size and scrolls: no rescaling,
+ * because the whole point of the pinned grid is that a column is a column.
+ * A scaled frame would also make the pointer math scale-dependent, and one
+ * geometry is enough geometry. */
+function FrameTile({
+  tile,
+  row,
+  now,
+}: { tile: DashboardTile; row: Artifact | undefined; now: number }) {
+  const age = row ? ageSeconds(row, now) : 0;
+  const stale = row && (tile.stale_after_seconds ?? 0) > 0 && age > (tile.stale_after_seconds ?? 0);
+  const frame = row ? frameOf(row) : null;
+  const svg = frame ? frameSvg(frame.lines, { cols: frame.cols }) : "";
+  const [tip, setTip] = useState<{ row: number; col: number; text: CursorTip } | null>(null);
+  const [cursor, setCursor] = useState<number | null>(null);
+  const [tipPx, setTipPx] = useState<[number, number]>([0, 0]);
+  const boxRef = useRef<HTMLDivElement>(null);
+  const tipRef = useRef<HTMLDivElement>(null);
+
+  /** The cell a pixel is in, in the frame's own geometry. The renderer and
+   * the pointer share the constants, so the column a pixel lands on is the
+   * column a glyph was pinned to. */
+  function cellAt(px: number, py: number): [number, number] {
+    return [Math.floor((py - PAD) / LH), Math.floor((px - PAD) / CW)];
+  }
+
+  function pointAt(e: React.MouseEvent) {
+    const box = boxRef.current;
+    if (!box || !frame) return;
+    const rect = box.getBoundingClientRect();
+    const [r, c] = cellAt(e.clientX - rect.left, e.clientY - rect.top);
+    setCursor(null); // the pointer owns the tooltip; the cursor stands down
+    const text = describe(frame.lines, r, c, frame);
+    setTip(text ? { row: r, col: c, text } : null);
+  }
+
+  function onKey(e: React.KeyboardEvent) {
+    if (!frame || frame.lines.length === 0) return;
+    const cur = cursor ?? tip?.row ?? Math.floor(frame.lines.length / 2);
+    let next: number | null = cur;
+    if (e.key === "j" || e.key === "ArrowDown") next = Math.min(cur + 1, frame.lines.length - 1);
+    else if (e.key === "k" || e.key === "ArrowUp") next = Math.max(cur - 1, 0);
+    else if (e.key === "PageDown") next = Math.min(cur + 10, frame.lines.length - 1);
+    else if (e.key === "PageUp") next = Math.max(cur - 10, 0);
+    else if (e.key === "Home") next = 0;
+    else if (e.key === "End") next = frame.lines.length - 1;
+    else if (e.key === "Escape") next = null;
+    else return;
+    e.preventDefault();
+    if (next === null) {
+      setCursor(null);
+      setTip(null);
+      return;
+    }
+    setCursor(next);
+    // Column one: inside the first cell, so the cursor answers the row's
+    // label. Column zero is the border column of a boxed frame - its segment
+    // is empty - and the label lookup is the whole point of the cursor.
+    const text = describe(frame.lines, next, 1, frame);
+    setTip(text ? { row: next, col: 0, text } : null);
+  }
+
+  // The tooltip box is sized to its text and placed so it is never
+  // clipped: rendered first, measured, then placed with place() against
+  // the frame's visible cells - the terminal's edge is the pane's edge.
+  useEffect(() => {
+    if (!tip || !boxRef.current || !tipRef.current) return;
+    const box = boxRef.current;
+    const bw = tipRef.current.offsetWidth / CW;
+    const bh = tipRef.current.offsetHeight / LH;
+    const left = box.scrollLeft / CW;
+    const visible = box.clientWidth / CW;
+    const visibleH = box.clientHeight / LH;
+    const [t, l] = place(bw, bh, tip.col, tip.row, visible, visibleH);
+    setTipPx([PAD + (l + left) * CW, PAD + t * LH]);
+  }, [tip]);
+
+  return (
+    <div
+      data-tile-label={tile.label}
+      data-tile-kind="frame"
+      data-empty={row ? undefined : "true"}
+      data-frame-bad={row && !frame ? "true" : undefined}
+      data-stale={stale ? "true" : undefined}
+      data-state={stateOf(row)}
+      data-age={row ? age : undefined}
+      className="flex flex-col gap-1 rounded-md border border-border p-4 sm:col-span-2 lg:col-span-4"
+    >
+      <div className="text-muted-foreground text-xs">{tile.label}</div>
+      {row && !frame ? (
+        <div className="py-1 text-muted-foreground text-sm">
+          its newest reading is not a frame of {"{lines, ...}"} - the tile says so rather than
+          drawing a wrong-shaped frame
+        </div>
+      ) : !row || !frame ? (
+        <div className="py-1 text-muted-foreground text-sm">
+          its metric has no rows pushed yet - not zero, just nothing
+        </div>
+      ) : (
+        <div
+          ref={boxRef}
+          // biome-ignore lint/a11y/noNoninteractiveTabindex: the cursor is the point - j/k, pgup/pgdn, home/end and esc are the frame's own keys, so the frame is a keyboard control by design
+          tabIndex={0}
+          role="application"
+          aria-label={`frame ${tile.label} - j/k move the cursor, pgup/pgdn by ten, home/end to the ends, esc clears`}
+          data-frame-cursor-row={cursor ?? undefined}
+          onMouseMove={pointAt}
+          onMouseLeave={() => setTip(null)}
+          onKeyDown={onKey}
+          className="overflow-x-auto rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <div className="relative inline-block">
+            {/* The frame itself. Built by frameSvg from the pushed lines -
+							text in, console-built markup out, everything escaped. */}
+            <div data-frame-svg dangerouslySetInnerHTML={{ __html: svg }} />
+            {cursor !== null && (
+              <div
+                data-frame-cursor
+                style={{
+                  top: PAD + cursor * LH,
+                  left: PAD,
+                  width: `calc(100% - ${PAD * 2}px)`,
+                  height: LH,
+                }}
+                className="pointer-events-none absolute rounded-sm bg-ring/15"
+              />
+            )}
+            {tip && (
+              <div
+                ref={tipRef}
+                data-frame-tip
+                data-frame-tip-title={tip.text.title}
+                data-frame-tip-body={tip.text.body}
+                style={{ left: tipPx[0], top: tipPx[1] }}
+                className="absolute z-10 w-80 rounded-md border border-border bg-card px-3 py-2 shadow-lg"
+              >
+                <div className="font-medium text-xs">{tip.text.title}</div>
+                <div className="text-muted-foreground text-xs">{tip.text.body}</div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+      <div className="flex items-baseline gap-2 text-muted-foreground text-xs" data-tile-age>
+        <span>{ageWords(age)}</span>
+        <span data-tile-state={stateOf(row)}>{stateOf(row)}</span>
+        {stale ? <span>, stale</span> : null}
+      </div>
+    </div>
+  );
+}
+
 export function DashboardView() {
   const { id } = useParams();
   const signedIn = useSignedIn();
@@ -380,6 +543,11 @@ export function DashboardView() {
           }
           if (tile.kind === "grid") {
             return <GridTile key={tile.label} tile={tile} row={rowsOf(tile.metric)[0]} now={now} />;
+          }
+          if (tile.kind === "frame") {
+            return (
+              <FrameTile key={tile.label} tile={tile} row={rowsOf(tile.metric)[0]} now={now} />
+            );
           }
           if (tile.kind === "number") {
             return (

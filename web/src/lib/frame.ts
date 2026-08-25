@@ -47,9 +47,15 @@ const DIM = 0.72;
 
 /** Cell advance and line height in px. Any pair works - the pinning makes the
  * glyphs fit the cell rather than the cell follow the glyphs - so these only
- * set how large the frame renders. */
-const CW = 7.22;
-const LH = 15.0;
+ * set how large the frame renders. Exported because the pointer math and the
+ * renderer must share one geometry: the column a pixel lands on is the column
+ * a glyph was pinned to, or the cursor answers about a different cell than
+ * the one under the hand. */
+export const CW = 7.22;
+export const LH = 15.0;
+/** The default outer padding; the cursor's cell math uses the same value the
+ * renderer did. */
+export const PAD = 8;
 
 /** Glyphs that are not really text: a bar is a filled area that happens to be
  * spelled with characters. Drawn as text they inherit a font's glyph box,
@@ -196,7 +202,7 @@ export function frameOf(row: { fields?: unknown } | undefined): FrameReading | n
 
 /** One SVG string for a list of ANSI lines, every run pinned to its column. */
 export function frameSvg(lines: string[], opts: FrameSvgOptions = {}): string {
-  const pad = opts.pad ?? 8;
+  const pad = opts.pad ?? PAD;
   const background = opts.background ?? "#101318";
   const cols =
     opts.cols ??

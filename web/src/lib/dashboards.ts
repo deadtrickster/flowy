@@ -22,7 +22,7 @@ export const DASHBOARD_TYPE = "memory";
 export const DASHBOARD_KIND = "dashboard";
 
 /** One declared tile, as the store rules it (store.DashboardTile). The
- * vocabulary is number, table, grid - each kind renders over the named
+ * vocabulary is number, table, grid, frame - each kind renders over the named
  * series' newest reading. */
 export interface DashboardTile {
   kind: string;
