@@ -118,8 +118,22 @@ answering, not a token sitting in localStorage.`);
   }
   if (crashes.length > 0) die(`the page threw: ${crashes.join("; ")}`);
   if (!landed) {
+    // THE CONSOLE'S OWN REFUSAL, if it has one. Without it the failure reads
+    // "nothing arrived", which is the symptom rather than the cause - and the
+    // cause is already on the screen, put there by the box for the person who
+    // pressed enter. A check that has the answer and prints the symptom wastes
+    // the run it took to get it.
+    const said = await page
+      .locator("[data-send-error]")
+      .first()
+      .innerText()
+      .catch(() => "");
+    const shown = said
+      ? `the box said: ${JSON.stringify(said)}`
+      : "and the box reported no error at all, so the send was believed to have worked";
     die(`the box took the message and the node never got it. The screen may have cleared;
-the room did not receive anything.`);
+the room did not receive anything.
+${shown}`);
   }
 
   console.log(`a logged-in person posted in ${project}/#${room} with no token anywhere`);

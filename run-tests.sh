@@ -8309,7 +8309,7 @@ console_mounts() {
 # link for the first time.
 console_says_the_worklog_needs_a_token() {
 	cd "$ROOT/web" || return 1
-	node scripts/render-check.mjs "" "" "paste a token to read the worklog" /worklog
+	node scripts/render-check.mjs "" "" "log in, or paste a token, to read the worklog" /worklog
 }
 
 # The same, for the queue across projects, and it is the third of three empties

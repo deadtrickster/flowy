@@ -435,7 +435,17 @@ export function MessageBox({
             ? `attaching ${uploading}…`
             : "enter sends, shift-enter is a newline, paste an image to attach it"}
         </span>
-        {error ? <span className="text-destructive text-xs">{error}</span> : null}
+        {/*
+          NAMED, so a check that watches a send fail can quote the node instead
+          of reporting that nothing arrived. "the room did not receive anything"
+          is a symptom; the refusal underneath it is the answer, and a check
+          that has it and does not print it wastes the run it took to get it.
+        */}
+        {error ? (
+          <span className="text-destructive text-xs" data-send-error>
+            {error}
+          </span>
+        ) : null}
         <Button
           type="submit"
           size="sm"
