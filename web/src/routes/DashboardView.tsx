@@ -20,9 +20,14 @@ import { useSignedIn } from "@/lib/session";
  * at open and has gone quietly stale is a lie with a timestamp.
  */
 
-/** One reading drawn as words: 12s, 4m, 6h, 2d. */
+/**
+ * One reading drawn as words: <1m, 4m, 6h, 2d. Under a minute is <1m, not a
+ * ticking second count - coarse formatting is stable formatting, and a page
+ * that recomputes its age every second must not redraw it differently every
+ * second.
+ */
 function ageWords(seconds: number): string {
-  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 60) return "<1m";
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
   if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
   return `${Math.floor(seconds / 86400)}d`;

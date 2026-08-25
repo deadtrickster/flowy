@@ -14,6 +14,9 @@
  *   - every number shows its age from the row it reads, and a datum older than
  *     its tile's threshold is visibly stale, not silently live - the operator
  *     reading prose today is exactly the failure this exists to fix;
+ *   - an age under a minute reads <1m, not a ticking second count - coarse
+ *     formatting is stable formatting, and a page that recomputes its age
+ *     every second must not redraw it differently every second;
  *   - a dashboard is no more readable than the artifacts it names: a reader
  *     outside the rows' scope is refused;
  *   - reopening the page shows the newest rows and the newest ages - nothing
@@ -203,8 +206,13 @@ try {
     die(`the cells tile's age reads ${age} - every number must say how old it is`);
   }
   const ageText = (await cellsTile.innerText()).trim();
-  if (!/\d+\s*(s|m|h|d)/.test(ageText)) {
+  if (!/<?\d+\s*(s|m|h|d)/.test(ageText)) {
     die(`the cells tile's age is not in words a person reads:\n${ageText}`);
+  }
+  if (!ageText.includes("<1m")) {
+    die(
+      `the cells tile's fresh age does not read <1m - under a minute is coarse, not a ticking second count:\n${ageText}`,
+    );
   }
 
   const rateTile = tile("rate");
