@@ -157,6 +157,43 @@ export interface FrameSvgOptions {
   cols?: number;
 }
 
+/** The fields of a frame reading, as agreed on the frame row
+ * (01M0XFJPBC68WT9FQY8C2PCVR6): the lines, an optional fixed width, the
+ * producer's column grid, its legend prose and its panel one-liners. All of
+ * it is text the producer wrote - the console draws and explains, it invents
+ * neither. The grid travels WITH the frame (claude-host's argument, accepted):
+ * a frame that carries its own grid stays readable when the producer's
+ * renderer changes its columns and this console has not been redeployed.
+ *
+ * The anomaly lookup (hover.py:156) is deliberately NOT part of this: that
+ * is live producer state, not frame content, and half-carrying it would be
+ * a console that sometimes answers - dropped from the contract rather than
+ * half-carried. The config hazards branch is skipped the same way: a frame
+ * that wants reasons can put them in its own legend section. */
+export interface FrameReading {
+  lines: string[];
+  cols?: number;
+  grid?: { label: number; value: number; bar: number };
+  legend?: Record<string, [string, string][]>;
+  panels?: Record<string, string>;
+}
+
+/** A metric row's fields.value parsed as a frame reading, or null when the
+ * reading is not this shape. The tile says so rather than drawing a
+ * wrong-shaped frame - a frame drawn from a string is a terminal that lies
+ * with confidence, same rule as the grid tile. Lenient like tilesOf: a read
+ * never errors, a writer is checked. */
+export function frameOf(row: { fields?: unknown } | undefined): FrameReading | null {
+  const fields = row?.fields as { value?: unknown } | undefined;
+  const value = fields?.value;
+  if (typeof value !== "object" || value === null) return null;
+  const v = value as { lines?: unknown };
+  if (!Array.isArray(v.lines) || !v.lines.every((l) => typeof l === "string")) {
+    return null;
+  }
+  return v as unknown as FrameReading;
+}
+
 /** One SVG string for a list of ANSI lines, every run pinned to its column. */
 export function frameSvg(lines: string[], opts: FrameSvgOptions = {}): string {
   const pad = opts.pad ?? 8;
