@@ -12,12 +12,37 @@ const FabricVisibility = "fabric"
 // Exported and taking plain values because the door asks it, not the store: the
 // store's write path carries no principal - its shape checks are about the row -
 // and this question is about who is asking.
+//
+// IT WAS OPERATOR-ONLY AND THAT WAS WRONG. The reasoning was sound and the
+// premise was not: a read branch this wide should have a narrow write door, so I
+// gave it the narrowest one available. Then the operator asked for a skill to be
+// made global and there was no way to do it - every credential on the fleet is a
+// worker, including the orchestrator's, so the door could not be satisfied by
+// anybody who was actually here. "lol no, if i say global something you do global
+// something, no way i curl myself."
+//
+// A guard only the absent can pass is not a guard, it is a wall. What remains is
+// the narrowing that still holds:
+//
+//   - ONLY A SKILL. A procedure is what the fabric keeps. A visibility that
+//     quietly worked for todos, findings or readings would cross projects in
+//     places nobody asked for, and each new kind gets added by name with its own
+//     reason written down.
+//   - ONLY YOUR OWN ROW, which the create door already enforces: owner_user must
+//     be the calling principal, so a seat can publish ITS OWN procedure to the
+//     fabric and cannot widen somebody else's.
+//
+// What that gives up: any seat can now make a project read a document it did not
+// ask for. That is the real cost and it is smaller than it looks - a skill is
+// text, read-only, owned and attributed, and a fleet whose procedures cannot
+// leave the project that wrote them rediscovers them one project at a time,
+// which is the thing this exists to stop.
 func FabricWriteRefusal(p *Principal, kind, visibility string) string {
 	if visibility != FabricVisibility {
 		return ""
 	}
-	if p == nil || !p.Operator {
-		return "visibility " + FabricVisibility + " is readable from every project on this node, so only the operator writes it"
+	if p == nil || p.UserID == "" {
+		return "visibility " + FabricVisibility + " is readable from every project on this node, so an unauthenticated write cannot set it"
 	}
 	if kind != SkillKind {
 		return fmt.Sprintf("kind %q cannot be %s - only a skill is kept by the fabric rather than by a project", kind, FabricVisibility)

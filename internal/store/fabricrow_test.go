@@ -18,16 +18,25 @@ func TestFabricWriteRefusal(t *testing.T) {
 			t.Fatalf("visibility %q was refused for an ordinary seat: %s", v, why)
 		}
 	}
-	if FabricWriteRefusal(seat, SkillKind, FabricVisibility) == "" {
-		t.Fatal("a non-operator wrote a row readable from every project - that is a way to publish everywhere")
+	// AN ORDINARY SEAT MAY PUBLISH ITS OWN SKILL. This was operator-only and the
+	// operator could not satisfy it - every credential on this fleet is a worker,
+	// so the door was one nobody present could pass. Ownership is still enforced,
+	// one layer up: the create door refuses owner_user != the caller, so a seat
+	// widens its own row and never somebody else's.
+	if why := FabricWriteRefusal(seat, SkillKind, FabricVisibility); why != "" {
+		t.Fatalf("an ordinary seat could not publish its own skill: %s", why)
 	}
+	// UNAUTHENTICATED STILL CANNOT. A principal with no user is not a seat.
 	if FabricWriteRefusal(nil, SkillKind, FabricVisibility) == "" {
 		t.Fatal("no principal wrote a fabric row")
+	}
+	if FabricWriteRefusal(&Principal{}, SkillKind, FabricVisibility) == "" {
+		t.Fatal("a principal with no user id wrote a fabric row")
 	}
 	// ONLY A SKILL. A visibility that quietly worked for todos and findings would
 	// cross projects where nobody asked it to.
 	for _, k := range []string{"todo", "finding", "dashboard", "metric", ""} {
-		if FabricWriteRefusal(op, k, FabricVisibility) == "" {
+		if FabricWriteRefusal(seat, k, FabricVisibility) == "" {
 			t.Fatalf("kind %q was allowed to be fabric - only a skill is kept by the fabric", k)
 		}
 	}
