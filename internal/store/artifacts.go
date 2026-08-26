@@ -292,7 +292,32 @@ func (d *DB) upsertArtifact(ctx context.Context, q execer, a *Artifact) error {
 	// The row is stored; its derived todos now owe it a re-sync. On the
 	// caller's execer, so a write that is half of an operation derives as
 	// part of it.
-	return d.syncOpenspec(ctx, q, a)
+	if err := d.syncOpenspec(ctx, q, a); err != nil {
+		return err
+	}
+	return d.pruneAfterMetric(ctx, q, a)
+}
+
+// pruneAfterMetric is the retention hook, asked at the three statements that
+// write a row - the same three checkMetricRow guards. It no-ops for everything
+// that is not a reading.
+//
+// ON THE CALLER'S EXECER, so a prune that is half of an operation is part of it,
+// the same rule syncOpenspec keeps two lines above every call to this.
+//
+// A PRUNE FAILURE FAILS THE WRITE, and that is the uncomfortable choice made
+// deliberately. The alternative - log it and carry on - means a store that
+// silently grows without bound while every push reports success, and the first
+// symptom is a full disk rather than a refused write. A refusal names itself.
+func (d *DB) pruneAfterMetric(ctx context.Context, q execer, a *Artifact) error {
+	if !IsMetric(a) {
+		return nil
+	}
+	name := MetricNameOf(a)
+	if name == "" {
+		return nil
+	}
+	return d.pruneSeries(ctx, q, name, RetentionOf(a))
 }
 
 // WriteMemory writes a memory item and the event that records the write, in one
@@ -602,7 +627,10 @@ func (d *DB) setArtifactFields(
 		// The row moved; its derived todos now owe it a re-sync, in this
 		// same transaction - a fields write that is also a tasks.md edit is
 		// one operation, not two. See deriveChange.
-		return d.syncOpenspec(ctx, tx, a)
+		if err := d.syncOpenspec(ctx, tx, a); err != nil {
+			return err
+		}
+		return d.pruneAfterMetric(ctx, tx, a)
 	})
 }
 
@@ -813,7 +841,10 @@ func (d *DB) createArtifact(ctx context.Context, q execer, a *Artifact) error {
 	}
 	// The row is stored; its tasks.md now derives its todos. On the caller's
 	// execer, so a create that is half of an operation derives as part of it.
-	return d.syncOpenspec(ctx, q, a)
+	if err := d.syncOpenspec(ctx, q, a); err != nil {
+		return err
+	}
+	return d.pruneAfterMetric(ctx, q, a)
 }
 
 // fill is what both writes do to an artifact before it goes in: force the

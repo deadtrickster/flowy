@@ -12809,6 +12809,36 @@ check "a red verdict ends the declaration and does not admit the branch" \
 # found nothing it was allowed to work on.
 check "a skip is recorded, ages out, and is cleared by the next declaration" \
 	go test -count=1 -run TestASkipIsRecordedAndAgesOut ./internal/store
+# Named, and read out of -v rather than out of the exit code, for the reason
+# ran_the_live_tests spells out: a store test with no DATABASE_URL SKIPS, and a
+# skip prints ok and exits zero. The prune's SQL is the only part of retention
+# that no unit test can reach - a query string that only ever compiled is not a
+# query anybody has run - so a silent skip here would green the one arm that
+# matters.
+the_prune_runs_against_a_real_database() {
+	local out status
+	out=$(go test -count=1 -v -run TestPruneSeriesHoldsASeriesDown ./internal/store 2>&1)
+	status=$?
+	if [ "$status" -ne 0 ]; then
+		printf '%s\n' "$out" >&2
+		return 1
+	fi
+	case "$out" in
+	*"--- SKIP: TestPruneSeriesHoldsASeriesDown"*)
+		printf 'the prune test skipped - DATABASE_URL was not set, so the SQL never ran\n' >&2
+		return 1
+		;;
+	*"--- PASS: TestPruneSeriesHoldsASeriesDown"*) ;;
+	*)
+		printf 'the prune test neither passed nor skipped - it did not run at all\n' >&2
+		printf '%s\n' "$out" >&2
+		return 1
+		;;
+	esac
+	printf 'the prune cut a series to its allowance and kept the newest, against a real database\n'
+}
+check "the prune runs against a real database, and a skip is not a pass" \
+	the_prune_runs_against_a_real_database
 # Named because of what it protects against being confidently wrong about: a
 # repudiation names a WINDOW of clock readings and every principal writes into
 # that window at once, so a reader that matched on the window and forgot the

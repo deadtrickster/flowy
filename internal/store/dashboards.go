@@ -388,3 +388,121 @@ func (d *DB) SeriesOf(ctx context.Context, p *Principal, names []string, points 
 	// that pair has cost this fleet more than any other single mistake.
 	return out, nil
 }
+
+// RetainDefaultPoints is how many readings of a series survive when the
+// producer does not say. 4096 is serenedash's own history.py KEEP, chosen there
+// because it bounds the file without turning a restart into a young baseline -
+// about 5.7 hours at one sample every 5 seconds.
+const RetainDefaultPoints = 4096
+
+// Retention is how much of its own series a producer wants kept, carried on the
+// reading as fields.retain.
+//
+// IT LIVES ON THE READING because the producer is the only party that knows its
+// push rate. A node-wide number cannot be right for a series sampled every five
+// seconds and one pushed hourly at the same time, and a per-series table
+// somewhere else would be a second place to describe a series that already
+// describes itself every time it is written.
+type Retention struct {
+	// Points is the most readings to keep. Zero means RetainDefaultPoints.
+	Points int `json:"points"`
+	// Seconds is how old a reading may get before it is dropped. Zero means no
+	// age bound - Points alone holds the series down.
+	Seconds int64 `json:"seconds"`
+}
+
+// RetentionOf reads fields.retain off a reading. A row that does not carry one
+// gets the default, because a producer that says nothing about retention is
+// asking for the ordinary case rather than for unbounded growth.
+//
+// Unparsable fields is the default too, and deliberately not an error: this is
+// read on the write path, and refusing a reading because its retention hint is
+// malformed would lose the measurement to protect the housekeeping. That is
+// history.py's rule - "every reader treats a missing or unreadable file as no
+// history" - pointed the same way.
+func RetentionOf(a *Artifact) Retention {
+	r := Retention{Points: RetainDefaultPoints}
+	if a == nil || len(a.Fields) == 0 {
+		return r
+	}
+	var outer struct {
+		Retain *Retention `json:"retain"`
+	}
+	if err := json.Unmarshal(a.Fields, &outer); err != nil || outer.Retain == nil {
+		return r
+	}
+	if outer.Retain.Points > 0 {
+		r.Points = outer.Retain.Points
+	}
+	if outer.Retain.Points > RetainMaxPoints {
+		r.Points = RetainMaxPoints
+	}
+	if outer.Retain.Seconds > 0 {
+		r.Seconds = outer.Retain.Seconds
+	}
+	return r
+}
+
+// RetainMaxPoints is the ceiling a producer cannot raise itself above. A
+// retention hint is untrusted input like any other field, and "keep ten million"
+// is a denial of service written as a preference.
+const RetainMaxPoints = 65536
+
+// pruneSeries drops the readings of one series that retention no longer covers.
+// Two bounds, and a reading must satisfy BOTH to survive:
+//
+//   - POINTS is the safety bound. It is what stops a series pushed a hundred
+//     times a second from being unbounded, and it is the one that always applies.
+//   - SECONDS is the policy. A dashboard window is measured in time, not in
+//     samples, and forty series at different push rates cover wildly different
+//     spans at the same count - which is exactly why count alone is not enough.
+//
+// AMORTISED, not run on every write. The delete only happens once a series is
+// past twice its allowance, so a series at its limit is rewritten every N pushes
+// rather than every one. history.py trims in place at twice retention for the
+// same reason and says so: "a rewrite every few hundred samples rather than
+// every one".
+//
+// A SERIES NOBODY PUSHES KEEPS ITS LAST WINDOW. Pruning happens on write, so a
+// producer that stops is not emptied out by its own age bound. That is the
+// useful behaviour rather than a gap in this one: a panel that says "last seen
+// 3h ago" tells you the box died, and a panel that says "no data" does not.
+func (d *DB) pruneSeries(ctx context.Context, q execer, name string, r Retention) error {
+	if strings.TrimSpace(name) == "" || r.Points <= 0 {
+		return nil
+	}
+	var n int
+	if err := q.QueryRowContext(ctx,
+		`SELECT count(*) FROM artifacts
+		  WHERE coalesce(tombstone, false) = false AND kind = $1 AND fields->>'name' = $2`,
+		MetricKind, name).Scan(&n); err != nil {
+		return fmt.Errorf("store: count series %q: %w", name, err)
+	}
+	if n <= 2*r.Points {
+		return nil
+	}
+	args := []any{MetricKind, name, r.Points}
+	age := ""
+	if r.Seconds > 0 {
+		// w.created, not ar.created - ar is the subquery's alias and is out of
+		// scope out here. The subquery selects it precisely so this can.
+		age = ` OR w.created < now() - ($4 || ' seconds')::interval`
+		args = append(args, r.Seconds)
+	}
+	_, err := q.ExecContext(ctx, `
+		DELETE FROM artifacts WHERE id IN (
+		  SELECT id FROM (
+		    SELECT ar.id,
+		           row_number() OVER (ORDER BY ar.hlc DESC, ar.id DESC) AS rn,
+		           ar.created
+		      FROM artifacts ar
+		     WHERE coalesce(ar.tombstone, false) = false
+		       AND ar.kind = $1
+		       AND ar.fields->>'name' = $2
+		  ) w WHERE w.rn > $3`+age+`
+		)`, args...)
+	if err != nil {
+		return fmt.Errorf("store: prune series %q: %w", name, err)
+	}
+	return nil
+}

@@ -150,3 +150,37 @@ func TestDashboardTilesOfIsLenientForReaders(t *testing.T) {
 		t.Fatal("unparsable fields is an error - a row this code cannot read")
 	}
 }
+
+// TestRetentionOf asserts each rule on its own row - default, honoured, clamped,
+// and the two shapes that must NOT be treated as a request.
+func TestRetentionOf(t *testing.T) {
+	row := func(fields string) *Artifact {
+		return &Artifact{ID: "01M0", Type: "memory", Kind: MetricKind, Fields: json.RawMessage(fields)}
+	}
+
+	if got := RetentionOf(row(`{"name":"a","value":1}`)); got.Points != RetainDefaultPoints || got.Seconds != 0 {
+		t.Fatalf("a reading that says nothing gets the default, got %+v", got)
+	}
+	if got := RetentionOf(nil); got.Points != RetainDefaultPoints {
+		t.Fatalf("no row is the default too, got %+v", got)
+	}
+	if got := RetentionOf(row(`{"name":"a","value":1,"retain":{"points":10,"seconds":60}}`)); got.Points != 10 || got.Seconds != 60 {
+		t.Fatalf("a producer's own retention must be honoured, got %+v", got)
+	}
+	if got := RetentionOf(row(`{"name":"a","value":1,"retain":{"seconds":60}}`)); got.Points != RetainDefaultPoints || got.Seconds != 60 {
+		t.Fatalf("an age bound alone keeps the default count, got %+v", got)
+	}
+	// A CEILING THE PRODUCER CANNOT RAISE. "keep ten million" is a denial of
+	// service written as a preference.
+	if got := RetentionOf(row(`{"name":"a","value":1,"retain":{"points":10000000}}`)); got.Points != RetainMaxPoints {
+		t.Fatalf("a retention hint above the ceiling must be clamped to it, got %+v", got)
+	}
+	// UNPARSABLE IS THE DEFAULT, NOT AN ERROR. This is read on the write path,
+	// and losing a measurement to protect the housekeeping is the wrong trade.
+	if got := RetentionOf(row(`{"name":"a","value":1,"retain":"soon"}`)); got.Points != RetainDefaultPoints {
+		t.Fatalf("a malformed retention hint must not change the default, got %+v", got)
+	}
+	if got := RetentionOf(row(`{"name":"a","value":1,"retain":{"points":-5}}`)); got.Points != RetainDefaultPoints {
+		t.Fatalf("a negative count is not a request to keep nothing, got %+v", got)
+	}
+}
