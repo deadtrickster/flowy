@@ -1,6 +1,9 @@
 package store
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // FabricVisibility is the value that makes a row readable from every project on
 // this node - see artifactReachSQL. It is what a GLOBAL skill is: a procedure
@@ -44,10 +47,39 @@ func FabricWriteRefusal(p *Principal, kind, visibility string) string {
 	if p == nil || p.UserID == "" {
 		return "visibility " + FabricVisibility + " is readable from every project on this node, so an unauthenticated write cannot set it"
 	}
-	if kind != SkillKind {
-		return fmt.Sprintf("kind %q cannot be %s - only a skill is kept by the fabric rather than by a project", kind, FabricVisibility)
+	if !fabricKind(kind) {
+		return fmt.Sprintf("kind %q cannot be %s - the fabric keeps %s, and every other kind belongs to a project",
+			kind, FabricVisibility, strings.Join(FabricKinds, " and "))
 	}
 	return ""
+}
+
+// FabricKinds is what the fabric may keep, and it is a closed list ON PURPOSE.
+//
+// The operator: "memory can cross project too. and somehow all vlaudes glms
+// opencodes etc etc must learn to use flowy and read memories and skills from
+// here." So a note joins a skill - both are things one seat learned and every
+// other seat needs, and both are read-only text.
+//
+// It stays a LIST rather than becoming "anything": a todo that crossed projects
+// would appear on boards nobody filed it to, a metric would land in dashboards
+// that never asked for the series, and a merge row would offer another project's
+// branch to this project's drainer. Each of those is a different mistake and none
+// of them is what "global memories" meant. A future kind gets added here by name,
+// with its own reason written next to it.
+var FabricKinds = []string{SkillKind, NoteKind}
+
+// NoteKind is a memory written from a shell - `flowy note write`. type memory,
+// kind note.
+const NoteKind = "note"
+
+func fabricKind(k string) bool {
+	for _, f := range FabricKinds {
+		if k == f {
+			return true
+		}
+	}
+	return false
 }
 
 // SkillKind is a procedure the fabric keeps: how something is done here, written

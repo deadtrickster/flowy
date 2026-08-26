@@ -35,9 +35,19 @@ func TestFabricWriteRefusal(t *testing.T) {
 	}
 	// ONLY A SKILL. A visibility that quietly worked for todos and findings would
 	// cross projects where nobody asked it to.
-	for _, k := range []string{"todo", "finding", "dashboard", "metric", ""} {
+	// A NOTE CROSSES TOO. "memory can cross project too" - a note is a memory
+	// written from a shell, and it is the same shape as a skill: something one
+	// seat learned that every other seat needs, read-only.
+	if why := FabricWriteRefusal(seat, NoteKind, FabricVisibility); why != "" {
+		t.Fatalf("a seat could not publish its own note to the fabric: %s", why)
+	}
+	// AND THE LIST IS STILL CLOSED. A todo crossing projects appears on boards
+	// nobody filed it to; a metric lands in dashboards that never asked for the
+	// series; a merge row offers another project's branch to this drainer. Three
+	// different mistakes, none of them what "global memories" meant.
+	for _, k := range []string{"todo", "finding", "dashboard", "metric", "merge", ""} {
 		if FabricWriteRefusal(seat, k, FabricVisibility) == "" {
-			t.Fatalf("kind %q was allowed to be fabric - only a skill is kept by the fabric", k)
+			t.Fatalf("kind %q was allowed to be fabric - the fabric keeps skills and notes", k)
 		}
 	}
 }
