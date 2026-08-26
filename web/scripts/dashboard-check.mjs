@@ -48,9 +48,12 @@
  *   - a dashboard is no more readable than the artifacts it names: a reader
  *     outside the rows' scope is refused;
  *   - reopening the page shows the newest rows and the newest ages - nothing
- *     is remembered between loads, the dashboard holds no state of its own.
+ *     is remembered between loads, the dashboard holds no state of its own;
+ *   - a dashboard left open re-fetches on its own beat: a row pushed after
+ *     load wins its tile without a reload - the age ticking up while the
+ *     rows are frozen would be a screenshot with a clock on it.
  *
- * SEVEN ARMS, of which the second is the one a component test would miss:
+ * EIGHT ARMS, of which the second is the one a component test would miss:
  *
  *   1. an agent authors a dashboard and metric rows through the API; the page
  *      lists the dashboard and renders each declared number with its age;
@@ -75,7 +78,10 @@
  *      kinds, segment widths over the pushed total, a tone word mapped to
  *      the palette (and a word outside the set drawn as no tone), a card's
  *      spark as a metric ref answered at its own window - and a reading that
- *      is not a document says so.
+ *      is not a document says so;
+ *   8. a row pushed after load wins its tile without a reload - the page
+ *      re-fetches on its own beat, so a dashboard left open follows the
+ *      producers instead of freezing at page load.
  *
  * TWO TOKENS. The author writes in their project; the outsider proves the
  * scope arm, because a check with one token could not prove "readable by me,
@@ -1358,6 +1364,24 @@ try {
   }
   if (crashes.length > 0) die(`the page threw: ${crashes.join("; ")}`);
 
+  // ---- ARM 8: a pushed row shows without a reload - the page re-fetches on
+  // its own beat. The age ticked up while the rows were frozen from page
+  // load, a screenshot with a clock on it; now a row pushed after load wins
+  // the tile within one beat, no reload asked. ----
+  await mkMetric(metricName("rate"), 777);
+  const refetchDeadline = Date.now() + 35_000;
+  let shownValue = null;
+  while (Date.now() < refetchDeadline) {
+    shownValue = await rateTile.getAttribute("data-value");
+    if (shownValue === "777") break;
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  if (shownValue !== "777") {
+    die(
+      `without a reload the rate tile reads ${shownValue}, wanted 777 - a pushed row must reach the page on its own beat`,
+    );
+  }
+
   // ---- ARM 2, browser half: the outsider's page is a refusal, not a blank. ----
   // The outsider's session mounts the console shell like any visit, and the
   // shell declares its own console:<room> readers under the outsider's
@@ -1401,8 +1425,8 @@ try {
       "cursor row under j/k, pgup/pgdn, home/end and esc, styles a stale tile " +
       "past its threshold, says what each reading is - inferred as claimed, " +
       "unknown as unclaimed - right-aligns its numbers off the eight-colour " +
-      "palette, refuses an outsider, and a reload shows the newest row with a " +
-      "fresh age",
+      "palette, refuses an outsider, a reload shows the newest row with a " +
+      "fresh age, and a row pushed after load wins its tile without one",
   );
 } finally {
   await browser.close();

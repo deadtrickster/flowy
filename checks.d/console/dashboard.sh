@@ -24,7 +24,7 @@
 # Scope decides who reads it: a principal outside the rows' projects is
 # refused.
 #
-# SEVEN ARMS, of which the second is the one a component test would miss:
+# EIGHT ARMS, of which the second is the one a component test would miss:
 #
 #   1. an agent authors a dashboard and metric rows through the API; the page
 #      lists the dashboard and renders each declared number with its age;
@@ -47,7 +47,10 @@
 #   7. a report tile draws its pushed document - header and all four section
 #      kinds, segment widths over the pushed total, tone words mapped to the
 #      palette with an unknown word drawn as no tone, a card spark answered
-#      at its own window - and a reading that is not a document says so.
+#      at its own window - and a reading that is not a document says so;
+#   8. a row pushed after load wins its tile without a reload - the page
+#      re-fetches on its own beat, so a dashboard left open follows the
+#      producers instead of freezing at page load.
 #
 # TWO TOKENS, AND THAT IS THE POINT. The author writes the rows; the outsider
 # proves the scope arm, because a check with one token could not prove

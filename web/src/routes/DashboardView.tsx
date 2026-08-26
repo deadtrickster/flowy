@@ -1458,88 +1458,118 @@ export function DashboardView() {
     return () => clearInterval(timer);
   }, []);
 
-  useEffect(() => {
-    if (!signedIn || !id) {
-      setDash(null);
-      setRows([]);
-      setSeriesPages(new Map());
-      setLoaded(false);
-      return;
-    }
-    let stopped = false;
-    setLoaded(false);
-    setRefused(false);
-    setError(null);
-    dashboards
-      .read(id)
-      .then(async (artifact) => {
-        if (stopped) return;
-        setDash(artifact);
-        const tiles = tilesOf(artifact);
-        const names = [...new Set(tiles.map((t) => t.metric).filter(Boolean))];
-        if (names.length === 0) return;
-        // The series door takes one points value for every name - and a
-        // window wider than a tile's own would rob that tile of its truncated
-        // flag, so the page groups its series tiles by the window they
-        // declare and asks each window once. A tile reads its own window's
-        // answer; the door's shape stays the door's.
-        const byWindow = new Map<number, string[]>();
-        for (const t of tiles) {
-          if (t.kind !== "series" || !t.metric) continue;
-          const w = t.points && t.points > 0 ? t.points : SERIES_DEFAULT_WINDOW;
-          const ns = byWindow.get(w) ?? [];
-          ns.push(t.metric);
-          byWindow.set(w, ns);
-        }
-        try {
-          const page = await dashboards.metrics(names);
-          // A report's cards may declare sparks - metric refs with their own
-          // window. Those windows are only known once the metrics are read,
-          // so they are asked after, not beside, the tiles' own series asks.
-          for (const row of page.metrics ?? []) {
-            const read = reportOf(row);
-            if (!read.ok) continue;
-            for (const section of read.doc.sections) {
-              if (section.kind !== "cards") continue;
-              for (const card of section.cards) {
-                if (!card.spark) continue;
-                const ns = byWindow.get(card.spark.points) ?? [];
-                ns.push(card.spark.metric);
-                byWindow.set(card.spark.points, ns);
+  // The data re-fetches on a slower beat than the age - every 30s. A page
+  // that never asks again is a screenshot with a clock on it: the age ticks
+  // up convincingly while the rows are frozen from page load.
+
+  // One load: read the dashboard, then the metrics, then the series windows
+  // it declares. A background refresh keeps the current drawing up until the
+  // new one arrives, and a failed one leaves it - a transient refusal must
+  // not blank a page that was drawing fine.
+  const load = useCallback(
+    (background: boolean) => {
+      if (!signedIn || !id) {
+        setDash(null);
+        setRows([]);
+        setSeriesPages(new Map());
+        setLoaded(false);
+        return;
+      }
+      let stopped = false;
+      if (!background) {
+        setLoaded(false);
+        setRefused(false);
+        setError(null);
+      }
+      dashboards
+        .read(id)
+        .then(async (artifact) => {
+          if (stopped) return;
+          setDash(artifact);
+          const tiles = tilesOf(artifact);
+          const names = [...new Set(tiles.map((t) => t.metric).filter(Boolean))];
+          if (names.length === 0) return;
+          // The series door takes one points value for every name - and a
+          // window wider than a tile's own would rob that tile of its truncated
+          // flag, so the page groups its series tiles by the window they
+          // declare and asks each window once. A tile reads its own window's
+          // answer; the door's shape stays the door's.
+          const byWindow = new Map<number, string[]>();
+          for (const t of tiles) {
+            if (t.kind !== "series" || !t.metric) continue;
+            const w = t.points && t.points > 0 ? t.points : SERIES_DEFAULT_WINDOW;
+            const ns = byWindow.get(w) ?? [];
+            ns.push(t.metric);
+            byWindow.set(w, ns);
+          }
+          try {
+            const page = await dashboards.metrics(names);
+            // A report's cards may declare sparks - metric refs with their own
+            // window. Those windows are only known once the metrics are read,
+            // so they are asked after, not beside, the tiles' own series asks.
+            for (const row of page.metrics ?? []) {
+              const read = reportOf(row);
+              if (!read.ok) continue;
+              for (const section of read.doc.sections) {
+                if (section.kind !== "cards") continue;
+                for (const card of section.cards) {
+                  if (!card.spark) continue;
+                  const ns = byWindow.get(card.spark.points) ?? [];
+                  ns.push(card.spark.metric);
+                  byWindow.set(card.spark.points, ns);
+                }
               }
             }
+            const spages = await Promise.all(
+              [...byWindow.entries()].map(async ([w, ns]) =>
+                dashboards.series([...new Set(ns)], w).then((p) => [w, p] as const),
+              ),
+            );
+            if (!stopped) {
+              setRows(page.metrics ?? []);
+              setSeriesPages(new Map(spages));
+            }
+          } catch (err) {
+            // The tiles render their empty state; the declaration is still the
+            // truth of the page even if the read of the data failed. A
+            // background refresh keeps the last good drawing instead.
+            if (!stopped && !background) setError(err instanceof Error ? err.message : String(err));
           }
-          const spages = await Promise.all(
-            [...byWindow.entries()].map(async ([w, ns]) =>
-              dashboards.series([...new Set(ns)], w).then((p) => [w, p] as const),
-            ),
-          );
-          if (!stopped) {
-            setRows(page.metrics ?? []);
-            setSeriesPages(new Map(spages));
-          }
-        } catch (err) {
-          // The tiles render their empty state; the declaration is still the
-          // truth of the page even if the read of the data failed.
-          if (!stopped) setError(err instanceof Error ? err.message : String(err));
-        }
-      })
-      .catch((err: unknown) => {
-        if (stopped) return;
-        // Out of scope and missing are told apart here: the node answers a
-        // 404 for both, but the reader's page must say refused rather than
-        // draw an empty dashboard - an empty page reads as "there is
-        // nothing to read", which is not what happened.
-        if (err instanceof ApiError && err.status === 404) setRefused(true);
-        else setError(err instanceof Error ? err.message : String(err));
-      })
-      .finally(() => {
-        if (!stopped) setLoaded(true);
-      });
-    return () => {
-      stopped = true;
-    };
-  }, [signedIn, id]);
+        })
+        .catch((err: unknown) => {
+          if (stopped || background) return;
+          // Out of scope and missing are told apart here: the node answers a
+          // 404 for both, but the reader's page must say refused rather than
+          // draw an empty dashboard - an empty page reads as "there is
+          // nothing to read", which is not what happened.
+          if (err instanceof ApiError && err.status === 404) setRefused(true);
+          else setError(err instanceof Error ? err.message : String(err));
+        })
+        .finally(() => {
+          if (!stopped) setLoaded(true);
+        });
+      return () => {
+        stopped = true;
+      };
+    },
+    [signedIn, id],
+  );
+
+  // The first load for an identity is a full one (clears, loading line,
+  // refusals); every beat after that refreshes in the background. The beat
+  // lives here, on the load itself, so a re-arm on identity change is free.
+  const foregroundKey = useRef("");
+  useEffect(() => {
+    const key = `${signedIn}:${id}`;
+    const background = foregroundKey.current === key;
+    void load(background);
+    foregroundKey.current = key;
+    const timer = setInterval(() => {
+      void load(true);
+      foregroundKey.current = key;
+    }, 30000);
+    return () => clearInterval(timer);
+  }, [load, signedIn, id]);
 
   const tiles = useMemo(() => (dash ? tilesOf(dash) : []), [dash]);
 
