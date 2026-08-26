@@ -88,9 +88,10 @@ export const dashboards = {
 
   /**
    * The newest `points` readings of each named series, oldest first. One
-   * points value applies to every name - the door's shape - so the page asks
-   * for the widest window its series tiles declare and each tile slices its
-   * own.
+   * points value applies to every name - the door's shape - so the page
+   * groups its series tiles by the window they declare and asks each window
+   * once: a window wider than a tile's own would rob that tile of its
+   * truncated flag.
    */
   series: (names: string[], points: number) =>
     request<SeriesPage>(

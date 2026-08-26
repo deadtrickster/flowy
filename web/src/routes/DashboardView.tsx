@@ -597,7 +597,7 @@ export function DashboardView() {
   const signedIn = useSignedIn();
   const [dash, setDash] = useState<Artifact | null>(null);
   const [rows, setRows] = useState<Artifact[]>([]);
-  const [seriesPage, setSeriesPage] = useState<SeriesPage | null>(null);
+  const [seriesPages, setSeriesPages] = useState<Map<number, SeriesPage>>(new Map());
   const [loaded, setLoaded] = useState(false);
   const [refused, setRefused] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -613,7 +613,7 @@ export function DashboardView() {
     if (!signedIn || !id) {
       setDash(null);
       setRows([]);
-      setSeriesPage(null);
+      setSeriesPages(new Map());
       setLoaded(false);
       return;
     }
@@ -629,26 +629,31 @@ export function DashboardView() {
         const tiles = tilesOf(artifact);
         const names = [...new Set(tiles.map((t) => t.metric).filter(Boolean))];
         if (names.length === 0) return;
-        // The series door takes one points value for every name, so the page
-        // asks for the widest window its series tiles declare and each tile
-        // slices its own - the door's shape, not a second vocabulary.
-        const seriesNames = [
-          ...new Set(tiles.filter((t) => t.kind === "series" && t.metric).map((t) => t.metric)),
-        ];
-        const window = tiles
-          .filter((t) => t.kind === "series")
-          .reduce(
-            (w, t) => Math.max(w, t.points && t.points > 0 ? t.points : SERIES_DEFAULT_WINDOW),
-            0,
-          );
+        // The series door takes one points value for every name - and a
+        // window wider than a tile's own would rob that tile of its truncated
+        // flag, so the page groups its series tiles by the window they
+        // declare and asks each window once. A tile reads its own window's
+        // answer; the door's shape stays the door's.
+        const byWindow = new Map<number, string[]>();
+        for (const t of tiles) {
+          if (t.kind !== "series" || !t.metric) continue;
+          const w = t.points && t.points > 0 ? t.points : SERIES_DEFAULT_WINDOW;
+          const ns = byWindow.get(w) ?? [];
+          ns.push(t.metric);
+          byWindow.set(w, ns);
+        }
         try {
-          const [page, spage] = await Promise.all([
+          const [page, spages] = await Promise.all([
             dashboards.metrics(names),
-            seriesNames.length > 0 ? dashboards.series(seriesNames, window) : Promise.resolve(null),
+            Promise.all(
+              [...byWindow.entries()].map(async ([w, ns]) =>
+                dashboards.series([...new Set(ns)], w).then((p) => [w, p] as const),
+              ),
+            ),
           ]);
           if (!stopped) {
             setRows(page.metrics ?? []);
-            if (spage) setSeriesPage(spage);
+            setSeriesPages(new Map(spages));
           }
         } catch (err) {
           // The tiles render their empty state; the declaration is still the
@@ -682,9 +687,14 @@ export function DashboardView() {
       return fields?.name === name;
     });
 
-  /** The series window of one metric, off the series door. */
-  const seriesOf = (name: string): SeriesEntry | undefined =>
-    seriesPage?.series.find((s) => s.name === name);
+  /** The series window one tile declares and reads - the door was asked at
+   * that width, so the tile's own truncated flag survives. */
+  const windowOfTile = (tile: DashboardTile): number =>
+    tile.points && tile.points > 0 ? tile.points : SERIES_DEFAULT_WINDOW;
+
+  /** The series window of one metric, off its tile's own series door ask. */
+  const seriesOf = (tile: DashboardTile): SeriesEntry | undefined =>
+    seriesPages.get(windowOfTile(tile))?.series.find((s) => s.name === tile.metric);
 
   if (!signedIn) {
     return (
@@ -746,7 +756,7 @@ export function DashboardView() {
               <SeriesTile
                 key={tile.label}
                 tile={tile}
-                entry={seriesOf(tile.metric)}
+                entry={seriesOf(tile)}
                 row={rowsOf(tile.metric)[0]}
                 now={now}
               />
