@@ -6,22 +6,26 @@
 # The operator, 01M0WY7F5: agents author dashboards for their activity, "start
 # stop pause and monitor", asap. The contract, answered on the row: a dashboard
 # is a memory row of kind `dashboard` whose fields declare tiles - a fixed
-# vocabulary (number, table) over a named metric - and the console renders the
-# declaration. It RUNS nothing: producers push metric rows through the ordinary
-# artifact door, the dashboard declares queries over them, and every number
-# shows its age from the row it reads. Past a tile's threshold the datum is
-# styled stale, not silently live - the operator reading prose somebody typed
-# is exactly the failure this exists to fix. Scope decides who reads it: a
-# principal outside the rows' projects is refused.
+# vocabulary (number, table, grid, frame) over a named metric - and the console
+# renders the declaration. It RUNS nothing: producers push metric rows through
+# the ordinary artifact door, the dashboard declares queries over them, and
+# every number shows its age from the row it reads. Past a tile's threshold
+# the datum is styled stale, not silently live - the operator reading prose
+# somebody typed is exactly the failure this exists to fix. Scope decides who
+# reads it: a principal outside the rows' projects is refused.
 #
-# THREE ARMS, of which the second is the one a component test would miss:
+# FOUR ARMS, of which the second is the one a component test would miss:
 #
 #   1. an agent authors a dashboard and metric rows through the API; the page
 #      lists the dashboard and renders each declared number with its age;
 #   2. a principal from another project opens it and is refused - and their
 #      metrics read comes back empty;
 #   3. a newer metric row shows on reload with a fresh age, and a stale tile
-#      is styled stale, not silently current.
+#      is styled stale, not silently current;
+#   4. a frame tile draws a pushed frame reading exactly - every run pinned
+#      to its column, fill bars as rects, angle-bracket text as text - and
+#      answers the pointer from the frame's own legend while j/k, pgup/pgdn,
+#      home/end and esc drive a visible cursor row.
 #
 # TWO TOKENS, AND THAT IS THE POINT. The author writes the rows; the outsider
 # proves the scope arm, because a check with one token could not prove

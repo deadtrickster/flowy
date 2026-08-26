@@ -386,7 +386,11 @@ function FrameTile({
           <div className="relative inline-block">
             {/* The frame itself. Built by frameSvg from the pushed lines -
 							text in, console-built markup out, everything escaped. */}
-            <div data-frame-svg dangerouslySetInnerHTML={{ __html: svg }} />
+            <div
+              data-frame-svg
+              // biome-ignore lint/security/noDangerouslySetInnerHtml: the markup is frameSvg's, and frameSvg escapes every pushed run - the check arm proves angle brackets render as text
+              dangerouslySetInnerHTML={{ __html: svg }}
+            />
             {cursor !== null && (
               <div
                 data-frame-cursor

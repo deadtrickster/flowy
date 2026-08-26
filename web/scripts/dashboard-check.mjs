@@ -8,9 +8,9 @@
  * stop pause and monitor", asap. The contract, answered on the row:
  *
  *   - a dashboard is a memory row of kind `dashboard` whose fields declare
- *     tiles - a fixed vocabulary (number, table, grid) over a named metric -
- *     and the console renders the declaration. It RUNS nothing: the data is
- *     metric rows producers push through the ordinary artifact door;
+ *     tiles - a fixed vocabulary (number, table, grid, frame) over a named
+ *     metric - and the console renders the declaration. It RUNS nothing: the
+ *     data is metric rows producers push through the ordinary artifact door;
  *   - every number shows its age from the row it reads, and a datum older than
  *     its tile's threshold is visibly stale, not silently live - the operator
  *     reading prose today is exactly the failure this exists to fix;
@@ -22,19 +22,28 @@
  *     that does not say what it is must read as unknown, not as measured;
  *   - numbers right-align - digits line up, so a column of readings reads as
  *     a column (the serenedash finding, 01M0XCCQK19G4T03NBJDDDWFW1);
+ *   - a frame reading is ANSI lines a producer pushed; the console draws
+ *     them exactly - every run pinned to its column, fill bars as rects,
+ *     angle-bracket text as text - and answers the pointer from the frame's
+ *     own legend prose, while j/k, pgup/pgdn, home/end and esc drive a
+ *     visible cursor row;
  *   - a dashboard is no more readable than the artifacts it names: a reader
  *     outside the rows' scope is refused;
  *   - reopening the page shows the newest rows and the newest ages - nothing
  *     is remembered between loads, the dashboard holds no state of its own.
  *
- * THREE ARMS, of which the second is the one a component test would miss:
+ * FOUR ARMS, of which the second is the one a component test would miss:
  *
  *   1. an agent authors a dashboard and metric rows through the API; the page
  *      lists the dashboard and renders each declared number with its age;
  *   2. a principal from another project opens it and is refused - and their
  *      metrics read comes back empty;
  *   3. a newer metric row shows on reload with a fresh age, and a stale tile
- *      is styled stale, not silently current.
+ *      is styled stale, not silently current;
+ *   4. a frame tile draws a pushed frame reading exactly - every run pinned
+ *      to its column, fill bars as rects, angle-bracket text as text - and
+ *      answers the pointer from the frame's own legend while j/k, pgup/pgdn,
+ *      home/end and esc drive a visible cursor row.
  *
  * TWO TOKENS. The author writes in their project; the outsider proves the
  * scope arm, because a check with one token could not prove "readable by me,
@@ -120,6 +129,14 @@ const dash = await post({
       // A grid over a series that holds plain numbers: the honest wrong-shape
       // state, drawn as a refusal rather than a matrix that lies.
       { kind: "grid", label: "wrong shape", metric: metricName("cells") },
+      {
+        kind: "frame",
+        label: "lab frame",
+        metric: metricName("frame"),
+        stale_after_seconds: 5,
+      },
+      // A frame over a numeric series: the same wrong-shape refusal.
+      { kind: "frame", label: "wrong frame", metric: metricName("cells") },
     ],
   },
 });
@@ -147,6 +164,38 @@ await mkMetric(metricName("grid"), {
   ],
 });
 
+// THE FRAME FIXTURE: ANSI lines a producer rendered, pushed with the grid
+// the console reads them by - serenedash's own (label 22, value 10, bar 18),
+// so the columns below are built to it. The bars are SGR-coloured runs, so
+// the renderer draws them as rects rather than text (a fill glyph inside a
+// mixed run is text, same as the export); the last line is a free tail whose
+// angle brackets must reach the page as text, never as markup.
+const ESC = String.fromCharCode(27);
+const sgr = (codes, text) => `${ESC}[${codes}m${text}${ESC}[0m`;
+const FRAME_BOX_W = 63;
+const frameCell = (label, value, bar, spark) =>
+  `│${label.padEnd(22)}${String(value).padStart(10)}  ${sgr(32, bar.padEnd(18))}${spark}`;
+const FRAME_LINES = [
+  // The space after the title is the producer's own layout (views.py:1001
+  // draws `┌─{t} ` then the dashes) - the cursor's title scan reads a word
+  // there, and a title glued to its dashes would read as the whole border.
+  `${sgr(1, "┌─lab ")}${"─".repeat(FRAME_BOX_W - 7)}┐`,
+  frameCell("pass cells", 12, "████████░░░░░░░░░░", "▁▂▃▄▅▆▇█▂▁"),
+  frameCell("lab2x1", 55, "███████░░░░░░░░░░░", "▂▄▆█▄▂▁▁▂▁"),
+  `└${"─".repeat(FRAME_BOX_W - 2)}┘`,
+  `  <sweep> & "cells" 12/13`,
+];
+await mkMetric(
+  metricName("frame"),
+  {
+    lines: FRAME_LINES,
+    grid: { label: 22, value: 10, bar: 18 },
+    legend: { lab: [["pass cells", "cells that ran green under the latest sweep"]] },
+    panels: { lab: "the lab sweep - one box per host, newest row first" },
+  },
+  "measured",
+);
+
 // WHAT THE NODE HOLDS, read back before the browser opens: if the fixture
 // seeded differently than intended, this fails as a fixture problem instead
 // of the page answering a question about the wrong data.
@@ -158,7 +207,7 @@ if (cells.length !== 2 || cells[0] !== 1350 || cells[1] !== 1200) {
   die(`the node holds cells [${cells}], wanted [1350, 1200] newest-first - the seed is wrong`);
 }
 const heldDash = await api(`/api/artifact/${dash.id}`);
-if (!Array.isArray(heldDash.fields?.tiles) || heldDash.fields.tiles.length !== 6) {
+if (!Array.isArray(heldDash.fields?.tiles) || heldDash.fields.tiles.length !== 8) {
   die(
     `the dashboard row's tiles read ${JSON.stringify(heldDash.fields?.tiles)} - the seed is wrong`,
   );
@@ -375,6 +424,192 @@ try {
     die('the "wrong shape" tile does not say its reading is not a grid');
   }
 
+  // ---- THE FRAME: a pushed ANSI rendering, drawn exactly. The geometry
+  // numbers below are the export's own - CW 7.22, LH 15, pad 8 - so a run
+  // that lands off its column fails here, not in someone's reading. ----
+  const frameTile = tile("lab frame");
+  await frameTile.scrollIntoViewIfNeeded().catch(() => {});
+  const svg = frameTile.locator("[data-frame-svg] svg");
+  if ((await svg.count()) !== 1) {
+    die(`the lab frame tile does not draw one SVG:\n${await frameTile.innerText()}`);
+  }
+  if ((await frameTile.getAttribute("data-state")) !== "measured") {
+    die(
+      `the lab frame's state reads ${await frameTile.getAttribute("data-state")}, wanted measured - the row claims it`,
+    );
+  }
+  if ((await frameTile.getAttribute("data-age")) === null) {
+    die("the lab frame carries no age - a frozen frame reads as a live screen");
+  }
+
+  // Every styled run is pinned to its column. The line starts with the │ at
+  // column zero (x = pad + 0*CW), and the bar - an all-fill SGR run - draws
+  // as rects at the bar column of the fixture grid (1 + label 22 + value 10
+  // + gap 2): the █ group first, then the ░ group at reduced opacity.
+  const textEls = await svg.locator("text").evaluateAll((els) =>
+    els.map((el) => ({
+      x: Number(el.getAttribute("x")),
+      len: Number(el.getAttribute("textLength")),
+      bold: el.getAttribute("font-weight"),
+      text: el.textContent,
+    })),
+  );
+  const pinned = textEls.some(
+    (t) =>
+      Math.abs(t.x - 8) < 0.01 &&
+      Math.abs(t.len - 35 * 7.22) < 0.01 &&
+      (t.text ?? "").includes("pass cells"),
+  );
+  if (!pinned) {
+    die(
+      `no run is pinned to column zero at the export's geometry:\n${JSON.stringify(textEls.slice(0, 3))}`,
+    );
+  }
+  const title = textEls.find((t) => (t.text ?? "").includes("┌─lab"));
+  if (!title || title.bold !== "700") {
+    die(`the bold title run is not bold:\n${JSON.stringify(title)}`);
+  }
+  const rects = await svg.locator("rect").evaluateAll((els) =>
+    els
+      .map((el) => ({
+        x: Number(el.getAttribute("x")),
+        w: Number(el.getAttribute("width")),
+        h: Number(el.getAttribute("height")),
+        o: el.getAttribute("opacity"),
+        fill: el.getAttribute("fill"),
+      }))
+      .filter((r) => r.x > 0),
+  );
+  const bar = rects.find((r) => Math.abs(r.x - (8 + 35 * 7.22)) < 0.01);
+  if (
+    !bar ||
+    Math.abs(bar.w - 8 * 7.22) > 0.01 ||
+    Math.abs(bar.h - 15) > 0.01 ||
+    bar.fill !== "#b5e08d"
+  ) {
+    die(`the bar is not one green rectangle at its grid column:\n${JSON.stringify(rects)}`);
+  }
+  // The ░ group follows it, same row, at the glyph's reduced opacity - the
+  // FILL table's own alpha, not a guess.
+  const dim = rects.find(
+    (r) => Math.abs(r.x - (8 + 43 * 7.22)) < 0.01 && Math.abs(r.w - 10 * 7.22) < 0.01,
+  );
+  if (!dim || dim.o !== "0.22") {
+    die(
+      `the dim half of the bar is not one rectangle at the fill's opacity:\n${JSON.stringify(rects)}`,
+    );
+  }
+
+  // The tail's angle brackets reach the page as text: the SVG holds a text
+  // node spelling them, and no element named by them.
+  if ((await svg.locator("sweep").count()) !== 0) {
+    die("the frame's angle-bracket content became markup - the escape is broken");
+  }
+  if ((await svg.locator("text").filter({ hasText: "<sweep>" }).count()) === 0) {
+    die("the tail text does not spell <sweep> - the escape is broken");
+  }
+
+  // The wrong-shape refusal for frames, same honesty as the grid's.
+  const wrongFrame = tile("wrong frame");
+  if ((await wrongFrame.getAttribute("data-frame-bad")) === null) {
+    die('the "wrong frame" tile does not say its reading is not a frame');
+  }
+
+  // ---- THE CURSOR: the pointer answers from the frame's own legend, and
+  // the keys drive a visible cursor row. Pointer first, over the "pass
+  // cells" label (row 1, cell column 4). ----
+  const frameBox = frameTile.locator("[data-frame-svg]");
+  const frameBoxRect = await frameBox.boundingBox();
+  if (!frameBoxRect) die("the frame's SVG has no bounding box - it is not laid out");
+  await page.mouse.move(frameBoxRect.x + 8 + 4 * 7.22, frameBoxRect.y + 8 + 1 * 15 + 7.5);
+  await frameTile
+    .locator("[data-frame-tip]")
+    .waitFor({ state: "visible", timeout: 5000 })
+    .catch(() => {});
+  if ((await frameTile.locator("[data-frame-tip]").count()) !== 1) {
+    die("no tooltip under the pointer over the frame");
+  }
+  const tipTitle = await frameTile.locator("[data-frame-tip]").getAttribute("data-frame-tip-title");
+  const tipBody = await frameTile.locator("[data-frame-tip]").getAttribute("data-frame-tip-body");
+  if (tipTitle !== "lab · pass cells") {
+    die(
+      `the tooltip's title reads ${tipTitle}, wanted "lab · pass cells" - the legend's own words`,
+    );
+  }
+  if (tipBody !== "cells that ran green under the latest sweep") {
+    die(`the tooltip's body is not the legend's meaning:\n${tipBody}`);
+  }
+
+  // Keyboard: the pointer stands down and the keys take over. The cursor
+  // highlight is a real element on the row, and the tooltip answers the row
+  // the cursor is on - the same legend entry the pointer answered.
+  await page.mouse.move(0, 0);
+  await frameTile
+    .locator("[data-frame-tip]")
+    .waitFor({ state: "detached", timeout: 5000 })
+    .catch(() => {});
+  const keys = frameTile.locator('[role="application"]');
+  await keys.focus();
+  await page.keyboard.press("Home");
+  if ((await keys.getAttribute("data-frame-cursor-row")) !== "0") {
+    die(
+      `Home does not put the cursor on row zero: ${await keys.getAttribute("data-frame-cursor-row")}`,
+    );
+  }
+  await page.keyboard.press("j");
+  if ((await keys.getAttribute("data-frame-cursor-row")) !== "1") {
+    die(
+      `j does not move the cursor down one row: ${await keys.getAttribute("data-frame-cursor-row")}`,
+    );
+  }
+  const cursorHl = frameTile.locator("[data-frame-cursor]");
+  if ((await cursorHl.count()) !== 1) {
+    die("the cursor highlight does not render on the row");
+  }
+  if ((await cursorHl.evaluate((el) => el.style.top)) !== `${8 + 15}px`) {
+    die(
+      `the cursor highlight sits at top ${await cursorHl.evaluate((el) => el.style.top)}, wanted ${8 + 15}px - row one's line`,
+    );
+  }
+  await frameTile
+    .locator("[data-frame-tip]")
+    .waitFor({ state: "visible", timeout: 5000 })
+    .catch(() => {});
+  const keyTipTitle = await frameTile
+    .locator("[data-frame-tip]")
+    .getAttribute("data-frame-tip-title");
+  if (keyTipTitle !== "lab · pass cells") {
+    die(
+      `the cursor's tooltip title reads ${keyTipTitle}, wanted "lab · pass cells" - the cursor answers the row's label`,
+    );
+  }
+  await page.keyboard.press("k");
+  if ((await keys.getAttribute("data-frame-cursor-row")) !== "0") {
+    die(
+      `k does not move the cursor back up one row: ${await keys.getAttribute("data-frame-cursor-row")}`,
+    );
+  }
+  await page.keyboard.press("PageDown");
+  if ((await keys.getAttribute("data-frame-cursor-row")) !== "4") {
+    die(
+      `PageDown does not move the cursor ten rows, clamped to the last: ${await keys.getAttribute("data-frame-cursor-row")}`,
+    );
+  }
+  await page.keyboard.press("Home");
+  await page.keyboard.press("End");
+  if ((await keys.getAttribute("data-frame-cursor-row")) !== "4") {
+    die(
+      `End does not put the cursor on the last row: ${await keys.getAttribute("data-frame-cursor-row")}`,
+    );
+  }
+  await page.keyboard.press("Escape");
+  if ((await keys.getAttribute("data-frame-cursor-row")) !== null) {
+    die("Escape does not clear the cursor");
+  }
+  if ((await cursorHl.count()) !== 0) {
+    die("the cursor highlight lingers after Escape clears it");
+  }
+
   // ---- THE STALENESS HALF: past its threshold, the tile is styled stale,
   // not silently live. ----
   await page.waitForTimeout(6000);
@@ -383,6 +618,9 @@ try {
   }
   if ((await gridTile.getAttribute("data-stale")) === null) {
     die("the coverage grid past its 5s threshold is not styled stale");
+  }
+  if ((await frameTile.getAttribute("data-stale")) === null) {
+    die("the lab frame past its 5s threshold is not styled stale");
   }
   if (crashes.length > 0) die(`the page threw: ${crashes.join("; ")}`);
 
@@ -431,10 +669,14 @@ try {
   console.log(
     "the dashboard lists, renders its declared tiles from pushed rows with ages, " +
       "draws the coverage grid from its nested reading and says so when a grid " +
-      "tile's reading is not one, styles a stale tile past its threshold, " +
-      "says what each reading is - inferred as claimed, unknown as unclaimed - " +
-      "right-aligns its numbers off the eight-colour palette, " +
-      "refuses an outsider, and a reload shows the newest row with a fresh age",
+      "tile's reading is not one, draws the pushed frame exactly - pinned runs, " +
+      "a green fill bar as one rect at its grid column, angle-bracket text as " +
+      "text - answers the pointer and the cursor from its own legend, moves the " +
+      "cursor row under j/k, pgup/pgdn, home/end and esc, styles a stale tile " +
+      "past its threshold, says what each reading is - inferred as claimed, " +
+      "unknown as unclaimed - right-aligns its numbers off the eight-colour " +
+      "palette, refuses an outsider, and a reload shows the newest row with a " +
+      "fresh age",
   );
 } finally {
   await browser.close();
