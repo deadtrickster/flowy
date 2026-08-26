@@ -56,8 +56,8 @@ const (
 
 // DashboardTile is one declared panel of a dashboard row.
 type DashboardTile struct {
-	// Kind is the component: number, table, grid, frame. The closed set - see
-	// checkDashboardRow.
+	// Kind is the component: number, table, grid, frame, gauge. The closed set -
+	// see checkDashboardRow.
 	Kind string `json:"kind"`
 	// Label is what the tile is called on the page, in a person's words.
 	Label string `json:"label"`
@@ -69,6 +69,15 @@ type DashboardTile struct {
 	// about the row it came from, and "fresh enough" is a decision the
 	// author makes per tile.
 	StaleAfterSeconds int64 `json:"stale_after_seconds,omitempty"`
+	// Min, Max and Thresholds are read ONLY so that a tile carrying them can be
+	// refused by name. They are not part of the declaration: a gauge's scale
+	// travels with the reading. See checkTileCarriesNoBounds.
+	Min *float64 `json:"min,omitempty"`
+	Max *float64 `json:"max,omitempty"`
+	// RawMessage rather than a bool or a struct: this only ever needs to answer
+	// "was the key there", and a typed field would silently accept a thresholds
+	// object it could not parse and report its absence.
+	Thresholds json.RawMessage `json:"thresholds,omitempty"`
 }
 
 // IsDashboard reports whether the row is a dashboard declaration.
@@ -169,6 +178,11 @@ func (e MetricRowError) depRefusal() {}
 //     cannot honour, refused by name rather than drawn as nothing
 //   - a tile with no label is a number nobody knows the meaning of
 //   - a tile naming no metric is a query over nothing
+//   - a tile carrying min, max or thresholds has put them on the wrong object.
+//     A gauge is a value WITH ITS BOUNDS and the bounds travel beside the
+//     reading, because the producer is the party that knows them - see
+//     checkMetricRow. Refused by name rather than ignored, because an ignored
+//     bound draws an unscaled bar and looks like a rendering bug.
 func checkDashboardRow(a *Artifact) error {
 	if a == nil || !IsDashboard(a) {
 		return nil
@@ -182,10 +196,14 @@ func checkDashboardRow(a *Artifact) error {
 			Why: "a dashboard is its declaration - fields.tiles must carry at least one tile"}
 	}
 	for _, t := range tiles {
-		if t.Kind != "number" && t.Kind != "table" && t.Kind != "grid" && t.Kind != "frame" {
+		if t.Kind != "number" && t.Kind != "table" && t.Kind != "grid" &&
+			t.Kind != "frame" && t.Kind != "gauge" {
 			return DashboardRowError{Row: a.ID, Why: fmt.Sprintf(
-				"tile %q declares kind %q - the vocabulary is number, table, grid, frame",
+				"tile %q declares kind %q - the vocabulary is number, table, grid, frame, gauge",
 				t.Label, t.Kind)}
+		}
+		if err := checkTileCarriesNoBounds(a.ID, t); err != nil {
+			return err
 		}
 		if strings.TrimSpace(t.Label) == "" {
 			return DashboardRowError{Row: a.ID, Why: "a tile names what it shows - label must carry it"}
@@ -213,6 +231,15 @@ func checkMetricRow(a *Artifact) error {
 		Name  string          `json:"name"`
 		Value json.RawMessage `json:"value"`
 		State string          `json:"state"`
+		Min   *float64        `json:"min"`
+		Max   *float64        `json:"max"`
+		// Thresholds is where a value stops being ordinary. A pointer, because
+		// a reading with no thresholds is the common case and an empty object
+		// is a different statement from an absent one.
+		Thresholds *struct {
+			Warn *float64 `json:"warn"`
+			Crit *float64 `json:"crit"`
+		} `json:"thresholds"`
 	}
 	if err := json.Unmarshal(a.Fields, &outer); err != nil {
 		return MetricRowError{Row: a.ID, Why: "fields is not JSON: " + err.Error()}
@@ -228,7 +255,74 @@ func checkMetricRow(a *Artifact) error {
 			"a metric says what its reading is - fields.state is %q, and the states are measured, inferred, unknown",
 			outer.State)}
 	}
+	// A HALF-DECLARED SCALE IS NOT A SCALE. min alone cannot place a value and
+	// max alone cannot either; a renderer given one of them has to invent the
+	// other, and what it invents is zero.
+	if (outer.Min == nil) != (outer.Max == nil) {
+		return MetricRowError{Row: a.ID,
+			Why: "a scale is both ends - fields.min and fields.max come together or not at all"}
+	}
+	// Both checked, though the refusal above already guarantees they arrive
+	// together. That guarantee is an ORDERING and an ordering is invisible from
+	// here: the same shape, with only one of them checked, turned a bad
+	// declaration into a SIGSEGV once already.
+	if outer.Min != nil && outer.Max != nil && *outer.Max <= *outer.Min {
+		return MetricRowError{Row: a.ID, Why: fmt.Sprintf(
+			"max %v is at or below min %v - a scale that does not ascend cannot place a reading",
+			*outer.Max, *outer.Min)}
+	}
+	if outer.Thresholds == nil {
+		return nil
+	}
+	// THRESHOLDS NEED A SCALE TO BE ON. "warn at 15" says nothing without
+	// knowing what the bar runs between.
+	if outer.Min == nil || outer.Max == nil {
+		return MetricRowError{Row: a.ID,
+			Why: "thresholds mark a place on a scale - fields.min and fields.max must declare one"}
+	}
+	for _, m := range []struct {
+		name string
+		at   *float64
+	}{{"warn", outer.Thresholds.Warn}, {"crit", outer.Thresholds.Crit}} {
+		// Every operand this comparison uses is checked here rather than
+		// inherited from the refusal above. Disabling that refusal to prove it
+		// fails turned this loop into a nil dereference, which is the second
+		// time tonight an ordering stood in for a guard.
+		if m.at == nil || outer.Min == nil || outer.Max == nil {
+			continue
+		}
+		if *m.at < *outer.Min || *m.at > *outer.Max {
+			return MetricRowError{Row: a.ID, Why: fmt.Sprintf(
+				"threshold %s at %v is outside the scale %v..%v - a mark off the bar can never be reached",
+				m.name, *m.at, *outer.Min, *outer.Max)}
+		}
+	}
+	// DELIBERATELY NOT CHECKED: that warn comes before crit. A gauge of free
+	// disk or remaining quota gets worse DOWNWARDS, and forcing warn <= crit
+	// would refuse every one of them.
+	//
+	// The order is not a constraint here, it is the DIRECTION: crit above warn
+	// means high is bad, crit below warn means low is bad. A renderer reads the
+	// sense of the gauge off the two numbers it already has, so nothing needs a
+	// field saying which way round it is.
 	return nil
+}
+
+// checkTileCarriesNoBounds refuses a scale declared on the tile.
+//
+// It exists because the obvious place to put min and max is the tile - it is
+// where stale_after_seconds lives, and that is a presentation decision. Bounds
+// are not: the producer measuring memory is the party that knows the limit is
+// 64GB, and it changes when the machine does. A tile-side scale would have to
+// be re-declared on every dashboard that reads the series, and each copy would
+// go stale on its own.
+func checkTileCarriesNoBounds(row string, t DashboardTile) error {
+	if t.Min == nil && t.Max == nil && len(t.Thresholds) == 0 {
+		return nil
+	}
+	return DashboardRowError{Row: row, Why: fmt.Sprintf(
+		"tile %q carries a scale - min, max and thresholds belong on the reading, where the producer that knows them writes them",
+		t.Label)}
 }
 
 // Metrics reads the rows of the named metric series, newest first, under the

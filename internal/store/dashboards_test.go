@@ -184,3 +184,70 @@ func TestRetentionOf(t *testing.T) {
 		t.Fatalf("a negative count is not a request to keep nothing, got %+v", got)
 	}
 }
+
+// TestAGaugeCarriesItsScaleOnTheReading asserts each rule on its own row. The
+// scale is the PRODUCER's to declare - spec 01M0XG29064XBAQCX8J16QK1E9 point 2 -
+// so these are metric rows, and the tile arm at the bottom proves the other
+// home is closed.
+func TestAGaugeCarriesItsScaleOnTheReading(t *testing.T) {
+	reading := func(fields string) *Artifact {
+		return &Artifact{ID: "01M0", Type: MemoryType, Kind: MetricKind, Fields: json.RawMessage(fields)}
+	}
+
+	for _, ok := range []string{
+		`{"name":"m","value":3}`,
+		`{"name":"m","value":3,"min":0,"max":64}`,
+		`{"name":"m","value":3,"min":0,"max":64,"thresholds":{"warn":48,"crit":60}}`,
+		// LOW IS BAD, and it must be expressible: free disk, remaining quota.
+		// crit below warn is the direction, not an error.
+		`{"name":"m","value":3,"min":0,"max":100,"thresholds":{"warn":20,"crit":5}}`,
+		// One threshold alone is a legitimate half-declaration - plenty of
+		// gauges warn and never have a hard limit.
+		`{"name":"m","value":3,"min":0,"max":64,"thresholds":{"warn":48}}`,
+		// A scale that spans zero, for a temperature or a delta.
+		`{"name":"m","value":3,"min":-40,"max":40}`,
+	} {
+		if err := checkMetricRow(reading(ok)); err != nil {
+			t.Fatalf("%s is a legal reading: %v", ok, err)
+		}
+	}
+
+	for _, bad := range []struct{ fields, why string }{
+		{`{"name":"m","value":3,"min":0}`, "min without max is half a scale"},
+		{`{"name":"m","value":3,"max":64}`, "max without min is half a scale"},
+		{`{"name":"m","value":3,"min":64,"max":64}`, "a scale that does not ascend cannot place a reading"},
+		{`{"name":"m","value":3,"min":64,"max":0}`, "an inverted scale is not a downward gauge"},
+		{`{"name":"m","value":3,"thresholds":{"warn":48}}`, "a threshold with no scale marks nothing"},
+		{`{"name":"m","value":3,"min":0,"max":64,"thresholds":{"warn":90}}`, "a mark off the bar can never be reached"},
+		{`{"name":"m","value":3,"min":0,"max":64,"thresholds":{"crit":-1}}`, "a mark below the bar can never be reached"},
+	} {
+		if err := checkMetricRow(reading(bad.fields)); err == nil {
+			t.Fatalf("%s - %s, must be refused", bad.fields, bad.why)
+		}
+	}
+
+	// ZERO IS A DECLARED FLOOR. The arm a plain float64 fails silently.
+	if err := checkMetricRow(reading(`{"name":"m","value":3,"min":0,"max":64}`)); err != nil {
+		t.Fatalf("min 0 is declared, not missing: %v", err)
+	}
+
+	// THE OTHER HOME IS CLOSED. A tile carrying a scale is refused by name
+	// rather than ignored - an ignored bound draws an unscaled bar and reads
+	// as a rendering bug.
+	for _, tile := range []map[string]any{
+		{"kind": "gauge", "label": "used", "metric": "m", "min": 0, "max": 64},
+		{"kind": "gauge", "label": "used", "metric": "m", "thresholds": map[string]any{"warn": 48}},
+		{"kind": "number", "label": "used", "metric": "m", "max": 64},
+	} {
+		if err := checkDashboardRow(dashboardRow([]map[string]any{tile})); err == nil {
+			t.Fatalf("tile %v carries a scale - must be refused, naming where it belongs", tile)
+		}
+	}
+
+	// AND gauge IS IN THE VOCABULARY, carrying nothing but its metric and kind.
+	if err := checkDashboardRow(dashboardRow([]map[string]any{
+		{"kind": "gauge", "label": "memory used", "metric": "m"},
+	})); err != nil {
+		t.Fatalf("a gauge tile names a metric and a kind and nothing else: %v", err)
+	}
+}
