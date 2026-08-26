@@ -8,9 +8,10 @@
  * stop pause and monitor", asap. The contract, answered on the row:
  *
  *   - a dashboard is a memory row of kind `dashboard` whose fields declare
- *     tiles - a fixed vocabulary (number, table, grid, frame, series) over a
- *     named metric - and the console renders the declaration. It RUNS nothing:
- *     the data is metric rows producers push through the ordinary artifact door;
+ *     tiles - a fixed vocabulary (number, table, grid, frame, gauge, series)
+ *     over a named metric - and the console renders the declaration. It RUNS
+ *     nothing: the data is metric rows producers push through the ordinary
+ *     artifact door;
  *   - every number shows its age from the row it reads, and a datum older than
  *     its tile's threshold is visibly stale, not silently live - the operator
  *     reading prose today is exactly the failure this exists to fix;
@@ -32,12 +33,18 @@
  *     off the series door, which is the shape a trend needs; a window that
  *     was truncated says so, and a series whose points are not numbers
  *     says so instead of connecting prose into a trend;
+ *   - a gauge tile draws a value WITH ITS BOUNDS - the scale and thresholds
+ *     travel beside the reading, never on the tile - and reads its direction
+ *     off the threshold order: crit above warn means high is bad, crit below
+ *     warn means low is bad. A reading whose shape cannot place the value -
+ *     prose, half a scale, half a threshold set, a value off its own scale -
+ *     says so instead of drawing a bar that lies;
  *   - a dashboard is no more readable than the artifacts it names: a reader
  *     outside the rows' scope is refused;
  *   - reopening the page shows the newest rows and the newest ages - nothing
  *     is remembered between loads, the dashboard holds no state of its own.
  *
- * FIVE ARMS, of which the second is the one a component test would miss:
+ * SIX ARMS, of which the second is the one a component test would miss:
  *
  *   1. an agent authors a dashboard and metric rows through the API; the page
  *      lists the dashboard and renders each declared number with its age;
@@ -52,7 +59,12 @@
  *   5. a series tile draws its window oldest-first - rising values read as
  *      a rising line in coordinates - pins the newest point, flags a
  *      truncated window, refuses non-numeric points, and a series tile over
- *      a never-pushed metric says so.
+ *      a never-pushed metric says so;
+ *   6. a gauge tile draws its value with the pushed bounds - the fill runs
+ *      min to value, the warn and crit bands sit where the thresholds say,
+ *      the direction reads off the order (crit above warn is high-bad, below
+ *      is low-bad), the severity colours the fill off the palette, and a
+ *      reading that cannot be placed says so.
  *
  * TWO TOKENS. The author writes in their project; the outsider proves the
  * scope arm, because a check with one token could not prove "readable by me,
@@ -156,16 +168,31 @@ const dash = await post({
       { kind: "series", label: "never sparkline", metric: metricName("sparkmissing") },
       // A series of words: the honest wrong-shape state for a line chart.
       { kind: "series", label: "wordy sparkline", metric: metricName("words") },
+      {
+        kind: "gauge",
+        label: "mem used",
+        metric: metricName("mem"),
+        stale_after_seconds: 5,
+      },
+      { kind: "gauge", label: "free disk", metric: metricName("disk") },
+      { kind: "gauge", label: "plain gauge", metric: metricName("plain") },
+      { kind: "gauge", label: "never gauge", metric: metricName("gaugemissing") },
+      // A gauge over a series of words: the honest wrong-shape state.
+      { kind: "gauge", label: "wordy gauge", metric: metricName("words") },
+      // Half a threshold set: one mark alone cannot say which way is worse.
+      { kind: "gauge", label: "half threshold", metric: metricName("halfthr") },
+      // A value its own scale cannot place.
+      { kind: "gauge", label: "off scale", metric: metricName("offscl") },
     ],
   },
 });
 
-const mkMetric = (name, value, state) =>
+const mkMetric = (name, value, state, extra) =>
   post({
     type: "memory",
     kind: "metric",
     title: `metric ${stamp} ${name}`,
-    fields: { name, value, ...(state ? { state } : {}) },
+    fields: { name, value, ...(state ? { state } : {}), ...(extra ?? {}) },
   });
 
 await mkMetric(metricName("cells"), 1200);
@@ -226,6 +253,31 @@ for (let v = 1; v <= 7; v++) {
 await mkMetric(metricName("words"), "high");
 await mkMetric(metricName("words"), "low");
 
+// THE GAUGE FIXTURE: values with their bounds riding beside them - the scale
+// and the thresholds are the producer's words, the tile declares metric and
+// kind only. mem is high-bad (crit above warn), disk is low-bad (crit below
+// warn) - the order IS the direction, no field says which way round it is.
+await mkMetric(metricName("mem"), 57, "measured", {
+  min: 0,
+  max: 64,
+  thresholds: { warn: 40, crit: 55 },
+});
+await mkMetric(metricName("disk"), 4.5, undefined, {
+  min: 0,
+  max: 10,
+  thresholds: { warn: 3, crit: 1 },
+});
+// A bare number: a gauge with no scale and no thresholds is just the value.
+await mkMetric(metricName("plain"), 7);
+// The wrong shapes: half a threshold set - one mark alone cannot say which
+// way is worse - and a value its own scale cannot place.
+await mkMetric(metricName("halfthr"), 5, undefined, {
+  min: 0,
+  max: 10,
+  thresholds: { warn: 4 },
+});
+await mkMetric(metricName("offscl"), 12, undefined, { min: 0, max: 10 });
+
 // WHAT THE NODE HOLDS, read back before the browser opens: if the fixture
 // seeded differently than intended, this fails as a fixture problem instead
 // of the page answering a question about the wrong data.
@@ -251,7 +303,7 @@ if (
   );
 }
 const heldDash = await api(`/api/artifact/${dash.id}`);
-if (!Array.isArray(heldDash.fields?.tiles) || heldDash.fields.tiles.length !== 11) {
+if (!Array.isArray(heldDash.fields?.tiles) || heldDash.fields.tiles.length !== 18) {
   die(
     `the dashboard row's tiles read ${JSON.stringify(heldDash.fields?.tiles)} - the seed is wrong`,
   );
@@ -727,6 +779,167 @@ try {
     die('the "wordy sparkline" tile does not say its points are not numbers');
   }
 
+  // ---- ARM 6: THE GAUGE - a value drawn with its pushed bounds. The tile
+  // declares metric and kind only; the scale and thresholds travel beside
+  // the reading. The direction reads off the order of the thresholds - crit
+  // above warn means high is bad, crit below warn means low is bad - and the
+  // bands and the fill land where the pushed numbers say they land. ----
+  const memGauge = tile("mem used");
+  await memGauge.scrollIntoViewIfNeeded().catch(() => {});
+  if ((await memGauge.getAttribute("data-gauge-value")) !== "57") {
+    die(
+      `the mem gauge reads ${await memGauge.getAttribute("data-gauge-value")}, wanted 57 - the pushed reading`,
+    );
+  }
+  if (
+    (await memGauge.getAttribute("data-gauge-min")) !== "0" ||
+    (await memGauge.getAttribute("data-gauge-max")) !== "64"
+  ) {
+    die(
+      `the mem gauge carries scale ${await memGauge.getAttribute("data-gauge-min")}..${await memGauge.getAttribute("data-gauge-max")}, wanted 0..64 - the pushed bounds`,
+    );
+  }
+  if (
+    (await memGauge.getAttribute("data-gauge-warn")) !== "40" ||
+    (await memGauge.getAttribute("data-gauge-crit")) !== "55"
+  ) {
+    die("the mem gauge does not carry its pushed thresholds warn 40 crit 55");
+  }
+  if ((await memGauge.getAttribute("data-gauge-direction")) !== "high") {
+    die(
+      `the mem gauge's direction reads ${await memGauge.getAttribute("data-gauge-direction")}, wanted high - crit above warn means high is bad`,
+    );
+  }
+  if ((await memGauge.getAttribute("data-gauge-severity")) !== "crit") {
+    die(
+      `the mem gauge's severity reads ${await memGauge.getAttribute("data-gauge-severity")}, wanted crit - 57 is past the crit mark of 55`,
+    );
+  }
+  if ((await memGauge.getAttribute("data-state")) !== "measured") {
+    die(
+      `the mem gauge's state reads ${await memGauge.getAttribute("data-state")}, wanted measured - the row claims it`,
+    );
+  }
+  if ((await memGauge.getAttribute("data-age")) === null) {
+    die("the mem gauge carries no age - a frozen gauge reads as a live instrument");
+  }
+  // The bar in coordinates: the fill runs min to value, the warn band spans
+  // warn..crit, the crit band crit..max. The same percents derive from the
+  // pushed numbers, so the drawn boxes must land where they say they land.
+  const gaugeBox = async (sel) => {
+    const b = await memGauge.locator(sel).boundingBox();
+    if (!b) die(`the mem gauge's ${sel} has no bounding box - it is not laid out`);
+    return b;
+  };
+  const track = await gaugeBox("[data-gauge-track]");
+  const fillBox = await gaugeBox("[data-gauge-fill]");
+  if (Math.abs(fillBox.width / track.width - 57 / 64) > 0.02) {
+    die(
+      `the mem gauge's fill runs ${fillBox.width / track.width} of the bar, wanted 57/64 - min to value`,
+    );
+  }
+  const warnBox = await gaugeBox('[data-gauge-band="warn"]');
+  if (
+    Math.abs(warnBox.x - (track.x + (40 / 64) * track.width)) > 2 ||
+    Math.abs(warnBox.width / track.width - 15 / 64) > 0.02
+  ) {
+    die(`the mem gauge's warn band does not span 40..55:\n${JSON.stringify(warnBox)}`);
+  }
+  const critBox = await gaugeBox('[data-gauge-band="crit"]');
+  if (
+    Math.abs(critBox.x - (track.x + (55 / 64) * track.width)) > 2 ||
+    Math.abs(critBox.width / track.width - 9 / 64) > 0.02
+  ) {
+    die(`the mem gauge's crit band does not span 55..64:\n${JSON.stringify(critBox)}`);
+  }
+  // The severity is styled, not just spoken: the crit fill takes the
+  // palette's dim red-orange. Measured against a probe styled with the same
+  // var in-page, so the comparison is of two computed colours, not of a
+  // serialization a browser version chooses.
+  const fillColour = await memGauge
+    .locator("[data-gauge-fill]")
+    .evaluate((el) => getComputedStyle(el).backgroundColor);
+  const critProbe = await page.evaluate(() => {
+    const probe = document.createElement("div");
+    probe.style.backgroundColor = "var(--color-serenedash-3)";
+    document.body.appendChild(probe);
+    const colour = getComputedStyle(probe).backgroundColor;
+    probe.remove();
+    return colour;
+  });
+  if (fillColour !== critProbe) {
+    die(
+      `the mem gauge's crit fill is not the palette's dim red-orange: ${fillColour} vs ${critProbe}`,
+    );
+  }
+  // A LOW-BAD gauge gets worse downwards: the danger sits at the bottom, the
+  // crit band spans min..crit and the warn band crit..warn.
+  const diskGauge = tile("free disk");
+  if ((await diskGauge.getAttribute("data-gauge-direction")) !== "low") {
+    die(
+      `the free disk gauge's direction reads ${await diskGauge.getAttribute("data-gauge-direction")}, wanted low - crit below warn means low is bad`,
+    );
+  }
+  if ((await diskGauge.getAttribute("data-gauge-severity")) !== "ok") {
+    die(
+      `the free disk gauge's severity reads ${await diskGauge.getAttribute("data-gauge-severity")}, wanted ok - 4.5 is above the warn mark of 3`,
+    );
+  }
+  if ((await diskGauge.getAttribute("data-state")) !== "unknown") {
+    die(
+      `the free disk gauge's state reads ${await diskGauge.getAttribute("data-state")}, wanted unknown - the row claims nothing`,
+    );
+  }
+  const diskTrack = await diskGauge.locator("[data-gauge-track]").boundingBox();
+  if (!diskTrack) die("the free disk gauge's bar has no bounding box - it is not laid out");
+  const diskCrit = await diskGauge.locator('[data-gauge-band="crit"]').boundingBox();
+  const diskWarn = await diskGauge.locator('[data-gauge-band="warn"]').boundingBox();
+  if (!diskCrit || !diskWarn) die("the free disk gauge does not draw its bands");
+  if (
+    Math.abs(diskCrit.x - diskTrack.x) > 2 ||
+    Math.abs(diskCrit.width / diskTrack.width - 0.1) > 0.02
+  ) {
+    die(`the free disk gauge's crit band does not span 0..1:\n${JSON.stringify(diskCrit)}`);
+  }
+  if (
+    Math.abs(diskWarn.x - (diskTrack.x + 0.1 * diskTrack.width)) > 2 ||
+    Math.abs(diskWarn.width / diskTrack.width - 0.2) > 0.02
+  ) {
+    die(`the free disk gauge's warn band does not span 1..3:\n${JSON.stringify(diskWarn)}`);
+  }
+  // A gauge with no scale and no thresholds is just the value: no bar, no
+  // bands, no severity, and it must not invent any of them.
+  const plainGauge = tile("plain gauge");
+  if ((await plainGauge.getAttribute("data-gauge-value")) !== "7") {
+    die(
+      `the plain gauge reads ${await plainGauge.getAttribute("data-gauge-value")}, wanted 7 - the pushed reading`,
+    );
+  }
+  if ((await plainGauge.getAttribute("data-gauge-min")) !== null) {
+    die("the plain gauge declares a scale it does not have");
+  }
+  if ((await plainGauge.getAttribute("data-gauge-severity")) !== null) {
+    die("the plain gauge declares a severity it cannot have - no thresholds were pushed");
+  }
+  if ((await plainGauge.locator("[data-gauge-track]").count()) !== 0) {
+    die("the plain gauge draws a bar over no scale");
+  }
+  // The honest wrong-shape states, same honesty as the grid, frame and
+  // series refusals: prose, half a threshold set, and a value off its scale
+  // each say so rather than drawing a bar that lies.
+  if ((await tile("never gauge").getAttribute("data-empty")) === null) {
+    die('the "never gauge" tile does not say its metric has no rows');
+  }
+  if ((await tile("wordy gauge").getAttribute("data-gauge-bad")) === null) {
+    die('the "wordy gauge" tile does not say its reading is not a gauge');
+  }
+  if ((await tile("half threshold").getAttribute("data-gauge-bad")) === null) {
+    die('the "half threshold" tile does not say its direction is undecidable');
+  }
+  if ((await tile("off scale").getAttribute("data-gauge-bad")) === null) {
+    die('the "off scale" tile does not say its value cannot be placed on its scale');
+  }
+
   // ---- THE STALENESS HALF: past its threshold, the tile is styled stale,
   // not silently live. ----
   await page.waitForTimeout(6000);
@@ -741,6 +954,9 @@ try {
   }
   if ((await seriesTile.getAttribute("data-stale")) === null) {
     die("the series tile past its 5s threshold is not styled stale");
+  }
+  if ((await memGauge.getAttribute("data-stale")) === null) {
+    die("the mem gauge past its 5s threshold is not styled stale");
   }
   if (crashes.length > 0) die(`the page threw: ${crashes.join("; ")}`);
 
@@ -793,7 +1009,10 @@ try {
       "a green fill bar as one rect at its grid column, angle-bracket text as " +
       "text - answers the pointer and the cursor from its own legend, draws the " +
       "series window oldest-first with the newest point pinned, flags a " +
-      "truncated window, refuses prose points, moves the " +
+      "truncated window, refuses prose points, draws the gauge " +
+      "value with its pushed bounds - fill min to value, bands where the " +
+      "thresholds say, direction off the order, severity off the palette - " +
+      "refuses unplaceable readings, moves the " +
       "cursor row under j/k, pgup/pgdn, home/end and esc, styles a stale tile " +
       "past its threshold, says what each reading is - inferred as claimed, " +
       "unknown as unclaimed - right-aligns its numbers off the eight-colour " +

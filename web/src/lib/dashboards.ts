@@ -22,8 +22,10 @@ export const DASHBOARD_TYPE = "memory";
 export const DASHBOARD_KIND = "dashboard";
 
 /** One declared tile, as the store rules it (store.DashboardTile). The
- * vocabulary is number, table, grid, frame, series - each kind renders over
- * the named metric. */
+ * vocabulary is number, table, grid, frame, series, gauge - each kind renders
+ * over the named metric. A gauge declares metric and kind ONLY: its scale
+ * and thresholds travel with the reading, because the producer is the party
+ * that knows them. */
 export interface DashboardTile {
   kind: string;
   label: string;

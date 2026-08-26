@@ -592,6 +592,215 @@ function SeriesTile({
   );
 }
 
+/** The gauge a gauge tile draws: a numeric value WITH ITS BOUNDS - the scale
+ * and the thresholds travel beside the reading, not on the tile, because the
+ * producer is the party that knows them (the tile-side scale is refused by
+ * name at the write). Any reading that is not this shape is null, and the
+ * tile says so - a gauge drawn from a wrong-shaped reading is a bar that lies
+ * with confidence. The direction is not a field: crit above warn means high
+ * is bad, crit below warn means low is bad - the renderer reads the sense of
+ * the gauge off the two numbers it already has, so a free-disk gauge works
+ * without a flag saying which way round it is. */
+type GaugeReading = {
+  value: number;
+  min?: number;
+  max?: number;
+  warn?: number;
+  crit?: number;
+  direction?: "high" | "low";
+  severity?: "ok" | "warn" | "crit";
+};
+
+function gaugeOf(row: Artifact): GaugeReading | null {
+  const fields = row.fields as
+    | {
+        value?: unknown;
+        min?: unknown;
+        max?: unknown;
+        thresholds?: unknown;
+      }
+    | undefined;
+  const value = fields?.value;
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  const min = fields?.min;
+  const max = fields?.max;
+  // A HALF-DECLARED SCALE IS NOT A SCALE: min alone cannot place a value,
+  // and max alone cannot either - a bar drawn from one end invents the other.
+  if ((min === undefined) !== (max === undefined)) return null;
+  const thresholds = fields?.thresholds;
+  if (min === undefined || max === undefined) {
+    // Thresholds with no scale are marks off nothing - refused at the write
+    // too, so an ignored mark cannot read as a rendering bug here.
+    return thresholds === undefined || thresholds === null ? { value } : null;
+  }
+  if (
+    typeof min !== "number" ||
+    typeof max !== "number" ||
+    !Number.isFinite(min) ||
+    !Number.isFinite(max) ||
+    max <= min
+  ) {
+    return null;
+  }
+  // A value its own scale cannot place is a wrong-shaped reading, not a
+  // clamped bar: off the scale says the bounds and the reading disagree.
+  if (value < min || value > max) return null;
+  if (thresholds === undefined || thresholds === null) {
+    return { value, min, max };
+  }
+  if (typeof thresholds !== "object") return null;
+  const marks = thresholds as { warn?: unknown; crit?: unknown };
+  const warn = marks.warn;
+  const crit = marks.crit;
+  if (
+    typeof warn !== "number" ||
+    typeof crit !== "number" ||
+    !Number.isFinite(warn) ||
+    !Number.isFinite(crit)
+  ) {
+    return null;
+  }
+  // One threshold alone cannot say which way is worse, and a pair at the
+  // same spot cannot either - the order IS the direction, so an order the
+  // tile cannot read is a gauge it cannot draw.
+  if (warn === crit) return null;
+  const direction = crit > warn ? "high" : "low";
+  const severity =
+    direction === "high"
+      ? value >= crit
+        ? "crit"
+        : value >= warn
+          ? "warn"
+          : "ok"
+      : value <= crit
+        ? "crit"
+        : value <= warn
+          ? "warn"
+          : "ok";
+  return { value, min, max, warn, crit, direction, severity };
+}
+
+/** The colour a gauge's fill takes, by its severity - off the serenedash
+ * palette, the only colour vocabulary a tile may use: ok is the plain blue,
+ * warn borrows the amber of inferred, crit the dim red-orange. The gauge's
+ * verdict is in its position on the bar; the colour only names it. */
+const GAUGE_FILL: Record<"ok" | "warn" | "crit", string> = {
+  ok: "var(--color-serenedash-1)",
+  warn: "var(--color-serenedash-4)",
+  crit: "var(--color-serenedash-3)",
+};
+
+/** One gauge tile: the newest reading of its series, drawn as a value with
+ * its bar. The scale comes off the reading - no scale, no bar, just the
+ * number - and the thresholds draw warn and crit bands on it: above the mark
+ * when high is bad, below it when low is bad. The fill runs min to value and
+ * takes the severity's colour. It carries its age and staleness exactly like
+ * a number tile: a gauge frozen at its last push reads as a live instrument. */
+function GaugeTile({
+  tile,
+  row,
+  now,
+}: { tile: DashboardTile; row: Artifact | undefined; now: number }) {
+  const age = row ? ageSeconds(row, now) : 0;
+  const stale = row && (tile.stale_after_seconds ?? 0) > 0 && age > (tile.stale_after_seconds ?? 0);
+  const gauge = row ? gaugeOf(row) : null;
+  let fill = 0;
+  let warnBand: [number, number] | null = null;
+  let critBand: [number, number] | null = null;
+  if (gauge !== null && gauge.min !== undefined && gauge.max !== undefined) {
+    const { min, max } = gauge;
+    const span = max - min;
+    const pct = (v: number) => ((v - min) / span) * 100;
+    fill = pct(gauge.value);
+    if (gauge.warn !== undefined && gauge.crit !== undefined && gauge.direction !== undefined) {
+      if (gauge.direction === "high") {
+        warnBand = [pct(gauge.warn), pct(gauge.crit) - pct(gauge.warn)];
+        critBand = [pct(gauge.crit), 100 - pct(gauge.crit)];
+      } else {
+        warnBand = [pct(gauge.crit), pct(gauge.warn) - pct(gauge.crit)];
+        critBand = [0, pct(gauge.crit)];
+      }
+    }
+  }
+  const scaled = gauge !== null && gauge.min !== undefined && gauge.max !== undefined;
+  return (
+    <div
+      data-tile-label={tile.label}
+      data-tile-kind="gauge"
+      data-empty={row ? undefined : "true"}
+      data-gauge-bad={row && !gauge ? "true" : undefined}
+      data-stale={stale ? "true" : undefined}
+      data-state={stateOf(row)}
+      data-age={row && gauge ? age : undefined}
+      data-gauge-value={gauge ? gauge.value : undefined}
+      data-gauge-min={gauge?.min}
+      data-gauge-max={gauge?.max}
+      data-gauge-warn={gauge?.warn}
+      data-gauge-crit={gauge?.crit}
+      data-gauge-direction={gauge?.direction}
+      data-gauge-severity={gauge?.severity}
+      className="flex flex-col gap-1 rounded-md border border-border p-4"
+    >
+      <div className="text-muted-foreground text-xs">{tile.label}</div>
+      {row && !gauge ? (
+        <div className="py-1 text-muted-foreground text-sm">
+          its newest reading is not a gauge of {"{value, min, max, thresholds}"} - the tile says so
+          rather than drawing a bar that lies
+        </div>
+      ) : !row || !gauge ? (
+        <div className="py-1 text-muted-foreground text-sm">
+          its metric has no rows pushed yet - not zero, just nothing
+        </div>
+      ) : (
+        <>
+          <div
+            data-tile-value
+            className="flex items-baseline justify-end font-semibold text-2xl tabular-nums"
+          >
+            {gauge.value}
+          </div>
+          {scaled && (
+            <div data-gauge-track className="relative h-2 w-full rounded bg-border/60">
+              <div
+                data-gauge-fill
+                style={{ width: `${fill}%`, background: GAUGE_FILL[gauge.severity ?? "ok"] }}
+                className="absolute top-0 left-0 h-full rounded"
+              />
+              {critBand && (
+                <div
+                  data-gauge-band="crit"
+                  style={{
+                    left: `${critBand[0]}%`,
+                    width: `${critBand[1]}%`,
+                    background: "var(--color-serenedash-3)",
+                  }}
+                  className="absolute top-0 h-full opacity-25"
+                />
+              )}
+              {warnBand && (
+                <div
+                  data-gauge-band="warn"
+                  style={{
+                    left: `${warnBand[0]}%`,
+                    width: `${warnBand[1]}%`,
+                    background: "var(--color-serenedash-4)",
+                  }}
+                  className="absolute top-0 h-full opacity-25"
+                />
+              )}
+            </div>
+          )}
+          <div className="flex items-baseline gap-2 text-muted-foreground text-xs" data-tile-age>
+            <span>{ageWords(age)}</span>
+            <span data-tile-state={stateOf(row)}>{stateOf(row)}</span>
+            {stale ? <span>, stale</span> : null}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 export function DashboardView() {
   const { id } = useParams();
   const signedIn = useSignedIn();
@@ -760,6 +969,11 @@ export function DashboardView() {
                 row={rowsOf(tile.metric)[0]}
                 now={now}
               />
+            );
+          }
+          if (tile.kind === "gauge") {
+            return (
+              <GaugeTile key={tile.label} tile={tile} row={rowsOf(tile.metric)[0]} now={now} />
             );
           }
           // A kind outside the vocabulary cannot be written - see
