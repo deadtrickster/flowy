@@ -158,6 +158,8 @@ const dash = await post({
       },
       // A frame over a numeric series: the same wrong-shape refusal.
       { kind: "frame", label: "wrong frame", metric: metricName("cells") },
+      // The reflow tile - one frame pushed at three widths.
+      { kind: "frame", label: "reflow frame", metric: metricName("reflow") },
       {
         kind: "series",
         label: "sweep points",
@@ -238,6 +240,26 @@ await mkMetric(
     grid: { label: 22, value: 10, bar: 18 },
     legend: { lab: [["pass cells", "cells that ran green under the latest sweep"]] },
     panels: { lab: "the lab sweep - one box per host, newest row first" },
+  },
+  "measured",
+);
+
+// THE REFLOW FIXTURE, deliberately its own metric rather than variants bolted
+// onto the frame above: those arms measure runs pinned to FRAME_LINES' columns,
+// and a tile that picked a different rendering would fail them for a reason
+// that has nothing to do with what they test.
+//
+// The two widths are far apart so the drawn SVG's pixel width says
+// unambiguously which one the console chose.
+await mkMetric(
+  metricName("reflow"),
+  {
+    lines: ["default rendering".padEnd(60, " ")],
+    cols: 60,
+    variants: {
+      30: { cols: 30, lines: ["narrow rendering".padEnd(30, " ")] },
+      150: { cols: 150, lines: ["wide rendering".padEnd(150, " ")] },
+    },
   },
   "measured",
 );
@@ -704,6 +726,57 @@ try {
   }
   if ((await cursorHl.count()) !== 0) {
     die("the cursor highlight lingers after Escape clears it");
+  }
+
+  // ---- REFLOW: the widest rendering that fits the PANEL, not the window.
+  //
+  // A frame cannot be re-wrapped by whoever draws it - the bars and the column
+  // grid were fixed when the producer chose its glyphs - so it ships several
+  // widths and the tile measures its own box and takes the widest that fits. A
+  // frame narrower than its panel leaves the panel half empty; one wider is the
+  // horizontal scroll this exists to remove.
+  //
+  // Asserted on the drawn SVG's width in pixels - cols * CW + 2 * pad - because
+  // that is the fact a reader cares about, and the three renderings are far
+  // enough apart that the number says unambiguously which was chosen.
+  {
+    const reflow = tile("reflow frame");
+    await reflow.scrollIntoViewIfNeeded().catch(() => {});
+    const rsvg = reflow.locator("[data-frame-svg] svg");
+    if ((await rsvg.count()) !== 1) {
+      die("the reflow tile draws no SVG");
+    }
+    const widthOf = async () => Number(await rsvg.getAttribute("width"));
+    const wide = 150 * 7.22 + 16;
+    const narrow = 30 * 7.22 + 16;
+    const atFull = await widthOf();
+    if (Math.abs(atFull - wide) > 2) {
+      die(
+        `at a 1600px viewport the reflow frame drew ${atFull}px, wanted ~${wide.toFixed(0)} - the widest rendering that fits is the one to draw`,
+      );
+    }
+    await page.setViewportSize({ width: 480, height: 1000 });
+    let narrowed = true;
+    await page
+      .waitForFunction(
+        (want) => {
+          const el = document.querySelector(
+            '[data-tile-label="reflow frame"] [data-frame-svg] svg',
+          );
+          return el !== null && Math.abs(Number(el.getAttribute("width")) - want) <= 2;
+        },
+        narrow,
+        { timeout: 5000 },
+      )
+      .catch(() => {
+        narrowed = false;
+      });
+    if (!narrowed) {
+      die(
+        `narrowed to 480px the reflow frame stayed at ${await widthOf()}px, wanted ~${narrow.toFixed(0)} - a frame wider than its panel is the horizontal scroll this removes`,
+      );
+    }
+    await page.setViewportSize({ width: 1600, height: 1000 });
   }
 
   // ---- ARM 5: THE SERIES - a sparkline drawn oldest-first from the series

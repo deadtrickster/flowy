@@ -182,6 +182,49 @@ export interface FrameReading {
   grid?: { label: number; value: number; bar: number };
   legend?: Record<string, [string, string][]>;
   panels?: Record<string, string>;
+  /** The same frame rendered at other widths, keyed by column count.
+   *
+   * A frame CANNOT be reflowed by whoever draws it: the bars, the column grid
+   * and the coverage squares were all decided when the producer chose its
+   * glyphs, and nothing downstream can re-wrap a line without destroying the
+   * alignment that makes it a frame. So the producer renders it several times
+   * and the console picks - see pickFrame. */
+  variants?: Record<string, { cols: number; lines: string[] }>;
+}
+
+/** The widest rendering of a frame that fits `px` pixels, and its column count.
+ *
+ * WIDEST THAT FITS, not nearest: a frame narrower than its panel leaves the
+ * panel half empty, which is what "make it fit the entire width" was about. When
+ * nothing fits - a very narrow panel, or a producer that only pushed wide
+ * variants - the NARROWEST is returned rather than the default, because a frame
+ * that overflows scrolls sideways and that was the original complaint.
+ *
+ * A reading with no variants returns its own lines unchanged, so a producer that
+ * has not been updated renders exactly as before. */
+export function pickFrame(frame: FrameReading, px: number): { lines: string[]; cols: number } {
+  const base = { lines: frame.lines, cols: frame.cols ?? widestRun(frame.lines) };
+  const vs = frame.variants;
+  if (!vs) return base;
+  const all = [base];
+  for (const v of Object.values(vs)) {
+    if (Array.isArray(v?.lines) && typeof v?.cols === "number") {
+      all.push({ lines: v.lines, cols: v.cols });
+    }
+  }
+  const fits = Math.floor((px - PAD * 2) / CW);
+  const usable = all.filter((a) => a.cols > 0);
+  if (usable.length === 0) return base;
+  const within = usable.filter((a) => a.cols <= fits);
+  if (within.length > 0) {
+    return within.reduce((best, a) => (a.cols > best.cols ? a : best));
+  }
+  return usable.reduce((best, a) => (a.cols < best.cols ? a : best));
+}
+
+/** The widest line in a frame, counted in printable cells. */
+function widestRun(lines: string[]): number {
+  return lines.reduce((m, ln) => Math.max(m, runs(ln).reduce((s, r) => s + r.text.length, 0)), 0);
 }
 
 /** A metric row's fields.value parsed as a frame reading, or null when the

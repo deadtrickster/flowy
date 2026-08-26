@@ -9,7 +9,7 @@ import {
   dashboards,
   tilesOf,
 } from "@/lib/dashboards";
-import { CW, LH, PAD, frameOf, frameSvg } from "@/lib/frame";
+import { CW, LH, PAD, frameOf, frameSvg, pickFrame } from "@/lib/frame";
 import { type CursorTip, describe, place } from "@/lib/frame-cursor";
 import { useSignedIn } from "@/lib/session";
 
@@ -295,12 +295,34 @@ function FrameTile({
   const age = row ? ageSeconds(row, now) : 0;
   const stale = row && (tile.stale_after_seconds ?? 0) > 0 && age > (tile.stale_after_seconds ?? 0);
   const frame = row ? frameOf(row) : null;
-  const svg = frame ? frameSvg(frame.lines, { cols: frame.cols }) : "";
+  // THE PANEL'S WIDTH DECIDES WHICH RENDERING IS DRAWN. The producer pushes the
+  // same frame at several widths; this measures the box and takes the widest
+  // that fits, so the frame fills its panel instead of sitting narrow inside it.
+  // Measured rather than assumed: a dashboard is one column on a phone and three
+  // on a desktop, and the tile cannot know which it is in.
+  const [boxPx, setBoxPx] = useState(0);
+  const picked = frame ? pickFrame(frame, boxPx || 1e9) : null;
+  const svg = picked ? frameSvg(picked.lines, { cols: picked.cols }) : "";
   const [tip, setTip] = useState<{ row: number; col: number; text: CursorTip } | null>(null);
   const [cursor, setCursor] = useState<number | null>(null);
   const [tipPx, setTipPx] = useState<[number, number]>([0, 0]);
   const boxRef = useRef<HTMLDivElement>(null);
   const tipRef = useRef<HTMLDivElement>(null);
+
+  // THE BOX, NOT THE WINDOW. A tile is one column of a grid that reflows on its
+  // own, so the window's width says nothing about how much room this frame has.
+  // ResizeObserver rather than a resize listener for the same reason: the column
+  // changes width when the grid does, which is not always when the window does.
+  useEffect(() => {
+    const box = boxRef.current;
+    if (!box) return;
+    const seen = () => setBoxPx(box.clientWidth);
+    seen();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(seen);
+    ro.observe(box);
+    return () => ro.disconnect();
+  }, []);
 
   /** The cell a pixel is in, in the frame's own geometry. The renderer and
    * the pointer share the constants, so the column a pixel lands on is the
@@ -311,21 +333,21 @@ function FrameTile({
 
   function pointAt(e: React.MouseEvent) {
     const box = boxRef.current;
-    if (!box || !frame) return;
+    if (!box || !frame || !picked) return;
     const rect = box.getBoundingClientRect();
     const [r, c] = cellAt(e.clientX - rect.left, e.clientY - rect.top);
     setCursor(null); // the pointer owns the tooltip; the cursor stands down
-    const text = describe(frame.lines, r, c, frame);
+    const text = describe(picked.lines, r, c, frame);
     setTip(text ? { row: r, col: c, text } : null);
   }
 
   function onKey(e: React.KeyboardEvent) {
-    if (!frame || frame.lines.length === 0) return;
-    const cur = cursor ?? tip?.row ?? Math.floor(frame.lines.length / 2);
+    if (!frame || !picked || picked.lines.length === 0) return;
+    const cur = cursor ?? tip?.row ?? Math.floor(picked.lines.length / 2);
     let next: number | null = cur;
-    if (e.key === "j" || e.key === "ArrowDown") next = Math.min(cur + 1, frame.lines.length - 1);
+    if (e.key === "j" || e.key === "ArrowDown") next = Math.min(cur + 1, picked.lines.length - 1);
     else if (e.key === "k" || e.key === "ArrowUp") next = Math.max(cur - 1, 0);
-    else if (e.key === "PageDown") next = Math.min(cur + 10, frame.lines.length - 1);
+    else if (e.key === "PageDown") next = Math.min(cur + 10, picked.lines.length - 1);
     else if (e.key === "PageUp") next = Math.max(cur - 10, 0);
     else if (e.key === "Home") next = 0;
     else if (e.key === "End") next = frame.lines.length - 1;
