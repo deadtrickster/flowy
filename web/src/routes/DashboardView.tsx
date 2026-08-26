@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import { ApiError, type Artifact } from "@/lib/api";
@@ -301,7 +301,7 @@ function FrameTile({
   // Measured rather than assumed: a dashboard is one column on a phone and three
   // on a desktop, and the tile cannot know which it is in.
   const [boxPx, setBoxPx] = useState(0);
-  const picked = frame ? pickFrame(frame, boxPx || 1e9) : null;
+  const picked = frame ? pickFrame(frame, boxPx > 0 ? boxPx : null) : null;
   const svg = picked ? frameSvg(picked.lines, { cols: picked.cols }) : "";
   const [tip, setTip] = useState<{ row: number; col: number; text: CursorTip } | null>(null);
   const [cursor, setCursor] = useState<number | null>(null);
@@ -313,16 +313,26 @@ function FrameTile({
   // own, so the window's width says nothing about how much room this frame has.
   // ResizeObserver rather than a resize listener for the same reason: the column
   // changes width when the grid does, which is not always when the window does.
-  useEffect(() => {
-    const box = boxRef.current;
-    if (!box) return;
-    const seen = () => setBoxPx(box.clientWidth);
-    seen();
+  //
+  // A CALLBACK REF, NOT AN EFFECT ON MOUNT. The frame box does not exist until
+  // the row has loaded, so an effect with an empty dependency list runs while
+  // boxRef.current is still null, attaches nothing, and leaves the width
+  // permanently unmeasured. The check caught exactly that: the frame drew its
+  // widest rendering and never narrowed. A callback ref fires whenever the node
+  // attaches or detaches, which is the question being asked.
+  const roRef = useRef<ResizeObserver | null>(null);
+  const measure = useCallback((node: HTMLDivElement | null) => {
+    boxRef.current = node;
+    roRef.current?.disconnect();
+    roRef.current = null;
+    if (!node) return;
+    setBoxPx(node.clientWidth);
     if (typeof ResizeObserver === "undefined") return;
-    const ro = new ResizeObserver(seen);
-    ro.observe(box);
-    return () => ro.disconnect();
+    const ro = new ResizeObserver(() => setBoxPx(node.clientWidth));
+    ro.observe(node);
+    roRef.current = ro;
   }, []);
+  useEffect(() => () => roRef.current?.disconnect(), []);
 
   /** The cell a pixel is in, in the frame's own geometry. The renderer and
    * the pointer share the constants, so the column a pixel lands on is the
@@ -405,7 +415,7 @@ function FrameTile({
         </div>
       ) : (
         <div
-          ref={boxRef}
+          ref={measure}
           // biome-ignore lint/a11y/noNoninteractiveTabindex: the cursor is the point - j/k, pgup/pgdn, home/end and esc are the frame's own keys, so the frame is a keyboard control by design
           tabIndex={0}
           role="application"

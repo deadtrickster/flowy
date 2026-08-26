@@ -202,10 +202,17 @@ export interface FrameReading {
  *
  * A reading with no variants returns its own lines unchanged, so a producer that
  * has not been updated renders exactly as before. */
-export function pickFrame(frame: FrameReading, px: number): { lines: string[]; cols: number } {
+export function pickFrame(
+  frame: FrameReading,
+  px: number | null,
+): { lines: string[]; cols: number } {
   const base = { lines: frame.lines, cols: frame.cols ?? widestRun(frame.lines) };
   const vs = frame.variants;
-  if (!vs) return base;
+  // NULL IS "NOT MEASURED YET", NOT "INFINITE ROOM". Treating an absent
+  // measurement as unlimited draws the widest rendering and looks exactly like a
+  // working reflow until something narrows - which is how the missing observer
+  // stayed invisible until the check narrowed the viewport.
+  if (!vs || px === null) return base;
   const all = [base];
   for (const v of Object.values(vs)) {
     if (Array.isArray(v?.lines) && typeof v?.cols === "number") {
@@ -224,7 +231,14 @@ export function pickFrame(frame: FrameReading, px: number): { lines: string[]; c
 
 /** The widest line in a frame, counted in printable cells. */
 function widestRun(lines: string[]): number {
-  return lines.reduce((m, ln) => Math.max(m, runs(ln).reduce((s, r) => s + r.text.length, 0)), 0);
+  return lines.reduce(
+    (m, ln) =>
+      Math.max(
+        m,
+        runs(ln).reduce((s, r) => s + r.text.length, 0),
+      ),
+    0,
+  );
 }
 
 /** A metric row's fields.value parsed as a frame reading, or null when the
