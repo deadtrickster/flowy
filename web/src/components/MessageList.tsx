@@ -805,7 +805,24 @@ export function MessageList({
                 {event.meta?.attachments ? (
                   <AttachmentCards ids={event.meta.attachments.split(" ").filter(Boolean)} />
                 ) : null}
-                <div className="flex gap-2 pt-1 font-mono text-[11px] text-muted-foreground">
+                {/*
+                  THE ROW WRAPS; THE CHIPS DO NOT.
+
+                  MEASURED on a phone, 2026-08-27: with `flex gap-2` and no
+                  wrap, a head row carrying replies - cite/todo/keep, the id,
+                  `thread`, `N replies`, `show replies`, the fold snippet and
+                  `opens a thread` - has more items than fit. Flex then squeezes
+                  every item to its minimum width instead of moving any to a
+                  second line, so each chip's TEXT broke internally: "opens a
+                  thread" came out over three lines against the right edge and
+                  the labels read as scattered.
+
+                  flex-wrap moves whole items down; whitespace-nowrap on each
+                  chip forbids the words inside one from breaking. The fold
+                  snippet is the one thing that MAY shrink - it already
+                  truncates - so it keeps min-w-0 and takes what is left.
+                */}
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1 pt-1 font-mono text-[11px] text-muted-foreground">
                   {/*
                     CITING IS A CHOICE, and it used to be a side effect of
                     selecting. The operator: "why whenever i select message text
@@ -939,7 +956,7 @@ export function MessageList({
                     data-thread-open={event.id}
                     onClick={() => (onOpenThread ?? onSelect)(event)}
                     aria-label={`open the thread ${shortId(event.thread)} this message is in`}
-                    className="cursor-pointer text-muted-foreground underline decoration-dotted hover:text-foreground"
+                    className="cursor-pointer whitespace-nowrap text-muted-foreground underline decoration-dotted hover:text-foreground"
                   >
                     thread {shortId(event.thread)}
                   </button>
@@ -962,7 +979,7 @@ export function MessageList({
                       data-thread-count={threads?.[event.thread]}
                       onClick={() => (onOpenThread ?? onSelect)(event)}
                       aria-label={`open this thread, ${(threads?.[event.thread] ?? 1) - 1} replies`}
-                      className="cursor-pointer rounded border border-border px-1.5 text-[11px] text-primary transition hover:border-primary/50 hover:text-foreground"
+                      className="cursor-pointer whitespace-nowrap rounded border border-border px-1.5 text-[11px] text-primary transition hover:border-primary/50 hover:text-foreground"
                     >
                       {(threads?.[event.thread] ?? 1) - 1} repl
                       {(threads?.[event.thread] ?? 1) - 1 === 1 ? "y" : "ies"}
@@ -983,7 +1000,7 @@ export function MessageList({
                         type="button"
                         data-fold-show={event.thread}
                         onClick={() => onUnfold(event.thread, true)}
-                        className="cursor-pointer rounded border border-border px-1.5 text-[11px] text-primary transition hover:border-primary/50 hover:text-foreground"
+                        className="cursor-pointer whitespace-nowrap rounded border border-border px-1.5 text-[11px] text-primary transition hover:border-primary/50 hover:text-foreground"
                       >
                         show replies
                       </button>
@@ -1007,15 +1024,15 @@ export function MessageList({
                       type="button"
                       data-fold-hide={event.thread}
                       onClick={() => onUnfold(event.thread, false)}
-                      className="cursor-pointer rounded border border-border px-1.5 text-[11px] text-muted-foreground transition hover:border-primary/50 hover:text-foreground"
+                      className="cursor-pointer whitespace-nowrap rounded border border-border px-1.5 text-[11px] text-muted-foreground transition hover:border-primary/50 hover:text-foreground"
                     >
                       hide replies
                     </button>
                   ) : null}
                   {event.parents.length > 0 ? (
-                    <span>← {event.parents.map((id) => shortId(id)).join(" ")}</span>
+                    <span className="whitespace-nowrap">← {event.parents.map((id) => shortId(id)).join(" ")}</span>
                   ) : (
-                    <span>opens a thread</span>
+                    <span className="whitespace-nowrap">opens a thread</span>
                   )}
                 </div>
               </motion.div>
