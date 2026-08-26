@@ -22,10 +22,12 @@ export const DASHBOARD_TYPE = "memory";
 export const DASHBOARD_KIND = "dashboard";
 
 /** One declared tile, as the store rules it (store.DashboardTile). The
- * vocabulary is number, table, grid, frame, series, gauge - each kind renders
- * over the named metric. A gauge declares metric and kind ONLY: its scale
- * and thresholds travel with the reading, because the producer is the party
- * that knows them. */
+ * vocabulary is number, table, grid, frame, series, gauge, report - each
+ * kind renders over the named metric. A gauge declares metric and kind ONLY:
+ * its scale and thresholds travel with the reading, because the producer is
+ * the party that knows them. A report is the document style: the reading is
+ * the whole page - header plus sections of the closed vocabulary - and the
+ * console renders structure, never markup. */
 export interface DashboardTile {
   kind: string;
   label: string;

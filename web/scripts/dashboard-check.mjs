@@ -8,10 +8,10 @@
  * stop pause and monitor", asap. The contract, answered on the row:
  *
  *   - a dashboard is a memory row of kind `dashboard` whose fields declare
- *     tiles - a fixed vocabulary (number, table, grid, frame, gauge, series)
- *     over a named metric - and the console renders the declaration. It RUNS
- *     nothing: the data is metric rows producers push through the ordinary
- *     artifact door;
+ *     tiles - a fixed vocabulary (number, table, grid, frame, gauge, series,
+ *     report) over a named metric - and the console renders the declaration.
+ *     It RUNS nothing: the data is metric rows producers push through the
+ *     ordinary artifact door;
  *   - every number shows its age from the row it reads, and a datum older than
  *     its tile's threshold is visibly stale, not silently live - the operator
  *     reading prose today is exactly the failure this exists to fix;
@@ -39,12 +39,18 @@
  *     warn means low is bad. A reading whose shape cannot place the value -
  *     prose, half a scale, half a threshold set, a value off its own scale -
  *     says so instead of drawing a bar that lies;
+ *   - a report tile draws the other dashboard style - the reading is the
+ *     whole document: eyebrow, title, lede, and sections of the closed
+ *     vocabulary (progress, cards, columns, squares). A tone is a WORD from
+ *     the closed set the console maps to the palette, and a word outside
+ *     the set draws as no tone at all; a card's spark is a metric ref with
+ *     its own window, asked off the series door at that window;
  *   - a dashboard is no more readable than the artifacts it names: a reader
  *     outside the rows' scope is refused;
  *   - reopening the page shows the newest rows and the newest ages - nothing
  *     is remembered between loads, the dashboard holds no state of its own.
  *
- * SIX ARMS, of which the second is the one a component test would miss:
+ * SEVEN ARMS, of which the second is the one a component test would miss:
  *
  *   1. an agent authors a dashboard and metric rows through the API; the page
  *      lists the dashboard and renders each declared number with its age;
@@ -64,7 +70,12 @@
  *      min to value, the warn and crit bands sit where the thresholds say,
  *      the direction reads off the order (crit above warn is high-bad, below
  *      is low-bad), the severity colours the fill off the palette, and a
- *      reading that cannot be placed says so.
+ *      reading that cannot be placed says so;
+ *   7. a report tile draws its pushed document - header and all four section
+ *      kinds, segment widths over the pushed total, a tone word mapped to
+ *      the palette (and a word outside the set drawn as no tone), a card's
+ *      spark as a metric ref answered at its own window - and a reading that
+ *      is not a document says so.
  *
  * TWO TOKENS. The author writes in their project; the outsider proves the
  * scope arm, because a check with one token could not prove "readable by me,
@@ -185,6 +196,15 @@ const dash = await post({
       { kind: "gauge", label: "half threshold", metric: metricName("halfthr") },
       // A value its own scale cannot place.
       { kind: "gauge", label: "off scale", metric: metricName("offscl") },
+      {
+        kind: "report",
+        label: "vl sweep report",
+        metric: metricName("reportfloor"),
+        stale_after_seconds: 5,
+      },
+      { kind: "report", label: "never report", metric: metricName("reportmissing") },
+      // A report over a series of words: the honest wrong-shape state.
+      { kind: "report", label: "wordy report", metric: metricName("words") },
     ],
   },
 });
@@ -300,6 +320,81 @@ await mkMetric(metricName("halfthr"), 5, undefined, {
 });
 await mkMetric(metricName("offscl"), 12, undefined, { min: 0, max: 10 });
 
+// THE REPORT FIXTURE: the other dashboard style - a document pushed whole as
+// one reading. Four sections, one of each kind. Tones are words; "ok" below
+// is deliberately OUTSIDE the closed set ("" good warn bad dim accent), so
+// the arm can prove an unknown word draws as no tone, never a crash and
+// never a colour the producer did not choose. The card's spark names the
+// points series the series arm already pushed - the console asks that window
+// once, and the series tile and the card spark read the same answer.
+await mkMetric(
+  metricName("reportfloor"),
+  {
+    eyebrow: "three boxes",
+    title: "VL Sweep",
+    lede: "one host, two cells, a progress bar and a tone grid - the pushed shape",
+    sections: [
+      {
+        kind: "progress",
+        total: 5850,
+        value: 44.3,
+        caption: "cells done",
+        segments: [
+          { label: "lab2x1", value: 1000 },
+          { label: "lubuntu2", value: 2000 },
+        ],
+      },
+      {
+        kind: "cards",
+        cards: [
+          {
+            title: "lab2x1",
+            pill: "green",
+            blurb: "the box that ran the sweep",
+            stats: [
+              { label: "cells", value: 44 },
+              { label: "fail", value: 3 },
+            ],
+            spark: { metric: metricName("points"), points: 5 },
+            note: "sweep of the morning",
+          },
+        ],
+      },
+      {
+        kind: "columns",
+        columns: [
+          { label: "model", align: "left" },
+          { label: "cells", align: "right" },
+        ],
+        rows: [
+          { cells: ["a", "44"] },
+          {
+            cells: [
+              { text: "b", tone: "good" },
+              { text: "7", tone: "bad" },
+            ],
+          },
+        ],
+      },
+      {
+        kind: "squares",
+        groups: [
+          {
+            label: "lab2x1",
+            rows: [
+              {
+                label: "m",
+                cells: [{ text: "x", tone: "good", title: "hover x" }, { tone: "ok" }],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  },
+  "measured",
+);
+
 // WHAT THE NODE HOLDS, read back before the browser opens: if the fixture
 // seeded differently than intended, this fails as a fixture problem instead
 // of the page answering a question about the wrong data.
@@ -325,7 +420,7 @@ if (
   );
 }
 const heldDash = await api(`/api/artifact/${dash.id}`);
-if (!Array.isArray(heldDash.fields?.tiles) || heldDash.fields.tiles.length !== 19) {
+if (!Array.isArray(heldDash.fields?.tiles) || heldDash.fields.tiles.length !== 22) {
   die(
     `the dashboard row's tiles read ${JSON.stringify(heldDash.fields?.tiles)} - the seed is wrong`,
   );
@@ -1013,6 +1108,216 @@ try {
     die('the "off scale" tile does not say its value cannot be placed on its scale');
   }
 
+  // ---- ARM 7: THE REPORT - the other dashboard style, drawn as its
+  // document. The reading carries the whole page: eyebrow, title, lede and
+  // four sections of the closed vocabulary. Tones are words the console maps
+  // to the palette, and a word outside the set draws as no tone at all; a
+  // card's spark is a metric ref asked off the series door, the same window
+  // the series tile reads. ----
+  const reportTile = tile("vl sweep report");
+  await reportTile.scrollIntoViewIfNeeded().catch(() => {});
+  if ((await reportTile.getAttribute("data-report-bad")) !== null) {
+    die("the vl sweep report draws as a wrong shape - the pushed document is a report");
+  }
+  // The header pieces are child elements carrying their text, not root
+  // attributes - the tile root only says whether the document is bad. Count
+  // first, read second: textContent auto-waits, and a missing element must
+  // die in the arm's words, not in a locator timeout.
+  const eyebrow = reportTile.locator("[data-report-eyebrow]");
+  const eyebrowText = (await eyebrow.count()) === 1 ? await eyebrow.textContent() : null;
+  if (eyebrowText !== "three boxes") {
+    die(`the report's eyebrow reads ${eyebrowText}, wanted "three boxes" - the pushed document`);
+  }
+  const reportTitle = reportTile.locator("[data-report-title]");
+  const titleText = (await reportTitle.count()) === 1 ? await reportTitle.textContent() : null;
+  if (titleText !== "VL Sweep") {
+    die("the report's title is not the pushed title");
+  }
+  if ((await reportTile.locator("[data-report-lede]").count()) !== 1) {
+    die("the report's lede is not drawn");
+  }
+  if ((await reportTile.getAttribute("data-age")) === null) {
+    die("the report carries no age - a frozen page reads as a live one");
+  }
+  if ((await reportTile.getAttribute("data-state")) !== "measured") {
+    die(
+      `the report's state reads ${await reportTile.getAttribute("data-state")}, wanted measured - the row claims it`,
+    );
+  }
+  const sectionKinds = await reportTile
+    .locator("[data-report-section]")
+    .evaluateAll((els) => els.map((el) => el.getAttribute("data-report-section-kind")));
+  if (
+    JSON.stringify(sectionKinds) !== JSON.stringify(["progress", "cards", "columns", "squares"])
+  ) {
+    die(`the report draws sections [${sectionKinds}], wanted the four pushed kinds in order`);
+  }
+  // The progress section: figure, caption, and segments that sum into the
+  // bar - the segment widths are the pushed values over the pushed total.
+  // The figure and caption are text on their own elements; the total rides
+  // on the track element the segments are laid out inside.
+  const progressValue = reportTile.locator("[data-progress-value]");
+  const valueText = (await progressValue.count()) === 1 ? await progressValue.textContent() : null;
+  if (valueText !== "44.3") {
+    die(`the progress figure reads ${valueText}, wanted 44.3`);
+  }
+  const progressTrack = reportTile.locator("[data-progress-track]");
+  const totalAttr =
+    (await progressTrack.count()) === 1
+      ? await progressTrack.getAttribute("data-progress-total")
+      : null;
+  if (totalAttr !== "5850") {
+    die("the progress bar does not carry its pushed total 5850");
+  }
+  const progressCaption = reportTile.locator("[data-progress-caption]");
+  const captionText =
+    (await progressCaption.count()) === 1 ? await progressCaption.textContent() : null;
+  if (captionText !== "cells done") {
+    die("the progress caption is not the pushed caption");
+  }
+  const progressSegments = reportTile.locator("[data-progress-segment]");
+  if ((await progressSegments.count()) !== 2) {
+    die(`the progress bar draws ${await progressSegments.count()} segments, wanted 2`);
+  }
+  const firstSegment = progressSegments.first();
+  if (
+    (await firstSegment.getAttribute("data-progress-segment-label")) !== "lab2x1" ||
+    (await firstSegment.getAttribute("data-progress-segment-value")) !== "1000"
+  ) {
+    die("the first progress segment is not the pushed lab2x1 1000");
+  }
+  const trackBox = await progressTrack.boundingBox();
+  const segBox = await firstSegment.boundingBox();
+  if (!trackBox || !segBox) die("the progress bar has no laid-out boxes");
+  if (Math.abs(segBox.width / trackBox.width - 1000 / 5850) > 0.02) {
+    die(
+      `the first progress segment runs ${segBox.width / trackBox.width} of the bar, wanted 1000/5850 - value over total`,
+    );
+  }
+  // The cards section: one card carrying title, pill, blurb, stats, a spark
+  // metric ref and a note - the spark draws the points window the series
+  // arm seeded, asked once at that window.
+  const reportCard = reportTile.locator("[data-report-card]");
+  if ((await reportCard.count()) !== 1) {
+    die(`the report draws ${await reportCard.count()} cards, wanted 1`);
+  }
+  if ((await reportCard.getAttribute("data-report-card-title")) !== "lab2x1") {
+    die("the card's title is not the pushed title");
+  }
+  if ((await reportCard.getAttribute("data-report-card-pill")) !== "green") {
+    die("the card's pill is not the pushed pill");
+  }
+  if ((await reportCard.getAttribute("data-report-card-stats")) !== "2") {
+    die("the card does not draw its two pushed stats");
+  }
+  if ((await reportCard.getAttribute("data-report-spark")) !== metricName("points")) {
+    die("the card's spark is not the pushed metric ref");
+  }
+  if ((await reportCard.getAttribute("data-report-spark-points")) !== "5") {
+    die("the card's spark is not the pushed window of 5");
+  }
+  const cardSpark = reportCard.locator("[data-spark-svg]");
+  if ((await cardSpark.count()) !== 1) {
+    die("the card draws no spark over a window the door answered");
+  }
+  const sparkPath = await cardSpark.locator("[data-spark-path]").getAttribute("points");
+  if (!sparkPath || sparkPath.split(" ").length !== 5) {
+    die(
+      `the card spark draws ${sparkPath?.split(" ").length ?? 0} points, wanted 5 - the pushed window`,
+    );
+  }
+  // The columns section: a header of two aligned columns and two rows - the
+  // second row's first cell carries the tone word good, which the console
+  // maps to the palette's dim green. Measured against a probe styled with
+  // the same var in-page, so the comparison is of two computed colours.
+  const cols = reportTile.locator("[data-report-col]");
+  if ((await cols.count()) !== 2) {
+    die(`the columns section draws ${await cols.count()} columns, wanted 2`);
+  }
+  if ((await cols.nth(0).getAttribute("data-report-col-label")) !== "model") {
+    die("the first column is not the pushed model column");
+  }
+  if ((await cols.nth(0).getAttribute("data-report-col-align")) !== "left") {
+    die("the first column's align is not the pushed left");
+  }
+  if ((await cols.nth(1).getAttribute("data-report-col-align")) !== "right") {
+    die("the second column's align is not the pushed right");
+  }
+  if ((await reportTile.locator("[data-report-row]").count()) !== 2) {
+    die("the columns section does not draw its two rows");
+  }
+  const goodCell = reportTile.locator('[data-report-cell-tone="good"]');
+  if ((await goodCell.count()) !== 1) die("the columns section does not carry the good-toned cell");
+  if ((await goodCell.getAttribute("data-report-cell-text")) !== "b") {
+    die("the good-toned cell does not carry its pushed text");
+  }
+  const goodColour = await goodCell.evaluate((el) => getComputedStyle(el).color);
+  const greenProbe = await page.evaluate(() => {
+    const probe = document.createElement("div");
+    probe.style.color = "var(--color-serenedash-2)";
+    document.body.appendChild(probe);
+    const colour = getComputedStyle(probe).color;
+    probe.remove();
+    return colour;
+  });
+  if (goodColour !== greenProbe) {
+    die(`the good-toned cell is not the palette's dim green: ${goodColour} vs ${greenProbe}`);
+  }
+  // The squares section: one group, one row, two cells - the good cell
+  // colours off the palette and carries its hover title; the "ok" cell is a
+  // word outside the tone set and draws as no tone at all, never a crash and
+  // never a colour the producer did not choose.
+  const squareCells = reportTile.locator("[data-square-cell]");
+  if ((await squareCells.count()) !== 2) {
+    die(`the squares section draws ${await squareCells.count()} cells, wanted 2`);
+  }
+  const groupLabel = reportTile.locator("[data-report-group-label]");
+  const groupAttr =
+    (await groupLabel.count()) === 1
+      ? await groupLabel.getAttribute("data-report-group-label")
+      : null;
+  if (groupAttr !== "lab2x1") {
+    die("the squares group's label is not the pushed label");
+  }
+  const goodSquare = reportTile.locator('[data-square-tone="good"]');
+  const goodSquareColour = await goodSquare.evaluate((el) => getComputedStyle(el).backgroundColor);
+  const greenBgProbe = await page.evaluate(() => {
+    const probe = document.createElement("div");
+    probe.style.backgroundColor = "var(--color-serenedash-2)";
+    document.body.appendChild(probe);
+    const colour = getComputedStyle(probe).backgroundColor;
+    probe.remove();
+    return colour;
+  });
+  if (goodSquareColour !== greenBgProbe) {
+    die(`the good square is not the palette's dim green: ${goodSquareColour} vs ${greenBgProbe}`);
+  }
+  if ((await goodSquare.getAttribute("data-square-title")) !== "hover x") {
+    die("the good square does not carry its pushed hover title");
+  }
+  const okSquare = reportTile.locator('[data-square-tone="ok"]');
+  const okSquareColour = await okSquare.evaluate((el) => getComputedStyle(el).backgroundColor);
+  const plainProbe = await page.evaluate(() => {
+    const probe = document.createElement("span");
+    document.body.appendChild(probe);
+    const colour = getComputedStyle(probe).backgroundColor;
+    probe.remove();
+    return colour;
+  });
+  if (okSquareColour !== plainProbe) {
+    die(
+      `the ok square - a tone word outside the set - draws ${okSquareColour}, wanted no tone: the console must not invent a colour the producer did not choose`,
+    );
+  }
+  // The honest states: a report tile over a never-pushed metric says so, and
+  // one over a series of words says its reading is not a document.
+  if ((await tile("never report").getAttribute("data-empty")) === null) {
+    die('the "never report" tile does not say its metric has no rows');
+  }
+  if ((await tile("wordy report").getAttribute("data-report-bad")) === null) {
+    die('the "wordy report" tile does not say its reading is not a report');
+  }
+
   // ---- THE STALENESS HALF: past its threshold, the tile is styled stale,
   // not silently live. ----
   await page.waitForTimeout(6000);
@@ -1030,6 +1335,9 @@ try {
   }
   if ((await memGauge.getAttribute("data-stale")) === null) {
     die("the mem gauge past its 5s threshold is not styled stale");
+  }
+  if ((await reportTile.getAttribute("data-stale")) === null) {
+    die("the report tile past its 5s threshold is not styled stale");
   }
   if (crashes.length > 0) die(`the page threw: ${crashes.join("; ")}`);
 
@@ -1085,7 +1393,11 @@ try {
       "truncated window, refuses prose points, draws the gauge " +
       "value with its pushed bounds - fill min to value, bands where the " +
       "thresholds say, direction off the order, severity off the palette - " +
-      "refuses unplaceable readings, moves the " +
+      "refuses unplaceable readings, draws the report document - header and " +
+      "all four sections, progress segments over the pushed total, tone words " +
+      "mapped to the palette with an unknown word drawn as no tone, a card " +
+      "spark answered at its own window - and says so when a report tile's " +
+      "reading is not one, moves the " +
       "cursor row under j/k, pgup/pgdn, home/end and esc, styles a stale tile " +
       "past its threshold, says what each reading is - inferred as claimed, " +
       "unknown as unclaimed - right-aligns its numbers off the eight-colour " +

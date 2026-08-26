@@ -839,6 +839,608 @@ function GaugeTile({
   );
 }
 
+/** One cell of a report's columns or squares sections: text plus optional
+ * tone word and hover title. A plain pushed string is a cell of text with no
+ * tone - the tone is optional because most cells are just words. */
+type ReportCell = {
+  text: string;
+  tone: string | undefined;
+  title: string | undefined;
+};
+
+type ReportProgress = {
+  kind: "progress";
+  tone: string | undefined;
+  total: number | undefined;
+  value: number | undefined;
+  caption: string | undefined;
+  segments: { label: string; value: number; tone: string | undefined }[];
+};
+
+type ReportCard = {
+  title: string;
+  pill: string | undefined;
+  blurb: string | undefined;
+  stats: { label: string; value: string }[];
+  spark: { metric: string; points: number } | undefined;
+  note: string | undefined;
+};
+
+type ReportCards = { kind: "cards"; tone: string | undefined; cards: ReportCard[] };
+
+type ReportColumns = {
+  kind: "columns";
+  tone: string | undefined;
+  columns: { label: string; align: "left" | "right" | "center" }[];
+  rows: { cells: ReportCell[]; tone: string | undefined }[];
+};
+
+type ReportSquares = {
+  kind: "squares";
+  tone: string | undefined;
+  groups: { label: string; rows: { label: string; cells: ReportCell[] }[] }[];
+};
+
+type ReportSection =
+  | ReportProgress
+  | ReportCards
+  | ReportColumns
+  | ReportSquares
+  | { kind: "unknown"; name: string; tone: undefined };
+
+type ReportDoc = {
+  eyebrow: string | undefined;
+  title: string | undefined;
+  lede: string | undefined;
+  sections: ReportSection[];
+};
+
+type ReportRead = { ok: true; doc: ReportDoc } | { ok: false; why: "shape" | "empty" };
+
+/** The palette a tone word maps to - the word is the producer's, the colour
+ * is the reader's theme. An unknown word draws as no tone at all: refusing
+ * it outright would punish a producer for a word this console has not met,
+ * and a colour the console invented would be a colour nobody chose. */
+const REPORT_TONE: Record<string, string | undefined> = {
+  "": undefined,
+  good: "var(--color-serenedash-2)",
+  warn: "var(--color-serenedash-4)",
+  bad: "var(--color-serenedash-3)",
+  dim: "var(--color-serenedash-5)",
+  accent: "var(--color-serenedash-6)",
+};
+
+function toneColour(word: string | undefined): string | undefined {
+  if (word === undefined) return undefined;
+  return REPORT_TONE[word];
+}
+
+function strOf(v: unknown): string | undefined {
+  return typeof v === "string" ? v : undefined;
+}
+
+function numOf(v: unknown): number | undefined {
+  return typeof v === "number" && Number.isFinite(v) ? v : undefined;
+}
+
+function cellOf(v: unknown): ReportCell {
+  if (typeof v === "string") return { text: v, tone: undefined, title: undefined };
+  if (typeof v !== "object" || v === null) {
+    return { text: String(v ?? ""), tone: undefined, title: undefined };
+  }
+  const o = v as { text?: unknown; tone?: unknown; title?: unknown };
+  return {
+    text: o.text === undefined || o.text === null ? "" : String(o.text),
+    tone: strOf(o.tone),
+    title: strOf(o.title),
+  };
+}
+
+/** The document a report tile draws, parsed from the newest reading. Any
+ * reading that is not a document with a non-empty sections array is not a
+ * report: prose is a number or a frame's business, not this tile's - and an
+ * empty document is a page that shows nothing. Section shapes are parsed
+ * leniently field by field, so a producer's extra key is never this tile's
+ * problem; an unknown section kind is kept and said so rather than skipped. */
+function reportOf(row: Artifact): ReportRead {
+  const fields = row.fields as { value?: unknown } | undefined;
+  const value = fields?.value;
+  if (typeof value !== "object" || value === null) return { ok: false, why: "shape" };
+  const v = value as { eyebrow?: unknown; title?: unknown; lede?: unknown; sections?: unknown };
+  if (!Array.isArray(v.sections)) return { ok: false, why: "shape" };
+  if (v.sections.length === 0) return { ok: false, why: "empty" };
+  const sections: ReportSection[] = [];
+  for (const s of v.sections) {
+    if (typeof s !== "object" || s === null) {
+      sections.push({ kind: "unknown", name: String(s ?? ""), tone: undefined });
+      continue;
+    }
+    const sec = s as { kind?: unknown; tone?: unknown };
+    const tone = strOf(sec.tone);
+    if (sec.kind === "progress") {
+      const p = s as { total?: unknown; value?: unknown; caption?: unknown; segments?: unknown };
+      const segments: ReportProgress["segments"] = [];
+      if (Array.isArray(p.segments)) {
+        for (const seg of p.segments) {
+          if (typeof seg !== "object" || seg === null) continue;
+          const so = seg as { label?: unknown; value?: unknown; tone?: unknown };
+          const val = numOf(so.value);
+          if (val === undefined) continue;
+          segments.push({
+            label: so.label === undefined || so.label === null ? "" : String(so.label),
+            value: val,
+            tone: strOf(so.tone),
+          });
+        }
+      }
+      sections.push({
+        kind: "progress",
+        tone,
+        total: numOf(p.total),
+        value: numOf(p.value),
+        caption: strOf(p.caption),
+        segments,
+      });
+    } else if (sec.kind === "cards") {
+      const c = s as { cards?: unknown };
+      const cards: ReportCard[] = [];
+      if (Array.isArray(c.cards)) {
+        for (const card of c.cards) {
+          if (typeof card !== "object" || card === null) continue;
+          const co = card as {
+            title?: unknown;
+            pill?: unknown;
+            blurb?: unknown;
+            stats?: unknown;
+            spark?: unknown;
+            note?: unknown;
+          };
+          const stats: ReportCard["stats"] = [];
+          if (Array.isArray(co.stats)) {
+            for (const st of co.stats) {
+              if (typeof st !== "object" || st === null) continue;
+              const so = st as { label?: unknown; value?: unknown };
+              stats.push({
+                label: so.label === undefined || so.label === null ? "" : String(so.label),
+                value: so.value === undefined || so.value === null ? "" : String(so.value),
+              });
+            }
+          }
+          let spark: ReportCard["spark"];
+          if (typeof co.spark === "object" && co.spark !== null) {
+            const sp = co.spark as { metric?: unknown; points?: unknown };
+            const metric = strOf(sp.metric);
+            const points = numOf(sp.points);
+            if (metric !== undefined && metric !== "" && points !== undefined && points > 0) {
+              spark = { metric, points };
+            }
+          }
+          cards.push({
+            title: co.title === undefined || co.title === null ? "" : String(co.title),
+            pill: strOf(co.pill),
+            blurb: strOf(co.blurb),
+            stats,
+            spark,
+            note: strOf(co.note),
+          });
+        }
+      }
+      sections.push({ kind: "cards", tone, cards });
+    } else if (sec.kind === "columns") {
+      const c = s as { columns?: unknown; rows?: unknown };
+      const columns: ReportColumns["columns"] = [];
+      if (Array.isArray(c.columns)) {
+        for (const col of c.columns) {
+          if (typeof col !== "object" || col === null) continue;
+          const colo = col as { label?: unknown; align?: unknown };
+          const alignRaw = strOf(colo.align);
+          const align = alignRaw === "right" || alignRaw === "center" ? alignRaw : "left";
+          columns.push({
+            label: colo.label === undefined || colo.label === null ? "" : String(colo.label),
+            align,
+          });
+        }
+      }
+      const rows: ReportColumns["rows"] = [];
+      if (Array.isArray(c.rows)) {
+        for (const r of c.rows) {
+          if (typeof r !== "object" || r === null) continue;
+          const ro = r as { cells?: unknown; tone?: unknown };
+          rows.push({
+            cells: Array.isArray(ro.cells) ? ro.cells.map(cellOf) : [],
+            tone: strOf(ro.tone),
+          });
+        }
+      }
+      sections.push({ kind: "columns", tone, columns, rows });
+    } else if (sec.kind === "squares") {
+      const sq = s as { groups?: unknown };
+      const groups: ReportSquares["groups"] = [];
+      if (Array.isArray(sq.groups)) {
+        for (const g of sq.groups) {
+          if (typeof g !== "object" || g === null) continue;
+          const go = g as { label?: unknown; rows?: unknown };
+          const rows: ReportSquares["groups"][number]["rows"] = [];
+          if (Array.isArray(go.rows)) {
+            for (const r of go.rows) {
+              if (typeof r !== "object" || r === null) continue;
+              const ro = r as { label?: unknown; cells?: unknown };
+              rows.push({
+                label: ro.label === undefined || ro.label === null ? "" : String(ro.label),
+                cells: Array.isArray(ro.cells) ? ro.cells.map(cellOf) : [],
+              });
+            }
+          }
+          groups.push({
+            label: go.label === undefined || go.label === null ? "" : String(go.label),
+            rows,
+          });
+        }
+      }
+      sections.push({ kind: "squares", tone, groups });
+    } else {
+      sections.push({
+        kind: "unknown",
+        name: sec.kind === undefined || sec.kind === null ? "" : String(sec.kind),
+        tone: undefined,
+      });
+    }
+  }
+  return {
+    ok: true,
+    doc: { eyebrow: strOf(v.eyebrow), title: strOf(v.title), lede: strOf(v.lede), sections },
+  };
+}
+
+const SPARK_W = 80;
+const SPARK_H = 20;
+const SPARK_PAD = 2;
+
+/** The card spark: the metric's window off the series door, drawn as the
+ * same sparkline shape the series tile draws - oldest first, newest pinned.
+ * Drawn only when the door answered with numbers: a spark over prose would
+ * draw a trend that is not there, so no points means no spark, not an empty
+ * axis. */
+function CardSpark({
+  entry,
+  points,
+  name,
+}: { entry: SeriesEntry | undefined; points: number; name: string }) {
+  const nums = windowOf(entry, points);
+  if (nums === null || nums.length === 0) return null;
+  let min = nums[0];
+  let max = nums[0];
+  for (const v of nums) {
+    if (v < min) min = v;
+    if (v > max) max = v;
+  }
+  const span = max - min;
+  const yOf = (v: number) =>
+    span === 0 ? SPARK_H / 2 : SPARK_H - SPARK_PAD - ((v - min) / span) * (SPARK_H - 2 * SPARK_PAD);
+  const path =
+    nums.length === 1
+      ? `${SPARK_W},${SPARK_H / 2}`
+      : nums.map((v, i) => `${(i / (nums.length - 1)) * SPARK_W},${yOf(v)}`).join(" ");
+  const lastY = yOf(nums[nums.length - 1]);
+  return (
+    <svg
+      data-spark-svg
+      data-spark-name={name}
+      viewBox={`0 0 ${SPARK_W} ${SPARK_H}`}
+      className="h-5 w-20"
+    >
+      <title>{`${name}: ${nums[nums.length - 1]}`}</title>
+      <polyline data-spark-path points={path} fill="none" stroke="currentColor" strokeWidth="2" />
+      <circle data-spark-dot cx={SPARK_W} cy={lastY} r="2" />
+    </svg>
+  );
+}
+
+/** The one alignment class a columns section uses for its header and cells.
+ * A column aligns its own cells; anything else reads left. */
+function alignClassOf(col: ReportColumns["columns"][number] | undefined): string {
+  if (col?.align === "right") return "text-right";
+  if (col?.align === "center") return "text-center";
+  return "text-left";
+}
+
+function ReportSectionView({
+  section,
+  sparkOf,
+}: {
+  section: ReportSection;
+  sparkOf: (metric: string, points: number) => SeriesEntry | undefined;
+}) {
+  if (section.kind === "unknown") {
+    return (
+      <div data-report-section-bad className="text-muted-foreground text-sm">
+        a section declares kind {section.name || "(none)"} - not in this console's vocabulary, drawn
+        as a gap rather than a guess
+      </div>
+    );
+  }
+  if (section.kind === "progress") {
+    const total = section.total;
+    const bar = total !== undefined && total > 0;
+    return (
+      <div className="flex flex-col gap-1">
+        {section.value !== undefined && (
+          <div data-progress-value className="flex justify-end font-semibold text-2xl tabular-nums">
+            {section.value}
+          </div>
+        )}
+        {bar && (
+          <div
+            data-progress-track
+            data-progress-total={total}
+            className="flex h-2 w-full gap-px overflow-hidden rounded bg-border/60"
+          >
+            {section.segments.length > 0 ? (
+              section.segments.map((seg, j) => (
+                <div
+                  // biome-ignore lint/suspicious/noArrayIndexKey: a progress's segments are positional - the pushed reading carries no ids, so the index is the identity
+                  key={j}
+                  data-progress-segment={j}
+                  data-progress-segment-value={seg.value}
+                  data-progress-segment-label={seg.label}
+                  data-progress-segment-tone={seg.tone}
+                  title={seg.label ? `${seg.label}: ${seg.value}` : String(seg.value)}
+                  style={{
+                    width: `${Math.min(100, (seg.value / total) * 100)}%`,
+                    background: toneColour(seg.tone) ?? `var(--color-serenedash-${(j % 8) + 1})`,
+                  }}
+                />
+              ))
+            ) : section.value !== undefined ? (
+              <div
+                data-progress-fill
+                style={{
+                  width: `${Math.min(100, (section.value / total) * 100)}%`,
+                  background: "var(--color-serenedash-1)",
+                }}
+              />
+            ) : null}
+          </div>
+        )}
+        {section.caption && (
+          <div data-progress-caption className="text-muted-foreground text-xs">
+            {section.caption}
+          </div>
+        )}
+      </div>
+    );
+  }
+  if (section.kind === "cards") {
+    return (
+      <div className="grid gap-2 sm:grid-cols-2">
+        {section.cards.map((card, j) => (
+          <div
+            // biome-ignore lint/suspicious/noArrayIndexKey: a report's cards are positional - the pushed document carries no ids, so the index is the identity
+            key={j}
+            data-report-card={j}
+            data-report-card-title={card.title}
+            data-report-card-pill={card.pill}
+            data-report-card-blurb={card.blurb}
+            data-report-card-note={card.note}
+            data-report-card-stats={card.stats.length}
+            data-report-spark={card.spark?.metric}
+            data-report-spark-points={card.spark?.points}
+            className="flex flex-col gap-1 rounded-md border border-border p-3"
+          >
+            <div className="flex items-center gap-2">
+              <span className="font-medium text-sm">{card.title}</span>
+              {card.pill && (
+                <span className="rounded-full bg-border/60 px-2 py-0.5 text-muted-foreground text-xs">
+                  {card.pill}
+                </span>
+              )}
+            </div>
+            {card.blurb && <div className="text-muted-foreground text-xs">{card.blurb}</div>}
+            {card.stats.length > 0 && (
+              <ul className="flex flex-col">
+                {card.stats.map((stat, k) => (
+                  <li
+                    // biome-ignore lint/suspicious/noArrayIndexKey: a card's stats are positional - the pushed document carries no ids, so the index is the identity
+                    key={k}
+                    className="flex items-baseline justify-between gap-3 border-border border-b py-0.5 last:border-b-0"
+                  >
+                    <span className="text-muted-foreground text-xs">{stat.label}</span>
+                    <span className="tabular-nums text-sm text-right">{stat.value}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {card.spark && (
+              <CardSpark
+                entry={sparkOf(card.spark.metric, card.spark.points)}
+                points={card.spark.points}
+                name={card.spark.metric}
+              />
+            )}
+            {card.note && <div className="text-muted-foreground text-xs">{card.note}</div>}
+          </div>
+        ))}
+      </div>
+    );
+  }
+  if (section.kind === "columns") {
+    return (
+      <table className="mt-1 border-collapse text-sm">
+        <thead>
+          <tr>
+            {section.columns.map((col, j) => (
+              <th
+                // biome-ignore lint/suspicious/noArrayIndexKey: a report's columns are positional - the pushed document carries no ids, so the index is the identity
+                key={j}
+                data-report-col={j}
+                data-report-col-label={col.label}
+                data-report-col-align={col.align}
+                className={`border-border border-b px-2 py-1 text-muted-foreground text-xs font-medium ${alignClassOf(col)}`}
+              >
+                {col.label}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {section.rows.map((r, i) => (
+            <tr
+              // biome-ignore lint/suspicious/noArrayIndexKey: a report's rows are positional - the pushed document carries no ids, so the index is the identity
+              key={i}
+              data-report-row={i}
+              data-report-row-tone={r.tone}
+            >
+              {r.cells.map((cell, j) => (
+                <td
+                  // biome-ignore lint/suspicious/noArrayIndexKey: a row's cells are positional - the pushed document carries no ids, so the index is the identity
+                  key={j}
+                  data-report-cell={i * section.columns.length + j}
+                  data-report-cell-text={cell.text}
+                  data-report-cell-tone={cell.tone}
+                  style={{ color: toneColour(cell.tone) }}
+                  className={`px-2 py-1 tabular-nums ${alignClassOf(section.columns[j])}`}
+                >
+                  {cell.text}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    );
+  }
+  return (
+    <div className="flex flex-col gap-1">
+      {section.groups.map((group, i) => (
+        <div
+          // biome-ignore lint/suspicious/noArrayIndexKey: a report's square groups are positional - the pushed document carries no ids, so the index is the identity
+          key={i}
+          data-report-group={i}
+          data-report-group-label={group.label}
+          className="flex flex-col gap-0.5"
+        >
+          {group.label && <div className="text-muted-foreground text-xs">{group.label}</div>}
+          {group.rows.map((r, j) => (
+            <div
+              // biome-ignore lint/suspicious/noArrayIndexKey: a squares row is positional - the pushed document carries no ids, so the index is the identity
+              key={j}
+              data-square-row={j}
+              data-square-row-label={r.label}
+              className="flex items-center gap-1"
+            >
+              {r.label && (
+                <span className="w-16 shrink-0 text-muted-foreground text-xs">{r.label}</span>
+              )}
+              {r.cells.map((cell, k) => (
+                <span
+                  // biome-ignore lint/suspicious/noArrayIndexKey: a square cell is positional - the pushed document carries no ids, so the index is the identity
+                  key={k}
+                  data-square-cell={k}
+                  data-square-tone={cell.tone}
+                  data-square-title={cell.title}
+                  data-square-text={cell.text}
+                  title={cell.title ?? cell.text}
+                  style={{ background: toneColour(cell.tone) }}
+                  className="inline-flex h-5 w-5 items-center justify-center rounded-sm text-[10px] leading-none"
+                >
+                  {cell.text}
+                </span>
+              ))}
+            </div>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** One report tile: the newest reading of its series, drawn as its document.
+ * The document carries its own header - eyebrow, title, lede - and sections
+ * of the closed vocabulary: progress, cards, columns, squares. A tone is a
+ * WORD the console maps to the palette; a word outside the set draws as no
+ * tone at all. Sparks are metric refs with their own window, asked off the
+ * series door at that window - a card spark and a series tile of the same
+ * window share one ask. The age reads off the newest row's wall clock
+ * exactly like every other tile. */
+function ReportTile({
+  tile,
+  row,
+  now,
+  sparkOf,
+}: {
+  tile: DashboardTile;
+  row: Artifact | undefined;
+  now: number;
+  sparkOf: (metric: string, points: number) => SeriesEntry | undefined;
+}) {
+  const age = row ? ageSeconds(row, now) : 0;
+  const stale = row && (tile.stale_after_seconds ?? 0) > 0 && age > (tile.stale_after_seconds ?? 0);
+  const read = row ? reportOf(row) : null;
+  return (
+    <div
+      data-tile-label={tile.label}
+      data-tile-kind="report"
+      data-empty={row ? undefined : "true"}
+      data-report-bad={row && !read?.ok ? "true" : undefined}
+      data-stale={stale ? "true" : undefined}
+      data-state={stateOf(row)}
+      data-age={row && read?.ok ? age : undefined}
+      className="flex flex-col gap-1 rounded-md border border-border p-4 sm:col-span-2 lg:col-span-4"
+    >
+      <div className="text-muted-foreground text-xs">{tile.label}</div>
+      {!row ? (
+        <div className="py-1 text-muted-foreground text-sm">
+          its metric has no rows pushed yet - not zero, just nothing
+        </div>
+      ) : !read?.ok ? (
+        <div className="py-1 text-muted-foreground text-sm">
+          {read?.why === "empty"
+            ? "a report with no sections is a page that shows nothing - the tile says so rather than drawing a blank card"
+            : "its newest reading is not a report of {eyebrow, title, lede, sections} - the tile says so rather than drawing a page that lies"}
+        </div>
+      ) : (
+        <>
+          {read.doc.eyebrow && (
+            <div
+              data-report-eyebrow
+              className="text-muted-foreground text-xs uppercase tracking-wide"
+            >
+              {read.doc.eyebrow}
+            </div>
+          )}
+          {read.doc.title && (
+            <div data-report-title className="font-semibold text-lg">
+              {read.doc.title}
+            </div>
+          )}
+          {read.doc.lede && (
+            <div data-report-lede className="text-muted-foreground text-sm">
+              {read.doc.lede}
+            </div>
+          )}
+          {read.doc.sections.map((section, i) => (
+            <div
+              // biome-ignore lint/suspicious/noArrayIndexKey: a report's sections are positional - the pushed document carries no ids, so the index is the identity
+              key={i}
+              data-report-section={i}
+              data-report-section-kind={section.kind}
+              data-report-tone={section.tone}
+              className="mt-2"
+            >
+              <ReportSectionView section={section} sparkOf={sparkOf} />
+            </div>
+          ))}
+        </>
+      )}
+      <div className="flex items-baseline gap-2 text-muted-foreground text-xs" data-tile-age>
+        <span>{ageWords(age)}</span>
+        <span data-tile-state={stateOf(row)}>{stateOf(row)}</span>
+        {stale ? <span>, stale</span> : null}
+      </div>
+    </div>
+  );
+}
+
 export function DashboardView() {
   const { id } = useParams();
   const signedIn = useSignedIn();
@@ -890,14 +1492,28 @@ export function DashboardView() {
           byWindow.set(w, ns);
         }
         try {
-          const [page, spages] = await Promise.all([
-            dashboards.metrics(names),
-            Promise.all(
-              [...byWindow.entries()].map(async ([w, ns]) =>
-                dashboards.series([...new Set(ns)], w).then((p) => [w, p] as const),
-              ),
+          const page = await dashboards.metrics(names);
+          // A report's cards may declare sparks - metric refs with their own
+          // window. Those windows are only known once the metrics are read,
+          // so they are asked after, not beside, the tiles' own series asks.
+          for (const row of page.metrics ?? []) {
+            const read = reportOf(row);
+            if (!read.ok) continue;
+            for (const section of read.doc.sections) {
+              if (section.kind !== "cards") continue;
+              for (const card of section.cards) {
+                if (!card.spark) continue;
+                const ns = byWindow.get(card.spark.points) ?? [];
+                ns.push(card.spark.metric);
+                byWindow.set(card.spark.points, ns);
+              }
+            }
+          }
+          const spages = await Promise.all(
+            [...byWindow.entries()].map(async ([w, ns]) =>
+              dashboards.series([...new Set(ns)], w).then((p) => [w, p] as const),
             ),
-          ]);
+          );
           if (!stopped) {
             setRows(page.metrics ?? []);
             setSeriesPages(new Map(spages));
@@ -942,6 +1558,11 @@ export function DashboardView() {
   /** The series window of one metric, off its tile's own series door ask. */
   const seriesOf = (tile: DashboardTile): SeriesEntry | undefined =>
     seriesPages.get(windowOfTile(tile))?.series.find((s) => s.name === tile.metric);
+
+  /** The series window one card spark declares - the page asked the door at
+   * the sparks' windows too, after the metrics named them. */
+  const sparkOf = (metric: string, points: number): SeriesEntry | undefined =>
+    seriesPages.get(points)?.series.find((s) => s.name === metric);
 
   if (!signedIn) {
     return (
@@ -1012,6 +1633,17 @@ export function DashboardView() {
           if (tile.kind === "gauge") {
             return (
               <GaugeTile key={tile.label} tile={tile} row={rowsOf(tile.metric)[0]} now={now} />
+            );
+          }
+          if (tile.kind === "report") {
+            return (
+              <ReportTile
+                key={tile.label}
+                tile={tile}
+                row={rowsOf(tile.metric)[0]}
+                now={now}
+                sparkOf={sparkOf}
+              />
             );
           }
           // A kind outside the vocabulary cannot be written - see

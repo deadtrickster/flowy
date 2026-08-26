@@ -6,21 +6,25 @@
 # The operator, 01M0WY7F5: agents author dashboards for their activity, "start
 # stop pause and monitor", asap. The contract, answered on the row: a dashboard
 # is a memory row of kind `dashboard` whose fields declare tiles - a fixed
-# vocabulary (number, table, grid, frame, gauge, series) over a named metric -
-# and the console renders the declaration. It RUNS nothing: producers push
-# metric rows through the ordinary artifact door, the dashboard declares
+# vocabulary (number, table, grid, frame, gauge, series, report) over a named
+# metric - and the console renders the declaration. It RUNS nothing: producers
+# push metric rows through the ordinary artifact door, the dashboard declares
 # queries over them, and every number shows its age from the row it reads. A
 # series tile draws its metric's newest readings as a sparkline - oldest left,
 # newest pinned, the window's own truncated flag - and says so when the points
 # are not numbers. A gauge tile draws a value WITH ITS BOUNDS - the scale and
 # thresholds travel beside the reading, never on the tile - and reads its
 # direction off the threshold order: crit above warn means high is bad, crit
-# below warn means low is bad. Past a tile's threshold the datum is styled
-# stale, not silently live - the operator reading prose somebody typed is
-# exactly the failure this exists to fix. Scope decides who reads it: a
-# principal outside the rows' projects is refused.
+# below warn means low is bad. A report tile draws the document style - the
+# reading is the whole page, header plus sections of the closed vocabulary -
+# with tone words mapped to the palette, an unknown word drawn as no tone,
+# and card sparks as metric refs asked at their own window. Past a tile's
+# threshold the datum is styled stale, not silently live - the operator
+# reading prose somebody typed is exactly the failure this exists to fix.
+# Scope decides who reads it: a principal outside the rows' projects is
+# refused.
 #
-# SIX ARMS, of which the second is the one a component test would miss:
+# SEVEN ARMS, of which the second is the one a component test would miss:
 #
 #   1. an agent authors a dashboard and metric rows through the API; the page
 #      lists the dashboard and renders each declared number with its age;
@@ -39,7 +43,11 @@
 #   6. a gauge tile draws its value with the pushed bounds - fill min to
 #      value, warn and crit bands where the thresholds say, direction off the
 #      order, severity colouring the fill off the palette - and a reading
-#      that cannot be placed says so.
+#      that cannot be placed says so;
+#   7. a report tile draws its pushed document - header and all four section
+#      kinds, segment widths over the pushed total, tone words mapped to the
+#      palette with an unknown word drawn as no tone, a card spark answered
+#      at its own window - and a reading that is not a document says so.
 #
 # TWO TOKENS, AND THAT IS THE POINT. The author writes the rows; the outsider
 # proves the scope arm, because a check with one token could not prove
