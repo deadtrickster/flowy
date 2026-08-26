@@ -325,7 +325,7 @@ if (
   );
 }
 const heldDash = await api(`/api/artifact/${dash.id}`);
-if (!Array.isArray(heldDash.fields?.tiles) || heldDash.fields.tiles.length !== 18) {
+if (!Array.isArray(heldDash.fields?.tiles) || heldDash.fields.tiles.length !== 19) {
   die(
     `the dashboard row's tiles read ${JSON.stringify(heldDash.fields?.tiles)} - the seed is wrong`,
   );
