@@ -86,6 +86,38 @@ function escaped(text: string): string {
     .replace(/"/g, "&quot;");
 }
 
+/**
+ * A bare row id is a link to the row it names, through the resolver route
+ * /a/<ulid> - the renderer cannot look a row up synchronously, so the link
+ * names the resolver and the resolver 302s to wherever the row lives.
+ *
+ * The pattern is strict on purpose, for the reason the row 01M0XDPFSA7M73
+ * spells out: "a pattern that is nearly right will turn arbitrary tokens into
+ * dead links, which is worse than no links at all". A ULID is 26 characters
+ * starting 01 - that prefix plus 24 Crockford base32 characters, which
+ * excludes I, L, O and U - and the boundaries are the byte classes a human
+ * pastes an id between: start of message or a non-alphanumeric character
+ * before it, and a non-alphanumeric character or end of message after it. A
+ * ULID inside a longer word is a longer word, and a ULID inside a URL is the
+ * URL's business - GFM autolinked it already, and an anchor inside an anchor
+ * closes the outer one first (measured, see the URL-run comment below).
+ */
+const ROW_ID = /(^|[^0-9A-Za-z])(01[0-9A-HJKMNP-TV-Z]{24})(?![0-9A-Za-z])/g;
+
+/** rowLinks wraps the row ids in a run of plain text in resolver anchors. */
+function rowLinks(text: string): string {
+  let out = "";
+  let last = 0;
+  ROW_ID.lastIndex = 0;
+  for (let m = ROW_ID.exec(text); m !== null; m = ROW_ID.exec(text)) {
+    const start = m.index + m[1].length;
+    out += escaped(text.slice(last, start));
+    out += `<a href="/a/${m[2]}">${m[2]}</a>`;
+    last = start + m[2].length;
+  }
+  return out + escaped(text.slice(last));
+}
+
 /** Who is reading, for the ring a mention of them wears. */
 export interface Reader {
   user?: string;
@@ -140,7 +172,10 @@ function mentionsRenderer(meta: string | undefined, me: Reader | undefined) {
         // the outer one first and leaves an EMPTY anchor in front of the real
         // one. Measured: link-check timed out waiting for a[href] to become
         // visible, on a page where the link was rendered and clickable.
-        return escaped(run.text);
+        if (run.href) return escaped(run.text);
+        // And a bare row id is a link of its own - the resolver takes it from
+        // here.
+        return rowLinks(run.text);
       })
       .join("");
   };
@@ -160,11 +195,35 @@ export function renderChat(body: string, meta?: string, me?: Reader): string {
 }
 
 /**
+ * documentTextRenderer is the text renderer for a document: no mention chips -
+ * a document is not addressed at anybody - but the same URL-run respect as
+ * chat (a typed link is the tokenizer's to wrap, never a second anchor) and
+ * the same row-id links. It reuses splitBody for the same reason chat does:
+ * one function decides what is a URL, so the two renderers cannot disagree
+ * about which text an id sits inside.
+ */
+function documentTextRenderer() {
+  return function (this: Renderer, token: Tokens.Text | Tokens.Escape): string {
+    // The same two cases the chat renderer answers first: a text token with
+    // inline children belongs to the parser, and an already-escaped token is
+    // HTML this file must not touch.
+    if ("tokens" in token && token.tokens) return this.parser.parseInline(token.tokens);
+    if ("escaped" in token && token.escaped) return token.text;
+
+    return splitBody(token.text)
+      .map((run) => (run.href ? escaped(run.text) : rowLinks(run.text)))
+      .join("");
+  };
+}
+
+/**
  * renderDocument is a report, a finding or an artifact body: the same GFM, no
  * mention chips - a document is not addressed at anybody - and no `breaks`,
- * because its prose is hard wrapped.
+ * because its prose is hard wrapped. Bare row ids are links here too: a
+ * document quotes ids constantly, and the resolver fixes them everywhere.
  */
 export function renderDocument(body: string): string {
   const marked = new Marked({ ...DIALECT, breaks: false });
+  marked.use({ renderer: { text: documentTextRenderer() } });
   return sanitize(marked.parse(body, { async: false }) as string);
 }

@@ -1,6 +1,7 @@
 import { Route, Routes } from "react-router-dom";
 
 import { Shell } from "@/components/Shell";
+import { useRowLinkClicks } from "@/lib/rowlink";
 import { UnreadProvider } from "@/lib/unread";
 import { Activity } from "@/routes/Activity";
 import { ArtifactView } from "@/routes/ArtifactView";
@@ -38,6 +39,9 @@ import { Worklog } from "@/routes/Worklog";
  * page with tabs.
  */
 export default function App() {
+  // Row-id links resolve on click through the console's own credential - see
+  // lib/rowlink for why the resolver route alone cannot serve a token seat.
+  useRowLinkClicks();
   return (
     // Outside the shell because both sides of it need the same numbers: the
     // sidebar draws the badges and the room clears them, and a count owned by

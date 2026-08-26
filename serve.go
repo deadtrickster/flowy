@@ -498,6 +498,11 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("POST /api/login", s.handleLogin)
 	mux.HandleFunc("POST /api/logout", s.handleLogout)
 	mux.HandleFunc("GET /version", s.handleVersion)
+	// A pasted row id resolves to the row it names: /a/<ulid> 302s to the
+	// row's own page, behind the token and the same scope filter a read runs,
+	// so the resolver cannot leak that a row exists out of reach. See
+	// rowlinks.go.
+	mux.Handle("GET /a/{ulid}", s.authenticate(http.HandlerFunc(s.handleRowResolve)))
 	// The Prometheus text endpoint. It is at /metrics because that is where a
 	// scraper looks, and it is behind the same token and the same scope filter
 	// as GET /api/metrics: a scrape is a read, and an unauthenticated one would
