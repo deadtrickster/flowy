@@ -341,6 +341,26 @@ func artifactReachSQL(alias, user, projects string) string {
 	return strings.NewReplacer("{a}", alias, "{user}", user, "{projects}", projects).Replace(
 		`(CASE WHEN {a}.visibility = 'personal' OR {a}.project IS NULL
 		       THEN {a}.owner_user = {user} AND {user} <> ''
+		       -- FABRIC: readable from every project on this node.
+		       --
+		       -- The operator: "we dont have global flowy skills, they are per
+		       -- project now". A skill is a procedure the fabric keeps, and a
+		       -- procedure that only one project can read is one every other
+		       -- project rediscovers - which is what happened, twice, with the
+		       -- same diagram skill.
+		       --
+		       -- It sits AFTER the personal branch so a projectless or personal
+		       -- row cannot be widened by it: those are their owner's and stay
+		       -- their owner's. And it is TRUE rather than a project test
+		       -- because that is the whole claim - a fabric row belongs to the
+		       -- node, not to a project that happens to hold it.
+		       --
+		       -- WHO MAY WRITE ONE is the other half, and it is not here:
+		       -- checkFabricRow refuses the visibility from anybody but the
+		       -- operator. A read branch this wide with an open write door
+		       -- would be a way for any seat to publish into every project.
+		       WHEN {a}.visibility = 'fabric'
+		       THEN TRUE
 		       WHEN {a}.visibility = 'project-only'
 		       THEN {a}.project = ANY({projects})
 		       ELSE {a}.project = ANY({projects})

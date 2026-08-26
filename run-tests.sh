@@ -19973,6 +19973,32 @@ the_stacktrace_read_runs_against_a_real_database() {
 	printf 'the stacktrace read filtered on any frame and grouped by top frame, against a real database\n'
 }
 
+# Read out of -v: the fabric read branch is one line of SQL inside the predicate
+# every list goes through, and only a cross-project read proves it. A store test
+# with no DATABASE_URL SKIPS while printing ok.
+the_global_skill_crosses_projects_against_a_real_database() {
+	local out status
+	out=$(go test -count=1 -v -run TestAFabricSkillIsReadableFromAnotherProject ./internal/store 2>&1)
+	status=$?
+	if [ "$status" -ne 0 ]; then
+		printf '%s\n' "$out" >&2
+		return 1
+	fi
+	case "$out" in
+	*"--- SKIP: TestAFabricSkillIsReadableFromAnotherProject"*)
+		printf 'the global skill test skipped - DATABASE_URL was not set, so the read branch never ran\n' >&2
+		return 1
+		;;
+	*"--- PASS: TestAFabricSkillIsReadableFromAnotherProject"*) ;;
+	*)
+		printf 'the global skill test neither passed nor skipped - it did not run\n' >&2
+		printf '%s\n' "$out" >&2
+		return 1
+		;;
+	esac
+	printf 'a fabric skill reads from another project, a project-scoped one still does not\n'
+}
+
 the_series_door_answers_per_name_oldest_first() {
 	recall
 	local a="gate.series.a.$$" b="gate.series.b.$$"
@@ -20134,6 +20160,8 @@ check "a person who is logged in, with no token, sees the console instead of the
 	a_logged_in_person_sees_the_console
 check "the series door answers per name, oldest first" \
 	the_series_door_answers_per_name_oldest_first
+check "a global skill is readable from every project, a scoped one is not" \
+	the_global_skill_crosses_projects_against_a_real_database
 check "the stacktrace door filters on any frame and counts top frames" \
 	the_stacktrace_door_filters_any_frame_and_counts_top_frames
 check "the stacktrace read runs against a real database, and a skip is not a pass" \

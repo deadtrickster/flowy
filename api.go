@@ -174,6 +174,18 @@ func (s *server) createArtifact(w http.ResponseWriter, r *http.Request, req arti
 	// An artifact is owned by whoever wrote it. The field is accepted so a
 	// client can be explicit, not so it can put somebody else's name on a row -
 	// that would let one user mint another user's personal artifacts.
+	// FABRIC VISIBILITY IS THE OPERATOR'S, and it is checked HERE rather than in
+	// the store because the store's write path has no principal - the three shape
+	// checks it runs are about the row, and this one is about who is asking.
+	//
+	// A fabric row is readable from every project on this node, so an open write
+	// door would let any seat publish into every project by setting one field.
+	// That is a wider hole than the one global skills close.
+	if why := store.FabricWriteRefusal(p, req.Kind, req.Visibility); why != "" {
+		writeJSON(w, http.StatusForbidden, errorBody(why))
+		return
+	}
+
 	owner := req.OwnerUser
 	if owner == "" {
 		owner = p.UserID
