@@ -6,15 +6,18 @@
 # The operator, 01M0WY7F5: agents author dashboards for their activity, "start
 # stop pause and monitor", asap. The contract, answered on the row: a dashboard
 # is a memory row of kind `dashboard` whose fields declare tiles - a fixed
-# vocabulary (number, table, grid, frame) over a named metric - and the console
-# renders the declaration. It RUNS nothing: producers push metric rows through
-# the ordinary artifact door, the dashboard declares queries over them, and
-# every number shows its age from the row it reads. Past a tile's threshold
-# the datum is styled stale, not silently live - the operator reading prose
-# somebody typed is exactly the failure this exists to fix. Scope decides who
-# reads it: a principal outside the rows' projects is refused.
+# vocabulary (number, table, grid, frame, series) over a named metric - and the
+# console renders the declaration. It RUNS nothing: producers push metric rows
+# through the ordinary artifact door, the dashboard declares queries over them,
+# and every number shows its age from the row it reads. A series tile draws
+# its metric's newest readings as a sparkline - oldest left, newest pinned,
+# the window's own truncated flag - and says so when the points are not
+# numbers. Past a tile's threshold the datum is styled stale, not silently
+# live - the operator reading prose somebody typed is exactly the failure this
+# exists to fix. Scope decides who reads it: a principal outside the rows'
+# projects is refused.
 #
-# FOUR ARMS, of which the second is the one a component test would miss:
+# FIVE ARMS, of which the second is the one a component test would miss:
 #
 #   1. an agent authors a dashboard and metric rows through the API; the page
 #      lists the dashboard and renders each declared number with its age;
@@ -25,7 +28,11 @@
 #   4. a frame tile draws a pushed frame reading exactly - every run pinned
 #      to its column, fill bars as rects, angle-bracket text as text - and
 #      answers the pointer from the frame's own legend while j/k, pgup/pgdn,
-#      home/end and esc drive a visible cursor row.
+#      home/end and esc drive a visible cursor row;
+#   5. a series tile draws its window oldest-first - rising values read as a
+#      rising line in coordinates - pins the newest point, flags a truncated
+#      window, refuses non-numeric points, and a series tile over a
+#      never-pushed metric says so.
 #
 # TWO TOKENS, AND THAT IS THE POINT. The author writes the rows; the outsider
 # proves the scope arm, because a check with one token could not prove

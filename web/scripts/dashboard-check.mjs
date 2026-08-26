@@ -8,9 +8,9 @@
  * stop pause and monitor", asap. The contract, answered on the row:
  *
  *   - a dashboard is a memory row of kind `dashboard` whose fields declare
- *     tiles - a fixed vocabulary (number, table, grid, frame) over a named
- *     metric - and the console renders the declaration. It RUNS nothing: the
- *     data is metric rows producers push through the ordinary artifact door;
+ *     tiles - a fixed vocabulary (number, table, grid, frame, series) over a
+ *     named metric - and the console renders the declaration. It RUNS nothing:
+ *     the data is metric rows producers push through the ordinary artifact door;
  *   - every number shows its age from the row it reads, and a datum older than
  *     its tile's threshold is visibly stale, not silently live - the operator
  *     reading prose today is exactly the failure this exists to fix;
@@ -27,12 +27,17 @@
  *     angle-bracket text as text - and answers the pointer from the frame's
  *     own legend prose, while j/k, pgup/pgdn, home/end and esc drive a
  *     visible cursor row;
+ *   - a series tile draws the newest N readings of its metric as a
+ *     sparkline - oldest first, left to right, the newest point pinned -
+ *     off the series door, which is the shape a trend needs; a window that
+ *     was truncated says so, and a series whose points are not numbers
+ *     says so instead of connecting prose into a trend;
  *   - a dashboard is no more readable than the artifacts it names: a reader
  *     outside the rows' scope is refused;
  *   - reopening the page shows the newest rows and the newest ages - nothing
  *     is remembered between loads, the dashboard holds no state of its own.
  *
- * FOUR ARMS, of which the second is the one a component test would miss:
+ * FIVE ARMS, of which the second is the one a component test would miss:
  *
  *   1. an agent authors a dashboard and metric rows through the API; the page
  *      lists the dashboard and renders each declared number with its age;
@@ -43,7 +48,11 @@
  *   4. a frame tile draws a pushed frame reading exactly - every run pinned
  *      to its column, fill bars as rects, angle-bracket text as text - and
  *      answers the pointer from the frame's own legend while j/k, pgup/pgdn,
- *      home/end and esc drive a visible cursor row.
+ *      home/end and esc drive a visible cursor row;
+ *   5. a series tile draws its window oldest-first - rising values read as
+ *      a rising line in coordinates - pins the newest point, flags a
+ *      truncated window, refuses non-numeric points, and a series tile over
+ *      a never-pushed metric says so.
  *
  * TWO TOKENS. The author writes in their project; the outsider proves the
  * scope arm, because a check with one token could not prove "readable by me,
@@ -137,6 +146,16 @@ const dash = await post({
       },
       // A frame over a numeric series: the same wrong-shape refusal.
       { kind: "frame", label: "wrong frame", metric: metricName("cells") },
+      {
+        kind: "series",
+        label: "sweep points",
+        metric: metricName("points"),
+        points: 5,
+        stale_after_seconds: 5,
+      },
+      { kind: "series", label: "never sparkline", metric: metricName("sparkmissing") },
+      // A series of words: the honest wrong-shape state for a line chart.
+      { kind: "series", label: "wordy sparkline", metric: metricName("words") },
     ],
   },
 });
@@ -196,6 +215,17 @@ await mkMetric(
   "measured",
 );
 
+// THE SERIES FIXTURE: seven readings rising one per push - the window a
+// series tile draws is the last five, and oldest-first is the contract: the
+// first drawn point must be the oldest of the window (value 3), the pinned
+// dot the newest (7). One series of words rides along: a sparkline over
+// prose would draw a trend that is not there, and the tile must say so.
+for (let v = 1; v <= 7; v++) {
+  await mkMetric(metricName("points"), v, v === 7 ? "measured" : undefined);
+}
+await mkMetric(metricName("words"), "high");
+await mkMetric(metricName("words"), "low");
+
 // WHAT THE NODE HOLDS, read back before the browser opens: if the fixture
 // seeded differently than intended, this fails as a fixture problem instead
 // of the page answering a question about the wrong data.
@@ -206,8 +236,22 @@ const cells = (held.metrics ?? []).map((m) => m.fields?.value);
 if (cells.length !== 2 || cells[0] !== 1350 || cells[1] !== 1200) {
   die(`the node holds cells [${cells}], wanted [1350, 1200] newest-first - the seed is wrong`);
 }
+const heldSeries = await api(
+  `/api/metrics/series?name=${encodeURIComponent(metricName("points"))}&points=5`,
+);
+const seriesHeld = (heldSeries.series?.[0]?.points ?? []).map((p) => p.value);
+if (
+  seriesHeld.length !== 5 ||
+  seriesHeld[0] !== 3 ||
+  seriesHeld[4] !== 7 ||
+  !heldSeries.series?.[0]?.truncated
+) {
+  die(
+    `the node holds series [${seriesHeld}] truncated=${heldSeries.series?.[0]?.truncated}, wanted [3,4,5,6,7] truncated=true - the seed is wrong`,
+  );
+}
 const heldDash = await api(`/api/artifact/${dash.id}`);
-if (!Array.isArray(heldDash.fields?.tiles) || heldDash.fields.tiles.length !== 8) {
+if (!Array.isArray(heldDash.fields?.tiles) || heldDash.fields.tiles.length !== 11) {
   die(
     `the dashboard row's tiles read ${JSON.stringify(heldDash.fields?.tiles)} - the seed is wrong`,
   );
@@ -610,6 +654,79 @@ try {
     die("the cursor highlight lingers after Escape clears it");
   }
 
+  // ---- ARM 5: THE SERIES - a sparkline drawn oldest-first from the series
+  // door. The window is the last five of seven pushed readings, so the first
+  // drawn point is 3 and the pinned dot is 7 - and the door's window was
+  // truncated, which the tile says rather than reading as the whole series. ----
+  const seriesTile = tile("sweep points");
+  await seriesTile.scrollIntoViewIfNeeded().catch(() => {});
+  if ((await seriesTile.getAttribute("data-series-points")) !== "5") {
+    die(
+      `the series tile draws ${await seriesTile.getAttribute("data-series-points")} points, wanted 5 - its declared window`,
+    );
+  }
+  if ((await seriesTile.getAttribute("data-series-first")) !== "3") {
+    die(
+      `the series tile's first point is ${await seriesTile.getAttribute("data-series-first")}, wanted 3 - the oldest of the window`,
+    );
+  }
+  if ((await seriesTile.getAttribute("data-series-latest")) !== "7") {
+    die(
+      `the series tile's latest point is ${await seriesTile.getAttribute("data-series-latest")}, wanted 7 - the newest pushed reading`,
+    );
+  }
+  if ((await seriesTile.getAttribute("data-series-truncated")) === null) {
+    die("the series tile does not say its window was truncated - seven pushed, five drawn");
+  }
+  if ((await seriesTile.getAttribute("data-state")) !== "measured") {
+    die(
+      `the series tile's state reads ${await seriesTile.getAttribute("data-state")}, wanted measured - the newest row claims it`,
+    );
+  }
+  if ((await seriesTile.getAttribute("data-age")) === null) {
+    die(
+      "the series tile carries no age - a trend without its newest reading's age is a frozen chart",
+    );
+  }
+  const seriesSvg = seriesTile.locator("[data-series-svg]");
+  if ((await seriesSvg.count()) !== 1) {
+    die(`the series tile does not draw one SVG:\n${await seriesTile.innerText()}`);
+  }
+  // Oldest-first in coordinates: rising values must read as a rising line -
+  // x grows left to right and SVG y grows downward, so the points attribute
+  // must be five pairs with x strictly up and y strictly down, ending at the
+  // pinned dot (x 240, y 4 - the value 7 at the top of the window 3..7).
+  const seriesPath = await seriesSvg.locator("[data-series-path]").getAttribute("points");
+  const pairs = (seriesPath ?? "")
+    .trim()
+    .split(/\s+/)
+    .map((p) => p.split(",").map(Number));
+  if (pairs.length !== 5 || pairs.some((p) => p.length !== 2 || !p.every(Number.isFinite))) {
+    die(`the series polyline is not five coordinate pairs:\n${seriesPath}`);
+  }
+  for (let i = 1; i < pairs.length; i++) {
+    if (!(pairs[i][0] > pairs[i - 1][0]) || !(pairs[i][1] < pairs[i - 1][1])) {
+      die(`the series polyline does not rise oldest-first:\n${JSON.stringify(pairs)}`);
+    }
+  }
+  const dot = seriesSvg.locator("[data-series-dot]");
+  if (Number(await dot.getAttribute("cx")) !== 240 || Number(await dot.getAttribute("cy")) !== 4) {
+    die(
+      `the pinned dot is not at the newest point (240, 4): cx=${await dot.getAttribute("cx")} cy=${await dot.getAttribute("cy")}`,
+    );
+  }
+  if ((await seriesTile.locator("[data-tile-value]").innerText()).trim() !== "7") {
+    die(
+      `the series tile's number reads ${await seriesTile.locator("[data-tile-value]").innerText()}, wanted 7 - the newest reading`,
+    );
+  }
+  if ((await tile("never sparkline").getAttribute("data-empty")) === null) {
+    die('the "never sparkline" tile does not say its metric has no rows');
+  }
+  if ((await tile("wordy sparkline").getAttribute("data-series-bad")) === null) {
+    die('the "wordy sparkline" tile does not say its points are not numbers');
+  }
+
   // ---- THE STALENESS HALF: past its threshold, the tile is styled stale,
   // not silently live. ----
   await page.waitForTimeout(6000);
@@ -621,6 +738,9 @@ try {
   }
   if ((await frameTile.getAttribute("data-stale")) === null) {
     die("the lab frame past its 5s threshold is not styled stale");
+  }
+  if ((await seriesTile.getAttribute("data-stale")) === null) {
+    die("the series tile past its 5s threshold is not styled stale");
   }
   if (crashes.length > 0) die(`the page threw: ${crashes.join("; ")}`);
 
@@ -671,7 +791,9 @@ try {
       "draws the coverage grid from its nested reading and says so when a grid " +
       "tile's reading is not one, draws the pushed frame exactly - pinned runs, " +
       "a green fill bar as one rect at its grid column, angle-bracket text as " +
-      "text - answers the pointer and the cursor from its own legend, moves the " +
+      "text - answers the pointer and the cursor from its own legend, draws the " +
+      "series window oldest-first with the newest point pinned, flags a " +
+      "truncated window, refuses prose points, moves the " +
       "cursor row under j/k, pgup/pgdn, home/end and esc, styles a stale tile " +
       "past its threshold, says what each reading is - inferred as claimed, " +
       "unknown as unclaimed - right-aligns its numbers off the eight-colour " +

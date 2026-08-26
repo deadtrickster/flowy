@@ -2,7 +2,13 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import { ApiError, type Artifact } from "@/lib/api";
-import { type DashboardTile, dashboards, tilesOf } from "@/lib/dashboards";
+import {
+  type DashboardTile,
+  type SeriesEntry,
+  type SeriesPage,
+  dashboards,
+  tilesOf,
+} from "@/lib/dashboards";
 import { CW, LH, PAD, frameOf, frameSvg } from "@/lib/frame";
 import { type CursorTip, describe, place } from "@/lib/frame-cursor";
 import { useSignedIn } from "@/lib/session";
@@ -42,11 +48,16 @@ function ageWords(seconds: number): string {
   return `${Math.floor(seconds / 86400)}d`;
 }
 
+/** The age of a clock reading, coarse to the second. */
+function ageSecondsAt(at: string, now: number): number {
+  const parsed = Date.parse(at);
+  if (!Number.isFinite(parsed)) return 0;
+  return Math.max(0, Math.floor((now - parsed) / 1000));
+}
+
 /** The reading of one metric series, off the row it came from. */
 function ageSeconds(row: Artifact, now: number): number {
-  const at = Date.parse(row.created);
-  if (!Number.isFinite(at)) return 0;
-  return Math.max(0, Math.floor((now - at) / 1000));
+  return ageSecondsAt(row.created, now);
 }
 
 /** Which of measured, inferred, unknown a reading claims to be. The claim is
@@ -428,11 +439,165 @@ function FrameTile({
   );
 }
 
+/** One series tile: the newest N readings of its metric, drawn as a
+ * sparkline - the serenedash look, where a number is a trend with the trend
+ * shown. The window comes from the series door, oldest first, and the tile
+ * pins the newest point: the leftmost point is the oldest, the dot is the
+ * now. The whole window is drawn from numbers only - a point that is not a
+ * finite number would draw a trend that is not there, so the tile refuses
+ * the window and says so rather than connecting prose.
+ *
+ * Age and staleness read off the newest point's own clock - the datum IS
+ * the newest reading - and state off the newest row, exactly like a number
+ * tile: absent is unknown, and a claim of measured is the producer's to
+ * make. The door's truncated flag rides with the tile: when the series
+ * holds more points than the window, the sparkline says so instead of
+ * reading as the whole of it.
+ */
+const SERIES_W = 240;
+const SERIES_H = 48;
+const SERIES_PAD = 4;
+const SERIES_DEFAULT_WINDOW = 60;
+
+/** The window a series tile draws: the last `wanted` numeric points, or
+ * null when any point in it is not a finite number, or none when the name
+ * was never pushed (the door omits it). */
+function windowOf(entry: SeriesEntry | undefined, wanted: number): number[] | null {
+  if (!entry || entry.points.length === 0) return [];
+  const nums: number[] = [];
+  for (const p of entry.points.slice(-wanted)) {
+    if (typeof p.value !== "number" || !Number.isFinite(p.value)) return null;
+    nums.push(p.value);
+  }
+  return nums;
+}
+
+/** The polyline's points attribute, in viewBox units. SVG y grows downward,
+ * so a rising series reads as a falling line - and the check arm reads THIS
+ * attribute and asserts the leftmost point sits above the rightmost for
+ * rising values, which is the oldest-first proof in coordinates. */
+function sparkPath(nums: number[]): string {
+  const n = nums.length;
+  if (n === 0) return "";
+  if (n === 1) return `${SERIES_W},${SERIES_H / 2}`;
+  let min = nums[0];
+  let max = nums[0];
+  for (const v of nums) {
+    if (v < min) min = v;
+    if (v > max) max = v;
+  }
+  const span = max - min;
+  const yOf = (v: number) =>
+    span === 0
+      ? SERIES_H / 2
+      : SERIES_H - SERIES_PAD - ((v - min) / span) * (SERIES_H - 2 * SERIES_PAD);
+  return nums.map((v, i) => `${(i / (n - 1)) * SERIES_W},${yOf(v)}`).join(" ");
+}
+
+/** The y of the newest point - the dot's cy, always at the right edge. */
+function sparkLastY(nums: number[]): number {
+  const n = nums.length;
+  if (n === 0) return SERIES_H / 2;
+  let min = nums[0];
+  let max = nums[0];
+  for (const v of nums) {
+    if (v < min) min = v;
+    if (v > max) max = v;
+  }
+  const span = max - min;
+  const last = nums[n - 1];
+  return span === 0
+    ? SERIES_H / 2
+    : SERIES_H - SERIES_PAD - ((last - min) / span) * (SERIES_H - 2 * SERIES_PAD);
+}
+
+function SeriesTile({
+  tile,
+  entry,
+  row,
+  now,
+}: {
+  tile: DashboardTile;
+  entry: SeriesEntry | undefined;
+  row: Artifact | undefined;
+  now: number;
+}) {
+  const wanted = tile.points && tile.points > 0 ? tile.points : SERIES_DEFAULT_WINDOW;
+  const nums = windowOf(entry, wanted);
+  const bad = nums === null;
+  const empty = !bad && nums.length === 0;
+  const last = !empty && !bad ? nums[nums.length - 1] : 0;
+  const age =
+    entry && entry.points.length > 0 && !empty && !bad
+      ? ageSecondsAt(entry.points[entry.points.length - 1].at, now)
+      : 0;
+  const stale =
+    !empty && !bad && (tile.stale_after_seconds ?? 0) > 0 && age > (tile.stale_after_seconds ?? 0);
+  return (
+    <div
+      data-tile-label={tile.label}
+      data-tile-kind="series"
+      data-empty={empty ? "true" : undefined}
+      data-series-bad={bad ? "true" : undefined}
+      data-stale={stale ? "true" : undefined}
+      data-state={stateOf(row)}
+      data-age={!empty && !bad ? age : undefined}
+      data-series-points={!empty && !bad ? nums.length : undefined}
+      data-series-first={!empty && !bad ? nums[0] : undefined}
+      data-series-latest={!empty && !bad ? last : undefined}
+      data-series-truncated={!empty && !bad && entry?.truncated ? "true" : undefined}
+      className="flex flex-col gap-1 rounded-md border border-border p-4"
+    >
+      <div className="text-muted-foreground text-xs">{tile.label}</div>
+      {bad ? (
+        <div className="py-1 text-muted-foreground text-sm">
+          its points are not numbers - the tile says so rather than drawing a wrong-shaped sparkline
+        </div>
+      ) : empty ? (
+        <div className="py-1 text-muted-foreground text-sm">
+          its metric has no rows pushed yet - not zero, just nothing
+        </div>
+      ) : (
+        <>
+          <div
+            data-tile-value
+            className="flex items-baseline justify-end font-semibold text-2xl tabular-nums"
+          >
+            {last}
+          </div>
+          <svg
+            data-series-svg
+            viewBox={`0 0 ${SERIES_W} ${SERIES_H}`}
+            preserveAspectRatio="none"
+            className="h-12 w-full"
+          >
+            <title>{`${tile.label}: ${last}`}</title>
+            <polyline
+              data-series-path
+              points={sparkPath(nums)}
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+            />
+            <circle data-series-dot cx={SERIES_W} cy={sparkLastY(nums)} r="3" />
+          </svg>
+          <div className="flex items-baseline gap-2 text-muted-foreground text-xs" data-tile-age>
+            <span>{ageWords(age)}</span>
+            <span data-tile-state={stateOf(row)}>{stateOf(row)}</span>
+            {stale ? <span>, stale</span> : null}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 export function DashboardView() {
   const { id } = useParams();
   const signedIn = useSignedIn();
   const [dash, setDash] = useState<Artifact | null>(null);
   const [rows, setRows] = useState<Artifact[]>([]);
+  const [seriesPage, setSeriesPage] = useState<SeriesPage | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [refused, setRefused] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -448,6 +613,7 @@ export function DashboardView() {
     if (!signedIn || !id) {
       setDash(null);
       setRows([]);
+      setSeriesPage(null);
       setLoaded(false);
       return;
     }
@@ -460,17 +626,30 @@ export function DashboardView() {
       .then(async (artifact) => {
         if (stopped) return;
         setDash(artifact);
-        const names = [
-          ...new Set(
-            tilesOf(artifact)
-              .map((t) => t.metric)
-              .filter(Boolean),
-          ),
-        ];
+        const tiles = tilesOf(artifact);
+        const names = [...new Set(tiles.map((t) => t.metric).filter(Boolean))];
         if (names.length === 0) return;
+        // The series door takes one points value for every name, so the page
+        // asks for the widest window its series tiles declare and each tile
+        // slices its own - the door's shape, not a second vocabulary.
+        const seriesNames = [
+          ...new Set(tiles.filter((t) => t.kind === "series" && t.metric).map((t) => t.metric)),
+        ];
+        const window = tiles
+          .filter((t) => t.kind === "series")
+          .reduce(
+            (w, t) => Math.max(w, t.points && t.points > 0 ? t.points : SERIES_DEFAULT_WINDOW),
+            0,
+          );
         try {
-          const page = await dashboards.metrics(names);
-          if (!stopped) setRows(page.metrics ?? []);
+          const [page, spage] = await Promise.all([
+            dashboards.metrics(names),
+            seriesNames.length > 0 ? dashboards.series(seriesNames, window) : Promise.resolve(null),
+          ]);
+          if (!stopped) {
+            setRows(page.metrics ?? []);
+            if (spage) setSeriesPage(spage);
+          }
         } catch (err) {
           // The tiles render their empty state; the declaration is still the
           // truth of the page even if the read of the data failed.
@@ -502,6 +681,10 @@ export function DashboardView() {
       const fields = row.fields as { name?: unknown } | undefined;
       return fields?.name === name;
     });
+
+  /** The series window of one metric, off the series door. */
+  const seriesOf = (name: string): SeriesEntry | undefined =>
+    seriesPage?.series.find((s) => s.name === name);
 
   if (!signedIn) {
     return (
@@ -556,6 +739,17 @@ export function DashboardView() {
           if (tile.kind === "number") {
             return (
               <NumberTile key={tile.label} tile={tile} row={rowsOf(tile.metric)[0]} now={now} />
+            );
+          }
+          if (tile.kind === "series") {
+            return (
+              <SeriesTile
+                key={tile.label}
+                tile={tile}
+                entry={seriesOf(tile.metric)}
+                row={rowsOf(tile.metric)[0]}
+                now={now}
+              />
             );
           }
           // A kind outside the vocabulary cannot be written - see

@@ -22,8 +22,8 @@ export const DASHBOARD_TYPE = "memory";
 export const DASHBOARD_KIND = "dashboard";
 
 /** One declared tile, as the store rules it (store.DashboardTile). The
- * vocabulary is number, table, grid, frame - each kind renders over the named
- * series' newest reading. */
+ * vocabulary is number, table, grid, frame, series - each kind renders over
+ * the named metric. */
 export interface DashboardTile {
   kind: string;
   label: string;
@@ -31,6 +31,9 @@ export interface DashboardTile {
   /** How old a reading may be before the tile draws it as stale rather than
    * live. Zero means never stale. */
   stale_after_seconds?: number;
+  /** The window a series tile draws - the newest N readings, oldest first.
+   * Zero means the console's default. */
+  points?: number;
 }
 
 /** The tiles a dashboard row declares, or none. The row checks make a written
@@ -43,6 +46,26 @@ export function tilesOf(artifact: Artifact): DashboardTile[] {
 /** One reading of one series, newest first is the door's order. */
 export interface MetricPage {
   metrics: Artifact[];
+}
+
+/** One point of a series, off GET /api/metrics/series: the row's clock and
+ * the reading it carried. */
+export interface SeriesPoint {
+  at: string;
+  value: unknown;
+}
+
+/** One series window, as the series door answers it: oldest first, its own
+ * truncated flag, absent from the array when its name was never pushed. */
+export interface SeriesEntry {
+  name: string;
+  points: SeriesPoint[];
+  truncated: boolean;
+}
+
+export interface SeriesPage {
+  series: SeriesEntry[];
+  asked: string[];
 }
 
 export const dashboards = {
@@ -61,5 +84,16 @@ export const dashboards = {
   metrics: (names: string[]) =>
     request<MetricPage>(
       `/api/metrics/rows?${names.map((n) => `name=${encodeURIComponent(n)}`).join("&")}&limit=200`,
+    ),
+
+  /**
+   * The newest `points` readings of each named series, oldest first. One
+   * points value applies to every name - the door's shape - so the page asks
+   * for the widest window its series tiles declare and each tile slices its
+   * own.
+   */
+  series: (names: string[], points: number) =>
+    request<SeriesPage>(
+      `/api/metrics/series?${names.map((n) => `name=${encodeURIComponent(n)}`).join("&")}&points=${points}`,
     ),
 };

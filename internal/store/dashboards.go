@@ -56,8 +56,8 @@ const (
 
 // DashboardTile is one declared panel of a dashboard row.
 type DashboardTile struct {
-	// Kind is the component: number, table, grid, frame, gauge. The closed set -
-	// see checkDashboardRow.
+	// Kind is the component: number, table, grid, frame, gauge, series. The
+	// closed set - see checkDashboardRow.
 	Kind string `json:"kind"`
 	// Label is what the tile is called on the page, in a person's words.
 	Label string `json:"label"`
@@ -78,6 +78,10 @@ type DashboardTile struct {
 	// "was the key there", and a typed field would silently accept a thresholds
 	// object it could not parse and report its absence.
 	Thresholds json.RawMessage `json:"thresholds,omitempty"`
+	// Points is the window a series tile draws - the newest N readings of its
+	// metric, oldest first. Zero means the console's default. Only a series
+	// tile reads it; the shape check refuses it as negative.
+	Points int64 `json:"points,omitempty"`
 }
 
 // IsDashboard reports whether the row is a dashboard declaration.
@@ -197,9 +201,9 @@ func checkDashboardRow(a *Artifact) error {
 	}
 	for _, t := range tiles {
 		if t.Kind != "number" && t.Kind != "table" && t.Kind != "grid" &&
-			t.Kind != "frame" && t.Kind != "gauge" {
+			t.Kind != "frame" && t.Kind != "gauge" && t.Kind != "series" {
 			return DashboardRowError{Row: a.ID, Why: fmt.Sprintf(
-				"tile %q declares kind %q - the vocabulary is number, table, grid, frame, gauge",
+				"tile %q declares kind %q - the vocabulary is number, table, grid, frame, gauge, series",
 				t.Label, t.Kind)}
 		}
 		if err := checkTileCarriesNoBounds(a.ID, t); err != nil {
@@ -210,6 +214,10 @@ func checkDashboardRow(a *Artifact) error {
 		}
 		if strings.TrimSpace(t.Metric) == "" {
 			return DashboardRowError{Row: a.ID, Why: "a tile reads a metric - metric must name one"}
+		}
+		if t.Points < 0 {
+			return DashboardRowError{Row: a.ID, Why: fmt.Sprintf(
+				"tile %q declares %d points - the window must be positive", t.Label, t.Points)}
 		}
 	}
 	return nil
