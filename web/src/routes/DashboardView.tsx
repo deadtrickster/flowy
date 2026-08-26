@@ -527,10 +527,10 @@ function SeriesTile({
   const bad = nums === null;
   const empty = !bad && nums.length === 0;
   const last = !empty && !bad ? nums[nums.length - 1] : 0;
-  const age =
-    entry && entry.points.length > 0 && !empty && !bad
-      ? ageSecondsAt(entry.points[entry.points.length - 1].at, now)
-      : 0;
+  // The age is the newest ROW's wall clock - the same reading the dot pins,
+  // and the same age every other tile shows. The door's `at` is the store's
+  // HLC, a logical ordering clock, not wall time.
+  const age = row && !empty && !bad ? ageSeconds(row, now) : 0;
   const stale =
     !empty && !bad && (tile.stale_after_seconds ?? 0) > 0 && age > (tile.stale_after_seconds ?? 0);
   return (
