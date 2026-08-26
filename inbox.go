@@ -375,6 +375,21 @@ func (s *server) handleInboxWait(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// AND WHERE THIS READER STANDS IN EACH THREAD. The line already says which
+	// project's room a message came from and whether it names an addressee, and
+	// neither answers the question that decides whether to reply: is this
+	// conversation mine? A room is a public square and most of what crosses it
+	// is other seats talking.
+	//
+	// Refusing rather than logging, the same as the two fills above and for the
+	// same reason: this page is delivered to something that acts on it without
+	// anybody looking, and "you are not in this thread" and "I could not work
+	// out whether you are" would arrive identically.
+	if err := s.db.FillThreadStanding(r.Context(), p, name, deliver); err != nil {
+		serverError(w, r, err)
+		return
+	}
+
 	writeJSON(w, http.StatusOK, inboxWaitResponse{
 		Reader: name, Events: deliver, Skipped: skipped, Since: reader.Cursor, Cursor: at,
 		Now: nodeNow(),
@@ -1171,9 +1186,27 @@ func writeInbox(page inboxWaitResponse) error {
 			"addressee": e.Addressee,
 			"body":      e.Body,
 			"thread":    e.Thread,
-			"id":        e.ID,
-			"created":   e.Created,
-			"cursor":    page.Cursor,
+			// AND WHERE YOU STAND IN IT. `thread` is an id: it says which
+			// conversation, and nothing about whether it is yours. A seat that
+			// watches a room sees mostly other seats talking, and adjacency
+			// reads as address - a correction posted seconds after your own
+			// message, on your own subject, into somebody else's thread, looks
+			// exactly like a reply to you.
+			//
+			// Measured 2026-08-26, on this seat: it was, and it was not for me.
+			// "square size wasnt addressed to you". Nothing in the delivery
+			// could have said otherwise.
+			//
+			// Absent standing prints as absent rather than false: "you have not
+			// spoken here" and "nobody worked it out" are different, and only
+			// the first is safe to act on.
+			"thread_spoken":    standingBool(e, func(s *store.ThreadStanding) bool { return s.Spoken }),
+			"thread_root_mine": standingBool(e, func(s *store.ThreadStanding) bool { return s.RootMine }),
+			"replies_to":       standingText(e),
+			"replies_to_me":    standingBool(e, func(s *store.ThreadStanding) bool { return s.RepliesToMe }),
+			"id":               e.ID,
+			"created":          e.Created,
+			"cursor":           page.Cursor,
 		}
 		// WHO SAID IT, AND NOT ONLY WHICH PRINCIPAL SAID IT. `actor` is a
 		// ULID. Every listener in this fleet was written against the ROOM
@@ -1399,4 +1432,23 @@ func thisProcess() (pid, since, host string, ok bool) {
 		return "", "", "", false
 	}
 	return strconv.Itoa(os.Getpid()), info.ModTime().UTC().Format(time.RFC3339Nano), name, true
+}
+
+// standingBool reads one fact of a delivery's thread standing, or nil when the
+// door did not fill one. Nil rather than false on purpose: a listener that
+// cannot tell "not in this thread" from "not computed" will treat every
+// un-enriched delivery as somebody else's conversation and go quiet.
+func standingBool(e *store.Event, pick func(*store.ThreadStanding) bool) any {
+	if e == nil || e.Standing == nil {
+		return nil
+	}
+	return pick(e.Standing)
+}
+
+// standingText is who this message replies to, when the delivery could see it.
+func standingText(e *store.Event) any {
+	if e == nil || e.Standing == nil || e.Standing.RepliesTo == "" {
+		return nil
+	}
+	return e.Standing.RepliesTo
 }

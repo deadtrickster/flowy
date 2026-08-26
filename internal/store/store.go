@@ -673,6 +673,13 @@ type Event struct {
 	// it nil, because both the words and whether there are any depend on who is
 	// asking.
 	Citation *Citation `json:"citation,omitempty"`
+	// Standing is THIS READER'S relationship to the thread the message sits in,
+	// filled per delivery by FillThreadStanding for the same reason Citation is
+	// filled per read: it is not a property of the message. Two seats handed the
+	// same line have different standings in its thread, so there is no column
+	// for this, it is not signed and it does not replicate. Nil where nobody
+	// asked - which a listener must not read as "you are not in this thread".
+	Standing *ThreadStanding `json:"standing,omitempty"`
 }
 
 // AppendEvent writes an event, stamping id/seq_hlc/node when unset.

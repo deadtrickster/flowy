@@ -298,3 +298,59 @@ func eventJSONFields(t *testing.T) []string {
 	}
 	return out
 }
+
+// THE STANDING FACTS TRAVEL, AND ABSENT IS NOT FALSE.
+//
+// A delivery says which project's room a message came from and whether it names
+// an addressee. Neither answers what decides a reply: is this conversation mine?
+// A seat watching a room sees mostly other seats talking, and adjacency reads as
+// address - a correction posted seconds after your own message, on your own
+// subject, into somebody else's thread looks exactly like a reply to you.
+//
+// Measured 2026-08-26 on claude-host: it was, and it was not for that seat.
+func TestADeliveryCarriesWhereTheReaderStands(t *testing.T) {
+	page := inboxWaitResponse{
+		Reader: "claude-host",
+		Events: []*store.Event{{
+			ID: "01M0HQ0NMS16X5SZ87AGYAB5ZT", Room: "general", Body: "b",
+			Thread: "01M0HPQTFJ417T7G0WFK4GEQJD",
+			Standing: &store.ThreadStanding{
+				Spoken: true, RootMine: false, RepliesTo: "dead-claude", RepliesToMe: false,
+			},
+		}},
+	}
+	line := captureDelivery(t, page)
+	for _, want := range []struct {
+		key string
+		val any
+		why string
+	}{
+		{"thread_spoken", true, "a seat cannot tell a thread it is already in from one it is overhearing"},
+		{"thread_root_mine", false, "a thread hanging off your own message is yours before you reply twice"},
+		{"replies_to", "dead-claude", "the listener cannot say who is being answered"},
+		{"replies_to_me", false, "a reply to somebody else reads as a reply to you"},
+	} {
+		if got := line[want.key]; got != want.val {
+			t.Errorf("the delivery carries %q = %v, want %v - without it %s",
+				want.key, got, want.val, want.why)
+		}
+	}
+}
+
+// AN UNFILLED STANDING IS ABSENT, NOT FALSE. "You have not spoken in this
+// thread" and "nobody worked out whether you have" are different facts, and a
+// listener that reads the second as the first goes quiet on every delivery from
+// a door that did not fill one.
+func TestADeliveryWithNoStandingSaysNothingAboutIt(t *testing.T) {
+	page := inboxWaitResponse{
+		Reader: "claude-host",
+		Events: []*store.Event{{ID: "01M0HQ0NMS16X5SZ87AGYAB5ZT", Room: "general", Body: "hi"}},
+	}
+	line := captureDelivery(t, page)
+	for _, key := range []string{"thread_spoken", "thread_root_mine", "replies_to", "replies_to_me"} {
+		if got, present := line[key]; present && got != nil {
+			t.Errorf("an unenriched delivery carries %q = %v, want it absent - false would read as "+
+				"\"not your thread\" and silence every listener the door did not enrich", key, got)
+		}
+	}
+}

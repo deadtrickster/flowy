@@ -20042,6 +20042,31 @@ the_report_door_refuses_a_document_it_cannot_draw() {
 	printf 'the report door stores a whole document and refuses each bad one by its own rule\n'
 }
 
+# Read out of -v: FillThreadStanding's two statements are the part no unit test
+# reaches, and a store test with no DATABASE_URL SKIPS while printing ok.
+the_thread_standing_runs_against_a_real_database() {
+	local out status
+	out=$(go test -count=1 -v -run TestFillThreadStandingAgainstARealRoom ./internal/store 2>&1)
+	status=$?
+	if [ "$status" -ne 0 ]; then
+		printf '%s\n' "$out" >&2
+		return 1
+	fi
+	case "$out" in
+	*"--- SKIP: TestFillThreadStandingAgainstARealRoom"*)
+		printf 'the thread standing test skipped - DATABASE_URL was not set, so the SQL never ran\n' >&2
+		return 1
+		;;
+	*"--- PASS: TestFillThreadStandingAgainstARealRoom"*) ;;
+	*)
+		printf 'the thread standing test neither passed nor skipped - it did not run\n' >&2
+		printf '%s\n' "$out" >&2
+		return 1
+		;;
+	esac
+	printf 'a delivery says where the reader stands in the thread, against a real room\n'
+}
+
 the_series_door_answers_per_name_oldest_first() {
 	recall
 	local a="gate.series.a.$$" b="gate.series.b.$$"
@@ -20203,6 +20228,8 @@ check "a person who is logged in, with no token, sees the console instead of the
 	a_logged_in_person_sees_the_console
 check "the series door answers per name, oldest first" \
 	the_series_door_answers_per_name_oldest_first
+check "a delivery says where the reader stands in the thread" \
+	the_thread_standing_runs_against_a_real_database
 check "the report door refuses a document it cannot draw" \
 	the_report_door_refuses_a_document_it_cannot_draw
 check "a global skill is readable from every project, a scoped one is not" \
