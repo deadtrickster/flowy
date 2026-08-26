@@ -211,6 +211,7 @@ func TestTheDeliveryDropsNothingByAccident(t *testing.T) {
 		"project":    "the reader's project is settled before delivery, by the same predicate the room read uses",
 		"private":    "its own comment forbids reading it to answer `may they see it` - by the time it is set that question is answered",
 		"citation":   "NOT dropped: writeInbox inlines the quote into body and puts the exact signed bytes in body_signed",
+		"standing":   "NOT dropped: writeInbox FLATTENS it into thread_spoken, thread_root_mine, replies_to and replies_to_me. A listener acts on one fact at a time - `is this thread mine` is a shell test in a waiter loop - and a nested object makes every consumer reach two levels for a boolean it either has or has not been given",
 	}
 
 	// EVERY FIELD POPULATED, because an absent value and a dropped one look
