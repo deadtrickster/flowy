@@ -19999,6 +19999,49 @@ the_global_skill_crosses_projects_against_a_real_database() {
 	printf 'a fabric skill reads from another project, a project-scoped one still does not\n'
 }
 
+the_report_door_refuses_a_document_it_cannot_draw() {
+	recall
+	local m="gate.report.$$"
+	push_report() { # NAME BODY_JSON
+		api POST "$TOKEN_A" "/api/artifacts" \
+			"{\"type\":\"memory\",\"kind\":\"metric\",\"title\":\"$1\",\"fields\":{\"name\":\"$1\",\"value\":$2}}"
+	}
+
+	# A WHOLE DOCUMENT GOES THROUGH. Every section kind in one reading, which is
+	# the shape a real page has and the one a vocabulary change would break.
+	push_report "$m" '{"eyebrow":"e","title":"t","lede":"l","sections":[
+	    {"kind":"progress","label":"fleet","value":44.3,"total":5850,
+	     "segments":[{"label":"a","value":1248,"of":3120}]},
+	    {"kind":"cards","cards":[{"title":"a","stats":[{"label":"cells","value":"40%"}]}]},
+	    {"kind":"columns","columns":[{"label":"model"},{"label":"box"}],
+	     "rows":[{"cells":["dotsocr","lubuntu2"]}]},
+	    {"kind":"squares","groups":[{"label":"a","rows":[{"label":"m","cells":[{"tone":"accent"}]}]}]}]}' || return 1
+	want_eq "a whole report is stored" "$API_STATUS" "200" || return 1
+
+	# EACH REFUSAL BY ITSELF, because they fail separately and a producer should
+	# learn which rule it broke rather than that something was wrong.
+	push_report "$m" '{"sections":[]}'
+	want_eq "a report with no sections is refused" "$API_STATUS" "400" || return 1
+	push_report "$m" '{"sections":[{"kind":"chart"}]}'
+	want_eq "a section kind outside the vocabulary is refused" "$API_STATUS" "400" || return 1
+	push_report "$m" '{"sections":[{"kind":"progress","value":44}]}'
+	want_eq "a progress bar with no total is refused" "$API_STATUS" "400" || return 1
+	push_report "$m" '{"sections":[{"kind":"columns","columns":[{"label":"one"}],"rows":[{"cells":["a","b"]}]}]}'
+	want_eq "a row longer than its header is refused" "$API_STATUS" "400" || return 1
+	push_report "$m" '{"sections":[{"kind":"cards","tone":"chartreuse","cards":[]}]}'
+	want_eq "a tone outside the set is refused" "$API_STATUS" "400" || return 1
+
+	# AND A READING THAT IS NOT A REPORT IS UNTOUCHED. The value of a metric is
+	# any JSON and most are a number; this guard must not become a second
+	# opinion on every metric written.
+	push_report "gate.report.plain.$$" '42' || return 1
+	want_eq "a plain number is still a reading" "$API_STATUS" "200" || return 1
+	push_report "gate.report.grid.$$" '{"cols":["a"],"rows":[{"label":"r","cells":[1]}]}' || return 1
+	want_eq "a grid reading is still a reading" "$API_STATUS" "200" || return 1
+
+	printf 'the report door stores a whole document and refuses each bad one by its own rule\n'
+}
+
 the_series_door_answers_per_name_oldest_first() {
 	recall
 	local a="gate.series.a.$$" b="gate.series.b.$$"
@@ -20160,6 +20203,8 @@ check "a person who is logged in, with no token, sees the console instead of the
 	a_logged_in_person_sees_the_console
 check "the series door answers per name, oldest first" \
 	the_series_door_answers_per_name_oldest_first
+check "the report door refuses a document it cannot draw" \
+	the_report_door_refuses_a_document_it_cannot_draw
 check "a global skill is readable from every project, a scoped one is not" \
 	the_global_skill_crosses_projects_against_a_real_database
 check "the stacktrace door filters on any frame and counts top frames" \
