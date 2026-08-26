@@ -401,7 +401,7 @@ function FrameTile({
       data-stale={stale ? "true" : undefined}
       data-state={stateOf(row)}
       data-age={row ? age : undefined}
-      className="flex flex-col gap-1 rounded-md border border-border p-4 sm:col-span-2 lg:col-span-4"
+      className="flex min-w-0 flex-col gap-1 rounded-md border border-border p-4 sm:col-span-2 lg:col-span-4"
     >
       <div className="text-muted-foreground text-xs">{tile.label}</div>
       {row && !frame ? (
@@ -424,7 +424,13 @@ function FrameTile({
           onMouseMove={pointAt}
           onMouseLeave={() => setTip(null)}
           onKeyDown={onKey}
-          className="overflow-x-auto rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          // min-w-0 is what makes the measurement mean anything. A flex or grid
+          // item defaults to min-width:auto, so a 1099px frame made this box
+          // 1099px wide whatever the viewport - and measuring it then measured
+          // the FRAME, not the room, which picks the widest rendering and holds
+          // it there. With min-width:0 the box shrinks to its column and
+          // overflow-x-auto does the clipping it was always meant to do.
+          className="min-w-0 overflow-x-auto rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <div className="relative inline-block">
             {/* The frame itself. Built by frameSvg from the pushed lines -
