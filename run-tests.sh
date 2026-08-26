@@ -375,6 +375,15 @@ skipped=0
 # How many checks the filter SELECTED - see the verdict, where a zero refuses.
 matched=0
 
+# WHERE FULL-SUITE TOTALS ARE RECORDED, one "sha total" line per full run. The
+# verdict compares a run against its base by reading this back - see
+# a_run_that_ran_fewer_checks_than_its_base. Machine-local on purpose: it is
+# THE ONE NUMBER THE DRAINER ALREADY KNOWS, in a place the run can read. The
+# drainer runs this same script on the gate node, so a base's total is recorded
+# there by the base's own gate run before any branch is ever measured against
+# it. FLOWY_SUITE_COUNTS overrides for a check that wants a throwaway file.
+SUITE_COUNTS_FILE=${FLOWY_SUITE_COUNTS:-$HOME/.cache/flowy-suite-counts/checks-counts}
+
 # THE CHECKS A FILTER MAY NOT SKIP, because the rest of the run is built on them.
 #
 # MEASURED 2026-08-21, by running ONLY= against one console check and reading a
@@ -573,6 +582,55 @@ a_run_that_measured_nothing_is_not_a_pass() {
 # the second is the half a filtered run needs.
 a_filter_that_selected_nothing_is_not_a_pass() {
 	[ -z "${only:-}" ] || [ "${1:-0}" -gt 0 ]
+}
+
+# AND A RUN THAT MEASURED FEWER CHECKS THAN ITS BASE MUST SAY SO. Neither rule
+# above sees it: every check that exists ran - the suite's own checks included -
+# and fewer of them exist than the base had.
+#
+# MEASURED 2026-08-22, on the near-miss that would have reverted openspec p2: a
+# commit whose tree was a 2218-line deletion went 765 -> 763 checks, and the
+# suite correctly measured a smaller world. "The full suite passed" is not
+# evidence about what a commit DELETES - it is evidence about what remains.
+#
+# The comparison is against the nearest ANCESTOR sha with a recorded full-suite
+# total: a branch's own commits have none, the nearest gated base does.
+#
+# Not a refusal. A branch may legitimately delete tests when it deletes the
+# feature they were for. The requirement is that it be SAID, in the place the
+# verdict is read.
+suite_total_recorded_for() {
+	# SHA FILE - the recorded full-suite total for SHA, empty when FILE does
+	# not exist or has no line for it. Records append, so a re-run of one sha
+	# adds a line and the last one wins.
+	[ -f "$2" ] || {
+		printf ''
+		return 0
+	}
+	grep "^$1 " "$2" | tail -n 1 | awk '{print $2}' || true
+}
+
+a_run_that_ran_fewer_checks_than_its_base() {
+	# SHA TOTAL [FILTER] [COUNTS FILE] - prints the sentence when the drop
+	# needs one, and nothing otherwise. FILTER names ONLY= so a filtered drop
+	# is said to be one rather than read as deleted tests. The file argument
+	# exists for the suite's own check, which seeds a throwaway record.
+	local anc base_total total="$2" filter="${3:-}" counts="${4:-${SUITE_COUNTS_FILE:-}}"
+	while read -r anc; do
+		base_total="$(suite_total_recorded_for "$anc" "$counts")"
+		[ -n "$base_total" ] || continue
+		if [ "$total" -ge "$base_total" ]; then
+			return 0
+		fi
+		if [ -n "$filter" ]; then
+			printf 'CHECKS SHRANK: ONLY=%s selected %d checks against a base of %d - a filtered run, not a smaller tree.\n' \
+				"$filter" "$total" "$base_total"
+		else
+			printf 'CHECKS SHRANK: this tree runs %d checks, its base %s ran %d - deleted tests, or a filter; the diff owes a sentence.\n' \
+				"$total" "$anc" "$base_total"
+		fi
+		return 0
+	done < <(git rev-list --max-count=100 "$1" | tail -n +2)
 }
 
 # free_port prints the first port at or above $1 that nothing is listening on.
@@ -21953,6 +22011,53 @@ an_installed_hook_stops_a_real_push() {
 
 check "the suite refuses to call a run of nothing a pass" \
 	the_suite_refuses_to_call_nothing_a_pass
+# The verdict's third rule, checked against a seeded record rather than the
+# machine-local file, which may hold anything from prior runs. The outcomes are
+# proved in a throwaway file: no record says nothing, a bigger base is said
+# with deleted tests named, and a filtered drop names the filter.
+the_suite_says_so_when_a_run_shrank() {
+	local dir="$WORK/shrink-counts" out head parent
+	mkdir -p "$dir"
+	head="$(git rev-parse HEAD)"
+	parent="$(git rev-parse HEAD~1 2>/dev/null || true)"
+	[ -n "$parent" ] || {
+		printf 'no parent to seed a base with\n' >&2
+		return 1
+	}
+	# No record at all - nothing to say.
+	out="$(a_run_that_ran_fewer_checks_than_its_base "$head" 1 "" "$dir/counts")"
+	[ -z "$out" ] || {
+		printf 'no base record still printed: %s\n' "$out" >&2
+		return 1
+	}
+	# The base ran fewer - tests were added, also nothing to say.
+	printf '%s 5\n' "$parent" >"$dir/counts"
+	out="$(a_run_that_ran_fewer_checks_than_its_base "$head" 9 "" "$dir/counts")"
+	[ -z "$out" ] || {
+		printf 'a tree bigger than its base still printed: %s\n' "$out" >&2
+		return 1
+	}
+	# The base ran more - the drop is said, and names deleted tests.
+	printf '%s 9\n' "$parent" >"$dir/counts"
+	out="$(a_run_that_ran_fewer_checks_than_its_base "$head" 5 "" "$dir/counts")"
+	printf '%s\n' "$out" | grep -q 'CHECKS SHRANK' || {
+		printf 'a shrink printed no banner: %s\n' "$out" >&2
+		return 1
+	}
+	printf '%s\n' "$out" | grep -q 'deleted tests' || {
+		printf 'an unfiltered shrink does not name deleted tests: %s\n' "$out" >&2
+		return 1
+	}
+	# And a filtered shrink is said to be one.
+	out="$(a_run_that_ran_fewer_checks_than_its_base "$head" 5 "foo" "$dir/counts")"
+	printf '%s\n' "$out" | grep -q 'ONLY=foo' || {
+		printf 'a filtered shrink does not name the filter: %s\n' "$out" >&2
+		return 1
+	}
+	printf 'a run that shrank says so and names the cause\n'
+}
+check "a run with fewer checks than its base says so, and names the cause" \
+	the_suite_says_so_when_a_run_shrank
 check "the repo's shell scripts are all found" shell_scripts_enumerated
 check "the repo's shell scripts parse" shell_scripts_parse
 check "the repo's shell scripts are shellcheck clean" shell_scripts_lint
@@ -22123,6 +22228,13 @@ git rev-parse HEAD >/dev/null 2>&1 && git diff --quiet && git diff --cached --qu
 	exit 1
 }
 
+# AND A SHRUNK RUN SAYS SO ABOVE THE VERDICT, the same eyes argument as the
+# ONLY= banner above. The comparison is against the nearest gated ancestor's
+# full-suite total - recorded by that ancestor's own full run - and a filtered
+# drop is named as one rather than read as deleted tests. Not a refusal: the
+# banner and the verdict print together, and the exit is the verdict's.
+measured_sha="$(git rev-parse HEAD)"
+a_run_that_ran_fewer_checks_than_its_base "$measured_sha" "$((passed + failed))" "${only:-}"
 printf 'passed: %d failed: %d\n' "$passed" "$failed"
 if ! a_run_that_measured_nothing_is_not_a_pass "$passed" "$failed"; then
 	printf 'FAIL: this run measured nothing - it did not pass, it did not run\n' >&2
@@ -22133,5 +22245,16 @@ if ! a_filter_that_selected_nothing_is_not_a_pass "${matched:-0}"; then
 		"$only" "$passed" >&2
 	printf '%s\n' "ONLY matches on a check's NAME, the sentence in quotes after \`check\`, not on the function that implements it. Nothing was measured for that filter, and this is a refusal rather than a green so it cannot be pasted as one." >&2
 	exit 1
+fi
+# A FULL RUN RECORDS ITS TOTAL against the sha it measured - the number the
+# next descendant reads back as its base. Only a full run records: a filtered
+# total would poison the base for every later comparison. A red run records
+# too - the count is what the verdict measured, pass or fail, and the count is
+# all the comparison needs. WORK is the suite's own mark: the verdict-order
+# check extracts this block and runs it against a temp repo, and that is not a
+# suite run to record.
+if [ -z "${only:-}" ] && [ -n "${WORK:-}" ]; then
+	mkdir -p "$(dirname "$SUITE_COUNTS_FILE")"
+	printf '%s %d\n' "$measured_sha" "$((passed + failed))" >>"$SUITE_COUNTS_FILE"
 fi
 [ "$failed" -eq 0 ] || exit 1

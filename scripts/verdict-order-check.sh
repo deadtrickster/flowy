@@ -59,7 +59,9 @@ fi
 # time.
 : >"$work/defs.sh"
 for guard in a_run_that_measured_nothing_is_not_a_pass \
-	a_filter_that_selected_nothing_is_not_a_pass; do
+	a_filter_that_selected_nothing_is_not_a_pass \
+	a_run_that_ran_fewer_checks_than_its_base \
+	suite_total_recorded_for; do
 	sed -n "/^$guard()/,/^}/p" "$src" >>"$work/defs.sh"
 	grep -q "^$guard()" "$work/defs.sh" || {
 		printf 'verdict-order-check: %s is not in %s - the verdict calls it and this could not lift it\n' \
