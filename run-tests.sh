@@ -19837,6 +19837,75 @@ a_rail_follows_a_project_switch() {
 #   than an entry with no points, and `asked` echoes what was requested so a
 #   caller can tell "nothing pushed" from "I misspelled it". Collapsing that
 #   pair has cost this fleet more than any other single mistake.
+the_log_door_tails_one_stream_and_counts_the_filter() {
+	recall
+	local st="gate.logs.$$"
+	push_log() { # LEVEL TYPE MESSAGE
+		api POST "$TOKEN_A" "/api/artifacts" \
+			"{\"type\":\"memory\",\"kind\":\"log\",\"title\":\"$st\",\"fields\":{\"stream\":\"$st\",\"level\":\"$1\",\"type\":\"$2\",\"message\":\"$3\"}}"
+	}
+	push_log INFO Startup "listening" || return 1
+	push_log ERROR Storage "disk went away" || return 1
+	push_log INFO Storage "back" || return 1
+	push_log ERROR Search "index is behind" || return 1
+
+	api GET "$TOKEN_A" "/api/logs/tail?stream=$st" || return 1
+	want_eq "the whole stream comes back" "$(jqv '.lines | length')" "4" || return 1
+	# OLDEST FIRST - a log read top to bottom runs forwards.
+	want_eq "the lines are oldest first" \
+		"$(jqv '[.lines[].message] | join("|")')" \
+		"listening|disk went away|back|index is behind" || return 1
+
+	# THE COUNTS DESCRIBE THE FILTERED SET, NOT THE PAGE. limit=1 leaves one line
+	# on the page and both ERRORs in the count - a count computed over the page
+	# would say 1 and change as somebody scrolled.
+	api GET "$TOKEN_A" "/api/logs/tail?stream=$st&level=ERROR&limit=1" || return 1
+	want_eq "the page is one line" "$(jqv '.lines | length')" "1" || return 1
+	want_eq "and the count is of the filter" "$(jqv '.counts.levels.ERROR')" "2" || return 1
+
+	# A NEEDLE MATCHES THE TYPE as well as the message.
+	api GET "$TOKEN_A" "/api/logs/tail?stream=$st&needle=storage" || return 1
+	want_eq "a needle matches the subsystem" \
+		"$(jqv '[.lines[].message] | join("|")')" "disk went away|back" || return 1
+
+	# A STREAM IS REQUIRED - every line on this node is not a tail.
+	api GET "$TOKEN_A" "/api/logs/tail" || return 1
+	want_eq "a tail with no stream is refused" "$API_STATUS" "400" || return 1
+
+	# AND A LEVEL NOTHING CAN COUNT IS REFUSED AT THE WRITE, not stored and
+	# silently dropped from every total afterwards.
+	api POST "$TOKEN_A" "/api/artifacts" \
+		"{\"type\":\"memory\",\"kind\":\"log\",\"title\":\"$st\",\"fields\":{\"stream\":\"$st\",\"level\":\"NOTICE\",\"message\":\"m\"}}"
+	want_eq "an invented level is refused at the door" "$API_STATUS" "400" || return 1
+	printf 'the log door tails one stream, oldest first, and counts the filter rather than the page\n'
+}
+
+# Read out of -v rather than out of the exit code, for the reason
+# ran_the_live_tests spells out: a store test with no DATABASE_URL SKIPS, and a
+# skip prints ok and exits zero. TailLogs' SQL is the part no unit test reaches.
+the_log_tail_runs_against_a_real_database() {
+	local out status
+	out=$(go test -count=1 -v -run TestTailLogsFiltersAndCounts ./internal/store 2>&1)
+	status=$?
+	if [ "$status" -ne 0 ]; then
+		printf '%s\n' "$out" >&2
+		return 1
+	fi
+	case "$out" in
+	*"--- SKIP: TestTailLogsFiltersAndCounts"*)
+		printf 'the log tail test skipped - DATABASE_URL was not set, so the SQL never ran\n' >&2
+		return 1
+		;;
+	*"--- PASS: TestTailLogsFiltersAndCounts"*) ;;
+	*)
+		printf 'the log tail test neither passed nor skipped - it did not run at all\n' >&2
+		printf '%s\n' "$out" >&2
+		return 1
+		;;
+	esac
+	printf 'the log tail filtered and counted against a real database\n'
+}
+
 the_series_door_answers_per_name_oldest_first() {
 	recall
 	local a="gate.series.a.$$" b="gate.series.b.$$"
@@ -19974,6 +20043,10 @@ check "a person who is logged in, with no token, sees the console instead of the
 	a_logged_in_person_sees_the_console
 check "the series door answers per name, oldest first" \
 	the_series_door_answers_per_name_oldest_first
+check "the log door tails one stream and counts the filter, not the page" \
+	the_log_door_tails_one_stream_and_counts_the_filter
+check "the log tail runs against a real database, and a skip is not a pass" \
+	the_log_tail_runs_against_a_real_database
 check "the rooms rail follows a project switch, with no reload" \
 	a_rail_follows_a_project_switch
 check "the author of a row can fix its words, and the node holds the new ones" \

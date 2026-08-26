@@ -24,6 +24,7 @@ package main
 
 import (
 	"net/http"
+	"strings"
 )
 
 // metricsRowsParams are the query parameters this door honours, and the whole
@@ -106,4 +107,37 @@ func (s *server) handleMetricsSeries(w http.ResponseWriter, r *http.Request) {
 	// misspelled its name": the series array carries only names that exist, and
 	// without the ask there is nothing to diff it against.
 	writeJSON(w, http.StatusOK, map[string]any{"series": list, "asked": names})
+}
+
+// logsTailParams is the closed set for GET /api/logs/tail. level and type repeat.
+var logsTailParams = map[string]bool{
+	"stream": true, "needle": true, "level": true, "type": true, "limit": true,
+}
+
+// handleLogsTail answers "the last N lines of this stream, filtered", with the
+// counts of the FILTERED set beside them rather than of the page.
+//
+// A STREAM IS REQUIRED. "every line on this node" is not a tail, and a door that
+// answered it would be a way to read every project's logs one page at a time.
+func (s *server) handleLogsTail(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	if why := refuseUnknownParams(q, logsTailParams); why != "" {
+		writeJSON(w, http.StatusBadRequest, errorBody(why))
+		return
+	}
+	stream := q.Get("stream")
+	if strings.TrimSpace(stream) == "" {
+		writeJSON(w, http.StatusBadRequest,
+			errorBody("stream is required - a tail is of one stream, and every line on this node is not a tail"))
+		return
+	}
+	lines, counts, err := s.db.TailLogs(r.Context(), principalOf(r), stream,
+		q.Get("needle"), q["level"], q["type"], intParam(q.Get("limit")))
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	// stream is echoed for the same reason series echoes asked: an empty lines
+	// array cannot say whether the stream is quiet or the name was wrong.
+	writeJSON(w, http.StatusOK, map[string]any{"lines": lines, "counts": counts, "stream": stream})
 }
