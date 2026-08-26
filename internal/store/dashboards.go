@@ -36,9 +36,11 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/deadtrickster/flowy/internal/otel"
 	"github.com/lib/pq"
@@ -383,7 +385,21 @@ func (d *DB) Metrics(ctx context.Context, p *Principal, names []string, limit in
 // `At` is the hlc rather than a wall clock, for the reason every other ordering
 // on this node uses it: two nodes' clocks disagree and the log does not.
 type SeriesPoint struct {
-	At    int64           `json:"at"`
+	// At is the store's HLC - a LOGICAL ordering clock, not wall time. It is
+	// what the points are sorted by and what makes the order total, and it is
+	// meaningless as a date: subtracting it from now() gives a number with no
+	// unit. A console that measured a tile's age from it got NaN, and an NaN
+	// age compares false against every threshold, so the tile never went stale.
+	// Fixed console-side in b3c0b18; When exists so nobody has to find that out
+	// twice.
+	At int64 `json:"at"`
+	// When is the same point's WALL CLOCK, RFC3339, from the row's created
+	// column - what a label, an axis or an age is computed from.
+	//
+	// Both are carried because they answer different questions and neither
+	// substitutes: two rows can share a wall-clock second and still have a
+	// definite order, which is the whole reason the store keeps an HLC.
+	When  string          `json:"when"`
 	Value json.RawMessage `json:"value"`
 }
 
@@ -433,8 +449,9 @@ func (d *DB) SeriesOf(ctx context.Context, p *Principal, names []string, points 
 	filter := ArtifactFilterSQL(p, "ar", a, false)
 	// One window per name, so a busy series cannot crowd out a quiet one. The
 	// extra row per name is what tells the caller it truncated.
-	query := `SELECT name, hlc, value FROM (
-	            SELECT ar.fields->>'name' AS name, ar.hlc AS hlc, ar.fields->'value' AS value,
+	query := `SELECT name, hlc, created, value FROM (
+	            SELECT ar.fields->>'name' AS name, ar.hlc AS hlc, ar.created AS created,
+	                   ar.fields->'value' AS value,
 	                   row_number() OVER (PARTITION BY ar.fields->>'name' ORDER BY ar.hlc DESC, ar.id DESC) AS rn
 	              FROM artifacts ar
 	             WHERE coalesce(ar.tombstone, false) = false
@@ -458,8 +475,9 @@ func (d *DB) SeriesOf(ctx context.Context, p *Principal, names []string, points 
 	for rows.Next() {
 		var name string
 		var hlc int64
+		var created sql.NullTime
 		var raw []byte
-		if err := rows.Scan(&name, &hlc, &raw); err != nil {
+		if err := rows.Scan(&name, &hlc, &created, &raw); err != nil {
 			return nil, fmt.Errorf("store: read series: %w", err)
 		}
 		s := byName[name]
@@ -468,7 +486,14 @@ func (d *DB) SeriesOf(ctx context.Context, p *Principal, names []string, points 
 			byName[name] = s
 			order = append(order, name)
 		}
-		s.Points = append(s.Points, SeriesPoint{At: hlc, Value: json.RawMessage(raw)})
+		// A row with no created is left as "" rather than stamped with now():
+		// an absent wall clock and a wall clock of this instant are different
+		// facts, and the second one silently makes an old point look fresh.
+		when := ""
+		if created.Valid {
+			when = created.Time.UTC().Format(time.RFC3339)
+		}
+		s.Points = append(s.Points, SeriesPoint{At: hlc, When: when, Value: json.RawMessage(raw)})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("store: read series: %w", err)

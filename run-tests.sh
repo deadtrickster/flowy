@@ -20007,6 +20007,30 @@ the_series_door_answers_per_name_oldest_first() {
 	# TRUNCATED says the window is not the whole series.
 	want_eq "a says it truncated" \
 		"$(jqv ".series[] | select(.name==\"$a\") | .truncated")" "true" || return 1
+	# EVERY POINT CARRIES A WALL CLOCK AS WELL AS THE HLC. `at` is a logical
+	# clock and is meaningless as a date - a console that measured a tile's age
+	# from it got NaN, and NaN compares false against every threshold, so the
+	# tile never went stale (b3c0b18). This arm is why nobody finds that out
+	# twice: it fails if `when` is dropped, left empty, or is not a date.
+	want_eq "every point carries a wall clock too" \
+		"$(jqv "[.series[].points[] | select((.when // \"\") | test(\"^[0-9]{4}-[0-9]{2}-[0-9]{2}T\"))] | length")" \
+		"$(jqv "[.series[].points[]] | length")" || return 1
+	# AND IT IS THE ROW'S OWN CLOCK, NOT A DATE DERIVED FROM THE HLC.
+	#
+	# This replaced an arm asserting `when != at`, which could never fail: any
+	# implementation that put the HLC in `when` failed the date-shape arm above
+	# first, so the second one never ran. Measured by mutation, not assumed.
+	#
+	# The uncaught case it left behind is the one that matters - flowy's HLC
+	# carries a timestamp in its high bits, so a plausible-looking date CAN be
+	# computed from it, and that passes every shape test. These rows were written
+	# seconds ago by this check, so their wall clock is within a minute of now;
+	# anything reconstructed rather than read will not be.
+	local now
+	now=$(date -u +%s)
+	want_eq "the wall clock is the row's own, not one derived from the hlc" \
+		"$(jqv "[.series[].points[] | select(((.when|fromdateiso8601) - $now) | fabs < 300)] | length")" \
+		"$(jqv "[.series[].points[]] | length")" || return 1
 	want_eq "b did not truncate" \
 		"$(jqv ".series[] | select(.name==\"$b\") | .truncated // false")" "false" || return 1
 
