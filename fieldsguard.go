@@ -81,6 +81,7 @@ var openspecStateReach = map[string]string{
 	"GET /api/metrics/rows":              "na",
 	"GET /api/metrics/series":            "na",
 	"GET /api/logs/tail":                 "na",
+	"GET /api/stacktraces":               "na",
 	"GET /api/nag":                       "na",
 	"GET /api/nag/wait":                  "na",
 	"GET /api/node":                      "na",

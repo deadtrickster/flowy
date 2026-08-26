@@ -141,3 +141,35 @@ func (s *server) handleLogsTail(w http.ResponseWriter, r *http.Request) {
 	// array cannot say whether the stream is quiet or the name was wrong.
 	writeJSON(w, http.StatusOK, map[string]any{"lines": lines, "counts": counts, "stream": stream})
 }
+
+// stacksParams is the closed set for GET /api/stacktraces.
+var stacksParams = map[string]bool{
+	"stream": true, "symbol": true, "file": true, "limit": true,
+}
+
+// handleStacks answers "the stacktraces of this stream, optionally only those
+// passing through a symbol or a file", newest first, counted by top frame.
+//
+// A STREAM IS REQUIRED, for the reason the log tail's is: "every stacktrace on
+// this node" is not a question anybody asks, and a door that answered it would
+// be a way to read another project's crashes one page at a time.
+func (s *server) handleStacks(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	if why := refuseUnknownParams(q, stacksParams); why != "" {
+		writeJSON(w, http.StatusBadRequest, errorBody(why))
+		return
+	}
+	stream := q.Get("stream")
+	if strings.TrimSpace(stream) == "" {
+		writeJSON(w, http.StatusBadRequest,
+			errorBody("stream is required - stacktraces are read per stream, not across the node"))
+		return
+	}
+	list, counts, err := s.db.StacksThrough(r.Context(), principalOf(r), stream,
+		q.Get("symbol"), q.Get("file"), intParam(q.Get("limit")))
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"stacktraces": list, "counts": counts, "stream": stream})
+}

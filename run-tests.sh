@@ -19906,6 +19906,73 @@ the_log_tail_runs_against_a_real_database() {
 	printf 'the log tail filtered and counted against a real database\n'
 }
 
+the_stacktrace_door_filters_any_frame_and_counts_top_frames() {
+	recall
+	local st="gate.stacks.$$"
+	push_stack() { # TITLE FRAMES_JSON
+		api POST "$TOKEN_A" "/api/artifacts" \
+			"{\"type\":\"memory\",\"kind\":\"stacktrace\",\"title\":\"$1\",\"fields\":{\"stream\":\"$st\",\"frames\":$2}}"
+	}
+	push_stack first '[{"symbol":"decodeBody","file":"http.go","line":12},{"symbol":"serveHTTP"}]' || return 1
+	push_stack second '[{"symbol":"flush","file":"store.go"},{"symbol":"decodeBody","file":"http.go"}]' || return 1
+	push_stack third '[{"file":"vendor/lib.c","line":3}]' || return 1
+
+	api GET "$TOKEN_A" "/api/stacktraces?stream=$st" || return 1
+	want_eq "the stream comes back newest first" \
+		"$(jqv '[.stacktraces[].title] | join("|")')" "third|second|first" || return 1
+	# THE TOP FRAME FALLS BACK TO THE FILE when it has no symbol, rather than
+	# dropping the trace out of every total under an empty key.
+	want_eq "a symbolless top frame counts under its file" \
+		"$(jqv '.counts.top_frames["vendor/lib.c"]')" "1" || return 1
+
+	# THE SYMBOL FILTER LOOKS AT EVERY FRAME. "second" carries decodeBody
+	# SECOND, and this is the arm a top-frame-only filter fails.
+	api GET "$TOKEN_A" "/api/stacktraces?stream=$st&symbol=decodebody" || return 1
+	want_eq "a symbol matches at any depth, case-insensitively" \
+		"$(jqv '[.stacktraces[].title] | join("|")')" "second|first" || return 1
+
+	# COUNTS DESCRIBE THE FILTER, NOT THE PAGE.
+	api GET "$TOKEN_A" "/api/stacktraces?stream=$st&symbol=decodebody&limit=1" || return 1
+	want_eq "the page is one trace" "$(jqv '.stacktraces | length')" "1" || return 1
+	want_eq "and the counts are of the filter" "$(jqv '.counts.top_frames.flush')" "1" || return 1
+
+	api GET "$TOKEN_A" "/api/stacktraces" || return 1
+	want_eq "a read with no stream is refused" "$API_STATUS" "400" || return 1
+
+	# A FRAME THAT NAMES NOWHERE IS REFUSED AT THE WRITE, not stored to sit in
+	# every group-by as an unnamed bucket.
+	api POST "$TOKEN_A" "/api/artifacts" \
+		"{\"type\":\"memory\",\"kind\":\"stacktrace\",\"title\":\"blank\",\"fields\":{\"stream\":\"$st\",\"frames\":[{\"line\":9}]}}"
+	want_eq "a frame with neither symbol nor file is refused" "$API_STATUS" "400" || return 1
+	printf 'the stacktrace door filters on any frame and counts by top frame, not by page\n'
+}
+
+# Read out of -v: the EXISTS over jsonb_array_elements and the top-frame
+# group-by are the parts no unit test reaches, and a store test with no
+# DATABASE_URL skips while printing ok.
+the_stacktrace_read_runs_against_a_real_database() {
+	local out status
+	out=$(go test -count=1 -v -run TestStacksThroughFiltersAndCountsTopFrames ./internal/store 2>&1)
+	status=$?
+	if [ "$status" -ne 0 ]; then
+		printf '%s\n' "$out" >&2
+		return 1
+	fi
+	case "$out" in
+	*"--- SKIP: TestStacksThroughFiltersAndCountsTopFrames"*)
+		printf 'the stacktrace test skipped - DATABASE_URL was not set, so the SQL never ran\n' >&2
+		return 1
+		;;
+	*"--- PASS: TestStacksThroughFiltersAndCountsTopFrames"*) ;;
+	*)
+		printf 'the stacktrace test neither passed nor skipped - it did not run at all\n' >&2
+		printf '%s\n' "$out" >&2
+		return 1
+		;;
+	esac
+	printf 'the stacktrace read filtered on any frame and grouped by top frame, against a real database\n'
+}
+
 the_series_door_answers_per_name_oldest_first() {
 	recall
 	local a="gate.series.a.$$" b="gate.series.b.$$"
@@ -20043,6 +20110,10 @@ check "a person who is logged in, with no token, sees the console instead of the
 	a_logged_in_person_sees_the_console
 check "the series door answers per name, oldest first" \
 	the_series_door_answers_per_name_oldest_first
+check "the stacktrace door filters on any frame and counts top frames" \
+	the_stacktrace_door_filters_any_frame_and_counts_top_frames
+check "the stacktrace read runs against a real database, and a skip is not a pass" \
+	the_stacktrace_read_runs_against_a_real_database
 check "the log door tails one stream and counts the filter, not the page" \
 	the_log_door_tails_one_stream_and_counts_the_filter
 check "the log tail runs against a real database, and a skip is not a pass" \
