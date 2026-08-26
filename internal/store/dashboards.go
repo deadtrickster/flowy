@@ -203,9 +203,10 @@ func checkDashboardRow(a *Artifact) error {
 	}
 	for _, t := range tiles {
 		if t.Kind != "number" && t.Kind != "table" && t.Kind != "grid" &&
-			t.Kind != "frame" && t.Kind != "gauge" && t.Kind != "series" {
+			t.Kind != "frame" && t.Kind != "gauge" && t.Kind != "series" &&
+			t.Kind != ReportKind {
 			return DashboardRowError{Row: a.ID, Why: fmt.Sprintf(
-				"tile %q declares kind %q - the vocabulary is number, table, grid, frame, gauge, series",
+				"tile %q declares kind %q - the vocabulary is number, table, grid, frame, gauge, series, report",
 				t.Label, t.Kind)}
 		}
 		if err := checkTileCarriesNoBounds(a.ID, t); err != nil {
@@ -280,6 +281,15 @@ func checkMetricRow(a *Artifact) error {
 		return MetricRowError{Row: a.ID, Why: fmt.Sprintf(
 			"max %v is at or below min %v - a scale that does not ascend cannot place a reading",
 			*outer.Max, *outer.Min)}
+	}
+	// A READING THAT IS A REPORT IS CHECKED AS ONE. The value is any JSON, so a
+	// malformed report would otherwise be stored and refused only by the
+	// renderer - at which point the producer has moved on and the page is blank
+	// with nobody to ask.
+	if IsReportReading(a.Fields) {
+		if err := checkReportReading(a.ID, reportValueOf(a.Fields)); err != nil {
+			return err
+		}
 	}
 	if outer.Thresholds == nil {
 		return nil
@@ -632,4 +642,17 @@ func (d *DB) pruneSeries(ctx context.Context, q execer, name string, r Retention
 		return fmt.Errorf("store: prune series %q: %w", name, err)
 	}
 	return nil
+}
+
+// reportValueOf pulls fields.value back out for the report check. Returns nil
+// when there is not one, which checkReportReading never sees because
+// IsReportReading gates it.
+func reportValueOf(fields json.RawMessage) json.RawMessage {
+	var outer struct {
+		Value json.RawMessage `json:"value"`
+	}
+	if err := json.Unmarshal(fields, &outer); err != nil {
+		return nil
+	}
+	return outer.Value
 }
