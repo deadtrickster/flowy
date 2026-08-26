@@ -66,3 +66,48 @@ func TestAWaiterNarrowedToItsOwnMailWakesOnAMentionOfIt(t *testing.T) {
 		}
 	})
 }
+
+// A PERSON WHO NAMES ONE AGENT HAS NOT ADDRESSED THE ROOM.
+//
+// wakesFor's addressed clause used to end `|| saidByAPerson(e)`, which asked
+// only whether a person wrote it and never whether they said who they meant.
+// So the operator writing "@dead-claude can continue grinding thru todos" woke
+// claude-host's addressed-only listener too, and a seat went looking at work
+// that had another seat's name on it. It is the same complaint as "square size
+// wasnt addressed to you", one layer down from where it kept being noticed.
+//
+// The half that must NOT regress is in the third case: a person who names
+// nobody still reaches everybody. That clause was itself a fix - without it a
+// human's "who is here?" matched nothing and their messages were structurally
+// the least likely in the room to be answered.
+func TestAPersonNamingAnotherAgentDoesNotWakeThisWaiter(t *testing.T) {
+	me := &store.Principal{UserID: "u-me", AgentID: "a-me"}
+	addressedOnly := inboxFilter{addressed: true}
+
+	byAPerson := func(addressee, body string) *store.Event {
+		return &store.Event{
+			Actor:     "u-operator",
+			Addressee: addressee,
+			Body:      body,
+			Meta:      json.RawMessage(`{"actor_kind":"user"}`),
+		}
+	}
+
+	t.Run("addressed to another agent, it sleeps", func(t *testing.T) {
+		if wakesFor(me, byAPerson("a-somebody-else", "@somebody-else take the todos"), addressedOnly) {
+			t.Fatal("--to-me woke on a person's message addressed to a different agent")
+		}
+	})
+
+	t.Run("addressed to this waiter, it wakes", func(t *testing.T) {
+		if !wakesFor(me, byAPerson("a-me", "take the todos"), addressedOnly) {
+			t.Fatal("a person addressed this waiter by name and it slept")
+		}
+	})
+
+	t.Run("addressed to nobody, it still wakes", func(t *testing.T) {
+		if !wakesFor(me, byAPerson("", "who is here?"), addressedOnly) {
+			t.Fatal("a person's broadcast must still reach everybody - that clause was its own fix")
+		}
+	})
+}

@@ -193,7 +193,25 @@ func wakesFor(p *store.Principal, e *store.Event, want inboxFilter) bool {
 		// i post in the web ui are more likely to be ignored, you guys talk to
 		// each other just fine". claude-host fixed the same flaw in the
 		// firecode hook at 9b0a6e2; this is that rule in the other listener.
-		return isOwnActor(p, e.Addressee) || saidByAPerson(e)
+		if isOwnActor(p, e.Addressee) {
+			return true
+		}
+		// A PERSON'S BROADCAST, and only a broadcast. The clause above was
+		// `|| saidByAPerson(e)` with no regard for who the person named, so a
+		// message the operator addressed to ONE agent woke every --to-me
+		// waiter in the room. Measured 2026-08-27: "i think @dead-claude can
+		// continue grinding thru todos, feel free to reasign to yourself" was
+		// delivered to claude-host, whose listener calls itself addressed-only.
+		// Twice before that a seat acted on work meant for another - "square
+		// size wasnt addressed to you" is the same complaint, and this is where
+		// it comes from.
+		//
+		// The rule the empty check keeps intact is the one directly above it: a
+		// person writing "who is here?" names nobody, so their message still
+		// reaches everybody and is not sorted to the bottom. What changes is
+		// only the case where the person DID say who they meant - and when they
+		// have said it, honouring it is the whole point of --to-me.
+		return saidByAPerson(e) && e.Addressee == ""
 	}
 	return true
 }
