@@ -81,6 +81,10 @@ export function Memory() {
                     has about a note, and no list has ever answered it. */}
                 <Badge variant="outline">{n.visibility ?? "personal"}</Badge>
                 <span>{n.project ?? "no project"}</span>
+                {/* Who wrote it, as the node's resolved name - same rule as the
+                    row page's author line. Absent is unnameable and draws
+                    nothing rather than an id dressed as a name. */}
+                {n.author ? <span data-memory-author={n.author}>by {n.author}</span> : null}
                 {n.body ? <span className="truncate">{n.body.slice(0, 120)}</span> : null}
               </div>
             </li>

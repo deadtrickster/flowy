@@ -437,6 +437,19 @@ type Artifact struct {
 	// row that does not say where its work came from - every queue item written
 	// before this field, and nothing here guesses one. See RaiserField.
 	Raiser string `json:"raiser,omitempty"`
+	// Author is the NAME this node resolves for the row's owner, by the same
+	// rules chat resolves a speaker's - see speakerNameOf in chat.go: a person
+	// is their registry handle, an agent their person's handle or else their
+	// runtime kind. It is a read-time finding like Disowned beside it: not
+	// stored, not signed, nothing replicates it, and it never names what it
+	// cannot resolve - "" is "this node cannot name the owner", and a surface
+	// must draw nothing rather than the raw id dressed as a name, which is a
+	// name the id has never been.
+	//
+	// WHY IT EXISTS: the row page showed owner_user - the seat whose token
+	// wrote the row - only as a raw ULID in its diagnostics line, and a queue
+	// read by four seats is read as names, not ids. Row 01M10Y4D.
+	Author string `json:"author,omitempty"`
 	// Started is when this row FIRST went active, and LastWorked is when
 	// something that counts as work last touched it. Both are columns, stamped
 	// by setArtifactStatus and appendEvent, and both are pointers because ABSENT

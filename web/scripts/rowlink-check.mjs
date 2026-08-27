@@ -1,7 +1,8 @@
 /**
  * A row id somebody pasted into a message is a link, and clicking it lands on
- * the row; a nearly-right string is not a link; and the resolver answers
- * honestly for an id that links but names no row.
+ * the row; a nearly-right string is not a link; the resolver answers
+ * honestly for an id that links but names no row; and the row page names its
+ * author the way the door resolved one.
  *
  * The resolver route GET /a/{ulid} exists so a renderer can link a bare id
  * without a lookup: it 302s to the row's own page. The pattern that links is
@@ -9,6 +10,10 @@
  * which excludes I, L, O and U - because a wider one turns arbitrary tokens
  * into dead links. So the two fakes below carry the two ways a nearly-right
  * pattern would widen: an I inside the id, and a lowercase one.
+ *
+ * The author arm rides the row the first arm lands on: the door's resolved
+ * name is the truth, and the page must agree with it - "by <name>" when the
+ * door has one, nothing drawn when it has none, and never the raw id.
  *
  *   node scripts/rowlink-check.mjs BASE_URL TOKEN
  */
@@ -107,6 +112,53 @@ try {
     console.error(`the row page does not show the row the id named
   ${popup.url()} never drew the title "${row.title}".
   A clicked id must land on the row it names.`);
+    process.exit(1);
+  }
+
+  // ARM 4: the row page names its author, agreeing with the door. The name
+  // is the node's resolution - a person's handle, an agent's person's handle
+  // or else their runtime kind - and the door is the truth the page must
+  // draw: the page says "by <the door's name>". The door is required to
+  // resolve a name FIRST - the check's token is a minted seat with a handle
+  // in the registry, so a door that answers no name here cannot name
+  // anybody, and the arm dies rather than letting an absent feature pass as
+  // an unnameable owner. The raw id dressed as a name fails the door's own
+  // rule, so that is refused too.
+  const got = await fetch(`${base}/api/artifact/${row.id}`, { headers: AUTH }).catch((err) => ({
+    ok: false,
+    status: 0,
+    text: async () => String(err),
+    json: async () => ({}),
+  }));
+  if (!got.ok) {
+    console.error(`the row's own door would not answer for the author arm
+  GET /api/artifact/${row.id} answered ${got.status}.
+  Nothing about the author line was tested.`);
+    process.exit(1);
+  }
+  const art = await got.json();
+  const author = typeof art.author === "string" ? art.author : "";
+  if (!author) {
+    console.error(`the door resolved no name for the fixture row's own author
+  ${row.id} is filed by this check's token - a minted seat with a handle in
+  the registry - and its owner came back unnameable.
+  A row must carry its author's name, and an absent one is not honesty.`);
+    process.exit(1);
+  }
+  if (author === art.owner_user) {
+    console.error(`the door handed the raw owner id back as the author name
+  wanted a resolved name for ${art.owner_user}, got the id itself.
+  An id is not a name, and no surface may draw one as though it were.`);
+    process.exit(1);
+  }
+  try {
+    await popup
+      .locator(`[data-artifact-author="${author}"]`)
+      .waitFor({ state: "visible", timeout: 15_000 });
+  } catch {
+    console.error(`the row page does not name its author
+  ${popup.url()} never drew "by ${author}", which the door resolved for ${row.id}.
+  A row must show its author as a name, not only as an id.`);
     process.exit(1);
   }
   await popup.close();

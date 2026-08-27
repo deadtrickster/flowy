@@ -105,6 +105,12 @@ type NoteEntry struct {
 	// things a reader of a note is telling apart.
 	ActorKind string `json:"actor_kind,omitempty"`
 	ActorUser string `json:"actor_user,omitempty"`
+	// ActorName is the name this node resolves for the seat, by the same rules
+	// as Artifact.Author - a note's actor is a seat id, and a wall of notes
+	// attributed by raw id tails is a wall a reader cannot tell apart. Filled
+	// at read time by FillAuthorNames; "" is unnameable, and a surface keeps
+	// drawing the id's tail rather than a blank.
+	ActorName string `json:"actor_name,omitempty"`
 	SeqHLC    int64  `json:"seq_hlc"`
 	Node      string `json:"node"`
 	Created   string `json:"created"`

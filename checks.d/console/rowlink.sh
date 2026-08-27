@@ -25,6 +25,12 @@
 # nowhere, and a path that is not even shaped like an id answers the same.
 # /a/<ulid> only ever answers 302 or 404.
 #
+# THE AUTHOR LINE IS THE FOURTH ARM (row 01M10Y4D): the row page names its
+# author. The door's resolved name is the truth - a person's handle, an
+# agent's person's handle or else their runtime kind - and the page draws
+# "by <name>" exactly when the door has one, never the raw id dressed as a
+# name, and nothing when the door could not name the owner.
+#
 # ONE TOKEN, one browser. There is deliberately no scope arm: the resolver
 # runs the same permission filter as reading the row, so an out-of-scope id
 # is indistinguishable from a missing one by design - there is no second
@@ -36,5 +42,5 @@ a_pasted_row_id_is_a_link_and_a_nearly_right_string_is_not() {
 		"$TOKEN_A" || return 1
 }
 
-check "a pasted row id links to its row, a nearly-right string stays text, and the resolver 404s honestly" \
+check "a pasted row id links to its row, a nearly-right string stays text, the resolver 404s honestly, and the row page names its author" \
 	a_pasted_row_id_is_a_link_and_a_nearly_right_string_is_not

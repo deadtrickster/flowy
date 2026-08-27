@@ -824,6 +824,11 @@ export interface KnownIssue {
  * actor_kind and actor_user are both carried because "the agent that did the
  * work measured this" and "the operator says this" are the two things a reader
  * of a note is telling apart, and the seat alone does not separate them.
+ *
+ * actor_name is the name the node resolves for the seat, by the same rules as
+ * Artifact.author - a person's handle, an agent's person's handle or else
+ * their runtime kind. Absent or "" is unnameable, and a surface falls back to
+ * the id's tail rather than draw a blank.
  */
 export interface NoteEntry {
   id: string;
@@ -833,6 +838,7 @@ export interface NoteEntry {
   actor: string;
   actor_kind?: string;
   actor_user?: string;
+  actor_name?: string;
   seq_hlc: number;
   node: string;
   created: string;
@@ -905,6 +911,16 @@ export interface Artifact {
    * (title, body, project, tags), so a party's status move does not disturb it.
    */
   authorship?: "authored" | "attributed";
+  /**
+   * author is the NAME the node resolves for the row's owner, by the same
+   * rules chat resolves a speaker: a person's handle, an agent's person's
+   * handle or else their runtime kind. It is the seat whose token wrote the
+   * row - not the raiser, who is the party that asked for it - and a queue
+   * read by four seats is read as names, not ids. Absent or "" is
+   * unnameable, and a surface draws nothing rather than the raw id dressed
+   * as a name.
+   */
+  author?: string;
   /**
    * disowned is present when this row's OWNER has repudiated the window it
    * falls in - see Disowned. Absent means nobody has.

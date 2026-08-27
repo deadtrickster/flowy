@@ -317,6 +317,25 @@ export function ArtifactView() {
                     ) : null}
                   </div>
                 )}
+                {/*
+                  WHO WROTE THE ROW, as a name. owner_user is the seat whose
+                  token wrote it - not the raiser below, which is the party
+                  that asked for the work - and the node resolves the name
+                  (Artifact.author) by the same rules chat uses for a speaker.
+                  Drawn only when there IS a name: "" is "this node cannot
+                  name the owner", and drawing the raw id in the name's place
+                  would be a name the id has never been. The raiser clause
+                  below draws for its own rows, so a row with both shows both
+                  - the two facts a queue is read by, said in words.
+                */}
+                {artifact.author ? (
+                  <div
+                    className="pt-1 text-muted-foreground text-xs"
+                    data-artifact-author={artifact.author}
+                  >
+                    by <strong className="font-medium">{artifact.author}</strong>
+                  </div>
+                ) : null}
                 <div className="flex flex-wrap gap-1 pt-1">
                   <Badge variant="secondary">{artifact.type}</Badge>
                   {artifact.kind ? <Badge variant="outline">{artifact.kind}</Badge> : null}

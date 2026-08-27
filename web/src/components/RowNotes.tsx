@@ -100,10 +100,13 @@ export function RowNotes({ artifact, onAppended }: Props) {
                 are read differently. The kind is drawn in words - the seat is an
                 id either way, so nothing else on the line says which it is.
 
-                The id is shortened with the full one in the title, which is what
-                the status history beside this does. A note carries no name for
-                the seat, so there is nothing better to draw and a blank would be
-                worse than the tail of the id.
+                The NAME comes first when the node resolved one (NoteEntry
+                actor_name, the same rule as Artifact.author): a wall of notes
+                attributed by id tails is a wall a reader cannot tell apart.
+                Without one the tail of the id is kept - a note carries no
+                name for the seat, and a blank would be worse than the tail -
+                with the full id in the title, which is what the status
+                history beside this does.
               */}
               <div className="flex flex-wrap items-baseline gap-2 text-xs">
                 <span
@@ -112,7 +115,7 @@ export function RowNotes({ artifact, onAppended }: Props) {
                   style={speakerStyle(entry.actor)}
                   title={entry.actor_user ? `${entry.actor}, for ${entry.actor_user}` : entry.actor}
                 >
-                  {shortId(entry.actor, 8)}
+                  {entry.actor_name || shortId(entry.actor, 8)}
                 </span>
                 {entry.actor_kind ? (
                   <span className="text-muted-foreground">

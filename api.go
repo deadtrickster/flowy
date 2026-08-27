@@ -797,6 +797,14 @@ func (s *server) handleListArtifacts(w http.ResponseWriter, r *http.Request) {
 	if err := s.db.FillDisowned(r.Context(), list, nil); err != nil {
 		log.Printf("disowned: could not resolve repudiations for an artifact page: %v", err)
 	}
+	// AND WHO WROTE EACH ROW, resolved to the name chat uses for a speaker -
+	// see store.FillAuthorNames. An annotation, not the row: a failure is
+	// logged and the name simply absent, which every surface draws as no
+	// name. The two fills answer different questions about the same id, and
+	// a page missing one of them shows half a picture of who a row is from.
+	if err := s.db.FillAuthorNames(r.Context(), list); err != nil {
+		log.Printf("author: could not resolve names for an artifact page: %v", err)
+	}
 	// A NARROWING THAT MATCHED NOTHING SAYS WHAT IT NARROWED ON, and what this
 	// reader would have found something under.
 	//
@@ -916,6 +924,12 @@ func (s *server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 	// the field is simply absent, which is what every surface shows today.
 	if fillErr := s.db.FillDisowned(r.Context(), []*store.Artifact{art}, nil); fillErr != nil {
 		log.Printf("disowned: could not resolve repudiations for %s: %v", art.ID, fillErr)
+	}
+	// AND WHO WROTE IT, the same resolution the list door makes - see
+	// store.FillAuthorNames. Treated as the annotation it is: a failure is
+	// logged, the name absent, the row still answered.
+	if fillErr := s.db.FillAuthorNames(r.Context(), []*store.Artifact{art}); fillErr != nil {
+		log.Printf("author: could not resolve a name for %s: %v", art.ID, fillErr)
 	}
 	writeJSON(w, http.StatusOK, art)
 }
