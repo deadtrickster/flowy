@@ -685,10 +685,10 @@ go_build() {
 	local stamp
 	stamp="$(git -C "$ROOT" rev-parse --short=7 HEAD 2>/dev/null || true)"
 	if [ -z "$stamp" ]; then
-		go build -o "$ROOT/flowy" .
+		go build -o "$ROOT/flowy" ./cmd/flowy
 		return
 	fi
-	go build -ldflags "-X main.buildStamp=$stamp" -o "$ROOT/flowy" .
+	go build -ldflags "-X main.buildStamp=$stamp" -o "$ROOT/flowy" ./cmd/flowy
 }
 
 # gofmt_clean checks our own sources; vendor/ is upstream's to format.
@@ -12928,21 +12928,21 @@ check "a repudiation marks its subject's rows and nobody else's" \
 # what tells them apart - it must move when the target is given back and NOT
 # when a countdown counts down.
 check "the merge queue cursor moves on what a caller acts on, and not on time passing" \
-	go test -count=1 -run TestTheQueueCursorMovesOnWhatACallerActsOn .
+	go test -count=1 -run TestTheQueueCursorMovesOnWhatACallerActsOn ./internal/flowy
 check "go test ./..." go test -count=1 ./...
 # Named as well as covered by `go test ./...` above, because this one failing
 # means every console on this node loses its stream on a sixty-second clock -
 # and a stream that dies looks exactly like a room where nothing is happening.
 check "an SSE stream outlives the server's WriteTimeout, and only because it is cleared" \
 	go test -count=1 \
-	-run 'TestAStreamOutlivesTheServersWriteTimeoutOnlyWhenTheDeadlineIsCleared' .
+	-run 'TestAStreamOutlivesTheServersWriteTimeoutOnlyWhenTheDeadlineIsCleared' ./internal/flowy
 
 # Named because the failure is invisible from the outside: a queue row filed at
 # personal scope IS in the queue table and IS NOT in anybody else's read of it,
 # so a drainer reporting an empty queue is telling the truth about what it can
 # see. Three merge requests sat that way for hours tonight.
 check "a work item filed over MCP defaults to the project, and a memory does not" \
-	go test -count=1 -run TestAWorkItemDefaultsToTheProjectAndAMemoryDoesNot .
+	go test -count=1 -run TestAWorkItemDefaultsToTheProjectAndAMemoryDoesNot ./internal/flowy
 # Named for the same reason: a runner that forgets its runs answers the empty
 # list a runner that has never run anything answers, so a finding that HAS been
 # reproduced reads as never reproduced in the console's drawer.
@@ -12973,7 +12973,7 @@ check "a change's state moves by the line, with tasks done and an event in the s
 check "every route declares its reach to a change's state, and only the transition door moves it" \
 	go test -count=1 \
 	-run 'TestOpenspecTransition|TestGenericArtifactWritePreservesState|TestOpenspecDoorUpdatePreservesState|TestStatusDoorRefusesAChange|TestEveryRegisteredRouteDeclaresItsReach|TestOpenspecStateReach|TestOpenspecTransitionEventsAreMinted' \
-	.
+	./internal/flowy
 # Named because the derived todos are rows no artifact filter can reach: a
 # change's tasks.md derives them on the write (p2), and GET
 # /api/openspec/{id}/todos is the read that names them - the console's board
@@ -12981,7 +12981,7 @@ check "every route declares its reach to a change's state, and only the transiti
 check "a change's derived todos are listed by the one door that names them, and the refusals say why" \
 	go test -count=1 \
 	-run 'TestOpenspecTodosListsTheDerivedRows|TestOpenspecTodosRefusals' \
-	.
+	./internal/flowy
 # Named because a complete that outlived its verdict is a landed-looking row
 # that never earned it: the validate arm refuses absent, stale and red caches
 # with the door's own sentences, each check refuses in its own words, and the
@@ -12998,7 +12998,7 @@ check "a complete refuses a verdict that is absent, stale or red, in the checks'
 check "the validate door caches its verdict without touching the state, and complete says the cache's words" \
 	go test -count=1 \
 	-run 'TestOpenspecValidateCachesAVerdictAndPreservesTheState|TestOpenspecCompleteRefusesTheCachedRedVerdict|TestOpenspecCompleteRefusesAfterAnEditDroppedTheVerdict|TestOpenspecValidateRefusesANonChange|TestOpenspecValidateRefusesAnUnknownId' \
-	.
+	./internal/flowy
 # Named because archived was the one ungated edge and p6 is the gate: a move
 # into archived asks the merge the change names in fields.openspec.merge, and
 # the answer has to be a decision - landed or decided-rejected, both terminal,
@@ -13523,7 +13523,7 @@ check "the first mention addresses, the rest are on the message" \
 check "an email address, an unknown name and a stray @ address nobody" \
 	what_is_not_a_mention_addresses_nobody
 check "what counts as a mention, and what only looks like one" \
-	go test -count=1 -run 'TestWhatCountsAsAMention|TestAnUnresolvedMentionIsPlainTextAndNotARefusal|TestTheFirstMentionAddressesAndTheRestAreOnTheMessage' .
+	go test -count=1 -run 'TestWhatCountsAsAMention|TestAnUnresolvedMentionIsPlainTextAndNotARefusal|TestTheFirstMentionAddressesAndTheRestAreOnTheMessage' ./internal/flowy
 check "a name resolves to the one principal it names" \
 	go test -count=1 -run 'TestANameResolvesToTheOnePrincipalItNames|TestAnAmbiguousNameResolvesToNobody|TestAnAgentWhosePersonHasAHandleIsNamedByTheHandle' ./internal/store
 check "the addressee is inside what the node signs" \
@@ -13581,7 +13581,7 @@ check "--to-me wakes for what names it and counts what it skipped" \
 check "--to-me wakes on an @name in the body, and not on somebody else's" \
 	a_mention_wakes_a_to_me_waiter
 check "the wake-up rule for a mention, in the unit" \
-	go test -count=1 -run TestAWaiterNarrowedToItsOwnMailWakesOnAMentionOfIt .
+	go test -count=1 -run TestAWaiterNarrowedToItsOwnMailWakesOnAMentionOfIt ./internal/flowy
 check "a bad token, no token and a dead node are exit 2, never exit 1" \
 	a_broken_waiter_is_exit_2_and_not_exit_1
 
@@ -13608,7 +13608,7 @@ check "a seat that stopped mid-poll is named as gone quiet, not left reading att
 check "the roster retires a stalled reader and keeps the evidence" \
 	go test -count=1 -run 'TestPresenceRetiresAReaderThatStoppedMidPoll|TestPresenceStartingIsJudgedByTheRowsAge' ./internal/store
 check "the two windows follow the waiter's own numbers" \
-	go test -count=1 -run 'TestPresenceWindowIsManyServerWindowsWide|TestPresenceLostWindowFollowsTheWaitersDeadline' .
+	go test -count=1 -run 'TestPresenceWindowIsManyServerWindowsWide|TestPresenceLostWindowFollowsTheWaitersDeadline' ./internal/flowy
 
 # A todo panel inside the room, and the field it needs. The room rides fields
 # the way as_of rides a report, and it is a filter and not a permission axis -
@@ -13736,13 +13736,13 @@ check "a row with no raiser says nothing about one, and still says who carries i
 check "every list answer says which project it is about, and an operator's says all" \
 	every_list_answer_says_which_project
 check "the scope helper is one helper, and stamping changes nothing else on an answer" \
-	go test -count=1 -run 'TestAnAnswerSaysWhichProjectItIsAbout|TestStampingAScopeDoesNotChangeWhatWasAlreadyThere|TestARoomsProjectComesFromItsRowsAndNotItsReader' .
+	go test -count=1 -run 'TestAnAnswerSaysWhichProjectItIsAbout|TestStampingAScopeDoesNotChangeWhatWasAlreadyThere|TestARoomsProjectComesFromItsRowsAndNotItsReader' ./internal/flowy
 check "the distribution probe has a verb and a panel, and both name which line was crossed" \
 	the_nag_has_a_verb_and_it_names_the_line
 check "and the two lines are reported because both are applied, in Go" \
 	go test -count=1 -run 'TestBothLinesAreReportedBecauseBothAreApplied' ./internal/store
 check "the nag verb says which line, and its counts are the caller's own" \
-	go test -count=1 -run 'TestTheNagSaysWhichLineWasCrossed|TestTheNagCountsAreTheCallersOwn' .
+	go test -count=1 -run 'TestTheNagSaysWhichLineWasCrossed|TestTheNagCountsAreTheCallersOwn' ./internal/flowy
 
 # A SEAT BLOCKED ON SOMEBODY ELSE IS NOT A SEAT SITTING ON ITS WORK, and until
 # now the nag gave them the same number.
@@ -13855,7 +13855,7 @@ check "mem_write defaults one from the message and refuses to restate it" \
 check "the raiser is a handle, is never inferred, and is settled at the raise, in Go" \
 	go test -count=1 \
 	-run 'TestATodoRaisedOutOfAMessageSaysWhoseRequestItWas|TestAnExplicitRaiserWinsOverTheMessagesSpeaker|TestARowWithNoRaiserSaysNobodyAndNothingIsInferred|TestARaiserIsAHandleAndTheWordsForNobodyCollapse' \
-	.
+	./internal/flowy
 check "the queue row and the artifact page say both names, in a browser" \
 	browser_shows_who_raised_a_todo
 check "tapping a raise opens the row, links to it, dismisses, and names a failure" \
@@ -13973,7 +13973,7 @@ check "A TAG NARROWS THE LIST AT THE DOOR, and a parameter it does not honour is
 check "the list door's tag filter, composition and refusal, in the handler" \
 	go test -count=1 \
 	-run 'TestATagNarrowsTheListAndTwoTagsMeanBoth|TestATagMatchesEitherColumnOfLabels|TestATagComposesWithTheOtherNarrowingsAndIsAppliedBeforeTheLimit|TestTheListRefusesAParameterItDoesNotHonour|TestTheListStillTakesTheParametersItDocuments' \
-	.
+	./internal/flowy
 
 say "what was learned about a row"
 check "somebody who did not raise a row attaches what they learned, at both doors" \
@@ -14389,7 +14389,7 @@ check "a citation is the node's to write, not a client's" a_client_cannot_write_
 check "what a citation encodes, and what it derives" \
 	go test -count=1 -run 'TestACitationRecordsTheSpanAndNeverTheText|TestASpanThatIsNotInTheBodyIsNotACitation|TestAQuoteIsDerivedFromTheBodyItCites' ./internal/store
 check "a client cannot hand the node a citation, in the unit" \
-	go test -count=1 -run TestClientMetaCannotCarryACitation .
+	go test -count=1 -run TestClientMetaCannotCarryACitation ./internal/flowy
 check "the citation is drawn on the message, in the cited speaker's colour, in a browser" \
 	browser_draws_a_citation
 
@@ -14704,7 +14704,7 @@ check "the same rule, in the store, row by row (HIGH 1)" \
 	go test -count=1 -run 'TestCheckEventIsWhatTheAPIWouldHaveAllowed|TestSyncApplyAsRefusesAForgedEvent' \
 	./internal/store
 check "the endpoint's minted types and the store's are one list (HIGH 1)" \
-	go test -count=1 -run TestMintedTypesAgreeWithTheStore .
+	go test -count=1 -run TestMintedTypesAgreeWithTheStore ./internal/flowy
 
 say "the forge, again"
 check "a status refresh obeys the operator's repository list (HIGH 5)" \
@@ -16204,7 +16204,7 @@ check "ThreadEvents is a single query, in (seq_hlc, id) order (LOW 4)" \
 
 say "a peer that answers with too much is told so"
 check "an oversized pull answer is a named error, not a parse error (LOW 5)" \
-	go test -count=1 -run 'TestPeerAnswerRefusesAnOversizedPage|TestPullFromAPeerThatAnswersTooMuchSaysSo' .
+	go test -count=1 -run 'TestPeerAnswerRefusesAnOversizedPage|TestPullFromAPeerThatAnswersTooMuchSaysSo' ./internal/flowy
 
 say "a body that is not json still has a status"
 check "a non-json error body becomes an ApiError with the status (LOW 6)" \
@@ -16698,7 +16698,7 @@ say "the mcp server stops when it is told to"
 check "flowy mcp on stdio exits on SIGTERM instead of waiting for its client (MED 4)" \
 	flowy_mcp_exits_on_sigterm
 check "the stdio loop returns on a cancelled context rather than blocking in Scan (MED 4)" \
-	go test -count=1 -run TestStdioStopsOnCancellation .
+	go test -count=1 -run TestStdioStopsOnCancellation ./internal/flowy
 
 say "an event descends from what its writer can see"
 check "a parent that is missing or out of reach is refused on both write paths (LOW 5)" \
@@ -17568,8 +17568,8 @@ a_relay_is_the_same_at_both_doors() {
 the_version_names_the_build() {
 	recall5
 	local one two served
-	go build -ldflags "-X main.buildStamp=aaaaaaa" -o "$WORK/flowy-stamp-a" . || return 1
-	go build -ldflags "-X main.buildStamp=bbbbbbb" -o "$WORK/flowy-stamp-b" . || return 1
+	go build -ldflags "-X main.buildStamp=aaaaaaa" -o "$WORK/flowy-stamp-a" ./cmd/flowy || return 1
+	go build -ldflags "-X main.buildStamp=bbbbbbb" -o "$WORK/flowy-stamp-b" ./cmd/flowy || return 1
 	one="$("$WORK/flowy-stamp-a" version)" || return 1
 	two="$("$WORK/flowy-stamp-b" version)" || return 1
 	if [ "$one" = "$two" ]; then
@@ -17607,7 +17607,7 @@ say "the version says which build is answering"
 check "two builds report two versions, and the wire carries the build stamp (MED 2)" \
 	the_version_names_the_build
 check "the scheme is release+stamp and nothing is frozen into a literal (MED 2)" \
-	go test -count=1 -run TestTheVersionCarriesABuildStamp .
+	go test -count=1 -run TestTheVersionCarriesABuildStamp ./internal/flowy
 
 # ---------------------------------------------------------------- phase 7: fuse
 #

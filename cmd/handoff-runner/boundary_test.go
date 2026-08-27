@@ -33,11 +33,10 @@ const storePackage = "github.com/deadtrickster/flowy/internal/store"
 // a version, and then `flowy serve` needs Docker to build. So the check is
 // on the import, which is the thing that would actually change.
 func TestTheNodeDoesNotLinkTheRunner(t *testing.T) {
-	root := ".."
-	root = filepath.Join(root, "..")
-	entries, err := os.ReadDir(root)
+	nodeDir := filepath.Join("..", "..", "internal", "flowy")
+	entries, err := os.ReadDir(nodeDir)
 	if err != nil {
-		t.Fatalf("read repository root: %v", err)
+		t.Fatalf("read the node package: %v", err)
 	}
 
 	sawStore, files := false, 0
@@ -46,7 +45,7 @@ func TestTheNodeDoesNotLinkTheRunner(t *testing.T) {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") {
 			continue
 		}
-		path := filepath.Join(root, e.Name())
+		path := filepath.Join(nodeDir, e.Name())
 		f, err := parser.ParseFile(fset, path, nil, parser.ImportsOnly)
 		if err != nil {
 			t.Fatalf("parse %s: %v", path, err)
@@ -69,8 +68,8 @@ func TestTheNodeDoesNotLinkTheRunner(t *testing.T) {
 }
 
 // TestTheRunnerDoesNotLinkTheNode is the same boundary from the other side.
-// This package is `main` in cmd/handoff-runner and the node is `main` in the
-// repository root, so Go already makes the import impossible - what this
+// This package is `main` in cmd/handoff-runner and the node is `flowy` in
+// internal/flowy, so Go already makes the import impossible - what this
 // checks is that nothing here reaches into the node's files by copying a
 // path, and that the four helpers this binary does duplicate (bearerToken,
 // writeJSON, logRequests, errorRef) stay small enough to be duplicates

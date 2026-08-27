@@ -1,0 +1,129 @@
+package flowy
+
+import (
+	"io"
+	"io/fs"
+	"net/http"
+	"path"
+	"strings"
+	"time"
+
+	"github.com/deadtrickster/flowy/web"
+)
+
+// console serves the built single-page app.
+type console struct {
+	files fs.FS
+	index []byte
+	// bundle is the hashed asset name this binary's index.html loads, and it is
+	// this node's answer to "which console are you serving". Vite renames the
+	// bundle on every content change, so it is a fingerprint that already
+	// exists and costs nothing to compute - no build stamp to remember to bump,
+	// and no way for it to say one thing while the bytes say another.
+	//
+	// A tab that has been open since before a deploy is running code nobody is
+	// looking at any more. That is not cosmetic: the console flooded the node
+	// at 567 requests a second for days precisely because the fix shipped and
+	// the tab holding the bug never reloaded. So the running page asks for this
+	// and reloads itself when it stops matching.
+	bundle string
+	// started is the modtime handed to http.ServeContent for the index. The
+	// embedded files all carry the zero time, and a zero modtime turns caching
+	// validators off, which is what we want for index.html anyway.
+	started time.Time
+}
+
+// newConsole opens the embedded build. It reports whether there is an app in
+// there: a tree that has never run `npm run build` embeds an empty directory,
+// and the node still has to start - the API is the half of it that does not
+// need a bundler.
+func newConsole() (*console, bool) {
+	sub, err := fs.Sub(web.Dist, "dist")
+	if err != nil {
+		return &console{}, false
+	}
+	index, err := fs.ReadFile(sub, "index.html")
+	if err != nil {
+		return &console{files: sub}, false
+	}
+	return &console{
+		files:   sub,
+		index:   index,
+		bundle:  bundleOf(index),
+		started: time.Now(),
+	}, true
+}
+
+// bundleOf reads the hashed javascript asset out of the index.
+//
+// It is deliberately the same string the gate already asserts on
+// (console_build_is_hashed) rather than a second notion of a version: if the
+// index stops naming a hashed bundle, that check fails and this one goes empty,
+// which is one failure rather than two disagreeing answers. An empty result is
+// honest - a node that cannot name its console does not claim one, and the page
+// treats "no answer" as "nothing to do" rather than as a reason to reload.
+func bundleOf(index []byte) string {
+	const marker = "/assets/"
+	rest := string(index)
+	for {
+		i := strings.Index(rest, marker)
+		if i < 0 {
+			return ""
+		}
+		rest = rest[i+len(marker):]
+		end := strings.IndexAny(rest, `"'`)
+		if end < 0 {
+			return ""
+		}
+		if name := rest[:end]; strings.HasSuffix(name, ".js") {
+			return name
+		}
+	}
+}
+
+// ServeHTTP serves an asset when the path names one and index.html when it does
+// not. That fallback is the whole point of routing by path: /chat/general is a
+// route inside the app, the browser asks this server for it on a reload or a
+// pasted link, and the app can only take it from there if the server answers
+// with the app rather than with 404.
+//
+// It is only ever reached for paths outside /api/ - unknown API paths answer
+// 404 as themselves, because a client that asked for JSON and got HTML back
+// with a 200 has to parse the app to find that out.
+func (c *console) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
+		writeJSON(w, http.StatusMethodNotAllowed, errorBody("method not allowed"))
+		return
+	}
+	if c.index == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+			"error":   "console not built",
+			"hint":    "cd web && npm ci && npm run build, then rebuild flowy",
+			"version": version,
+		})
+		return
+	}
+
+	name := strings.TrimPrefix(path.Clean(r.URL.Path), "/")
+	if name != "" && name != "." {
+		if f, err := c.files.Open(name); err == nil {
+			defer f.Close()
+			if st, err := f.Stat(); err == nil && !st.IsDir() {
+				if rs, ok := f.(io.ReadSeeker); ok {
+					// Hashed asset names, so the content of one never changes.
+					if strings.HasPrefix(name, "assets/") {
+						w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+					}
+					http.ServeContent(w, r, st.Name(), st.ModTime(), rs)
+					return
+				}
+			}
+		}
+	}
+
+	// Every other path is a route in the app.
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	http.ServeContent(w, r, "index.html", c.started, strings.NewReader(string(c.index)))
+}

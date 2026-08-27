@@ -1,0 +1,175 @@
+// THE DASHBOARD READ over HTTP: the rows of the named metric series.
+//
+// The rules are in the store - see internal/store/dashboards.go - so this
+// file is argument checking and status codes, the shape threadfolds.go has
+// and for the same reason: the console renders a declaration and an agent
+// pushing rows goes through the artifact door, and both must read the same
+// series through the same filter.
+//
+// WHY THIS DOOR EXISTS AT ALL, and why it is this narrow: the authoring, the
+// row read and the list are all the ordinary artifact doors - a dashboard is
+// a memory row, its tiles live in fields, and GET /api/artifact/{id} already
+// serves them. What does not exist anywhere is "the rows of this metric
+// series under the reader's own reach", which is the one query every tile on
+// the page is. This door answers it, under the same permission filter every
+// list goes through, so a dashboard is no more readable than the rows it
+// names.
+//
+// NOT GET /api/metrics, deliberately: that route is the node measuring
+// itself (metrics.go), a different question about a different population,
+// and one route answering both would hand a caller one when it asked for the
+// other.
+
+package flowy
+
+import (
+	"net/http"
+	"strings"
+)
+
+// metricsRowsParams are the query parameters this door honours, and the whole
+// of them - refuseUnknownParams closes it against everything else, for the
+// reason listParams does: a filter that silently did nothing would answer an
+// unfiltered page to a caller who asked for a narrowed one.
+var metricsRowsParams = map[string]bool{
+	"limit": true,
+	"name":  true,
+}
+
+// GET /api/metrics/rows?name=X&name=Y&limit=N
+//
+// The rows of the named series, newest first, under the reader's reach. The
+// metric name is repeatable because a dashboard page reads every series its
+// tiles name in one call, and a caller reading one series at a time is just
+// the one-name case of the same shape. A read with no name would be "every
+// metric row ever pushed", which is not a question a dashboard asks; it is
+// refused rather than answered as a shorter list that reads exactly like "no
+// rows".
+func (s *server) handleMetricsRows(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	if why := refuseUnknownParams(q, metricsRowsParams); why != "" {
+		writeJSON(w, http.StatusBadRequest, errorBody(why))
+		return
+	}
+	names := q["name"]
+	if len(names) == 0 {
+		writeJSON(w, http.StatusBadRequest,
+			errorBody("name is required - the door answers the rows of the metrics it is asked for"))
+		return
+	}
+	list, err := s.db.Metrics(r.Context(), principalOf(r), names, intParam(q.Get("limit")))
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"metrics": list})
+}
+
+// metricsSeriesParams is the door's vocabulary. `points` rather than `limit`
+// because it bounds points PER SERIES, and limit already means something else on
+// the neighbouring door - one word, one meaning.
+var metricsSeriesParams = map[string]bool{"name": true, "points": true}
+
+// handleMetricsSeries answers the last N readings of each named series, oldest
+// first.
+//
+// GET /api/metrics/series?name=A&name=B&points=60
+//
+// WHY A SECOND DOOR RATHER THAN A FLAG ON THE FIRST. /api/metrics/rows answers
+// "what do these metrics say now" and takes one limit across every name, so
+// three series at limit 200 can come back as 200 points of the busiest and none
+// of the others. That is the right answer to its own question and cannot be the
+// right answer to this one. A flag would make one door answer two questions and
+// the caller guess which it got.
+//
+// OLDEST FIRST, said here and in the store, because a sparkline is read left to
+// right. Every other list on this node is newest-first; a series drawn backwards
+// looks like a trend reversing, which is a wrong answer that renders beautifully
+// and is exactly the class this fleet keeps paying for.
+func (s *server) handleMetricsSeries(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	if why := refuseUnknownParams(q, metricsSeriesParams); why != "" {
+		writeJSON(w, http.StatusBadRequest, errorBody(why))
+		return
+	}
+	names := q["name"]
+	if len(names) == 0 {
+		writeJSON(w, http.StatusBadRequest,
+			errorBody("name is required - the door answers the points of the series it is asked for"))
+		return
+	}
+	list, err := s.db.SeriesOf(r.Context(), principalOf(r), names, intParam(q.Get("points")))
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	// asked is echoed so a caller can tell "this series has no rows" from "I
+	// misspelled its name": the series array carries only names that exist, and
+	// without the ask there is nothing to diff it against.
+	writeJSON(w, http.StatusOK, map[string]any{"series": list, "asked": names})
+}
+
+// logsTailParams is the closed set for GET /api/logs/tail. level and type repeat.
+var logsTailParams = map[string]bool{
+	"stream": true, "needle": true, "level": true, "type": true, "limit": true,
+}
+
+// handleLogsTail answers "the last N lines of this stream, filtered", with the
+// counts of the FILTERED set beside them rather than of the page.
+//
+// A STREAM IS REQUIRED. "every line on this node" is not a tail, and a door that
+// answered it would be a way to read every project's logs one page at a time.
+func (s *server) handleLogsTail(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	if why := refuseUnknownParams(q, logsTailParams); why != "" {
+		writeJSON(w, http.StatusBadRequest, errorBody(why))
+		return
+	}
+	stream := q.Get("stream")
+	if strings.TrimSpace(stream) == "" {
+		writeJSON(w, http.StatusBadRequest,
+			errorBody("stream is required - a tail is of one stream, and every line on this node is not a tail"))
+		return
+	}
+	lines, counts, err := s.db.TailLogs(r.Context(), principalOf(r), stream,
+		q.Get("needle"), q["level"], q["type"], intParam(q.Get("limit")))
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	// stream is echoed for the same reason series echoes asked: an empty lines
+	// array cannot say whether the stream is quiet or the name was wrong.
+	writeJSON(w, http.StatusOK, map[string]any{"lines": lines, "counts": counts, "stream": stream})
+}
+
+// stacksParams is the closed set for GET /api/stacktraces.
+var stacksParams = map[string]bool{
+	"stream": true, "symbol": true, "file": true, "limit": true,
+}
+
+// handleStacks answers "the stacktraces of this stream, optionally only those
+// passing through a symbol or a file", newest first, counted by top frame.
+//
+// A STREAM IS REQUIRED, for the reason the log tail's is: "every stacktrace on
+// this node" is not a question anybody asks, and a door that answered it would
+// be a way to read another project's crashes one page at a time.
+func (s *server) handleStacks(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	if why := refuseUnknownParams(q, stacksParams); why != "" {
+		writeJSON(w, http.StatusBadRequest, errorBody(why))
+		return
+	}
+	stream := q.Get("stream")
+	if strings.TrimSpace(stream) == "" {
+		writeJSON(w, http.StatusBadRequest,
+			errorBody("stream is required - stacktraces are read per stream, not across the node"))
+		return
+	}
+	list, counts, err := s.db.StacksThrough(r.Context(), principalOf(r), stream,
+		q.Get("symbol"), q.Get("file"), intParam(q.Get("limit")))
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"stacktraces": list, "counts": counts, "stream": stream})
+}

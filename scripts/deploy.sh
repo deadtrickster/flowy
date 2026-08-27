@@ -422,7 +422,7 @@ tmp=$(mktemp -t flowy-deploy-XXXXXX) || die "cannot make a temp file"
 # reported a bare release and no way to tell which commit it is running. Today
 # that question came up repeatedly and the only answers were shell access to
 # the host or comparing bundle hashes by hand.
-go build -ldflags "-X main.buildStamp=$commit" -o "$tmp" . || die "go build failed"
+go build -ldflags "-X main.buildStamp=$commit" -o "$tmp" ./cmd/flowy || die "go build failed"
 
 # THE CHECK THAT WOULD HAVE CAUGHT IT. Read the asset name back out of the
 # binary rather than trusting that the build order was right, because a binary
