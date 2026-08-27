@@ -671,10 +671,10 @@ export interface MergeRequest {
    *
    * SENT EVEN WHEN EMPTY, so an unjudged row reads as a fact rather than as an
    * older node that does not rank at all (the wire field has no omitempty, the
-   * same call priorityView makes). The queue ORDER still keys on queued - the
-   * operator settled FIFO for the time being - so this is what the pane draws
-   * and what the control sets, not what the drainer takes. The vocabulary is
-   * the node's: store/todopriority.go.
+   * same call priorityView makes). The queue ORDER follows the word too -
+   * QueuedOrder sorts priority-first, age within a rank, so setting it moves
+   * the row where the ranking says. The vocabulary is the node's:
+   * store/todopriority.go.
    */
   priority: string;
   assignee?: string;

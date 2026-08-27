@@ -180,9 +180,9 @@ export function MergeQueue({
                   select rather than a cycling chip, for the same reason the
                   room panel gives: four states - unjudged, now, next, later -
                   and a chip that cycled would make "take it back" three clicks
-                  and an accident on the way. The queue ORDER does not follow
-                  this word - the operator settled FIFO for the time being -
-                  so setting it never moves a row out of its place. */}
+                  and an accident on the way. The queue ORDER follows this word
+                  - QueuedOrder sorts priority-first, age within a rank - so
+                  setting it moves the row where the ranking says. */}
               <label className="ml-auto flex items-center gap-1 text-muted-foreground text-xs">
                 do first
                 <select

@@ -13,9 +13,9 @@ import (
 // The operator asked for priorities on todos AND merges, and the door stores
 // the word on either kind - but the queue projection dropped it, so every
 // surface that reads /api/merge-queue saw nothing to draw and nothing to set.
-// The word travels here on purpose: the queue ORDER still keys on Queued (the
-// operator settled FIFO for the time being), so this field is what the pane
-// draws, not what the drainer takes.
+// The word travels here because the pane draws it AND the queue orders by it:
+// QueuedOrder sorts priority-first, age within a rank, so a ranking that never
+// reached this answer is a label nothing shows and nothing acts on.
 //
 // "" IS A REAL ANSWER AND MUST SURVIVE. A row nobody has judged is a different
 // fact from an older node that does not rank at all, and a field that vanished

@@ -74,9 +74,9 @@ type mergeQueueItem struct {
 	// Priority is the work-item ranking - now, next, later - or "" for a row
 	// nobody has judged. Sent even when empty, for the reason priorityView
 	// carries it: an unjudged row must not read like an older node that does
-	// not rank at all. The queue ORDER still keys on Queued - the operator
-	// settled FIFO for the time being - so this is what the pane draws, not
-	// what the drainer takes.
+	// not rank at all. The queue ORDER follows this word too - QueuedOrder
+	// sorts priority-first, age within a rank - so the word is what the pane
+	// draws AND what the drainer's next row is decided by.
 	Priority   string `json:"priority"`
 	Admissible *bool  `json:"admissible,omitempty"`
 	Reason     string `json:"reason,omitempty"`
@@ -270,11 +270,12 @@ func (s *server) readMergeQueue(r *http.Request) (mergeQueueAnswer, error) {
 		NotStatus: store.DoneStatus,
 		ScopeAll:  scopeAll(r, p),
 		Limit:     intParam(q.Get("limit")),
-		// IN THE ORDER THEY WERE QUEUED, because this list is consumed in turn
-		// rather than browsed. The drainer takes the first row of this answer
-		// it can work, so whatever this door sorts by IS the queue discipline -
-		// and until now that was `updated DESC`, which made every write a
-		// promotion. See store.ArtifactQuery.QueuedOrder for what that cost.
+		// PRIORITY FIRST, THEN AGE - the QueuedOrder sort, because this list is
+		// consumed in turn rather than browsed. The drainer takes the first
+		// row of this answer it can work, so whatever this door sorts by IS
+		// the queue discipline - and until now that was `updated DESC`, which
+		// made every write a promotion. See store.ArtifactQuery.QueuedOrder
+		// for what that cost and for the now, next, UNJUDGED, later order.
 		QueuedOrder: true,
 	})
 	if err != nil {
