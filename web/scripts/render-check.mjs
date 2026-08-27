@@ -17,8 +17,8 @@
  * call, so what this exercises is the router, the shell and the room view.
  */
 
-import { readFileSync, readdirSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import jsdom from "jsdom";
 
@@ -29,9 +29,27 @@ const here = dirname(fileURLToPath(import.meta.url));
 const dist = resolve(here, "..", "dist");
 
 const index = readFileSync(join(dist, "index.html"), "utf8");
-const bundle = readdirSync(join(dist, "assets")).find((name) => name.endsWith(".js"));
-if (!bundle) {
-  console.error("web/dist/assets holds no javascript bundle");
+// THE ENTRY IS THE ONE index.html LOADS, not the first .js in the directory.
+//
+// This used to take readdirSync(...).find(endsWith(".js")), which is the first
+// name in DIRECTORY ORDER, and that was correct only while the build emitted a
+// single chunk. The moment anything is code-split the directory also holds
+// `__vite-browser-external-*.js` and the vendor chunks, and the first of those
+// alphabetically sorts BEFORE index-*.js - so this check imported a chunk that
+// mounts nothing, reported "the app mounted nothing into #root", and was
+// describing itself rather than the console. Silent, and it looks exactly like
+// a bundle that throws on mount.
+//
+// index.html names its entry, so it is asked rather than guessed - the same
+// thing console.go does for the same reason.
+const entry = /<script[^>]+type="module"[^>]+src="([^"]+)"/.exec(index);
+if (!entry) {
+  console.error("web/dist/index.html loads no module script - there is no console to mount");
+  process.exit(1);
+}
+const bundle = basename(entry[1]);
+if (!existsSync(join(dist, "assets", bundle))) {
+  console.error(`index.html loads ${entry[1]} and web/dist/assets has no ${bundle}`);
   process.exit(1);
 }
 

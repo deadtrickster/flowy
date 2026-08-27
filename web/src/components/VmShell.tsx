@@ -1,5 +1,16 @@
-import { FitAddon, Terminal, init as initGhostty } from "ghostty-web";
 import { useEffect, useRef, useState } from "react";
+
+// GHOSTTY IS NOT IMPORTED AT MODULE SCOPE, and that is measured rather than
+// stylistic. Importing it here put it in the main bundle - two megabytes of
+// wasm-loading code on every page - and the console then MOUNTED NOTHING AT
+// ALL: the gate's dom check said "the app mounted nothing into #root", because
+// whatever the library reaches for at import time is not there when the bundle
+// is evaluated outside a full browser. One panel took down every page.
+//
+// So it is a dynamic import inside run(), which is also the moment somebody
+// has asked for a terminal and is willing to wait for one.
+type GhosttyModule = typeof import("ghostty-web");
+type GhosttyTerminal = InstanceType<GhosttyModule["Terminal"]>;
 
 /**
  * A shell running in a firecode microVM, drawn here.
@@ -42,7 +53,7 @@ type ShellState = "idle" | "starting" | "live" | "ended";
 
 export function VmShell({ project }: { project: string }) {
   const box = useRef<HTMLDivElement | null>(null);
-  const term = useRef<Terminal | null>(null);
+  const term = useRef<GhosttyTerminal | null>(null);
   const sock = useRef<WebSocket | null>(null);
   const [state, setState] = useState<ShellState>("idle");
   const [why, setWhy] = useState("");
@@ -66,6 +77,8 @@ export function VmShell({ project }: { project: string }) {
     // The wasm is loaded on demand rather than at page load. It is 2MB, and
     // every console page would pay for it to serve the one panel that draws a
     // terminal.
+    // The library AND its wasm are fetched here rather than at page load.
+    const { FitAddon, Terminal, init: initGhostty } = await import("ghostty-web");
     await initGhostty();
 
     const t = new Terminal({ fontSize: 13, fontFamily: "ui-monospace, monospace" });
