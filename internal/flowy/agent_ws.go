@@ -175,32 +175,9 @@ func (s *server) handleAgentSocket(w http.ResponseWriter, r *http.Request) {
 	low := make(chan []byte, agentSendQueue)
 	go func() {
 		defer stop()
-		for {
-			// Offered first and on its own, so a control frame never waits
-			// behind output that was queued before it.
-			select {
-			case <-ctx.Done():
-				return
-			case frame := <-high:
-				if !writeAgentFrame(ctx, conn, frame) {
-					return
-				}
-				continue
-			default:
-			}
-			select {
-			case <-ctx.Done():
-				return
-			case frame := <-high:
-				if !writeAgentFrame(ctx, conn, frame) {
-					return
-				}
-			case frame := <-low:
-				if !writeAgentFrame(ctx, conn, frame) {
-					return
-				}
-			}
-		}
+		pumpByPriority(ctx, high, low, func(frame []byte) bool {
+			return writeAgentFrame(ctx, conn, frame)
+		})
 	}()
 
 	v := viewAgent(sess)
@@ -372,4 +349,48 @@ func firecodeProjectPath(ctx context.Context, name string) (string, error) {
 	}
 	return "", fmt.Errorf(
 		"%q is not a project this host advertises - GET /api/vm/projects says which are", name)
+}
+
+// pumpByPriority writes frames, and never lets a low one go first.
+//
+// THIS IS WHERE PRIORITY ACTUALLY LIVES, which is the whole of the operator's
+// argument for one socket per session: "single websocket for a session with
+// different streams... i.e. we can have priorities". A websocket is one ordered
+// byte stream, so priority cannot be a property of the framing - it can only be
+// a decision about what this node writes NEXT, and this is that decision.
+//
+// The high queue is offered on its own first, so a control frame never waits
+// behind output that was queued before it. Only when high is empty does the
+// second select consider low, and it still offers high alongside so a control
+// frame arriving during the wait wins the race.
+//
+// IT IS A FUNCTION RATHER THAN INLINE SO THAT IT CAN BE ASSERTED. Written into
+// the handler it was untestable without a VM, a browser and a websocket, which
+// means the claim in the commit message would have been the only evidence for
+// it. See TestControlOutranksOutput.
+func pumpByPriority(ctx context.Context, high, low <-chan []byte, write func([]byte) bool) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case frame := <-high:
+			if !write(frame) {
+				return
+			}
+			continue
+		default:
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case frame := <-high:
+			if !write(frame) {
+				return
+			}
+		case frame := <-low:
+			if !write(frame) {
+				return
+			}
+		}
+	}
 }
