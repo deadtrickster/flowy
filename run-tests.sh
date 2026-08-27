@@ -13207,7 +13207,7 @@ an_empty_node_answers_arrays_not_null() {
 		[ -n "$nulls" ] || continue
 		printf '%s answers null at: %s\n' "$ep" "$nulls" >&2
 		bad=1
-	done < <(grep -oE 'api\.HandleFunc\("GET (/api/[^"]*)"' serve.go |
+	done < <(grep -oE 'api\.HandleFunc\("GET (/api/[^"]*)"' internal/flowy/serve.go |
 		sed 's/.*GET //; s/"//' | grep -v '{' | sort -u)
 	# A WALK THAT REACHED NOTHING IS NOT A PASS. If the token is wrong or the
 	# port is not ours, every door answers something jq refuses and the loop ends
