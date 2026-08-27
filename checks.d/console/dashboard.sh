@@ -6,7 +6,7 @@
 # The operator, 01M0WY7F5: agents author dashboards for their activity, "start
 # stop pause and monitor", asap. The contract, answered on the row: a dashboard
 # is a memory row of kind `dashboard` whose fields declare tiles - a fixed
-# vocabulary (number, table, grid, frame, gauge, series, report) over a named
+# vocabulary (number, table, grid, frame, gauge, series, log, report) over a named
 # metric - and the console renders the declaration. It RUNS nothing: producers
 # push metric rows through the ordinary artifact door, the dashboard declares
 # queries over them, and every number shows its age from the row it reads. A
@@ -18,13 +18,16 @@
 # below warn means low is bad. A report tile draws the document style - the
 # reading is the whole page, header plus sections of the closed vocabulary -
 # with tone words mapped to the palette, an unknown word drawn as no tone,
-# and card sparks as metric refs asked at their own window. Past a tile's
+# and card sparks as metric refs asked at their own window. A log tile draws
+# its stream's last lines oldest-first - each level a tag in its severity
+# colour, a level-less line as plain text - and the counts the door computed
+# over the window; a stream never pushed says so. Past a tile's
 # threshold the datum is styled stale, not silently live - the operator
 # reading prose somebody typed is exactly the failure this exists to fix.
 # Scope decides who reads it: a principal outside the rows' projects is
 # refused.
 #
-# EIGHT ARMS, of which the second is the one a component test would miss:
+# NINE ARMS, of which the second is the one a component test would miss:
 #
 #   1. an agent authors a dashboard and metric rows through the API; the page
 #      lists the dashboard and renders each declared number with its age;
@@ -50,7 +53,12 @@
 #      at its own window - and a reading that is not a document says so;
 #   8. a row pushed after load wins its tile without a reload - the page
 #      re-fetches on its own beat, so a dashboard left open follows the
-#      producers instead of freezing at page load.
+#      producers instead of freezing at page load;
+#   9. a log tile draws its stream's last lines oldest-first - each level a
+#      tag in its severity colour, a level-less line drawn as plain text -
+#      and the counts the door computed over the window; a stream never
+#      pushed says so, rather than drawing an empty list that reads as
+#      silence.
 #
 # TWO TOKENS, AND THAT IS THE POINT. The author writes the rows; the outsider
 # proves the scope arm, because a check with one token could not prove

@@ -53,7 +53,7 @@
  *     load wins its tile without a reload - the age ticking up while the
  *     rows are frozen would be a screenshot with a clock on it.
  *
- * EIGHT ARMS, of which the second is the one a component test would miss:
+ * NINE ARMS, of which the second is the one a component test would miss:
  *
  *   1. an agent authors a dashboard and metric rows through the API; the page
  *      lists the dashboard and renders each declared number with its age;
@@ -81,7 +81,12 @@
  *      is not a document says so;
  *   8. a row pushed after load wins its tile without a reload - the page
  *      re-fetches on its own beat, so a dashboard left open follows the
- *      producers instead of freezing at page load.
+ *      producers instead of freezing at page load;
+ *   9. a log tile draws its stream's last lines oldest-first - each level a
+ *      tag in its severity colour, a line without a level drawn as plain
+ *      text - and the counts the door computed over the window; a stream
+ *      never pushed says so, rather than drawing an empty list that reads
+ *      as silence.
  *
  * TWO TOKENS. The author writes in their project; the outsider proves the
  * scope arm, because a check with one token could not prove "readable by me,
@@ -211,6 +216,12 @@ const dash = await post({
       { kind: "report", label: "never report", metric: metricName("reportmissing") },
       // A report over a series of words: the honest wrong-shape state.
       { kind: "report", label: "wordy report", metric: metricName("words") },
+      {
+        kind: "log",
+        label: "build tail",
+        metric: metricName("buildlog"),
+      },
+      { kind: "log", label: "never log", metric: metricName("logmissing") },
     ],
   },
 });
@@ -401,6 +412,29 @@ await mkMetric(
   "measured",
 );
 
+// THE LOG FIXTURE: lines of one stream pushed as kind log - prose with a
+// level and a type, the shape the log door filters and counts. Four lines
+// oldest first: an info, a warn with a type, an error, and one with NO
+// level (a crash dump straight to stderr is legal and deliberately so - the
+// store's own comment). A log tile over a stream never pushed rides along
+// for the honest empty state.
+const mkLog = (stream, message, level, type) =>
+  post({
+    type: "memory",
+    kind: "log",
+    title: `log ${stamp} ${stream}`,
+    fields: {
+      stream,
+      message,
+      ...(level ? { level } : {}),
+      ...(type ? { type } : {}),
+    },
+  });
+await mkLog(metricName("buildlog"), "booting the sweep", "INFO");
+await mkLog(metricName("buildlog"), "disk nearly full", "WARN", "disk");
+await mkLog(metricName("buildlog"), "sweep died mid-run", "ERROR", "sweep");
+await mkLog(metricName("buildlog"), "panic: nil map deref at 0x7f");
+
 // WHAT THE NODE HOLDS, read back before the browser opens: if the fixture
 // seeded differently than intended, this fails as a fixture problem instead
 // of the page answering a question about the wrong data.
@@ -426,9 +460,20 @@ if (
   );
 }
 const heldDash = await api(`/api/artifact/${dash.id}`);
-if (!Array.isArray(heldDash.fields?.tiles) || heldDash.fields.tiles.length !== 22) {
+if (!Array.isArray(heldDash.fields?.tiles) || heldDash.fields.tiles.length !== 24) {
   die(
     `the dashboard row's tiles read ${JSON.stringify(heldDash.fields?.tiles)} - the seed is wrong`,
+  );
+}
+const heldTail = await api(`/api/logs/tail?stream=${encodeURIComponent(metricName("buildlog"))}`);
+const tailMessages = (heldTail.lines ?? []).map((l) => l.message);
+if (
+  tailMessages.length !== 4 ||
+  tailMessages[0] !== "booting the sweep" ||
+  tailMessages[3] !== "panic: nil map deref at 0x7f"
+) {
+  die(
+    `the node holds log tail [${tailMessages}], wanted the four seeded lines oldest-first - the seed is wrong`,
   );
 }
 
@@ -1382,6 +1427,91 @@ try {
     );
   }
 
+  // ---- ARM 9: THE LOG - a stream's last lines drawn oldest first, each
+  // level a tag in its severity colour, the no-level line drawn as plain
+  // text, and the counts the door computed over the window. A log is prose,
+  // so the tile draws lines, never a trend; a stream never pushed says so
+  // rather than drawing an empty list that reads as silence. ----
+  const logTile = tile("build tail");
+  await logTile.scrollIntoViewIfNeeded().catch(() => {});
+  if ((await logTile.getAttribute("data-tile-kind")) !== "log") {
+    die('the "build tail" tile is not a log tile');
+  }
+  if ((await logTile.getAttribute("data-log-empty")) !== null) {
+    die('the "build tail" tile draws as empty - the stream has four pushed lines');
+  }
+  const lineEls = logTile.locator("[data-log-line]");
+  if ((await lineEls.count()) !== 4) {
+    die(`the build tail draws ${await lineEls.count()} lines, wanted 4`);
+  }
+  const lineMessages = await lineEls.evaluateAll((els) =>
+    els.map((e) => e.getAttribute("data-log-line")),
+  );
+  if (
+    lineMessages[0] !== "booting the sweep" ||
+    lineMessages[3] !== "panic: nil map deref at 0x7f"
+  ) {
+    die(
+      `the build tail runs ${JSON.stringify(lineMessages)}, wanted the seeded lines oldest-first`,
+    );
+  }
+  const lineLevels = await lineEls.evaluateAll((els) =>
+    els.map((e) => e.querySelector("[data-log-level]")?.getAttribute("data-log-level") ?? null),
+  );
+  if (
+    lineLevels[0] !== "INFO" ||
+    lineLevels[1] !== "WARN" ||
+    lineLevels[2] !== "ERROR" ||
+    lineLevels[3] !== null
+  ) {
+    die(
+      `the build tail's level tags read ${JSON.stringify(lineLevels)}, wanted INFO, WARN, ERROR and none - a line without a level must draw as no tag`,
+    );
+  }
+  // The type rides beside its line, in the producer's own brackets - the
+  // WARN and ERROR lines are both typed.
+  const typeEls = logTile.locator("[data-log-type]");
+  if ((await typeEls.count()) !== 2) {
+    die(`the build tail draws ${await typeEls.count()} typed lines, wanted the two seeded types`);
+  }
+  const lineTypes = await typeEls.evaluateAll((els) =>
+    els.map((e) => e.getAttribute("data-log-type")),
+  );
+  if (lineTypes[0] !== "disk" || lineTypes[1] !== "sweep") {
+    die(`the build tail's typed lines read ${JSON.stringify(lineTypes)}, wanted disk then sweep`);
+  }
+  // The counts are the door's, not the page's arithmetic: one line per
+  // level, and the level-less line counted under no level.
+  for (const lvl of ["INFO", "WARN", "ERROR"]) {
+    const chip = logTile.locator(`[data-log-count="${lvl}"]`);
+    if ((await chip.count()) !== 1) die(`the build tail draws no ${lvl} count`);
+    if ((await chip.getAttribute("data-log-count-value")) !== "1") {
+      die(`the build tail's ${lvl} count is not 1`);
+    }
+  }
+  // The severity is styled, not just spoken: the ERROR tag takes the
+  // palette's dim red-orange, measured against an in-page probe of the same
+  // var like the gauge's fill.
+  const errTagColour = await logTile
+    .locator('[data-log-level="ERROR"]')
+    .evaluate((el) => getComputedStyle(el).color);
+  const errProbe = await page.evaluate(() => {
+    const probe = document.createElement("div");
+    probe.style.color = "var(--color-serenedash-3)";
+    document.body.appendChild(probe);
+    const colour = getComputedStyle(probe).color;
+    probe.remove();
+    return colour;
+  });
+  if (errTagColour !== errProbe) {
+    die(
+      `the ERROR tag's colour is not the palette's dim red-orange: ${errTagColour} vs ${errProbe}`,
+    );
+  }
+  if ((await tile("never log").getAttribute("data-log-empty")) === null) {
+    die('the "never log" tile does not say its stream has no lines');
+  }
+
   // ---- ARM 2, browser half: the outsider's page is a refusal, not a blank. ----
   // The outsider's session mounts the console shell like any visit, and the
   // shell declares its own console:<room> readers under the outsider's
@@ -1426,7 +1556,10 @@ try {
       "past its threshold, says what each reading is - inferred as claimed, " +
       "unknown as unclaimed - right-aligns its numbers off the eight-colour " +
       "palette, refuses an outsider, a reload shows the newest row with a " +
-      "fresh age, and a row pushed after load wins its tile without one",
+      "fresh age, a row pushed after load wins its tile without one, and " +
+      "draws the log tail oldest-first with level tags in severity colours, " +
+      "leaves a level-less line untagged, shows the door's counts, and says " +
+      "so when a stream has no lines",
   );
 } finally {
   await browser.close();

@@ -4,6 +4,7 @@ import { Link, useParams } from "react-router-dom";
 import { ApiError, type Artifact } from "@/lib/api";
 import {
   type DashboardTile,
+  type LogTail,
   type SeriesEntry,
   type SeriesPage,
   dashboards,
@@ -1441,12 +1442,86 @@ function ReportTile({
   );
 }
 
+/** The colour a log level tag takes, off the serenedash palette - fatal and
+ * error the dim red-orange of crit, warn and warning the amber, info the blue
+ * of ok, and the quiet levels the dim violet. A line with NO level draws no
+ * tag: the store lets it through because a crash dump is exactly the line
+ * most worth having, and a colour it did not earn would lie about it. */
+const LOG_LEVEL_COLOUR: Record<string, string> = {
+  FATAL: "var(--color-serenedash-3)",
+  ERROR: "var(--color-serenedash-3)",
+  WARN: "var(--color-serenedash-4)",
+  WARNING: "var(--color-serenedash-4)",
+  INFO: "var(--color-serenedash-1)",
+  DEBUG: "var(--color-serenedash-8)",
+  TRACE: "var(--color-serenedash-8)",
+};
+
+/** One log tile: the last lines of its stream, oldest first, with the level
+ * counts the door already computed over the window. A log is prose, so the
+ * tile draws the lines, never a trend - and a stream with nothing pushed says
+ * so rather than drawing an empty list that reads as silence. */
+function LogTile({ tile, tail }: { tile: DashboardTile; tail: LogTail | undefined }) {
+  const counts = tail?.counts.levels ?? {};
+  const empty = !tail || tail.lines.length === 0;
+  return (
+    <div
+      data-tile-label={tile.label}
+      data-tile-kind="log"
+      data-log-empty={empty ? "true" : undefined}
+      className="flex flex-col gap-1 rounded-md border border-border p-4"
+    >
+      <div className="text-muted-foreground text-xs">{tile.label}</div>
+      {empty ? (
+        <div className="py-1 text-muted-foreground text-sm">
+          its stream has no lines pushed yet - not zero, just nothing
+        </div>
+      ) : (
+        <>
+          {Object.keys(counts).length > 0 && (
+            <div data-log-counts className="flex flex-wrap gap-x-2 text-[10px]">
+              {Object.entries(counts).map(([level, n]) => (
+                <span
+                  key={level}
+                  data-log-count={level}
+                  data-log-count-value={n}
+                  style={{ color: LOG_LEVEL_COLOUR[level] ?? "var(--color-serenedash-8)" }}
+                >
+                  {level} {n}
+                </span>
+              ))}
+            </div>
+          )}
+          <div className="flex flex-col gap-0.5 font-mono text-xs" data-log-lines>
+            {tail.lines.map((line) => (
+              <div key={line.id} data-log-line={line.message} className="truncate">
+                {line.level ? (
+                  <span
+                    data-log-level={line.level}
+                    style={{ color: LOG_LEVEL_COLOUR[line.level] ?? "var(--color-serenedash-8)" }}
+                    className="mr-1"
+                  >
+                    {line.level}
+                  </span>
+                ) : null}
+                {line.type ? <span data-log-type={line.type}>{`[${line.type}] `}</span> : null}
+                <span>{line.message}</span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 export function DashboardView() {
   const { id } = useParams();
   const signedIn = useSignedIn();
   const [dash, setDash] = useState<Artifact | null>(null);
   const [rows, setRows] = useState<Artifact[]>([]);
   const [seriesPages, setSeriesPages] = useState<Map<number, SeriesPage>>(new Map());
+  const [logTails, setLogTails] = useState<Map<string, LogTail>>(new Map());
   const [loaded, setLoaded] = useState(false);
   const [refused, setRefused] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1472,6 +1547,7 @@ export function DashboardView() {
         setDash(null);
         setRows([]);
         setSeriesPages(new Map());
+        setLogTails(new Map());
         setLoaded(false);
         return;
       }
@@ -1525,9 +1601,18 @@ export function DashboardView() {
                 dashboards.series([...new Set(ns)], w).then((p) => [w, p] as const),
               ),
             );
+            // The log tiles read their streams through the log door, one ask
+            // per stream - like the series door, the door's shape is per
+            // stream, so the page dedupes what the tiles name.
+            const tails = await Promise.all(
+              [
+                ...new Set(tiles.filter((t) => t.kind === "log" && t.metric).map((t) => t.metric)),
+              ].map(async (n) => [n, await dashboards.logTail(n)] as const),
+            );
             if (!stopped) {
               setRows(page.metrics ?? []);
               setSeriesPages(new Map(spages));
+              setLogTails(new Map(tails));
             }
           } catch (err) {
             // The tiles render their empty state; the declaration is still the
@@ -1664,6 +1749,9 @@ export function DashboardView() {
             return (
               <GaugeTile key={tile.label} tile={tile} row={rowsOf(tile.metric)[0]} now={now} />
             );
+          }
+          if (tile.kind === "log") {
+            return <LogTile key={tile.label} tile={tile} tail={logTails.get(tile.metric)} />;
           }
           if (tile.kind === "report") {
             return (

@@ -72,6 +72,27 @@ export interface SeriesPage {
   asked: string[];
 }
 
+/** One line of a log tail, off GET /api/logs/tail. Level may be empty - a
+ * line without one is legal and deliberately so, the store's comment says a
+ * crash dump is exactly the line most worth having. */
+export interface LogLine {
+  id: string;
+  at: number;
+  stream: string;
+  level: string;
+  type: string;
+  message: string;
+}
+
+/** One stream's tail, as the log door answers it: the last lines oldest
+ * first, with the level and type counts over the whole filtered window - the
+ * header says so without the caller counting the page it was given. */
+export interface LogTail {
+  stream: string;
+  lines: LogLine[];
+  counts: { levels: Record<string, number>; types: Record<string, number> };
+}
+
 export const dashboards = {
   list: () =>
     request<{ artifacts: Artifact[] }>(
@@ -101,4 +122,13 @@ export const dashboards = {
     request<SeriesPage>(
       `/api/metrics/series?${names.map((n) => `name=${encodeURIComponent(n)}`).join("&")}&points=${points}`,
     ),
+
+  /**
+   * The last lines of one log stream, oldest first. The stream is the tile's
+   * metric - a log tile declares metric and kind only, like a gauge - and the
+   * door is per stream because "every log line on this node" is not a tile
+   * anybody declares.
+   */
+  logTail: (stream: string, limit = 200) =>
+    request<LogTail>(`/api/logs/tail?stream=${encodeURIComponent(stream)}&limit=${limit}`),
 };

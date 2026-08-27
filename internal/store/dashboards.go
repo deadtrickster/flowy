@@ -58,8 +58,8 @@ const (
 
 // DashboardTile is one declared panel of a dashboard row.
 type DashboardTile struct {
-	// Kind is the component: number, table, grid, frame, gauge, series. The
-	// closed set - see checkDashboardRow.
+	// Kind is the component: number, table, grid, frame, gauge, series, log.
+	// The closed set - see checkDashboardRow.
 	Kind string `json:"kind"`
 	// Label is what the tile is called on the page, in a person's words.
 	Label string `json:"label"`
@@ -204,9 +204,9 @@ func checkDashboardRow(a *Artifact) error {
 	for _, t := range tiles {
 		if t.Kind != "number" && t.Kind != "table" && t.Kind != "grid" &&
 			t.Kind != "frame" && t.Kind != "gauge" && t.Kind != "series" &&
-			t.Kind != ReportKind {
+			t.Kind != LogKind && t.Kind != ReportKind {
 			return DashboardRowError{Row: a.ID, Why: fmt.Sprintf(
-				"tile %q declares kind %q - the vocabulary is number, table, grid, frame, gauge, series, report",
+				"tile %q declares kind %q - the vocabulary is number, table, grid, frame, gauge, series, log, report",
 				t.Label, t.Kind)}
 		}
 		if err := checkTileCarriesNoBounds(a.ID, t); err != nil {
