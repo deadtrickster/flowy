@@ -6,7 +6,7 @@
 # The operator, 01M0WY7F5: agents author dashboards for their activity, "start
 # stop pause and monitor", asap. The contract, answered on the row: a dashboard
 # is a memory row of kind `dashboard` whose fields declare tiles - a fixed
-# vocabulary (number, table, grid, frame, gauge, series, log, report) over a named
+# vocabulary (number, table, grid, frame, gauge, series, log, report, trace) over a named
 # metric - and the console renders the declaration. It RUNS nothing: producers
 # push metric rows through the ordinary artifact door, the dashboard declares
 # queries over them, and every number shows its age from the row it reads. A
@@ -21,13 +21,17 @@
 # and card sparks as metric refs asked at their own window. A log tile draws
 # its stream's last lines oldest-first - each level a tag in its severity
 # colour, a level-less line as plain text - and the counts the door computed
-# over the window; a stream never pushed says so. Past a tile's
+# over the window; a stream never pushed says so. A trace tile is the one
+# tile whose declaration is not a series name: it carries the trace BY ID -
+# the author was handed it on the Trace-Id header of the request that broke -
+# draws the spans in start order with their status, and a well-formed id
+# naming no readable trace says so. Past a tile's
 # threshold the datum is styled stale, not silently live - the operator
 # reading prose somebody typed is exactly the failure this exists to fix.
 # Scope decides who reads it: a principal outside the rows' projects is
 # refused.
 #
-# NINE ARMS, of which the second is the one a component test would miss:
+# TEN ARMS, of which the second is the one a component test would miss:
 #
 #   1. an agent authors a dashboard and metric rows through the API; the page
 #      lists the dashboard and renders each declared number with its age;
@@ -58,7 +62,13 @@
 #      tag in its severity colour, a level-less line drawn as plain text -
 #      and the counts the door computed over the window; a stream never
 #      pushed says so, rather than drawing an empty list that reads as
-#      silence.
+#      silence;
+#  10. a trace tile draws the trace it declares BY ID - the check's own
+#      request trace, captured off the Trace-Id header the node stamps on
+#      every response - spans in start order with their status, and says when
+#      the trace ran; a malformed id is refused by the door naming the rule,
+#      and a well-formed id naming no readable trace says so rather than
+#      drawing an empty waterfall that reads as a crash.
 #
 # TWO TOKENS, AND THAT IS THE POINT. The author writes the rows; the outsider
 # proves the scope arm, because a check with one token could not prove

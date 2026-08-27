@@ -7,6 +7,7 @@ import {
   type LogTail,
   type SeriesEntry,
   type SeriesPage,
+  type Trace,
   dashboards,
   tilesOf,
 } from "@/lib/dashboards";
@@ -1515,6 +1516,70 @@ function LogTile({ tile, tail }: { tile: DashboardTile; tail: LogTail | undefine
   );
 }
 
+const TRACE_ERROR_COLOUR = "var(--color-serenedash-3)";
+
+/** One trace tile: the spans of the trace it names, in start order - the
+ * console's waterfall. The only tile whose declaration is not a series name:
+ * the tile carries the id and the id is the query. A span that failed is
+ * drawn in the palette's severity colour; a trace that holds no spans
+ * readable by this reader says so - the spans may exist and be somebody
+ * else's, and that is not a broken page. */
+function TraceTile({
+  tile,
+  trace,
+  now,
+}: { tile: DashboardTile; trace: Trace | undefined; now: number }) {
+  const spans = trace?.spans ?? [];
+  const empty = spans.length === 0;
+  const errors = trace?.errors ?? 0;
+  const nodes = trace?.nodes ?? [];
+  const age = trace?.started ? ageSecondsAt(trace.started, now) : 0;
+  return (
+    <div
+      data-tile-label={tile.label}
+      data-tile-kind="trace"
+      data-trace-empty={empty ? "true" : undefined}
+      className="flex flex-col gap-1 rounded-md border border-border p-4"
+    >
+      <div className="text-muted-foreground text-xs">{tile.label}</div>
+      {empty ? (
+        <div className="py-1 text-muted-foreground text-sm">
+          this trace holds no spans readable by you - they may exist and belong to somebody else
+        </div>
+      ) : (
+        <>
+          <div className="flex flex-wrap gap-x-2 text-[10px] text-muted-foreground" data-trace-head>
+            <span data-trace-age={age}>{`traced ${ageWords(age)} ago`}</span>
+            {errors > 0 && (
+              <span data-trace-errors style={{ color: TRACE_ERROR_COLOUR }}>
+                {`${errors} span(s) failed`}
+              </span>
+            )}
+            {nodes.length > 0 && <span data-trace-nodes={nodes.join(",")}>{nodes.join(", ")}</span>}
+          </div>
+          <div className="flex flex-col gap-0.5 font-mono text-xs" data-trace-spans>
+            {spans.map((s) => (
+              <div key={s.span_id} data-trace-span={s.name} className="flex items-baseline gap-2">
+                <span
+                  data-trace-span-status={s.status ?? "ok"}
+                  style={s.status === "error" ? { color: TRACE_ERROR_COLOUR } : undefined}
+                  className="w-10 shrink-0"
+                >
+                  {s.status ?? "ok"}
+                </span>
+                <span className="flex-1 truncate">{s.name}</span>
+                <span className="shrink-0 text-right tabular-nums text-muted-foreground">
+                  {`${Math.max(1, Math.round(s.duration_us / 1000))}ms`}
+                </span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 export function DashboardView() {
   const { id } = useParams();
   const signedIn = useSignedIn();
@@ -1522,6 +1587,7 @@ export function DashboardView() {
   const [rows, setRows] = useState<Artifact[]>([]);
   const [seriesPages, setSeriesPages] = useState<Map<number, SeriesPage>>(new Map());
   const [logTails, setLogTails] = useState<Map<string, LogTail>>(new Map());
+  const [traces, setTraces] = useState<Map<string, Trace>>(new Map());
   const [loaded, setLoaded] = useState(false);
   const [refused, setRefused] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1564,7 +1630,6 @@ export function DashboardView() {
           setDash(artifact);
           const tiles = tilesOf(artifact);
           const names = [...new Set(tiles.map((t) => t.metric).filter(Boolean))];
-          if (names.length === 0) return;
           // The series door takes one points value for every name - and a
           // window wider than a tile's own would rob that tile of its truncated
           // flag, so the page groups its series tiles by the window they
@@ -1579,7 +1644,11 @@ export function DashboardView() {
             byWindow.set(w, ns);
           }
           try {
-            const page = await dashboards.metrics(names);
+            // A page may declare no series at all - a dashboard of only trace
+            // tiles names no metric - so the metrics ask is skipped rather
+            // than asked with an empty name list it would refuse. The log and
+            // trace asks below still run: they do not read the metrics door.
+            const page = names.length > 0 ? await dashboards.metrics(names) : { metrics: [] };
             // A report's cards may declare sparks - metric refs with their own
             // window. Those windows are only known once the metrics are read,
             // so they are asked after, not beside, the tiles' own series asks.
@@ -1609,10 +1678,21 @@ export function DashboardView() {
                 ...new Set(tiles.filter((t) => t.kind === "log" && t.metric).map((t) => t.metric)),
               ].map(async (n) => [n, await dashboards.logTail(n)] as const),
             );
+            // The trace tiles read the trace store by id - the one tile whose
+            // declaration is its query. One ask per id, deduped like the log
+            // door: two tiles naming the same trace read it once.
+            const trs = await Promise.all(
+              [
+                ...new Set(
+                  tiles.filter((t) => t.kind === "trace" && t.trace).map((t) => t.trace ?? ""),
+                ),
+              ].map(async (id) => [id, (await dashboards.traceById(id)).trace] as const),
+            );
             if (!stopped) {
               setRows(page.metrics ?? []);
               setSeriesPages(new Map(spages));
               setLogTails(new Map(tails));
+              setTraces(new Map(trs));
             }
           } catch (err) {
             // The tiles render their empty state; the declaration is still the
@@ -1752,6 +1832,16 @@ export function DashboardView() {
           }
           if (tile.kind === "log") {
             return <LogTile key={tile.label} tile={tile} tail={logTails.get(tile.metric)} />;
+          }
+          if (tile.kind === "trace") {
+            return (
+              <TraceTile
+                key={tile.label}
+                tile={tile}
+                trace={traces.get(tile.trace ?? "")}
+                now={now}
+              />
+            );
           }
           if (tile.kind === "report") {
             return (

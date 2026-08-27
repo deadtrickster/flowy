@@ -27,11 +27,17 @@ export const DASHBOARD_KIND = "dashboard";
  * its scale and thresholds travel with the reading, because the producer is
  * the party that knows them. A report is the document style: the reading is
  * the whole page - header plus sections of the closed vocabulary - and the
- * console renders structure, never markup. */
+ * console renders structure, never markup. A trace tile is the exception to
+ * the metric rule: it declares kind + trace (the id), because its query IS
+ * the id - the author was handed it on the Trace-Id header of the request
+ * that broke. */
 export interface DashboardTile {
   kind: string;
   label: string;
   metric: string;
+  /** The 32-hex id a trace tile draws. Only a trace tile carries it; the
+   * store refuses it on every other kind. */
+  trace?: string;
   /** How old a reading may be before the tile draws it as stale rather than
    * live. Zero means never stale. */
   stale_after_seconds?: number;
@@ -93,6 +99,35 @@ export interface LogTail {
   counts: { levels: Record<string, number>; types: Record<string, number> };
 }
 
+/** One span of a trace, as the trace door returns it. */
+export interface TraceSpan {
+  span_id: string;
+  trace_id: string;
+  parent_id?: string;
+  name: string;
+  kind: string;
+  node: string;
+  status?: string;
+  started: string;
+  ended: string;
+  duration_us: number;
+}
+
+/** One trace, spans in start order - the console's waterfall. An id that
+ * names no readable trace comes back as an empty trace, not an error: the
+ * spans may exist and be somebody else's, and "nothing of this trace is
+ * yours" is the honest answer. */
+export interface Trace {
+  trace_id: string;
+  spans: TraceSpan[];
+  nodes: string[];
+  root?: string;
+  started: string;
+  ended: string;
+  duration_us: number;
+  errors: number;
+}
+
 export const dashboards = {
   list: () =>
     request<{ artifacts: Artifact[] }>(
@@ -131,4 +166,12 @@ export const dashboards = {
    */
   logTail: (stream: string, limit = 200) =>
     request<LogTail>(`/api/logs/tail?stream=${encodeURIComponent(stream)}&limit=${limit}`),
+
+  /**
+   * One trace by id, spans in start order. The door answers an empty trace
+   * rather than a 404 for a valid id that names nothing this reader may see,
+   * so the tile draws that honesty instead of an error that reads as a
+   * broken page.
+   */
+  traceById: (id: string) => request<{ trace: Trace }>(`/api/trace/${encodeURIComponent(id)}`),
 };

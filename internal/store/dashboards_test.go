@@ -56,9 +56,32 @@ func TestCheckDashboardRowShape(t *testing.T) {
 		{"kind": "grid", "label": "coverage", "metric": "cells", "stale_after_seconds": 5},
 		{"kind": "series", "label": "cells over time", "metric": "cells", "points": 60},
 		{"kind": "log", "label": "the build tail", "metric": "build"},
+		{"kind": "trace", "label": "the broken ask", "trace": "AABBCCDDEEFF00112233445566778899"},
 	})
 	if err := checkDashboardRow(ok); err != nil {
-		t.Fatalf("a dashboard declaring number, table, grid, frame, series and log tiles is a dashboard: %v", err)
+		t.Fatalf("a dashboard declaring number, table, grid, frame, series, log and trace tiles is a dashboard: %v", err)
+	}
+	// THE METRIC-LESS TILE: its query is the id, and both a missing one and a
+	// stray series name beside one are refused by name rather than drawn wrong.
+	if err := checkDashboardRow(dashboardRow([]map[string]any{
+		{"kind": "trace", "label": "the broken ask"},
+	})); err == nil {
+		t.Fatal("a trace tile naming no id is a query over nothing - must be refused")
+	}
+	if err := checkDashboardRow(dashboardRow([]map[string]any{
+		{"kind": "trace", "label": "the broken ask", "trace": "not-hex"},
+	})); err == nil {
+		t.Fatal("a trace tile naming a malformed id must be refused with the door's own rule")
+	}
+	if err := checkDashboardRow(dashboardRow([]map[string]any{
+		{"kind": "trace", "label": "the broken ask", "trace": "AABBCCDDEEFF00112233445566778899", "metric": "cells"},
+	})); err == nil {
+		t.Fatal("a trace tile carrying a metric must be refused - a stray series name would be silently ignored")
+	}
+	if err := checkDashboardRow(dashboardRow([]map[string]any{
+		{"kind": "number", "label": "cells", "metric": "cells", "trace": "AABBCCDDEEFF00112233445566778899"},
+	})); err == nil {
+		t.Fatal("a non-trace tile carrying a trace id must be refused - a stray id would be silently ignored")
 	}
 	if err := checkDashboardRow(dashboardRow([]map[string]any{
 		{"kind": "series", "label": "cells over time", "metric": "cells", "points": -1},

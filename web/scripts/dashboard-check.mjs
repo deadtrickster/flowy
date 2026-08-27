@@ -9,9 +9,12 @@
  *
  *   - a dashboard is a memory row of kind `dashboard` whose fields declare
  *     tiles - a fixed vocabulary (number, table, grid, frame, gauge, series,
- *     report) over a named metric - and the console renders the declaration.
- *     It RUNS nothing: the data is metric rows producers push through the
- *     ordinary artifact door;
+ *     report, log, trace) over a named metric - and the console renders the
+ *     declaration. It RUNS nothing: the data is metric rows producers push
+ *     through the ordinary artifact door. The trace tile is the one exception
+ *     to the named metric: it declares the trace BY ID, because its query IS
+ *     the id - the author was handed it on the Trace-Id header of the request
+ *     that broke;
  *   - every number shows its age from the row it reads, and a datum older than
  *     its tile's threshold is visibly stale, not silently live - the operator
  *     reading prose today is exactly the failure this exists to fix;
@@ -53,7 +56,7 @@
  *     load wins its tile without a reload - the age ticking up while the
  *     rows are frozen would be a screenshot with a clock on it.
  *
- * NINE ARMS, of which the second is the one a component test would miss:
+ * TEN ARMS, of which the second is the one a component test would miss:
  *
  *   1. an agent authors a dashboard and metric rows through the API; the page
  *      lists the dashboard and renders each declared number with its age;
@@ -86,7 +89,13 @@
  *      tag in its severity colour, a line without a level drawn as plain
  *      text - and the counts the door computed over the window; a stream
  *      never pushed says so, rather than drawing an empty list that reads
- *      as silence.
+ *      as silence;
+ *  10. a trace tile draws the trace it declares BY ID - the check's own
+ *      request trace, captured off the Trace-Id header the node stamps on
+ *      every response - spans in start order with their status, and says when
+ *      the trace ran; a malformed id is refused by the door naming the rule,
+ *      and a well-formed id naming no readable trace says so rather than
+ *      drawing an empty waterfall that reads as a crash.
  *
  * TWO TOKENS. The author writes in their project; the outsider proves the
  * scope arm, because a check with one token could not prove "readable by me,
@@ -507,6 +516,17 @@ try {
   });
   const crashes = [];
   page.on("pageerror", (err) => crashes.push(String(err)));
+  // A trace id to arm the trace tile with: the node stamps the Trace-Id of
+  // every request it serves onto the response, so the page's own API traffic
+  // hands this check a trace the node recorded for it - no fixture spans,
+  // nothing minted that a producer would not really mint.
+  let capturedTraceId = "";
+  page.on("response", (res) => {
+    if (!capturedTraceId && res.url().startsWith(`${base}/api/`)) {
+      const id = res.headers()["trace-id"];
+      if (id) capturedTraceId = id;
+    }
+  });
   await page.addInitScript((t) => localStorage.setItem("flowy.token", t), author);
 
   const openDashboard = async () => {
@@ -1512,6 +1532,100 @@ try {
     die('the "never log" tile does not say its stream has no lines');
   }
 
+  // ---- ARM 10: THE TRACE - a tile declares the trace BY ID, not by series:
+  // the one tile whose declaration is its query. The id under test is this
+  // very check's own request trace, captured off the Trace-Id header the node
+  // stamps on every response; the guard and the honest empty state are asked
+  // through the same door. ----
+  if (!capturedTraceId) {
+    die("no Trace-Id came back on the page's API responses - the trace arm has no id to read");
+  }
+  // The guard through the door, in the door's own words: a malformed id is
+  // refused by name rather than stored and drawn as nothing.
+  const badTrace = await fetch(`${base}/api/artifacts`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${author}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      type: "memory",
+      kind: "dashboard",
+      title: `${title} bad trace`,
+      fields: { tiles: [{ kind: "trace", label: "bad id", trace: "not-hex" }] },
+    }),
+  });
+  const badTraceText = await badTrace.text();
+  if (badTrace.status !== 400 || !badTraceText.includes("32 hex digits")) {
+    die(`a trace tile naming a malformed id is not refused: ${badTrace.status} ${badTraceText}`);
+  }
+  const traceDash = await post({
+    type: "memory",
+    kind: "dashboard",
+    title: `${title} trace page`,
+    fields: {
+      tiles: [
+        { kind: "trace", label: "the broken ask", trace: capturedTraceId },
+        // A well-formed id that names no trace the author may read: the door
+        // answers an empty trace rather than an error, and the tile must say
+        // so - an empty waterfall drawn silently reads as a crash.
+        { kind: "trace", label: "no such trace", trace: "AABBCCDDEEFF00112233445566778899" },
+      ],
+    },
+  });
+  await page.goto(`${base}/dashboards/${traceDash.id}`, { timeout: 30_000 }).catch(() => {});
+  await page
+    .locator(`[data-dashboard="${traceDash.id}"]`)
+    .waitFor({ state: "visible", timeout: 20_000 })
+    .catch(() => {});
+  const traceTile = tile("the broken ask");
+  if ((await traceTile.getAttribute("data-tile-kind")) !== "trace") {
+    die('the "the broken ask" tile is not a trace tile');
+  }
+  await traceTile
+    .locator("[data-trace-span]")
+    .first()
+    .waitFor({ state: "attached", timeout: 20_000 })
+    .catch(() => {});
+  if ((await traceTile.getAttribute("data-trace-empty")) !== null) {
+    die(
+      'the "the broken ask" tile draws as empty - the node recorded spans for this check\'s own request',
+    );
+  }
+  const spanEls = traceTile.locator("[data-trace-span]");
+  const spanCount = await spanEls.count();
+  if (spanCount < 1) {
+    die(
+      `the broken ask draws no spans, wanted at least one - the trace holds the check's own request`,
+    );
+  }
+  const statuses = await spanEls.evaluateAll((els) =>
+    els.map(
+      (e) =>
+        e.querySelector("[data-trace-span-status]")?.getAttribute("data-trace-span-status") ?? null,
+    ),
+  );
+  if (statuses.some((s) => s !== "ok")) {
+    die(
+      `the broken ask's spans read ${JSON.stringify(statuses)}, wanted every one ok - this check made no failing request`,
+    );
+  }
+  const spanNames = await spanEls.evaluateAll((els) =>
+    els.map((e) => e.getAttribute("data-trace-span")),
+  );
+  if (spanNames.some((n) => !n)) {
+    die("the broken ask draws a span with no name - a waterfall of nameless rows reads as noise");
+  }
+  if ((await traceTile.locator("[data-trace-age]").count()) !== 1) {
+    die("the broken ask does not say when its trace ran");
+  }
+  const emptyTile = tile("no such trace");
+  if ((await emptyTile.getAttribute("data-tile-kind")) !== "trace") {
+    die('the "no such trace" tile is not a trace tile');
+  }
+  if ((await emptyTile.getAttribute("data-trace-empty")) === null) {
+    die(
+      'the "no such trace" tile does not say its trace holds no readable spans - an empty waterfall reads as a crash',
+    );
+  }
+
   // ---- ARM 2, browser half: the outsider's page is a refusal, not a blank. ----
   // The outsider's session mounts the console shell like any visit, and the
   // shell declares its own console:<room> readers under the outsider's
@@ -1559,7 +1673,10 @@ try {
       "fresh age, a row pushed after load wins its tile without one, and " +
       "draws the log tail oldest-first with level tags in severity colours, " +
       "leaves a level-less line untagged, shows the door's counts, and says " +
-      "so when a stream has no lines",
+      "so when a stream has no lines, and draws the trace it names by id - " +
+      "spans in start order with their status and the trace's age - refuses " +
+      "a malformed id by name, and says so when a well-formed id holds no " +
+      "readable spans",
   );
 } finally {
   await browser.close();

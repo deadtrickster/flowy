@@ -25,6 +25,16 @@ import (
 // other read, because a span names a principal, a project and sometimes an
 // artifact, and a waterfall of somebody else's work is somebody else's work.
 
+// TraceKind is the dashboard tile that draws one trace by id.
+//
+// THE ONLY METRIC-LESS TILE, and that is the honest shape: every other tile
+// declares a series name and draws what producers pushed under it, but a trace
+// is not a series - it is the one waterfall the node recorded, named by the id
+// the caller already has. It came back on the Trace-Id header of the request
+// that broke, so the producer files the id it was handed, not a series name
+// that would have to be minted to mean it.
+const TraceKind = "trace"
+
 // Span is one recorded operation, as the API and the console read it.
 type Span struct {
 	SpanID     string            `json:"span_id"`

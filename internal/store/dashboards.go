@@ -64,8 +64,14 @@ type DashboardTile struct {
 	// Label is what the tile is called on the page, in a person's words.
 	Label string `json:"label"`
 	// Metric names the series the tile reads. The newest row of that series
-	// is what the tile draws.
+	// is what the tile draws. A trace tile names no metric - see Trace.
 	Metric string `json:"metric"`
+	// Trace is the 32-hex id a trace tile draws. The only tile whose query is
+	// not a series name: a trace is the one waterfall the node recorded, and
+	// the author already holds its id - it came back on the Trace-Id header of
+	// the request that broke. Refused on every other kind, and a metric on a
+	// trace tile is refused with it - see checkDashboardRow.
+	Trace string `json:"trace,omitempty"`
 	// StaleAfterSeconds is how old a reading may be before the tile draws it
 	// as stale rather than live. Zero means never stale: a reading is a fact
 	// about the row it came from, and "fresh enough" is a decision the
@@ -204,9 +210,9 @@ func checkDashboardRow(a *Artifact) error {
 	for _, t := range tiles {
 		if t.Kind != "number" && t.Kind != "table" && t.Kind != "grid" &&
 			t.Kind != "frame" && t.Kind != "gauge" && t.Kind != "series" &&
-			t.Kind != LogKind && t.Kind != ReportKind {
+			t.Kind != LogKind && t.Kind != ReportKind && t.Kind != TraceKind {
 			return DashboardRowError{Row: a.ID, Why: fmt.Sprintf(
-				"tile %q declares kind %q - the vocabulary is number, table, grid, frame, gauge, series, log, report",
+				"tile %q declares kind %q - the vocabulary is number, table, grid, frame, gauge, series, log, report, trace",
 				t.Label, t.Kind)}
 		}
 		if err := checkTileCarriesNoBounds(a.ID, t); err != nil {
@@ -214,6 +220,34 @@ func checkDashboardRow(a *Artifact) error {
 		}
 		if strings.TrimSpace(t.Label) == "" {
 			return DashboardRowError{Row: a.ID, Why: "a tile names what it shows - label must carry it"}
+		}
+		if t.Kind == TraceKind {
+			// THE METRIC-LESS TILE. Its query IS the id: the author was handed
+			// it on the Trace-Id header of the request that broke, so a series
+			// name would be a second identity invented to mean it. The id is
+			// checked with the same rule the trace door uses - a malformed id
+			// refused here rather than drawn as nothing there.
+			if strings.TrimSpace(t.Trace) == "" {
+				return DashboardRowError{Row: a.ID, Why: fmt.Sprintf(
+					"tile %q declares kind trace and no id - fields.trace must carry the trace id",
+					t.Label)}
+			}
+			if !otel.ValidTraceID(t.Trace) {
+				return DashboardRowError{Row: a.ID, Why: fmt.Sprintf(
+					"tile %q names trace %q - a trace id is 32 hex digits",
+					t.Label, t.Trace)}
+			}
+			if strings.TrimSpace(t.Metric) != "" {
+				return DashboardRowError{Row: a.ID, Why: fmt.Sprintf(
+					"tile %q declares a metric beside its trace - a trace tile reads the trace store by id, and a stray series name would be silently ignored",
+					t.Label)}
+			}
+			continue
+		}
+		if strings.TrimSpace(t.Trace) != "" {
+			return DashboardRowError{Row: a.ID, Why: fmt.Sprintf(
+				"tile %q is kind %q and names a trace - fields.trace is the trace tile's id, and a stray id on another kind would be silently ignored",
+				t.Label, t.Kind)}
 		}
 		if strings.TrimSpace(t.Metric) == "" {
 			return DashboardRowError{Row: a.ID, Why: "a tile reads a metric - metric must name one"}
