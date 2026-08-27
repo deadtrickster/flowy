@@ -106,7 +106,7 @@ function ProjectBadge() {
     <div className="flex flex-col gap-0.5">
       <div className="flex items-center gap-1.5">
         <span
-          data-current-project={here || "none"}
+          data-rail-project={here || "none"}
           className="font-mono text-foreground text-xs"
           title={
             whoami.project_fixture
@@ -133,7 +133,14 @@ function ProjectBadge() {
             <button
               key={p}
               type="button"
-              data-enter-project={p}
+              // ITS OWN ATTRIBUTE, not the Projects page's. Reusing
+              // data-enter-project put two elements with that name on any page
+              // where both are drawn, and three existing checks locate by it -
+              // Playwright's strict mode then fails with "resolved to 2
+              // elements" rather than picking one, which is the right
+              // behaviour and turned this row red. The rail is a different
+              // control in a different place; it gets a different name.
+              data-rail-enter-project={p}
               disabled={busy !== ""}
               onClick={() => void enter(p)}
               className="cursor-pointer rounded border border-border px-1 font-mono text-[10px] text-muted-foreground transition hover:border-primary/50 hover:text-foreground disabled:opacity-50"
@@ -144,7 +151,7 @@ function ProjectBadge() {
         </div>
       )}
       {refused ? (
-        <span data-enter-refused className="text-[10px] text-destructive">
+        <span data-rail-enter-refused className="text-[10px] text-destructive">
           {refused}
         </span>
       ) : null}
