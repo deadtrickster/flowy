@@ -3,6 +3,7 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { type Artifact, api } from "@/lib/api";
+import { writeFile } from "@/lib/attach";
 import { useBodyAttachments } from "@/lib/attachrefs";
 import { renderDocument } from "@/lib/markdown";
 import { speakerStyle } from "@/lib/speakercolour";
@@ -79,9 +80,42 @@ function NoteBody({ note }: { note: string }) {
 
 export function RowNotes({ artifact, onAppended }: Props) {
   const [draft, setDraft] = useState("");
+  // How many files are on their way up. A count and not a flag, because two
+  // pasted screenshots are two uploads and a flag would clear on the first.
+  const [uploading, setUploading] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const notes = artifact.notes ?? [];
+
+  /**
+   * A SCREENSHOT PASTED INTO A COMMENT LANDS IN THE COMMENT'S OWN TEXT.
+   *
+   * The operator's words were "screenshots should be supported in
+   * notes/comments... plus listed in attachment, JIRA style". The reference goes
+   * into the draft as ordinary markdown - ![name](id) - rather than into a
+   * second field beside it, and that is the decision worth stating: a comment is
+   * a body, bodies already draw what they refer to, and a parallel list of files
+   * per comment would be a second place for the same fact to be wrong.
+   *
+   * It is put where the cursor is not: appended on its own line. A paste that
+   * chopped a half-typed sentence in two would be the box editing prose somebody
+   * was in the middle of.
+   */
+  const attach = async (file: File, pasted: boolean) => {
+    setUploading((n) => n + 1);
+    setError(null);
+    try {
+      // Through lib/attach, which is where the ceiling, the 32k base64 chunking
+      // and the refusal sentences live. A second copy of them is a second set
+      // of answers - see 01M0GGQ8D4.
+      const carried = await writeFile(file, "", pasted ? "pasted into a note" : file.name);
+      setDraft((text) => `${text.replace(/\s*$/, "")}\n\n![${carried.name}](${carried.id})\n`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setUploading((n) => n - 1);
+    }
+  };
 
   const append = async () => {
     const text = draft.trim();
@@ -184,10 +218,35 @@ export function RowNotes({ artifact, onAppended }: Props) {
           value={draft}
           disabled={busy}
           onChange={(event) => setDraft(event.target.value)}
-          placeholder="what did you learn about this row?"
+          onPaste={(event) => {
+            // ONLY FILES. A paste into a comment box is overwhelmingly text and
+            // text must land in the box - intercepting that would break the
+            // commonest thing this does to serve the rarest.
+            const files = Array.from(event.clipboardData.files);
+            if (files.length === 0) return;
+            event.preventDefault();
+            for (const file of files) void attach(file, true);
+          }}
+          placeholder="what did you learn about this row? paste a screenshot straight in"
           aria-label="add a note"
         />
         <div className="flex items-center gap-3">
+          {/* The paperclip is the second way in - the first is paste, because a
+              screenshot is in the clipboard and was never a file on disk. */}
+          <label className="cursor-pointer text-muted-foreground text-xs hover:underline">
+            <input
+              data-note-attach=""
+              type="file"
+              className="hidden"
+              disabled={busy}
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                event.target.value = "";
+                if (file) void attach(file, false);
+              }}
+            />
+            {uploading > 0 ? `attaching ${uploading}…` : "attach a file"}
+          </label>
           {error ? <span className="text-destructive text-xs">{error}</span> : null}
           <Button
             type="submit"
