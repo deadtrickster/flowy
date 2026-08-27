@@ -206,7 +206,16 @@ ${JSON.stringify(after?.fields?.assignee ?? "")}. That is the assignment this fi
 exists to stop being the only way to ask somebody something.`);
   }
 
-  // 4 - AND TAKING IT BACK CLEARS BOTH KEYS.
+  // 4 - AND TAKING IT BACK CLEARS BOTH KEYS, FROM THE SAME CONTROL. The row
+  // says "from the same control", so the card staying open across a write is
+  // part of what is being asserted rather than an accident of the test: a
+  // person who mistypes a name has to be able to correct it where they are.
+  if ((await box.count()) === 0) {
+    const stillListed = await page.locator(`[data-todo-open="${plain}"]`).count();
+    await die(`the card closed itself when the question was written, so the control that
+set the pointer is gone and it cannot be taken back from where it was set.
+The row is ${stillListed ? "still in the panel" : "no longer in the panel at all"}.`);
+  }
   await box.fill("");
   await box.blur();
   let cleared = null;
