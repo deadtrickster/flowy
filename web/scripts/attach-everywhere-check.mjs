@@ -213,8 +213,43 @@ which is the distinction store.ErrNoBytes exists to keep.`);
 tell a reader which file is missing or why.`);
   }
 
+  // 6 - AND A WORD IN ANGLE BRACKETS IS STILL A WORD. Reported as "some
+  // markdown rendering is broken on some times" and measured: marked hands
+  // <id> through as raw HTML, the sanitizer drops the unknown element, and an
+  // unknown EMPTY element has no children to keep - so the word is gone and the
+  // sentence still reads as a sentence. This house writes <file>, <name>, <id>
+  // and <you> unbackticked all through its own prose.
+  //
+  // Four things in one body, because the fix must not be a wider HTML
+  // allowance: the bracketed word comes back, a real <em> is still emphasis, a
+  // bare less-than is untouched, and <script> is NOT resurrected as text.
+  const angled = await writeArtifact(
+    "report",
+    "a report that says how to run it",
+    "run flowy inbox --as <you>, where a < b, with real <em>emphasis</em>.\n\n<script>alert(1)</script>\n",
+  );
+  await page.goto(`${base}${await pathOf(angled)}`, { timeout: 30_000 });
+  const bodyText = await page.locator("[data-artifact-body]").innerText();
+  if (!bodyText.includes("--as <you>")) {
+    await die(`the body says "run flowy inbox --as <you>" and the page reads
+${JSON.stringify(bodyText)}. The word in angle brackets was deleted, which is
+worse than a visible glitch: the sentence still reads as a sentence and the only
+part that said what to type is gone.`);
+  }
+  if (!bodyText.includes("a < b")) {
+    await die(`a bare less-than was disturbed: the page reads ${JSON.stringify(bodyText)}`);
+  }
+  if ((await page.locator("[data-artifact-body] em").count()) !== 1) {
+    await die(`real HTML in a body stopped working - the fix widened into an escape of
+everything. A deliberate <em> must still be emphasis.`);
+  }
+  if (bodyText.includes("<script>") || bodyText.includes("alert(1)")) {
+    await die(`<script> came back as visible text: ${JSON.stringify(bodyText)}. Putting an
+eaten word back must not put a forbidden tag back with it.`);
+  }
+
   console.log(
-    `a note drew its file and its neighbour drew none; a body drew ${pixel.slice(0, 10)} at ${width}px and listed it too; one comment of two drew it; an unfollowable reference was named`,
+    `a note drew its file and its neighbour drew none; a body drew ${pixel.slice(0, 10)} at ${width}px and listed it too; one comment of two drew it; an unfollowable reference was named; <you> survived the sanitizer and <script> did not`,
   );
 } finally {
   await clearRaised();

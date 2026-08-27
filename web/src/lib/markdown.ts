@@ -57,6 +57,44 @@ const DIALECT = { gfm: true, pedantic: false, async: false } as const;
  * last: an anchor arriving in raw HTML inside a body goes through here too,
  * and one that came out of marked cannot be stripped of its rel afterwards.
  */
+/**
+ * A WORD IN ANGLE BRACKETS IS A WORD, NOT A TAG.
+ *
+ * The operator's report was "some markdown rendering is broken on some times",
+ * and this is it, measured: `use <id> for the row` renders as "use  for the
+ * row". marked hands `<id>` through as raw HTML, the sanitizer drops the
+ * unknown element, and because an unknown empty element has no children there
+ * is nothing left to keep. The word is GONE - not mangled, not escaped, gone -
+ * and the sentence still reads as a sentence, which is what makes it worse than
+ * a visible glitch. `run flowy inbox --as <you>` loses the only part that told
+ * anybody what to type.
+ *
+ * This house writes that way constantly: <file>, <name>, <id>, <you> appear
+ * unbackticked all through the repo's own prose and every agent copies the
+ * style. So the console silently eats words from the documents it exists to
+ * show, and nobody can tell from the reading that anything was removed.
+ *
+ * The fix is to put the literal back rather than to widen what HTML a body may
+ * contain. An element the sanitizer will not allow becomes the text somebody
+ * typed - `<id>` - and its children are kept as DOMPurify would have kept them
+ * anyway. Deliberate HTML in a body still works exactly as before, because an
+ * ALLOWED tag never reaches this branch.
+ *
+ * `a < b` was never affected and is not touched here: marked escapes a bare
+ * less-than that does not begin something tag-shaped, so it arrives as &lt; and
+ * is not an element at all.
+ */
+DOMPurify.addHook("uponSanitizeElement", (node, data) => {
+  const tag = data.tagName;
+  if (!tag || data.allowedTags[tag]) return;
+  // Only element nodes, and only ones the parser made from something that
+  // looked like a tag. #text, #comment and the document fragment itself all
+  // arrive here too and none of them is a word somebody lost.
+  const owner = node.ownerDocument;
+  if (node.nodeType !== 1 || !node.parentNode || !owner) return;
+  node.parentNode.insertBefore(owner.createTextNode(`<${tag}>`), node);
+});
+
 DOMPurify.addHook("afterSanitizeAttributes", (node) => {
   if (node.tagName === "A" && node.hasAttribute("href")) {
     node.setAttribute("target", "_blank");
