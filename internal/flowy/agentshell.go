@@ -138,7 +138,7 @@ func openAgentPTY() (master, slave *os.File, err error) {
 // and this repo's rule is argument vectors only. Nothing here is interpolated
 // into a string: the project name is one argv element and the guest never sees
 // a shell of ours.
-func (a *agentShells) start(id, project, binary string, size agentSize) (*agentSession, error) {
+func (a *agentShells) start(id, project, workdir, binary string, size agentSize) (*agentSession, error) {
 	master, slave, err := openAgentPTY()
 	if err != nil {
 		return nil, err
@@ -150,9 +150,15 @@ func (a *agentShells) start(id, project, binary string, size agentSize) (*agentS
 	}
 
 	// ARGUMENT VECTOR, NEVER A COMMAND LINE.
+	// --project takes a DIRECTORY here, which is why the caller's name was
+	// resolved to one before this - see firecodeProjectPath. Passing the name
+	// straight through is what the first attempt did, and firecode answered
+	// "cd: flowy-staleblocked: No such file or directory": a shell that exits
+	// immediately, relayed faithfully, and indistinguishable at the panel from
+	// a VM that would not boot.
 	args := []string{"shell"}
-	if project != "" {
-		args = append(args, "--project", project)
+	if workdir != "" {
+		args = append(args, "--project", workdir)
 	}
 	cmd := exec.Command(binary, args...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = slave, slave, slave

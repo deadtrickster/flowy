@@ -121,10 +121,17 @@ func (s *server) handleAgentSocket(w http.ResponseWriter, r *http.Request) {
 	// any directory on this host into a VM that has the network. The name is
 	// checked against what firecode itself advertises, so this node never
 	// invents the set.
+	// THE CALLER NAMES, THE NODE RESOLVES. api_vm.go's rule is that a project
+	// is a NAME and never a path, because a caller who can name a directory can
+	// pack any directory on this host into a VM that has the network. But
+	// `firecode shell --project` takes a DIRECTORY, so something has to map one
+	// to the other, and the only honest place is here, against the roster
+	// firecode itself publishes. Asking the door that maps names to paths is
+	// also this repo's rule about identifiers: resolve, never guess.
 	project := r.URL.Query().Get("project")
-	if project != "" && !knownFirecodeProject(r.Context(), project) {
-		writeJSON(w, http.StatusBadRequest, errorBody(
-			"that is not a project this host advertises - GET /api/vm/projects says which are"))
+	workdir, err := firecodeProjectPath(r.Context(), project)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody(err.Error()))
 		return
 	}
 
@@ -142,7 +149,7 @@ func (s *server) handleAgentSocket(w http.ResponseWriter, r *http.Request) {
 	conn.SetReadLimit(maxAgentFrame + 1024)
 
 	id := ulid.NewString()
-	sess, err := s.agents.start(id, project, binary, agentSize{})
+	sess, err := s.agents.start(id, project, workdir, binary, agentSize{})
 	if err != nil {
 		sendAgentControl(r.Context(), conn, agentControl{
 			Type: "exited",
@@ -323,29 +330,46 @@ func viewAgent(s *agentSession) agentView {
 	}
 }
 
-// knownFirecodeProject asks firecode whether it advertises this name.
+// firecodeProjectPath turns a project NAME into the directory firecode says it
+// is, refusing a name this host does not advertise.
 //
-// ASKED, NOT PATTERN-MATCHED. A name that merely looks safe is not the
-// question - the question is whether this host offers it, and only firecode
-// knows that. A regex here would drift from the roster the moment somebody adds
-// a project, and would be the callee inventing an answer it was not given.
-func knownFirecodeProject(ctx context.Context, name string) bool {
+// ASKED, NOT PATTERN-MATCHED. Whether a name is offered is a fact only firecode
+// holds; a regex here would drift from the roster the moment somebody adds a
+// project, and would be this node inventing an answer it was never given.
+//
+// An empty name is not an error and not a default guess: it means "wherever
+// firecode would run anyway", and the empty path passed on to `shell` is
+// exactly that.
+func firecodeProjectPath(ctx context.Context, name string) (string, error) {
+	if name == "" {
+		return "", nil
+	}
 	out, err := runFirecode(ctx, 15*time.Second, "projects", "--json")
 	if err != nil {
-		return false
+		return "", errNoFirecode
 	}
 	var roster struct {
 		Projects []struct {
-			Name string `json:"name"`
+			Name   string `json:"name"`
+			Path   string `json:"path"`
+			Exists bool   `json:"exists"`
 		} `json:"projects"`
 	}
 	if err := json.Unmarshal(out, &roster); err != nil {
-		return false
+		return "", fmt.Errorf("firecode's project roster could not be read: %w", err)
 	}
 	for _, p := range roster.Projects {
-		if p.Name == name {
-			return true
+		if p.Name != name {
+			continue
 		}
+		// EXISTS IS ASKED RATHER THAN ASSUMED. The roster carries the answer,
+		// and a VM packed over a directory that is not there fails deep inside
+		// firecode with a message a person reads as a bug in this panel.
+		if !p.Exists {
+			return "", fmt.Errorf("firecode knows %q but its directory is not on this host", name)
+		}
+		return p.Path, nil
 	}
-	return false
+	return "", fmt.Errorf(
+		"%q is not a project this host advertises - GET /api/vm/projects says which are", name)
 }
