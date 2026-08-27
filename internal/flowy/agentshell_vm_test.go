@@ -26,6 +26,7 @@ package flowy
 import (
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -56,63 +57,51 @@ func TestAShellIsTheGuests(t *testing.T) {
 	ch, _, _ := sess.attach()
 	defer sess.detach(ch)
 
-	// A VM takes a while to boot and the shell says nothing useful until it
-	// has. Waiting for the prompt is unreliable across shells, so the canary is
-	// the answer to a question only the guest can answer.
+	// A CANARY, AND TYPED UNTIL IT IS ANSWERED.
+	//
+	// The first attempt typed once, on the first output, and timed out: the
+	// first output is the boot banner, which arrives long before there is a
+	// shell to read a keystroke. Waiting for a prompt instead is unreliable
+	// across shells, so this retypes on a timer until the answer comes back.
+	//
+	// The canary is a printf rather than a bare `hostname` because the
+	// transcript carries the command being ECHOED as well as its answer, and
+	// those must not be confusable. The typed line contains the literal %s; only
+	// the answer has a name between the brackets.
+	const canary = "printf 'GUESTNAME[%s]\\n' \"$(hostname)\"\n"
+	answer := regexp.MustCompile(`GUESTNAME\[([^\]%]+)\]`)
+
 	deadline := time.After(4 * time.Minute)
-	typed := false
+	retype := time.NewTicker(5 * time.Second)
+	defer retype.Stop()
 	var seen strings.Builder
 	for {
 		select {
 		case <-deadline:
 			t.Fatalf("the guest never answered in four minutes; what came back was:\n%s", seen.String())
+		case <-retype.C:
+			if err := sess.write([]byte(canary)); err != nil {
+				t.Fatalf("typing into the shell: %v", err)
+			}
 		case chunk, ok := <-ch:
 			if !ok {
 				t.Fatalf("the shell ended before it answered:\n%s", seen.String())
 			}
 			seen.Write(chunk)
-			// Typed once, after the first output - which is the earliest moment
-			// there is anything on the other end to type at.
-			if !typed {
-				typed = true
-				if err := sess.write([]byte("hostname\n")); err != nil {
-					t.Fatalf("typing into the shell: %v", err)
-				}
+			m := answer.FindStringSubmatch(seen.String())
+			if m == nil {
 				continue
 			}
-			// THE ASSERTION. The transcript carries the command being echoed
-			// back, so finding "hostname" proves nothing; finding a name that
-			// is not this machine's is the difference.
-			out := seen.String()
-			for _, line := range strings.Split(out, "\n") {
-				name := strings.TrimSpace(line)
-				if name == "" || strings.Contains(name, "hostname") || strings.Contains(name, "$") {
-					continue
-				}
-				if name == mine {
-					t.Fatalf("the shell answered %q, which is THIS machine - the relay is wired to a"+
-						" local shell and not to the guest at all", name)
-				}
-				if isPlausibleHostname(name) {
-					t.Logf("the guest calls itself %q and this machine is %q", name, mine)
-					return
-				}
+			// THE ASSERTION, and it is a difference rather than a reading: a
+			// relay wired to a local shell would draw a prompt, echo what you
+			// type and render colour, and be completely wrong.
+			name := strings.TrimSpace(m[1])
+			if name == mine {
+				t.Fatalf("the shell answered %q, which is THIS machine - the relay is wired to a"+
+					" local shell and not to the guest at all", name)
 			}
+			t.Logf("the guest calls itself %q and this machine is %q", name, mine)
+			return
 		}
 	}
-}
-
-// isPlausibleHostname keeps the loop above from accepting a fragment of a
-// prompt or an escape sequence as the guest's answer.
-func isPlausibleHostname(s string) bool {
-	if len(s) < 2 || len(s) > 64 || strings.ContainsAny(s, " \t\x1b[]()#~") {
-		return false
-	}
-	for _, r := range s {
-		if !(r == '-' || r == '.' || (r >= '0' && r <= '9') ||
-			(r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')) {
-			return false
-		}
-	}
-	return true
 }
