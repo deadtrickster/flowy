@@ -222,8 +222,120 @@ function documentTextRenderer() {
  * because its prose is hard wrapped. Bare row ids are links here too: a
  * document quotes ids constantly, and the resolver fixes them everywhere.
  */
-export function renderDocument(body: string): string {
+export function renderDocument(
+  body: string,
+  files: Map<string, ResolvedAttachment> = new Map(),
+): string {
   const marked = new Marked({ ...DIALECT, breaks: false });
-  marked.use({ renderer: { text: documentTextRenderer() } });
+  marked.use({
+    renderer: { text: documentTextRenderer(), image: documentImageRenderer(files) },
+  });
   return sanitize(marked.parse(body, { async: false }) as string);
+}
+
+/**
+ * A body refers to a file it carries by the file's own id, as an ordinary
+ * markdown image: `![what it shows](01M0...)`.
+ *
+ * NO NEW SYNTAX, which is the whole argument for it. An attachment is an
+ * artifact and its id is what everything else here already names it by - the
+ * bare-id links above, the `attachments` field, the cards. A body written this
+ * way still reads as markdown anywhere that has never heard of flowy, which is
+ * what the operator asked for when they said the file should be "right into the
+ * body as <img>, plus listed in attachment, JIRA style".
+ *
+ * `attachment:01M0...` is taken too, because a person who has just read the
+ * word "attachment" in a UI will type it, and refusing a spelling nobody was
+ * told about is a refusal the reader has to guess at.
+ */
+const ATTACHMENT_HREF = /^(?:attachment:)?(01[0-9A-HJKMNP-TV-Z]{24})$/;
+
+/** The id in an image href, or "" when the href is an ordinary URL. */
+export function attachmentHref(href: string): string {
+  const m = ATTACHMENT_HREF.exec(href.trim());
+  return m ? m[1] : "";
+}
+
+/**
+ * attachmentsIn is every file a body refers to, in the order it refers to them.
+ *
+ * It exists because the render is SYNCHRONOUS and the bytes are not: a caller
+ * has to know what to fetch before it can draw, and the alternative - render a
+ * placeholder and swap the src in afterwards - puts a network read inside a
+ * dangerouslySetInnerHTML subtree, where React does not own the nodes and
+ * nothing tells it when they are replaced.
+ *
+ * Duplicates collapse and order is kept, so a body naming one file three times
+ * is one fetch and the list at the foot draws it once.
+ */
+export function attachmentsIn(body: string): string[] {
+  const found: string[] = [];
+  const seen = new Set<string>();
+  const marked = new Marked({ ...DIALECT });
+  marked.use({
+    renderer: {
+      image(this: Renderer, token: Tokens.Image) {
+        const id = attachmentHref(token.href);
+        if (id && !seen.has(id)) {
+          seen.add(id);
+          found.push(id);
+        }
+        return "";
+      },
+    },
+  });
+  marked.parse(body, { async: false });
+  return found;
+}
+
+/**
+ * What a caller knows about one file by the time it draws: the bytes as a data
+ * URI, or nothing at all.
+ *
+ * ABSENT IS NOT EMPTY, and this type is where that is kept. `src` empty with
+ * `why` set is "asked and cannot show it" - the caller may not read it, or the
+ * artifact replicated here and its bytes did not, which is what store.ErrNoBytes
+ * is for and why it is deliberately not ErrNotFound. A file still being fetched
+ * is neither, and is simply not in the map yet.
+ */
+export interface ResolvedAttachment {
+  src: string;
+  title: string;
+  why?: string;
+}
+
+/**
+ * The image renderer for a document: an attachment id becomes the picture, and
+ * anything else is left to marked.
+ *
+ * A REFERENCE THE READER CANNOT SEE SAYS SO, BY NAME. The alternative is an
+ * <img> with a dead src, which every browser draws as the same small broken
+ * glyph whether the file is gone, forbidden, or never existed - three states
+ * with one appearance, in a document whose whole job is to be evidence. So an
+ * unresolved reference renders as text naming the id and the reason, and it is
+ * a data attribute rather than a class so a check can assert it without
+ * asserting a stylesheet.
+ */
+function documentImageRenderer(files: Map<string, ResolvedAttachment>) {
+  return function image(this: Renderer, token: Tokens.Image): string {
+    const id = attachmentHref(token.href);
+    if (!id) {
+      const title = token.title ? ` title="${escaped(token.title)}"` : "";
+      return `<img src="${escaped(token.href)}" alt="${escaped(token.text)}"${title}>`;
+    }
+    const got = files.get(id);
+    const caption = token.text || got?.title || id;
+    if (!got || !got.src) {
+      const why = got?.why || "it is not on this node, or you may not read it";
+      return (
+        `<span data-attachment-missing="${id}">` +
+        `${escaped(caption)} - this file is referred to here and cannot be shown: ${escaped(why)}` +
+        `</span>`
+      );
+    }
+    return (
+      `<img data-attachment="${id}" src="${escaped(got.src)}" alt="${escaped(caption)}"` +
+      ` title="${escaped(got.title || caption)}">`
+    );
+  };
 }

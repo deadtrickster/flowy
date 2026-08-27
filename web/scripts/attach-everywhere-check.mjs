@@ -1,0 +1,193 @@
+/**
+ * A file rides any memory type, is drawn where the prose refers to it, and is
+ * still listed at the foot.
+ *
+ *   node scripts/attach-everywhere-check.mjs BASE_URL TOKEN
+ *
+ * Attachments existed before this and the surfaces did not honour them: a note
+ * or a report could carry a file that nothing drew, and a body could not refer
+ * to one at all. So every arm here is a DIFFERENCE - a panel that drew a card
+ * on every row unconditionally would satisfy a check that only counted one.
+ *
+ *   1  a note WITH a file draws it; a note WITHOUT draws no card and no empty
+ *      heading. Fails on master, where a note draws neither.
+ *   2  a body referring to a file renders a picture - naturalWidth non-zero,
+ *      not merely an <img> tag, because a broken reference is also an <img>.
+ *   3  and the same file is listed at the foot as well. JIRA style is both.
+ *   4  a reference the reader cannot follow is NAMED, not a broken glyph:
+ *      "you may not read this" and "there is nothing here" are different
+ *      answers and store.ErrNoBytes exists to keep them apart.
+ */
+
+import { chromium } from "playwright";
+
+const [base, token] = process.argv.slice(2);
+if (!base || !token) {
+  console.error("usage: node scripts/attach-everywhere-check.mjs BASE_URL TOKEN");
+  process.exit(2);
+}
+
+const bearer = { Authorization: `Bearer ${token}` };
+const raised = [];
+
+const clearRaised = async () => {
+  for (const id of raised) {
+    await fetch(`${base}/api/artifact/${encodeURIComponent(id)}/status`, {
+      method: "POST",
+      headers: { ...bearer, "Content-Type": "application/json" },
+      body: JSON.stringify({ status: "done", note: "closed by attach-everywhere-check" }),
+    }).catch(() => {});
+  }
+};
+
+const die = async (message) => {
+  console.error(message);
+  await clearRaised();
+  process.exit(1);
+};
+
+/**
+ * A one-pixel PNG, as bytes rather than as a string of hex somebody has to
+ * trust. It is a real image: the point of arm 2 is that the browser DECODED
+ * something, and a payload the decoder rejects would fail the arm for the wrong
+ * reason.
+ */
+const ONE_PIXEL_PNG =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+const writeAttachment = async (title) => {
+  const res = await fetch(`${base}/api/attachment`, {
+    method: "POST",
+    headers: { ...bearer, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      content_base64: ONE_PIXEL_PNG,
+      title,
+      filename: "pixel.png",
+      content_type: "image/png",
+    }),
+  });
+  if (!res.ok) await die(`could not write the attachment: ${res.status} ${await res.text()}`);
+  const id = (await res.json()).item?.id;
+  if (!id) await die("the attachment write answered without item.id");
+  return id;
+};
+
+/** A memory of some type, with whatever fields the arm needs on it. */
+const writeArtifact = async (type, title, body, fields = {}) => {
+  const res = await fetch(`${base}/api/artifacts`, {
+    method: "POST",
+    headers: { ...bearer, "Content-Type": "application/json" },
+    body: JSON.stringify({ type, title, body, visibility: "project-only", fields }),
+  });
+  if (!res.ok) await die(`could not write the ${type}: ${res.status} ${await res.text()}`);
+  const id = (await res.json()).id;
+  if (!id) await die(`writing the ${type} answered without an id`);
+  raised.push(id);
+  return id;
+};
+
+const pixel = await writeAttachment("a pixel, for the attachment check");
+
+// THE PROJECT AND TYPE IN THE PATH come from the artifact the node stored, not
+// from what was posted: /p/:project/:type/:id is the route, and guessing either
+// segment would be a check that asserts its own inputs.
+const pathOf = async (id) => {
+  const res = await fetch(`${base}/api/artifact/${encodeURIComponent(id)}`, { headers: bearer });
+  if (!res.ok) await die(`could not read ${id} back: ${res.status}`);
+  const row = await res.json();
+  return `/p/${encodeURIComponent(row.project)}/${encodeURIComponent(row.type)}/${encodeURIComponent(id)}`;
+};
+
+const withFile = await writeArtifact("note", "a note that carries a file", "nothing inline here.", {
+  attachments: pixel,
+});
+const without = await writeArtifact("note", "a note that carries nothing", "nothing inline here.");
+const inline = await writeArtifact(
+  "report",
+  "a report that shows its evidence",
+  `The measurement is below.\n\n![the pixel](${pixel})\n\nAnd that is the whole of it.`,
+);
+// AN ID THAT IS WELL FORMED AND NAMES NOTHING. A ULID this node has never seen
+// reads exactly like one the caller may not see, which is the point: the reader
+// is told the reference cannot be followed and not which of the two it was.
+const missingId = "01JZZZZZZZZZZZZZZZZZZZZZZZ";
+const dangling = await writeArtifact(
+  "report",
+  "a report referring to something it cannot show",
+  `Here is the evidence.\n\n![the missing one](${missingId})\n`,
+);
+
+const browser = await chromium.launch();
+try {
+  const page = await browser.newPage({ viewport: { width: 1400, height: 1000 } });
+  await page.addInitScript((t) => localStorage.setItem("flowy.token", t), token);
+
+  // 1 - A NOTE CARRIES A FILE, AND ITS NEIGHBOUR DOES NOT.
+  await page.goto(`${base}${await pathOf(withFile)}`, { timeout: 30_000 });
+  const listedOn = page.locator("[data-artifact-attachments]");
+  try {
+    await listedOn.waitFor({ state: "visible", timeout: 20_000 });
+  } catch {
+    await die(`the note ${withFile} carries ${pixel} in fields.attachments and the page draws no
+list of files at all, so a note can hold evidence that is reachable from nowhere.`);
+  }
+  const said = await listedOn.getAttribute("data-artifact-attachments");
+  if (said !== "1") {
+    await die(`the note carries one file and the page says it carries ${said}`);
+  }
+
+  await page.goto(`${base}${await pathOf(without)}`, { timeout: 30_000 });
+  await page.waitForLoadState("networkidle");
+  if ((await page.locator("[data-artifact-attachments]").count()) !== 0) {
+    await die(`a note carrying no files still drew a list of them, so the list says nothing
+about whether there is anything to see.`);
+  }
+
+  // 2 and 3 - DRAWN WHERE THE PROSE REFERS TO IT, AND STILL LISTED.
+  await page.goto(`${base}${await pathOf(inline)}`, { timeout: 30_000 });
+  const drawn = page.locator(`img[data-attachment="${pixel}"]`);
+  try {
+    await drawn.waitFor({ state: "visible", timeout: 20_000 });
+  } catch {
+    await die(`the body of ${inline} refers to ${pixel} and no picture was drawn for it.`);
+  }
+  // THE BROWSER DECODED IT. An <img> with a dead src is still an <img>, and
+  // naturalWidth is the only thing here that can tell them apart.
+  const width = await drawn.evaluate((el) => el.naturalWidth);
+  if (!width) {
+    await die(`the picture for ${pixel} is in the document and the browser decoded nothing:
+naturalWidth is ${width}. A reference that renders a broken image is the state
+this was built to end.`);
+  }
+  const alsoListed = await page.locator("[data-artifact-attachments]").count();
+  if (alsoListed !== 1) {
+    await die(`${pixel} is drawn inside the body of ${inline} and is not listed at the foot.
+Inline and listed answer different questions - what this sentence is about, and
+what does this row carry - and JIRA style is both.`);
+  }
+
+  // 4 - AND A REFERENCE THAT CANNOT BE FOLLOWED SAYS SO, BY NAME.
+  await page.goto(`${base}${await pathOf(dangling)}`, { timeout: 30_000 });
+  const named = page.locator(`[data-attachment-missing="${missingId}"]`);
+  try {
+    await named.waitFor({ state: "visible", timeout: 20_000 });
+  } catch {
+    const broken = await page.locator("img").count();
+    await die(`${dangling} refers to ${missingId}, which this node cannot hand over, and the
+document says nothing about it - ${broken} img element(s) on the page. A dead
+<img> draws "you may not read this" and "there is nothing here" identically,
+which is the distinction store.ErrNoBytes exists to keep.`);
+  }
+  const explains = (await named.innerText()) || "";
+  if (!explains.includes(missingId) && !explains.toLowerCase().includes("cannot be shown")) {
+    await die(`the placeholder for ${missingId} says ${JSON.stringify(explains)}, which does not
+tell a reader which file is missing or why.`);
+  }
+
+  console.log(
+    `a note drew its file and its neighbour drew none; a body drew ${pixel.slice(0, 10)} at ${width}px and listed it too; an unfollowable reference was named`,
+  );
+} finally {
+  await clearRaised();
+  await browser.close();
+}

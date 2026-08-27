@@ -23,7 +23,8 @@ import {
   reproOf,
   upstreamOf,
 } from "@/lib/findings";
-import { renderDocument } from "@/lib/markdown";
+import { useBodyAttachments } from "@/lib/attachrefs";
+import { attachmentsIn, renderDocument } from "@/lib/markdown";
 import { useSession } from "@/lib/session";
 import { evidenceTone, reproTone, severityTone, upstreamTone } from "@/lib/statecolour";
 import { isQueueItem, todoAssignee, todoAttachments, todoRaiser } from "@/lib/todos";
@@ -63,7 +64,19 @@ export function ArtifactView() {
   // The files the row carries. Raised out of a room with a paperclip, or
   // written by an agent onto the row - either way they are attachment ids in
   // the same field, and this page is where somebody picking the work up looks.
-  const carried = artifact ? todoAttachments(artifact) : [];
+  //
+  // JIRA STYLE, WHICH IS TWO PLACES AND ONE TRUTH. A file named in the body is
+  // drawn where the prose refers to it AND listed here, because the two answer
+  // different questions: the inline picture is what the sentence is about, and
+  // the list is "what does this row carry" - the question somebody picking the
+  // work up asks before they have read a word of it. So the list is the union
+  // of the field and the body, deduplicated, field order first.
+  const listed = artifact ? todoAttachments(artifact) : [];
+  const inBody = artifact?.body ? attachmentsIn(artifact.body) : [];
+  const carried = [...listed, ...inBody.filter((id) => !listed.includes(id))];
+  // The bytes for the ones the body refers to. Fetched before the render
+  // rather than swapped in after it - see useBodyAttachments.
+  const bodyFiles = useBodyAttachments(artifact?.body ?? "");
   // The words somebody has selected in the document, and the ones they have
   // asked to quote. Two states rather than one: selecting is reading, and the
   // draft is only written when somebody says so.
@@ -378,7 +391,7 @@ export function ArtifactView() {
                   <div
                     data-artifact-body=""
                     className="report-body text-sm"
-                    dangerouslySetInnerHTML={{ __html: renderDocument(artifact.body) }}
+                    dangerouslySetInnerHTML={{ __html: renderDocument(artifact.body, bodyFiles) }}
                   />
                 ) : (
                   <pre
