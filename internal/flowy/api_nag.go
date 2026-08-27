@@ -209,7 +209,9 @@ func (s *server) readNag(ctx context.Context, p *store.Principal, all bool) (nag
 			// waiting on somebody else is neither started nor startable, and
 			// counting it as work waiting for me is what made a blocked seat
 			// and a stalled one read alike.
-			if waiting := store.WaitingOnOf(a); waiting != "" && waiting != me && !answered[a.ID] {
+			waiting := store.WaitingOnOf(a)
+			blocked := waiting != "" && waiting != me && !answered[a.ID]
+			if blocked {
 				view.MineWaiting++
 				view.MineWaitingIDs = append(view.MineWaitingIDs, a.ID)
 			} else if a.Status != "active" {
@@ -218,7 +220,21 @@ func (s *server) readNag(ctx context.Context, p *store.Principal, all bool) (nag
 			}
 			// ACTIVE IS A CLAIM, NOT AN OBSERVATION - the operator's own
 			// complaint, and the reason this counts rather than concludes.
-			if a.Status == "active" && now.Sub(a.Updated) > nagStaleAfter {
+			//
+			// AND A BLOCKED ROW IS NOT STALE, which is the half missed when
+			// mine_waiting was added. `stale` means "you said you were on this
+			// and nothing has happened since" - a reproach the seat answers by
+			// working. A row waiting on somebody else's answer has had nothing
+			// happen for exactly the right reason, and counting it here made
+			// board-nag - which wakes on mine_todo PLUS stale - fire every
+			// cycle about a row the seat cannot clear. That is the
+			// always-fires-carries-no-information failure the nag was rewritten
+			// to end, reintroduced through the door beside it.
+			//
+			// Measured by @orchestrator on its own board: mine_todo 0,
+			// mine_waiting 1, stale 1 - one row, correctly not work, still
+			// waking the seat every cycle.
+			if a.Status == "active" && !blocked && now.Sub(a.Updated) > nagStaleAfter {
 				view.Stale++
 			}
 		}

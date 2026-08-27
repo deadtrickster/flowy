@@ -13763,7 +13763,7 @@ check "the nag verb says which line, and its counts are the caller's own" \
 # would pass on a node that always says 1.
 a_blocked_row_is_not_counted_as_work_waiting_for_you() {
 	recall
-	local carried asked before_todo after_todo
+	local carried asked before_todo after_todo fixture
 
 	# ONE ROW THIS SEAT CARRIES, so it lands in mine_todo to begin with.
 	api POST "$TOKEN_A" /api/artifacts "{
@@ -13849,7 +13849,44 @@ a_blocked_row_is_not_counted_as_work_waiting_for_you() {
 	want_eq "the answered row is work again" "$(jqv .mine_waiting)" 0 || return 1
 	want_eq "and it is back in the todo count" "$(jqv .mine_todo)" "$before_todo" || return 1
 
-	printf 'blocked %s left the todo count and came back when %s answered; %s is an answer owed\n' \
+	# AND A BLOCKED ROW IS NOT STALE EITHER, which is the same subtraction at
+	# the other door. `stale` means "you said you were on this and nothing has
+	# happened since" - a reproach the seat answers by working. A row waiting on
+	# somebody else has had nothing happen for the right reason, and board-nag
+	# wakes on mine_todo PLUS stale, so counting it there fires every cycle
+	# about a row the seat cannot clear.
+	#
+	# ASSERTED BY MAKING THE ROW STALE ON PURPOSE: active, and its updated
+	# pushed back past the threshold in the database, because waiting twenty
+	# minutes is not a test. Then the same row is read twice, blocked and not.
+	want_status 200 POST "$TOKEN_A" "/api/artifact/$carried/status" '{"status": "active"}' || return 1
+	scalar "UPDATE artifacts SET updated = now() - interval '2 hours' WHERE id = '$carried'" \
+		>/dev/null || return 1
+
+	api GET "$TOKEN_A" /api/nag || return 1
+	want_eq "an untouched active row of mine is stale" "$(jqv .stale)" 1 || return 1
+
+	want_status 200 POST "$TOKEN_A" "/api/todo/$carried/waiting-on" \
+		"$(jq -nc --arg who "$HANDLE_OP" '{waiting_on: $who, asked: "and now it is blocked"}')" ||
+		return 1
+	# THE WRITE MOVES `updated`, so push it back again - otherwise the second
+	# reading would differ because the row is FRESH rather than because it is
+	# BLOCKED, and that is a different question with the same answer.
+	scalar "UPDATE artifacts SET updated = now() - interval '2 hours' WHERE id = '$carried'" \
+		>/dev/null || return 1
+	api GET "$TOKEN_A" /api/nag || return 1
+	want_eq "and the same row blocked is not stale" "$(jqv .stale)" 0 || return 1
+	want_eq "it is counted as blocked instead" "$(jqv .mine_waiting)" 1 || return 1
+
+	# THE ROWS GO. 01M0HADJ2R: a check that leaves rows on a board is the defect
+	# it exists to describe - and by now these two are active and blocked, which
+	# is precisely the state the thing under test counts.
+	for fixture in "$carried" "$asked"; do
+		want_status 200 POST "$TOKEN_A" "/api/artifact/$fixture/status" \
+			'{"status": "done", "note": "closed by the waiting-on check"}' || return 1
+	done
+
+	printf 'blocked %s left the todo count and came back when %s answered; %s is an answer owed; and a blocked row is not stale\n' \
 		"${carried:0:10}" "$HANDLE_OP" "${asked:0:10}"
 }
 check "a row waiting on somebody else is not counted as work waiting for you" \
