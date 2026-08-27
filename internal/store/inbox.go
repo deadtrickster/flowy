@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/deadtrickster/flowy/internal/otel"
+	"github.com/lib/pq"
 )
 
 // The waiter's side of the inbox: where a thing that blocks on the log got to.
@@ -745,6 +746,17 @@ type RoomMember struct {
 	// PrincipalsNamed - and a name the roster never shows is one only the
 	// people who read the source would know to type.
 	Role string `json:"role,omitempty"`
+	// Projects is where this speaker's readable chat events landed, every
+	// distinct project. A room belongs to a project, so this is what lets a
+	// caller tell "in this project" from "elsewhere on this node": a name whose
+	// projects do not include the room's project cannot hear that room.
+	//
+	// Nil when nothing this speaker said carried a project, which the events
+	// allow (a message written by a principal with no home project). It is nil
+	// rather than an empty array because those two are different answers: an
+	// empty array would claim "measured, in no project", and a nil says the
+	// events carried nothing to measure.
+	Projects []string `json:"projects,omitempty"`
 }
 
 // RoomMembers is who is in the room: every distinct actor of a chat event the
@@ -767,6 +779,7 @@ func (d *DB) RoomMembers(ctx context.Context, p *Principal) ([]*RoomMember, erro
 		          u.handle, '') AS name,
 		        CASE WHEN a2.id IS NOT NULL THEN 'agent' ELSE 'user' END AS kind,
 		        coalesce(u.role, '') AS role,
+		        array_agg(DISTINCT e.project) FILTER (WHERE e.project IS NOT NULL) AS projects,
 		        max(e.seq_hlc) AS last
 		   FROM events e
 		   LEFT JOIN agents a2 ON a2.id = e.actor
@@ -783,7 +796,7 @@ func (d *DB) RoomMembers(ctx context.Context, p *Principal) ([]*RoomMember, erro
 	for rows.Next() {
 		m := &RoomMember{}
 		var last int64
-		if err := rows.Scan(&m.Actor, &m.Name, &m.Kind, &m.Role, &last); err != nil {
+		if err := rows.Scan(&m.Actor, &m.Name, &m.Kind, &m.Role, pq.Array(&m.Projects), &last); err != nil {
 			return nil, fmt.Errorf("store: room members: %w", err)
 		}
 		out = append(out, m)

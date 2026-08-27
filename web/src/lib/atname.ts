@@ -19,10 +19,25 @@ import { api } from "@/lib/api";
  * exactly this reason, so one list means the composer and the door cannot
  * disagree about who a name is. A second, cleverer source here would be a second
  * answer to "who is alice", and that is the disagreement worth not inventing.
+ *
+ * NARROWED TO WHO CAN HEAR THE ROOM. Row 01M0X22ECZ4: two projects both have a
+ * room called general, so a list fed from everywhere the caller can read
+ * offered people who are not in this one - and a mention RESOLVES at write
+ * time, so the message looked addressed while it reached nobody in the room.
+ * Members now carry where they spoke; a name is offered only when that
+ * includes the caller's project, and the rest come back as elsewhere so the
+ * composer can say so BEFORE the send, in the box, rather than after it.
  */
 export interface AtName {
   /** The roster, as the node knows it. Empty while unread or on failure. */
   names: { name: string; kind: string }[];
+  /**
+   * Names the node knows that are NOT in this project. A mention resolves at
+   * write time, so a name typed from this list would land on somebody who
+   * cannot hear the room - the composer warns on it before the send rather
+   * than after.
+   */
+  elsewhere: { name: string; projects: string[] }[];
 }
 
 /**
@@ -43,12 +58,14 @@ const REFRESH_MS = 60_000;
  * The token was never used here for anything but its truthiness; api.presence
  * carries whichever credential the request has.
  */
-export function useRoster(signedIn: boolean): AtName {
+export function useRoster(signedIn: boolean, project?: string): AtName {
   const [names, setNames] = useState<{ name: string; kind: string }[]>([]);
+  const [elsewhere, setElsewhere] = useState<{ name: string; projects: string[] }[]>([]);
 
   useEffect(() => {
     if (!signedIn) {
       setNames([]);
+      setElsewhere([]);
       return;
     }
     let stopped = false;
@@ -56,12 +73,29 @@ export function useRoster(signedIn: boolean): AtName {
       // SWALLOWED, and the composer keeps working without it. A suggestion list
       // is help; typing the name yourself still resolves at the node. Failing
       // loudly here would take the message box down for a garnish.
-      const roster = await api
-        .presence()
-        .then((p) => (p.members ?? []).map((m) => ({ name: m.name, kind: m.kind })))
-        .catch(() => null);
+      const roster = await api.presence().catch(() => null);
       if (stopped || roster === null) return;
-      setNames(roster);
+      const here: { name: string; kind: string }[] = [];
+      const away: { name: string; projects: string[] }[] = [];
+      const seenHere = new Set<string>();
+      const seenAway = new Set<string>();
+      for (const m of roster.members ?? []) {
+        if (!m.name) continue;
+        // Absent projects is "the node could not measure", not "elsewhere" -
+        // a member that old nodes answer nothing about is kept rather than
+        // hidden, and the roster below reads the same field the same way.
+        if (!m.projects || (project !== undefined && m.projects.includes(project))) {
+          if (!seenHere.has(m.name)) {
+            seenHere.add(m.name);
+            here.push({ name: m.name, kind: m.kind });
+          }
+        } else if (!seenAway.has(m.name)) {
+          seenAway.add(m.name);
+          away.push({ name: m.name, projects: m.projects });
+        }
+      }
+      setNames(here);
+      setElsewhere(away);
     };
     void load();
     const every = setInterval(() => void load(), REFRESH_MS);
@@ -69,9 +103,9 @@ export function useRoster(signedIn: boolean): AtName {
       stopped = true;
       clearInterval(every);
     };
-  }, [signedIn]);
+  }, [signedIn, project]);
 
-  return { names };
+  return { names, elsewhere };
 }
 
 /**

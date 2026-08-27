@@ -1138,7 +1138,21 @@ export function ChatRoom() {
           >
             {panelOpen ? "hide" : "todos, threads"}
           </Button>
-          {whoami?.project ? <Badge variant="outline">{whoami.project}</Badge> : null}
+          {/*
+            WHICH PROJECT THIS ROOM BELONGS TO, said rather than implied.
+            Row 01M0X22ECZ4: two projects both have a room called general, and
+            the page never said which one this was - so the roster below could
+            draw the other project's speakers under "in the room" and nobody
+            could tell the page was not about them. The room is the caller's
+            home project: the room list navigated from it, and it is where the
+            composer below writes. Named in the markup too, so a check can ask
+            the page rather than guess from a badge's text.
+          */}
+          {whoami?.project ? (
+            <Badge variant="outline" data-room-project={whoami.project}>
+              project {whoami.project}
+            </Badge>
+          ) : null}
           <Badge variant={live ? "default" : "outline"}>{live ? "watching" : "idle"}</Badge>
           {/*
             ON SCREEN, not "in the room". It used to be able to say either,
@@ -1566,7 +1580,7 @@ export function ChatRoom() {
         ) : null}
         {pane === "listening" ? (
           <div data-room-pane-body="listening" className="min-h-0 flex-1 overflow-y-auto">
-            <RoomRoster presence={presence} />
+            <RoomRoster presence={presence} project={whoami?.project} />
           </div>
         ) : null}
         {pane === "worklog" ? (

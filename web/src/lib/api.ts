@@ -447,7 +447,21 @@ export interface InboxReader {
  * deaf, and dropping the row would have deleted the only record that it had.
  */
 export interface Presence {
-  members: { actor: string; name: string; kind: string; role?: string }[];
+  members: {
+    actor: string;
+    name: string;
+    kind: string;
+    role?: string;
+    /**
+     * Where this speaker's readable messages landed. A room belongs to a
+     * project, so a name whose projects do not include the room's project
+     * cannot hear that room - this is the field the @ list and the roster
+     * filter on. Absent when the node had nothing to measure, which the
+     * console reads as "cannot say" and keeps offering rather than hiding a
+     * name the node has not judged.
+     */
+    projects?: string[];
+  }[];
   listeners: {
     principal: string;
     project: string;

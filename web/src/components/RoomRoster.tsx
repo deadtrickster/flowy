@@ -14,8 +14,22 @@ import { speakerStyle } from "@/lib/speakercolour";
  * wake nobody, because only a harness-tracked waiter exiting produces a
  * notification. Drawn from attachment alone this panel called such a listener
  * healthy for 28 minutes while the person who wrote into the room got silence.
+ *
+ * MEMBERS SPLIT BY WHERE THEY SPOKE. Row 01M0X22ECZ4: "in the room" was
+ * everyone who had spoken anywhere this caller could read, so a pane for Lab's
+ * #general showed flowy's speakers under a heading that claimed they were
+ * here. Members carry their projects now; names whose projects do not include
+ * THIS room's project draw under "elsewhere on this node" with the projects
+ * named, so the pane says who is where instead of flattening the two.
  */
-export function RoomRoster({ presence }: { presence: Presence | null }) {
+export function RoomRoster({
+  presence,
+  project,
+}: {
+  presence: Presence | null;
+  /** The room's project, from the caller's whoami - what the composer writes into. */
+  project?: string;
+}) {
   if (!presence) {
     return (
       <div className="border-border border-b px-4 py-3">
@@ -93,16 +107,26 @@ export function RoomRoster({ presence }: { presence: Presence | null }) {
   const ears = groupByPrincipal(live);
   const deaf = groupByPrincipal(lost);
 
+  // THE SPLIT THE ROW ASKED FOR. Absent projects is "the node could not
+  // measure", not "elsewhere" - such a member stays under "in the room" rather
+  // than being banished by a field that was never answered.
+  const here = presence.members.filter(
+    (m) => !m.projects || project === undefined || m.projects.includes(project),
+  );
+  const away = presence.members.filter(
+    (m) => m.projects !== undefined && project !== undefined && !m.projects.includes(project),
+  );
+
   return (
     <div className="border-border border-b px-4 py-3">
       <div className="pb-1 font-medium text-muted-foreground text-xs uppercase tracking-wide">
         in the room
       </div>
       <div className="flex flex-wrap gap-1 pb-2">
-        {presence.members.length === 0 ? (
+        {here.length === 0 ? (
           <span className="text-muted-foreground text-xs">nobody has spoken yet</span>
         ) : (
-          presence.members.map((m) => (
+          here.map((m) => (
             <Badge
               key={m.actor}
               variant="secondary"
@@ -126,6 +150,38 @@ export function RoomRoster({ presence }: { presence: Presence | null }) {
           ))
         )}
       </div>
+
+      {/*
+        THE OTHER HALF OF THE SPLIT, and the half the row is about. Two projects
+        both have a room called general, so a roster that drew every readable
+        speaker under "in the room" told the operator that the flowy seats were
+        in Lab's room. These are speakers the node knows who are NOT in this
+        project, drawn under their own heading with the projects named - so the
+        pane says who is where instead of flattening the two.
+      */}
+      {away.length > 0 ? (
+        <>
+          <div className="pb-1 font-medium text-muted-foreground text-xs uppercase tracking-wide">
+            elsewhere on this node
+          </div>
+          <div className="flex flex-wrap gap-1 pb-2">
+            {away.map((m) => (
+              <Badge
+                key={m.actor}
+                variant="outline"
+                data-elsewhere={m.actor}
+                data-elsewhere-name={named(m)}
+                style={speakerStyle(named(m))}
+              >
+                {named(m)}
+                <span className="pl-1 font-normal text-[10px] opacity-70">
+                  speaks in {(m.projects ?? []).join(", ")}
+                </span>
+              </Badge>
+            ))}
+          </div>
+        </>
+      ) : null}
 
       <div className="pb-1 font-medium text-muted-foreground text-xs uppercase tracking-wide">
         listening

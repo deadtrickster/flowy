@@ -105,7 +105,7 @@ export function MessageBox({
   // mention that does not resolve is prose, so this list is not decoration, it
   // is the difference between addressing somebody and appearing to.
   const { whoami } = useSession();
-  const { names } = useRoster(whoami != null);
+  const { names, elsewhere } = useRoster(whoami != null, whoami?.project);
   // The @word the caret is inside, recomputed on every draft or caret move.
   // Held rather than derived at render because the CARET is not state React
   // knows about - a selection change with no text change still moves it.
@@ -117,6 +117,27 @@ export function MessageBox({
 
   const shown = at ? matchNames(names, at.fragment).slice(0, 6) : [];
   const offering = shown.length > 0 && at !== null;
+  /**
+   * A NAME THAT CANNOT HEAR THIS ROOM, TYPED IN FULL.
+   *
+   * Row 01M0X22ECZ4: a room never said who can hear it, so agents addressed
+   * people in the other project's #general - and a mention RESOLVES at write
+   * time, so the message looked addressed while it reached nobody in the room.
+   * The suggestion list now offers only names that can hear; this is the other
+   * half, the name somebody types in full anyway.
+   *
+   * SAID, NOT REFUSED. Refusing the send would be wrong - "I mean @bob" is a
+   * thing a person can know and the node cannot, and a mention of somebody who
+   * is not here is still a message they can read later. So the box says so at
+   * compose time, before the send, and the send stays a send.
+   *
+   * Exact match only, case-insensitive: a half-typed name might still be
+   * somebody else, and a fragment that merely STARTS with an elsewhere name is
+   * exactly the case the list exists to help finish differently.
+   */
+  const warned = at
+    ? elsewhere.find((e) => e.name.toLowerCase() === at.fragment.toLowerCase())
+    : undefined;
 
   /** Where the caret is now, asked of the element rather than remembered. */
   const lookAt = (el: HTMLTextAreaElement | null) => {
@@ -345,6 +366,23 @@ export function MessageBox({
               <span className="text-muted-foreground text-xs">{n.kind}</span>
             </button>
           ))}
+        </div>
+      ) : null}
+
+      {/*
+        The compose-time warning, between the list and the box. It is a claim
+        about the node's roster and not a block - see `warned` above for why
+        the send stays a send.
+      */}
+      {warned ? (
+        <div
+          data-at-warn={warned.name}
+          className="rounded border border-amber-500/50 bg-amber-500/10 px-2 py-1 text-amber-700 text-xs dark:text-amber-400"
+        >
+          @{warned.name} cannot hear #{room} -{" "}
+          {warned.projects.length > 0
+            ? `they speak in ${warned.projects.join(", ")}, not here`
+            : "the node has seen them speak in no project you can read"}
         </div>
       ) : null}
 
