@@ -2,7 +2,7 @@
  * A room says its project, the @ list offers only names that can hear it, and a
  * name typed in full that cannot is said at compose time.
  *
- *   node scripts/room-audience-check.mjs BASE_URL TOKEN_A TOKEN_A_AGENT TOKEN_B USER_A USER_B PROJECT_A PROJECT_B
+ *   node scripts/room-audience-check.mjs BASE_URL TOKEN_A TOKEN_B USER_A USER_B PROJECT_A PROJECT_B
  *
  * The operator, 2026-08-25 (row 01M0X22ECZ4): "we should be clear who is in the
  * rooms". Two projects both have a room called general, so agents addressed
@@ -16,36 +16,59 @@
  * the roster draws the elsewhere speaker under their own heading with the
  * project named (arm 4).
  *
- * THE FIXTURE EARNS ITS NEGATIVES. Alice (pa) and bob (pb) each speak in a room
- * called audroom - one room name, two rooms, the failure the row describes.
- * Bob then grants pa read of pb, so alice's AGENT - the browser's identity -
- * can SEE bob in the roster: without the grant, "bob is not offered" would be
- * true by blindness, which is not a test.
+ * THE FIXTURE EARNS ITS NEGATIVES WITHOUT WRITING A GRANT. Alice (pa) and bob
+ * (pb) each speak in a room called audroom - one room name, two rooms, the
+ * failure the row describes. The browser reads as BOB, and bob can SEE alice
+ * because the suite's own grant checks have already opened pa to pb by the
+ * time console checks run (run-tests.sh: "A opens pa up to pb"). A check that
+ * earned its own grant would leave the node's grant table changed for every
+ * later permission check - measured, the hard way: a pa->pb grant of the
+ * check's own turned six later checks red, each one saying what a token could
+ * now read. Standing on the suite's grant means the fixture is real and the
+ * node is left exactly as it was found.
+ *
+ * AND IT DELETES THE CONSOLE'S READER ROWS. One shell load declares
+ * console:<room> rows for the sidebar and console-dm for the direct rail
+ * under the browser's principal (user-first), and inbox_readers keys on the
+ * principal - a row left behind is a second row with the same first part for
+ * the suite's own reader-row check, whose arithmetic then sees two marks where
+ * it read one. The browser closes before the deletes (a refresh in flight
+ * could re-declare), and the empty state is CHECKED afterwards, the way the
+ * unread check taught: a delete that quietly did not happen leaves a reader
+ * that is poisoned.
  */
 
 import { chromium } from "playwright";
 
 import { refuseRemote } from "./localonly.mjs";
 
-const [base, tokenA, tokenAAgent, tokenB, userA, userB, projectA, projectB] = process.argv.slice(2);
-if (!base || !tokenA || !tokenAAgent || !tokenB || !userA || !userB || !projectA || !projectB) {
+const [base, tokenA, tokenB, userA, userB, projectA, projectB] = process.argv.slice(2);
+if (!base || !tokenA || !tokenB || !userA || !userB || !projectA || !projectB) {
   console.error(
-    "usage: node scripts/room-audience-check.mjs BASE_URL TOKEN_A TOKEN_A_AGENT TOKEN_B USER_A USER_B PROJECT_A PROJECT_B",
+    "usage: node scripts/room-audience-check.mjs BASE_URL TOKEN_A TOKEN_B USER_A USER_B PROJECT_A PROJECT_B",
   );
   process.exit(2);
 }
 refuseRemote(base, "room-audience-check");
 
 const ROOM = "audroom";
+
 const die = (message) => {
-  console.error(message);
-  process.exit(1);
+  throw new Error(message);
+};
+
+const call = async (token, path, init = {}) => {
+  const r = await fetch(`${base}${path}`, {
+    ...init,
+    headers: { Authorization: `Bearer ${token}`, ...(init.headers ?? {}) },
+  });
+  return r;
 };
 
 const say = async (token, body) => {
-  const r = await fetch(`${base}/api/chat/${encodeURIComponent(ROOM)}/say`, {
+  const r = await call(token, `/api/chat/${encodeURIComponent(ROOM)}/say`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ body }),
   });
   if (!r.ok) die(`seeding "${body}" was refused: HTTP ${r.status} ${await r.text()}`);
@@ -54,53 +77,42 @@ const say = async (token, body) => {
 await say(tokenA, "alice is in pa audroom");
 await say(tokenB, "bob is in pb audroom");
 
-// THE GRANT. Bob is a pb principal, so he opens pb up to pa - the same shape
-// the suite's own grant checks use. This is what makes the browser able to see
-// the name it must not offer.
-const grant = await fetch(`${base}/api/grants`, {
-  method: "POST",
-  headers: { "Content-Type": "application/json", Authorization: `Bearer ${tokenB}` },
-  body: JSON.stringify({ from_project: projectA, to_project: projectB }),
-});
-if (!grant.ok) {
-  die(`the fixture grant was refused: HTTP ${grant.status} ${await grant.text()}
-Nothing about who can hear the room was tested - the negative arms need a
-cross-project reader and only the grant makes one.`);
-}
-
 // WHO THE ROSTERS SAY, asked of the door the page offers from. The member names
 // are the node's own - a check that hardcoded a handle would assert about a
 // name the page never drew.
-const presence = await fetch(`${base}/api/presence`, {
-  headers: { Authorization: `Bearer ${tokenAAgent}` },
-}).then((r) => (r.ok ? r.json() : die(`/api/presence answered ${r.status}`)));
-const here = (presence.members ?? []).find((m) => m.actor === userA);
-const away = (presence.members ?? []).find((m) => m.actor === userB);
-if (!here?.name) die("the pa speaker is not in the roster - the fixture said nothing");
-if (!away?.name) die("the pb speaker is not in the roster - the grant did not open pb to pa");
-// WHERE THEY SPOKE is asserted by the page arms, not here: on an old node the
-// door answers no projects at all, and that is itself the defect the arms name.
-// Dying here would make the red run die about the fixture instead of the page.
+const presence = await call(tokenB, "/api/presence").then((r) =>
+  r.ok ? r.json() : die(`/api/presence answered ${r.status}`),
+);
+const here = (presence.members ?? []).find((m) => m.actor === userB);
+const away = (presence.members ?? []).find((m) => m.actor === userA);
+if (!here?.name) die("the pb speaker is not in the roster - the fixture said nothing");
+if (!away?.name) {
+  die(`the pa speaker is not in the roster - the suite's pa->pb grant is not
+standing, so the fixture is blind. Nothing about who can hear the room was tested.`);
+}
 
 const newest = async () => {
-  const r = await fetch(`${base}/api/chat/${encodeURIComponent(ROOM)}?order=recent&limit=1`, {
-    headers: { Authorization: `Bearer ${tokenAAgent}` },
-  });
+  const r = await call(tokenB, `/api/chat/${encodeURIComponent(ROOM)}?order=recent&limit=1`);
   if (!r.ok) die(`reading #${ROOM} answered ${r.status}`);
   const page = await r.json();
   return page.events?.[0];
 };
 
 const browser = await chromium.launch();
+// Set only once the shell is up: the cleanup below must not delete reader rows
+// when no console of this check ever declared any - on a failed launch the rows
+// present belong to an earlier check.
+let mounted = false;
 try {
   const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
   const crashes = [];
   page.on("pageerror", (err) => crashes.push(String(err)));
-  await page.addInitScript((t) => localStorage.setItem("flowy.token", t), tokenAAgent);
+  await page.addInitScript((t) => localStorage.setItem("flowy.token", t), tokenB);
   await page.goto(`${base}/chat/${encodeURIComponent(ROOM)}`, { timeout: 30_000 }).catch(() => {});
   const composer = page.locator('textarea[aria-label="message"]');
   await composer.waitFor({ state: "visible", timeout: 20_000 }).catch(() => {});
   if ((await composer.count()) === 0) die("no composer on the room page");
+  mounted = true;
   if (crashes.length > 0) die(`the room threw: ${crashes.join("; ")}`);
 
   // ARM 1: THE PAGE SAYS WHICH PROJECT THE ROOM BELONGS TO. Two projects both
@@ -111,8 +123,8 @@ try {
 both have #${ROOM}, and a page that says neither tells nobody which one it is`);
   }
   const stated = (await badge.first().textContent()) ?? "";
-  if (!stated.includes(projectA)) {
-    die(`the room badge says ${JSON.stringify(stated)}, wanted it to name ${projectA}`);
+  if (!stated.includes(projectB)) {
+    die(`the room badge says ${JSON.stringify(stated)}, wanted it to name ${projectB}`);
   }
 
   // ARM 2: TYPING @ OFFERS ONLY NAMES THAT CAN HEAR THIS ROOM.
@@ -130,12 +142,12 @@ both have #${ROOM}, and a page that says neither tells nobody which one it is`);
     die(`typing @ did not offer ${here.name}. Offered: ${offered.join(", ") || "(nothing)"}`);
   }
   if (offered.includes(away.name)) {
-    die(`typing @ offered ${away.name}, who speaks in ${projectB} and cannot hear this
+    die(`typing @ offered ${away.name}, who speaks in ${projectA} and cannot hear this
 room. The list must offer only names that can hear it.`);
   }
 
   // ARM 3: A NAME TYPED IN FULL IS SAID AT COMPOSE TIME, AND THE SEND IS NOT
-  // REFUSED. The row judged refusing the send wrong - "I mean @bob" is a thing
+  // REFUSED. The row judged refusing the send wrong - "I mean @alice" is a thing
   // a person can know - so the box says so BEFORE the send, and Enter stays a
   // send. The second half is asserted by the message landing.
   await composer.fill("");
@@ -147,7 +159,7 @@ room. The list must offer only names that can hear it.`);
 hear this room, and the box must say so BEFORE the send, not after it`);
   }
   const warnText = (await warn.first().textContent()) ?? "";
-  if (!warnText.includes(projectB)) {
+  if (!warnText.includes(projectA)) {
     die(`the warning does not say where ${away.name} is: ${JSON.stringify(warnText)}`);
   }
   const before = (await newest())?.id ?? "";
@@ -173,20 +185,64 @@ hear this room, and the box must say so BEFORE the send, not after it`);
 every readable speaker as in the room, which is the flat roster the row filed`);
   }
   const elseText = (await elsewhereBadge.first().textContent()) ?? "";
-  if (!elseText.includes(projectB)) {
+  if (!elseText.includes(projectA)) {
     die(`the elsewhere badge does not say which project: ${JSON.stringify(elseText)}`);
   }
   const inRoom = await page
     .locator("[data-member]")
     .evaluateAll((els) => els.map((e) => e.getAttribute("data-member")));
-  if (inRoom.includes(userB)) {
-    die(`${away.name} is drawn as in the room while their projects name only ${projectB}`);
+  if (inRoom.includes(userA)) {
+    die(`${away.name} is drawn as in the room while their projects name only ${projectA}`);
   }
 
   if (crashes.length > 0) die(`the page threw: ${crashes.join("; ")}`);
   console.log(
-    `#${ROOM} says it belongs to ${projectA}, @ offers ${here.name} and not ${away.name}, @${away.name} is warned at compose time and still sends, and the roster puts ${away.name} in ${projectB}`,
+    `#${ROOM} says it belongs to ${projectB}, @ offers ${here.name} and not ${away.name}, @${away.name} is warned at compose time and still sends, and the roster puts ${away.name} in ${projectA}`,
   );
+} catch (err) {
+  console.error(err instanceof Error ? err.message : String(err));
+  process.exitCode = 1;
 } finally {
+  // Leave the node's inbox_readers as the check found it. The browser closes
+  // FIRST - the shell re-declares its reader rows on a tick, so deleting while
+  // it lives could lose a row to a refresh in flight. Runs on arm failures
+  // too: a red run must not leave a poisoned reader for the rest of the suite.
   await browser.close();
+  if (mounted) {
+    // Every row this browser's shell can have declared: console:<room> for the
+    // sidebar and console-dm for the direct rail (a dash, deliberately - a
+    // colon there would collide with a room some day). No other console check
+    // drives a TOKEN_B browser, so under this token they are all this one's.
+    const held = await call(tokenB, "/api/inbox/readers").then((r) =>
+      r.ok ? r.json() : die(`/api/inbox/readers answered ${r.status}`),
+    );
+    const mine = (held.readers ?? []).filter(
+      (row) => row.reader === "console-dm" || row.reader.startsWith("console:"),
+    );
+    for (const row of mine) {
+      const r = await call(tokenB, `/api/inbox/reader/${encodeURIComponent(row.reader)}`, {
+        method: "DELETE",
+      });
+      // 404 is the goal state reached another way - the row vanished between
+      // the list and the delete. Anything else must be said.
+      if (!r.ok && r.status !== 404) {
+        console.error(`deleting the ${row.reader} reader row was refused: HTTP ${r.status}`);
+        process.exitCode = 1;
+      }
+    }
+    // AND THE RESULT IS CHECKED, the way the unread check taught: a delete
+    // that quietly did not happen leaves a reader that is poisoned.
+    const after = await call(tokenB, "/api/inbox/readers").then((r) =>
+      r.ok ? r.json() : die(`/api/inbox/readers answered ${r.status}`),
+    );
+    const left = (after.readers ?? []).filter(
+      (row) => row.reader === "console-dm" || row.reader.startsWith("console:"),
+    );
+    if (left.length > 0) {
+      console.error(
+        `the console's reader rows survived the cleanup: ${left.map((row) => row.reader).join(", ")}`,
+      );
+      process.exitCode = 1;
+    }
+  }
 }

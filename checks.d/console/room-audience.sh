@@ -19,18 +19,21 @@
 # stays a send, by COUNTING THE ROOM the way an_at_offers does - a send is a row
 # on the node, and the page is never asked to swear to one.
 #
-# THE FIXTURE EARNS ITS NEGATIVES. Alice (pa) and bob (pb) each speak in a room
-# called audroom - one room name, two rooms, the failure the row describes. Bob
-# then grants pa read of pb mid-check, so the browser's identity (alice's agent)
-# can SEE the name it must not offer. Without the grant, "bob is not offered"
-# would be true by blindness, which is not a test.
+# THE FIXTURE EARNS ITS NEGATIVES WITHOUT WRITING A GRANT. Alice (pa) and bob
+# (pb) each speak in a room called audroom - one room name, two rooms, the
+# failure the row describes. The browser reads as BOB, and bob can see alice
+# because the suite's own grant checks have already opened pa to pb by the time
+# console checks run. A check that earned its own grant leaves the grant table
+# changed for every later permission check - measured, the hard way: a pa->pb
+# grant of the check's own turned six later checks red. The check also deletes
+# the console reader rows its shell load declares, checked, so the suite's own
+# reader-row check keeps reading exactly one mark per principal.
 
 a_room_says_its_project_and_offers_only_who_can_hear_it() {
 	recall
 	cd "$ROOT/web" || return 1
 	node scripts/room-audience-check.mjs "http://127.0.0.1:$HTTP_PORT" \
-		"$TOKEN_A" "$TOKEN_A_AGENT" "$TOKEN_B" "$USER_A" "$USER_B" \
-		"$PROJECT_A" "$PROJECT_B"
+		"$TOKEN_A" "$TOKEN_B" "$USER_A" "$USER_B" "$PROJECT_A" "$PROJECT_B"
 }
 
 check "a room says its project, @ offers only names that can hear it, and an elsewhere name is said before the send" \
