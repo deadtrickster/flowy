@@ -32,6 +32,7 @@ import { FreshBanner } from "@/components/FreshBanner";
 import { ResizeHandle } from "@/components/ResizeHandle";
 import { TokenBar } from "@/components/TokenBar";
 import { api } from "@/lib/api";
+import { useSession } from "@/lib/session";
 import { useIgnoredRooms, useRoomList, useUnread } from "@/lib/unread";
 import { cn } from "@/lib/utils";
 import { useWaiting } from "@/lib/waiting";
@@ -50,6 +51,107 @@ function navClass({ isActive }: { isActive: boolean }) {
  * badge that clears is a badge that is gone from the document. The room is on
  * it so a check can find the one it means - see scripts/unread-check.mjs.
  */
+
+/**
+ * WHICH PROJECT AM I IN, in the one place every page shows.
+ *
+ * 01M10V97MD, the operator: "No currnet project name anywhere ... no way to
+ * quickly switch between projects - replacy 'handoff fabric console' with a
+ * project dropdown". The subtitle it replaces was a slogan, and a slogan is
+ * what this corner said while two messages went into pa's #general instead of
+ * flowy's - routes/Projects.tsx records that one. Every project has a #general,
+ * so a room name is not an address once there is more than one project.
+ *
+ * SWITCHING IS A SESSION ACT and only a person has one: entering needs a cookie
+ * and a membership, and an agent credential has neither. So a seat sees the
+ * name and no control, which is the honest rendering - not a dropdown that
+ * refuses when pressed.
+ *
+ * ABSENT IS NOT EMPTY, the same distinction the field carries on the node.
+ * memberships null means nobody said (an agent, or a whoami still in flight) and
+ * draws no control; [] means this person belongs to nothing, and that gets a
+ * word rather than an empty menu, because a menu with no items reads as broken.
+ */
+function ProjectBadge() {
+  const { whoami, refresh } = useSession();
+  const [busy, setBusy] = useState("");
+  const [refused, setRefused] = useState("");
+
+  const here = whoami?.project ?? "";
+  const mine = whoami?.memberships ?? null;
+  // The list is what a person may ENTER, and being here already is not a
+  // reason to leave the current project out of it - it is the one that has to
+  // be shown as current.
+  const others = (mine ?? []).filter((p) => p !== here);
+
+  const enter = async (project: string) => {
+    setBusy(project);
+    setRefused("");
+    try {
+      // The node answers where the writes now land rather than "ok", so the
+      // refusal is its sentence and not a guess made here.
+      await api.enterProject(project);
+      refresh();
+    } catch (err) {
+      setRefused(String(err));
+    } finally {
+      setBusy("");
+    }
+  };
+
+  if (!whoami) {
+    return <div className="text-muted-foreground text-xs">handoff fabric console</div>;
+  }
+  return (
+    <div className="flex flex-col gap-0.5">
+      <div className="flex items-center gap-1.5">
+        <span
+          data-current-project={here || "none"}
+          className="font-mono text-foreground text-xs"
+          title={
+            whoami.project_fixture
+              ? `you are writing into ${here}, which is demo seed data`
+              : `you are writing into ${here || "no project"}`
+          }
+        >
+          {here || "no project"}
+        </span>
+        {/* A FIXTURE IS WRITABLE, which is exactly why it has to be said. */}
+        {whoami.project_fixture ? (
+          <span className="rounded bg-destructive/15 px-1 text-[10px] text-destructive">
+            fixture
+          </span>
+        ) : null}
+      </div>
+      {mine === null ? null : others.length === 0 ? (
+        <span className="text-[10px] text-muted-foreground">
+          {mine.length === 0 ? "no other project to switch to" : "the only one you are in"}
+        </span>
+      ) : (
+        <div className="flex flex-wrap items-center gap-1" data-project-switcher={others.length}>
+          {others.map((p) => (
+            <button
+              key={p}
+              type="button"
+              data-enter-project={p}
+              disabled={busy !== ""}
+              onClick={() => void enter(p)}
+              className="cursor-pointer rounded border border-border px-1 font-mono text-[10px] text-muted-foreground transition hover:border-primary/50 hover:text-foreground disabled:opacity-50"
+            >
+              {busy === p ? `${p}…` : p}
+            </button>
+          ))}
+        </div>
+      )}
+      {refused ? (
+        <span data-enter-refused className="text-[10px] text-destructive">
+          {refused}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
 function UnreadDot({ room, n }: { room: string; n: number }) {
   if (n <= 0) return null;
   return (
@@ -235,7 +337,7 @@ export function Shell({ children }: { children: ReactNode }) {
       >
         <div className="px-2 pt-1">
           <div className="font-semibold text-lg tracking-tight">flowy</div>
-          <div className="text-muted-foreground text-xs">handoff fabric console</div>
+          <ProjectBadge />
         </div>
 
         {/*
