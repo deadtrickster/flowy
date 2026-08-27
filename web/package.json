@@ -10,7 +10,8 @@
     "postbuild": "node scripts/keep-dist.mjs",
     "preview": "vite preview",
     "check": "biome check .",
-    "fix": "biome check --write ."
+    "fix": "biome check --write .",
+    "prebuild": "node scripts/ghostty-wasm.mjs"
   },
   "dependencies": {
     "@radix-ui/react-slot": "^1.1.2",
@@ -20,6 +21,7 @@
     "dompurify": "^3.4.13",
     "eventsource": "^5.1.0",
     "framer-motion": "^12.4.7",
+    "ghostty-web": "^0.4.0",
     "lucide-react": "^0.475.0",
     "marked": "^18.0.9",
     "react": "^19.0.0",

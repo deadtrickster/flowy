@@ -1,0 +1,6 @@
+# ghostty's wasm, copied here from node_modules by scripts/ghostty-wasm.mjs so
+# that vite serves it at /ghostty-vt.wasm, which is where ghostty-web's init()
+# looks. NOT committed: it is two megabytes of a dependency this repo already
+# pins in package-lock.json, and a second copy is one free to drift from the
+# version the installed library expects.
+public/ghostty-vt.wasm

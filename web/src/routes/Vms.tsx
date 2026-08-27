@@ -1,3 +1,4 @@
+import { VmShell } from "@/components/VmShell";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -291,6 +292,15 @@ export function Vms() {
           ))}
         </ul>
       )}
+
+      {/* A SHELL, BESIDE THE SPAWN CONTROLS THAT WERE ALREADY HERE.
+          The operator asked for "a run button which will bring fcvm with the
+          shell relayed to the panel". This page already knew how to list
+          projects, spawn over one and read a log; what it could not do is the
+          interactive half, which is the whole of this row. Put here rather
+          than on a new page because a second page listing the same projects
+          with a different verb is two answers to "what can I run over". */}
+      <VmShell project={project} />
 
       {opened ? (
         <section className="flex flex-col gap-2" data-vm-console={opened}>
