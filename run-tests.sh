@@ -16177,6 +16177,15 @@ console_reports_the_status_not_the_parse_error() {
 	node scripts/api-error-check.mjs
 }
 
+# A time label that says only "23:14:02" is unambiguous for about a day and then
+# lies by omission: a row from Tuesday and one from ten minutes ago render
+# identically. Every list in the console stamps through lib/utils clock(), so
+# the check drives that helper directly, across a day boundary and a year one.
+time_labels_say_which_day_they_mean() {
+	cd "$ROOT/web" || return 1
+	node scripts/clock-check.mjs
+}
+
 say "answering in a thread is not publishing"
 check "a project mate's reply is not sent to the forge (HIGH 1)" \
 	only_the_owners_replies_reach_the_forge
@@ -16200,6 +16209,10 @@ check "an oversized pull answer is a named error, not a parse error (LOW 5)" \
 say "a body that is not json still has a status"
 check "a non-json error body becomes an ApiError with the status (LOW 6)" \
 	console_reports_the_status_not_the_parse_error
+
+say "a stamp says which day it means"
+check "a time label carries the date when it is not today" \
+	time_labels_say_which_day_they_mean
 
 # -------------------------------------------------- phase 6.5: signed rows
 #

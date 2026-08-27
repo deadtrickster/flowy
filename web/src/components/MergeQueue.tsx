@@ -5,7 +5,7 @@ import type { KnownIssue, MergeLock, MergeRequest } from "@/lib/api";
 import { artifactPath, refPath } from "@/lib/api";
 import { toneStyle, verdictTone } from "@/lib/statecolour";
 import { statusStyle } from "@/lib/todos";
-import { shortId } from "@/lib/utils";
+import { clock, shortId } from "@/lib/utils";
 
 /**
  * The verdict colours now come from lib/statecolour.ts rather than from a
@@ -220,7 +220,11 @@ function stamp(iso?: string) {
   if (!iso) return "";
   const at = new Date(iso);
   if (Number.isNaN(at.getTime()) || at.getFullYear() < 2000) return "";
-  return at.toLocaleTimeString();
+  // The zero-time refusal above is this function's whole reason to exist; the
+  // RENDERING is clock()'s job and is shared, so a queue stamp gains the date
+  // on a row from yesterday exactly as every other list does. Keeping a second
+  // toLocaleTimeString() here is how the two drift.
+  return clock(iso);
 }
 
 /** Whole minutes between two instants, or null when either is unusable. */
