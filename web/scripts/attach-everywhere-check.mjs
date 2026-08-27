@@ -248,8 +248,96 @@ everything. A deliberate <em> must still be emphasis.`);
 eaten word back must not put a forbidden tag back with it.`);
   }
 
+  // 7 - ATTACHING FROM THE CONSOLE REACHES THE NODE, AND MOVES NOTHING ELSE.
+  //
+  // The arms above all seeded through the door and asserted the drawing. This
+  // one goes the other way: a file is chosen in the comment box, the comment is
+  // added, and the NODE is asked what it now holds - because a composer that
+  // rendered its own optimism and posted nothing would satisfy every arm so far.
+  //
+  // AND THE ARM THAT MATTERS. Attaching must not change the row's assignee, its
+  // status or its body. A control that quietly rewrote the body to carry its own
+  // reference would look exactly like success, and would be the console editing
+  // prose somebody else wrote.
+  const before = await (
+    await fetch(`${base}/api/artifact/${encodeURIComponent(commented)}`, {
+      headers: bearer,
+    })
+  ).json();
+  await page.goto(`${base}${await pathOf(commented)}`, { timeout: 30_000 });
+  const picker = page.locator("[data-note-attach]");
+  await picker.waitFor({ state: "attached", timeout: 20_000 }).catch(() => {});
+  if ((await picker.count()) === 0) {
+    await die(`the comment box on ${commented} offers no way to attach a file, so a screenshot
+can only be put on a comment by writing an id into the text by hand.`);
+  }
+  await picker.setInputFiles({
+    name: "evidence.png",
+    mimeType: "image/png",
+    buffer: Buffer.from(ONE_PIXEL_PNG, "base64"),
+  });
+  const draft = page.locator("[data-note-draft]");
+  let referenced = "";
+  for (let i = 0; i < 40; i++) {
+    const text = (await draft.inputValue()) || "";
+    const found = /!\[[^\]]*\]\((01[0-9A-HJKMNP-TV-Z]{24})\)/.exec(text);
+    if (found) {
+      referenced = found[1];
+      break;
+    }
+    await page.waitForTimeout(250);
+  }
+  if (!referenced) {
+    await die(`a file was chosen in the comment box on ${commented} and the draft never came to
+refer to it: ${JSON.stringify(await draft.inputValue())}`);
+  }
+  await draft.fill(`${await draft.inputValue()}\n\nwith the evidence above.`);
+  await page.locator("[data-note-add]").click();
+
+  let carriedNow = null;
+  for (let i = 0; i < 40; i++) {
+    const notes = await (
+      await fetch(`${base}/api/todo/${encodeURIComponent(commented)}/notes`, { headers: bearer })
+    ).json();
+    // {item, notes}, and `notes` is never null - viewNotes substitutes an empty
+    // slice precisely so a client cannot read "no notes" off the same value as
+    // "this door does not carry notes". So an absent key here is a broken door,
+    // not an empty row, and it is worth saying which.
+    if (!Array.isArray(notes.notes)) {
+      await die(
+        `GET /api/todo/{id}/notes answered without a notes array: ${JSON.stringify(notes).slice(0, 200)}`,
+      );
+    }
+    const entries = notes.notes;
+    if (entries.some((entry) => String(entry.note ?? "").includes(referenced))) {
+      carriedNow = entries;
+      break;
+    }
+    await page.waitForTimeout(250);
+  }
+  if (!carriedNow) {
+    await die(`the comment box said it had attached ${referenced} and the node holds no note
+that refers to it. The console drew its own optimism.`);
+  }
+
+  const after = await (
+    await fetch(`${base}/api/artifact/${encodeURIComponent(commented)}`, {
+      headers: bearer,
+    })
+  ).json();
+  for (const [what, was, is] of [
+    ["assignee", before.fields?.assignee ?? "", after.fields?.assignee ?? ""],
+    ["status", before.status ?? "", after.status ?? ""],
+    ["body", before.body ?? "", after.body ?? ""],
+  ]) {
+    if (was !== is) {
+      await die(`attaching a file to a comment changed the row's ${what} from
+${JSON.stringify(was)} to ${JSON.stringify(is)}. Attaching is not editing.`);
+    }
+  }
+
   console.log(
-    `a note drew its file and its neighbour drew none; a body drew ${pixel.slice(0, 10)} at ${width}px and listed it too; one comment of two drew it; an unfollowable reference was named; <you> survived the sanitizer and <script> did not`,
+    `a note drew its file and its neighbour drew none; a body drew ${pixel.slice(0, 10)} at ${width}px and listed it too; one comment of two drew it; an unfollowable reference was named; <you> survived the sanitizer and <script> did not; and a file chosen in the comment box reached the node without moving the row's assignee, status or body`,
   );
 } finally {
   await clearRaised();
