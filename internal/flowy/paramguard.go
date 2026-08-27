@@ -133,6 +133,7 @@ var routeParams = map[string][]string{
 	"POST /api/projects/{project}/members": {},
 	"GET /api/search":                      {"kind", "limit", "project", "q", "scope", "status", "type"},
 	"GET /api/stream":                      {"since", "topics"},
+	"GET /api/agent/socket":                {"project"},
 	"GET /api/sync/pull":                   {"limit", "since"},
 	"GET /api/task/{id}":                   {},
 	"GET /api/todo/{id}/assignee":          {},

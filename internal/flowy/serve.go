@@ -31,6 +31,12 @@ const defaultAddr = "127.0.0.1:8787"
 type server struct {
 	db   *store.DB
 	node string
+	// agents are the VM shells this node is relaying to panels. In memory and
+	// never a row: a session is a running process on THIS machine, and a fact
+	// that cannot outlive the process must not be written somewhere that
+	// survives it - a replicated session id would name a shell on a node that
+	// has no idea about it. See internal/flowy/agentshell.go.
+	agents *agentShells
 	// joins rate-limits the one unauthenticated door. It is per-process and
 	// deliberately simple: the endpoint grants nothing, so the limit is about
 	// keeping the board tidy rather than about security.
@@ -189,9 +195,14 @@ func serve(args []string) error {
 		started:    time.Now(),
 		tracer:     newTracer(*node, db),
 		joins:      newJoinLimiter(),
+		agents:     newAgentShells(),
 		reproBase:  strings.TrimRight(strings.TrimSpace(*repro), "/"),
 	}
 	defer srv.tracer.Close()
+	// EVERY VM THIS NODE STARTED STOPS WHEN IT DOES. Without this a restart
+	// leaves microVMs running with nothing left that remembers them, which is
+	// the abandoned-scratch failure with a whole machine attached to each one.
+	defer srv.agents.stopAll("the node stopped")
 	// The bootstrap operator becomes a row before anything reads one - see
 	// adoptoperator.go. It runs here rather than lazily because everything that
 	// asks "who is the operator" of the STORE (a mention of @operator, the role
@@ -346,6 +357,9 @@ var apiRoutes = []string{
 	// And the runner behind it. On this list because a console that cannot find
 	// these doors falls back to asking the operator for an address, which is the
 	// thing they asked to stop doing.
+	// The shell socket. One websocket per session carrying several streams,
+	// which is what lets control outrank output - see agent_ws.go.
+	"GET /api/agent/socket",
 	"GET /api/vm/projects",
 	"GET /api/vm/list",
 	"POST /api/vm/spawn",
@@ -594,6 +608,9 @@ func (s *server) routes() http.Handler {
 	// no address in anybody's browser - see repro_proxy.go.
 	// The VMs, run here rather than behind a configured address - see
 	// api_vm.go for why this is an exec and the repro path is a proxy.
+	// A shell in a VM, relayed to the panel. operatorOnly like every other VM
+	// door: a shell is the widest thing this node can be asked for.
+	api.HandleFunc("GET /api/agent/socket", s.operatorOnly(s.handleAgentSocket))
 	api.HandleFunc("GET /api/vm/projects", s.operatorOnly(s.handleVMProjects))
 	api.HandleFunc("GET /api/vm/list", s.operatorOnly(s.handleVMList))
 	api.HandleFunc("POST /api/vm/spawn", s.operatorOnly(s.handleVMSpawn))

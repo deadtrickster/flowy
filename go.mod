@@ -28,6 +28,7 @@ require (
 	github.com/charmbracelet/bubbletea v1.2.4
 	github.com/charmbracelet/lipgloss v1.0.0
 	github.com/charmbracelet/x/exp/teatest v0.0.0-20240815200342-61de596daa2b
+	github.com/coder/websocket v1.8.13
 	github.com/hanwen/go-fuse/v2 v2.9.0
 	github.com/muesli/termenv v0.15.2
 	golang.org/x/crypto v0.31.0
