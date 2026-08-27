@@ -207,6 +207,14 @@ document says nothing about it - ${broken} img element(s) on the page. A dead
 <img> draws "you may not read this" and "there is nothing here" identically,
 which is the distinction store.ErrNoBytes exists to keep.`);
   }
+  // AND IT IS THE REFUSAL, NOT THE WAIT. A reference still being fetched and one
+  // that cannot be followed are different sentences and must be different
+  // elements, or every picture in a document announces that it cannot be shown
+  // for as long as the read takes and a reader on a slow link believes it.
+  if ((await page.locator(`[data-attachment-pending="${missingId}"]`).count()) !== 0) {
+    await die(`${missingId} is still drawn as pending after the refusal landed, so "loading" and
+"cannot be shown" are the same state to this document.`);
+  }
   const explains = (await named.innerText()) || "";
   if (!explains.includes(missingId) && !explains.toLowerCase().includes("cannot be shown")) {
     await die(`the placeholder for ${missingId} says ${JSON.stringify(explains)}, which does not

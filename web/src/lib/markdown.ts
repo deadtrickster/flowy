@@ -363,8 +363,18 @@ function documentImageRenderer(files: Map<string, ResolvedAttachment>) {
     }
     const got = files.get(id);
     const caption = token.text || got?.title || id;
-    if (!got || !got.src) {
-      const why = got?.why || "it is not on this node, or you may not read it";
+    // THREE STATES, NOT TWO, AND THIS IS THE ONE THAT IS EASY TO LOSE. A file
+    // absent from the map has not been fetched YET; one present with no src was
+    // asked for and cannot be shown. Rendering both as the refusal means every
+    // picture in the document announces that it cannot be shown for as long as
+    // the read takes, and then silently becomes a picture - so a reader on a
+    // slow link reads a false sentence about their own evidence. Absent is not
+    // empty, in the renderer as much as at the wire.
+    if (!got) {
+      return `<span data-attachment-pending="${id}">${escaped(caption)} - loading…</span>`;
+    }
+    if (!got.src) {
+      const why = got.why || "it is not on this node, or you may not read it";
       return `<span data-attachment-missing="${id}">${escaped(caption)} - this file is referred to here and cannot be shown: ${escaped(why)}</span>`;
     }
     return `<img data-attachment="${id}" src="${escaped(got.src)}" alt="${escaped(caption)}" title="${escaped(got.title || caption)}">`;
