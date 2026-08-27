@@ -577,10 +577,21 @@ export function RoomTodos({
                   names side by side would be the confusion this field exists to
                   end. The verb is what separates them.
                 */}
+                {/*
+                  IT TRUNCATES RATHER THAN REFUSING TO SHRINK. shrink-0 here cost
+                  the title button its whole width: the row is a flex line whose
+                  title is the only min-w-0 flex-1 child, so a chip that will not
+                  give way takes the space out of the one thing that can. With a
+                  handle long enough - the suite mints handle+ULID, and a person
+                  may have a long one - the title came out 0px wide at the right
+                  edge. The row still SAID everything and none of it could be
+                  read, which is why the check asserts the row is VISIBLE rather
+                  than present: count() and getAttribute() both answer for it.
+                */}
                 {waiting ? (
                   <span
                     data-todo-waiting-on={waiting}
-                    className="shrink-0 text-muted-foreground"
+                    className="min-w-0 max-w-[45%] shrink truncate text-muted-foreground"
                     title={asked || `waiting on ${waiting} to answer`}
                   >
                     waiting on <span style={speakerStyle(waiting)}>{waiting}</span>
