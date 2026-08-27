@@ -72,12 +72,26 @@ const writeAttachment = async (title) => {
   return id;
 };
 
-/** A memory of some type, with whatever fields the arm needs on it. */
-const writeArtifact = async (type, title, body, fields = {}) => {
+/**
+ * A memory of some type, with whatever fields the arm needs on it.
+ *
+ * `kind` is TOP LEVEL and not a field. It is a column on the artifact, and
+ * putting it in fields produced a row the note door refused as "no such todo"
+ * six lines later, which reads as the door being broken rather than as the
+ * fixture being wrong.
+ */
+const writeArtifact = async (type, title, body, fields = {}, kind = "") => {
   const res = await fetch(`${base}/api/artifacts`, {
     method: "POST",
     headers: { ...bearer, "Content-Type": "application/json" },
-    body: JSON.stringify({ type, title, body, visibility: "project-only", fields }),
+    body: JSON.stringify({
+      type,
+      title,
+      body,
+      visibility: "project-only",
+      fields,
+      ...(kind ? { kind } : {}),
+    }),
   });
   if (!res.ok) await die(`could not write the ${type}: ${res.status} ${await res.text()}`);
   const id = (await res.json()).id;
@@ -170,9 +184,24 @@ what does this row carry - and JIRA style is both.`);
   // operator called this surface "notes/comments", and it is the one where two
   // bodies sit next to each other - so it is also the one where a picture drawn
   // under the wrong one would be invisible as a defect.
-  const commented = await writeArtifact("memory", "a row two people commented on", "the row.", {
-    kind: "todo",
-  });
+  const commented = await writeArtifact(
+    "memory",
+    "a row two people commented on",
+    "the row.",
+    {},
+    "todo",
+  );
+  // THE FIXTURE SAYS SO ITSELF. The note door answers 404 for a row that is not
+  // a queue item, and a 404 six lines below here reads as the door being broken.
+  const isRow = await (
+    await fetch(`${base}/api/artifact/${encodeURIComponent(commented)}`, {
+      headers: bearer,
+    })
+  ).json();
+  if (isRow.type !== "memory" || isRow.kind !== "todo") {
+    await die(`the fixture row came back as type=${isRow.type} kind=${isRow.kind}, which has no
+note door. That is this check's own setup being wrong, not a verdict on comments.`);
+  }
   for (const text of [`with the evidence: ![the pixel](${pixel})`, "without any evidence"]) {
     const res = await fetch(`${base}/api/todo/${encodeURIComponent(commented)}/note`, {
       method: "POST",
