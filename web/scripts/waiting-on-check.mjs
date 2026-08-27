@@ -62,6 +62,55 @@ const file = async (title) => {
   return id;
 };
 
+// WHY IT IS NOT VISIBLE, rather than that it is not. Playwright's actionability
+// timeout says "element is not visible" and stops there, and an hour goes into
+// finding out which ancestor is hiding it - the element itself is usually fine.
+// 01M0K7PD9B is the cost of guessing at this: a tool's refusal was read as a
+// dead button and two fixes were built for a defect that was not there.
+//
+// So the check walks up from the element and names the FIRST ancestor that
+// answers for it - display:none, visibility:hidden, zero-sized, or clipped out
+// of a scroller - and reports that instead of the symptom.
+const whyInvisible = async (locator) => {
+  const handle = await locator.elementHandle().catch(() => null);
+  if (!handle) return "the element is not in the DOM at all";
+  return handle.evaluate((el) => {
+    const reasons = [];
+    for (let node = el; node && node !== document.documentElement; node = node.parentElement) {
+      const style = getComputedStyle(node);
+      const box = node.getBoundingClientRect();
+      const name =
+        node.tagName.toLowerCase() +
+        (node.className && typeof node.className === "string"
+          ? "." + node.className.trim().split(/\s+/).slice(0, 4).join(".")
+          : "");
+      if (style.display === "none") reasons.push(`${name} is display:none`);
+      else if (style.visibility === "hidden") reasons.push(`${name} is visibility:hidden`);
+      else if (style.opacity === "0") reasons.push(`${name} is opacity:0`);
+      else if (box.width === 0 || box.height === 0)
+        reasons.push(`${name} is ${box.width}x${box.height}`);
+      if (reasons.length) break;
+    }
+    const box = el.getBoundingClientRect();
+    reasons.push(
+      `the element itself is ${Math.round(box.width)}x${Math.round(box.height)} at ${Math.round(box.x)},${Math.round(box.y)} in a ${window.innerWidth}x${window.innerHeight} viewport`,
+    );
+    return reasons.join("; ");
+  });
+};
+
+// AND VISIBLE IS THE ASSERTION, not present. count() and getAttribute() both
+// answer for an element nobody can see, so an arm built out of them passes on a
+// pane that renders nothing - which is the failure the repo rule about class
+// names is about, reached by a different route.
+const mustSee = async (locator, what) => {
+  try {
+    await locator.first().waitFor({ state: "visible", timeout: 15_000 });
+  } catch {
+    await die(`${what} is in the DOM and cannot be seen: ${await whyInvisible(locator.first())}`);
+  }
+};
+
 const rowOf = async (id) => {
   const res = await fetch(`${base}/api/artifact/${encodeURIComponent(id)}`, { headers: bearer });
   if (!res.ok) await die(`could not read ${id} back: ${res.status}`);
@@ -94,13 +143,11 @@ try {
   await page.addInitScript((t) => localStorage.setItem("flowy.token", t), token);
   await page.goto(`${base}/chat/${encodeURIComponent(room)}`, { timeout: 30_000 });
 
-  await page
-    .locator(`[data-todo-open="${waiting}"]`)
-    .waitFor({ state: "visible", timeout: 20_000 })
-    .catch(() => {});
+  await mustSee(page.locator(`[data-todo-open="${waiting}"]`), "the row the panel is supposed to draw");
 
   // 1 - DRAWN APART. Both rows are in the panel; exactly one carries the chip,
   // and it is the one with the pointer.
+  await mustSee(page.locator("[data-todo-waiting-on]"), "the whose-move chip");
   const chips = await page.locator("[data-todo-waiting-on]").count();
   if (chips === 0) {
     await die(`the panel draws no whose-move chip at all, so a blocked row reads as untouched.
@@ -117,10 +164,7 @@ the chip is drawn unconditionally, so it says nothing about which row is blocked
 
   // 2 - THE QUESTION IS READABLE where the pointer is.
   await page.locator(`[data-todo-open="${waiting}"]`).click();
-  await page
-    .locator("[data-todo-asked]")
-    .waitFor({ state: "visible", timeout: 10_000 })
-    .catch(() => {});
+  await mustSee(page.locator("[data-todo-asked]"), "the question on the card");
   const shown =
     (await page
       .locator("[data-todo-asked]")
@@ -139,7 +183,7 @@ somebody has to open the artifact page to understand.`);
   const carrier = before.fields?.assignee ?? "";
   await page.locator(`[data-todo-open="${plain}"]`).click();
   const box = page.locator(`[data-todo-waiting-set="${plain}"]`);
-  await box.waitFor({ state: "visible", timeout: 10_000 }).catch(() => {});
+  await mustSee(box, `the whose-move control on the card for ${plain}`);
   if ((await box.count()) === 0) {
     await die(`the card for ${plain} has no control to say whose move it is`);
   }
