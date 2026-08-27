@@ -4,7 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import type { KnownIssue, MergeLock, MergeRequest } from "@/lib/api";
 import { artifactPath, refPath } from "@/lib/api";
 import { toneStyle, verdictTone } from "@/lib/statecolour";
-import { statusStyle } from "@/lib/todos";
+import { priorityClass, statusStyle } from "@/lib/todos";
 import { clock, shortId } from "@/lib/utils";
 
 /**
@@ -45,12 +45,16 @@ export function MergeQueue({
   decided,
   loaded,
   lock,
+  onPriority,
 }: {
   items: MergeRequest[];
   tip: string;
   tipFrom: "stated" | "landed" | "deployed" | "none";
   decided: boolean;
   loaded: boolean;
+  /** Rank a row - now, next, later, or "" to take one back. The door is one
+   * for todos AND merges: POST /api/todo/{id}/priority. */
+  onPriority: (id: string, priority: string) => Promise<void>;
   /**
    * The state of the MACHINE, as against the state of each row. Optional
    * because an older node does not send it and a page that has not read yet
@@ -132,6 +136,22 @@ export function MergeQueue({
               >
                 {m.title || m.branch}
               </Link>
+              {/* WHAT TO DO FIRST, when somebody has said - the same word the
+                  room's todo panel draws, off the same colour map. Drawn only
+                  when set, for the same reason the todo panel gives: a chip on
+                  every row saying "unjudged" would be a column of the same
+                  word, and the field's whole point is that unjudged and
+                  unimportant are different facts. */}
+              {m.priority ? (
+                <Badge
+                  variant="outline"
+                  data-merge-priority={m.id}
+                  data-merge-priority-value={m.priority}
+                  className={priorityClass(m.priority)}
+                >
+                  {m.priority}
+                </Badge>
+              ) : null}
               <Badge variant="secondary" style={statusStyle(m.status)}>
                 {m.status || "todo"}
               </Badge>
@@ -154,6 +174,36 @@ export function MergeQueue({
                   gating
                 </Badge>
               ) : null}
+              {/* WHERE THE RANKING IS SET, on the row rather than behind a
+                  click: a merge row is already four badges wide on a full
+                  pane, and a control a click away is one nobody finds. A
+                  select rather than a cycling chip, for the same reason the
+                  room panel gives: four states - unjudged, now, next, later -
+                  and a chip that cycled would make "take it back" three clicks
+                  and an accident on the way. The queue ORDER does not follow
+                  this word - the operator settled FIFO for the time being -
+                  so setting it never moves a row out of its place. */}
+              <label className="ml-auto flex items-center gap-1 text-muted-foreground text-xs">
+                do first
+                <select
+                  data-merge-priority-set={m.id}
+                  aria-label={`what to do first about ${m.title || m.branch}`}
+                  className="rounded border border-border bg-background px-1 py-0.5 text-foreground text-xs"
+                  value={m.priority ?? ""}
+                  onChange={(event) => void onPriority(m.id, event.target.value)}
+                >
+                  {/*
+                    The empty option is FIRST and is named. "unjudged" rather
+                    than "none" or a blank line, because the whole distinction
+                    this field keeps is that nobody having looked is a
+                    different fact from somebody deciding it can wait.
+                  */}
+                  <option value="">unjudged</option>
+                  <option value="now">now</option>
+                  <option value="next">next</option>
+                  <option value="later">later</option>
+                </select>
+              </label>
             </div>
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-muted-foreground text-xs">
               <span>

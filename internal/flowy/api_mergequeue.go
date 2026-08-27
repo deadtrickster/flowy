@@ -68,11 +68,18 @@ type mergeQueueItem struct {
 	// carry is a sort nobody can check: a reader who suspected the order was
 	// wrong had to fetch /api/artifact/<id> once per row to see it. Two of us
 	// did exactly that tonight.
-	Queued     time.Time `json:"queued"`
-	Status     string    `json:"status"`
-	Assignee   string    `json:"assignee,omitempty"`
-	Admissible *bool     `json:"admissible,omitempty"`
-	Reason     string    `json:"reason,omitempty"`
+	Queued   time.Time `json:"queued"`
+	Status   string    `json:"status"`
+	Assignee string    `json:"assignee,omitempty"`
+	// Priority is the work-item ranking - now, next, later - or "" for a row
+	// nobody has judged. Sent even when empty, for the reason priorityView
+	// carries it: an unjudged row must not read like an older node that does
+	// not rank at all. The queue ORDER still keys on Queued - the operator
+	// settled FIFO for the time being - so this is what the pane draws, not
+	// what the drainer takes.
+	Priority   string `json:"priority"`
+	Admissible *bool  `json:"admissible,omitempty"`
+	Reason     string `json:"reason,omitempty"`
 	// Held says the target is reserved by another declarer's lock - a WAIT, as
 	// against Admissible's verdict about this row's own evidence. Distinct on
 	// purpose: collapsing them is how an agent re-gates when it should sleep
@@ -511,6 +518,7 @@ func queueItemOf(
 		Queued:   a.Created,
 		Status:   store.TodoStatusOf(a),
 		Assignee: store.AssigneeOf(a),
+		Priority: store.PriorityOf(a),
 	}
 	if a.Project != nil {
 		it.Project = *a.Project

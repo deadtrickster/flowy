@@ -353,6 +353,30 @@ export function statusStyle(status: string): { color: string; backgroundColor: s
   return { color: colour, backgroundColor: `color-mix(in srgb, ${colour} 18%, transparent)` };
 }
 
+/**
+ * The rank of a priority word, as a border treatment.
+ *
+ * now is loud, next is plain, later is quiet - the ORDER the field sorts in,
+ * said in colour so a scan down a panel matches a scan down the queue. An
+ * unknown word gets the plain treatment rather than no treatment: a value this
+ * console has not heard of is still somebody's decision.
+ *
+ * Lives here beside statusStyle rather than in a panel: the room's todo list
+ * and the merge pane both draw the same word, and two copies of a colour map
+ * is how one of them drifts. The word stays inside the badge either way -
+ * colour is the second signal and never the only one.
+ */
+export function priorityClass(priority: string): string {
+  switch (priority) {
+    case "now":
+      return "border-primary/60 text-primary";
+    case "later":
+      return "border-border/50 text-muted-foreground";
+    default:
+      return "border-border text-foreground";
+  }
+}
+
 const STATUS_COLOUR: Record<number, string> = {
   [RANK.active]: "#e0a03f", // amber - in flight, and the first thing to see
   [RANK.todo]: "#8b93a7", // grey - waiting, and quiet on purpose

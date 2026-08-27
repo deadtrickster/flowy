@@ -666,6 +666,17 @@ export interface MergeRequest {
   gated_tip: string;
   gate_run: string;
   status: string;
+  /**
+   * What to do first - now, next, later - or "" for a row nobody has judged.
+   *
+   * SENT EVEN WHEN EMPTY, so an unjudged row reads as a fact rather than as an
+   * older node that does not rank at all (the wire field has no omitempty, the
+   * same call priorityView makes). The queue ORDER still keys on queued - the
+   * operator settled FIFO for the time being - so this is what the pane draws
+   * and what the control sets, not what the drainer takes. The vocabulary is
+   * the node's: store/todopriority.go.
+   */
+  priority: string;
   assignee?: string;
   admissible?: boolean;
   /**

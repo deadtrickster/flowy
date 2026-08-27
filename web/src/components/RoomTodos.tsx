@@ -14,6 +14,7 @@ import {
   countTodos,
   hideDonePreference,
   isTodoDone,
+  priorityClass,
   setHideDonePreference,
   sortTodos,
   statusStyle,
@@ -34,21 +35,6 @@ function priorityOf(todo: Artifact): string {
   const fields = todo.fields as Record<string, unknown> | undefined;
   const value = fields?.priority;
   return typeof value === "string" ? value.trim().toLowerCase() : "";
-}
-
-// now is loud, next is plain, later is quiet - which is the ORDER the field
-// sorts in, said in colour so a scan down the panel matches a scan down the
-// queue. An unknown word gets the plain treatment rather than no treatment: a
-// value this console has not heard of is still somebody's decision.
-function priorityClass(priority: string): string {
-  switch (priority) {
-    case "now":
-      return "border-primary/60 text-primary";
-    case "later":
-      return "border-border/50 text-muted-foreground";
-    default:
-      return "border-border text-foreground";
-  }
 }
 
 interface Props {

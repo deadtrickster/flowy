@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 
 import { MergeQueue } from "@/components/MergeQueue";
@@ -146,6 +146,19 @@ export function Todos() {
   // "no gate is running" is a measurement, and this page must not make it up
   // from a read that never came back.
   const [mergeLock, setMergeLock] = useState<MergeLock | undefined>(undefined);
+
+  /**
+   * Rank a merge row, and paint the node's answer rather than a guess.
+   *
+   * The answer carries the word the node kept - "" when one was taken back -
+   * so the patch below is the row the node now has, not the row this page
+   * asked for. The stream re-reads the queue anyway; this is so the pane does
+   * not sit unranked for the length of a poll after the click.
+   */
+  const rank = useCallback(async (id: string, priority: string) => {
+    const answer = await api.setPriority(id, priority);
+    setMerges((prev) => prev.map((m) => (m.id === id ? { ...m, priority: answer.priority } : m)));
+  }, []);
 
   /**
    * WHICH READ IS THE NEWEST, so a slow answer never paints over a fast one.
@@ -440,6 +453,7 @@ export function Todos() {
           decided={mergeDecided}
           loaded={mergesLoaded}
           lock={mergeLock}
+          onPriority={rank}
         />
       ) : (
         <>

@@ -1494,6 +1494,7 @@ export function ChatRoom() {
               decided={mergesDecided}
               loaded={true}
               lock={mergeLock}
+              onPriority={rank}
             />
           </div>
         ) : null}
