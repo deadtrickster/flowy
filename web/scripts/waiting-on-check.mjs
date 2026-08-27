@@ -107,7 +107,7 @@ const mustSee = async (locator, what) => {
   try {
     await locator.first().waitFor({ state: "visible", timeout: 15_000 });
   } catch {
-    await die(`${what} is in the DOM and cannot be seen: ${await whyInvisible(locator.first())}`);
+    await die(`${what} could not be seen: ${await whyInvisible(locator.first())}`);
   }
 };
 
@@ -235,8 +235,13 @@ ${cleared?.fields?.waiting_on}`);
   // guard was written for. So the other half is asserted here rather than
   // assumed: the row is closed on the NODE, the panel polls, and the card that
   // was open on it has to go.
-  await page.locator(`[data-todo-open="${plain}"]`).click();
-  await mustSee(page.locator(`[data-todo-waiting-set="${plain}"]`), "the card reopened for arm 5");
+  // NOT REOPENED - it never closed, which is what arm 4 just established. The
+  // opener is a toggle, so clicking it here would shut the card and the arm
+  // would pass for having closed it by hand.
+  await mustSee(
+    page.locator(`[data-todo-waiting-set="${plain}"]`),
+    "the card arm 4 wrote from, still open at the start of arm 5",
+  );
   const closed = await fetch(`${base}/api/artifact/${encodeURIComponent(plain)}/status`, {
     method: "POST",
     headers: { ...bearer, "Content-Type": "application/json" },
