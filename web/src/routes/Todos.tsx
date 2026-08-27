@@ -1031,7 +1031,9 @@ function Owner({ id, owner }: { id: string; owner: string }) {
         // painted always rather than on hover.
         className="shrink-0 cursor-pointer text-muted-foreground text-xs underline decoration-dotted underline-offset-2 hover:text-foreground"
         title="who is carrying this - click to change"
-        aria-label={owner ? `reassign this row, carried by ${owner}` : "assign this row to somebody"}
+        aria-label={
+          owner ? `reassign this row, carried by ${owner}` : "assign this row to somebody"
+        }
         style={owner ? speakerStyle(owner) : undefined}
         onClick={() => {
           setValue(owner);
