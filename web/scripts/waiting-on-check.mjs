@@ -82,7 +82,7 @@ const whyInvisible = async (locator) => {
       const name =
         node.tagName.toLowerCase() +
         (node.className && typeof node.className === "string"
-          ? "." + node.className.trim().split(/\s+/).slice(0, 4).join(".")
+          ? `.${node.className.trim().split(/\s+/).slice(0, 4).join(".")}`
           : "");
       if (style.display === "none") reasons.push(`${name} is display:none`);
       else if (style.visibility === "hidden") reasons.push(`${name} is visibility:hidden`);
@@ -143,7 +143,10 @@ try {
   await page.addInitScript((t) => localStorage.setItem("flowy.token", t), token);
   await page.goto(`${base}/chat/${encodeURIComponent(room)}`, { timeout: 30_000 });
 
-  await mustSee(page.locator(`[data-todo-open="${waiting}"]`), "the row the panel is supposed to draw");
+  await mustSee(
+    page.locator(`[data-todo-open="${waiting}"]`),
+    "the row the panel is supposed to draw",
+  );
 
   // 1 - DRAWN APART. Both rows are in the panel; exactly one carries the chip,
   // and it is the one with the pointer.
