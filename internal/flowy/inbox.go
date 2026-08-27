@@ -118,6 +118,33 @@ type inboxReaderRequest struct {
 type inboxFilter struct {
 	room      string
 	addressed bool
+	// focus is the project this waiter is FOR. Empty is every project the
+	// credential reaches, which is what every waiter did before this existed.
+	//
+	// A seat reaching two projects was handed everything in both, and there was
+	// no way to say "all of my own project, only what names me elsewhere". The
+	// operator, 2026-08-27: "I wanted to have you as a hause/flowy master. But
+	// you pick things up and participate in Labs and Oracle ... I cant
+	// reconfigure your watch to deliver only mentioned on your non-home
+	// projects".
+	//
+	// IT IS ONE FLAG BECAUSE IT HAS TO BE. The obvious alternative - one waiter
+	// narrowed to the home project and a second with --to-me for the rest -
+	// cannot be built: a reader belongs to a NAME, and a second waiter on that
+	// name is refused so both cannot hold it. The policy lives in one waiter or
+	// it does not exist.
+	focus string
+	// mentionsOnly is the strict form of addressed: this principal is NAMED, or
+	// the message is not handed over. Nothing else qualifies.
+	//
+	// `addressed` below is deliberately looser - it also passes anything a
+	// person said, because a human writing "who is here?" names nobody and
+	// their messages were otherwise the least likely in the room to be
+	// answered. That is right for a seat working a room and wrong for a seat
+	// that has been asked to stay out of one, so this is the second setting
+	// rather than a change to the first. The operator, 2026-08-27: "we need
+	// another mode - only deliver explicit mentions".
+	mentionsOnly bool
 	// ignored is the set of rooms this reader has asked not to be told about -
 	// see ignorerooms.go. Resolved once before the delivery loop and handed in,
 	// so every event on one page is judged against one reading of it.
@@ -169,6 +196,30 @@ func wakesFor(p *store.Principal, e *store.Event, want inboxFilter) bool {
 	// would be a wrong answer shaped like a quiet room.
 	if want.room == "" && want.ignored[e.Room] {
 		return false
+	}
+	// OUTSIDE THE FOCUS, ONLY WHAT NAMES YOU. A message in another project
+	// wakes this waiter when it is addressed to it, and not otherwise: the
+	// mention is the point, and the rest of that project is somebody else's
+	// room to read. Inside the focus nothing changes at all.
+	//
+	// This deliberately does NOT honour saidByAPerson the way `addressed`
+	// does below. That clause exists so a human's broadcast in the room you
+	// WORK IN cannot be sorted to the bottom; a human's broadcast in a project
+	// you merely reach is exactly the traffic this flag was asked for to stop.
+	// A NIL PROJECT IS NOT THE FOCUS. Project is a pointer because "no project
+	// at all" is a real state on this node and is not the same as a project
+	// named "" - a projectless event with an addressee is the case the delivery
+	// code names next door. Such a message is outside any focus, so it reaches a
+	// focused waiter only by naming it, which is the rule this flag states.
+	if want.focus != "" && (e.Project == nil || *e.Project != want.focus) &&
+		!isOwnActor(p, e.Addressee) {
+		return false
+	}
+	// NAMED OR NOTHING. Checked before `addressed` because it is the stricter
+	// of the two and a caller may pass both - a mode that silently widened when
+	// combined with a looser flag would be the opposite of what it says.
+	if want.mentionsOnly {
+		return isOwnActor(p, e.Addressee)
 	}
 	if want.addressed {
 		// isOwnActor asks "is this string this principal", which is the same
@@ -259,7 +310,13 @@ func (s *server) handleInboxWait(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	want := inboxFilter{room: q.Get("room"), addressed: boolParam(q.Get("addressed"))}
+	want := inboxFilter{
+		room:      q.Get("room"),
+		addressed: boolParam(q.Get("addressed")),
+		focus:     strings.TrimSpace(q.Get("focus")),
+
+		mentionsOnly: boolParam(q.Get("mentions")),
+	}
 	// BEFORE THE LOOP, AND A FAILURE HERE IS NOT AN EMPTY LIST. If the note
 	// cannot be read this refuses rather than delivering as though nothing were
 	// ignored: "you have ignored nothing" and "I could not find out what you
@@ -668,7 +725,7 @@ func boolParam(s string) bool {
 const inboxUsage = `flowy inbox - block until somebody says something to you
 
 usage:
-  flowy inbox --as NAME [--deadline S] [--new] [--to-me] [--room R]
+  flowy inbox --as NAME [--deadline S] [--new] [--to-me] [--mentions] [--room R] [--focus P]
   flowy inbox replay --as NAME [--last N] [--since TIME] [--room R]
 
   --as NAME     the waiter's name. Its place in the log is kept on the node
@@ -682,6 +739,11 @@ usage:
                 A probe tests the inbox; it does not hold a place in the log,
                 and a row it leaves behind polls never again
   --to-me       wake only for messages addressed to this principal
+  --mentions    deliver ONLY messages that name you. Stricter than --to-me,
+                which also passes anything a person said, named or not
+  --focus P     deliver everything from project P, and from every other project
+                only what names you. A seat that reaches two projects is handed
+                both in full without this
   --room R      wake only for messages in one room, default every room
   --url URL     node to ask (default $FLOWY_ADDR, then http://127.0.0.1:8787)
   --token T     bearer token (default $FLOWY_TOKEN, then ~/.config/flowy/token)
@@ -755,6 +817,11 @@ func inboxCmd(args []string) error {
 	drop := fs.Bool("drop-reader", false,
 		"delete this reader's row on exit: a probe's label is not a place in the log")
 	toMe := fs.Bool("to-me", false, "wake only for messages addressed to this principal")
+	focus := fs.String("focus", "",
+		"deliver everything from this project, and only what names you from the others")
+	mentions := fs.Bool("mentions", false,
+		"deliver ONLY messages that name this principal - stricter than --to-me, "+
+			"which also passes anything a person said")
 	room := fs.String("room", "", "wake only for messages in this room")
 	urlFlag := fs.String("url", "", "node to talk to (default $FLOWY_ADDR or "+defaultTUIAddr+")")
 	token := fs.String("token", "", "bearer token (default $FLOWY_TOKEN, then ~/.config/flowy/token)")
@@ -831,7 +898,7 @@ func inboxCmd(args []string) error {
 	if strings.TrimSpace(*token) != "" || strings.TrimSpace(os.Getenv("FLOWY_TOKEN")) != "" {
 		seat = ""
 	}
-	err = waitOnInbox(ctx, client, base, bearer, *as, *room, bearer, seat, *toMe, *deadline)
+	err = waitOnInbox(ctx, client, base, bearer, *as, *room, bearer, seat, *toMe, *focus, *mentions, *deadline)
 
 	// A PROBE LEAVES NOTHING BEHIND, however it ends.
 	//
@@ -918,7 +985,7 @@ func tokenStillOurs(started, agentName string) bool {
 
 func waitOnInbox(ctx context.Context, client *http.Client, base, bearer, as, room string,
 	startedWith, agentName string,
-	toMe bool, deadline int,
+	toMe bool, focus string, mentions bool, deadline int,
 ) error {
 	query := url.Values{}
 	query.Set("as", as)
@@ -953,6 +1020,14 @@ func waitOnInbox(ctx context.Context, client *http.Client, base, bearer, as, roo
 	}
 	if toMe {
 		query.Set("addressed", "1")
+	}
+	// The project this waiter is for. Everything from it, and from anywhere
+	// else only what names this principal.
+	if focus != "" {
+		query.Set("focus", focus)
+	}
+	if mentions {
+		query.Set("mentions", "1")
 	}
 
 	// The client's own clock, not a count of polls. A server that answers early

@@ -30,7 +30,7 @@ func TestWaitOnInboxNamesTheSwitchedTokenTrap(t *testing.T) {
 	// startedWith and the seat name are empty: this case is about the start-up
 	// refusal, and a waiter with no seat file has no credential to re-read.
 	err := waitOnInbox(context.Background(), client, srv.URL, "token", "claude-glm",
-		"", "", "", false, 2)
+		"", "", "", false, "", false, 2)
 	if err == nil {
 		t.Fatal("the refusal came back as success")
 	}

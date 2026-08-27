@@ -111,3 +111,115 @@ func TestAPersonNamingAnotherAgentDoesNotWakeThisWaiter(t *testing.T) {
 		}
 	})
 }
+
+// A WAITER FOCUSED ON ONE PROJECT hears all of it, and hears the others only
+// when they name it.
+//
+// 01M125..., the operator: "I wanted to have you as a hause/flowy master. But
+// you pick things up and participate in Labs and Oracle ... I cant reconfigure
+// your watch to deliver only mentioned on your non-home projects". A seat that
+// reaches two projects was handed both in full, and inboxFilter had no field
+// that could say otherwise.
+//
+// The two halves are separate cases because they fail separately: a focus that
+// silenced the home project would be a seat that stopped hearing its own room,
+// and a focus that let unaddressed foreign traffic through would not have
+// fixed anything.
+func TestAFocusedWaiterHearsItsOwnProjectAndOnlyMentionsElsewhere(t *testing.T) {
+	me := &store.Principal{UserID: "u-me", AgentID: "a-me"}
+	focused := inboxFilter{focus: "flowy"}
+
+	project := func(name string) *string { return &name }
+	said := func(p *string, addressee, body string) *store.Event {
+		return &store.Event{
+			Actor:     "a-other",
+			Addressee: addressee,
+			Project:   p,
+			Body:      body,
+			Meta:      json.RawMessage(`{"actor_kind":"agent"}`),
+		}
+	}
+
+	t.Run("its own project arrives unaddressed", func(t *testing.T) {
+		if !wakesFor(me, said(project("flowy"), "", "the drainer is red again"), focused) {
+			t.Fatal("a focused waiter stopped hearing the project it is focused on")
+		}
+	})
+
+	t.Run("another project does not", func(t *testing.T) {
+		if wakesFor(me, said(project("Lab"), "", "sweep is at 40%"), focused) {
+			t.Fatal("unaddressed traffic from another project woke a focused waiter")
+		}
+	})
+
+	t.Run("another project does when it names this waiter", func(t *testing.T) {
+		if !wakesFor(me, said(project("Lab"), "a-me", "@thatname what is the n here?"), focused) {
+			t.Fatal("a mention in another project did not reach a focused waiter, which is the one thing it must do")
+		}
+	})
+
+	t.Run("a projectless message needs to name it too", func(t *testing.T) {
+		if wakesFor(me, said(nil, "", "no project at all"), focused) {
+			t.Fatal("a projectless message is not in the focus and must not arrive unaddressed")
+		}
+		if !wakesFor(me, said(nil, "a-me", "no project, but yours"), focused) {
+			t.Fatal("a projectless message that names this waiter did not arrive")
+		}
+	})
+
+	t.Run("no focus is every project, as before", func(t *testing.T) {
+		if !wakesFor(me, said(project("Lab"), "", "sweep is at 40%"), inboxFilter{}) {
+			t.Fatal("an unfocused waiter stopped hearing another project - this flag must be opt-in")
+		}
+	})
+}
+
+// MENTIONS-ONLY IS THE STRICT MODE, and its whole point is the case --to-me
+// lets through: a person's message that names nobody.
+//
+// The operator, 2026-08-27: "we need another mode - only deliver explicit
+// mentions". --to-me passes those deliberately - a human writing "who is here?"
+// names no one, and before that clause their messages were the least likely in
+// the room to be answered. A seat asked to stay out of a room needs the other
+// answer, so this is a second setting rather than a change to the first.
+func TestMentionsOnlyDeliversNothingThatDoesNotNameYou(t *testing.T) {
+	me := &store.Principal{UserID: "u-me", AgentID: "a-me"}
+	strict := inboxFilter{mentionsOnly: true}
+	loose := inboxFilter{addressed: true}
+
+	byAPerson := func(addressee, body string) *store.Event {
+		return &store.Event{
+			Actor: "u-operator", Addressee: addressee, Body: body,
+			Meta: json.RawMessage(`{"actor_kind":"user"}`),
+		}
+	}
+
+	t.Run("a person's broadcast reaches --to-me but not --mentions", func(t *testing.T) {
+		broadcast := byAPerson("", "who is here?")
+		if !wakesFor(me, broadcast, loose) {
+			t.Fatal("--to-me stopped passing a person's broadcast, which is a separate rule and must not move")
+		}
+		if wakesFor(me, broadcast, strict) {
+			t.Fatal("--mentions delivered a message that names nobody, which is the one thing it exists to refuse")
+		}
+	})
+
+	t.Run("a message that names this principal arrives", func(t *testing.T) {
+		if !wakesFor(me, byAPerson("a-me", "take this row"), strict) {
+			t.Fatal("--mentions dropped a message addressed to this principal")
+		}
+	})
+
+	t.Run("a message naming somebody else does not", func(t *testing.T) {
+		if wakesFor(me, byAPerson("a-else", "@somebody take this row"), strict) {
+			t.Fatal("--mentions delivered somebody else's mail")
+		}
+	})
+
+	t.Run("strict wins when both are set", func(t *testing.T) {
+		both := inboxFilter{addressed: true, mentionsOnly: true}
+		if wakesFor(me, byAPerson("", "who is here?"), both) {
+			t.Fatal("passing both flags widened the filter - the stricter one must decide")
+		}
+	})
+}

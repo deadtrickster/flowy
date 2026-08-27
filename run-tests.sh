@@ -13582,6 +13582,10 @@ check "--to-me wakes on an @name in the body, and not on somebody else's" \
 	a_mention_wakes_a_to_me_waiter
 check "the wake-up rule for a mention, in the unit" \
 	go test -count=1 -run TestAWaiterNarrowedToItsOwnMailWakesOnAMentionOfIt ./internal/flowy
+check "--focus hears its own project and only mentions from the others" \
+	go test -count=1 -run TestAFocusedWaiterHearsItsOwnProjectAndOnlyMentionsElsewhere ./internal/flowy
+check "--mentions delivers nothing that does not name you" \
+	go test -count=1 -run TestMentionsOnlyDeliversNothingThatDoesNotNameYou ./internal/flowy
 check "a bad token, no token and a dead node are exit 2, never exit 1" \
 	a_broken_waiter_is_exit_2_and_not_exit_1
 
