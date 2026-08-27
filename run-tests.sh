@@ -4395,20 +4395,37 @@ an_unknown_waiter_is_refused_with_what_does_exist() {
 # than at the beginning of the log: a waiter is armed to hear what happens next,
 # and one that replayed every room it can see would have its first batch thrown
 # away by whoever armed it.
+#
+# The head is measured against itself, not against the raw chat head. The raw
+# head is the newest chat event on the whole node, and a declaration starts at
+# the newest chat event this principal can READ - the store's own DM test
+# writes a private peer event at Pack()+1, which is the newest chat event and
+# unreadable by TOKEN_A, so a raw comparison failed every run while both
+# values were exactly what their code promised. Two declarations back to back
+# prove the property that matters: the head never moves down between them, so
+# a later waiter never starts earlier than an earlier one.
 a_declared_waiter_starts_at_the_head_and_a_quiet_deadline_is_exit_1() {
 	recall
-	local head mark start elapsed
-	head="$(scalar "SELECT coalesce(max(seq_hlc), 0) FROM events WHERE type = 'chat'")" || return 1
+	local mark probe_mark start elapsed
+	# A probe declaration, same principal, same filter: where the head is for
+	# TOKEN_A right now. A refused name answers 2, not 1.
+	inbox_run --token "$TOKEN_A" --as ${GATE_WAITER}-probe --new --deadline 3
+	want_eq "exit code for the probe's quiet deadline" "$INBOX_STATUS" 1 || return 1
+	probe_mark="$(inbox_mark ${GATE_WAITER}-probe)" || return 1
 	start=$SECONDS
 	inbox_run --token "$TOKEN_A" --as ${GATE_WAITER} --new --deadline 3
 	elapsed=$((SECONDS - start))
 	want_eq "exit code for a deadline that passed quietly" "$INBOX_STATUS" 1 || return 1
 	want_eq "messages written on a quiet deadline" "$INBOX_OUT" "" || return 1
 	mark="$(inbox_mark ${GATE_WAITER})" || return 1
-	if [ "$mark" -lt "$head" ]; then
-		printf 'a new waiter started at %s, below the head at %s\n' "$mark" "$head" >&2
+	if [ "$mark" -lt "$probe_mark" ]; then
+		printf 'a later waiter started at %s, below the earlier one at %s\n' \
+			"$mark" "$probe_mark" >&2
 		return 1
 	fi
+	# The probe served its purpose; anything counting armed waiters would
+	# otherwise count an identity that never waits for anything.
+	psql_do "DELETE FROM inbox_readers WHERE reader = '${GATE_WAITER}-probe'" || return 1
 	# And it took about the three seconds it was asked for. The poll window is
 	# twenty, so a deadline shorter than one has to shorten the last request or
 	# a caller who asked to wait three seconds waits twenty.
