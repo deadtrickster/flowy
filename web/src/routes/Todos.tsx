@@ -1018,8 +1018,20 @@ function Owner({ id, owner }: { id: string; owner: string }) {
         type="button"
         data-todo-assignee={owner}
         data-todo-assign={id}
-        className="shrink-0 text-muted-foreground text-xs hover:underline"
+        // AFFORDANCE THAT SURVIVES A PHONE. hover:underline and title= are
+        // both hover-only, and a touch screen has no hover: on a phone this
+        // control rendered as plain text with nothing to say it could be
+        // pressed. The operator reported "I cant reassign todos" a second time
+        // on 2026-08-27, after the control existed and was deployed - the door
+        // was never the problem and neither was the button, only the fact that
+        // nothing on screen said it was one.
+        //
+        // Dotted underline is this console's existing word for "press me" -
+        // cite, todo, keep and `thread` in MessageList all wear it - and it is
+        // painted always rather than on hover.
+        className="shrink-0 cursor-pointer text-muted-foreground text-xs underline decoration-dotted underline-offset-2 hover:text-foreground"
         title="who is carrying this - click to change"
+        aria-label={owner ? `reassign this row, carried by ${owner}` : "assign this row to somebody"}
         style={owner ? speakerStyle(owner) : undefined}
         onClick={() => {
           setValue(owner);
