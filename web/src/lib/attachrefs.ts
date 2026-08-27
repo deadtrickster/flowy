@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { api } from "@/lib/api";
-import { attachmentsIn, type ResolvedAttachment } from "@/lib/markdown";
+import { type ResolvedAttachment, attachmentsIn } from "@/lib/markdown";
 
 /**
  * The files a body refers to, fetched so the body can be drawn with them in it.

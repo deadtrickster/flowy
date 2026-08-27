@@ -166,6 +166,35 @@ Inline and listed answer different questions - what this sentence is about, and
 what does this row carry - and JIRA style is both.`);
   }
 
+  // 5 - A COMMENT DRAWS ITS FILE, AND THE COMMENT BESIDE IT DOES NOT. The
+  // operator called this surface "notes/comments", and it is the one where two
+  // bodies sit next to each other - so it is also the one where a picture drawn
+  // under the wrong one would be invisible as a defect.
+  const commented = await writeArtifact("memory", "a row two people commented on", "the row.", {
+    kind: "todo",
+  });
+  for (const text of [`with the evidence: ![the pixel](${pixel})`, "without any evidence"]) {
+    const res = await fetch(`${base}/api/todo/${encodeURIComponent(commented)}/note`, {
+      method: "POST",
+      headers: { ...bearer, "Content-Type": "application/json" },
+      body: JSON.stringify({ note: text }),
+    });
+    if (!res.ok) await die(`could not comment on ${commented}: ${res.status} ${await res.text()}`);
+  }
+  await page.goto(`${base}${await pathOf(commented)}`, { timeout: 30_000 });
+  const inComments = page.locator(`[data-note-body] img[data-attachment="${pixel}"]`);
+  try {
+    await inComments.waitFor({ state: "visible", timeout: 20_000 });
+  } catch {
+    await die(`a comment on ${commented} refers to ${pixel} and no picture was drawn in it, so a
+screenshot posted in a comment is reachable only by copying an id out of the text.`);
+  }
+  const drawnInComments = await inComments.count();
+  if (drawnInComments !== 1) {
+    await die(`${drawnInComments} comments drew the picture and only one refers to it - a file
+drawn under every comment says nothing about which comment it belongs to.`);
+  }
+
   // 4 - AND A REFERENCE THAT CANNOT BE FOLLOWED SAYS SO, BY NAME.
   await page.goto(`${base}${await pathOf(dangling)}`, { timeout: 30_000 });
   const named = page.locator(`[data-attachment-missing="${missingId}"]`);
@@ -185,7 +214,7 @@ tell a reader which file is missing or why.`);
   }
 
   console.log(
-    `a note drew its file and its neighbour drew none; a body drew ${pixel.slice(0, 10)} at ${width}px and listed it too; an unfollowable reference was named`,
+    `a note drew its file and its neighbour drew none; a body drew ${pixel.slice(0, 10)} at ${width}px and listed it too; one comment of two drew it; an unfollowable reference was named`,
   );
 } finally {
   await clearRaised();

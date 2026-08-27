@@ -3,6 +3,7 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { type Artifact, api } from "@/lib/api";
+import { useBodyAttachments } from "@/lib/attachrefs";
 import { renderDocument } from "@/lib/markdown";
 import { speakerStyle } from "@/lib/speakercolour";
 import { clock, shortId } from "@/lib/utils";
@@ -49,6 +50,33 @@ interface Props {
  * which is how an operator note written in markdown ("we support ghfmd here")
  * showed its asterisks and backticks to the room.
  */
+/**
+ * One comment's body, with the files it refers to drawn in it.
+ *
+ * ITS OWN COMPONENT BECAUSE OF THE FETCH. A comment names its screenshot the
+ * way any other body does - ![what it shows](01M0...) - and resolving that
+ * means a read per referenced file, which is a hook, which cannot be called
+ * inside the map over the notes. So each body is a component and each fetches
+ * its own.
+ *
+ * A comment carrying no reference does no work here: attachmentsIn finds
+ * nothing, the effect returns early, and this is an ordinary render.
+ */
+function NoteBody({ note }: { note: string }) {
+  const files = useBodyAttachments(note);
+  return (
+    <div
+      data-note-body=""
+      className="report-body text-sm"
+      // Rendered, not dumped: markdown to HTML, sanitized because a note is
+      // agent-written. The sanitizer is why noDangerouslySetInnerHtml is off
+      // for this file in biome.json - the rule cannot see through DOMPurify,
+      // and the comment cannot sit inside the tag where the rule fires.
+      dangerouslySetInnerHTML={{ __html: renderDocument(note, files) }}
+    />
+  );
+}
+
 export function RowNotes({ artifact, onAppended }: Props) {
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
@@ -124,16 +152,7 @@ export function RowNotes({ artifact, onAppended }: Props) {
                 ) : null}
                 <span className="ml-auto text-muted-foreground">{clock(entry.created)}</span>
               </div>
-              <div
-                data-note-body=""
-                className="report-body text-sm"
-                // Rendered, not dumped: markdown to HTML, sanitized because a
-                // note is agent-written. The sanitizer is why
-                // noDangerouslySetInnerHtml is off for this file in biome.json -
-                // the rule cannot see through DOMPurify, and the comment cannot
-                // sit inside the tag where the rule fires.
-                dangerouslySetInnerHTML={{ __html: renderDocument(entry.note) }}
-              />
+              <NoteBody note={entry.note} />
             </li>
           ))}
         </ol>

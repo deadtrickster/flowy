@@ -13,6 +13,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { type Artifact, LIFECYCLE_TYPES, type OriginRef, api, refPath } from "@/lib/api";
+import { useBodyAttachments } from "@/lib/attachrefs";
 import {
   UNKNOWN_UPSTREAM,
   evidenceOf,
@@ -23,7 +24,6 @@ import {
   reproOf,
   upstreamOf,
 } from "@/lib/findings";
-import { useBodyAttachments } from "@/lib/attachrefs";
 import { attachmentsIn, renderDocument } from "@/lib/markdown";
 import { useSession } from "@/lib/session";
 import { evidenceTone, reproTone, severityTone, upstreamTone } from "@/lib/statecolour";

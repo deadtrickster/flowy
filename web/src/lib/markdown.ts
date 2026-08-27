@@ -327,15 +327,8 @@ function documentImageRenderer(files: Map<string, ResolvedAttachment>) {
     const caption = token.text || got?.title || id;
     if (!got || !got.src) {
       const why = got?.why || "it is not on this node, or you may not read it";
-      return (
-        `<span data-attachment-missing="${id}">` +
-        `${escaped(caption)} - this file is referred to here and cannot be shown: ${escaped(why)}` +
-        `</span>`
-      );
+      return `<span data-attachment-missing="${id}">${escaped(caption)} - this file is referred to here and cannot be shown: ${escaped(why)}</span>`;
     }
-    return (
-      `<img data-attachment="${id}" src="${escaped(got.src)}" alt="${escaped(caption)}"` +
-      ` title="${escaped(got.title || caption)}">`
-    );
+    return `<img data-attachment="${id}" src="${escaped(got.src)}" alt="${escaped(caption)}" title="${escaped(got.title || caption)}">`;
   };
 }
