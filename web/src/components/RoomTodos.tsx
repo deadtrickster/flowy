@@ -344,8 +344,22 @@ export function RoomTodos({
     // exhaustive-deps rule exists to catch, and a biome-ignore whose reasoning
     // ran onto a second line stopped being the last comment above the code and
     // suppressed nothing - twice.
-    if (order !== "") setOpen("");
-  }, [order]);
+    //
+    // AND IT CLOSES WHEN THE ROW LEAVES, NOT WHEN THE LIST MOVES. Closing on
+    // any reorder made a card shut itself the moment anybody wrote from it: the
+    // panel's order is the node's, which is by `updated`, and every write from
+    // the card moves `updated`. So setting a pointer reordered the list, the
+    // guard read that as the card having gone stale, and the control a person
+    // had just used was gone before they could correct it - the write
+    // perturbing the very thing the guard measures.
+    //
+    // Narrowing it to "the open row is no longer drawn" keeps what the guard
+    // was for. The card the twenty-seven-rows-down finding was about pointed at
+    // a row that had moved out from under it; this one is drawn INSIDE its own
+    // <li> and travels with it, so a row that is still in the list still has
+    // its card in the right place however far it moved.
+    if (order !== "" && open !== "" && !order.split(" ").includes(open)) setOpen("");
+  }, [order, open]);
 
   return (
     // flex-1 because this is a whole pane now rather than the top half of one:

@@ -229,8 +229,36 @@ The row is ${stillListed ? "still in the panel" : "no longer in the panel at all
 ${cleared?.fields?.waiting_on}`);
   }
 
+  // 5 - AND THE CARD STILL CLOSES WHEN ITS ROW LEAVES. Arm 4 needed the card to
+  // survive its own write, and the narrowing that allows it would also let a
+  // card hang over a row that is no longer drawn - which is the finding the
+  // guard was written for. So the other half is asserted here rather than
+  // assumed: the row is closed on the NODE, the panel polls, and the card that
+  // was open on it has to go.
+  await page.locator(`[data-todo-open="${plain}"]`).click();
+  await mustSee(page.locator(`[data-todo-waiting-set="${plain}"]`), "the card reopened for arm 5");
+  const closed = await fetch(`${base}/api/artifact/${encodeURIComponent(plain)}/status`, {
+    method: "POST",
+    headers: { ...bearer, "Content-Type": "application/json" },
+    body: JSON.stringify({ status: "done", note: "closed to see the card follow it" }),
+  });
+  if (!closed.ok) await die(`could not close ${plain} to test the guard: ${closed.status}`);
+  let gone = false;
+  for (let i = 0; i < 40; i++) {
+    if ((await page.locator(`[data-todo-waiting-set="${plain}"]`).count()) === 0) {
+      gone = true;
+      break;
+    }
+    await page.waitForTimeout(250);
+  }
+  if (!gone) {
+    await die(`${plain} left the panel and its card stayed open over whatever row took its
+place. That is the finding the close-on-reorder guard exists for, and narrowing
+it to "the open row is no longer drawn" was supposed to keep it.`);
+  }
+
   console.log(
-    `the panel drew 1 of 2 rows as blocked, showed the question, wrote ${me} onto ${plain.slice(0, 10)} without moving its carrier, and took it back`,
+    `the panel drew 1 of 2 rows as blocked, showed the question, wrote ${me} onto ${plain.slice(0, 10)} without moving its carrier, took it back from the same control, and closed the card when the row left`,
   );
 } finally {
   await clearRaised();
