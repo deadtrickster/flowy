@@ -1030,7 +1030,9 @@ export function MessageList({
                     </button>
                   ) : null}
                   {event.parents.length > 0 ? (
-                    <span className="whitespace-nowrap">← {event.parents.map((id) => shortId(id)).join(" ")}</span>
+                    <span className="whitespace-nowrap">
+                      ← {event.parents.map((id) => shortId(id)).join(" ")}
+                    </span>
                   ) : (
                     <span className="whitespace-nowrap">opens a thread</span>
                   )}
