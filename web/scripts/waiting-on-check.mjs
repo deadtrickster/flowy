@@ -251,6 +251,25 @@ ${cleared?.fields?.waiting_on}`);
     body: JSON.stringify({ status: "done", note: "closed to see the card follow it" }),
   });
   if (!closed.ok) await die(`could not close ${plain} to test the guard: ${closed.status}`);
+  // AND THE ROW HAS TO ACTUALLY LEAVE, which closing it alone does not do: the
+  // panel draws finished rows until somebody ticks "hide done". Ticking it is
+  // the supported gesture that removes a row from this list, and without it the
+  // arm asserts a guard against a precondition it never produced - which is how
+  // it passed under ONLY= and failed in the full run, where the fixture differs.
+  await page.locator("[data-hide-done]").check();
+  let left = false;
+  for (let i = 0; i < 40; i++) {
+    if ((await page.locator(`[data-todo-open="${plain}"]`).count()) === 0) {
+      left = true;
+      break;
+    }
+    await page.waitForTimeout(250);
+  }
+  if (!left) {
+    await die(`${plain} was closed and hide-done was ticked and it is still drawn in the panel,
+so this arm never reached the state it is about. That is a broken fixture, not a
+verdict on the guard.`);
+  }
   let gone = false;
   for (let i = 0; i < 40; i++) {
     if ((await page.locator(`[data-todo-waiting-set="${plain}"]`).count()) === 0) {
