@@ -84,9 +84,40 @@ const DIALECT = { gfm: true, pedantic: false, async: false } as const;
  * less-than that does not begin something tag-shaped, so it arrives as &lt; and
  * is not an element at all.
  */
+/**
+ * The tags whose removal is a SECURITY decision rather than a vocabulary one,
+ * and which therefore never come back as text.
+ *
+ * The hook below cannot tell the two apart on its own: DOMPurify's allowedTags
+ * says what may stay, and a word somebody typed in brackets is missing from it
+ * for the same reason <script> is. Measured in a real browser - jsdom did not
+ * reproduce it - a body containing <script>alert(1)</script> rendered a visible
+ * "<script>" with its contents correctly gone, which is a dangling half of
+ * something the sanitizer had decided to remove whole.
+ *
+ * Putting an eaten word back must not put one of these back with it, even as
+ * inert text. Everything else is a word until proven otherwise: <title>, <id>,
+ * <you>, <name> are all things this house writes in prose.
+ */
+const REMOVED_ON_PURPOSE = new Set([
+  "script",
+  "style",
+  "iframe",
+  "object",
+  "embed",
+  "base",
+  "link",
+  "meta",
+  "form",
+  "noscript",
+  "template",
+  "svg",
+  "math",
+]);
+
 DOMPurify.addHook("uponSanitizeElement", (node, data) => {
   const tag = data.tagName;
-  if (!tag || data.allowedTags[tag]) return;
+  if (!tag || data.allowedTags[tag] || REMOVED_ON_PURPOSE.has(tag)) return;
   // Only element nodes, and only ones the parser made from something that
   // looked like a tag. #text, #comment and the document fragment itself all
   // arrive here too and none of them is a word somebody lost.
