@@ -20284,6 +20284,97 @@ a_logged_in_person_can_post_in_a_room() {
 	node scripts/person-can-post-check.mjs "http://127.0.0.1:$HTTP_PORT" "$HANDLE_A" "$pw" "$PROJECT_A"
 }
 
+# A PERSON WHO IS THE OPERATOR IS THE OPERATOR, whatever they logged in with.
+#
+# The operator reported it against the VMs page: "and I logged in with a
+# password". isOperator resolved a bearer header and gave up when there was
+# none, so a session cookie - which is what a password login leaves - made them
+# nobody. Every operatorOnly door was shut to every signed-in human: all six
+# /api/vm/*, /api/agent/socket, the role door, agent projects, the schedules
+# check, and healthz?counts.
+#
+# WHY NO EXISTING CHECK SAW IT. Every operator arm in this suite presents
+# TOKEN_OP. They exercise the bearer half, correctly, and are silent about the
+# other way in - so the bug could live under a green suite indefinitely. That is
+# the gap this closes, and it is the reason this check is about CREDENTIAL KIND
+# rather than about any one door.
+#
+# FOUR ARMS, and each is a difference:
+#
+#   the operator's SESSION reaches an operator door - fails on master
+#   another person's session does NOT - or the fix is a door with no lock
+#   the bearer half is unchanged, both ways round
+#   and the open door stays open: healthz answers with no credential at all,
+#   because isOperator is called from outside the authenticate mount and a
+#   change here must never turn a health check into a 401
+a_person_who_is_the_operator_is_the_operator() {
+	recall
+	local pw="a-password-the-gate-picked" jar_op jar_other code
+	jar_op="$WORK/cookies-operator.txt"
+	jar_other="$WORK/cookies-other.txt"
+	rm -f "$jar_op" "$jar_other"
+
+	printf '%s\n' "$pw" | "$ROOT/flowy" passwd --handle "$HANDLE_OP" >/dev/null || return 1
+	printf '%s\n' "$pw" | "$ROOT/flowy" passwd --handle "$HANDLE_A" >/dev/null || return 1
+
+	# A SESSION EACH, through the same door a browser uses.
+	curl -sS -c "$jar_op" -X POST "http://127.0.0.1:$HTTP_PORT/api/login" \
+		-H 'Content-Type: application/json' \
+		-d "$(jq -nc --arg h "$HANDLE_OP" --arg p "$pw" '{handle: $h, password: $p}')" \
+		-o /dev/null || return 1
+	curl -sS -c "$jar_other" -X POST "http://127.0.0.1:$HTTP_PORT/api/login" \
+		-H 'Content-Type: application/json' \
+		-d "$(jq -nc --arg h "$HANDLE_A" --arg p "$pw" '{handle: $h, password: $p}')" \
+		-o /dev/null || return 1
+	grep -q flowy_session "$jar_op" || {
+		printf 'the login door set no session cookie for %s, so this check has no session to test with\n' \
+			"$HANDLE_OP" >&2
+		return 1
+	}
+
+	# ONE OPERATOR DOOR, and a read rather than a write: this is about who is
+	# recognised, and spawning a VM to find out would boot a firecracker on
+	# whatever machine runs the suite.
+	# THE EXPECTED ANSWER, not merely "not 403". /api/vm/projects shells out to
+	# firecode: 200 where it is installed, 503 where it is not - and this suite
+	# usually runs inside a firecode guest, which has neither. Both mean the
+	# GUARD LET THEM THROUGH, which is what this arm is about, and asserting the
+	# pair by name is stronger than asserting the absence of one number.
+	code=$(curl -sS -b "$jar_op" -o /dev/null -w '%{http_code}' \
+		"http://127.0.0.1:$HTTP_PORT/api/vm/projects")
+	case "$code" in
+	200 | 502 | 503) ;;
+	*)
+		printf "the operator's own session got %s from an operator door - a password login leaves a session cookie and no bearer, and this is the refusal that reports the operator as nobody\n" "$code" >&2
+		return 1
+		;;
+	esac
+
+	code=$(curl -sS -b "$jar_other" -o /dev/null -w '%{http_code}' \
+		"http://127.0.0.1:$HTTP_PORT/api/vm/projects")
+	want_eq "somebody else's session is refused" "$code" 403 || return 1
+
+	# THE BEARER HALF, UNCHANGED. Widening who is recognised must not move it.
+	code=$(curl -sS -H "Authorization: Bearer $TOKEN_OP" -o /dev/null -w '%{http_code}' \
+		"http://127.0.0.1:$HTTP_PORT/api/vm/projects")
+	case "$code" in
+	200 | 502 | 503) ;;
+	*)
+		printf "the operator's TOKEN got %s - widening who is recognised has moved it\n" "$code" >&2
+		return 1
+		;;
+	esac
+	code=$(curl -sS -H "Authorization: Bearer $TOKEN_A" -o /dev/null -w '%{http_code}' \
+		"http://127.0.0.1:$HTTP_PORT/api/vm/projects")
+	want_eq "an ordinary token is still refused" "$code" 403 || return 1
+
+	# AND THE OPEN DOOR STAYS OPEN, with nothing presented at all.
+	code=$(curl -sS -o /dev/null -w '%{http_code}' "http://127.0.0.1:$HTTP_PORT/healthz")
+	want_eq "healthz answers an anonymous request" "$code" 200 || return 1
+
+	printf 'the operator was recognised by session and by token; another session and another token were refused; healthz still answers nobody\n'
+}
+
 a_person_fixes_the_words_they_wrote() {
 	cd "$ROOT/web" || return 1
 	node scripts/editwords-check.mjs "http://127.0.0.1:$HTTP_PORT" "$TOKEN_A"
@@ -20353,6 +20444,8 @@ check "a person logs in with a password, and the session survives a reload with 
 	a_person_logs_in_from_the_console
 check "a person who is logged in, with no token anywhere, can post in a room" \
 	a_logged_in_person_can_post_in_a_room
+check "a person who is the operator is the operator, by session as well as by token" \
+	a_person_who_is_the_operator_is_the_operator
 check "a person who is logged in, with no token, sees the console instead of the locked shelf" \
 	a_logged_in_person_sees_the_console
 check "the series door answers per name, oldest first" \

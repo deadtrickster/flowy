@@ -96,26 +96,36 @@ func (s *server) authenticate(next http.Handler) http.Handler {
 	})
 }
 
-// isOperator reports whether r carries this node's operator's token.
+// isOperator reports whether r is the operator - by whatever credential they
+// presented.
 //
-// It resolves the token itself because the endpoints that ask are the open
-// ones, outside the authenticate mount - /healthz is answered whether or not
-// anybody holds a credential, and it has to be. A missing token, an unknown one
-// and somebody else's are all simply "no": a health check that answered 401 to
-// a typo would be a health check that fails when the node is fine.
+// IT ASKS principalFor RATHER THAN RESOLVING A TOKEN ITSELF, and that is the
+// whole of this fix. It used to call bearerToken and give up when there was
+// none, so a person who LOGGED IN WITH A PASSWORD - a session cookie and no
+// Authorization header - was never the operator. The operator reported it
+// against the VMs page: "and I logged in with a password".
+//
+// That shut every operatorOnly door to every signed-in human at once - all six
+// /api/vm/*, /api/agent/socket, the role door, agent projects, the schedules
+// check and healthz?counts - and it inverts what the role is FOR. The role was
+// moved into the store on 2026-08-18 precisely so operator-ness would be a fact
+// about a PERSON rather than about one token; resolving only tokens made it a
+// fact about a token again, one layer down.
+//
+// It still resolves rather than reading the request's principal, because the
+// endpoints that ask are the open ones, outside the authenticate mount -
+// /healthz is answered whether or not anybody holds a credential. principalFor
+// keeps that: no credential is errNoCredential, which is false here, so an open
+// door stays open and a health check never turns into a 401.
 func (s *server) isOperator(ctx context.Context, r *http.Request) bool {
 	if s.operator == "" {
 		return false
 	}
-	token, ok := bearerToken(r)
-	if !ok {
-		return false
-	}
-	p, err := s.db.PrincipalForToken(ctx, token)
+	p, err := s.principalFor(r)
 	if err != nil {
 		return false
 	}
-	if p.UserID == "" {
+	if p == nil || p.UserID == "" {
 		return false
 	}
 	// THE STORE DECIDES, and the env var only bootstraps.
