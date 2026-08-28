@@ -9,6 +9,7 @@ package flowy
 // pulled the loop out of the handler.
 
 import (
+	"bytes"
 	"context"
 	"testing"
 	"time"
@@ -120,5 +121,112 @@ func TestAFailedWriteStopsThePump(t *testing.T) {
 		}
 	case <-ctx.Done():
 		t.Fatal("the pump kept going after a write failed")
+	}
+}
+
+// A burst of output keeps every byte, in order, and does not cost the shell.
+//
+// WHY THIS SHAPE. The first version of this test drove the producer and the
+// consumer against the same channel and called a coalescer that drained it -
+// which is the race the production code had. It passed in a VM and the drainer
+// failed it, correctly. A test that reproduces the bug it is guarding is not a
+// guard.
+//
+// So the queue has exactly ONE reader, as it does in the node: the outbox holds
+// what will not fit and offers it again with the next chunk. What is asserted
+// is that every byte comes out, in order - a version that dropped the oldest
+// bytes would also keep the session alive and would pass a check that only
+// counted survival.
+func TestABurstOfOutputKeepsEveryByte(t *testing.T) {
+	const frames = 500
+	low := make(chan []byte, 8)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var want []byte
+	for i := 0; i < frames; i++ {
+		want = append(want, byte(i%251), byte((i/251)%251), '.')
+	}
+
+	// One reader, started first, draining as the producer works - the send
+	// loop's role.
+	got := make(chan []byte, 1)
+	go func() {
+		var seen []byte
+		for frame := range low {
+			seen = append(seen, frame[2:]...)
+		}
+		got <- seen
+	}()
+
+	out := &agentOutbox{slot: 7}
+	for i := 0; i < frames; i++ {
+		out.add(ctx, low, []byte{byte(i % 251), byte((i / 251) % 251), '.'})
+	}
+	// Whatever is still owed at the end is flushed the way the node does it:
+	// by offering it again until the reader takes it.
+	for len(out.pending) > 0 {
+		out.add(ctx, low, nil)
+	}
+	close(low)
+
+	select {
+	case seen := <-got:
+		if !bytes.Equal(seen, want) {
+			t.Fatalf("%d chunks through a queue of 8 came out as %d bytes, want %d - a burst "+
+				"must cost frames, never bytes, and never their order",
+				frames, len(seen), len(want))
+		}
+	case <-ctx.Done():
+		t.Fatal("the reader never finished")
+	}
+}
+
+// And one terminal's bytes never end up in another's frame.
+//
+// Two slots share the queue once a socket carries more than one terminal, and
+// the failure this rules out is silent: half a build pasted into somebody's
+// editor reads as a corrupted terminal, not as a bug in a queue.
+func TestTwoTerminalsDoNotMixOnOneQueue(t *testing.T) {
+	low := make(chan []byte, 4)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	done := make(chan map[byte][]byte, 1)
+	go func() {
+		bySlot := map[byte][]byte{}
+		for frame := range low {
+			bySlot[frame[1]] = append(bySlot[frame[1]], frame[2:]...)
+		}
+		done <- bySlot
+	}()
+
+	a := &agentOutbox{slot: 1}
+	b := &agentOutbox{slot: 2}
+	var wantA, wantB []byte
+	for i := 0; i < 300; i++ {
+		a.add(ctx, low, []byte{'a', byte(i % 251)})
+		b.add(ctx, low, []byte{'b', byte(i % 251)})
+		wantA = append(wantA, 'a', byte(i%251))
+		wantB = append(wantB, 'b', byte(i%251))
+	}
+	for len(a.pending) > 0 {
+		a.add(ctx, low, nil)
+	}
+	for len(b.pending) > 0 {
+		b.add(ctx, low, nil)
+	}
+	close(low)
+
+	select {
+	case bySlot := <-done:
+		if !bytes.Equal(bySlot[1], wantA) {
+			t.Fatalf("slot 1 got %d bytes, want %d", len(bySlot[1]), len(wantA))
+		}
+		if !bytes.Equal(bySlot[2], wantB) {
+			t.Fatalf("slot 2 got %d bytes, want %d", len(bySlot[2]), len(wantB))
+		}
+	case <-ctx.Done():
+		t.Fatal("the reader never finished")
 	}
 }

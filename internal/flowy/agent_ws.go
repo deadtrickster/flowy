@@ -32,9 +32,9 @@ package flowy
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/coder/websocket"
@@ -78,6 +78,13 @@ const agentSendQueue = 256
 // has to infer the message from which fields happen to be set.
 type agentControl struct {
 	Type string `json:"type"`
+	// Which terminal on this socket. One byte on the front of every data frame
+	// and repeated here, so a control message and the bytes it is about name
+	// the same thing.
+	Slot byte `json:"slot"`
+	// attach: which machine, and which session to adopt if one is named.
+	Where   string `json:"where,omitempty"`
+	Session string `json:"session,omitempty"`
 	// hello
 	ID      string `json:"id,omitempty"`
 	Project string `json:"project,omitempty"`
@@ -101,40 +108,6 @@ type agentControl struct {
 // would have a window in which a VM is up and nobody is attached, which is the
 // abandoned-VM failure with extra steps. Here the VM's lifetime is the socket's.
 func (s *server) handleAgentSocket(w http.ResponseWriter, r *http.Request) {
-	// firecodeBin and errNoFirecode are api_vm.go's, and this uses them rather
-	// than looking the binary up again. That file already decided what "this
-	// node cannot run VMs" means and says it in a sentence naming the fix; a
-	// second answer to the same question here would be a second sentence to
-	// keep in step, and the whole point of its 503-not-empty-list rule is that
-	// there is ONE answer.
-	binary, err := firecodeBin()
-	if err != nil {
-		// SAID BEFORE THE UPGRADE, as an ordinary HTTP refusal. A websocket
-		// that accepts and then immediately closes tells a browser almost
-		// nothing; a 503 with a sentence tells a person what is missing.
-		writeJSON(w, http.StatusServiceUnavailable, errorBody(errNoFirecode.Error()))
-		return
-	}
-
-	// A NAME, NEVER A PATH - api_vm.go's rule, and it is a security decision
-	// rather than a tidiness one: a caller who can name a directory can pack
-	// any directory on this host into a VM that has the network. The name is
-	// checked against what firecode itself advertises, so this node never
-	// invents the set.
-	// THE CALLER NAMES, THE NODE RESOLVES. api_vm.go's rule is that a project
-	// is a NAME and never a path, because a caller who can name a directory can
-	// pack any directory on this host into a VM that has the network. But
-	// `firecode shell --project` takes a DIRECTORY, so something has to map one
-	// to the other, and the only honest place is here, against the roster
-	// firecode itself publishes. Asking the door that maps names to paths is
-	// also this repo's rule about identifiers: resolve, never guess.
-	project := r.URL.Query().Get("project")
-	workdir, err := firecodeProjectPath(r.Context(), project)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, errorBody(err.Error()))
-		return
-	}
-
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		// The console is served by this same node, so the browser's origin is
 		// this node's. Anything else is a page somebody else is serving trying
@@ -144,34 +117,13 @@ func (s *server) handleAgentSocket(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	// A reason, so a closed panel can say why rather than just going blank.
 	defer func() { _ = conn.CloseNow() }()
 	conn.SetReadLimit(maxAgentFrame + 1024)
-
-	id := ulid.NewString()
-	sess, err := s.agents.start(id, project, workdir, binary, agentSize{})
-	if err != nil {
-		sendAgentControl(r.Context(), conn, agentControl{
-			Type: "exited",
-			Why:  fmt.Sprintf("the VM could not be started: %v", err),
-		})
-		_ = conn.Close(websocket.StatusInternalError, "could not start")
-		return
-	}
-	defer func() { _ = s.agents.stop(id, "the panel disconnected") }()
-
-	ch, backlog, dropped := sess.attach()
-	defer sess.detach(ch)
 
 	ctx, stop := context.WithCancel(r.Context())
 	defer stop()
 
-	// THE SEND LOOP IS WHERE PRIORITY LIVES. Two queues, and the high one is
-	// drained to empty before a single low frame goes out. A websocket is one
-	// ordered byte stream, so priority cannot mean anything else: it is a
-	// decision about what this node writes next, and this select is that
-	// decision.
-	high := make(chan []byte, 32)
+	high := make(chan []byte, 64)
 	low := make(chan []byte, agentSendQueue)
 	go func() {
 		defer stop()
@@ -180,82 +132,79 @@ func (s *server) handleAgentSocket(w http.ResponseWriter, r *http.Request) {
 		})
 	}()
 
-	v := viewAgent(sess)
-	high <- agentControlFrame(agentControl{
-		Type: "hello", ID: v.ID, Project: v.Project, Started: v.Started, Dropped: dropped,
-	})
-	if len(backlog) > 0 {
-		low <- append([]byte{agentStreamOut}, backlog...)
-	}
-
-	// Output into the low queue.
-	go func() {
-		defer stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case chunk, ok := <-ch:
-				if !ok {
-					// The shell ended. High priority: this is the frame that
-					// tells the panel it is looking at a dead terminal.
-					select {
-					case high <- agentControlFrame(agentControl{
-						Type: "exited", Why: viewAgent(sess).Why,
-					}):
-					case <-ctx.Done():
-					}
-					return
-				}
-				select {
-				case low <- append([]byte{agentStreamOut}, chunk...):
-				default:
-					// THE SLOW READER IS TOLD, NOT STARVED. Dropping quietly
-					// would leave a terminal that renders a corrupted screen
-					// with no way to know why.
-					select {
-					case high <- agentControlFrame(agentControl{
-						Type: "exited",
-						Why:  "this panel fell too far behind to keep the terminal correct - reopen it",
-					}):
-					case <-ctx.Done():
-					}
-					return
-				}
-			}
+	// EVERY TERMINAL ON THIS SOCKET, by slot. A slot is one byte on the front
+	// of every data frame, so output stays raw and costs one byte per frame
+	// rather than a JSON envelope per chunk.
+	//
+	// The socket no longer owns a session: it ATTACHES to one. That is
+	// OpenChamber's shape and the reason for it is the same - a connection is
+	// how a browser is reaching this node, and a session is a shell on a
+	// machine. Tying the two together is what made a dropped wire kill a guest.
+	live := map[byte]*agentAttachment{}
+	defer func() {
+		for slot := range live {
+			live[slot].detach()
 		}
 	}()
 
-	// And the read loop: keystrokes and control, from the browser.
 	for {
 		typ, frame, err := conn.Read(ctx)
 		if err != nil {
 			return
 		}
-		if typ != websocket.MessageBinary || len(frame) == 0 {
+		if typ != websocket.MessageBinary || len(frame) < 2 {
 			continue
 		}
+		slot := frame[1]
 		switch frame[0] {
 		case agentStreamIn:
-			if err := sess.write(frame[1:]); err != nil {
-				return
+			if a := live[slot]; a != nil {
+				if err := a.sess.write(frame[2:]); err != nil {
+					sendAgentControl(ctx, high, agentControl{
+						Type: "exited", Slot: slot, Why: "this shell is gone",
+					})
+				}
 			}
 		case agentStreamControl:
 			var c agentControl
-			if err := json.Unmarshal(frame[1:], &c); err != nil {
+			if err := json.Unmarshal(frame[2:], &c); err != nil {
 				continue
 			}
-			if c.Type == "resize" {
-				if err := sess.resize(agentSize{Rows: c.Rows, Cols: c.Cols}); err != nil {
-					if errors.Is(err, ErrNoSession) {
-						return
-					}
+			c.Slot = slot
+			switch c.Type {
+			case "attach":
+				if live[slot] != nil {
+					continue
+				}
+				a, why := s.attachAgent(ctx, r, c, high, low)
+				if a == nil {
+					sendAgentControl(ctx, high, agentControl{
+						Type: "error", Slot: slot, Why: why,
+					})
+					continue
+				}
+				live[slot] = a
+			case "detach":
+				// DETACHING IS NOT STOPPING. The shell keeps running and the
+				// VM stays up; this socket simply stops carrying it. Closing a
+				// tab must not end somebody's build.
+				if a := live[slot]; a != nil {
+					a.detach()
+					delete(live, slot)
+				}
+			case "resize":
+				if a := live[slot]; a != nil {
+					_ = a.sess.resize(agentSize{Rows: c.Rows, Cols: c.Cols})
+				}
+			case "stop":
+				// The only message that ends a session, and it says so.
+				if a := live[slot]; a != nil {
+					_ = s.agents.stop(a.sess.id, "stopped from the panel")
+					a.detach()
+					delete(live, slot)
 				}
 			}
 		default:
-			// AN UNKNOWN TAG IS REFUSED, NOT IGNORED. A stream this node does
-			// not know is a client speaking a protocol this one does not, and
-			// carrying on would be the callee dropping an argument.
 			_ = conn.Close(websocket.StatusUnsupportedData,
 				fmt.Sprintf("stream %d is not one this node speaks", frame[0]))
 			return
@@ -263,17 +212,170 @@ func (s *server) handleAgentSocket(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// agentAttachment is one terminal being carried by one socket.
+type agentAttachment struct {
+	sess *agentSession
+	ch   chan []byte
+	off  func()
+}
+
+func (a *agentAttachment) detach() {
+	a.off()
+	a.sess.detach(a.ch)
+}
+
+// attachAgent finds or starts the session an attach message names, and begins
+// relaying it into this socket's queues under the message's slot.
+//
+// THE SNAPSHOT AND THE REGISTRATION ARE ONE STEP, which is what makes a
+// terminal correct across a reattach. agentSession.attach takes the scrollback
+// and adds the reader under a single lock, so a byte produced in between cannot
+// be lost by arriving after the snapshot and before the channel existed - and
+// the missing byte is nearly always the prompt. OpenChamber reaches the same
+// property the other way, buffering into `pending` while `initializing` and
+// replaying only what is newer than the snapshot; holding one lock is stronger
+// and simpler, and this comment exists because the property is invisible in the
+// code that depends on it.
+func (s *server) attachAgent(
+	ctx context.Context, r *http.Request, c agentControl, high, low chan []byte,
+) (*agentAttachment, string) {
+	// AN EXISTING SESSION IS ADOPTED. A stale id after a node restart is not an
+	// error - it is simply a new session - because a browser remembering an id
+	// across a deploy is the ordinary case.
+	var sess *agentSession
+	if id := strings.TrimSpace(c.Session); id != "" {
+		if found, err := s.agents.get(id); err == nil {
+			sess = found
+		}
+	}
+
+	if sess == nil {
+		where := shellInGuest
+		switch strings.TrimSpace(c.Where) {
+		case "", string(shellInGuest):
+		case string(shellOnHost):
+			where = shellOnHost
+		default:
+			return nil, `where is "vm" or "host"`
+		}
+
+		binary := ""
+		if where == shellInGuest {
+			found, err := firecodeBin()
+			if err != nil {
+				return nil, errNoFirecode.Error()
+			}
+			binary = found
+		}
+
+		// A NAME, NEVER A PATH, resolved against the roster firecode itself
+		// publishes - api_vm.go's rule, and a security decision rather than a
+		// tidy one: a caller who can name a directory can pack any directory on
+		// this host into a VM that has the network.
+		workdir, err := firecodeProjectPath(r.Context(), c.Project)
+		if err != nil {
+			return nil, err.Error()
+		}
+
+		started, err := s.agents.start(newAgentID(), c.Project, workdir, binary, where,
+			agentSize{Rows: c.Rows, Cols: c.Cols})
+		if err != nil {
+			return nil, fmt.Sprintf("the shell could not be started: %v", err)
+		}
+		sess = started
+	}
+
+	ch, backlog, dropped := sess.attach()
+	inner, off := context.WithCancel(ctx)
+	out := &agentOutbox{slot: c.Slot}
+
+	v := viewAgent(sess)
+	sendAgentControl(ctx, high, agentControl{
+		Type: "hello", Slot: c.Slot, ID: v.ID, Project: v.Project,
+		Started: v.Started, Dropped: dropped, Where: string(sess.where),
+	})
+	if len(backlog) > 0 {
+		out.add(inner, low, backlog)
+	}
+
+	go func() {
+		for {
+			select {
+			case <-inner.Done():
+				return
+			case chunk, ok := <-ch:
+				if !ok {
+					sendAgentControl(ctx, high, agentControl{
+						Type: "exited", Slot: c.Slot, Why: viewAgent(sess).Why,
+					})
+					return
+				}
+				out.add(inner, low, chunk)
+			}
+		}
+	}()
+
+	return &agentAttachment{sess: sess, ch: ch, off: off}, ""
+}
+
+// agentOutbox holds one terminal's bytes on their way to the socket.
+//
+// WHY IT OWNS A BUFFER INSTEAD OF DRAINING THE QUEUE. The first version, when
+// the queue was full, drained `low` and merged what it found into one frame.
+// That reads correctly and is a race: pumpByPriority is reading the same
+// channel, so the two receivers take alternate items, and the merged frame goes
+// to the BACK of a queue that already holds later ones - reordering a
+// terminal's bytes. It survived a VM run and the drainer caught it.
+//
+// A producer may not reach into a queue somebody else is reading. So the bytes
+// that will not fit are kept HERE, in the goroutine that made them, and offered
+// again as one frame next time. Same bytes, same order, no shared mutation -
+// and one goroutine per terminal means `pending` needs no lock.
+type agentOutbox struct {
+	slot    byte
+	pending []byte
+}
+
+// add offers a chunk to the queue, keeping it for later if the queue is full.
+func (o *agentOutbox) add(ctx context.Context, low chan []byte, chunk []byte) {
+	o.pending = append(o.pending, chunk...)
+	frame := make([]byte, 0, len(o.pending)+2)
+	frame = append(frame, agentStreamOut, o.slot)
+	frame = append(frame, o.pending...)
+	select {
+	case low <- frame:
+		// Sent, so nothing is owed. A new slice rather than truncating the old
+		// one: the frame just queued aliases it, and reusing the array would
+		// rewrite bytes the send loop has not written yet.
+		o.pending = nil
+	case <-ctx.Done():
+	default:
+		// Still owed. It rides with the next chunk, which is what makes a burst
+		// cost frames instead of the shell.
+	}
+}
+
 func agentControlFrame(c agentControl) []byte {
 	body, err := json.Marshal(c)
 	if err != nil {
-		return []byte{agentStreamControl, '{', '}'}
+		return []byte{agentStreamControl, c.Slot, '{', '}'}
 	}
-	return append([]byte{agentStreamControl}, body...)
+	return append([]byte{agentStreamControl, c.Slot}, body...)
 }
 
-func sendAgentControl(ctx context.Context, conn *websocket.Conn, c agentControl) {
-	_ = conn.Write(ctx, websocket.MessageBinary, agentControlFrame(c))
+// sendAgentControl puts a control frame on the HIGH queue, so "control outranks
+// output" holds for every one of them rather than only for those written before
+// the queues existed.
+func sendAgentControl(ctx context.Context, high chan []byte, c agentControl) {
+	select {
+	case high <- agentControlFrame(c):
+	case <-ctx.Done():
+	}
 }
+
+// newAgentID is the id a session is known by, on this node and in the browser
+// that remembers it across a reload.
+func newAgentID() string { return ulid.NewString() }
 
 func writeAgentFrame(ctx context.Context, conn *websocket.Conn, frame []byte) bool {
 	// A write deadline per frame, so one wedged socket cannot hold its

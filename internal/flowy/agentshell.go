@@ -30,6 +30,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -59,6 +60,10 @@ const agentScrollback = 256 << 10
 type agentSession struct {
 	id      string
 	project string
+	// Which machine this shell is on. Carried so the panel can SAY so: a guest
+	// shell and a host shell look identical once a prompt is drawn, and the
+	// difference is whether what you type can reach this machine.
+	where   shellWhere
 	started time.Time
 
 	// The pty master. Writing to it is typing; reading from it is the screen.
@@ -79,6 +84,21 @@ type agentSession struct {
 
 	// When the last reader detached, for the idle reaper. Zero while attached.
 	lonely time.Time
+	// When this session last did anything - output from the shell, or a
+	// keystroke into it.
+	//
+	// IDLE MEANS QUIET, NOT UNWATCHED, and the difference is a defect I had.
+	// Reaping on `lonely` alone kills a session fifteen minutes after the panel
+	// closes EVEN IF THE SHELL IS WORKING - start a twenty-minute build, close
+	// the tab, come back to a stopped VM and a build that never finished. From
+	// the outside that is indistinguishable from the shells the operator
+	// reported as randomly exiting.
+	//
+	// Taken from how OpenChamber's terminal runtime does it: its sweep is
+	// `!attached && now - lastActivity > IDLE`, and lastActivity is bumped by
+	// both output and input. So an unattended session that is still producing
+	// output is not idle, which is the honest meaning of the word.
+	active time.Time
 }
 
 // agentShells is every session this node is running.
@@ -138,7 +158,22 @@ func openAgentPTY() (master, slave *os.File, err error) {
 // and this repo's rule is argument vectors only. Nothing here is interpolated
 // into a string: the project name is one argv element and the guest never sees
 // a shell of ours.
-func (a *agentShells) start(id, project, workdir, binary string, size agentSize) (*agentSession, error) {
+// Where a shell runs. Two values rather than a bool, because a bool would be
+// read as "the special case" and neither of these is special - they are two
+// different machines, and which one a person got is the first thing they need
+// to know.
+type shellWhere string
+
+const (
+	// shellInGuest is a shell inside a firecode microVM: its own kernel, its
+	// own root, and nothing it does reaches the host.
+	shellInGuest shellWhere = "vm"
+	// shellOnHost is a shell on the machine serving this console, as the node's
+	// own user. No isolation at all - see the comment at the switch below.
+	shellOnHost shellWhere = "host"
+)
+
+func (a *agentShells) start(id, project, workdir, binary string, where shellWhere, size agentSize) (*agentSession, error) {
 	master, slave, err := openAgentPTY()
 	if err != nil {
 		return nil, err
@@ -156,11 +191,43 @@ func (a *agentShells) start(id, project, workdir, binary string, size agentSize)
 	// "cd: flowy-staleblocked: No such file or directory": a shell that exits
 	// immediately, relayed faithfully, and indistinguishable at the panel from
 	// a VM that would not boot.
-	args := []string{"shell"}
-	if workdir != "" {
-		args = append(args, "--project", workdir)
+	// WHERE THE SHELL RUNS, and this is the one decision in this file with a
+	// consequence outside it.
+	//
+	// The operator: "I want host-based shells, not only fc/libvirt - do a
+	// selector." A guest shell is inside a microVM: its own kernel, its own
+	// root, and nothing it does reaches this machine. A HOST shell has none of
+	// that - it is a shell on the box serving this console, with the node's own
+	// user and its files. That is a legitimate thing to want and a different
+	// thing to hand out, so it is chosen explicitly and never by default.
+	//
+	// The only gate is that every one of these routes is operatorOnly. That was
+	// already true and was already enough for a guest; for a host shell it is
+	// the ONLY thing between a browser and the machine, which is worth saying
+	// where the choice is made rather than in a commit message.
+	var cmd *exec.Cmd
+	switch where {
+	case shellOnHost:
+		// The person's own login shell, not a hardcoded /bin/bash: a shell is a
+		// preference, and $SHELL is where that preference already lives. Falling
+		// back to sh rather than bash because sh is the one that is always there.
+		login := os.Getenv("SHELL")
+		if strings.TrimSpace(login) == "" {
+			login = "/bin/sh"
+		}
+		// -l so it reads the profile and behaves like a terminal somebody
+		// opened, rather than a bare shell with none of their environment.
+		cmd = exec.Command(login, "-l")
+		if workdir != "" {
+			cmd.Dir = workdir
+		}
+	default:
+		args := []string{"shell"}
+		if workdir != "" {
+			args = append(args, "--project", workdir)
+		}
+		cmd = exec.Command(binary, args...)
 	}
-	cmd := exec.Command(binary, args...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = slave, slave, slave
 	// The child leads its own session with the pty as its controlling terminal.
 	// Without Setctty the shell has a terminal it cannot control: no job
@@ -183,12 +250,14 @@ func (a *agentShells) start(id, project, workdir, binary string, size agentSize)
 	s := &agentSession{
 		id:      id,
 		project: project,
+		where:   where,
 		started: time.Now(),
 		pty:     master,
 		cmd:     cmd,
 		readers: map[chan []byte]struct{}{},
 		closed:  make(chan struct{}),
 		lonely:  time.Now(),
+		active:  time.Now(),
 	}
 
 	a.mu.Lock()
@@ -229,6 +298,7 @@ func (s *agentSession) emit(b []byte) {
 	copy(chunk, b)
 
 	s.mu.Lock()
+	s.active = time.Now()
 	s.out = append(s.out, chunk...)
 	if over := len(s.out) - agentScrollback; over > 0 {
 		s.out = s.out[over:]
@@ -279,6 +349,7 @@ func (s *agentSession) detach(ch chan []byte) {
 func (s *agentSession) write(b []byte) error {
 	s.mu.Lock()
 	done := s.done
+	s.active = time.Now()
 	s.mu.Unlock()
 	if done {
 		return ErrNoSession
@@ -378,10 +449,16 @@ func (s *agentSession) reap() {
 			return
 		case <-tick.C:
 			s.mu.Lock()
-			lonely := s.lonely
+			lonely, active := s.lonely, s.active
 			s.mu.Unlock()
-			if !lonely.IsZero() && time.Since(lonely) > agentIdleAfter {
-				s.finish(fmt.Sprintf("nobody was watching for %s, so the VM was stopped", agentIdleAfter))
+			// BOTH, and neither alone. Unwatched is not enough - a shell can be
+			// working with nobody looking. Quiet is not enough either - a
+			// terminal somebody is reading may say nothing for an hour.
+			if !lonely.IsZero() && time.Since(lonely) > agentIdleAfter &&
+				time.Since(active) > agentIdleAfter {
+				s.finish(fmt.Sprintf(
+					"nothing happened here and nobody was watching for %s, so the VM was stopped",
+					agentIdleAfter))
 				return
 			}
 		}

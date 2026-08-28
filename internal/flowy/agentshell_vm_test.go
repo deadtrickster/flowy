@@ -48,7 +48,10 @@ func TestAShellIsTheGuests(t *testing.T) {
 	shells := newAgentShells()
 	// The DIRECTORY, because that is what `firecode shell --project` takes. The
 	// node resolves a name to one; this test is below that layer.
-	sess, err := shells.start("vmshelltest", "", os.Getenv("FLOWY_VM_DIR"), binary, agentSize{Rows: 24, Cols: 80})
+	// shellInGuest by NAME. This test exists to prove the shell is the guest's,
+	// so it would be meaningless if a changed default quietly ran it on the host.
+	sess, err := shells.start("vmshelltest", "", os.Getenv("FLOWY_VM_DIR"), binary,
+		shellInGuest, agentSize{Rows: 24, Cols: 80})
 	if err != nil {
 		t.Fatalf("starting the shell: %v", err)
 	}
