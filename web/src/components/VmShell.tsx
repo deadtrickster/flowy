@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
+import { attachAgent, sendAgentControl, sendAgentInput, stopAgent } from "@/lib/agentsocket";
+
 // GHOSTTY IS NOT IMPORTED AT MODULE SCOPE, and that is measured rather than
 // stylistic. Importing it here put it in the main bundle - two megabytes of
 // wasm-loading code on every page - and the console then MOUNTED NOTHING AT
@@ -27,29 +29,6 @@ type GhosttyTerminal = InstanceType<GhosttyModule["Terminal"]>;
  * and its colours as literal ESC[ - which looks like a relay that is broken
  * rather than a renderer that was never written.
  */
-
-/** The streams, matching the constants in internal/flowy/agent_ws.go. */
-const STREAM_OUT = 0x01;
-const STREAM_IN = 0x02;
-const STREAM_CONTROL = 0x03;
-
-/**
- * Which terminal on the socket this panel is.
- *
- * One today, and the wire carries a slot per frame so that stays a fact about
- * this component rather than about the protocol - a tab strip adds slots
- * without the node or this file changing shape.
- */
-const SLOT = 0;
-
-interface Hello {
-  type: string;
-  id?: string;
-  project?: string;
-  started?: string;
-  dropped?: number;
-  why?: string;
-}
 
 /**
  * What the panel is doing, as one value rather than several booleans.
@@ -97,10 +76,12 @@ function forgetSession(project: string) {
   }
 }
 
-export function VmShell({ project }: { project: string }) {
+export function VmShell({ project, slot = 0 }: { project: string; slot?: number }) {
   const box = useRef<HTMLDivElement | null>(null);
   const term = useRef<GhosttyTerminal | null>(null);
-  const sock = useRef<WebSocket | null>(null);
+  // The detach for this panel's slot, so unmounting stops carrying the session
+  // without ending it.
+  const detach = useRef<(() => void) | null>(null);
   // Whether the shell told us how it ended. A ref rather than state: onclose
   // fires outside React's batching and must read the value as it is NOW, not
   // as it was when the handler closed over it.
@@ -118,7 +99,8 @@ export function VmShell({ project }: { project: string }) {
   // navigated away.
   useEffect(() => {
     return () => {
-      sock.current?.close();
+      detach.current?.();
+      detach.current = null;
       term.current?.dispose();
     };
   }, []);
@@ -148,47 +130,25 @@ export function VmShell({ project }: { project: string }) {
 
     // ws:// or wss:// to match how this page was served. Hard-coding either is
     // a panel that works on one deployment.
-    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-    // NO QUERY PARAMETERS. Which terminal, which machine and which session to
-    // adopt are all said in the attach message now, because a socket carries
-    // several terminals and a URL can only describe one. A ?project= the node
-    // no longer reads would be an argument the callee drops.
-    const url = new URL(`${proto}//${window.location.host}/api/agent/socket`);
-    // THE SESSION THIS PANEL LAST HELD, so a reload comes back to its own shell
-    // rather than starting a second VM beside the first. The node adopts a live
-    // session named here and mints a new one otherwise, so a stale id after a
-    // node restart costs nothing.
+    // THE SESSION THIS PANEL LAST HELD, so a reload comes back to its own
+    // shell rather than starting a second VM beside the first. The node adopts
+    // a live session named here and mints a new one otherwise, so a stale id
+    // after a node restart costs nothing.
     //
     // localStorage rather than component state: surviving a RELOAD is the whole
     // point, and state does not.
     const held = readHeldSession(project);
-    const ws = new WebSocket(url);
-    ws.binaryType = "arraybuffer";
-    sock.current = ws;
 
-    ws.onmessage = (event) => {
-      const frame = new Uint8Array(event.data as ArrayBuffer);
-      if (frame.length < 2) return;
-      // [tag][slot][payload]. This panel draws one terminal and owns slot 0;
-      // a frame for another slot is not an error, it is somebody else's
-      // terminal on the same socket, and ignoring it is how that stays true.
-      const slot = frame[1];
-      const body = frame.subarray(2);
-      if (slot !== SLOT) return;
-      switch (frame[0]) {
-        case STREAM_OUT:
-          // Straight in as bytes. Decoding to a string first would mangle any
-          // sequence that is not valid UTF-8, and a terminal's output is not
-          // valid UTF-8 in general.
-          t.write(body);
-          break;
-        case STREAM_CONTROL: {
-          let c: Hello;
-          try {
-            c = JSON.parse(new TextDecoder().decode(body)) as Hello;
-          } catch {
-            return;
-          }
+    // THE SOCKET IS NOT THIS COMPONENT'S. lib/agentsocket owns one connection
+    // for the page and routes frames by slot, so several panels are several
+    // slots rather than several sockets - which is what the slot byte on the
+    // wire is for. See its head comment.
+    detach.current = attachAgent(
+      slot,
+      { session: held, project, where, rows: t.rows, cols: t.cols },
+      {
+        out: (bytes) => t.write(bytes),
+        control: (c) => {
           if (c.type === "hello") {
             setSession(c.id ?? "");
             setState("live");
@@ -203,85 +163,36 @@ export function VmShell({ project }: { project: string }) {
                 `\r\n[${c.dropped} bytes of earlier output are no longer held by the node]\r\n`,
               );
             }
-          } else if (c.type === "exited") {
+          } else if (c.type === "exited" || c.type === "error") {
             setState("ended");
-            // THE SHELL'S OWN VERDICT, and it is recorded as HEARD so that
-            // losing the wire afterwards cannot overwrite it - see onclose.
+            // THE SHELL'S OWN VERDICT, recorded as HEARD so that losing the
+            // wire afterwards cannot overwrite it.
             heard.current = true;
             setWhy(c.why || "the shell ended without saying why");
           }
-          break;
-        }
-        default:
-          break;
-      }
-    };
-    ws.onclose = () => {
-      setState((s) => (s === "ended" ? s : "ended"));
-      // TWO DIFFERENT FACTS, KEPT APART.
-      //
-      // The exited frame is the SHELL'S verdict - it ran, and here is how it
-      // ended. onclose is THIS BROWSER losing the wire, which says nothing
-      // about the guest: the VM may still be up. Collapsing them was the whole
-      // of the operator's complaint that shells "randomly exit", because a
-      // dropped socket and a dead shell read identically.
-      //
-      // `w || ...` was not enough. It only holds while the reason is
-      // non-empty, and it cannot tell "no frame arrived" from "a frame arrived
-      // saying nothing" - so a shell that ended without a word was reported as
-      // a network drop. The node in fact always sends a reason - every finish
-      // path sets one - which is exactly why the CLIENT must not invent a
-      // different one over the top.
-      if (heard.current) return;
-      setWhy("the connection to this node closed - the VM may still be running");
-    };
-    ws.onerror = () => {
-      setState("ended");
-      setWhy("the socket could not be opened - this door is operator-only");
-    };
+        },
+        lost: (why) => {
+          setState((current) => (current === "ended" ? current : "ended"));
+          // TWO DIFFERENT FACTS, KEPT APART. The exited frame is the SHELL'S
+          // verdict; this is THIS BROWSER losing the wire, which says nothing
+          // about the guest - the VM may still be up. Collapsing them was the
+          // whole of the complaint that shells "randomly exit".
+          if (heard.current) return;
+          setWhy(why);
+        },
+      },
+    );
 
     // Keystrokes out. onData is already the encoded bytes for the key,
     // including the escape sequences for arrows and function keys, which is
-    // most of the reason to use a terminal emulator rather than read
-    // keydown.
-    t.onData((data: string) => {
-      if (ws.readyState !== WebSocket.OPEN) return;
-      const bytes = new TextEncoder().encode(data);
-      const frame = new Uint8Array(bytes.length + 2);
-      frame[0] = STREAM_IN;
-      frame[1] = SLOT;
-      frame.set(bytes, 2);
-      ws.send(frame);
-    });
+    // most of the reason to use a terminal emulator rather than read keydown.
+    t.onData((data: string) => sendAgentInput(slot, data));
 
     // And the shape, so the guest wraps where this panel wraps. A pty defaults
     // to 0x0 and a shell on a zero-sized terminal draws nothing sensible.
-    const control = (message: Record<string, unknown>) => {
-      if (ws.readyState !== WebSocket.OPEN) return;
-      const body = new TextEncoder().encode(JSON.stringify(message));
-      const frame = new Uint8Array(body.length + 2);
-      frame[0] = STREAM_CONTROL;
-      frame[1] = SLOT;
-      frame.set(body, 2);
-      ws.send(frame);
-    };
-    const tellSize = (cols: number, rows: number) => control({ type: "resize", rows, cols });
+    const tellSize = (cols: number, rows: number) =>
+      sendAgentControl(slot, { type: "resize", rows, cols });
     t.onResize(({ cols, rows }: { cols: number; rows: number }) => tellSize(cols, rows));
-    // ATTACH IS THE FIRST THING SAID, and it carries everything the URL used to:
-    // which project, which machine, and the session to adopt if this panel had
-    // one. The node answers hello with the id it actually gave us, which is
-    // what gets remembered - never the id we asked for.
-    ws.onopen = () => {
-      control({
-        type: "attach",
-        session: held,
-        project,
-        where,
-        rows: t.rows,
-        cols: t.cols,
-      });
-      tellSize(t.cols, t.rows);
-    };
   };
 
   const stop = () => {
@@ -289,16 +200,9 @@ export function VmShell({ project }: { project: string }) {
     // is: a closed socket now means "this browser went away" and leaves the VM
     // running. Ending it is a message.
     forgetSession(project);
-    const ws = sock.current;
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      const body = new TextEncoder().encode(JSON.stringify({ type: "stop" }));
-      const frame = new Uint8Array(body.length + 2);
-      frame[0] = STREAM_CONTROL;
-      frame[1] = SLOT;
-      frame.set(body, 2);
-      ws.send(frame);
-    }
-    ws?.close();
+    stopAgent(slot);
+    detach.current?.();
+    detach.current = null;
     setState("ended");
     setWhy("stopped from the panel");
   };
