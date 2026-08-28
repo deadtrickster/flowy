@@ -363,6 +363,7 @@ var apiRoutes = []string{
 	"GET /api/vm/projects",
 	"GET /api/vm/list",
 	"GET /api/vm/top",
+	"GET /api/shell/sessions",
 	"POST /api/vm/spawn",
 	"GET /api/vm/{name}/log",
 	"POST /api/vm/{name}/say",
@@ -617,6 +618,9 @@ func (s *server) routes() http.Handler {
 	// operatorOnly like every other vm door: it names this host's projects and
 	// what is running over them, and the readings come from inside the guests.
 	api.HandleFunc("GET /api/vm/top", s.operatorOnly(s.handleVMTop))
+	// The sessions a shell can attach to - the operator's own included, which
+	// is the point of it. operatorOnly for the reason every vm door is.
+	api.HandleFunc("GET /api/shell/sessions", s.operatorOnly(s.handleShellSessions))
 	api.HandleFunc("POST /api/vm/spawn", s.operatorOnly(s.handleVMSpawn))
 	api.HandleFunc("GET /api/vm/{name}/log", s.operatorOnly(s.handleVMLog))
 	api.HandleFunc("POST /api/vm/{name}/say", s.operatorOnly(s.handleVMSay))

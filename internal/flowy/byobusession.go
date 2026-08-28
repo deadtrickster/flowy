@@ -1,7 +1,10 @@
 package flowy
 
 import (
+	"context"
+	"errors"
 	"os/exec"
+	"strconv"
 	"strings"
 )
 
@@ -68,4 +71,134 @@ func byobuBin() (string, error) {
 		return bin, nil
 	}
 	return exec.LookPath("tmux")
+}
+
+// byobuSession is one session on this host, as tmux reports it.
+//
+// EVERY SESSION, NOT ONLY OURS. The operator's projectile/* sessions are the
+// point - the panel is a client of the same ones their editor uses - so a list
+// that showed only what flowy had started would be a list of the wrong thing.
+// `ours` says which are this convention's rather than hiding the rest.
+type byobuSession struct {
+	Name     string        `json:"name"`
+	Windows  []byobuWindow `json:"windows"`
+	Attached int           `json:"attached"`
+	Created  string        `json:"created"`
+	Ours     bool          `json:"ours"`
+}
+
+// byobuWindow is one window in a session: what it is called and what is in it.
+type byobuWindow struct {
+	Index   int    `json:"index"`
+	Name    string `json:"name"`
+	Active  bool   `json:"active"`
+	Command string `json:"command"`
+	Panes   int    `json:"panes"`
+}
+
+// listByobuSessions asks tmux what exists.
+//
+// TWO CALLS, NOT ONE PER SESSION. list-sessions and list-windows -a each answer
+// in one go with a format string, so this costs two processes however many
+// sessions there are - a per-session call would make a busy host slower to look
+// at than a quiet one, which is backwards.
+//
+// A UNIT SEPARATOR BETWEEN FIELDS, never a space or a colon: a window's command
+// is an arbitrary command line and a session name may hold anything tmux
+// accepts, so any printable delimiter is one somebody's build command contains.
+func listByobuSessions(ctx context.Context) ([]byobuSession, error) {
+	mux, err := byobuBin()
+	if err != nil {
+		return nil, errNoByobu
+	}
+	const sep = "\x1f"
+
+	out, err := exec.CommandContext(ctx, mux, "list-sessions", "-F",
+		strings.Join([]string{"#{session_name}", "#{session_attached}", "#{session_created}"}, sep),
+	).Output()
+	if err != nil {
+		// NO SERVER IS NOT AN ERROR. tmux exits non-zero with "no server
+		// running" when nothing has ever been started, and that is a true and
+		// ordinary answer: no sessions. Reporting it as a failure would put a
+		// red banner in front of somebody whose only crime is a fresh login.
+		if strings.Contains(string(exitOutput(err)), "no server running") {
+			return []byobuSession{}, nil
+		}
+		return nil, err
+	}
+
+	byName := map[string]*byobuSession{}
+	var order []string
+	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
+		if line == "" {
+			continue
+		}
+		f := strings.Split(line, sep)
+		if len(f) < 3 {
+			continue
+		}
+		s := &byobuSession{
+			Name:     f[0],
+			Attached: atoiOr(f[1], 0),
+			Created:  f[2],
+			Ours:     strings.HasPrefix(f[0], byobuSessionPrefix),
+			Windows:  []byobuWindow{},
+		}
+		byName[s.Name] = s
+		order = append(order, s.Name)
+	}
+
+	wins, err := exec.CommandContext(ctx, mux, "list-windows", "-a", "-F",
+		strings.Join([]string{
+			"#{session_name}", "#{window_index}", "#{window_name}",
+			"#{window_active}", "#{pane_current_command}", "#{window_panes}",
+		}, sep),
+	).Output()
+	if err == nil {
+		for _, line := range strings.Split(strings.TrimRight(string(wins), "\n"), "\n") {
+			f := strings.Split(line, sep)
+			if len(f) < 6 {
+				continue
+			}
+			s := byName[f[0]]
+			if s == nil {
+				continue
+			}
+			s.Windows = append(s.Windows, byobuWindow{
+				Index:   atoiOr(f[1], 0),
+				Name:    f[2],
+				Active:  f[3] == "1",
+				Command: f[4],
+				Panes:   atoiOr(f[5], 0),
+			})
+		}
+	}
+
+	list := make([]byobuSession, 0, len(order))
+	for _, name := range order {
+		list = append(list, *byName[name])
+	}
+	return list, nil
+}
+
+var errNoByobu = errors.New(
+	"this node has no byobu or tmux on its PATH, so it cannot hold a shell " +
+		"session anybody else could attach to")
+
+// exitOutput is whatever a failed command said on stderr, which is where tmux
+// puts "no server running".
+func exitOutput(err error) []byte {
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		return ee.Stderr
+	}
+	return nil
+}
+
+func atoiOr(s string, fallback int) int {
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil {
+		return fallback
+	}
+	return n
 }

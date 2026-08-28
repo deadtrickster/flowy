@@ -123,7 +123,10 @@ var routeParams = map[string][]string{
 	"GET /api/vm/list":               {},
 	// No parameters. The frame is the whole fleet; narrowing it is the
 	// console's to do, and a filter the door dropped would be a lie.
-	"GET /api/vm/top":          {},
+	"GET /api/vm/top": {},
+	// No parameters: it is every session on the host, and a filter this door
+	// dropped would be a narrowing the caller thinks happened.
+	"GET /api/shell/sessions":  {},
 	"POST /api/vm/spawn":       {},
 	"GET /api/vm/{name}/log":   {},
 	"POST /api/vm/{name}/say":  {},

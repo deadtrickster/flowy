@@ -365,3 +365,30 @@ func (s *server) handleVMDown(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"vm": name, "stopped": true})
 }
+
+// handleShellSessions is the management half: what sessions this host holds and
+// what is in them.
+//
+// EVERY SESSION, NOT ONLY FLOWY'S. The operator's own projectile/* sessions are
+// the point of this - the panel attaches to the ones their editor uses - so a
+// list filtered to what this node started would answer the wrong question. Each
+// row says whether it follows the convention rather than hiding the rest.
+//
+// operatorOnly, like every /api/vm door: it names what is running on the
+// machine serving this console, and the shells inside it are that machine's.
+func (s *server) handleShellSessions(w http.ResponseWriter, r *http.Request) {
+	list, err := listByobuSessions(r.Context())
+	if err != nil {
+		if errors.Is(err, errNoByobu) {
+			// 503 AND A REASON, never 200 with an empty list. "no multiplexer
+			// here" and "no sessions" are different facts and the second is a
+			// perfectly good state - a caller that cannot tell them apart will
+			// offer an attach button on a host that can never honour it.
+			writeJSON(w, http.StatusServiceUnavailable, errorBody(errNoByobu.Error()))
+			return
+		}
+		writeJSON(w, http.StatusBadGateway, errorBody("tmux refused: "+err.Error()))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"sessions": list})
+}
