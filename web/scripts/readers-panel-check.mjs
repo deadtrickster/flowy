@@ -48,10 +48,73 @@ try {
   await page.addInitScript((t) => localStorage.setItem("flowy.token", t), token);
   await page.goto(`${base}/profile`, { timeout: 20_000 }).catch(() => {});
 
+  /**
+   * THE TOKEN IS A PRECONDITION, SO PROVE IT BEFORE ASSERTING ANYTHING ELSE.
+   *
+   * addInitScript writes localStorage and lib/api getToken() reads it inside a
+   * try/catch that returns "" when the read throws. So on a browser where
+   * storage is unavailable - a profile it cannot write, storage partitioned or
+   * disabled - the page sends NO Authorization header, the node answers as a
+   * different principal, and the panel truthfully lists nothing. The check then
+   * reports "the panel does not list <reader>, which the node says this token
+   * holds", which blames the panel for an empty cupboard.
+   *
+   * That is why this check has been green on the box and red in a firecode
+   * guest across three unrelated branches - a shell relay, an argv change and a
+   * go.mod minimum, none of them anywhere near readers. A check that cannot
+   * tell "the feature is broken" from "my browser has no storage" reports the
+   * second as the first, every time, on whichever machine happens to lack it.
+   *
+   * Reading it back costs one evaluate and turns that into a named refusal.
+   */
+  const carried = await page.evaluate(() => {
+    try {
+      return localStorage.getItem("flowy.token") ?? "";
+    } catch (err) {
+      return `THREW: ${String(err)}`;
+    }
+  });
+  if (carried !== token) {
+    die(
+      `the page is not carrying the token this check was given, so nothing below ` +
+        `would have been measured against it. localStorage says ${JSON.stringify(carried)}. ` +
+        `That is this browser, not the panel: lib/api getToken() returns "" when the ` +
+        `read throws, so the page would send no Authorization header and the node ` +
+        `would answer as somebody else.`,
+    );
+  }
+
   const panel = page.locator("[data-your-readers]");
   await panel.waitFor({ state: "visible", timeout: 20_000 }).catch(() => {});
   if (crashes.length > 0) die(`the profile page threw: ${crashes.join("; ")}`);
   if ((await panel.count()) === 0) die("no readers panel on /profile at all");
+
+  /**
+   * AND THAT THE NODE AGREES, from inside the page and with the page's own
+   * credential. The suite already asserted this over curl with the bearer
+   * token; asking again here answers a different question - whether the door
+   * says the same thing to THIS browser - and separates "the node did not send
+   * it" from "the panel did not draw it", which is the whole ambiguity this
+   * check has been failing inside.
+   */
+  const fromDoor = await page.evaluate(async () => {
+    const res = await fetch("/api/inbox/readers", {
+      headers: { Authorization: `Bearer ${localStorage.getItem("flowy.token") ?? ""}` },
+    });
+    if (!res.ok) return `status ${res.status}`;
+    return ((await res.json())?.readers ?? []).map((r) => r.reader);
+  });
+  if (typeof fromDoor === "string") {
+    die(`the door refused the page's own credential: ${fromDoor}`);
+  }
+  for (const want of [quietReader, liveReader]) {
+    if (!fromDoor.includes(want)) {
+      die(
+        `the node did not send ${want} to this page - it sent ${JSON.stringify(fromDoor)}. ` +
+          `The panel draws what it is given, so this is the door or the credential, not the panel.`,
+      );
+    }
+  }
 
   for (const want of [quietReader, liveReader]) {
     if ((await page.locator(`[data-reader="${want}"]`).count()) === 0) {
