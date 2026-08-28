@@ -280,6 +280,69 @@ page errors: ${JSON.stringify(oops.slice(0, 3))}`);
 opening /vms goes looking for a shell nobody asked for`);
     }
 
+    // AND A FLOATING PANEL CAN BE MOVED. The operator: "floating shells can not
+    // be dragged." It was fixed at right-4 bottom-4, so it sat on whatever it
+    // happened to cover.
+    //
+    // ASSERTED AS GEOMETRY - where the box actually is before and after - and
+    // as a DIFFERENCE, because a panel that ignores the drag and a panel with
+    // no handle look the same from a screenshot.
+    await page.locator("[data-vm-shell-float-toggle]").click();
+    const floater = page.locator("[data-vm-shell-float]");
+    await floater.waitFor({ state: "visible", timeout: 10_000 });
+    const handle = page.locator("[data-vm-shell-drag]");
+    if ((await handle.count()) !== 1) die("the floating panel offers nothing to drag it by");
+    const before = await floater.boundingBox();
+    const grab = await handle.boundingBox();
+    if (!before || !grab) die("the floating panel has no box to measure");
+    await page.mouse.move(grab.x + grab.width / 2, grab.y + grab.height / 2);
+    await page.mouse.down();
+    // In steps, because a pointer that teleports produces one pointermove and
+    // a drag implemented on a single event would pass a test a person fails.
+    await page.mouse.move(grab.x + grab.width / 2 - 200, grab.y + grab.height / 2 - 150, {
+      steps: 8,
+    });
+    await page.mouse.up();
+    const after = await floater.boundingBox();
+    if (!after) die("the floating panel disappeared while being dragged");
+    const moved = Math.round(Math.hypot(after.x - before.x, after.y - before.y));
+    if (moved < 50) {
+      die(`the floating panel was dragged 250px and moved ${moved}px - from (${Math.round(before.x)},${Math.round(before.y)})
+to (${Math.round(after.x)},${Math.round(after.y)})`);
+    }
+
+    // AND IT OPENS IN A WINDOW OF ITS OWN. What is asserted is the URL the
+    // console asks for, because a popup is the browser's to allow: a headless
+    // run that blocked it would fail a check about the console for a reason
+    // that is not the console's.
+    const opened = [];
+    await page.exposeFunction("noteWindow", (u) => opened.push(u));
+    await page.evaluate(() => {
+      const real = window.open;
+      window.open = (u, ...rest) => {
+        window.noteWindow(String(u));
+        return real.call(window, "about:blank", ...rest);
+      };
+    });
+    const windowed = page.locator("[data-vm-shell-window]");
+    if ((await windowed.count()) !== 1) die("the panel offers no way to open a shell in a window");
+    await windowed.click();
+    await page.waitForTimeout(500);
+    if (opened.length === 0) die("the window control opened nothing");
+    const asked = new URL(opened[0]);
+    if (asked.pathname !== "/shell") {
+      die(`the window control opened ${asked.pathname}, which is not the one-shell page`);
+    }
+    if (asked.searchParams.get("project") !== project) {
+      die(
+        `the window was opened on project ${JSON.stringify(asked.searchParams.get("project"))} and the panel is on ${JSON.stringify(project)} - it would adopt a shell on a machine nobody chose`,
+      );
+    }
+    if (asked.searchParams.get("slot") === null) {
+      die("the window was opened without a slot, so it cannot know which shell it is");
+    }
+    await page.locator("[data-vm-shell-dock]").click();
+
     // THE SHELLS PANE IS THE WHOLE PANEL, which is the operator's complaint
     // stated as a number. The strip used to be the last thing on a page that
     // opens with a header, a picker, a spawn form and the list of running VMs -

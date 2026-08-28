@@ -28,6 +28,8 @@ const die = (why) => {
 const notInTheRail = {
   "/login": "you are sent here when signed out; the credential banner and the token bar link it",
   "/todos/merge": "the second tab on /todos, which is the page that owns the queue",
+  "/shell":
+    "the window the float control opens, on a shell you already have; a rail entry would lead to an empty one",
 };
 
 const table = "src/App.tsx";

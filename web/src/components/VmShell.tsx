@@ -95,6 +95,12 @@ export function VmShell({ project, slot = 0 }: { project: string; slot?: number 
   // changes shape rather than waiting on the observer's debounce.
   const fitter = useRef<GhosttyFit | null>(null);
   const unmouse = useRef<(() => void) | null>(null);
+  const floatBox = useRef<HTMLDivElement | null>(null);
+  // WHERE THE FLOATING PANEL HAS BEEN PUT, or null for "wherever it opens".
+  // Null is not (0,0): a panel that has never been dragged sits bottom-right by
+  // its class, and storing a position it never had would move it on first
+  // render for no reason anybody asked for.
+  const [at, setAt] = useState<{ x: number; y: number } | null>(null);
   // Whether the shell told us how it ended. A ref rather than state: onclose
   // fires outside React's batching and must read the value as it is NOW, not
   // as it was when the handler closed over it.
@@ -143,6 +149,46 @@ export function VmShell({ project, slot = 0 }: { project: string; slot?: number 
   // adopt: come back to a shell that is already running, and do nothing at all
   // if there is not one. The Run button passes false; the mount effect passes
   // true. They are different questions - see the effect below.
+  // DRAGGING THE FLOATING PANEL.
+  //
+  // POINTER EVENTS, not mouse: one path covers a trackpad, a touchscreen and a
+  // pen, and setPointerCapture is what keeps a fast drag from being lost when
+  // the pointer outruns the handle - a mousemove listener on the element alone
+  // drops the drag the moment the cursor leaves it.
+  const startDrag = (event: React.PointerEvent<HTMLDivElement>) => {
+    const box = floatBox.current;
+    if (!box) return;
+    // From what the browser has laid out, so the FIRST drag starts where the
+    // panel already is rather than jumping to a computed origin.
+    const rect = box.getBoundingClientRect();
+    const grabX = event.clientX - rect.left;
+    const grabY = event.clientY - rect.top;
+    const handle = event.currentTarget;
+    handle.setPointerCapture(event.pointerId);
+    event.preventDefault();
+
+    const move = (e: PointerEvent) => {
+      // KEPT ON SCREEN. A panel dragged past the edge is one that cannot be
+      // dragged back, and its handle is the first thing to go.
+      const maxX = Math.max(0, window.innerWidth - rect.width);
+      const maxY = Math.max(0, window.innerHeight - rect.height);
+      setAt({
+        x: Math.min(Math.max(0, e.clientX - grabX), maxX),
+        y: Math.min(Math.max(0, e.clientY - grabY), maxY),
+      });
+    };
+    const done = () => {
+      handle.removeEventListener("pointermove", move);
+      handle.removeEventListener("pointerup", done);
+      handle.removeEventListener("pointercancel", done);
+    };
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", done);
+    // pointercancel too: a touch that becomes a scroll gesture, or a pointer
+    // the browser takes away, ends the drag without ever sending pointerup.
+    handle.addEventListener("pointercancel", done);
+  };
+
   const run = async (adopt = false) => {
     if (state === "starting" || state === "live") return;
     adopting.current = adopt;
@@ -355,6 +401,42 @@ export function VmShell({ project, slot = 0 }: { project: string; slot?: number 
         >
           {floating ? "dock" : "float"}
         </button>
+        {/*
+          A REAL BROWSER WINDOW, which is a different thing from floating. The
+          float control moves the panel around this page; this puts the terminal
+          on a monitor of its own, outside the console, where the window manager
+          can tile it.
+
+          IT OPENS A URL RATHER THAN MOVING THE TERMINAL. A ghostty instance
+          cannot be handed to another document - its canvas, its wasm and its
+          listeners belong to this one - so the new window mounts its own panel,
+          which then adopts the SAME SESSION: the id is in localStorage, which is
+          per origin, and the node fans a session to every reader. Two windows,
+          one shell, both able to type.
+
+          noopener, so the opened window cannot reach back into this one through
+          window.opener. It has no need to and it is a console with an operator
+          session in it.
+        */}
+        <button
+          type="button"
+          data-vm-shell-window=""
+          className="rounded border border-border px-2 py-1 text-xs hover:bg-muted"
+          onClick={() => {
+            const where = new URL("/shell", window.location.origin);
+            where.searchParams.set("project", project);
+            where.searchParams.set("slot", String(slot));
+            window.open(
+              where.toString(),
+              // A NAME PER SLOT, so pressing it twice raises the window that is
+              // already open instead of stacking a second one on the same shell.
+              `flowy-shell-${project}-${slot}`,
+              "noopener,width=1100,height=700",
+            );
+          }}
+        >
+          window
+        </button>
         {session ? (
           <span data-vm-shell-session={session} className="text-muted-foreground text-xs">
             {session.slice(0, 10)}
@@ -439,10 +521,37 @@ export function VmShell({ project, slot = 0 }: { project: string; slot?: number 
           </button>
         </p>
       </section>
+      {/*
+        DRAGGABLE, because a floating panel you cannot move is a panel parked on
+        whatever it happens to be covering. The operator: "floating shells can
+        not be dragged."
+
+        POSITIONED FROM THE TOP LEFT once it has been moved, and from the bottom
+        right until then. `right-4 bottom-4` is the right place to appear and
+        the wrong thing to drag: moving it would mean subtracting from the right
+        edge, which inverts every sign and breaks the moment the window is
+        resized. So the first drag converts to left/top, once, from the box the
+        browser has already laid out.
+      */}
       <div
+        ref={floatBox}
         data-vm-shell-float=""
+        style={at ? { left: at.x, top: at.y, right: "auto", bottom: "auto" } : undefined}
         className="fixed right-4 bottom-4 z-50 flex h-[min(70vh,40rem)] w-[min(90vw,64rem)] resize flex-col overflow-auto rounded-lg border border-border bg-background p-3 shadow-lg"
       >
+        {/*
+          A HANDLE, NOT THE WHOLE PANEL. Dragging from anywhere would mean the
+          terminal cannot be selected with the mouse and every control inside is
+          a failed drag. This bar is the only thing that moves it, which is also
+          where a person reaches for a window.
+        */}
+        <div
+          data-vm-shell-drag=""
+          onPointerDown={startDrag}
+          className="-mt-1 mb-1 flex cursor-move items-center justify-center rounded py-1 text-muted-foreground text-xs hover:bg-muted"
+        >
+          ⠿ drag
+        </div>
         {panel}
       </div>
     </>

@@ -25,6 +25,7 @@ import { OpenspecView } from "@/routes/OpenspecView";
 import { Profile } from "@/routes/Profile";
 import { Projects } from "@/routes/Projects";
 import { Reports } from "@/routes/Reports";
+import { ShellWindow } from "@/routes/ShellWindow";
 import { Skills } from "@/routes/Skills";
 import { TaskView } from "@/routes/TaskView";
 import { Todos } from "@/routes/Todos";
@@ -183,6 +184,14 @@ export default function App() {
             entry is one the operator who asked for it has to be told about, and
             the ask was "right from flow".
           */}
+          {/*
+            A SHELL ON ITS OWN, for the window the float control opens. Not in
+            the rail on purpose - it is a view of a terminal you already have,
+            reached from the panel that has it, and an entry leading to an empty
+            one would be a page that does nothing. See notInTheRail in
+            route-reachable-check.
+          */}
+          <Route path="/shell" element={<ShellWindow />} />
           <Route path="/vms" element={<Vms />} />
           <Route path="*" element={<NotFound />} />
         </Routes>
