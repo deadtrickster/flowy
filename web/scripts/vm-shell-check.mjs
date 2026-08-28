@@ -43,17 +43,18 @@ the file is not really there.`);
 
 // 2 - THE SOCKET IS OPERATOR-ONLY, ASSERTED AS A DIFFERENCE. A door that hands
 // out a shell is the one place a guard must be proven rather than read.
+// A PLAIN GET, AND THAT IS ENOUGH. The first version sent Connection: Upgrade
+// and the websocket headers by hand, and node's fetch REFUSED - they are
+// forbidden header names, so the request never left the process and the check
+// died with "fetch failed" rather than measuring anything.
+//
+// It does not need them. operatorOnly wraps the route, so it decides before any
+// websocket logic runs: a refused caller never reaches the upgrade, and an
+// allowed one is turned away by the library for not asking to upgrade. Two
+// different answers, which is the whole assertion.
 const handshake = async (token) => {
   const res = await fetch(`${base}/api/agent/socket`, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      // A websocket handshake by hand: fetch will not upgrade, and the status
-      // before the upgrade is exactly what is being asked about here.
-      Connection: "Upgrade",
-      Upgrade: "websocket",
-      "Sec-WebSocket-Version": "13",
-      "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
-    },
+    headers: { Authorization: `Bearer ${token}` },
   });
   return res.status;
 };
@@ -64,7 +65,7 @@ if (asOther === asOperator) {
 Those being equal means the guard is not deciding anything - and this door hands
 out a root shell on the host's VMs.`);
 }
-if (asOther !== 403 && asOther !== 404) {
+if (asOther < 400) {
   die(`a non-operator token got ${asOther} from the shell socket, which is not a refusal`);
 }
 

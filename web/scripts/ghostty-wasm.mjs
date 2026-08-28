@@ -32,8 +32,7 @@ if (!existsSync(from)) {
   // building at all - the failure would be found by a person pressing a button
   // rather than by this line.
   console.error(
-    `ghostty-web's wasm is not at ${from} - run npm ci. Building without it produces a` +
-      " console whose terminal panel throws on Run.",
+    `ghostty-web's wasm is not at ${from} - run npm ci. Building without it produces a console whose terminal panel throws on Run.`,
   );
   process.exit(1);
 }

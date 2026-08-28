@@ -22,10 +22,12 @@
  */
 
 import { spawn } from "node:child_process";
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
+
+import { entryBundle } from "./entry.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const dist = resolve(here, "..", "dist");
@@ -42,7 +44,7 @@ let base = `http://127.0.0.1:${PORT}`;
 
 // What the shipped index actually loads, so "the same console" is the truth
 // rather than a string typed twice.
-const running = readdirSync(join(dist, "assets")).find((name) => name.endsWith(".js"));
+const running = entryBundle(dist);
 if (!running) {
   console.error("web/dist/assets holds no javascript bundle");
   process.exit(1);
