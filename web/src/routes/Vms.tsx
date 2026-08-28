@@ -519,7 +519,9 @@ export function Vms() {
                         : `${row.mem_used_mb}/${row.mem_total_mb}M`}
                     </td>
                     <td className="py-1 pr-4">{reading(row.uptime_s, forHowLong)}</td>
-                    <td className="py-1 pr-4">{reading(row.load, (l) => String(l).split(" ")[0])}</td>
+                    <td className="py-1 pr-4">
+                      {reading(row.load, (l) => String(l).split(" ")[0])}
+                    </td>
                     <td className="py-1 pr-4">{reading(row.agent, String)}</td>
                     <td className="py-1 pr-4 text-muted-foreground">{row.project}</td>
                   </tr>
