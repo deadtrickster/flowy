@@ -53,27 +53,33 @@ type ShellState = "idle" | "starting" | "live" | "ended";
  * in some embedded views, and a terminal panel must not fail to open because a
  * browser declined to remember something.
  */
-const heldKey = (project: string) => `flowy.vmshell.session.${project || "-"}`;
+// PER SLOT AS WELL AS PER PROJECT. It was per project alone, which was right
+// while a page held one terminal and became wrong the moment a strip of tabs
+// landed: every tab would remember the same id, and reattaching on mount would
+// point all of them at ONE shell - several terminals drawing the same session
+// and racing each other's keystrokes.
+const heldKey = (project: string, slot: number) =>
+  `flowy.vmshell.session.${project || "-"}.${slot}`;
 
-function readHeldSession(project: string): string {
+function readHeldSession(project: string, slot: number): string {
   try {
-    return window.localStorage.getItem(heldKey(project)) ?? "";
+    return window.localStorage.getItem(heldKey(project, slot)) ?? "";
   } catch {
     return "";
   }
 }
 
-function rememberSession(project: string, id: string) {
+function rememberSession(project: string, slot: number, id: string) {
   try {
-    window.localStorage.setItem(heldKey(project), id);
+    window.localStorage.setItem(heldKey(project, slot), id);
   } catch {
     // A browser that will not remember is not a reason to refuse a terminal.
   }
 }
 
-function forgetSession(project: string) {
+function forgetSession(project: string, slot: number) {
   try {
-    window.localStorage.removeItem(heldKey(project));
+    window.localStorage.removeItem(heldKey(project, slot));
   } catch {
     // As above.
   }
@@ -118,11 +124,11 @@ export function VmShell({ project, slot = 0 }: { project: string; slot?: number 
   // adopt: true, so opening this page never boots a VM. A remembered id that no
   // longer resolves leaves the panel idle.
   useEffect(() => {
-    if (!readHeldSession(project)) return;
+    if (!readHeldSession(project, slot)) return;
     void run(true);
     // Mount only: re-running this on every render would reattach in a loop.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [project]);
+  }, [project, slot]);
 
   useEffect(() => {
     return () => {
@@ -178,7 +184,7 @@ export function VmShell({ project, slot = 0 }: { project: string; slot?: number 
     //
     // localStorage rather than component state: surviving a RELOAD is the whole
     // point, and state does not.
-    const held = readHeldSession(project);
+    const held = readHeldSession(project, slot);
 
     // THE SOCKET IS NOT THIS COMPONENT'S. lib/agentsocket owns one connection
     // for the page and routes frames by slot, so several panels are several
@@ -199,7 +205,7 @@ export function VmShell({ project, slot = 0 }: { project: string; slot?: number 
             setState("live");
             // REMEMBERED ONLY ONCE THE NODE HAS NAMED IT. Writing the id we
             // asked for would remember a session that was never adopted.
-            if (c.id) rememberSession(project, c.id);
+            if (c.id) rememberSession(project, slot, c.id);
             // WHAT WAS DROPPED IS SAID. A reader that joins late is told how
             // much it will never see rather than handed a prefix that looks
             // whole.
@@ -213,7 +219,7 @@ export function VmShell({ project, slot = 0 }: { project: string; slot?: number 
             // shell is gone - node restarted, or somebody stopped it - so the
             // panel goes back to offering Run rather than reporting an error
             // for something nobody asked for.
-            forgetSession(project);
+            forgetSession(project, slot);
             setState("idle");
             detach.current?.();
             detach.current = null;
@@ -262,7 +268,7 @@ export function VmShell({ project, slot = 0 }: { project: string; slot?: number 
     // STOPPING IS DELIBERATE AND IS SAID, which closing the socket no longer
     // is: a closed socket now means "this browser went away" and leaves the VM
     // running. Ending it is a message.
-    forgetSession(project);
+    forgetSession(project, slot);
     stopAgent(slot);
     detach.current?.();
     detach.current = null;

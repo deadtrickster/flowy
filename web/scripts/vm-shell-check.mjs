@@ -222,7 +222,7 @@ indistinguishable from a terminal that disappeared`);
       page.on("websocket", seen);
       await page.evaluate(
         ([key, value]) => (value ? localStorage.setItem(key, value) : localStorage.removeItem(key)),
-        [`flowy.vmshell.session.${project}`, seed],
+        [`flowy.vmshell.session.${project}.0`, seed],
       );
       // Away and back, which is the operator's gesture rather than a reload.
       await page.goto(`${base}/chat/general`, { timeout: 30_000 });
