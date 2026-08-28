@@ -20355,7 +20355,12 @@ a_person_who_is_the_operator_is_the_operator() {
 	want_eq "an ordinary person's session is refused" "$code" 403 || return 1
 
 	# THE ROLE MOVES, THE SESSION DOES NOT.
-	api POST "$TOKEN_OP" "/api/user/$USER_A/role" '{"role": "operator"}' || return 1
+	#
+	# want_status, NOT `api ... || return 1`. api records the status and asserts
+	# nothing, so a refused role change reads as success and the arm below then
+	# reports the guard being wrong about a role that never moved. That is how
+	# the first version of this check blamed isOperator for its own silence.
+	want_status 200 POST "$TOKEN_OP" "/api/user/$USER_A/role" '{"role": "operator"}' || return 1
 	code=$(curl -sS -b "$jar" -o /dev/null -w '%{http_code}' \
 		"http://127.0.0.1:$HTTP_PORT/api/vm/projects")
 	# 200 where firecode is installed and 503 where it is not - this suite
@@ -20365,7 +20370,7 @@ a_person_who_is_the_operator_is_the_operator() {
 	case "$code" in
 	200 | 502 | 503) ;;
 	*)
-		api POST "$TOKEN_OP" "/api/user/$USER_A/role" '{"role": "user"}' >/dev/null
+		want_status 200 POST "$TOKEN_OP" "/api/user/$USER_A/role" '{"role": "user"}' >/dev/null
 		printf 'the same session got %s after its person was made operator - a password login leaves a session cookie and no bearer, and this is the refusal that reports the operator as nobody\n' "$code" >&2
 		return 1
 		;;
@@ -20373,7 +20378,7 @@ a_person_who_is_the_operator_is_the_operator() {
 
 	# AND BACK, so the fixture is left as it was found. A check that promotes
 	# somebody and walks away changes what every later check is allowed to do.
-	api POST "$TOKEN_OP" "/api/user/$USER_A/role" '{"role": "user"}' || return 1
+	want_status 200 POST "$TOKEN_OP" "/api/user/$USER_A/role" '{"role": "user"}' || return 1
 	code=$(curl -sS -b "$jar" -o /dev/null -w '%{http_code}' \
 		"http://127.0.0.1:$HTTP_PORT/api/vm/projects")
 	want_eq "and refused again once the role is taken away" "$code" 403 || return 1
