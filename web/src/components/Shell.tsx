@@ -21,6 +21,7 @@ import {
   Lock,
   Menu,
   Shapes,
+  TerminalSquare,
   UserRound,
   X,
 } from "lucide-react";
@@ -472,6 +473,20 @@ export function Shell({ children }: { children: ReactNode }) {
           <NavLink to="/projects" className={navClass}>
             <Boxes className="h-4 w-4" />
             projects
+          </NavLink>
+          {/*
+            /vms EXISTED AND NOTHING LED TO IT. The page, the panel and the
+            shell relay all landed without a way in - reachable only by typing
+            the URL, which is the same as not being there for anybody who did
+            not build it. The operator asked for it after using the panel for
+            an evening, which is how long it took to notice.
+
+            Beside projects because it answers the next question: these are the
+            projects, and this is where you run something over one.
+          */}
+          <NavLink to="/vms" className={navClass}>
+            <TerminalSquare className="h-4 w-4" />
+            shells
           </NavLink>
           <NavLink to="/memory" className={navClass}>
             <Brain className="h-4 w-4" />
