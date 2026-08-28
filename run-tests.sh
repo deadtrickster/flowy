@@ -20284,110 +20284,82 @@ a_logged_in_person_can_post_in_a_room() {
 	node scripts/person-can-post-check.mjs "http://127.0.0.1:$HTTP_PORT" "$HANDLE_A" "$pw" "$PROJECT_A"
 }
 
-# sign_in JAR HANDLE PASSWORD - a session cookie, waiting out the rate limiter.
-#
-# THE LOGIN DOOR SHARES THE JOIN LIMITER, keyed per client, and every check in
-# this suite that logs in does so from 127.0.0.1. Filtered, a check is nearly
-# the only caller and gets straight through; in a FULL run the door answers 429
-# "too many login attempts from here - wait a minute" and the caller sees no
-# cookie. That is the limiter working, not a fault, and a check that treated it
-# as one would be red on the suite and green on its own - which is precisely the
-# shape that makes a filtered green worthless.
-#
-# So a 429 is waited out and anything else is returned as it stands: a wrong
-# password must still fail immediately rather than being retried for a minute.
-sign_in() {
-	local jar=$1 handle=$2 password=$3 body code attempt
-	for attempt in 1 2 3 4 5 6 7; do
-		body=$(curl -sS -c "$jar" -X POST "http://127.0.0.1:$HTTP_PORT/api/login" \
-			-H 'Content-Type: application/json' \
-			-d "$(jq -nc --arg h "$handle" --arg p "$password" '{handle: $h, password: $p}')" \
-			-w '\n%{http_code}') || return 1
-		code=${body##*$'\n'}
-		if [ "$code" != "429" ]; then
-			printf '%s [%s]\n' "${body%$'\n'*}" "$code"
-			return 0
-		fi
-		sleep 12
-	done
-	printf 'the login door rate-limited %s for %d attempts over ~84s [429]\n' "$handle" "$attempt"
-	return 0
-}
-
 # A PERSON WHO IS THE OPERATOR IS THE OPERATOR, whatever they logged in with.
 #
 # The operator reported it against the VMs page: "and I logged in with a
 # password". isOperator resolved a bearer header and gave up when there was
 # none, so a session cookie - which is what a password login leaves - made them
-# nobody. Every operatorOnly door was shut to every signed-in human: all six
-# /api/vm/*, /api/agent/socket, the role door, agent projects, the schedules
+# nobody. Every operatorOnly door was shut to every signed-in human at once: all
+# six /api/vm/*, /api/agent/socket, the role door, agent projects, the schedules
 # check, and healthz?counts.
 #
 # WHY NO EXISTING CHECK SAW IT. Every operator arm in this suite presents
 # TOKEN_OP. They exercise the bearer half, correctly, and are silent about the
-# other way in - so the bug could live under a green suite indefinitely. That is
-# the gap this closes, and it is the reason this check is about CREDENTIAL KIND
-# rather than about any one door.
+# other way in - so the bug could live under a green suite indefinitely.
 #
-# FOUR ARMS, and each is a difference:
+# ONE LOGIN, AND THE ROLE MOVES UNDER IT. The first version logged in twice, as
+# the operator and as somebody else, and that starved the next check: the login
+# door shares the join limiter at THREE PER MINUTE per client, and every check
+# here that logs in comes from 127.0.0.1. Taking two of three left one, and
+# "the rooms rail follows a project switch" went red with "could not log in".
 #
-#   the operator's SESSION reaches an operator door - fails on master
-#   another person's session does NOT - or the fix is a door with no lock
-#   the bearer half is unchanged, both ways round
-#   and the open door stays open: healthz answers with no credential at all,
-#   because isOperator is called from outside the authenticate mount and a
-#   change here must never turn a health check into a 401
+# Asking the same question with one session is also the better assertion. The
+# session never changes; only the ROLE does. So this cannot pass by letting
+# every session through, and it cannot pass by recognising a particular
+# credential - which is exactly the distinction the 2026-08-18 change made when
+# it moved operator-ness into the store as a fact about a PERSON.
 a_person_who_is_the_operator_is_the_operator() {
 	recall
-	local pw="a-password-the-gate-picked" jar_op jar_other code
-	jar_op="$WORK/cookies-operator.txt"
-	jar_other="$WORK/cookies-other.txt"
-	rm -f "$jar_op" "$jar_other"
+	local pw="a-password-the-gate-picked" jar code body
+	jar="$WORK/cookies-person.txt"
+	rm -f "$jar"
 
-	printf '%s\n' "$pw" | "$ROOT/flowy" passwd --handle "$HANDLE_OP" >/dev/null || return 1
 	printf '%s\n' "$pw" | "$ROOT/flowy" passwd --handle "$HANDLE_A" >/dev/null || return 1
 
-	# A SESSION EACH, through the same door a browser uses.
-	#
-	# THE DOOR'S OWN ANSWER IS KEPT, because "no cookie" is a symptom with
-	# several causes - a wrong password, an account that cannot log in, a door
-	# that refused for a reason of its own - and a check that reports only the
-	# missing cookie sends the next reader looking in the wrong place.
-	local login_op login_other
-	login_op=$(sign_in "$jar_op" "$HANDLE_OP" "$pw") || return 1
-	login_other=$(sign_in "$jar_other" "$HANDLE_A" "$pw") || return 1
-	grep -q flowy_session "$jar_op" || {
-		printf 'the login door set no session cookie for %s - it answered %s. This check has no session to test with, which is its own setup failing rather than a verdict on the guard.\n' \
-			"$HANDLE_OP" "$login_op" >&2
-		return 1
-	}
-	grep -q flowy_session "$jar_other" || {
-		printf 'the login door set no session cookie for %s - it answered %s\n' \
-			"$HANDLE_A" "$login_other" >&2
+	# ONE login, through the same door a browser uses. Its own answer is kept:
+	# "no cookie" has several causes - a wrong password, an account that cannot
+	# log in, the limiter - and reporting only the missing cookie sends the next
+	# reader looking in the wrong place.
+	body=$(curl -sS -c "$jar" -X POST "http://127.0.0.1:$HTTP_PORT/api/login" \
+		-H 'Content-Type: application/json' \
+		-d "$(jq -nc --arg h "$HANDLE_A" --arg p "$pw" '{handle: $h, password: $p}')" \
+		-w ' [%{http_code}]') || return 1
+	grep -q flowy_session "$jar" || {
+		printf 'the login door set no session cookie for %s - it answered %s. That is this check failing to set itself up, not a verdict on the guard.\n' \
+			"$HANDLE_A" "$body" >&2
 		return 1
 	}
 
-	# ONE OPERATOR DOOR, and a read rather than a write: this is about who is
-	# recognised, and spawning a VM to find out would boot a firecracker on
-	# whatever machine runs the suite.
-	# THE EXPECTED ANSWER, not merely "not 403". /api/vm/projects shells out to
-	# firecode: 200 where it is installed, 503 where it is not - and this suite
-	# usually runs inside a firecode guest, which has neither. Both mean the
-	# GUARD LET THEM THROUGH, which is what this arm is about, and asserting the
-	# pair by name is stronger than asserting the absence of one number.
-	code=$(curl -sS -b "$jar_op" -o /dev/null -w '%{http_code}' \
+	# NOT THE OPERATOR YET, so the door refuses. This is the control: without it
+	# the fix could be "let every session through", which is the same door with
+	# no lock.
+	code=$(curl -sS -b "$jar" -o /dev/null -w '%{http_code}' \
 		"http://127.0.0.1:$HTTP_PORT/api/vm/projects")
+	want_eq "an ordinary person's session is refused" "$code" 403 || return 1
+
+	# THE ROLE MOVES, THE SESSION DOES NOT.
+	api POST "$TOKEN_OP" "/api/user/$USER_A/role" '{"role": "operator"}' || return 1
+	code=$(curl -sS -b "$jar" -o /dev/null -w '%{http_code}' \
+		"http://127.0.0.1:$HTTP_PORT/api/vm/projects")
+	# 200 where firecode is installed and 503 where it is not - this suite
+	# usually runs inside a firecode guest, which has neither. Both mean the
+	# GUARD LET THEM THROUGH, which is the whole of this arm, and naming the
+	# pair is stronger than asserting the absence of one number.
 	case "$code" in
 	200 | 502 | 503) ;;
 	*)
-		printf "the operator's own session got %s from an operator door - a password login leaves a session cookie and no bearer, and this is the refusal that reports the operator as nobody\n" "$code" >&2
+		api POST "$TOKEN_OP" "/api/user/$USER_A/role" '{"role": "user"}' >/dev/null
+		printf 'the same session got %s after its person was made operator - a password login leaves a session cookie and no bearer, and this is the refusal that reports the operator as nobody\n' "$code" >&2
 		return 1
 		;;
 	esac
 
-	code=$(curl -sS -b "$jar_other" -o /dev/null -w '%{http_code}' \
+	# AND BACK, so the fixture is left as it was found. A check that promotes
+	# somebody and walks away changes what every later check is allowed to do.
+	api POST "$TOKEN_OP" "/api/user/$USER_A/role" '{"role": "user"}' || return 1
+	code=$(curl -sS -b "$jar" -o /dev/null -w '%{http_code}' \
 		"http://127.0.0.1:$HTTP_PORT/api/vm/projects")
-	want_eq "somebody else's session is refused" "$code" 403 || return 1
+	want_eq "and refused again once the role is taken away" "$code" 403 || return 1
 
 	# THE BEARER HALF, UNCHANGED. Widening who is recognised must not move it.
 	code=$(curl -sS -H "Authorization: Bearer $TOKEN_OP" -o /dev/null -w '%{http_code}' \
@@ -20403,11 +20375,13 @@ a_person_who_is_the_operator_is_the_operator() {
 		"http://127.0.0.1:$HTTP_PORT/api/vm/projects")
 	want_eq "an ordinary token is still refused" "$code" 403 || return 1
 
-	# AND THE OPEN DOOR STAYS OPEN, with nothing presented at all.
+	# AND THE OPEN DOOR STAYS OPEN, with nothing presented at all. isOperator is
+	# called from outside the authenticate mount and a change here must never
+	# turn a health check into a 401.
 	code=$(curl -sS -o /dev/null -w '%{http_code}' "http://127.0.0.1:$HTTP_PORT/healthz")
 	want_eq "healthz answers an anonymous request" "$code" 200 || return 1
 
-	printf 'the operator was recognised by session and by token; another session and another token were refused; healthz still answers nobody\n'
+	printf 'one session, refused as a person and accepted as the operator and refused again; both token answers unchanged; healthz still answers nobody\n'
 }
 
 a_person_fixes_the_words_they_wrote() {
