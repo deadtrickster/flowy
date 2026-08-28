@@ -71,6 +71,25 @@ export default function App() {
         */}
           <Route path="/chat/:room/thread/:message" element={<ChatRoom />} />
           {/*
+          THE SAME THREE, WITH THE PROJECT IN THE PATH, and they are the
+          canonical form.
+
+          01M10V97MD, the operator: "no project name in url". Every project has
+          a #general, so /chat/general names a room and not a place - which is
+          the same defect that put two messages into pa's #general instead of
+          flowy's. A link somebody pastes has to say which one it means.
+
+          THE BARE FORMS ABOVE STAY, and are not deprecated: they mean "this
+          room in the project my session is in", which is what every existing
+          link and bookmark already meant. ChatRoom rewrites the address to the
+          canonical form on arrival, so a bare link upgrades itself and nothing
+          had to be rewritten - there are 17 chat links across 8 files and
+          touching them all would have been the risky way to do this.
+        */}
+          <Route path="/p/:project/chat/:room" element={<ChatRoom />} />
+          <Route path="/p/:project/chat/:room/:pane" element={<ChatRoom />} />
+          <Route path="/p/:project/chat/:room/thread/:message" element={<ChatRoom />} />
+          {/*
           Not /chat/dm. A direct message is not in a room, so there is no room
           name to put in the path - and a path that looked like a room's would
           be the first place somebody assumed a room could be private.

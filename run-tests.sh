@@ -19945,6 +19945,20 @@ a_rail_follows_a_project_switch() {
 		"$HANDLE_A" "$pw" "$PROJECT_A" "$other"
 }
 
+# A CHAT ADDRESS SAYS WHICH PROJECT IT MEANS.
+#
+# Every project has a #general, so /chat/general names a room and not a place.
+# The canonical form is /p/<project>/chat/<room>; the bare form still resolves
+# and rewrites itself, because 17 links across 8 files use it.
+a_chat_url_carries_its_project() {
+	local pw="urlproj-pw-$$"
+	printf '%s\n' "$pw" | "$ROOT/flowy" passwd --handle "$HANDLE_A" >/dev/null || return 1
+	api POST "$TOKEN_OP" "/api/projects/$PROJECT_A/members" "{\"user\": \"$HANDLE_A\"}" || return 1
+	cd "$ROOT/web" || return 1
+	node scripts/chat-url-project-check.mjs "http://127.0.0.1:$HTTP_PORT" \
+		"$HANDLE_A" "$pw" "$PROJECT_A"
+}
+
 # THE SERIES DOOR ANSWERS PER NAME, OLDEST FIRST.
 #
 # /api/metrics/rows answers "what do these metrics say now": one limit across
@@ -20502,6 +20516,8 @@ check "the log tail runs against a real database, and a skip is not a pass" \
 	the_log_tail_runs_against_a_real_database
 check "the rooms rail follows a project switch, with no reload" \
 	a_rail_follows_a_project_switch
+check "a chat url carries its project, and a bare one upgrades" \
+	a_chat_url_carries_its_project
 check "the author of a row can fix its words, and the node holds the new ones" \
 	a_person_fixes_the_words_they_wrote
 check "a person sets their own handle and password from the console" \

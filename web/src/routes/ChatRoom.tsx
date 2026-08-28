@@ -1,5 +1,5 @@
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useLocation, useNavigate, useParams } from "react-router-dom";
 
 import { AnnouncementBanner } from "@/components/AnnouncementBanner";
 import { MergeQueue } from "@/components/MergeQueue";
@@ -102,9 +102,33 @@ const COUNT_LISTENING = "#4fae7a"; // green - somebody has an ear on this room
  * the console has to keep alive itself.
  */
 export function ChatRoom() {
-  const { room = "general", pane: asked, message: linked } = useParams();
+  const { room = "general", pane: asked, message: linked, project: inPath } = useParams();
   const navigate = useNavigate();
   const { whoami } = useSession();
+  const location = useLocation();
+  /**
+   * THE PROJECT BELONGS IN THE ADDRESS, and this is where a bare link gets it.
+   *
+   * 01M10V97MD: "no project name in url". Every project has a #general, so
+   * /chat/general names a room and not a place. The canonical form is
+   * /p/<project>/chat/<room>; the bare form still resolves and means "this room
+   * in the project my session is in", which is what every existing link meant.
+   *
+   * REPLACE, NOT PUSH. This is the same place by another name, so it must not
+   * become a history entry - a back button that walked through /chat/general to
+   * /p/flowy/chat/general and back again would trap the reader in one room.
+   *
+   * It waits for whoami: rewriting to /p//chat/general before the session has
+   * answered would put an empty project in the address and read as a fact.
+   */
+  useEffect(() => {
+    if (inPath || !whoami?.project) {
+      return;
+    }
+    navigate(`/p/${encodeURIComponent(whoami.project)}${location.pathname}`, {
+      replace: true,
+    });
+  }, [inPath, whoami?.project, location.pathname, navigate]);
   const { markRead } = useUnread();
   /**
    * SIGNED IN IS WHOAMI ANSWERING, NOT A TOKEN IN localStorage.
@@ -1149,9 +1173,39 @@ export function ChatRoom() {
     [room, thread, threadEvents],
   );
 
+  /**
+   * A LINK INTO ANOTHER PROJECT SAYS SO, instead of drawing an empty room.
+   *
+   * Reach is per session and a session is in one project, so /p/Lab/chat/general
+   * opened from a flowy session cannot read that room at all - the events are
+   * not filtered out, they were never readable. Without this the reader gets a
+   * room with their own project's name in the header and none of the messages
+   * they were sent to see, which reads as "the room is empty" rather than "you
+   * are not in that project".
+   *
+   * Entering is the existing session act and needs a membership; the switcher
+   * on /projects is where that is granted, so this points at it rather than
+   * reimplementing the refusal.
+   */
+  const elsewhere = inPath && whoami?.project && inPath !== whoami.project ? inPath : "";
+
   return (
     <div className="flex h-full">
       <section className="flex min-w-0 flex-1 flex-col">
+        {elsewhere ? (
+          <div
+            data-project-mismatch={elsewhere}
+            className="border-border border-b bg-muted/40 px-4 py-2 text-sm"
+          >
+            this link is for <span className="font-mono">{elsewhere}</span> and you are working in{" "}
+            <span className="font-mono">{whoami?.project}</span>. A session reads the project it is
+            in, so this room will look empty until you switch to it on{" "}
+            <a className="underline decoration-dotted" href="/projects">
+              projects
+            </a>
+            .
+          </div>
+        ) : null}
         <header className="flex flex-wrap items-center gap-3 border-border border-b px-4 py-3 pl-14 md:pl-4">
           <h1 className="font-semibold text-base">#{room}</h1>
           {/*
