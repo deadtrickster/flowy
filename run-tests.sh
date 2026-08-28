@@ -20370,7 +20370,7 @@ a_person_who_is_the_operator_is_the_operator() {
 	case "$code" in
 	200 | 502 | 503) ;;
 	*)
-		want_status 200 POST "$TOKEN_OP" "/api/user/$USER_A/role" '{"role": "user"}' >/dev/null
+		want_status 200 POST "$TOKEN_OP" "/api/user/$USER_A/role" '{"role": "member"}' >/dev/null
 		printf 'the same session got %s after its person was made operator - a password login leaves a session cookie and no bearer, and this is the refusal that reports the operator as nobody\n' "$code" >&2
 		return 1
 		;;
@@ -20378,7 +20378,12 @@ a_person_who_is_the_operator_is_the_operator() {
 
 	# AND BACK, so the fixture is left as it was found. A check that promotes
 	# somebody and walks away changes what every later check is allowed to do.
-	want_status 200 POST "$TOKEN_OP" "/api/user/$USER_A/role" '{"role": "user"}' || return 1
+	#
+	# "member", not "user". The constant is named RoleUser and its VALUE is
+	# "member" - a name read out of the source and taken for its value, which is
+	# how the first version sent {"role": "user"}, got a 400 nobody was
+	# asserting, and reported the guard as wrong about a role that never moved.
+	want_status 200 POST "$TOKEN_OP" "/api/user/$USER_A/role" '{"role": "member"}' || return 1
 	code=$(curl -sS -b "$jar" -o /dev/null -w '%{http_code}' \
 		"http://127.0.0.1:$HTTP_PORT/api/vm/projects")
 	want_eq "and refused again once the role is taken away" "$code" 403 || return 1
