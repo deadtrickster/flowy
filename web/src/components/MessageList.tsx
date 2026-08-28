@@ -248,22 +248,7 @@ export function MessageList({
       const head = held[0];
       heads.set(thread, head);
       const folded = held.filter(
-        (event) =>
-          event.id !== head.id &&
-          !mine(event.addressee) &&
-          // AND NEVER MY OWN WORDS. The exemption above is for a reply
-          // ADDRESSED TO me; there was none for a reply I WROTE, so posting
-          // into a thread put my own message straight into the fold and the
-          // room I was looking at did not contain what I had just said. The
-          // operator reported exactly that: "I also dont the the message I
-          // just posted" - and it was there, on the node, hidden from its
-          // author.
-          //
-          // One path guarded and its sibling not: "for me" was thought about
-          // and "by me" was not, which is why the rest of this filter reads
-          // as correct.
-          !mine(event.meta?.actor_user) &&
-          !event.artifact,
+        (event) => event.id !== head.id && !mine(event.addressee) && !event.artifact,
       );
       if (folded.length > 0) hidable.add(thread);
       if (open.has(thread)) continue;

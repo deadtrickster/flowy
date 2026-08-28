@@ -682,6 +682,21 @@ export function ChatRoom() {
     }
   }, [room]);
 
+  // DECLARED BEFORE send, WHICH USES IT. A const is in its temporal dead zone
+  // until the line that defines it runs, and send names it in a dependency
+  // array that is evaluated during render - so leaving this below would throw
+  // on the first paint and take the whole room with it.
+  const unfold = useCallback(async (thread: string, on: boolean) => {
+    try {
+      if (on) await api.threadUnfold(thread);
+      else await api.threadFold(thread);
+      const page = await api.threadsUnfolded();
+      setUnfolded(page.threads);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }, []);
+
   const send = useCallback(
     async (body: string, to: string, attachments: string[]) => {
       const said = await api.say(
@@ -696,8 +711,23 @@ export function ChatRoom() {
       // The poll will bring it back anyway; showing it now is what makes the
       // box feel like it did something.
       setEvents((current) => merge(current, [said]));
+      // AND THE THREAD YOU JUST SPOKE IN IS OPEN TO YOU.
+      //
+      // The operator: "I also dont the the message I just posted" - and it was
+      // there, on the node, folded away from its own author. The fold exempts a
+      // reply ADDRESSED TO this reader and nothing exempted a reply they WROTE,
+      // so answering in a thread put your words straight behind the fold.
+      //
+      // UNFOLDING THE THREAD RATHER THAN EXEMPTING THE AUTHOR, which was the
+      // first fix and was too broad: never folding anything I wrote defeats the
+      // fold in exactly the rooms it exists for - an agent that has answered
+      // fifty times in one thread would unfold all fifty for itself, and the
+      // two thread-collapse checks said so by going red. Posting is a gesture,
+      // and this is that gesture's consequence: the thread I just spoke in is
+      // one I am reading.
+      if (said.thread) void unfold(said.thread, true);
     },
-    [room, selected, cite],
+    [room, selected, cite, unfold],
   );
 
   /**
@@ -986,17 +1016,6 @@ export function ChatRoom() {
       stopped = true;
     };
   }, [signedIn]);
-
-  const unfold = async (thread: string, on: boolean) => {
-    try {
-      if (on) await api.threadUnfold(thread);
-      else await api.threadFold(thread);
-      const page = await api.threadsUnfolded();
-      setUnfolded(page.threads);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  };
 
   const openThread = (event: FlowyEvent) => {
     // THE URL STILL NAMES IT, so the pane can be sent to somebody - measured by
