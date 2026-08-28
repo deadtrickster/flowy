@@ -85,6 +85,14 @@ type agentControl struct {
 	// attach: which machine, and which session to adopt if one is named.
 	Where   string `json:"where,omitempty"`
 	Session string `json:"session,omitempty"`
+	// attach: adopt the named session or fail, never start a new one.
+	//
+	// A PANEL COMING BACK IS NOT A PANEL ASKING FOR A SHELL. Reattaching on
+	// mount is what stops a shell vanishing when somebody navigates away and
+	// back; starting one on mount would boot a VM every time the page is
+	// opened, which is a different and much worse thing. So the two are
+	// different requests rather than the same request with a hopeful outcome.
+	Adopt bool `json:"adopt,omitempty"`
 	// hello
 	ID      string `json:"id,omitempty"`
 	Project string `json:"project,omitempty"`
@@ -247,6 +255,13 @@ func (s *server) attachAgent(
 		if found, err := s.agents.get(id); err == nil {
 			sess = found
 		}
+	}
+
+	if sess == nil && c.Adopt {
+		// Not an error worth logging: a remembered id after a node restart, or
+		// after somebody stopped the shell, is the ordinary case. The panel
+		// stays idle and offers Run.
+		return nil, "that shell is no longer running"
 	}
 
 	if sess == nil {

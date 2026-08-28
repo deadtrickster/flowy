@@ -11,6 +11,8 @@ package flowy
 import (
 	"bytes"
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 )
@@ -228,5 +230,51 @@ func TestTwoTerminalsDoNotMixOnOneQueue(t *testing.T) {
 		}
 	case <-ctx.Done():
 		t.Fatal("the reader never finished")
+	}
+}
+
+// TestAdoptDoesNotStartAnything is the reattach rule, asserted as a difference
+// rather than an absolute: the SAME absent session id, asked for two ways.
+//
+// It exists because the panel now attaches on mount so that navigating away and
+// back does not lose a running shell. That is only safe if a reattach can come
+// back empty-handed - otherwise merely opening the page boots a microVM, which
+// is a much worse bug than the one it fixes.
+//
+// The registry count is what is asserted, not the error string. A refusal that
+// started a VM first and then apologised would pass a message check.
+func TestAdoptDoesNotStartAnything(t *testing.T) {
+	s := &server{agents: newAgentShells()}
+	r := httptest.NewRequest(http.MethodGet, "/api/agents/socket", nil)
+	high := make(chan []byte, 4)
+	low := make(chan []byte, 4)
+
+	before := len(s.agents.by)
+
+	a, why := s.attachAgent(context.Background(), r,
+		agentControl{Type: "attach", Session: "01ABSENTSESSION", Adopt: true,
+			Project: "flowy", Rows: 24, Cols: 80},
+		high, low)
+	if a != nil {
+		t.Fatal("adopting a session that is not running handed back an attachment")
+	}
+	if why == "" {
+		t.Fatal("refused without saying why, which a panel cannot report")
+	}
+	if got := len(s.agents.by); got != before {
+		t.Fatalf("adopt started %d session(s); it must start none", got-before)
+	}
+
+	// THE OTHER HALF OF THE DIFFERENCE. The same absent id without adopt is a
+	// request to START one, and must fail for a different reason - it gets as
+	// far as looking for firecode or a project directory. If both paths gave
+	// the same answer this test would pass against a node that ignored the
+	// field entirely.
+	_, whyStart := s.attachAgent(context.Background(), r,
+		agentControl{Type: "attach", Session: "01ABSENTSESSION", Adopt: false,
+			Project: "flowy", Rows: 24, Cols: 80},
+		high, low)
+	if whyStart == why {
+		t.Fatalf("adopt and start refused identically (%q), so adopt was not read", why)
 	}
 }

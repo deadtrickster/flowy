@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
+import { attachMouseReporting } from "@/lib/mousereport";
+
 import { attachAgent, sendAgentControl, sendAgentInput, stopAgent } from "@/lib/agentsocket";
 
 // GHOSTTY IS NOT IMPORTED AT MODULE SCOPE, and that is measured rather than
@@ -86,10 +88,12 @@ export function VmShell({ project, slot = 0 }: { project: string; slot?: number 
   // The fit addon, kept so docking or floating can refit at the moment the box
   // changes shape rather than waiting on the observer's debounce.
   const fitter = useRef<GhosttyFit | null>(null);
+  const unmouse = useRef<(() => void) | null>(null);
   // Whether the shell told us how it ended. A ref rather than state: onclose
   // fires outside React's batching and must read the value as it is NOW, not
   // as it was when the handler closed over it.
   const heard = useRef(false);
+  const adopting = useRef(false);
   const [state, setState] = useState<ShellState>("idle");
   // WHICH MACHINE. Two values, and neither is a default that could be arrived
   // at by accident - the operator asked for host shells and the difference is
@@ -106,16 +110,36 @@ export function VmShell({ project, slot = 0 }: { project: string; slot?: number 
   // Tearing down on unmount is not tidiness: the node stops the VM when the
   // socket closes, so leaving one open is a microVM running because somebody
   // navigated away.
+  // COMING BACK IS NOT STARTING. Navigating to another page unmounts this
+  // panel, which detaches; the session keeps running on the node. Without this
+  // the panel came back idle and the shell looked lost until somebody pressed
+  // Run - which adopted it and made it reappear, so nothing was ever gone.
+  //
+  // adopt: true, so opening this page never boots a VM. A remembered id that no
+  // longer resolves leaves the panel idle.
+  useEffect(() => {
+    if (!readHeldSession(project)) return;
+    void run(true);
+    // Mount only: re-running this on every render would reattach in a loop.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project]);
+
   useEffect(() => {
     return () => {
       detach.current?.();
       detach.current = null;
+      unmouse.current?.();
+      unmouse.current = null;
       term.current?.dispose();
     };
   }, []);
 
-  const run = async () => {
+  // adopt: come back to a shell that is already running, and do nothing at all
+  // if there is not one. The Run button passes false; the mount effect passes
+  // true. They are different questions - see the effect below.
+  const run = async (adopt = false) => {
     if (state === "starting" || state === "live") return;
+    adopting.current = adopt;
     setState("starting");
     setWhy("");
     heard.current = false;
@@ -162,11 +186,15 @@ export function VmShell({ project, slot = 0 }: { project: string; slot?: number 
     // wire is for. See its head comment.
     detach.current = attachAgent(
       slot,
-      { session: held, project, where, rows: t.rows, cols: t.cols },
+      { session: held, project, where, rows: t.rows, cols: t.cols, adopt },
       {
         out: (bytes) => t.write(bytes),
         control: (c) => {
           if (c.type === "hello") {
+            // ADOPTED, SO THIS IS AN ORDINARY SESSION NOW. Any error after this
+            // point is the shell's, and gets reported rather than swallowed as
+            // a reattach that found nothing.
+            adopting.current = false;
             setSession(c.id ?? "");
             setState("live");
             // REMEMBERED ONLY ONCE THE NODE HAS NAMED IT. Writing the id we
@@ -180,6 +208,15 @@ export function VmShell({ project, slot = 0 }: { project: string; slot?: number 
                 `\r\n[${c.dropped} bytes of earlier output are no longer held by the node]\r\n`,
               );
             }
+          } else if (c.type === "error" && adopting.current) {
+            // A REATTACH THAT FOUND NOTHING IS NOT A FAILURE. The remembered
+            // shell is gone - node restarted, or somebody stopped it - so the
+            // panel goes back to offering Run rather than reporting an error
+            // for something nobody asked for.
+            forgetSession(project);
+            setState("idle");
+            detach.current?.();
+            detach.current = null;
           } else if (c.type === "exited" || c.type === "error") {
             setState("ended");
             // THE SHELL'S OWN VERDICT, recorded as HEARD so that losing the
@@ -204,6 +241,15 @@ export function VmShell({ project, slot = 0 }: { project: string; slot?: number 
     // including the escape sequences for arrows and function keys, which is
     // most of the reason to use a terminal emulator rather than read keydown.
     t.onData((data: string) => sendAgentInput(slot, data));
+
+    // MOUSE, WHICH THE LIBRARY DOES NOT ENCODE. ghostty-web knows the guest
+    // turned tracking on and has no encoder for it, so clicking a byobu window
+    // title did nothing. See lib/mousereport - it is gated on the guest having
+    // asked, so a plain bash prompt keeps ordinary text selection.
+    if (box.current) {
+      unmouse.current?.();
+      unmouse.current = attachMouseReporting(box.current, t, (data) => sendAgentInput(slot, data));
+    }
 
     // And the shape, so the guest wraps where this panel wraps. A pty defaults
     // to 0x0 and a shell on a zero-sized terminal draws nothing sensible.
@@ -239,6 +285,10 @@ export function VmShell({ project, slot = 0 }: { project: string; slot?: number 
       }
       data-vm-shell=""
       data-vm-shell-state={state}
+      // WHICH GUEST THIS PANEL WOULD ADOPT. The remembered session is keyed on
+      // it, so a reader that cannot see the project cannot tell a panel that
+      // reattached from one that had nothing to reattach to.
+      data-vm-shell-project={project}
       data-vm-shell-floating={floating ? "yes" : "no"}
     >
       <div className="flex items-center gap-2">

@@ -110,6 +110,53 @@ api_vm.go answers 503 rather than an empty list to avoid.`);
     if (!said.includes("firecode")) {
       die(`the page cannot run VMs and does not say why: ${JSON.stringify(said.slice(0, 200))}`);
     }
+    // AND IT COMES BACK. Navigating away unmounts the panel; coming back must
+    // reattach to a shell that is still running, or the shell looks lost until
+    // somebody presses Run - which is the bug this arm exists for.
+    //
+    // ASSERTED ON THE WIRE, because this host may have no VM to adopt. What is
+    // measured is the REQUEST the panel makes on mount, and as a difference:
+    // with a remembered session it must ask, without one it must not. A check
+    // that only looked at the screen could not tell "adopted nothing" from
+    // "never asked", which are the two states this fix is between.
+    const project = await shell.getAttribute("data-vm-shell-project");
+    if (!project) die("the panel does not say which project it would adopt a shell in");
+
+    const attachesOnMount = async (seed) => {
+      const asked = [];
+      const seen = (ws) =>
+        ws.on("framesent", ({ payload }) => {
+          const text = Buffer.from(payload).toString("utf8");
+          if (text.includes('"type":"attach"')) asked.push(text);
+        });
+      page.on("websocket", seen);
+      await page.evaluate(
+        ([key, value]) => (value ? localStorage.setItem(key, value) : localStorage.removeItem(key)),
+        [`flowy.vmshell.session.${project}`, seed],
+      );
+      // Away and back, which is the operator's gesture rather than a reload.
+      await page.goto(`${base}/chat/general`, { timeout: 30_000 });
+      await page.goto(`${base}/vms`, { timeout: 30_000 });
+      await page.waitForTimeout(3_000);
+      page.off("websocket", seen);
+      return asked;
+    };
+
+    const withMemory = await attachesOnMount("01SOMEREMEMBEREDSESSION");
+    if (withMemory.length === 0) {
+      die(`the panel remembered a session and did not ask for it on mount - coming back to this
+page leaves a running shell looking lost until somebody presses Run`);
+    }
+    if (!withMemory.some((f) => /"adopt":\s*true/.test(f))) {
+      die(`the panel reattached on mount WITHOUT adopt, so merely opening this page would start a
+VM: ${JSON.stringify(withMemory[0]).slice(0, 200)}`);
+    }
+    const withoutMemory = await attachesOnMount("");
+    if (withoutMemory.length !== 0) {
+      die(`the panel attached on mount with nothing remembered, so opening /vms starts a shell
+nobody asked for: ${JSON.stringify(withoutMemory[0]).slice(0, 200)}`);
+    }
+
     console.log(
       `the wasm is served (${wasmBytes.length} bytes, real module); the socket answered ${asOther} for an ordinary token and ${asOperator} for the operator's; this host cannot run VMs and the page says so instead of offering a Run control`,
     );
@@ -193,7 +240,7 @@ indistinguishable from a terminal that disappeared`);
       die("dock was pressed and the floating panel stayed");
     }
     console.log(
-      `the wasm is served (${wasmBytes.length} bytes, real module); the socket answered ${asOther} for an ordinary token and ${asOperator} for the operator's; the panel is idle and says where the typing goes`,
+      `the wasm is served (${wasmBytes.length} bytes, real module); the socket answered ${asOther} for an ordinary token and ${asOperator} for the operator's; the panel is idle and says where the typing goes; it reattaches on mount only when it remembers a session, and only with adopt`,
     );
   }
 } finally {
