@@ -24,6 +24,7 @@ import {
   type Presence,
   type Reaction,
   api,
+  projectPath,
 } from "@/lib/api";
 import { useCitation } from "@/lib/cite";
 import { openThreadIn, rememberOpenThread } from "@/lib/openthread";
@@ -125,9 +126,7 @@ export function ChatRoom() {
     if (inPath || !whoami?.project) {
       return;
     }
-    navigate(`/p/${encodeURIComponent(whoami.project)}${location.pathname}`, {
-      replace: true,
-    });
+    navigate(projectPath(whoami.project, location.pathname), { replace: true });
   }, [inPath, whoami?.project, location.pathname, navigate]);
   const { markRead } = useUnread();
   /**

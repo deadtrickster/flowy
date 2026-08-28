@@ -963,6 +963,23 @@ export interface Artifact {
  * the start of a query or a hash. It may never hold a /, which is what makes
  * splitting on one unambiguous.
  */
+/**
+ * projectPath puts an existing route inside a project.
+ *
+ * The canonical address of a room is /p/<project>/chat/<room>, and a bare
+ * /chat/<room> means "in the project my session is in" - ChatRoom rewrites one
+ * into the other on arrival. That rewrite needs to BUILD the prefixed path, and
+ * building it there would be a second place that knows the shape of a
+ * reference. So it asks here, beside refPath and artifactPath.
+ *
+ * The project is encoded and the rest is not: `path` is already a route this
+ * console built, with its own segments encoded by whoever built them, and
+ * encoding it again would turn every / in it into %2F.
+ */
+export function projectPath(project: string, path: string): string {
+  return `/p/${encodeURIComponent(project)}${path}`;
+}
+
 export function refPath(ref: string | undefined): string | undefined {
   const parts = (ref ?? "").split("/");
   if (parts.length !== 3 || parts.some((part) => part === "")) return undefined;
