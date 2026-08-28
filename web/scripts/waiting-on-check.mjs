@@ -257,8 +257,15 @@ ${cleared?.fields?.waiting_on}`);
   // arm asserts a guard against a precondition it never produced - which is how
   // it passed under ONLY= and failed in the full run, where the fixture differs.
   await page.locator("[data-hide-done]").check();
+  // LONGER THAN A POLL WINDOW, and that is the number rather than a guess. The
+  // panel does not have its own clock: it refills when the room's long poll
+  // returns, which api.wait blocks for up to ~25s. The row was closed through
+  // the DOOR, so the panel still holds it as active until that poll lands - and
+  // waiting ten seconds meant this arm passed or failed on where in the cycle
+  // the run happened to start. It failed on master for the same reason, which
+  // is how a check that landed green turned out to be a coin flip.
   let left = false;
-  for (let i = 0; i < 40; i++) {
+  for (let i = 0; i < 200; i++) {
     if ((await page.locator(`[data-todo-open="${plain}"]`).count()) === 0) {
       left = true;
       break;
@@ -266,7 +273,7 @@ ${cleared?.fields?.waiting_on}`);
     await page.waitForTimeout(250);
   }
   if (!left) {
-    await die(`${plain} was closed and hide-done was ticked and it is still drawn in the panel,
+    await die(`${plain} was closed and hide-done was ticked and after 50s it is still drawn,
 so this arm never reached the state it is about. That is a broken fixture, not a
 verdict on the guard.`);
   }

@@ -69,46 +69,84 @@ if (asOther < 400) {
   die(`a non-operator token got ${asOther} from the shell socket, which is not a refusal`);
 }
 
-// 3 - THE PANEL SAYS WHAT IT IS BEFORE ANYTHING RUNS.
+// 3 - WHAT THE PAGE OFFERS DEPENDS ON WHETHER THIS HOST CAN RUN VMs AT ALL,
+// and both halves are asserted rather than one being assumed.
+//
+// api_vm.go answers 503 - not an empty list - when firecode is absent, because
+// "no VMs are running" and "this node cannot run VMs" are different facts. The
+// page honours that by drawing the refusal INSTEAD of the panel, and a Run
+// button on a host that cannot run anything would be exactly the dead button
+// this repo keeps filing. So which arm runs is decided by what the node says,
+// and neither outcome is a skip.
 const browser = await chromium.launch();
 try {
   const page = await browser.newPage({ viewport: { width: 1400, height: 1000 } });
   await page.addInitScript((t) => localStorage.setItem("flowy.token", t), operator);
   await page.goto(`${base}/vms`, { timeout: 30_000 });
 
-  const shell = page.locator("[data-vm-shell]");
-  try {
-    await shell.waitFor({ state: "visible", timeout: 20_000 });
-  } catch {
-    die("the VMs page draws no shell panel at all");
+  const panel = page.locator("[data-vm-panel]");
+  await panel.waitFor({ state: "visible", timeout: 20_000 }).catch(() => {});
+  if ((await panel.count()) === 0) {
+    die("the /vms page drew nothing at all");
   }
-  const state = await shell.getAttribute("data-vm-shell-state");
-  if (state !== "idle") {
-    die(`the panel opens in state ${JSON.stringify(state)} rather than idle - it is doing
-something before anybody asked it to`);
-  }
-  // AN EMPTY STATE THAT SAYS SO. A terminal that failed to connect and one that
-  // has not been started are the same black rectangle otherwise.
-  const empty = await page
-    .locator("[data-vm-shell-empty]")
-    .innerText()
-    .catch(() => "");
-  if (!empty.trim()) {
-    die(`the panel draws no empty state, so "nothing has been started" and "this failed to
-connect" are the same picture`);
-  }
-  if (!/guest/i.test(empty)) {
-    die(`the empty state does not say where what you type goes: ${JSON.stringify(empty)}. That
-is the one thing a person needs to know before typing into a root shell.`);
-  }
-  const run = page.locator("[data-vm-shell-run]");
-  if ((await run.count()) !== 1 || (await run.isDisabled())) {
-    die("the panel offers no enabled Run control while idle");
+  // The page reports its own state, so this reads which world it is in rather
+  // than inferring it from what happens to be on screen.
+  let vmState = await panel.getAttribute("data-vm-state");
+  for (let i = 0; i < 40 && vmState === "reading"; i++) {
+    await page.waitForTimeout(250);
+    vmState = await panel.getAttribute("data-vm-state");
   }
 
-  console.log(
-    `the wasm is served (${wasmBytes.length} bytes, real module); the socket answered ${asOther} for an ordinary token and ${asOperator} for the operator's; the panel is idle and says where the typing goes`,
-  );
+  if (vmState !== "ok") {
+    // THIS HOST CANNOT RUN VMs - the ordinary case in the gate, which runs
+    // inside a firecode guest. The assertion is that nothing offers to run a
+    // shell, because there is nothing to run one on.
+    if ((await page.locator("[data-vm-shell-run]").count()) !== 0) {
+      die(`the page is in state ${JSON.stringify(vmState)} - this host cannot run VMs - and it
+still offers a Run control. A button that cannot do anything is the failure
+api_vm.go answers 503 rather than an empty list to avoid.`);
+    }
+    const said = (await panel.innerText()).toLowerCase();
+    if (!said.includes("firecode")) {
+      die(`the page cannot run VMs and does not say why: ${JSON.stringify(said.slice(0, 200))}`);
+    }
+    console.log(
+      `the wasm is served (${wasmBytes.length} bytes, real module); the socket answered ${asOther} for an ordinary token and ${asOperator} for the operator's; this host cannot run VMs and the page says so instead of offering a Run control`,
+    );
+  } else {
+    const shell = page.locator("[data-vm-shell]");
+    try {
+      await shell.waitFor({ state: "visible", timeout: 20_000 });
+    } catch {
+      die("this host can run VMs and the page draws no shell panel");
+    }
+    const shellState = await shell.getAttribute("data-vm-shell-state");
+    if (shellState !== "idle") {
+      die(`the panel opens in state ${JSON.stringify(shellState)} rather than idle - it is doing
+something before anybody asked it to`);
+    }
+    // AN EMPTY STATE THAT SAYS SO. A terminal that failed to connect and one
+    // that has not been started are the same black rectangle otherwise.
+    const empty = await page
+      .locator("[data-vm-shell-empty]")
+      .innerText()
+      .catch(() => "");
+    if (!empty.trim()) {
+      die(`the panel draws no empty state, so "nothing has been started" and "this failed to
+connect" are the same picture`);
+    }
+    if (!/guest/i.test(empty)) {
+      die(`the empty state does not say where what you type goes: ${JSON.stringify(empty)}. That
+is the one thing a person needs to know before typing into a root shell.`);
+    }
+    const run = page.locator("[data-vm-shell-run]");
+    if ((await run.count()) !== 1 || (await run.isDisabled())) {
+      die("the panel offers no enabled Run control while idle");
+    }
+    console.log(
+      `the wasm is served (${wasmBytes.length} bytes, real module); the socket answered ${asOther} for an ordinary token and ${asOperator} for the operator's; the panel is idle and says where the typing goes`,
+    );
+  }
 } finally {
   await browser.close();
 }
