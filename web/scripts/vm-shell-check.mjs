@@ -204,22 +204,53 @@ indistinguishable from a terminal that disappeared`);
     // reattach to a shell that is still running, or the shell looks lost until
     // somebody presses Run - which is the bug this arm exists for.
     //
-    // ASSERTED ON THE WIRE, because this host may have no VM to adopt. What is
-    // measured is the REQUEST the panel makes on mount, and as a difference:
-    // with a remembered session it must ask, without one it must not. A check
-    // that only looked at the screen could not tell "adopted nothing" from
-    // "never asked", which are the two states this fix is between.
+    // MEASURED AS A DIFFERENCE, and on the SOCKET rather than on the screen:
+    // with a remembered session the panel must go and ask, without one it must
+    // not. A check that only looked at the screen could not tell "adopted
+    // nothing" from "never asked", which are the two states this fix is
+    // between.
+    //
+    // NOT the attach frame's contents, and the reason is worth knowing. A
+    // browser cannot put an Authorization header on a WebSocket handshake, so
+    // a console holding only a token - which is what this check holds - is
+    // refused at /api/agent/socket and no frame is ever sent. The panel still
+    // demonstrably TRIED, which is the property under test here. That the
+    // request carries adopt, and that the node starts nothing when it does, is
+    // asserted where it can be: TestAdoptDoesNotStartAnything, on the registry
+    // count rather than on a message.
+    // A PROJECT IS CHOSEN FIRST, because the page does not choose one for you:
+    // the select starts on "choose one" and the panel's project is empty until
+    // somebody picks. Empty here is the page's honest answer, not a race, so
+    // the check does what a person does rather than waiting for something that
+    // is never going to arrive.
+    const picker = page.locator("[data-vm-project]");
+    const names = await picker
+      .locator("option")
+      .evaluateAll((os) => os.map((o) => o.value).filter((v) => v));
+    if (names.length === 0) {
+      die("this host can run VMs and the project select offers nothing to run one over");
+    }
+    await picker.selectOption(names[0]);
     const project = await shell.getAttribute("data-vm-shell-project");
-    if (!project) die("the panel does not say which project it would adopt a shell in");
+    if (project !== names[0]) {
+      die(`the project select was set to ${JSON.stringify(names[0])} and the panel says
+${JSON.stringify(project)} - a panel adopting a shell in a project nobody chose is a shell on a
+machine nobody asked for`);
+    }
+
+    // WHAT THE PAGE DID, not only what it sent. A panel that never opened a
+    // socket and one that opened it and stayed quiet are different failures,
+    // and the message has to say which.
+    const sockets = [];
+    const oops = [];
+    page.on("websocket", (ws) => sockets.push(ws.url()));
+    page.on("pageerror", (e) => oops.push(String(e)));
+    page.on("console", (m) => {
+      if (m.type() === "error") oops.push(m.text());
+    });
 
     const attachesOnMount = async (seed) => {
-      const asked = [];
-      const seen = (ws) =>
-        ws.on("framesent", ({ payload }) => {
-          const text = Buffer.from(payload).toString("utf8");
-          if (text.includes('"type":"attach"')) asked.push(text);
-        });
-      page.on("websocket", seen);
+      const before = sockets.length;
       await page.evaluate(
         ([key, value]) => (value ? localStorage.setItem(key, value) : localStorage.removeItem(key)),
         [`flowy.vmshell.session.${project}.0`, seed],
@@ -227,28 +258,29 @@ indistinguishable from a terminal that disappeared`);
       // Away and back, which is the operator's gesture rather than a reload.
       await page.goto(`${base}/chat/general`, { timeout: 30_000 });
       await page.goto(`${base}/vms`, { timeout: 30_000 });
+      // AND THE PROJECT IS CHOSEN AGAIN, because the page does not remember
+      // which one you were in - the select comes back on "choose one", and a
+      // panel with no project has no session to ask for. So this is part of
+      // the gesture under test, not scaffolding around it.
+      await page.locator("[data-vm-project]").selectOption(names[0]);
       await page.waitForTimeout(3_000);
-      page.off("websocket", seen);
-      return asked;
+      return sockets.length - before;
     };
 
     const withMemory = await attachesOnMount("01SOMEREMEMBEREDSESSION");
-    if (withMemory.length === 0) {
-      die(`the panel remembered a session and did not ask for it on mount - coming back to this
-page leaves a running shell looking lost until somebody presses Run`);
-    }
-    if (!withMemory.some((f) => /"adopt":\s*true/.test(f))) {
-      die(`the panel reattached on mount WITHOUT adopt, so merely opening this page would start a
-VM: ${JSON.stringify(withMemory[0]).slice(0, 200)}`);
+    if (withMemory === 0) {
+      die(`the panel remembered a session and did not go and ask for it on mount - coming back to
+this page leaves a running shell looking lost until somebody presses Run.
+page errors: ${JSON.stringify(oops.slice(0, 3))}`);
     }
     const withoutMemory = await attachesOnMount("");
-    if (withoutMemory.length !== 0) {
-      die(`the panel attached on mount with nothing remembered, so opening /vms starts a shell
-nobody asked for: ${JSON.stringify(withoutMemory[0]).slice(0, 200)}`);
+    if (withoutMemory !== 0) {
+      die(`the panel opened ${withoutMemory} socket(s) on mount with nothing remembered, so
+opening /vms goes looking for a shell nobody asked for`);
     }
 
     console.log(
-      `the wasm is served (${wasmBytes.length} bytes, real module); the socket answered ${asOther} for an ordinary token and ${asOperator} for the operator's; the panel is idle and says where the typing goes; it reattaches on mount only when it remembers a session, and only with adopt`,
+      `the wasm is served (${wasmBytes.length} bytes, real module); the socket answered ${asOther} for an ordinary token and ${asOperator} for the operator's; the panel is idle and says where the typing goes; and it goes looking for its shell on mount only when it remembers one`,
     );
   }
 } finally {
