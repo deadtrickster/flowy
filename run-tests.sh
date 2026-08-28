@@ -20284,6 +20284,36 @@ a_logged_in_person_can_post_in_a_room() {
 	node scripts/person-can-post-check.mjs "http://127.0.0.1:$HTTP_PORT" "$HANDLE_A" "$pw" "$PROJECT_A"
 }
 
+# sign_in JAR HANDLE PASSWORD - a session cookie, waiting out the rate limiter.
+#
+# THE LOGIN DOOR SHARES THE JOIN LIMITER, keyed per client, and every check in
+# this suite that logs in does so from 127.0.0.1. Filtered, a check is nearly
+# the only caller and gets straight through; in a FULL run the door answers 429
+# "too many login attempts from here - wait a minute" and the caller sees no
+# cookie. That is the limiter working, not a fault, and a check that treated it
+# as one would be red on the suite and green on its own - which is precisely the
+# shape that makes a filtered green worthless.
+#
+# So a 429 is waited out and anything else is returned as it stands: a wrong
+# password must still fail immediately rather than being retried for a minute.
+sign_in() {
+	local jar=$1 handle=$2 password=$3 body code attempt
+	for attempt in 1 2 3 4 5 6 7; do
+		body=$(curl -sS -c "$jar" -X POST "http://127.0.0.1:$HTTP_PORT/api/login" \
+			-H 'Content-Type: application/json' \
+			-d "$(jq -nc --arg h "$handle" --arg p "$password" '{handle: $h, password: $p}')" \
+			-w '\n%{http_code}') || return 1
+		code=${body##*$'\n'}
+		if [ "$code" != "429" ]; then
+			printf '%s [%s]\n' "${body%$'\n'*}" "$code"
+			return 0
+		fi
+		sleep 12
+	done
+	printf 'the login door rate-limited %s for %d attempts over ~84s [429]\n' "$handle" "$attempt"
+	return 0
+}
+
 # A PERSON WHO IS THE OPERATOR IS THE OPERATOR, whatever they logged in with.
 #
 # The operator reported it against the VMs page: "and I logged in with a
@@ -20318,17 +20348,22 @@ a_person_who_is_the_operator_is_the_operator() {
 	printf '%s\n' "$pw" | "$ROOT/flowy" passwd --handle "$HANDLE_A" >/dev/null || return 1
 
 	# A SESSION EACH, through the same door a browser uses.
-	curl -sS -c "$jar_op" -X POST "http://127.0.0.1:$HTTP_PORT/api/login" \
-		-H 'Content-Type: application/json' \
-		-d "$(jq -nc --arg h "$HANDLE_OP" --arg p "$pw" '{handle: $h, password: $p}')" \
-		-o /dev/null || return 1
-	curl -sS -c "$jar_other" -X POST "http://127.0.0.1:$HTTP_PORT/api/login" \
-		-H 'Content-Type: application/json' \
-		-d "$(jq -nc --arg h "$HANDLE_A" --arg p "$pw" '{handle: $h, password: $p}')" \
-		-o /dev/null || return 1
+	#
+	# THE DOOR'S OWN ANSWER IS KEPT, because "no cookie" is a symptom with
+	# several causes - a wrong password, an account that cannot log in, a door
+	# that refused for a reason of its own - and a check that reports only the
+	# missing cookie sends the next reader looking in the wrong place.
+	local login_op login_other
+	login_op=$(sign_in "$jar_op" "$HANDLE_OP" "$pw") || return 1
+	login_other=$(sign_in "$jar_other" "$HANDLE_A" "$pw") || return 1
 	grep -q flowy_session "$jar_op" || {
-		printf 'the login door set no session cookie for %s, so this check has no session to test with\n' \
-			"$HANDLE_OP" >&2
+		printf 'the login door set no session cookie for %s - it answered %s. This check has no session to test with, which is its own setup failing rather than a verdict on the guard.\n' \
+			"$HANDLE_OP" "$login_op" >&2
+		return 1
+	}
+	grep -q flowy_session "$jar_other" || {
+		printf 'the login door set no session cookie for %s - it answered %s\n' \
+			"$HANDLE_A" "$login_other" >&2
 		return 1
 	}
 
