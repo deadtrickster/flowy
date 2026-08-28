@@ -1,6 +1,21 @@
 module github.com/deadtrickster/flowy
 
-go 1.22.2
+// 1.24 IS A REQUIREMENT, NOT A PREFERENCE. internal/store/inbox.go tags the
+// waiter's process claim `omitzero`, which arrived in 1.24. An older toolchain
+// does not reject the tag - it IGNORES it, and the field is emitted always. The
+// three fields inside carry omitempty, so a waiter that has claimed no process
+// comes out of /api/presence as `{}` rather than not at all: empty where the
+// answer is absent, which is the one defect this repo has a rule about.
+//
+// Measured 2026-08-28: the suite is green on go1.26 here and red on go1.22.2 in
+// a guest, on the same commit, at
+// `a listener that claimed no process is null, want <not said>`.
+//
+// Stated here rather than fixed at the tag because the go directive is a HARD
+// MINIMUM since 1.21: with this line an old toolchain refuses to build, which
+// is a red that names itself, instead of building something whose answers are
+// quietly a different shape.
+go 1.24
 
 require github.com/lib/pq v1.10.9
 

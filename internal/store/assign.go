@@ -286,9 +286,12 @@ func (d *DB) AssignTodo(
 	held := strings.TrimSpace(AssigneeOf(art))
 	claimed := strings.TrimSpace(artifactString(art, AssigneeField))
 	if claimed != "" && claimed != name && d.seatHandle(ctx, p) != claimed {
-		return nil, nil, refuseAssign(fmt.Sprintf(
+		// Formatted ONCE. It was Sprintf'd and then handed to refuseAssign,
+		// which formats again - so a handle carrying a percent came out as
+		// %!s(MISSING) in the refusal a person reads. vet says so from 1.24.
+		return nil, nil, refuseAssign(
 			"todo %s is carried by %s - a held row moves by naming its holder: pass expect:%s to take it over",
-			art.ID, claimed, claimed))
+			art.ID, claimed, claimed)
 	}
 	// AND CAN THE SEAT BEING HANDED THE WORK SEE IT. Every refusal above is
 	// about the caller; this is the only one about the party being named. See

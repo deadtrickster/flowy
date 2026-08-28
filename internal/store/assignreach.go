@@ -126,10 +126,11 @@ func refuseOutOfReach(name, id, project string, reach []string) error {
 	if len(reach) > 0 {
 		where = strings.Join(reach, ", ")
 	}
-	return refuseAssign(fmt.Sprintf(
+	// Once, not twice - see assign.go's site.
+	return refuseAssign(
 		"%s cannot read work in project %s - every credential naming %s reaches %s. "+
 			"Give that seat a token in %s, or file the row where they can see it",
-		name, project, id, where, project))
+		name, project, id, where, project)
 }
 
 // assigneeCanReach refuses an assignment to a party that certainly cannot see
