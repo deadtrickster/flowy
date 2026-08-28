@@ -32,6 +32,112 @@ import { ApiError, api } from "@/lib/api";
  * worked. The operator's response was "i dont care about any runners". A
  * feature whose last mile is invisible is not delivered.
  */
+
+/**
+ * SEVERAL SHELLS, ONE SOCKET.
+ *
+ * 01M14HN1VX, the operator: "I want Shell tabs". lib/agentsocket owns one
+ * connection for the document and routes frames by slot, so a strip is N
+ * <VmShell slot={i}> and no socket code here - which is what the slot byte on
+ * the wire is for. Opening a socket per tab would work and would waste it.
+ *
+ * CLOSING A TAB DETACHES; IT DOES NOT STOP. The wire keeps those apart on
+ * purpose and so does this: unmounting a VmShell detaches its slot, the session
+ * keeps running on the node, and reattach finds it. A close that stopped the
+ * session would mean a stray click kills a build, which is the failure the
+ * whole reattach change exists to prevent. Stopping is the shell's own control,
+ * inside the panel, where it names the session it ends.
+ *
+ * A SLOT IS NEVER REUSED WHILE THE PAGE LIVES. Slots are handed out by a
+ * counter rather than by index, because the node keys attachments by slot and a
+ * closed tab's detach may still be in flight when the next one opens. Reusing
+ * the number would attach a new terminal to a slot the node is still tearing
+ * down.
+ */
+function ShellTabs({ project }: { project: string }) {
+  const [tabs, setTabs] = useState<number[]>([0]);
+  const [live, setLive] = useState(0);
+  const next = useRef(1);
+
+  const add = () => {
+    // A byte on the wire. 256 terminals in one browser tab is not a limit
+    // anybody reaches; refusing past it is better than wrapping to 0 and
+    // stealing slot 0's session.
+    if (next.current > 255) return;
+    const slot = next.current++;
+    setTabs((t) => [...t, slot]);
+    setLive(slot);
+  };
+
+  const close = (slot: number) => {
+    setTabs((t) => {
+      const left = t.filter((s) => s !== slot);
+      // Never leave the strip empty: a panel with no tabs has no way back to
+      // one, and the reader would have to reload to get a shell.
+      if (left.length === 0) {
+        const fresh = next.current++;
+        setLive(fresh);
+        return [fresh];
+      }
+      setLive((cur) => (cur === slot ? left[left.length - 1] : cur));
+      return left;
+    });
+  };
+
+  return (
+    <section className="flex flex-col gap-2" data-shell-tabs={tabs.length}>
+      <div className="flex flex-wrap items-center gap-1">
+        {tabs.map((slot, i) => (
+          <span key={slot} className="flex items-center">
+            <button
+              type="button"
+              data-shell-tab={slot}
+              data-shell-tab-live={slot === live ? "yes" : "no"}
+              onClick={() => setLive(slot)}
+              className={
+                slot === live
+                  ? "cursor-default rounded-l border border-primary bg-primary/10 px-2 py-0.5 font-mono text-primary text-xs"
+                  : "cursor-pointer rounded-l border border-border px-2 py-0.5 font-mono text-muted-foreground text-xs hover:bg-accent"
+              }
+            >
+              shell {i + 1}
+            </button>
+            <button
+              type="button"
+              data-shell-tab-close={slot}
+              title="close this tab - the shell keeps running and reattaches"
+              onClick={() => close(slot)}
+              className="cursor-pointer rounded-r border border-border border-l-0 px-1 py-0.5 font-mono text-muted-foreground text-xs hover:bg-accent"
+            >
+              x
+            </button>
+          </span>
+        ))}
+        <button
+          type="button"
+          data-shell-tab-add
+          onClick={add}
+          className="cursor-pointer rounded border border-border px-2 py-0.5 font-mono text-muted-foreground text-xs hover:bg-accent"
+        >
+          +
+        </button>
+      </div>
+      {/*
+        EVERY TAB STAYS MOUNTED, and the ones not being read are hidden rather
+        than unmounted. Unmounting would detach the slot - which is what closing
+        means - so switching tabs would silently drop the session the reader
+        just walked away from for a second. Hidden keeps the terminal, its
+        scrollback and its attachment exactly as they were.
+      */}
+      {tabs.map((slot) => (
+        <div key={slot} hidden={slot !== live} data-shell-pane={slot}>
+          <VmShell project={project} slot={slot} />
+        </div>
+      ))}
+    </section>
+  );
+}
+
 export function Vms() {
   const [projects, setProjects] = useState<VMProject[]>([]);
   const [vms, setVms] = useState<VM[]>([]);
@@ -300,7 +406,7 @@ export function Vms() {
           interactive half, which is the whole of this row. Put here rather
           than on a new page because a second page listing the same projects
           with a different verb is two answers to "what can I run over". */}
-      <VmShell project={project} />
+      <ShellTabs project={project} />
 
       {opened ? (
         <section className="flex flex-col gap-2" data-vm-console={opened}>
