@@ -217,7 +217,15 @@ export function VmShell({ project, slot = 0 }: { project: string; slot?: number 
           disabled={state === "starting" || state === "live"}
           onClick={() => void run()}
         >
-          {state === "starting" ? "bringing a VM up…" : "run a shell"}
+          {state === "starting"
+            ? // WHAT IS ACTUALLY STARTING. This said "bringing a VM up" whatever
+              // the selector held, so choosing "this host" and pressing Run
+              // reported a VM boot that was never happening - and the operator
+              // reasonably read it as the selector being ignored.
+              where === "host"
+              ? "opening a shell on this host…"
+              : "bringing a VM up…"
+            : "run a shell"}
         </button>
         {state === "live" ? (
           <button

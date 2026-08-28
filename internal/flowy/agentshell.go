@@ -222,7 +222,28 @@ func (a *agentShells) start(id, project, workdir, binary string, where shellWher
 			cmd.Dir = workdir
 		}
 	default:
-		args := []string{"shell"}
+		// --no-tmux, AND IT IS THE WHOLE FIX FOR "the shell exits immediately".
+		//
+		// `firecode shell` wraps an interactive session in byobu/tmux with
+		// `new-session -A -s firecode/<project>` - bin/firecode:4126, and -A is
+		// deliberate there: it makes the session a SINGLETON PER PROJECT so a
+		// person can close a laptop and reattach over ssh.
+		//
+		// That is exactly wrong here. It means the panel is not talking to a
+		// microVM at all: it is a tmux client on a session shared with every
+		// other `firecode shell` for the same project, including the operator's
+		// own terminal. Two consequences, both seen:
+		//
+		//   the panel adopted the operator's byobu - F3 and F4 switched THEIR
+		//   windows, and what they typed into the browser went to their session
+		//
+		//   when that session's VM had already exited, attach found a dead
+		//   window and returned at once, which the relay reported faithfully as
+		//   a shell that exited immediately
+		//
+		// A relayed shell must be its own session. The flag firecode already
+		// has says so, so nothing new is invented here.
+		args := []string{"shell", "--no-tmux"}
 		if workdir != "" {
 			args = append(args, "--project", workdir)
 		}
