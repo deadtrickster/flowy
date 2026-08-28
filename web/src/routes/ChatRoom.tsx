@@ -102,7 +102,40 @@ const COUNT_LISTENING = "#4fae7a"; // green - somebody has an ear on this room
  * node that goes away is a failed fetch and a retry rather than a connection
  * the console has to keep alive itself.
  */
+/**
+ * A ROOM IS A PROJECT AND A NAME, and this shell is what makes React agree.
+ *
+ * The operator, 2026-08-28: "when I switch projects chat messages in the
+ * same-named-room rendered old when scrolling above". Every effect below is
+ * keyed on [room] and nothing else - the load, the poll, the cursor, the todos,
+ * eleven of them. Switching project changes where the session writes and
+ * re-keys none of it: React sees the same room name, keeps the component
+ * mounted, keeps the messages already in state, and scrolling up pages MORE of
+ * the previous project's history in through a cursor nobody reset.
+ *
+ * Those are not stale renders. They are another project's messages, fetched
+ * under another project's reach, sitting in a room that now belongs to this
+ * one - the "a room name is not an address" defect the URL work was meant to
+ * end, reproduced one layer in because the project went into the address and
+ * the component stayed keyed on the room.
+ *
+ * A KEY RATHER THAN ELEVEN DEPENDENCY ARRAYS. Remounting throws away every
+ * piece of state at once - messages, cursor, pane, selection, the lot - and
+ * cannot be got half right. Adding `project` to eleven deps could: miss one and
+ * a single pane keeps reading the old project silently, which is how this
+ * shipped in the first place.
+ */
 export function ChatRoom() {
+  const { room = "general", project: inPath } = useParams();
+  const { whoami } = useSession();
+  // The project this room belongs to: the address if it names one, otherwise
+  // the project this session is in. Empty until whoami answers, which is a
+  // distinct key from any real project and remounts once when it arrives.
+  const belongsTo = inPath || whoami?.project || "";
+  return <ChatRoomIn key={`${belongsTo}/${room}`} />;
+}
+
+function ChatRoomIn() {
   const { room = "general", pane: asked, message: linked, project: inPath } = useParams();
   const navigate = useNavigate();
   const { whoami } = useSession();

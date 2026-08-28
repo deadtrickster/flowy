@@ -102,6 +102,9 @@ function ProjectBadge() {
   if (!whoami) {
     return <div className="text-muted-foreground text-xs">handoff fabric console</div>;
   }
+  if (!whoami) {
+    return <div className="text-muted-foreground text-xs">handoff fabric console</div>;
+  }
   return (
     <div className="flex flex-col gap-0.5">
       <div className="flex items-center gap-1.5">
@@ -123,32 +126,43 @@ function ProjectBadge() {
           </span>
         ) : null}
       </div>
-      {mine === null ? null : others.length === 0 ? (
-        <span className="text-[10px] text-muted-foreground">
-          {mine.length === 0 ? "no other project to switch to" : "the only one you are in"}
-        </span>
+      {/*
+        A DROPDOWN, because that is what was asked for and a row of buttons is
+        not one. The operator, twice: "replacy 'handoff fabric console' with a
+        project dropdown", then "project selector is not a dropdown". A button
+        per project reads at three and stops reading at ten.
+
+        A NATIVE SELECT rather than a styled menu: one element, keyboard and
+        touch native, no click-outside handler, and on a phone the platform
+        draws its own picker - which is where this console gets read.
+
+        THE CURRENT PROJECT IS IN THE LIST AND SELECTED, so the control says
+        where you are as well as where you could go.
+
+        ABSENT IS NOT EMPTY: null memberships is an agent credential or a
+        whoami still in flight and draws nothing; [] is a person who belongs
+        nowhere and gets a sentence, because an empty menu reads as broken.
+      */}
+      {mine === null ? null : mine.length === 0 ? (
+        <span className="text-[10px] text-muted-foreground">you belong to no project yet</span>
       ) : (
-        <div className="flex flex-wrap items-center gap-1" data-project-switcher={others.length}>
-          {others.map((p) => (
-            <button
-              key={p}
-              type="button"
-              // ITS OWN ATTRIBUTE, not the Projects page's. Reusing
-              // data-enter-project put two elements with that name on any page
-              // where both are drawn, and three existing checks locate by it -
-              // Playwright's strict mode then fails with "resolved to 2
-              // elements" rather than picking one, which is the right
-              // behaviour and turned this row red. The rail is a different
-              // control in a different place; it gets a different name.
-              data-rail-enter-project={p}
-              disabled={busy !== ""}
-              onClick={() => void enter(p)}
-              className="cursor-pointer rounded border border-border px-1 font-mono text-[10px] text-muted-foreground transition hover:border-primary/50 hover:text-foreground disabled:opacity-50"
-            >
-              {busy === p ? `${p}…` : p}
-            </button>
+        <select
+          data-project-switcher={others.length}
+          data-rail-project-select
+          value={here}
+          disabled={busy !== ""}
+          onChange={(e) => {
+            const next = e.target.value;
+            if (next && next !== here) void enter(next);
+          }}
+          className="w-full cursor-pointer rounded border border-border bg-transparent px-1 py-0.5 font-mono text-[10px] text-muted-foreground transition hover:border-primary/50 hover:text-foreground disabled:opacity-50"
+        >
+          {mine.map((p) => (
+            <option key={p} value={p}>
+              {p === here ? `${p} - here` : p}
+            </option>
           ))}
-        </div>
+        </select>
       )}
       {refused ? (
         <span data-rail-enter-refused className="text-[10px] text-destructive">
