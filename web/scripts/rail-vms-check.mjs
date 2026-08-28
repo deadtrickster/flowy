@@ -22,9 +22,19 @@ try {
   await page.addInitScript((t) => localStorage.setItem("flowy.token", t), operator);
   await page.goto(`${base}/`, { timeout: 30_000 });
 
-  const entry = page.locator('a[href="/vms"]').first();
-  if ((await entry.count()) === 0) {
-    die("the nav offers no way to the shells page");
+  // SCOPED TO THE RAIL, and this is not fussiness. The first version looked
+  // for a[href="/vms"] anywhere on the page and passed with the NAV LINK
+  // POINTING SOMEWHERE ELSE - it had found the home page's link, which has
+  // always been there. A check that cannot fail for its own case, caught by
+  // proving the red rather than by reading it.
+  const entry = page.locator('[data-nav] a[href="/vms"]');
+  const found = await entry.count();
+  if (found === 0) {
+    die(`the nav offers no way to the shells page. The home page links it, so a check that did
+not scope to [data-nav] would pass right here.`);
+  }
+  if (found > 1) {
+    die(`the nav has ${found} entries for /vms, so this is asserting whichever came first`);
   }
   await entry.click();
   await page.waitForURL((url) => url.pathname === "/vms", { timeout: 15_000 }).catch(() => {});

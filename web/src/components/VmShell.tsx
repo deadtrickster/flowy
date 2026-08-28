@@ -386,30 +386,30 @@ export function VmShell({ project, slot = 0 }: { project: string; slot?: number 
         </p>
       ) : null}
       {/*
-        HOW TALL, AND IT DEPENDS ON WHAT IT IS INSIDE.
+        HOW TALL, AND IT IS THE SPACE THAT IS ACTUALLY LEFT.
 
-        Floating, the panel is a box with a height of its own, so the screen
-        fills it: min-h-0 flex-1.
+        The shell hands a real height down: html, body and #root are 100%, the
+        frame is `flex h-full`, and main is a flex column with overflow-hidden
+        wrapping its children in `min-h-0 flex-1`. So there IS a definite height
+        to divide - the chain from /vms down to here simply stopped passing it
+        on, and flex-1 with no definite ancestor resolved to the content height,
+        which is this terminal. Circular, and it collapsed to 2px of border.
 
-        DOCKED, IT IS NOT. /vms is a scrolling document - every ancestor from
-        the pane div up to the page is auto-height - so "fill your container"
-        resolves to the container's content height, which is this terminal.
-        Circular, and flex-1 collapsed to the 2px of its own border. Measured
-        that way by the gate: 2px in a 700px window and 2px in a 1200px one.
-        My own run never saw it, because the arm only runs on a host with
-        firecode and the guest takes the other branch.
+        60vh was the first fix and it was a guess: right shape, wrong number,
+        and it ignored the space to either side of it. Now every link in the
+        chain carries min-h-0 flex-1 and the terminal takes what the header and
+        the form above it leave, which is what "fit its container" meant.
 
-        So docked it follows the WINDOW, which is the only container it really
-        has, with a floor so a short window still leaves a usable terminal.
+        min-h-0 on every one of them, because a flex item's default min-height
+        is auto - it refuses to shrink below its content - and one missing
+        min-h-0 anywhere up the chain puts the whole thing back. No pixel floor
+        here for the same reason: a floor and min-h-0 contradict each other, and
+        a container with a real height does not need one.
       */}
       <div
         ref={box}
         data-vm-shell-screen=""
-        className={
-          floating
-            ? "min-h-0 flex-1 rounded border border-border bg-black"
-            : "h-[60vh] min-h-[240px] rounded border border-border bg-black"
-        }
+        className="min-h-0 flex-1 rounded border border-border bg-black"
       />
     </section>
   );

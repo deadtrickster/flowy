@@ -85,7 +85,7 @@ function ShellTabs({ project }: { project: string }) {
   };
 
   return (
-    <section className="flex flex-col gap-2" data-shell-tabs={tabs.length}>
+    <section className="flex min-h-0 flex-1 flex-col gap-2" data-shell-tabs={tabs.length}>
       <div className="flex flex-wrap items-center gap-1">
         {tabs.map((slot, i) => (
           <span key={slot} className="flex items-center">
@@ -130,7 +130,15 @@ function ShellTabs({ project }: { project: string }) {
         scrollback and its attachment exactly as they were.
       */}
       {tabs.map((slot) => (
-        <div key={slot} hidden={slot !== live} data-shell-pane={slot}>
+        // min-h-0 flex-1 on the LIVE pane only: a hidden one must not take a
+        // share of the column, and `hidden` alone does not stop a flex item
+        // from being laid out as one.
+        <div
+          key={slot}
+          hidden={slot !== live}
+          data-shell-pane={slot}
+          className={slot === live ? "flex min-h-0 flex-1 flex-col" : undefined}
+        >
           <VmShell project={project} slot={slot} />
         </div>
       ))}
@@ -293,7 +301,15 @@ export function Vms() {
   }
 
   return (
-    <div className="flex flex-col gap-4 p-6" data-vm-panel="" data-vm-state="ok">
+    // h-full min-h-0 so the height main hands down reaches the terminal, and
+    // overflow-y-auto so a short window still scrolls to the form rather than
+    // clipping it - main is overflow-hidden, so without this the page loses its
+    // bottom instead of scrolling.
+    <div
+      className="flex h-full min-h-0 flex-col gap-4 overflow-y-auto p-6"
+      data-vm-panel=""
+      data-vm-state="ok"
+    >
       <header className="flex flex-col gap-1">
         <h1 className="font-semibold text-base">VMs</h1>
         <p className="text-muted-foreground text-xs">
