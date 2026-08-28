@@ -53,11 +53,38 @@ try {
   await page.locator("[data-login-submit]").click();
   await page.waitForURL((url) => url.pathname === "/", { timeout: 15_000 }).catch(() => {});
 
-  const who = await page.evaluate(async () => {
-    const res = await fetch("/api/whoami", { credentials: "same-origin" });
-    return res.ok ? ((await res.json())?.user ?? "") : "";
-  });
-  if (!who) die("could not log in, so nothing below was measured");
+  /**
+   * THE LOGIN LIMITER IS PART OF THE ENVIRONMENT, not an error.
+   *
+   * /api/login rate limits, and the gate runs many console checks in a row -
+   * so a check that logs in and dies on the first failure reports "could not
+   * log in, so nothing below was measured" and blames the feature. That is
+   * what this one did on its first gate run, while passing locally where
+   * nothing else had just logged in. person-sees-the-console-check and
+   * profile-check both wait the window out; this does the same rather than
+   * inventing a third answer.
+   */
+  let who = "";
+  for (let attempt = 0; attempt < 2 && !who; attempt++) {
+    who = await page.evaluate(async () => {
+      const res = await fetch("/api/whoami", { credentials: "same-origin" });
+      return res.ok ? ((await res.json())?.user ?? "") : "";
+    });
+    if (who) break;
+    if (attempt === 0) {
+      console.log("  (waiting out the login limiter, 62s)");
+      await new Promise((resolve) => setTimeout(resolve, 62_000));
+      await page.goto(`${base}/login`, { timeout: 30_000 }).catch(() => {});
+      await page.locator("[data-login-form]").waitFor({ state: "visible", timeout: 20_000 });
+      await page.locator("[data-login-handle]").fill(handle);
+      await page.locator("[data-login-password]").fill(password);
+      await page.locator("[data-login-submit]").click();
+      await page.waitForURL((url) => url.pathname === "/", { timeout: 15_000 }).catch(() => {});
+    }
+  }
+  if (!who) {
+    die("could not log in even after waiting out the limiter, so nothing below was measured");
+  }
 
   /**
    * ENTER THE PROJECT FIRST, and this is a precondition rather than a step.
@@ -86,8 +113,7 @@ try {
   await header.waitFor({ state: "visible", timeout: 20_000 }).catch(() => {});
   if (!(await header.isVisible().catch(() => false))) {
     die(
-      `/p/${project}/chat/general did not draw the room - if it matched /p/:project/:type/:id ` +
-        "instead, the artifact route outranks the chat one and every link of this shape is dead",
+      `/p/${project}/chat/general did not draw the room - if it matched /p/:project/:type/:id instead, the artifact route outranks the chat one and every link of this shape is dead`,
     );
   }
 
@@ -120,8 +146,7 @@ try {
   const back = new URL(page.url()).pathname;
   if (back !== "/projects") {
     die(
-      `back went to ${back} rather than /projects - the rewrite pushed a history entry, ` +
-        "so the reader presses back twice to leave a room they entered once",
+      `back went to ${back} rather than /projects - the rewrite pushed a history entry, so the reader presses back twice to leave a room they entered once`,
     );
   }
 
