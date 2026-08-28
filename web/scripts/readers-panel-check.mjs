@@ -76,11 +76,7 @@ try {
   });
   if (carried !== token) {
     die(
-      `the page is not carrying the token this check was given, so nothing below ` +
-        `would have been measured against it. localStorage says ${JSON.stringify(carried)}. ` +
-        `That is this browser, not the panel: lib/api getToken() returns "" when the ` +
-        `read throws, so the page would send no Authorization header and the node ` +
-        `would answer as somebody else.`,
+      `the page is not carrying the token this check was given, so nothing below would have been measured against it. localStorage says ${JSON.stringify(carried)}. That is this browser, not the panel: lib/api getToken() returns "" when the read throws, so the page would send no Authorization header and the node would answer as somebody else.`,
     );
   }
 
@@ -110,8 +106,7 @@ try {
   for (const want of [quietReader, liveReader]) {
     if (!fromDoor.includes(want)) {
       die(
-        `the node did not send ${want} to this page - it sent ${JSON.stringify(fromDoor)}. ` +
-          `The panel draws what it is given, so this is the door or the credential, not the panel.`,
+        `the node did not send ${want} to this page - it sent ${JSON.stringify(fromDoor)}. The panel draws what it is given, so this is the door or the credential, not the panel.`,
       );
     }
   }
