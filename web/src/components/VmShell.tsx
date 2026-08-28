@@ -13,6 +13,7 @@ import { attachAgent, sendAgentControl, sendAgentInput, stopAgent } from "@/lib/
 // has asked for a terminal and is willing to wait for one.
 type GhosttyModule = typeof import("ghostty-web");
 type GhosttyTerminal = InstanceType<GhosttyModule["Terminal"]>;
+type GhosttyFit = InstanceType<GhosttyModule["FitAddon"]>;
 
 /**
  * A shell running in a firecode microVM, drawn here.
@@ -82,6 +83,9 @@ export function VmShell({ project, slot = 0 }: { project: string; slot?: number 
   // The detach for this panel's slot, so unmounting stops carrying the session
   // without ending it.
   const detach = useRef<(() => void) | null>(null);
+  // The fit addon, kept so docking or floating can refit at the moment the box
+  // changes shape rather than waiting on the observer's debounce.
+  const fitter = useRef<GhosttyFit | null>(null);
   // Whether the shell told us how it ended. A ref rather than state: onclose
   // fires outside React's batching and must read the value as it is NOW, not
   // as it was when the handler closed over it.
@@ -91,6 +95,11 @@ export function VmShell({ project, slot = 0 }: { project: string; slot?: number 
   // at by accident - the operator asked for host shells and the difference is
   // whether what you type can reach this machine.
   const [where, setWhere] = useState<"vm" | "host">("vm");
+  // DOCKED OR FLOATING. Floating is not a second component: the same panel,
+  // the same session, the same socket - only the box around it moves. Making
+  // it a second component would be two terminals to keep in step and a
+  // reattach every time somebody undocked.
+  const [floating, setFloating] = useState(false);
   const [why, setWhy] = useState("");
   const [session, setSession] = useState("");
 
@@ -120,11 +129,19 @@ export function VmShell({ project, slot = 0 }: { project: string; slot?: number 
 
     const t = new Terminal({ fontSize: 13, fontFamily: "ui-monospace, monospace" });
     const fit = new FitAddon();
+    fitter.current = fit;
     t.loadAddon(fit);
     if (box.current) {
       box.current.replaceChildren();
       t.open(box.current);
       fit.fit();
+      // AND IT FOLLOWS THE CONTAINER FROM NOW ON. fit() once at open sizes the
+      // terminal to whatever the box happened to be at that instant and never
+      // again, so dragging the pane or floating the panel left the guest
+      // wrapping at the old width. observeResize is the addon's own
+      // ResizeObserver and is OPT-IN - not calling it was the whole of "it
+      // should fit height/width of its container".
+      fit.observeResize();
     }
     term.current = t;
 
@@ -207,8 +224,23 @@ export function VmShell({ project, slot = 0 }: { project: string; slot?: number 
     setWhy("stopped from the panel");
   };
 
-  return (
-    <section className="flex flex-col gap-2" data-vm-shell="" data-vm-shell-state={state}>
+  // REFIT THE MOMENT THE BOX CHANGES, rather than waiting for the observer.
+  // The observer debounces, which is right for a drag and wrong for a switch
+  // that changes the shape in one step - the terminal would sit at the old
+  // size for a beat with the guest wrapping to match.
+  useEffect(() => {
+    fitter.current?.fit();
+  }, []);
+
+  const panel = (
+    <section
+      className={
+        floating ? "flex h-full min-h-0 flex-col gap-2" : "flex min-h-0 flex-1 flex-col gap-2"
+      }
+      data-vm-shell=""
+      data-vm-shell-state={state}
+      data-vm-shell-floating={floating ? "yes" : "no"}
+    >
       <div className="flex items-center gap-2">
         <button
           type="button"
@@ -254,6 +286,19 @@ export function VmShell({ project, slot = 0 }: { project: string; slot?: number 
             <option value="host">this host</option>
           </select>
         </label>
+        <button
+          type="button"
+          data-vm-shell-float-toggle=""
+          className="rounded border border-border px-2 py-1 text-xs hover:bg-muted"
+          onClick={() => {
+            setFloating((on) => !on);
+            // The box changes shape in the same tick; refit on the next one,
+            // once the browser has laid it out.
+            window.requestAnimationFrame(() => fitter.current?.fit());
+          }}
+        >
+          {floating ? "dock" : "float"}
+        </button>
         {session ? (
           <span data-vm-shell-session={session} className="text-muted-foreground text-xs">
             {session.slice(0, 10)}
@@ -287,8 +332,42 @@ export function VmShell({ project, slot = 0 }: { project: string; slot?: number 
       <div
         ref={box}
         data-vm-shell-screen=""
-        className="min-h-[320px] rounded border border-border bg-black"
+        className="min-h-0 flex-1 rounded border border-border bg-black"
       />
     </section>
+  );
+
+  if (!floating) return panel;
+
+  // FLOATING IS A BOX, NOT A WINDOW MANAGER. Fixed, resizable by the browser's
+  // own corner, and bounded so it cannot be dragged or grown off screen. It is
+  // deliberately not draggable-by-header with saved coordinates: that is a lot
+  // of state to get wrong, and the thing asked for was to get the terminal out
+  // of the column, which this does.
+  return (
+    <>
+      {/* WHAT THE PANEL LEAVES BEHIND, so the page does not silently lose a
+          terminal. A floating panel with nothing in its place reads as a
+          terminal that vanished. */}
+      <section className="flex flex-col gap-2" data-vm-shell-docked-slot="">
+        <p className="text-muted-foreground text-xs">
+          this shell is floating.{" "}
+          <button
+            type="button"
+            data-vm-shell-dock=""
+            className="underline hover:text-foreground"
+            onClick={() => setFloating(false)}
+          >
+            dock it
+          </button>
+        </p>
+      </section>
+      <div
+        data-vm-shell-float=""
+        className="fixed right-4 bottom-4 z-50 flex h-[min(70vh,40rem)] w-[min(90vw,64rem)] resize flex-col overflow-auto rounded-lg border border-border bg-background p-3 shadow-lg"
+      >
+        {panel}
+      </div>
+    </>
   );
 }

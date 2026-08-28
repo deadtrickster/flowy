@@ -143,6 +143,55 @@ is the one thing a person needs to know before typing into a root shell.`);
     if ((await run.count()) !== 1 || (await run.isDisabled())) {
       die("the panel offers no enabled Run control while idle");
     }
+
+    // THE SCREEN FILLS ITS BOX, asserted as GEOMETRY rather than as a class.
+    // It carried min-h-[320px], which is 320px tall in a 900px pane and 320px
+    // tall in a 200px one - a number wrong in both directions. A check reading
+    // the className would have passed on exactly that.
+    const screen = page.locator("[data-vm-shell-screen]");
+    const grew = async () => {
+      const box = await screen.boundingBox();
+      return box?.height ?? 0;
+    };
+    await page.setViewportSize({ width: 1400, height: 700 });
+    const short = await grew();
+    await page.setViewportSize({ width: 1400, height: 1200 });
+    // The observer debounces, so the assertion waits rather than reading the
+    // frame it happened to land on.
+    let tall = short;
+    for (let i = 0; i < 40 && tall <= short; i++) {
+      await page.waitForTimeout(250);
+      tall = await grew();
+    }
+    if (!(tall > short)) {
+      die(`the terminal is ${short}px in a 700px window and ${tall}px in a 1200px one - it is
+not following its container, which is what a fixed height looks like from here.`);
+    }
+
+    // AND IT FLOATS. The panel comes out of the column and goes back, and the
+    // page says where it went - a floating panel with nothing in its place
+    // reads as a terminal that vanished.
+    const toggle = page.locator("[data-vm-shell-float-toggle]");
+    if ((await toggle.count()) !== 1) die("the panel offers no way to float");
+    await toggle.click();
+    try {
+      await page.locator("[data-vm-shell-float]").waitFor({ state: "visible", timeout: 10_000 });
+    } catch {
+      die("float was pressed and no floating panel appeared");
+    }
+    if ((await page.locator("[data-vm-shell-docked-slot]").count()) !== 1) {
+      die(`the panel floated and left nothing behind in the column, so from the page it is
+indistinguishable from a terminal that disappeared`);
+    }
+    if ((await page.locator("[data-vm-shell][data-vm-shell-floating='yes']").count()) !== 1) {
+      die("the floating panel does not say it is floating");
+    }
+    await page.locator("[data-vm-shell-dock]").click();
+    try {
+      await page.locator("[data-vm-shell-float]").waitFor({ state: "detached", timeout: 10_000 });
+    } catch {
+      die("dock was pressed and the floating panel stayed");
+    }
     console.log(
       `the wasm is served (${wasmBytes.length} bytes, real module); the socket answered ${asOther} for an ordinary token and ${asOperator} for the operator's; the panel is idle and says where the typing goes`,
     );
