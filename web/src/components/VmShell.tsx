@@ -385,10 +385,31 @@ export function VmShell({ project, slot = 0 }: { project: string; slot?: number 
             : "this shell is in a microVM - nothing here reaches the host"}
         </p>
       ) : null}
+      {/*
+        HOW TALL, AND IT DEPENDS ON WHAT IT IS INSIDE.
+
+        Floating, the panel is a box with a height of its own, so the screen
+        fills it: min-h-0 flex-1.
+
+        DOCKED, IT IS NOT. /vms is a scrolling document - every ancestor from
+        the pane div up to the page is auto-height - so "fill your container"
+        resolves to the container's content height, which is this terminal.
+        Circular, and flex-1 collapsed to the 2px of its own border. Measured
+        that way by the gate: 2px in a 700px window and 2px in a 1200px one.
+        My own run never saw it, because the arm only runs on a host with
+        firecode and the guest takes the other branch.
+
+        So docked it follows the WINDOW, which is the only container it really
+        has, with a floor so a short window still leaves a usable terminal.
+      */}
       <div
         ref={box}
         data-vm-shell-screen=""
-        className="min-h-0 flex-1 rounded border border-border bg-black"
+        className={
+          floating
+            ? "min-h-0 flex-1 rounded border border-border bg-black"
+            : "h-[60vh] min-h-[240px] rounded border border-border bg-black"
+        }
       />
     </section>
   );
