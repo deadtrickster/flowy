@@ -13582,6 +13582,8 @@ check "--to-me wakes on an @name in the body, and not on somebody else's" \
 	a_mention_wakes_a_to_me_waiter
 check "the wake-up rule for a mention, in the unit" \
 	go test -count=1 -run TestAWaiterNarrowedToItsOwnMailWakesOnAMentionOfIt ./internal/flowy
+check "--tip beside --row is a narrowing, not a second subject" \
+	go test -count=1 -run TestWaitTakesATipBesideARowAndStillRefusesTwoSubjects ./internal/flowy
 check "--focus hears its own project and only mentions from the others" \
 	go test -count=1 -run TestAFocusedWaiterHearsItsOwnProjectAndOnlyMentionsElsewhere ./internal/flowy
 check "--mentions delivers nothing that does not name you" \

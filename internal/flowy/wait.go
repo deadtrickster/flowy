@@ -140,8 +140,20 @@ func cliWait(args []string) error {
 	// adding a fourth subject cannot quietly leave the rule behind. Two subjects
 	// is refused rather than resolved in some order: "which of these did it
 	// answer about" is a question the caller should not have to ask afterwards.
+	// --tip BESIDE --row IS NOT A SECOND SUBJECT, it is a narrowing of the
+	// first: "the verdict on this row, measured against this tip". The usage
+	// below has always said so - "--tip goes with it: a red measured at another
+	// tip is not the answer, which is what you want after re-tipping a red row"
+	// - and the counter refused exactly that combination, so the documented way
+	// to ask the question was rejected before the row case could delegate it to
+	// `queue wait`, where --tip already lives.
+	//
+	// MEASURED 2026-08-28: a row re-tipped at 15:19 was still answered `red`
+	// from a verdict taken at 10:44, and the flag that would have excluded it
+	// errored out. Two subjects is still refused; a row and its tip are one.
+	onRow := strings.TrimSpace(*row) != ""
 	subjects := 0
-	for _, on := range []bool{strings.TrimSpace(*row) != "", *tip != "", *deploy} {
+	for _, on := range []bool{onRow, *tip != "" && !onRow, *deploy} {
 		if on {
 			subjects++
 		}
