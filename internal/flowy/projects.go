@@ -85,7 +85,23 @@ type projectsResponse struct {
 func (s *server) handleListProjects(w http.ResponseWriter, r *http.Request) {
 	p := principalOf(r)
 
-	all := r.URL.Query().Get("scope") == "all"
+	// THROUGH THE GATE, not straight off the query string. scopeAll() exists to
+	// answer this and says so in its own comment - "the answer is only ever yes
+	// for this node's operator; for anyone else the parameter is simply not
+	// there as far as the store is concerned" - and this handler read the raw
+	// parameter instead, so ProjectFilterSQL returned TRUE for anybody who
+	// typed it.
+	//
+	// MEASURED 2026-08-28 with an ordinary worker token: GET /api/projects
+	// answered 4, GET /api/projects?scope=all answered 8. whoami on the same
+	// token reports no operator flag. So every project name on the node,
+	// including ones the caller reaches by no grant and belongs to by no
+	// membership, was one query parameter away from any principal that could
+	// authenticate.
+	//
+	// Names only - this door lists a registry, it does not open anything - but a
+	// permission that a caller can grant themselves by typing is not one.
+	all := scopeAll(r, p)
 	list, err := s.db.ListProjects(r.Context(), p, all)
 	if err != nil {
 		serverError(w, r, err)

@@ -1600,6 +1600,37 @@ scope_all_works_for_the_operator() {
 	printf 'scope=all opens the whole node to the operator, and only on request\n'
 }
 
+# AND THE PROJECT REGISTRY OBEYS THE SAME RULE, which it did not.
+#
+# handleListProjects read `scope=all` straight off the query string instead of
+# through scopeAll(), so ProjectFilterSQL returned TRUE for anybody who typed
+# it. Measured with an ordinary worker token: /api/projects answered 4 and
+# /api/projects?scope=all answered 8, on a token whose whoami carries no
+# operator flag. Names only - this door lists a registry - but a permission a
+# caller grants themselves by typing is not one.
+#
+# BOTH ARMS, because the fix is one line and a check that only proves the
+# refusal would pass just as well against a door that refuses everybody.
+scope_all_on_projects_is_the_operators() {
+	recall
+	local mine all
+	api GET "$TOKEN_B" /api/projects || return 1
+	mine=$(printf '%s' "$API_BODY" | jq '.projects | length')
+	api GET "$TOKEN_B" '/api/projects?scope=all' || return 1
+	all=$(printf '%s' "$API_BODY" | jq '.projects | length')
+	want_eq "asking for everything gets B no more projects" "$all" "$mine" || return 1
+
+	api GET "$TOKEN_OP" '/api/projects?scope=all' || return 1
+	local op
+	op=$(printf '%s' "$API_BODY" | jq '.projects | length')
+	if [ "$op" -lt "$mine" ]; then
+		printf 'the operator asked for everything and saw fewer projects than B: %s < %s\n' \
+			"$op" "$mine" >&2
+		return 1
+	fi
+	printf 'B gets %s either way; the operator gets %s when asking\n' "$mine" "$op"
+}
+
 # --------------------------------------------------------- phase 2 mcp helpers
 #
 # The MCP checks are driven over the wire as well, for the same reason the
@@ -13341,6 +13372,7 @@ check "a withdrawn row out of reach is a 404 like any id that was never written"
 say "scope=all"
 check "scope=all does nothing for a principal who is not the operator" scope_all_ignored_for_others
 check "scope=all shows the operator the whole node" scope_all_works_for_the_operator
+check "scope=all on the project registry is the operator's too" scope_all_on_projects_is_the_operators
 
 # ------------------------------------------------------------------- phase 2
 #
