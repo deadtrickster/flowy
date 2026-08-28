@@ -97,6 +97,7 @@ try {
     vmState = await panel.getAttribute("data-vm-state");
   }
 
+  let share = 0;
   if (vmState !== "ok") {
     // THIS HOST CANNOT RUN VMs - the ordinary case in the gate, which runs
     // inside a firecode guest. The assertion is that nothing offers to run a
@@ -279,8 +280,37 @@ page errors: ${JSON.stringify(oops.slice(0, 3))}`);
 opening /vms goes looking for a shell nobody asked for`);
     }
 
+    // THE SHELLS PANE IS THE WHOLE PANEL, which is the operator's complaint
+    // stated as a number. The strip used to be the last thing on a page that
+    // opens with a header, a picker, a spawn form and the list of running VMs -
+    // "with three listed shells tabs already pushed to the bottom and squished".
+    //
+    // A RATIO, not a pixel count, because the panel's height is the window's and
+    // this runs at whatever viewport the arm before it left behind. Two thirds
+    // is well under what the layout gives (the tab bar and the picker are the
+    // only things above it) and well over what the old page ever could.
+    const tabs = page.locator("[data-vm-tabs]");
+    if ((await tabs.count()) !== 1) {
+      die("the vms page offers no way to switch between agents and shells");
+    }
+    await page.locator('[data-vm-tab="agents"]').click();
+    if ((await page.locator('[data-vm-pane="shells"]').isVisible()) === true) {
+      die(
+        "the shells pane is still on screen with the agents tab chosen, so the tabs are decoration",
+      );
+    }
+    await page.locator('[data-vm-tab="shells"]').click();
+    const panelBox = await page.locator("[data-vm-panel]").boundingBox();
+    const screenBox = await page.locator("[data-vm-shell-screen]").boundingBox();
+    if (!panelBox || !screenBox) die("the shells pane draws no terminal to measure");
+    share = screenBox.height / panelBox.height;
+    if (share < 0.66) {
+      die(`the terminal is ${Math.round(screenBox.height)}px of a ${Math.round(panelBox.height)}px panel - ${Math.round(share * 100)}% - so it is
+sharing the pane with something instead of being it`);
+    }
+
     console.log(
-      `the wasm is served (${wasmBytes.length} bytes, real module); the socket answered ${asOther} for an ordinary token and ${asOperator} for the operator's; the panel is idle and says where the typing goes; and it goes looking for its shell on mount only when it remembers one`,
+      `the wasm is served (${wasmBytes.length} bytes, real module); the socket answered ${asOther} for an ordinary token and ${asOperator} for the operator's; the panel is idle and says where the typing goes; it goes looking for its shell on mount only when it remembers one; and the shells pane is ${Math.round(share * 100)}% of the panel`,
     );
   }
 } finally {

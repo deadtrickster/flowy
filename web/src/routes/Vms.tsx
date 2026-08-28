@@ -156,6 +156,11 @@ export function Vms() {
   const [failure, setFailure] = useState<{ status: number; why: string } | null>(null);
   const [project, setProject] = useState("");
   const [prompt, setPrompt] = useState("");
+  // WHICH PANE. Not in the URL yet: /vms is one page and the pane is a view of
+  // it, so a link to /vms should land where you left off rather than on a
+  // pane somebody else chose. If that turns out to be wrong it wants a route,
+  // not a query parameter.
+  const [pane, setPane] = useState<"agents" | "shells">("shells");
   const [busy, setBusy] = useState("");
   const [opened, setOpened] = useState<string | null>(null);
   const [log, setLog] = useState("");
@@ -301,163 +306,222 @@ export function Vms() {
   }
 
   return (
-    // h-full min-h-0 so the height main hands down reaches the terminal, and
-    // overflow-y-auto so a short window still scrolls to the form rather than
-    // clipping it - main is overflow-hidden, so without this the page loses its
-    // bottom instead of scrolling.
-    <div
-      className="flex h-full min-h-0 flex-col gap-4 overflow-y-auto p-6"
-      data-vm-panel=""
-      data-vm-state="ok"
-    >
-      <header className="flex flex-col gap-1">
-        <h1 className="font-semibold text-base">VMs</h1>
-        <p className="text-muted-foreground text-xs">
-          an agent in a firecracker VM over a copy of a project. It runs unattended when given a
-          first turn, and waits when not.
-        </p>
-      </header>
+    // h-full min-h-0 because the height main hands down has to reach the
+    // terminal, and NOT overflow-y-auto here: each pane scrolls itself, so a
+    // scroll on the page would put a second scrollbar around a terminal that
+    // is already exactly as tall as its pane.
+    <div className="flex h-full min-h-0 flex-col p-6" data-vm-panel="" data-vm-state="ok">
+      {/*
+        TWO PANES, NOT ONE PAGE WITH A TERMINAL AT THE BOTTOM.
 
-      <section className="flex flex-wrap items-end gap-2 border-border border-b pb-4">
-        {/*
+        The shell strip was the last thing on a page that begins with a header,
+        a project picker, a spawn form and the list of running VMs. The operator,
+        with three shells open: "with three listed shells tabs already pushed to
+        the bottom and squished."
+
+        That is what a scrolling page does to the one thing on it that wants a
+        definite height. So the page is now the tabs: whichever is chosen takes
+        the WHOLE panel, and the terminal's container is the panel rather than
+        whatever is left under four other sections.
+      */}
+      {/*
+        THE PROJECT PICKER BELONGS TO THE PAGE, not to one pane. Both panes are
+        about the same project - the agents pane spawns over it, the shells pane
+        opens a shell in it - and a picker inside one of them means the other
+        cannot be used without visiting the first, or means two pickers that can
+        disagree about what you are looking at.
+
+        A LIST, NOT FREE TEXT. The node resolves the name against firecode's
+        registry and refuses anything else: typing a path here would be a field
+        whose only outcome is a refusal, and a caller that can name a directory
+        could otherwise pack any directory into a VM with network.
+      */}
+      <label className="flex items-center gap-2 pb-2 text-xs">
+        <span className="text-muted-foreground">project</span>
+        <select
+          data-vm-project=""
+          className="rounded border border-border bg-transparent px-2 py-1 text-sm"
+          value={project}
+          onChange={(e) => setProject(e.target.value)}
+        >
+          <option value="">choose one</option>
+          {projects.map((p) => (
+            <option key={p.name} value={p.name}>
+              {p.name}
+            </option>
+          ))}
+        </select>
+      </label>
+      <div className="flex items-center gap-1 border-border border-b pb-2" data-vm-tabs="">
+        {(["agents", "shells"] as const).map((name) => (
+          <button
+            key={name}
+            type="button"
+            data-vm-tab={name}
+            data-vm-tab-live={pane === name ? "yes" : "no"}
+            onClick={() => setPane(name)}
+            className={
+              pane === name
+                ? "cursor-default rounded border border-primary bg-primary/10 px-3 py-1 font-mono text-primary text-xs"
+                : "cursor-pointer rounded border border-border px-3 py-1 font-mono text-muted-foreground text-xs hover:bg-accent"
+            }
+          >
+            {name}
+          </button>
+        ))}
+      </div>
+
+      {/*
+        BOTH PANES STAY MOUNTED and the one not being read is hidden. Unmounting
+        the shells pane would unmount every VmShell in it, which detaches every
+        slot - so glancing at the agents list would drop the sessions somebody
+        walked away from for a second. Same rule the tab strip inside it already
+        follows, for the same reason.
+      */}
+      <section
+        hidden={pane !== "agents"}
+        data-vm-pane="agents"
+        className={
+          pane === "agents" ? "flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pt-4" : undefined
+        }
+      >
+        <header className="flex flex-col gap-1">
+          <h1 className="font-semibold text-base">VMs</h1>
+          <p className="text-muted-foreground text-xs">
+            an agent in a firecracker VM over a copy of a project. It runs unattended when given a
+            first turn, and waits when not.
+          </p>
+        </header>
+
+        <section className="flex flex-wrap items-end gap-2 border-border border-b pb-4">
+          {/*
           A LIST, NOT FREE TEXT. The node resolves the name against firecode's
           registry and refuses anything else - typing a path here would be a
           field whose only outcome is a refusal, and a caller that can name a
           directory could otherwise pack any directory into a VM with network.
         */}
-        <label className="flex flex-col gap-1 text-xs">
-          <span className="text-muted-foreground">project</span>
-          <select
-            data-vm-project=""
-            className="rounded border border-border bg-transparent px-2 py-1 text-sm"
-            value={project}
-            onChange={(e) => setProject(e.target.value)}
+          <label className="flex min-w-64 flex-1 flex-col gap-1 text-xs">
+            <span className="text-muted-foreground">first turn (optional)</span>
+            <input
+              data-vm-prompt=""
+              className="rounded border border-border bg-transparent px-2 py-1 text-sm"
+              placeholder="what the agent should do"
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+            />
+          </label>
+          <button
+            type="button"
+            data-vm-spawn=""
+            disabled={!project || busy === "spawn"}
+            onClick={() => void spawn()}
+            className="rounded border border-border px-3 py-1 text-sm disabled:opacity-50"
           >
-            <option value="">choose one</option>
-            {projects.map((p) => (
-              <option key={p.name} value={p.name}>
-                {p.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="flex min-w-64 flex-1 flex-col gap-1 text-xs">
-          <span className="text-muted-foreground">first turn (optional)</span>
-          <input
-            data-vm-prompt=""
-            className="rounded border border-border bg-transparent px-2 py-1 text-sm"
-            placeholder="what the agent should do"
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-          />
-        </label>
-        <button
-          type="button"
-          data-vm-spawn=""
-          disabled={!project || busy === "spawn"}
-          onClick={() => void spawn()}
-          className="rounded border border-border px-3 py-1 text-sm disabled:opacity-50"
-        >
-          {busy === "spawn" ? "starting…" : "spawn"}
-        </button>
-      </section>
+            {busy === "spawn" ? "starting…" : "spawn"}
+          </button>
+        </section>
 
-      {vms.length === 0 ? (
-        // NOTHING RUNNING, said as itself. This is the branch that has to be
-        // reachable only when the host answered and had nothing - every other
-        // reason for an empty screen is handled above.
-        <p data-vm-empty="" className="text-muted-foreground text-sm">
-          no VMs are running. This host answered, and had none — spawn one above.
-        </p>
-      ) : (
-        <ul className="flex flex-col">
-          {vms.map((vm) => (
-            <li
-              key={vm.id}
-              data-vm-row={vm.name}
-              className="flex flex-col gap-1 border-border-soft border-b py-3"
-            >
-              <div className="flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  data-vm-open={vm.name}
-                  onClick={() => void openLog(vm.name)}
-                  className="font-medium text-sm hover:underline"
-                >
-                  {vm.name}
-                </button>
-                <Badge variant="secondary">{vm.backend}</Badge>
-                {/*
+        {vms.length === 0 ? (
+          // NOTHING RUNNING, said as itself. This is the branch that has to be
+          // reachable only when the host answered and had nothing - every other
+          // reason for an empty screen is handled above.
+          <p data-vm-empty="" className="text-muted-foreground text-sm">
+            no VMs are running. This host answered, and had none — spawn one above.
+          </p>
+        ) : (
+          <ul className="flex flex-col">
+            {vms.map((vm) => (
+              <li
+                key={vm.id}
+                data-vm-row={vm.name}
+                className="flex flex-col gap-1 border-border-soft border-b py-3"
+              >
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    data-vm-open={vm.name}
+                    onClick={() => void openLog(vm.name)}
+                    className="font-medium text-sm hover:underline"
+                  >
+                    {vm.name}
+                  </button>
+                  <Badge variant="secondary">{vm.backend}</Badge>
+                  {/*
                   SAID WITH ITS LIMIT. `ps` does not probe the guest - that is a
                   25s timeout each - so this is how long ago the run last
                   printed, not a heartbeat. Drawing it as "alive" would be a
                   claim the host never made.
                 */}
+                  <span className="text-muted-foreground text-xs">
+                    last printed {vm.last_output_s}s ago
+                    {vm.probed ? null : " (not probed)"}
+                  </span>
+                  <button
+                    type="button"
+                    data-vm-down={vm.name}
+                    disabled={busy === `down:${vm.name}`}
+                    onClick={() => void down(vm.name)}
+                    className="ml-auto rounded border border-border px-2 py-0.5 text-xs disabled:opacity-50"
+                  >
+                    {busy === `down:${vm.name}` ? "stopping…" : "down"}
+                  </button>
+                </div>
                 <span className="text-muted-foreground text-xs">
-                  last printed {vm.last_output_s}s ago
-                  {vm.probed ? null : " (not probed)"}
+                  <code className="text-xs">{vm.project}</code>
                 </span>
-                <button
-                  type="button"
-                  data-vm-down={vm.name}
-                  disabled={busy === `down:${vm.name}`}
-                  onClick={() => void down(vm.name)}
-                  className="ml-auto rounded border border-border px-2 py-0.5 text-xs disabled:opacity-50"
-                >
-                  {busy === `down:${vm.name}` ? "stopping…" : "down"}
-                </button>
-              </div>
-              <span className="text-muted-foreground text-xs">
-                <code className="text-xs">{vm.project}</code>
-              </span>
-            </li>
-          ))}
-        </ul>
-      )}
+              </li>
+            ))}
+          </ul>
+        )}
 
-      {/* A SHELL, BESIDE THE SPAWN CONTROLS THAT WERE ALREADY HERE.
-          The operator asked for "a run button which will bring fcvm with the
-          shell relayed to the panel". This page already knew how to list
-          projects, spawn over one and read a log; what it could not do is the
-          interactive half, which is the whole of this row. Put here rather
-          than on a new page because a second page listing the same projects
-          with a different verb is two answers to "what can I run over". */}
-      <ShellTabs project={project} />
-
-      {opened ? (
-        <section className="flex flex-col gap-2" data-vm-console={opened}>
-          <h2 className="font-semibold text-sm">{opened}</h2>
-          <pre
-            data-vm-log=""
-            className="max-h-96 overflow-auto rounded border border-border p-3 text-xs"
-          >
-            {log || "(nothing printed yet)"}
-          </pre>
-          <div className="flex flex-wrap items-end gap-2">
-            <input
-              data-vm-say=""
-              className="min-w-64 flex-1 rounded border border-border bg-transparent px-2 py-1 text-sm"
-              placeholder="another turn"
-              value={say}
-              onChange={(e) => setSay(e.target.value)}
-            />
-            <button
-              type="button"
-              data-vm-send=""
-              disabled={!say.trim() || busy === "say"}
-              onClick={() => void sendTurn()}
-              className="rounded border border-border px-3 py-1 text-sm disabled:opacity-50"
+        {opened ? (
+          <section className="flex flex-col gap-2" data-vm-console={opened}>
+            <h2 className="font-semibold text-sm">{opened}</h2>
+            <pre
+              data-vm-log=""
+              className="max-h-96 overflow-auto rounded border border-border p-3 text-xs"
             >
-              {busy === "say" ? "sending…" : "say"}
-            </button>
-          </div>
-          {said ? (
-            <p data-vm-said="" className="text-muted-foreground text-xs">
-              {said}
-            </p>
-          ) : null}
-        </section>
-      ) : null}
+              {log || "(nothing printed yet)"}
+            </pre>
+            <div className="flex flex-wrap items-end gap-2">
+              <input
+                data-vm-say=""
+                className="min-w-64 flex-1 rounded border border-border bg-transparent px-2 py-1 text-sm"
+                placeholder="another turn"
+                value={say}
+                onChange={(e) => setSay(e.target.value)}
+              />
+              <button
+                type="button"
+                data-vm-send=""
+                disabled={!say.trim() || busy === "say"}
+                onClick={() => void sendTurn()}
+                className="rounded border border-border px-3 py-1 text-sm disabled:opacity-50"
+              >
+                {busy === "say" ? "sending…" : "say"}
+              </button>
+            </div>
+            {said ? (
+              <p data-vm-said="" className="text-muted-foreground text-xs">
+                {said}
+              </p>
+            ) : null}
+          </section>
+        ) : null}
+      </section>
+
+      {/*
+        THE SHELLS PANE, and it is the whole panel. The project it runs over is
+        the one picked on the agents pane - one answer to "what can I run over"
+        rather than two pickers that can disagree.
+      */}
+      <section
+        hidden={pane !== "shells"}
+        data-vm-pane="shells"
+        className={pane === "shells" ? "flex min-h-0 flex-1 flex-col pt-4" : undefined}
+      >
+        <ShellTabs project={project} />
+      </section>
     </div>
   );
 }

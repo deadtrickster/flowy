@@ -7,6 +7,7 @@ import {
   Boxes,
   Brain,
   Bug,
+  ChevronRight,
   FilePlus,
   FileText,
   GitBranch,
@@ -427,6 +428,20 @@ export function Shell({ children }: { children: ReactNode }) {
             rules and a second write door on each page would be several - so
             the one door gets a name in the rail.
           */}
+          {/*
+            /vms EXISTED AND NOTHING LED TO IT. The page, the panel and the
+            shell relay all landed without a way in - reachable only by typing
+            the URL, which is the same as not being there for anybody who did
+            not build it. The operator asked for it after using the panel for
+            an evening, which is how long it took to notice.
+
+            Beside projects because it answers the next question: these are the
+            projects, and this is where you run something over one.
+          */}
+          <NavLink to="/vms" className={navClass}>
+            <TerminalSquare className="h-4 w-4" />
+            shells
+          </NavLink>
           <NavLink to="/new" className={navClass}>
             <FilePlus className="h-4 w-4" />
             new
@@ -475,63 +490,82 @@ export function Shell({ children }: { children: ReactNode }) {
             projects
           </NavLink>
           {/*
-            /vms EXISTED AND NOTHING LED TO IT. The page, the panel and the
-            shell relay all landed without a way in - reachable only by typing
-            the URL, which is the same as not being there for anybody who did
-            not build it. The operator asked for it after using the panel for
-            an evening, which is how long it took to notice.
+            THE RAIL WAS A FLAT LIST OF TWENTY AND EVERY NEW PAGE MADE IT
+            LONGER. The operator, on adding one: "having agents list the way
+            you have it is not scalable."
 
-            Beside projects because it answers the next question: these are the
-            projects, and this is where you run something over one.
+            So the things you DO stay flat at the top - the ones with badges,
+            the ones you open because something happened - and the things you
+            LOOK THINGS UP IN fold into named groups. Two of them, because
+            "everything else" is not a name and a group nobody can predict the
+            contents of is a group nobody opens.
+
+            <details> rather than state, so the browser owns the open/closed and
+            a page that has not hydrated still opens them. `open` on both by
+            default: a fold that starts closed hides pages from somebody who has
+            never seen this console, which is the failure the flat list at least
+            did not have.
           */}
-          <NavLink to="/vms" className={navClass}>
-            <TerminalSquare className="h-4 w-4" />
-            shells
-          </NavLink>
-          <NavLink to="/memory" className={navClass}>
-            <Brain className="h-4 w-4" />
-            memory
-          </NavLink>
-          <NavLink to="/reports" className={navClass}>
-            <FileText className="h-4 w-4" />
-            reports
-          </NavLink>
-          <NavLink to="/openspec" className={navClass}>
-            <Layers className="h-4 w-4" />
-            openspec
-          </NavLink>
-          <NavLink to="/findings" className={navClass}>
-            <Bug className="h-4 w-4" />
-            findings
-          </NavLink>
-          <NavLink to="/diagrams" className={navClass}>
-            <Shapes className="h-4 w-4" />
-            diagrams
-          </NavLink>
-          <NavLink to="/dashboards" className={navClass}>
-            <LayoutDashboard className="h-4 w-4" />
-            dashboards
-          </NavLink>
-          <NavLink to="/skills" className={navClass}>
-            <BookOpen className="h-4 w-4" />
-            skills
-          </NavLink>
-          <NavLink to="/worklog" className={navClass}>
-            <History className="h-4 w-4" />
-            worklog
-          </NavLink>
-          <NavLink to="/activity" className={navClass}>
-            <ListTree className="h-4 w-4" />
-            activity
-          </NavLink>
-          <NavLink to="/metrics" className={navClass}>
-            <ActivityIcon className="h-4 w-4" />
-            metrics
-          </NavLink>
-          <NavLink to="/traces" className={navClass}>
-            <GitBranch className="h-4 w-4" />
-            traces
-          </NavLink>
+          <details className="group" open data-nav-group="library">
+            <summary className="flex cursor-pointer items-center gap-2 rounded px-2 py-1 text-muted-foreground text-xs hover:bg-accent">
+              <ChevronRight className="h-3 w-3 transition-transform group-open:rotate-90" />
+              library
+            </summary>
+            <div className="flex flex-col gap-0.5">
+              <NavLink to="/memory" className={navClass}>
+                <Brain className="h-4 w-4" />
+                memory
+              </NavLink>
+              <NavLink to="/reports" className={navClass}>
+                <FileText className="h-4 w-4" />
+                reports
+              </NavLink>
+              <NavLink to="/openspec" className={navClass}>
+                <Layers className="h-4 w-4" />
+                openspec
+              </NavLink>
+              <NavLink to="/findings" className={navClass}>
+                <Bug className="h-4 w-4" />
+                findings
+              </NavLink>
+              <NavLink to="/diagrams" className={navClass}>
+                <Shapes className="h-4 w-4" />
+                diagrams
+              </NavLink>
+              <NavLink to="/dashboards" className={navClass}>
+                <LayoutDashboard className="h-4 w-4" />
+                dashboards
+              </NavLink>
+              <NavLink to="/skills" className={navClass}>
+                <BookOpen className="h-4 w-4" />
+                skills
+              </NavLink>
+            </div>
+          </details>
+          <details className="group" open data-nav-group="the log">
+            <summary className="flex cursor-pointer items-center gap-2 rounded px-2 py-1 text-muted-foreground text-xs hover:bg-accent">
+              <ChevronRight className="h-3 w-3 transition-transform group-open:rotate-90" />
+              the log
+            </summary>
+            <div className="flex flex-col gap-0.5">
+              <NavLink to="/worklog" className={navClass}>
+                <History className="h-4 w-4" />
+                worklog
+              </NavLink>
+              <NavLink to="/activity" className={navClass}>
+                <ListTree className="h-4 w-4" />
+                activity
+              </NavLink>
+              <NavLink to="/metrics" className={navClass}>
+                <ActivityIcon className="h-4 w-4" />
+                metrics
+              </NavLink>
+              <NavLink to="/traces" className={navClass}>
+                <GitBranch className="h-4 w-4" />
+                traces
+              </NavLink>
+            </div>
+          </details>
           <NavLink to="/profile" className={navClass}>
             <UserRound className="h-4 w-4" />
             profile
