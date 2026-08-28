@@ -187,16 +187,28 @@ extra: ${extra.join(", ") || "none"}`,
   }
   if (crashes.length > 0) die(`the room threw: ${crashes.join("; ")}`);
 
-  // The fold block on A: a count of what is hidden and the LATEST hidden
-  // reply's words, which is what decides whether to open the thread.
+  // The fold control on A: a count of what is hidden, and the LATEST hidden
+  // reply's words - now in the title rather than in the row.
+  //
+  // 2026-08-28, the operator: "we dont need this '3 hidden - flowy-claude:...'
+  // we already see '3 replies'. So keep only '3 replies' and 'show replies' and
+  // pin them to the hard-right". The snippet said the same thing as the count
+  // beside it and was the longest item in a row with no room to spare.
+  //
+  // THE ASSERTION IS NOT RELAXED, IT IS RE-POINTED. What had to stay true is
+  // that a reader can find out what is hidden without opening the thread, and
+  // that is still true - one hover instead of always on screen. Checking
+  // innerText after the words moved to the title would be checking where they
+  // are drawn rather than whether they are reachable, which is how a check ends
+  // up defending a layout nobody asked for.
   const foldA = page.locator(`[data-message="${rootA.id}"] [data-fold="${rootA.thread}"]`);
   await foldA.waitFor({ state: "visible", timeout: 10_000 }).catch(() => {});
   if ((await foldA.count()) === 0) die(`thread A's head row carries no fold block`);
   const countA = await foldA.first().getAttribute("data-fold-count");
   if (countA !== "7") die(`thread A's fold block says ${countA} hidden, the node holds 7`);
-  const foldAText = await foldA.first().innerText();
-  if (!foldAText.includes(word("a7"))) {
-    die(`thread A's fold block does not carry the latest reply's words:\n${foldAText}`);
+  const foldATitle = (await foldA.first().getAttribute("title")) ?? "";
+  if (!foldATitle.includes(word("a7"))) {
+    die(`thread A's fold control does not offer the latest reply's words:\n${foldATitle}`);
   }
   if ((await page.locator(`[data-fold-show="${rootA.thread}"]`).count()) === 0) {
     die("thread A's fold block offers no way to show the replies in the stream");
@@ -214,13 +226,18 @@ extra: ${extra.join(", ") || "none"}`,
       `thread B's fold block says ${countB} hidden - the addressed reply is visible as a row, so the count is 6`,
     );
   }
-  const foldBText = await foldB.first().innerText();
-  if (!foldBText.includes(word("b6"))) {
-    die(`thread B's fold block does not carry the latest hidden reply's words:\n${foldBText}`);
+  // Same move as A: the words are in the title now. The SECOND assertion here
+  // is the one that matters most and is unchanged in substance - the offered
+  // reply must be the latest HIDDEN one, not the addressed reply that is drawn
+  // as its own row. That is a fact about which message the console picked, and
+  // moving the words to a title does not soften it.
+  const foldBTitle = (await foldB.first().getAttribute("title")) ?? "";
+  if (!foldBTitle.includes(word("b6"))) {
+    die(`thread B's fold control does not offer the latest hidden reply's words:\n${foldBTitle}`);
   }
-  if (foldBText.includes(word("b7"))) {
+  if (foldBTitle.includes(word("b7"))) {
     die(
-      `thread B's fold block quotes the addressed reply (b7), which is drawn as its own row - the snippet must be the latest HIDDEN reply`,
+      `thread B's fold control offers the addressed reply (b7), which is drawn as its own row - it must offer the latest HIDDEN reply`,
     );
   }
 

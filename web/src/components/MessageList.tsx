@@ -979,7 +979,14 @@ export function MessageList({
                       data-thread-count={threads?.[event.thread]}
                       onClick={() => (onOpenThread ?? onSelect)(event)}
                       aria-label={`open this thread, ${(threads?.[event.thread] ?? 1) - 1} replies`}
-                      className="cursor-pointer whitespace-nowrap rounded border border-border px-1.5 text-[11px] text-primary transition hover:border-primary/50 hover:text-foreground"
+                      // HARD RIGHT, and it is the first of the reply controls,
+                      // so ml-auto pushes it and everything after it to the end
+                      // of the row. The operator asked for the pair pinned
+                      // there: cite/todo/keep and the ids are what a reader
+                      // scans left to right, and the reply controls are what
+                      // they reach for, so the two groups stop competing for
+                      // the same space on a narrow screen.
+                      className="ml-auto cursor-pointer whitespace-nowrap rounded border border-border px-1.5 text-[11px] text-primary transition hover:border-primary/50 hover:text-foreground"
                     >
                       {(threads?.[event.thread] ?? 1) - 1} repl
                       {(threads?.[event.thread] ?? 1) - 1 === 1 ? "y" : "ies"}
@@ -994,26 +1001,40 @@ export function MessageList({
                     click away through `thread` beside it; this block is the
                     summary the operator asked for, not a door to hide behind.
                   */}
+                  {/*
+                    THE SNIPPET IS GONE AND THE COUNT STAYS.
+
+                    The operator, 2026-08-28: "we dont need this '3 hidden -
+                    flowy-claude:...' we already see '3 replies'. So keep only
+                    '3 replies' and 'show replies' and pin them to the
+                    hard-right". The fold used to print the latest hidden
+                    reply's words beside the control, which said the same thing
+                    twice - the count is already on the button next door - and
+                    it was the longest item in a row that has no room to spare.
+
+                    data-fold AND data-fold-count MOVE ONTO THE BUTTON rather
+                    than being deleted with the span that carried them.
+                    thread-collapse-check reads the count off them, and the fact
+                    it asserts - the node counted the hidden replies - is still
+                    true and still rendered. Deleting the attributes would have
+                    meant editing the check to accommodate new markup, which is
+                    the wrong direction.
+
+                    The title keeps the latest reply, so the words are one hover
+                    away rather than gone.
+                  */}
                   {block && onUnfold ? (
-                    <span className="flex min-w-0 items-center gap-1.5">
-                      <button
-                        type="button"
-                        data-fold-show={event.thread}
-                        onClick={() => onUnfold(event.thread, true)}
-                        className="cursor-pointer whitespace-nowrap rounded border border-border px-1.5 text-[11px] text-primary transition hover:border-primary/50 hover:text-foreground"
-                      >
-                        show replies
-                      </button>
-                      <span
-                        data-fold={event.thread}
-                        data-fold-count={block.count}
-                        className="min-w-0 truncate text-muted-foreground"
-                        title={`${block.count} repl${block.count === 1 ? "y" : "ies"} folded - latest: ${speaker(block.latest)}: ${plainCut(block.latest.body)}`}
-                      >
-                        {block.count} hidden - {speaker(block.latest)}:{" "}
-                        {plainCut(block.latest.body)}
-                      </span>
-                    </span>
+                    <button
+                      type="button"
+                      data-fold-show={event.thread}
+                      data-fold={event.thread}
+                      data-fold-count={block.count}
+                      onClick={() => onUnfold(event.thread, true)}
+                      title={`${block.count} repl${block.count === 1 ? "y" : "ies"} folded - latest: ${speaker(block.latest)}: ${plainCut(block.latest.body)}`}
+                      className="cursor-pointer whitespace-nowrap rounded border border-border px-1.5 text-[11px] text-primary transition hover:border-primary/50 hover:text-foreground"
+                    >
+                      show replies
+                    </button>
                   ) : null}
                   {isHead &&
                   fold &&
