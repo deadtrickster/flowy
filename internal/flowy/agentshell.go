@@ -208,6 +208,42 @@ func (a *agentShells) start(id, project, workdir, binary string, where shellWher
 	var cmd *exec.Cmd
 	switch where {
 	case shellOnHost:
+		// A BYOBU SESSION, PER PROJECT, AND IT IS THE OPERATOR'S OWN ONE.
+		//
+		// "per project byobu session i can attach to just over ssh, so your
+		// stuff is just byobu management." So this is not a shell of ours in a
+		// pty nobody else can reach: it is `byobu new-session -A -s
+		// projectile/<project>`, the same name their editor uses, so the panel,
+		// their Emacs terminal and `ssh host; byobu attach -t projectile/<x>`
+		// are three clients of one session.
+		//
+		// -A ATTACHES IF IT EXISTS AND CREATES OTHERWISE, which is the whole
+		// verb: a project they are already working in is joined, a project they
+		// are not gets one made the way `bb` would make it.
+		//
+		// THIS REVERSES --no-tmux FOR THIS PATH ON PURPOSE, and it is not a
+		// retraction of the fix that landed as 495a6e9. What was wrong there was
+		// joining firecode/<project> - a session `firecode shell` had made for
+		// its own VM, which had already exited, with nothing managing it. F3 and
+		// F4 worked in the browser precisely because the panel had accidentally
+		// become a byobu client; the accident had the right shape. The flag
+		// still belongs on what runs INSIDE a window, where firecode must not
+		// wrap itself a second time.
+		//
+		// A NAMELESS PROJECT GETS A PLAIN SHELL rather than projectile/, which
+		// every unnamed project would otherwise share.
+		session := byobuSessionFor(project)
+		mux, muxErr := byobuBin()
+		if session != "" && muxErr == nil {
+			cmd = exec.Command(mux, "new-session", "-A", "-s", session)
+			if workdir != "" {
+				// Only where the session is CREATED does this matter; an attach
+				// ignores it, which is right - a session that already exists has
+				// a directory somebody chose.
+				cmd.Dir = workdir
+			}
+			break
+		}
 		// The person's own login shell, not a hardcoded /bin/bash: a shell is a
 		// preference, and $SHELL is where that preference already lives. Falling
 		// back to sh rather than bash because sh is the one that is always there.

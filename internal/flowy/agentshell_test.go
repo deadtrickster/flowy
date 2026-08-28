@@ -83,3 +83,48 @@ func readUntil(t *testing.T, sess *agentSession, marker string) string {
 		}
 	}
 }
+
+// TestAHostShellJoinsTheProjectsByobuSession is the operator's ask asserted at
+// the point it takes effect: the argv that reaches exec.
+//
+// "per project byobu session i can attach to just over ssh, so your stuff is
+// just byobu management." A shell of ours in a pty nobody else can reach is
+// exactly what that rules out, and the difference is invisible from the panel -
+// both draw a prompt. So it is measured on the command, and against the SESSION
+// NAME their editor uses, because a session we named plausibly is one they
+// cannot attach to.
+func TestAHostShellJoinsTheProjectsByobuSession(t *testing.T) {
+	if _, err := byobuBin(); err != nil {
+		t.Skip("no byobu or tmux here, and this asserts what is handed to one")
+	}
+
+	shells := newAgentShells()
+	sess, err := shells.start("01BYOBU", "flowy.dogfood", t.TempDir(), "", shellOnHost,
+		agentSize{Rows: 24, Cols: 80})
+	if err != nil {
+		t.Fatalf("starting a host shell: %v", err)
+	}
+	defer sess.finish("test done")
+
+	got := strings.Join(sess.cmd.Args, " ")
+	if !strings.Contains(got, "new-session -A -s projectile/flowy_dogfood") {
+		t.Fatalf(`a host shell did not join the project's session. argv: %q
+
+It must be new-session -A on projectile/<project>, sanitised the way init.el
+does it - the dot becomes an underscore because tmux silently makes it one, so
+a name carrying the dot addresses a different session.`, got)
+	}
+
+	// THE OTHER HALF, so this cannot pass by every shell being a byobu client.
+	// A project with no name has no session to join and must get a plain shell
+	// rather than projectile/, which every unnamed project would share.
+	plain, err := shells.start("01NONAME", "", t.TempDir(), "", shellOnHost,
+		agentSize{Rows: 24, Cols: 80})
+	if err != nil {
+		t.Fatalf("starting a shell with no project: %v", err)
+	}
+	defer plain.finish("test done")
+	if strings.Contains(strings.Join(plain.cmd.Args, " "), "new-session") {
+		t.Fatalf("a shell with no project still joined a session: %q", plain.cmd.Args)
+	}
+}
