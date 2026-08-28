@@ -90,6 +90,42 @@ func runFirecode(ctx context.Context, timeout time.Duration, args ...string) ([]
 	return out, nil
 }
 
+// fctopBin resolves the dashboard the agents pane mirrors.
+//
+// A SEPARATE TOOL AND A SEPARATE ABSENCE. A host can have firecode and not
+// fctop, so "I cannot run VMs" and "I cannot tell you how they are" are two
+// different answers and neither may be reported as the other.
+func fctopBin() (string, error) {
+	return exec.LookPath("fctop")
+}
+
+// runFctop asks fctop for one frame.
+//
+// The timeout is short next to runFirecode's because fctop probes the guests IN
+// PARALLEL - measured 2.3s for two VMs on the live fleet, fully probed. That is
+// the reason this door can exist at all: /api/vm/list is deliberately unprobed
+// because `firecode ps` costs 25s per guest in series, and that arithmetic does
+// not apply here.
+func runFctop(ctx context.Context, timeout time.Duration, args ...string) ([]byte, error) {
+	bin, err := fctopBin()
+	if err != nil {
+		return nil, errNoFctop
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
+var errNoFctop = errors.New(
+	"this node has no fctop on its PATH, so it cannot say how the VMs are. " +
+		"That is not the same as there being none: the list is still on " +
+		"/api/vm/list, without the readings")
+
 var errNoFirecode = errors.New(
 	"this node has no firecode on its PATH, so it cannot run VMs. " +
 		"That is not the same as having none running: install firecode on " +
@@ -102,6 +138,10 @@ var errNoFirecode = errors.New(
 // from "nothing works", which is precisely the distinction this door exists to
 // preserve.
 func writeFirecodeFailure(w http.ResponseWriter, err error, out []byte) {
+	if errors.Is(err, errNoFctop) {
+		writeJSON(w, http.StatusServiceUnavailable, errorBody(errNoFctop.Error()))
+		return
+	}
 	if errors.Is(err, errNoFirecode) {
 		writeJSON(w, http.StatusServiceUnavailable, errorBody(errNoFirecode.Error()))
 		return
@@ -146,6 +186,24 @@ func (s *server) handleVMList(w http.ResponseWriter, r *http.Request) {
 	// a 25s timeout each: ten VMs would be four minutes for one page refresh.
 	// The roster it returns says "probed": false rather than implying it asked.
 	out, err := runFirecode(r.Context(), 20*time.Second, "ps", "--json")
+	if err != nil {
+		writeFirecodeFailure(w, err, out)
+		return
+	}
+	passThroughJSON(w, out)
+}
+
+// handleVMTop is the agents pane's table: every VM with how it is, and how much
+// of that to believe.
+//
+// PASSED THROUGH, like its siblings, and for a stronger reason here. fctop's
+// whole subject is the STATUS column - OK, ASKING, STALE 42s, SLOW, NO ANSWER,
+// TIMEOUT, ERROR, GONE - and its own README says why: "A dashboard that keeps
+// drawing the last number it saw, in the same colour it drew a fresh one, is
+// worse than no dashboard." Re-deriving that here would mean a second opinion
+// about staleness, and the two would drift.
+func (s *server) handleVMTop(w http.ResponseWriter, r *http.Request) {
+	out, err := runFctop(r.Context(), 45*time.Second, "--once", "--format", "json")
 	if err != nil {
 		writeFirecodeFailure(w, err, out)
 		return

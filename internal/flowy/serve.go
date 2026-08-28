@@ -362,6 +362,7 @@ var apiRoutes = []string{
 	"GET /api/agent/socket",
 	"GET /api/vm/projects",
 	"GET /api/vm/list",
+	"GET /api/vm/top",
 	"POST /api/vm/spawn",
 	"GET /api/vm/{name}/log",
 	"POST /api/vm/{name}/say",
@@ -613,6 +614,9 @@ func (s *server) routes() http.Handler {
 	api.HandleFunc("GET /api/agent/socket", s.operatorOnly(s.handleAgentSocket))
 	api.HandleFunc("GET /api/vm/projects", s.operatorOnly(s.handleVMProjects))
 	api.HandleFunc("GET /api/vm/list", s.operatorOnly(s.handleVMList))
+	// operatorOnly like every other vm door: it names this host's projects and
+	// what is running over them, and the readings come from inside the guests.
+	api.HandleFunc("GET /api/vm/top", s.operatorOnly(s.handleVMTop))
 	api.HandleFunc("POST /api/vm/spawn", s.operatorOnly(s.handleVMSpawn))
 	api.HandleFunc("GET /api/vm/{name}/log", s.operatorOnly(s.handleVMLog))
 	api.HandleFunc("POST /api/vm/{name}/say", s.operatorOnly(s.handleVMSay))

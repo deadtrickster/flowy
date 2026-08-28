@@ -121,11 +121,14 @@ var routeParams = map[string][]string{
 	"POST /api/repro/run":            {},
 	"GET /api/vm/projects":           {},
 	"GET /api/vm/list":               {},
-	"POST /api/vm/spawn":             {},
-	"GET /api/vm/{name}/log":         {},
-	"POST /api/vm/{name}/say":        {},
-	"POST /api/vm/{name}/down":       {},
-	"GET /api/rooms":                 {"project", "scope"},
+	// No parameters. The frame is the whole fleet; narrowing it is the
+	// console's to do, and a filter the door dropped would be a lie.
+	"GET /api/vm/top":          {},
+	"POST /api/vm/spawn":       {},
+	"GET /api/vm/{name}/log":   {},
+	"POST /api/vm/{name}/say":  {},
+	"POST /api/vm/{name}/down": {},
+	"GET /api/rooms":           {"project", "scope"},
 	// Both take their subject from the path and their body, so neither reads a
 	// query parameter - see the room doors above for why {} is said rather than
 	// left absent.

@@ -2,7 +2,7 @@ import { VmShell } from "@/components/VmShell";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
-import type { VM, VMProject } from "@/lib/api";
+import type { VM, VMProject, VMTopRow } from "@/lib/api";
 import { ApiError, api } from "@/lib/api";
 
 /**
@@ -146,9 +146,37 @@ function ShellTabs({ project }: { project: string }) {
   );
 }
 
+/**
+ * A reading, or a dash.
+ *
+ * null from fctop means THIS WAS NOT KNOWN - the guest did not answer, or was
+ * never asked - and it arrives on the same field that carries a real number.
+ * Rendering it as 0, or as an empty cell, makes "no memory in use" and "I could
+ * not ask" the same picture, which is the whole thing the STATUS column beside
+ * it exists to keep apart.
+ */
+function reading<T>(value: T | null | undefined, draw: (v: T) => string): string {
+  return value == null ? "-" : draw(value);
+}
+
+/** Seconds as something a person reads at a glance, the way fctop prints it. */
+function forHowLong(seconds: number): string {
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
+  if (seconds < 86400) return `${Math.round(seconds / 3600)}h`;
+  return `${Math.round(seconds / 86400)}d`;
+}
+
 export function Vms() {
   const [projects, setProjects] = useState<VMProject[]>([]);
   const [vms, setVms] = useState<VM[]>([]);
+  // THE PROBED FRAME, AND WHY IT IS KEPT APART FROM `vms`. /api/vm/list is the
+  // host's view and always answers; this asks each guest and needs fctop on the
+  // node's PATH. A node with firecode and no fctop lists its VMs and cannot say
+  // how they are, which is a real state and not an error - so the readings are
+  // their own value with their own failure, and neither stands in for the other.
+  const [top, setTop] = useState<VMTopRow[] | null>(null);
+  const [topWhy, setTopWhy] = useState("");
   // The read either happened or it did not. `loaded` false draws "reading",
   // never "nothing running" - the same distinction the node protects one layer
   // down, and the one this page is most likely to lose by accident.
@@ -173,6 +201,21 @@ export function Vms() {
     try {
       const [reg, running] = await Promise.all([api.vmProjects(), api.vmList()]);
       if (mine !== read.current) return;
+      // SEPARATELY, AND ALLOWED TO FAIL ON ITS OWN. Folding this into the
+      // Promise.all above would make a node without fctop draw the whole page
+      // as broken, when what it cannot do is one column.
+      void api
+        .vmTop()
+        .then((frame) => {
+          if (mine !== read.current) return;
+          setTop(frame.vms ?? []);
+          setTopWhy("");
+        })
+        .catch((err) => {
+          if (mine !== read.current) return;
+          setTop(null);
+          setTopWhy(err instanceof Error ? err.message : String(err));
+        });
       // Only projects whose directory still exists. The node resolves a spawn
       // against the same registry and refuses the rest, so offering them would
       // be a button that is refused on click.
@@ -420,6 +463,71 @@ export function Vms() {
             {busy === "spawn" ? "starting…" : "spawn"}
           </button>
         </section>
+
+        {/*
+          THE READINGS, WHICH IS THE HALF /api/vm/list CANNOT ANSWER.
+
+          The operator: "agents tab then essentially mirror fc-top". fctop's
+          columns, and its STATUS word rendered as a word - not folded into a
+          colour, because "STALE 42s" carries a number that a colour cannot, and
+          not dropped, because a row whose guest never answered would otherwise
+          show zeros indistinguishable from a guest that answered zero.
+
+          Every reading is drawn through `reading`, which prints a dash for null.
+          Null here means NOT KNOWN, and a dash is the only honest glyph for it.
+        */}
+        {topWhy ? (
+          <p data-vm-top-why="" className="text-muted-foreground text-xs">
+            no readings: {topWhy}
+          </p>
+        ) : top === null ? (
+          <p data-vm-top-reading="" className="text-muted-foreground text-xs">
+            reading how the VMs are…
+          </p>
+        ) : top.length > 0 ? (
+          <div className="overflow-x-auto" data-vm-top="">
+            <table className="w-full text-left text-xs">
+              <thead className="text-muted-foreground">
+                <tr>
+                  {["name", "status", "last-out", "memory", "up", "load", "agent", "project"].map(
+                    (h) => (
+                      <th key={h} className="py-1 pr-4 font-normal">
+                        {h}
+                      </th>
+                    ),
+                  )}
+                </tr>
+              </thead>
+              <tbody className="font-mono">
+                {top.map((row) => (
+                  <tr
+                    key={row.run_id}
+                    data-vm-top-row={row.name}
+                    className="border-border-soft border-t"
+                  >
+                    <td className="py-1 pr-4">{row.name}</td>
+                    <td className="py-1 pr-4" data-vm-top-status={row.status}>
+                      {row.status}
+                    </td>
+                    <td className="py-1 pr-4">
+                      {reading(row.last_output_s, (n) => `${n}s`)}
+                      {row.last_output_note ? "!" : ""}
+                    </td>
+                    <td className="py-1 pr-4">
+                      {row.mem_used_mb == null || row.mem_total_mb == null
+                        ? "-"
+                        : `${row.mem_used_mb}/${row.mem_total_mb}M`}
+                    </td>
+                    <td className="py-1 pr-4">{reading(row.uptime_s, forHowLong)}</td>
+                    <td className="py-1 pr-4">{reading(row.load, (l) => String(l).split(" ")[0])}</td>
+                    <td className="py-1 pr-4">{reading(row.agent, String)}</td>
+                    <td className="py-1 pr-4 text-muted-foreground">{row.project}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : null}
 
         {vms.length === 0 ? (
           // NOTHING RUNNING, said as itself. This is the branch that has to be

@@ -807,6 +807,50 @@ export interface VM {
   probed: boolean;
 }
 
+/**
+ * One row of fctop's frame: a VM, how it is, and HOW MUCH OF THAT TO BELIEVE.
+ *
+ * `status` is the field this exists for, and it is a word rather than a
+ * boolean because the answers are not two: OK is measured inside the staleness
+ * window, ASKING has asked and not heard, `STALE 42s` says how old the numbers
+ * are, SLOW is a probe overdue, NO ANSWER is firecode reaching the VM and the
+ * guest not replying, TIMEOUT is our own command killed, ERROR is firecode
+ * failing, GONE is no longer listed. fctop's README: "A dashboard that keeps
+ * drawing the last number it saw, in the same colour it drew a fresh one, is
+ * worse than no dashboard."
+ *
+ * So every reading below may be null, and null means NOT KNOWN rather than
+ * zero. A row rendering `0` for a guest that never answered would be the
+ * defect the status word exists to prevent, arriving one layer up.
+ *
+ * Passed through from `fctop --once --format json`, so a field fctop learns to
+ * report arrives without this file being edited - see handleVMTop.
+ */
+export interface VMTopRow {
+  run_id: string;
+  name: string;
+  label?: string;
+  project: string;
+  parent?: string | null;
+  backend?: string | null;
+  status: string;
+  measured_at?: number | null;
+  age_s?: number | null;
+  uptime_s?: number | null;
+  load?: string | null;
+  mem_used_mb?: number | null;
+  mem_total_mb?: number | null;
+  last_output_s?: number | null;
+  last_output_note?: string | null;
+  agent?: string | null;
+  agent_cmd?: string | null;
+  services?: string | null;
+  listening?: number[] | null;
+  not_answering?: boolean;
+  no_probe?: boolean;
+  error?: string | null;
+}
+
 /** Why a row was skipped, when it was skipped, and by which seat. */
 export interface MergeBlocked {
   why: string;
@@ -2549,6 +2593,12 @@ export const api = {
    */
   vmProjects: () => request<{ projects: VMProject[] }>("/api/vm/projects"),
   vmList: () => request<{ vms: VM[] }>("/api/vm/list"),
+  /**
+   * The probed frame. 503 when fctop is not on the node's PATH, which is a
+   * DIFFERENT answer from an empty fleet and must not be rendered as one - the
+   * caller keeps the failure and says which it was.
+   */
+  vmTop: () => request<{ at?: number; vms: VMTopRow[] }>("/api/vm/top"),
   /**
    * Answers 202 the moment the process is STARTED, not when the agent is done -
    * a run is minutes to hours. What happened next is `vmList` and `vmLog`.

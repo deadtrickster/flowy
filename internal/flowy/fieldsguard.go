@@ -119,6 +119,7 @@ var openspecStateReach = map[string]string{
 	// lifecycle, which is what "na" says here rather than leaving it unanswered.
 	"GET /api/agent/socket":  "na",
 	"GET /api/vm/list":       "na",
+	"GET /api/vm/top":        "na",
 	"GET /api/vm/{name}/log": "na",
 	"GET /api/vm/projects":   "na",
 	"GET /api/whoami":        "na",
