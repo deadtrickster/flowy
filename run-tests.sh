@@ -20320,13 +20320,30 @@ a_person_who_is_the_operator_is_the_operator() {
 	# "no cookie" has several causes - a wrong password, an account that cannot
 	# log in, the limiter - and reporting only the missing cookie sends the next
 	# reader looking in the wrong place.
-	body=$(curl -sS -c "$jar" -X POST "http://127.0.0.1:$HTTP_PORT/api/login" \
-		-H 'Content-Type: application/json' \
-		-d "$(jq -nc --arg h "$HANDLE_A" --arg p "$pw" '{handle: $h, password: $p}')" \
-		-w ' [%{http_code}]') || return 1
+	# A 429 IS WAITED OUT, AND WAITING IS FREE. The login door shares the join
+	# limiter at three per minute per client, and the three checks just above
+	# this one all log in from 127.0.0.1 - so the budget is routinely spent by
+	# the time this runs. A refused attempt costs nothing: allow() only records
+	# a timestamp when it lets the caller through, so retrying takes no token
+	# from anybody. Spending a SECOND login is what starved the next check, and
+	# that is why this one logs in once.
+	#
+	# Only a 429 is retried. A wrong password must still fail at once rather
+	# than being tried for a minute and a half.
+	local attempt
+	for attempt in 1 2 3 4 5 6 7 8; do
+		body=$(curl -sS -c "$jar" -X POST "http://127.0.0.1:$HTTP_PORT/api/login" \
+			-H 'Content-Type: application/json' \
+			-d "$(jq -nc --arg h "$HANDLE_A" --arg p "$pw" '{handle: $h, password: $p}')" \
+			-w ' [%{http_code}]') || return 1
+		case "$body" in
+		*'[429]') sleep 10 ;;
+		*) break ;;
+		esac
+	done
 	grep -q flowy_session "$jar" || {
-		printf 'the login door set no session cookie for %s - it answered %s. That is this check failing to set itself up, not a verdict on the guard.\n' \
-			"$HANDLE_A" "$body" >&2
+		printf 'the login door set no session cookie for %s after %s attempt(s) - it answered %s. That is this check failing to set itself up, not a verdict on the guard.\n' \
+			"$HANDLE_A" "$attempt" "$body" >&2
 		return 1
 	}
 
