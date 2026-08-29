@@ -113,7 +113,15 @@ drawn as data.`);
   }
 
   // THE RAIL, COMPARED TO THE ROOM BY VALUE.
-  await page.locator(`[data-body="${message}"]`).first().click({ timeout: 10_000 });
+  //
+  // SELECTING IS A CONTROL, NOT A CLICK ON THE TEXT. The first cut of this
+  // clicked the message body and the rail never filled - and it was right to:
+  // clicking the body is how a reader COPIES, and this console went out of its
+  // way to stop that gesture arming anything (MessageList's own comment: "why
+  // whenever i select message text here it automatically becomes a citation? I
+  // just wanted to copy it"). Selection goes through onSelect, which the cite
+  // control calls when nothing is highlighted.
+  await cite.click({ timeout: 10_000 });
   const railId = page.locator(`[data-raise-from-id="${message}"]`);
   await railId
     .first()
