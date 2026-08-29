@@ -131,6 +131,7 @@ export function VmShell({
   const heard = useRef(false);
   const adopting = useRef(false);
   const [state, setState] = useState<ShellState>("idle");
+  const [dims, setDims] = useState<{ cols: number; rows: number } | null>(null);
   // WHICH MACHINE. Two values, and neither is a default that could be arrived
   // at by accident - the operator asked for host shells and the difference is
   // whether what you type can reach this machine.
@@ -235,6 +236,9 @@ export function VmShell({
       box.current.replaceChildren();
       t.open(box.current);
       fit.fit();
+      // The first fit runs before onResize is wired, so its result is recorded
+      // here - otherwise the attribute reads "none" until something resizes.
+      setDims({ cols: t.cols, rows: t.rows });
       // AND IT FOLLOWS THE CONTAINER FROM NOW ON. fit() once at open sizes the
       // terminal to whatever the box happened to be at that instant and never
       // again, so dragging the pane or floating the panel left the guest
@@ -335,7 +339,10 @@ export function VmShell({
     // to 0x0 and a shell on a zero-sized terminal draws nothing sensible.
     const tellSize = (cols: number, rows: number) =>
       sendAgentControl(slot, { type: "resize", rows, cols });
-    t.onResize(({ cols, rows }: { cols: number; rows: number }) => tellSize(cols, rows));
+    t.onResize(({ cols, rows }: { cols: number; rows: number }) => {
+      setDims({ cols, rows });
+      tellSize(cols, rows);
+    });
   };
 
   const stop = () => {
@@ -358,32 +365,30 @@ export function VmShell({
     fitter.current?.fit();
   }, []);
 
-  // AND WATCH OUR OWN BOX, WHICH IS NOT WHAT THE ADDON WATCHES.
+  // REFIT WHEN THE PANEL'S OWN TEXT CHANGES, because that is what resizes the
+  // box. The header holds the state word and the reason, and a longer reason
+  // wraps it onto another line - measured in the gate: the box goes 772 -> 740
+  // the moment a refusal is rendered, and the canvas stays at 770.
   //
-  // MEASURED IN THE GATE, 2026-08-29, which is the only reason this is here
-  // rather than a second guess about a panel that had already been guessed at
-  // twice. Adding a longer refusal message to the header wrapped it onto a
-  // second line and took 32px off the screen box. The box went 796 -> 764. The
-  // canvas stayed at 784. Nothing re-fitted, so 20px of terminal was left
-  // drawn below the fold - and a full-screen program's bottom row is exactly
-  // what lives there. That is "started htop - bottom truncated", reproduced.
+  // The addon's own observer is not enough here and that is measured, not
+  // assumed. It watches the right element - Terminal.open(A) sets element = A,
+  // so it observes this box - but its callback begins `this._isResizing || ...`
+  // and fit() holds that flag for 50ms. The refusal arrives about 7ms after the
+  // terminal opens, which is inside that window, so the shrink is DISCARDED and
+  // nothing re-checks. The box never changes again, so it is discarded for
+  // good: a check that waited 8000ms watched it stay 740 against 770 the whole
+  // time.
   //
-  // fit.observeResize() was already on, and it did not fire. It watches the
-  // element GHOSTTY made, whose height comes from rows * cellHeight - so it is
-  // derived from the fit rather than from the space available. Our container
-  // shrinking never reaches it, which is why the old note said this can grow
-  // but never shrink: growing changes ghostty's element and shrinking does not.
-  //
-  // So the thing that decides the size is the thing to observe. This watches
-  // the box the terminal actually has to live in, and re-fits when it changes.
+  // Depending on state and why is depending on the renders that change the
+  // header's height, which is the thing that takes the space away.
   useEffect(() => {
-    const el = box.current;
-    if (!el || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(() => fitter.current?.fit());
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, []);
+    fitter.current?.fit();
+  }, [state, why]);
 
+  // WHAT THE TERMINAL THINKS IT HAS, on the element, so a check can read it.
+  // Geometry alone cannot tell "fit() never ran" from "fit() ran and the canvas
+  // did not follow", and those want different fixes. rows and cols are the
+  // fit's own output, so they answer it.
   const panel = (
     <section
       className={
@@ -405,6 +410,8 @@ export function VmShell({
       // console's spelling of the rule against the node's without a socket.
       data-vm-shell-session-name={sessionNameFor(project)}
       data-vm-shell-floating={floating ? "yes" : "no"}
+      data-vm-shell-rows={dims ? String(dims.rows) : "none"}
+      data-vm-shell-cols={dims ? String(dims.cols) : "none"}
     >
       <div className="flex items-center gap-2">
         <button

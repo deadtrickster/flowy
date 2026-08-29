@@ -123,6 +123,11 @@ so the terminal geometry cannot be read. Those two cannot both be right.`);
 element, on a node that serves the wasm. The panel said: ${JSON.stringify(why)}`);
   }
 
+  const dims = async () => ({
+    rows: await shell.getAttribute("data-vm-shell-rows").catch(() => null),
+    cols: await shell.getAttribute("data-vm-shell-cols").catch(() => null),
+  });
+
   const read = () =>
     box.evaluate((el) => {
       const kids = [...el.children].map((n) => ({
@@ -165,6 +170,7 @@ element, on a node that serves the wasm. The panel said: ${JSON.stringify(why)}`
   const last = samples[samples.length - 1];
 
   if (!settled) {
+    const d = await dims();
     die(`the terminal is taller than the box that shows it and stayed that way for ${SETTLE_MS}ms,
 so its bottom row is drawn where nobody can see it - which is what "started htop
 - bottom truncated" is. This is not a frame caught mid-refit: the addon debounces
@@ -174,14 +180,25 @@ its own resize by 100ms, and this waited ${Math.round((last.ms || 0) / 100) / 10
   last   ${last.ms}ms  state ${JSON.stringify(last.state)}  box ${last.clientHeight}  scroll ${last.scrollHeight}  tallest child ${last.tallestChild}
   samples ${samples.length}: ${JSON.stringify(samples.map((s) => `${s.ms}:${s.clientHeight}/${s.tallestChild}`))}
 
-The addon measures the CONTAINER - Terminal.open(A) sets element = A, which is
-this box - so this is not a fit reading the wrong element. The remaining
-mechanism worth looking at is the _isResizing guard: fit() holds it for 50ms and
-the resize observer drops any container change that arrives inside that window,
-with nothing re-checking afterwards.`);
+  the terminal believes it has ${d.rows} row(s) and ${d.cols} col(s)
+
+WHICH OF TWO THINGS THAT IS. If the row count still matches the ORIGINAL box
+height, fit() never ran again - the resize was dropped, and the addon's
+_isResizing guard is the candidate: fit() holds it for 50ms and the observer
+callback discards any container change arriving inside that window, with
+nothing re-checking afterwards. If the row count matches the NEW box height and
+the canvas is still tall, fit() ran and the canvas did not follow it, which is a
+different bug in a different place.
+
+Either way this is not a fit reading the wrong element: Terminal.open(A) sets
+element = A, so the addon measures and observes this very box.`);
   }
 
-  const late = settled.ms > 0;
+  // SAMPLES, NOT MILLISECONDS. This was `settled.ms > 0`, which is true merely
+  // because a read takes a few ms - so a run whose FIRST sample fit printed
+  // "it did NOT fit on the first read" and then the numbers proving it did.
+  // A check that lies on its success path is worse than one that says nothing.
+  const late = samples.length > 1;
   const lateNote = late
     ? ` - it did NOT fit on the first read (box ${first.clientHeight}, child ${first.tallestChild}, state ${JSON.stringify(first.state)}), so the refit is real but not instant`
     : "";
