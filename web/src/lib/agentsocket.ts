@@ -40,7 +40,7 @@ export interface AgentHandlers {
   /** hello, exited, error - already parsed. */
   control: (message: AgentControlMessage) => void;
   /** The socket went away. Says nothing about the shell, which may still run. */
-  lost: (why: string) => void;
+  lost: (why: string, refused: boolean) => void;
 }
 
 interface Attachment {
@@ -81,7 +81,14 @@ function open() {
   ws.binaryType = "arraybuffer";
   socket = ws;
 
+  // WHETHER IT EVER OPENED IS THE WHOLE DISTINCTION. A handshake the node
+  // refused and a wire that dropped after a working shell arrive at the same
+  // two events - onerror, then onclose - and nothing in either says which
+  // happened. This does: onopen fires for one and never for the other.
+  let opened = false;
+
   ws.onopen = () => {
+    opened = true;
     // Every attached slot announces itself, so a reconnect re-adopts every
     // session rather than only the one that happened to open the socket.
     for (const [slot, held] of attachments) {
@@ -114,12 +121,31 @@ function open() {
     }
   };
 
-  const lost = (why: string) => {
+  // A REFUSAL NAMES THE MECHANISM AND STOPS SHORT OF THE VERDICT. The old text
+  // said "this door is operator-only" for EVERY socket error, which is a guess
+  // presented as a finding - a node that is down produces exactly the same
+  // event. What is certain is how the handshake carries a credential, so that
+  // is what it says, and it leaves the two reasons it could be side by side.
+  const REFUSED =
+    "the shell socket would not open. A browser cannot put an Authorization header on a " +
+    "websocket handshake, so this door can only read a session cookie - a console holding " +
+    "just a token is refused, and so is anyone who is not the operator. Nothing was " +
+    "started, so this is not a shell that ended.";
+  const DROPPED = "the connection to this node closed - the VM may still be running";
+
+  // ONCE. A refused handshake fires onerror AND THEN onclose, so the accurate
+  // reason was overwritten by the generic one a tick later: the panel ended up
+  // reporting that the connection closed and the VM might still be running,
+  // about a socket that never opened and a VM that was never asked for.
+  let done = false;
+  const lost = (why: string, refused: boolean) => {
+    if (done) return;
+    done = true;
     if (socket === ws) socket = null;
-    for (const held of attachments.values()) held.handlers.lost(why);
+    for (const held of attachments.values()) held.handlers.lost(why, refused);
   };
-  ws.onclose = () => lost("the connection to this node closed - the VM may still be running");
-  ws.onerror = () => lost("the socket could not be opened - this door is operator-only");
+  ws.onclose = () => (opened ? lost(DROPPED, false) : lost(REFUSED, true));
+  ws.onerror = () => (opened ? lost(DROPPED, false) : lost(REFUSED, true));
 }
 
 /**

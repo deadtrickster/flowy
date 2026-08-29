@@ -41,7 +41,13 @@ type GhosttyFit = InstanceType<GhosttyModule["FitAddon"]>;
  * gone" are different things to a person looking at an empty black rectangle,
  * and a single `running` flag would draw the first and the third identically.
  */
-type ShellState = "idle" | "starting" | "live" | "ended";
+// "refused" IS NOT "ended". A handshake the node turned away and a shell that
+// finished were the same word here, so "this browser has no session, log in"
+// and "your shell died" were the same screen - and the first is not the
+// shell's fault at all. Same shape as an empty answer standing in for an
+// absent one, one layer down: a transport refusal rendered as a verdict
+// about the subject.
+type ShellState = "idle" | "starting" | "live" | "ended" | "refused";
 
 /**
  * The session this panel last held, per project.
@@ -295,12 +301,16 @@ export function VmShell({
             setWhy(c.why || "the shell ended without saying why");
           }
         },
-        lost: (why) => {
-          setState((current) => (current === "ended" ? current : "ended"));
-          // TWO DIFFERENT FACTS, KEPT APART. The exited frame is the SHELL'S
-          // verdict; this is THIS BROWSER losing the wire, which says nothing
-          // about the guest - the VM may still be up. Collapsing them was the
-          // whole of the complaint that shells "randomly exit".
+        lost: (why, refused) => {
+          // THREE DIFFERENT FACTS, KEPT APART. The exited frame is the SHELL'S
+          // verdict; a lost wire is THIS BROWSER losing the connection, which
+          // says nothing about the guest - the VM may still be up; and a
+          // refusal is the socket never having opened at all, where there is
+          // no shell and no VM to have an opinion about. Collapsing the first
+          // two was the whole of the complaint that shells "randomly exit",
+          // and collapsing the third into them reported a login problem as a
+          // dead shell.
+          setState((current) => (current === "ended" ? current : refused ? "refused" : "ended"));
           if (heard.current) return;
           setWhy(why);
         },
