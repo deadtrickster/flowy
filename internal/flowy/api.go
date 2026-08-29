@@ -749,6 +749,9 @@ func (s *server) handleListArtifacts(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorBody(err.Error()))
 		return
 	}
+	if s.refuseUnreadableProject(w, r, q.Get("project")) {
+		return
+	}
 	list, err := s.db.ListArtifacts(r.Context(), p, store.ArtifactQuery{
 		Type:       q.Get("type"),
 		Kind:       q.Get("kind"),
@@ -987,6 +990,49 @@ func (s *server) notFoundNote(r *http.Request, id string) string {
 	return s.scopeNote(r)
 }
 
+// refuseUnreadableProject turns "a project you cannot read" into a refusal
+// instead of an empty page.
+//
+// 01M17RVV777776424HGXJZC46M, the half the 404 fix did not cover.
+// GET /api/artifacts?project=flowy on a credential that reads only pa answered
+// 200 with zero artifacts. The caller cannot tell that from a project which is
+// genuinely empty, and this fleet has a name for it: absent is not empty. A
+// door that cannot see must not answer as though it looked.
+//
+// AND HERE 403 IS RIGHT, WHERE ON A ROW IT WAS NOT. The distinction is what the
+// answer depends on. Refusing a row by id would have revealed whether that row
+// exists - an existence oracle, which is why scopeNote left the 404 alone. This
+// refusal depends only on the REQUEST and the CALLER'S OWN REACH: it is
+// identical whether the named project is full, empty, or has never existed. It
+// tells the caller nothing they could not read from /api/projects about
+// themselves.
+//
+// It returns true when it has written a response and the handler must stop.
+func (s *server) refuseUnreadableProject(w http.ResponseWriter, r *http.Request, asked string) bool {
+	asked = strings.TrimSpace(asked)
+	if asked == "" {
+		return false
+	}
+	p := principalOf(r)
+	if scopeAll(r, p) {
+		return false
+	}
+	for _, project := range p.Reach() {
+		if project == asked {
+			return false
+		}
+	}
+	reach := p.Reach()
+	says := "this credential reads no project at all"
+	if len(reach) > 0 {
+		says = "this credential reads " + strings.Join(reach, ", ")
+	}
+	writeJSON(w, http.StatusForbidden, errorBody(
+		"cannot answer for project "+asked+" - "+says+
+			". An empty list would have been indistinguishable from a project with nothing in it"))
+	return true
+}
+
 // scopeNote says WHICH PROJECTS a 404 looked in.
 //
 // 01M17RVV777776424HGXJZC46M. A row this credential cannot reach answers
@@ -1068,6 +1114,9 @@ func (s *server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	query := q.Get("q")
 
+	if s.refuseUnreadableProject(w, r, q.Get("project")) {
+		return
+	}
 	hits, err := s.db.SearchArtifacts(r.Context(), p, store.ArtifactQuery{
 		Query:    query,
 		Type:     q.Get("type"),
