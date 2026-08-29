@@ -973,6 +973,54 @@ func (s *server) misreadIDNote(r *http.Request, id string) string {
 	return note
 }
 
+// notFoundNote is the whole diagnosis a missing row gets: what the id turned
+// out to name, or failing that, where the door looked.
+//
+// One function because the two answers are alternatives rather than a pair. If
+// the id names a chat message, THAT is the reader's mistake and the scope is
+// noise beside it; only when there is no such diagnosis does "and here is what
+// I searched" become the most useful thing left to say.
+func (s *server) notFoundNote(r *http.Request, id string) string {
+	if note := s.misreadIDNote(r, id); note != "" {
+		return note
+	}
+	return s.scopeNote(r)
+}
+
+// scopeNote says WHICH PROJECTS a 404 looked in.
+//
+// 01M17RVV777776424HGXJZC46M. A row this credential cannot reach answers
+// "no such todo: <id>" - the same sentence a deleted row gives, and the same
+// one a typo gives. flowy-claude measured it by varying only the token against
+// one row: 200 for one credential, 404 for another, on a row that exists and is
+// owned by a real user. They concluded for a minute that a row they had written
+// themselves had been deleted. The operator's own shell token reads a
+// backfill-derived fixture project, so every row this fleet files is invisible
+// to it and says so as though nothing were there.
+//
+// IT DOES NOT BECOME A 403, AND THAT IS DELIBERATE. A refusal that appears only
+// when the row EXISTS is an existence oracle: 403 here and 404 there tells an
+// unauthorised caller which ids are real. The row suggested 403 and this is the
+// one place I have not followed it.
+//
+// So the STATUS is unchanged and only the sentence grows, with the property
+// that makes it safe: it is the same sentence whether the row exists in another
+// project or does not exist at all. It reveals the caller's OWN reach, which
+// they may read from /api/projects anyway, and nothing about the row.
+//
+// That is enough to end the wrong conclusion. "No such todo, and I searched
+// project pa" is a sentence somebody acts on correctly - they check their
+// scope - where "no such todo" sends them looking for a deletion that never
+// happened.
+func (s *server) scopeNote(r *http.Request) string {
+	reach := principalOf(r).Reach()
+	if len(reach) == 0 {
+		return " - and this credential reads no project at all, so every row answers this way"
+	}
+	return " - searched " + strings.Join(reach, ", ") +
+		", which is what this credential reads. A row in another project answers exactly this too"
+}
+
 // handleDeleteArtifact tombstones an artifact: the row stays, marked, with a
 // fresh clock reading, so the delete can replicate as a fact rather than as an
 // absence.

@@ -226,9 +226,9 @@ func (s *server) writeQueueErrorFor(w http.ResponseWriter, r *http.Request, err 
 		// claim door gives - see store.readWorkItem - and so the one an agent
 		// pasting a thread id out of a room notification actually receives.
 		writeJSON(w, http.StatusNotFound,
-			errorBody(notATodo.Error()+s.misreadIDNote(r, notATodo.ID)))
+			errorBody(notATodo.Error()+s.notFoundNote(r, notATodo.ID)))
 	case errors.Is(err, store.ErrNotFound):
-		writeJSON(w, http.StatusNotFound, errorBody("no such todo"+s.misreadIDNote(r, id)))
+		writeJSON(w, http.StatusNotFound, errorBody("no such todo"+s.notFoundNote(r, id)))
 	case errors.As(err, &refusal):
 		s.writeRefusal(w, r, http.StatusBadRequest, err, refusal.Error())
 	default:
