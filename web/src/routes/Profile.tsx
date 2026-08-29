@@ -1,5 +1,6 @@
 import { type FormEvent, useCallback, useEffect, useState } from "react";
 
+import { TokenBar } from "@/components/TokenBar";
 import { YourReaders } from "@/components/YourReaders";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -170,6 +171,17 @@ export function Profile() {
             your handle and your password, on your own row
           </p>
         </div>
+
+        {/*
+          THE BEARER TOKEN, WHICH USED TO BE IN THE RAIL on every page. It is a
+          thing about WHO YOU ARE, so it belongs on the page about that, next to
+          the handle and the password - not in the furniture of every screen.
+
+          Above the handle rather than below it: this is the control that
+          DECIDES which row the rest of this page is about, so a reader who has
+          the wrong seat finds the fix before the thing that confused them.
+        */}
+        <TokenBar />
 
         {loading ? <p className="text-muted-foreground text-xs">reading your row...</p> : null}
 

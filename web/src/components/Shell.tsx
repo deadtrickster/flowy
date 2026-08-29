@@ -32,7 +32,6 @@ import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { CredentialBanner } from "@/components/CredentialBanner";
 import { FreshBanner } from "@/components/FreshBanner";
 import { ResizeHandle } from "@/components/ResizeHandle";
-import { TokenBar } from "@/components/TokenBar";
 import { api } from "@/lib/api";
 import { useSession } from "@/lib/session";
 import { useIgnoredRooms, useRoomList, useUnread } from "@/lib/unread";
@@ -852,12 +851,17 @@ export function Shell({ children }: { children: ReactNode }) {
           ) : null}
         </div>
 
-        {/* shrink-0 so the rooms list cannot squeeze it away; mt-auto is gone
-            because the rooms block now takes the slack that used to push this
-            down. */}
-        <div className="order-4 shrink-0 md:order-none">
-          <TokenBar />
-        </div>
+        {/*
+          THE TOKEN BAR IS NOT HERE ANY MORE. It sat at the foot of the rail on
+          every page of the console, with the bearer token visible in an input -
+          scaffolding parked in the product. The operator: "yeah move it in
+          profile. I dont use it and it wastes time."
+
+          It lives on /profile now, beside the handle and the password, which is
+          where the other thing-about-me lives. Nothing about it changed but its
+          address: the same component, the same session hook, so pasting a token
+          still signs a seat in.
+        */}
       </aside>
 
       {/*
