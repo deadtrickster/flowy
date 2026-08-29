@@ -120,7 +120,22 @@ try {
 const browser = await chromium.launch();
 try {
   const after = await ask(operator);
-  const names = (after.body?.sessions ?? []).map((s) => s.name);
+  // THE STATUS FIRST. `body?.sessions ?? []` turns a refusal into an empty
+  // host, which is the exact confusion this door exists to prevent - and it
+  // made this check report "the door named []" when the door may have said it
+  // could not look. Read what it answered before reading what it listed.
+  if (after.status !== 200) {
+    die(`after making two sessions the door answered ${after.status}: ${JSON.stringify(after.body)}
+
+That is not an empty host. It is the node saying something else, and the arm
+below would have reported it as sessions that are missing.`);
+  }
+  if (!Array.isArray(after.body?.sessions)) {
+    die(
+      `the door answered 200 with no sessions array: ${JSON.stringify(after.body).slice(0, 200)}`,
+    );
+  }
+  const names = after.body.sessions.map((s) => s.name);
   if (!names.includes(name)) {
     die(`a session made outside flowy is not in the door's answer. It named: ${JSON.stringify(names)}
 
