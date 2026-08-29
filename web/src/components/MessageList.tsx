@@ -910,7 +910,16 @@ export function MessageList({
                   snippet is the one thing that MAY shrink - it already
                   truncates - so it keeps min-w-0 and takes what is left.
                 */}
-                <div className="flex flex-wrap items-center gap-x-2 gap-y-1 pt-1 font-mono text-[11px] text-muted-foreground">
+                {/*
+                  MONO MEANS A MACHINE STRING YOU COULD COPY - ids, hashes,
+                  commands, paths - and nothing else. This row used to set
+                  font-mono on the whole strip, so the VERBS you press (cite,
+                  todo, keep) were drawn in the same face as the id sitting
+                  next to them, and underlined besides. Underline plus mono is
+                  the grammar of an identifier: they were drawn as data and
+                  behaved as controls. The face moves onto the ids themselves.
+                */}
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1 pt-1 text-[11px] text-muted-foreground">
                   {/*
                     CITING IS A CHOICE, and it used to be a side effect of
                     selecting. The operator: "why whenever i select message text
@@ -934,7 +943,7 @@ export function MessageList({
                     type="button"
                     data-cite={event.id}
                     title="cite what you have selected in this message, or the whole message"
-                    className="cursor-pointer text-muted-foreground underline decoration-dotted hover:text-foreground"
+                    className="cursor-pointer text-muted-foreground hover:text-foreground hover:underline"
                     onClick={() => {
                       const container = document.querySelector<HTMLElement>(
                         `[data-body="${CSS.escape(event.id)}"]`,
@@ -972,7 +981,7 @@ export function MessageList({
                       type="button"
                       data-todo-from={event.id}
                       title="raise a todo out of what you have selected, or out of the whole message"
-                      className="cursor-pointer text-muted-foreground underline decoration-dotted hover:text-foreground"
+                      className="cursor-pointer text-muted-foreground hover:text-foreground hover:underline"
                       onClick={() => {
                         const container = document.querySelector<HTMLElement>(
                           `[data-body="${CSS.escape(event.id)}"]`,
@@ -1009,7 +1018,7 @@ export function MessageList({
                           ? "you are keeping this - drop it from your list"
                           : "keep this message in your own list"
                       }
-                      className={`cursor-pointer underline decoration-dotted hover:text-foreground ${
+                      className={`cursor-pointer hover:text-foreground hover:underline ${
                         keeping.has(event.id) ? "text-primary" : "text-muted-foreground"
                       }`}
                       onClick={() => onKeep(event, !keeping.has(event.id))}
@@ -1017,7 +1026,9 @@ export function MessageList({
                       {keeping.has(event.id) ? "kept" : "keep"}
                     </button>
                   ) : null}
-                  <span>#{shortId(event.id)}</span>
+                  <span className="font-mono" data-msg-id={event.id}>
+                    #{shortId(event.id)}
+                  </span>
                   {/*
                     THE THREAD, AS A DOOR RATHER THAN A LABEL.
 
@@ -1044,9 +1055,9 @@ export function MessageList({
                     data-thread-open={event.id}
                     onClick={() => (onOpenThread ?? onSelect)(event)}
                     aria-label={`open the thread ${shortId(event.thread)} this message is in`}
-                    className="cursor-pointer whitespace-nowrap text-muted-foreground underline decoration-dotted hover:text-foreground"
+                    className="cursor-pointer whitespace-nowrap text-muted-foreground hover:text-foreground hover:underline"
                   >
-                    thread {shortId(event.thread)}
+                    thread <span className="font-mono">{shortId(event.thread)}</span>
                   </button>
                   {/*
                     AND HOW MUCH IS IN IT, when the node has counted it and

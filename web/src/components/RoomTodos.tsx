@@ -768,10 +768,23 @@ export function RoomTodos({
         {/* Which message it will be raised out of. The link is the point of
             raising it here rather than filing it somewhere else, so the panel
             says which message it is about to keep. */}
+        {/* AND THE SAME ID IN THE SAME FACE AS THE ROOM DRAWS IT. This said
+            "out of message #Q52CTX" in one sans string, while the message it
+            names carries that id in mono two inches to the left - the same
+            category in two faces on one screen. The prose stays prose and the
+            id takes the face, so mono goes on meaning "a machine string you
+            could copy" wherever a reader meets one. */}
         <span className="text-muted-foreground text-xs">
-          {raiseFrom
-            ? `out of message #${shortId(raiseFrom.id)}`
-            : "select a message to raise it out of that message"}
+          {raiseFrom ? (
+            <>
+              out of message{" "}
+              <span className="font-mono" data-raise-from-id={raiseFrom.id}>
+                #{shortId(raiseFrom.id)}
+              </span>
+            </>
+          ) : (
+            "select a message to raise it out of that message"
+          )}
         </span>
         {failed ? <span className="text-destructive text-xs">{failed}</span> : null}
       </form>
