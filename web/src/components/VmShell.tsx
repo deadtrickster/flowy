@@ -381,8 +381,16 @@ export function VmShell({
   //
   // Depending on state and why is depending on the renders that change the
   // header's height, which is the thing that takes the space away.
+  //
+  // AND ON THE NEXT FRAME, not in the effect body. The float toggle above
+  // already does this for the same reason: an effect runs after React commits
+  // the DOM but the box's new height is what the browser works out afterwards,
+  // so fitting in the same tick can measure the layout that is on its way out.
+  //
+  // biome-ignore lint/correctness/useExhaustiveDependencies: state and why are TRIGGERS and not reads - they are the two things rendered into the header, so a change in either is what alters its height and takes space from the box below it. The body never mentions them because what it needs is the LAYOUT that follows them, which it measures itself. Removing them is removing the refit.
   useEffect(() => {
-    fitter.current?.fit();
+    const id = window.requestAnimationFrame(() => fitter.current?.fit());
+    return () => window.cancelAnimationFrame(id);
   }, [state, why]);
 
   // WHAT THE TERMINAL THINKS IT HAS, on the element, so a check can read it.
