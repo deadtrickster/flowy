@@ -438,9 +438,16 @@ export function Shell({ children }: { children: ReactNode }) {
             Beside projects because it answers the next question: these are the
             projects, and this is where you run something over one.
           */}
+          {/*
+            AND IT SAID A DIFFERENT WORD THAN THE PAGE IT OPENS. The rail said
+            "shells", the page's own h1 says "VMs", the route is /vms and the
+            refusal copy says "spawning a VM". Three surfaces agreed and the
+            rail did not, so the rail is the one that moves - a link whose name
+            is not the name of where it lands makes a reader doubt they arrived.
+          */}
           <NavLink to="/vms" className={navClass}>
             <TerminalSquare className="h-4 w-4" />
-            shells
+            VMs
           </NavLink>
           <NavLink to="/new" className={navClass}>
             <FilePlus className="h-4 w-4" />

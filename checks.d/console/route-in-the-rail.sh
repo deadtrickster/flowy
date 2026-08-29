@@ -28,5 +28,5 @@ the_rail_entry_opens_the_page() {
 
 check "every page is in the nav, or the check says who decided it is not" \
 	every_page_is_in_the_rail
-check "the nav's shells entry opens the page, in a browser" \
+check "the nav's VMs entry opens the page, under the same name, in a browser" \
 	the_rail_entry_opens_the_page

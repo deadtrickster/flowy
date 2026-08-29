@@ -334,20 +334,59 @@ export function Vms() {
     const state =
       failure.status === 403 ? "forbidden" : failure.status === 503 ? "unavailable" : "refused";
     return (
+      // A REFUSAL IS A PAGE, NOT A HEADLINE ON A BLACK FIELD. The operator, on
+      // a screenshot: "/vms for a non-operator is a headline and one sentence
+      // on a full black page. The refusal is right and the emptiness is not -
+      // 95% of the viewport says nothing."
+      //
+      // Both halves of that are kept. The refusal still says WHICH refusal it
+      // is and still shows the node's own sentence, because that names the
+      // binary and the machine and is the actionable half. What is added is
+      // what the page WOULD show, so somebody who cannot see it still learns
+      // what it is and what it would take - an empty state that teaches rather
+      // than one that merely declines.
       <div className="p-6" data-vm-panel="" data-vm-state={state}>
-        <h1 className="font-semibold text-base">VMs</h1>
-        <p className="mt-2 max-w-2xl text-muted-foreground text-sm">
-          {state === "forbidden" ? (
-            <>
-              spawning a VM is the operator's, and this token is not the operator's. That is a
-              permission, not a fault — nothing here is broken.
-            </>
-          ) : state === "unavailable" ? (
-            <>this node cannot run VMs: {failure.why}. This is NOT the same as none running.</>
-          ) : (
-            <>firecode answered, and refused: {failure.why}</>
-          )}
-        </p>
+        <div className="mx-auto max-w-2xl">
+          <h1 className="font-semibold text-base">VMs</h1>
+          <p className="mt-2 text-muted-foreground text-sm" data-vm-refusal="">
+            {state === "forbidden" ? (
+              <>
+                spawning a VM is the operator's, and this token is not the operator's. That is a
+                permission, not a fault — nothing here is broken.
+              </>
+            ) : state === "unavailable" ? (
+              <>this node cannot run VMs: {failure.why}. This is NOT the same as none running.</>
+            ) : (
+              <>firecode answered, and refused: {failure.why}</>
+            )}
+          </p>
+
+          <div className="mt-6 rounded-lg border border-border bg-card p-4" data-vm-would-show="">
+            <p className="font-medium text-sm">what this page shows</p>
+            <dl className="mt-3 flex flex-col gap-3 text-sm">
+              <div>
+                <dt className="font-medium">agents</dt>
+                <dd className="text-muted-foreground">
+                  every VM this host is running, with the readings fctop takes: status as a word,
+                  how long since it last wrote, memory, uptime, load, and which agent and project it
+                  belongs to.
+                </dd>
+              </div>
+              <div>
+                <dt className="font-medium">shells</dt>
+                <dd className="text-muted-foreground">
+                  a terminal in a project's byobu session — the same session ssh and Emacs attach
+                  to, so a shell opened here is one you can pick up from either.
+                </dd>
+              </div>
+            </dl>
+            <p className="mt-4 text-muted-foreground text-xs">
+              {state === "forbidden"
+                ? "both doors are operator-only. An operator token is what opens them; nothing here degrades to a partial view, because a partial fleet reads as a whole one."
+                : "the doors are there and this node cannot answer them. Nothing on this page is a reading of the fleet."}
+            </p>
+          </div>
+        </div>
       </div>
     );
   }

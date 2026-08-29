@@ -49,7 +49,32 @@ not scope to [data-nav] would pass right here.`);
 points somewhere the router does not draw this page`);
   }
   const state = await panel.getAttribute("data-vm-state");
-  console.log(`the nav entry opened /vms and the panel drew, in state ${JSON.stringify(state)}`);
+
+  // AND THE ENTRY CALLS IT WHAT THE PAGE CALLS ITSELF. The rail said "shells"
+  // while the page's h1 said "VMs", the route said /vms and the refusal copy
+  // said "spawning a VM" - three surfaces agreeing and one not. A link whose
+  // name is not the name of where it lands makes a reader doubt they arrived,
+  // and it is the kind of drift no test notices, because both words are true
+  // of something on the page.
+  const label = ((await entry.textContent()) ?? "").trim().toLowerCase();
+  const heading = ((await page.locator("[data-vm-panel] h1").first().textContent()) ?? "")
+    .trim()
+    .toLowerCase();
+  if (!heading) {
+    die("the vms panel drew no h1, so there is nothing for the rail entry to agree with");
+  }
+  if (label !== heading) {
+    die(
+      `the rail calls it ${JSON.stringify(label)} and the page calls itself ${JSON.stringify(
+        heading,
+      )}. One of them has to move - a link should land somewhere that shares its name.`,
+    );
+  }
+
+  console.log(
+    `the nav entry opened /vms and the panel drew, in state ${JSON.stringify(state)}, ` +
+      `under the same name the rail gives it (${JSON.stringify(heading)})`,
+  );
 } finally {
   await browser.close();
 }
