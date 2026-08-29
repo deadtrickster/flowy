@@ -191,7 +191,41 @@ ones, and anything somebody started by hand - which is the list they most want.`
   // holds a token rather than a session, so the handshake is refused - see the
   // note in vm-shell-check. What is measured is the request the panel makes:
   // the name it asks to join.
+  // THE TWO ENDS SPELL THE SESSION NAME THE SAME WAY.
+  //
+  // The rule lives in three places on purpose - internal/flowy/byobusession.go,
+  // web/src/lib/api.ts, and their own init.el - because the panel needs a name
+  // before any socket has answered and the node needs one with no browser at
+  // all. Three copies is fine; three copies that DISAGREE is a shell somebody
+  // cannot find.
+  //
+  // ASKED WITH A DOTTED NAME, and that is the whole point of doing it here. The
+  // first version of this arm compared the rule against whatever project the
+  // gate happened to offer - all of which are plain words - so removing the dot
+  // from the sanitising changed nothing and the arm passed. The dot is the case
+  // that matters: tmux silently turns it into an underscore, so a console that
+  // stopped replacing it would address a session the node never makes.
+  //
+  // /shell takes the project from the query, so any name can be asked for
+  // without needing a firecode project named that way.
   const shellOf = () => page.locator("[data-vm-shell]").first();
+  for (const asked of ["a.b", "with space", "co:lon", "plain-name"]) {
+    await page.goto(`${base}/shell?project=${encodeURIComponent(asked)}&slot=0`, {
+      timeout: 30_000,
+    });
+    await shellOf().waitFor({ state: "visible", timeout: 15_000 });
+    const spelled = await shellOf().getAttribute("data-vm-shell-session-name");
+    const want = `projectile/${asked.replace(/[.: ]/g, "_")}`;
+    if (spelled !== want) {
+      die(`for project ${JSON.stringify(asked)} the console would join ${JSON.stringify(spelled)},
+and the rule says ${JSON.stringify(want)}. The two ends have drifted, and the panel
+would open a session the node never makes.`);
+    }
+  }
+  await page.goto(`${base}/vms`, { timeout: 30_000 });
+  await page.locator('[data-vm-tab="shells"]').click();
+  await page.locator("[data-shell-sessions-fold] summary").click();
+
   const onFirst = await shellOf().getAttribute("data-vm-shell-mux");
   if (onFirst) {
     die(

@@ -92,3 +92,63 @@ func TestTheListSeesTheOperatorsOwnSessions(t *testing.T) {
 		t.Fatalf("made %s and the list does not see it - the panel would not see the operator's sessions either", name)
 	}
 }
+
+// TestAWindowGoesIntoASessionThatExists is the "all is byobu" shape asserted
+// against a real tmux: a window opened in a session is visible in that session,
+// and asking for one in a session that is not there makes nothing.
+//
+// THE SECOND HALF IS THE ONE WORTH HAVING. new-window on a missing session must
+// FAIL rather than create it - a door that made a session as a side effect of a
+// typo would leave one nobody asked for, and the panel would list it as though
+// somebody had.
+func TestAWindowGoesIntoASessionThatExists(t *testing.T) {
+	mux, err := byobuBin()
+	if err != nil {
+		t.Skip("no byobu or tmux here")
+	}
+	ctx := context.Background()
+	name := "projectile/flowy-window-test"
+
+	if err := exec.CommandContext(ctx, mux, "new-session", "-d", "-s", name).Run(); err != nil {
+		t.Skipf("cannot make a session here: %v", err)
+	}
+	defer func() { _ = exec.Command(mux, "kill-session", "-t", name).Run() }()
+
+	windows := func() int {
+		list, err := listByobuSessions(ctx)
+		if err != nil {
+			t.Fatalf("listing: %v", err)
+		}
+		for _, s := range list {
+			if s.Name == name {
+				return len(s.Windows)
+			}
+		}
+		t.Fatalf("%s is not listed after being made", name)
+		return 0
+	}
+
+	before := windows()
+	if err := openByobuWindow(ctx, name, nil); err != nil {
+		t.Fatalf("opening a window: %v", err)
+	}
+	if after := windows(); after != before+1 {
+		t.Fatalf("opened a window and the session went from %d to %d", before, after)
+	}
+
+	// A SESSION THAT IS NOT THERE. The name is one nothing would ever make.
+	absent := "projectile/flowy-window-test-absent"
+	if err := openByobuWindow(ctx, absent, nil); err == nil {
+		_ = exec.Command(mux, "kill-session", "-t", absent).Run()
+		t.Fatal("opening a window in a session that does not exist succeeded, so it made one")
+	}
+	if out, _ := exec.Command(mux, "has-session", "-t", absent).CombinedOutput(); len(out) == 0 {
+		_ = exec.Command(mux, "kill-session", "-t", absent).Run()
+		t.Fatalf("%s exists after a refused window, so the refusal created it", absent)
+	}
+
+	// AND A NAME THAT IS AN OPTION. tmux would read it as a flag.
+	if err := openByobuWindow(ctx, "-d", nil); err == nil {
+		t.Fatal("a session name beginning with a dash was accepted")
+	}
+}

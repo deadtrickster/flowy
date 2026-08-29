@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
+import { api, sessionNameFor } from "@/lib/api";
 import { attachMouseReporting } from "@/lib/mousereport";
 
 import { attachAgent, sendAgentControl, sendAgentInput, stopAgent } from "@/lib/agentsocket";
@@ -117,6 +118,7 @@ export function VmShell({
   // its class, and storing a position it never had would move it on first
   // render for no reason anybody asked for.
   const [at, setAt] = useState<{ x: number; y: number } | null>(null);
+  const [opening, setOpening] = useState(false);
   // Whether the shell told us how it ended. A ref rather than state: onclose
   // fires outside React's batching and must read the value as it is NOW, not
   // as it was when the handler closed over it.
@@ -363,6 +365,9 @@ export function VmShell({
       // because the attach frame is unobservable to a console holding a token
       // rather than a login, the socket being refused before it is sent.
       data-vm-shell-mux={mux}
+      // AND THE ONE IT WOULD JOIN BY DEFAULT, so a check can compare the
+      // console's spelling of the rule against the node's without a socket.
+      data-vm-shell-session-name={sessionNameFor(project)}
       data-vm-shell-floating={floating ? "yes" : "no"}
     >
       <div className="flex items-center gap-2">
@@ -410,6 +415,41 @@ export function VmShell({
             <option value="host">this host</option>
           </select>
         </label>
+        {/*
+          A WINDOW IN THE SESSION THIS PANEL IS SHOWING, which is what the
+          selector beside it now decides. Under "all is byobu" there is one
+          session per project and the choice is what a new WINDOW runs - a login
+          shell or a firecode shell over this project. Both then switch with F3
+          and F4 in this terminal and in an ssh attached to the same session.
+
+          ONLY WHILE LIVE, because a window needs a session to go in, and the
+          session is the one this panel joined. Offering it beforehand would be
+          a button whose only outcome is a refusal naming a session nobody has.
+        */}
+        {state === "live" ? (
+          <button
+            type="button"
+            data-vm-shell-new-window=""
+            disabled={opening}
+            className="rounded border border-border px-2 py-1 text-xs hover:bg-muted disabled:opacity-50"
+            onClick={() => {
+              const inSession = mux || sessionNameFor(project);
+              if (!inSession) return;
+              setOpening(true);
+              void api
+                .shellWindow(inSession, where, project)
+                .then(() => setWhy(""))
+                // SAID, NOT SWALLOWED. The window either appeared in the
+                // session or it did not, and the person is looking at a
+                // terminal that will not change either way - F3 is how they
+                // would find out, which is not an error message.
+                .catch((err) => setWhy(err instanceof Error ? err.message : String(err)))
+                .finally(() => setOpening(false));
+            }}
+          >
+            {opening ? "opening…" : "+ window"}
+          </button>
+        ) : null}
         <button
           type="button"
           data-vm-shell-float-toggle=""

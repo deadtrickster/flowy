@@ -121,6 +121,7 @@ var openspecStateReach = map[string]string{
 	"GET /api/vm/list":        "na",
 	"GET /api/vm/top":         "na",
 	"GET /api/shell/sessions": "na",
+	"POST /api/shell/window":  "na",
 	"GET /api/vm/{name}/log":  "na",
 	"GET /api/vm/projects":    "na",
 	"GET /api/whoami":         "na",

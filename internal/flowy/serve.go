@@ -364,6 +364,7 @@ var apiRoutes = []string{
 	"GET /api/vm/list",
 	"GET /api/vm/top",
 	"GET /api/shell/sessions",
+	"POST /api/shell/window",
 	"POST /api/vm/spawn",
 	"GET /api/vm/{name}/log",
 	"POST /api/vm/{name}/say",
@@ -621,6 +622,9 @@ func (s *server) routes() http.Handler {
 	// The sessions a shell can attach to - the operator's own included, which
 	// is the point of it. operatorOnly for the reason every vm door is.
 	api.HandleFunc("GET /api/shell/sessions", s.operatorOnly(s.handleShellSessions))
+	// Opening a window runs a command on this host, so it is the operator's in
+	// the same way spawning a VM is.
+	api.HandleFunc("POST /api/shell/window", s.operatorOnly(s.handleShellWindow))
 	api.HandleFunc("POST /api/vm/spawn", s.operatorOnly(s.handleVMSpawn))
 	api.HandleFunc("GET /api/vm/{name}/log", s.operatorOnly(s.handleVMLog))
 	api.HandleFunc("POST /api/vm/{name}/say", s.operatorOnly(s.handleVMSay))

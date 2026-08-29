@@ -852,6 +852,25 @@ export interface VMTopRow {
 }
 
 /**
+ * The session a project's shell lives in, spelled the way the node spells it.
+ *
+ * The same rule as internal/flowy/byobusession.go and as the operator's own
+ * init.el:1568 - "projectile/" plus the project name with dot, colon and space
+ * replaced by underscore. THE DOT IS NOT COSMETIC: tmux silently turns a dot in
+ * a session name into an underscore, so a name carrying one addresses a
+ * different session than it says.
+ *
+ * Duplicated from the Go rather than asked for, because the panel needs it
+ * before any socket has answered. The console check spells the rule out a third
+ * time and compares, so a drift between the two ends is a red rather than a
+ * shell nobody can find.
+ */
+export function sessionNameFor(project: string): string {
+  const name = project.trim();
+  return name ? `projectile/${name.replace(/[.: ]/g, "_")}` : "";
+}
+
+/**
  * A byobu/tmux session on the node's host, and what is in it.
  *
  * THESE ARE NOT FLOWY'S SESSIONS. They are the host's, the operator's editor
@@ -2631,6 +2650,19 @@ export const api = {
    * keeps them apart so it does not offer an attach that can never work.
    */
   shellSessions: () => request<{ sessions: ShellSession[] }>("/api/shell/sessions"),
+  /**
+   * Open a window in a session that already exists.
+   *
+   * `where` is the same two words the panel has always used - it has just
+   * stopped being a choice about what kind of SESSION to start and become what
+   * a new WINDOW runs. The session must exist: a door that made one as a side
+   * effect of a typo would leave a session nobody asked for.
+   */
+  shellWindow: (session: string, where: "host" | "vm", project: string) =>
+    request<{ session: string }>("/api/shell/window", {
+      method: "POST",
+      body: JSON.stringify({ session, where, project }),
+    }),
   /**
    * Answers 202 the moment the process is STARTED, not when the agent is done -
    * a run is minutes to hours. What happened next is `vmList` and `vmLog`.

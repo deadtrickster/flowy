@@ -126,7 +126,10 @@ var routeParams = map[string][]string{
 	"GET /api/vm/top": {},
 	// No parameters: it is every session on the host, and a filter this door
 	// dropped would be a narrowing the caller thinks happened.
-	"GET /api/shell/sessions":  {},
+	"GET /api/shell/sessions": {},
+	// Everything it needs is in the body; a query parameter here would be one
+	// the door ignored.
+	"POST /api/shell/window":   {},
 	"POST /api/vm/spawn":       {},
 	"GET /api/vm/{name}/log":   {},
 	"POST /api/vm/{name}/say":  {},

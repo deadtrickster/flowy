@@ -392,3 +392,68 @@ func (s *server) handleShellSessions(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"sessions": list})
 }
+
+type shellWindowRequest struct {
+	// Session is a name from /api/shell/sessions, never a name typed here.
+	Session string `json:"session"`
+	// Where says what the window runs: "host" is a login shell, "vm" is a
+	// firecode shell over Project. The same two words the panel already uses,
+	// because they are the same choice - it has just stopped being a choice
+	// about what KIND of session to make.
+	Where string `json:"where"`
+	// Project is a NAME from /api/vm/projects when Where is "vm". Resolved to a
+	// directory here, for api_vm.go's standing reason: a caller that can name a
+	// directory can pack any directory on this host into a VM with a network.
+	Project string `json:"project"`
+}
+
+// handleShellWindow opens a window in a session that already exists.
+//
+// THE VM/HOST SELECTOR ENDS UP HERE. It used to decide what kind of session to
+// start; under "all is byobu" there is one session per project and this decides
+// what a new WINDOW in it runs. Both are reachable over ssh from the same
+// `byobu attach`, and both switch with F3 and F4, which is where this began.
+func (s *server) handleShellWindow(w http.ResponseWriter, r *http.Request) {
+	var req shellWindowRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody("body must be json: "+err.Error()))
+		return
+	}
+
+	var command []string
+	switch strings.TrimSpace(req.Where) {
+	case "", string(shellOnHost):
+		// Nothing: tmux opens the default shell, which is the person's own.
+	case string(shellInGuest):
+		bin, err := firecodeBin()
+		if err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, errorBody(errNoFirecode.Error()))
+			return
+		}
+		workdir, err := firecodeProjectPath(r.Context(), req.Project)
+		if err != nil {
+			writeFirecodeFailure(w, err, nil)
+			return
+		}
+		// --no-tmux, and NOW it is unambiguous why: the window IS the wrapping,
+		// so firecode wrapping itself again would put a second multiplexer
+		// inside one this node already manages.
+		command = []string{bin, "shell", "--no-tmux"}
+		if workdir != "" {
+			command = append(command, "--project", workdir)
+		}
+	default:
+		writeJSON(w, http.StatusBadRequest, errorBody(`where is "vm" or "host"`))
+		return
+	}
+
+	if err := openByobuWindow(r.Context(), req.Session, command); err != nil {
+		if errors.Is(err, errNoByobu) {
+			writeJSON(w, http.StatusServiceUnavailable, errorBody(errNoByobu.Error()))
+			return
+		}
+		writeJSON(w, http.StatusBadRequest, errorBody(err.Error()))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"session": req.Session})
+}

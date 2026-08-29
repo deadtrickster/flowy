@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 
-import { ApiError, type ShellSession, api } from "@/lib/api";
+import { ApiError, type ShellSession, api, sessionNameFor } from "@/lib/api";
 
 /**
  * WHAT IS RUNNING ON THIS HOST, AND WHOSE IT IS.
@@ -74,7 +74,7 @@ export function ShellSessions({
     );
   }
 
-  const mine = project ? `projectile/${project.replace(/[.: ]/g, "_")}` : "";
+  const mine = sessionNameFor(project);
 
   return (
     <div className="flex flex-col gap-2" data-shell-sessions={String(sessions.length)}>

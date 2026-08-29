@@ -202,3 +202,49 @@ func atoiOr(s string, fallback int) int {
 	}
 	return n
 }
+
+// openByobuWindow makes a new window in a session that already exists.
+//
+// A WINDOW, NOT A SESSION, and that is the whole shape the operator asked for:
+// "all is byobu" and "fcvms are ok to be attached to byobu windows too". One
+// session per project, and what runs in it - a login shell, a VM, a build - is
+// a window somebody opened.
+//
+// THE SESSION MUST ALREADY BE THERE. new-window against a name that does not
+// exist creates nothing and fails, and that is the right answer rather than
+// quietly making a session as a side effect of asking for a window: a typo
+// would otherwise leave a session nobody meant behind, with the panel showing
+// it as though it had been asked for.
+func openByobuWindow(ctx context.Context, session string, command []string) error {
+	mux, err := byobuBin()
+	if err != nil {
+		return errNoByobu
+	}
+	if strings.TrimSpace(session) == "" {
+		return errors.New("which session the window goes in has to be said")
+	}
+	// A LEADING DASH IS AN OPTION, NOT A NAME. Argument vectors keep a name
+	// with a space or a backtick from becoming a command; they do not stop tmux
+	// from reading "-d" as a flag, because by then it is the same string.
+	if strings.HasPrefix(session, "-") {
+		return errors.New("a session name may not begin with a dash")
+	}
+
+	args := []string{"new-window", "-t", session}
+	if len(command) > 0 {
+		// -- so everything after it is the command, however it begins. Without
+		// it a command starting with a dash is tmux's option again, one layer
+		// further in.
+		args = append(args, "--")
+		args = append(args, command...)
+	}
+	out, err := exec.CommandContext(ctx, mux, args...).CombinedOutput()
+	if err != nil {
+		said := strings.TrimSpace(string(out))
+		if said == "" {
+			said = err.Error()
+		}
+		return errors.New(said)
+	}
+	return nil
+}
