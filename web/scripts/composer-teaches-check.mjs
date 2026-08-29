@@ -38,7 +38,24 @@ const die = (message) => {
 // the placeholder with no entry here is an advertisement nobody can verify,
 // and that is a failure too - it is how "/ for commands" would get in.
 const ANSWERS = {
-  "@": "[data-at-suggestions]",
+  "@": {
+    shows: "[data-at-suggestions]",
+    // WHAT HAS TO BE TRUE BEFORE TYPING IT PROVES ANYTHING. The suggestion
+    // list is rendered only while there is something to offer, so on a node
+    // whose roster is empty a bare @ correctly draws nothing - and reading
+    // that as "the gesture does not work" is absent mistaken for empty, in
+    // the check rather than in the product. This ran green as a failure once
+    // for exactly that reason.
+    ready: async () => {
+      const res = await fetch(new URL("/api/presence", base), {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) return `/api/presence answered ${res.status}`;
+      const roster = await res.json();
+      const names = (roster.members ?? []).map((m) => m.name).filter(Boolean);
+      return names.length > 0 ? null : "/api/presence named nobody, so there is nothing to suggest";
+    },
+  },
 };
 
 const browser = await chromium.launch();
@@ -79,15 +96,23 @@ message reaches a seat at all, and nothing on screen says so.`);
   }
 
   for (const symbol of advertised) {
+    // The precondition first, and it FAILS rather than skips: a check that
+    // quietly passes when it could not look reports the same green as one
+    // that measured.
+    const why = await ANSWERS[symbol].ready?.();
+    if (why) {
+      die(`cannot judge ${JSON.stringify(symbol)} on this node: ${why}. That is not the composer
+failing - it is this check unable to see, and the two must not print the same result.`);
+    }
     await box.first().fill("");
     await box.first().click();
     await box.first().type(symbol, { delay: 40 });
-    const answer = page.locator(ANSWERS[symbol]);
+    const answer = page.locator(ANSWERS[symbol].shows);
     await answer.waitFor({ state: "visible", timeout: 10_000 }).catch(() => {});
     if ((await answer.count()) === 0) {
       die(`the placeholder advertises ${JSON.stringify(symbol)} and typing it does nothing -
-${ANSWERS[symbol]} never appeared. A composer that teaches a gesture it does not have sends the
-reader to find that out by hand.`);
+${ANSWERS[symbol].shows} never appeared. A composer that teaches a gesture it does not have sends
+the reader to find that out by hand.`);
     }
   }
 
