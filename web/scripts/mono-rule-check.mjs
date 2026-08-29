@@ -122,6 +122,17 @@ drawn as data.`);
   // just wanted to copy it"). Selection goes through onSelect, which the cite
   // control calls when nothing is highlighted.
   await cite.click({ timeout: 10_000 });
+
+  // AND THE QUEUE PANE HAS TO BE THE ONE SHOWING. Selecting also navigates to
+  // the message's thread, which swaps the right panel to the thread pane -
+  // RoomTodos only renders under pane === "todos", so the raise line was not
+  // hidden, it was not mounted. The second cut of this check read that as "the
+  // rail drew no id", which was a true sentence about the wrong pane.
+  await page.locator('[data-room-pane="todos"]').click({ timeout: 10_000 });
+  await page
+    .locator('[data-room-pane-body="todos"]')
+    .waitFor({ state: "visible", timeout: 10_000 })
+    .catch(() => {});
   const railId = page.locator(`[data-raise-from-id="${message}"]`);
   await railId
     .first()
