@@ -1,6 +1,12 @@
 package flowy
 
-import "testing"
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+)
 
 // TestTheSessionNameIsTheOperatorsOwn pins the naming against the rule in their
 // init.el, because the whole value of this is landing in the SAME session their
@@ -35,5 +41,35 @@ func TestTheSessionNameIsTheOperatorsOwn(t *testing.T) {
 	// every project with no name would share it.
 	if got := byobuSessionFor("  "); got != "" {
 		t.Errorf("a project with no name got session %q; it must get none", got)
+	}
+}
+
+// TestANamedSessionIsNotAFlag is the one piece of this that a browser controls.
+//
+// `mux` comes off a WebSocket message and ends up as an argument to tmux. An
+// argument vector is what keeps a name with a backtick or a space from becoming
+// a command - that rule is in CLAUDE.md and it is followed here - but it does
+// NOT stop a name that looks like a flag: `new-session -A -s -d` is tmux being
+// handed an option, not a session called "-d", and argv cannot tell them apart
+// because at that point they are the same string.
+func TestANamedSessionIsNotAFlag(t *testing.T) {
+	shells := newAgentShells()
+	high := make(chan []byte, 4)
+	low := make(chan []byte, 4)
+	s := &server{agents: shells}
+	r := httptest.NewRequest(http.MethodGet, "/api/agent/socket", nil)
+
+	a, why := s.attachAgent(context.Background(), r,
+		agentControl{Type: "attach", Project: "flowy", Where: string(shellOnHost),
+			Mux: "-d", Rows: 24, Cols: 80},
+		high, low)
+	if a != nil {
+		t.Fatal("a session name beginning with a dash was accepted, and tmux would read it as an option")
+	}
+	if !strings.Contains(why, "dash") {
+		t.Fatalf("refused without saying why a leading dash is the problem: %q", why)
+	}
+	if got := len(shells.by); got != 0 {
+		t.Fatalf("the refusal still started %d session(s)", got)
 	}
 }

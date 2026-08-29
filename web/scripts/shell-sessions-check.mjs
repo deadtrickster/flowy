@@ -183,8 +183,33 @@ ones, and anything somebody started by hand - which is the list they most want.`
     die(`the row does not say how to attach to it from a shell: ${JSON.stringify(said)}`);
   }
 
+  // AND PICKING ONE OPENS IT HERE. The list existing is half of it; the other
+  // half is that a session flowy never started can be joined from the panel
+  // rather than only from an ssh somewhere else.
+  //
+  // ASSERTED ON THE WIRE, because opening it needs the socket and this browser
+  // holds a token rather than a session, so the handshake is refused - see the
+  // note in vm-shell-check. What is measured is the request the panel makes:
+  // the name it asks to join.
+  const shellOf = () => page.locator("[data-vm-shell]").first();
+  const onFirst = await shellOf().getAttribute("data-vm-shell-mux");
+  if (onFirst) {
+    die(
+      `the pane opens already pointed at ${JSON.stringify(onFirst)}; it should start on the project's own session`,
+    );
+  }
+  await page.locator(`[data-shell-session-open="${stranger}"]`).click();
+  await page.waitForTimeout(1000);
+  const onPicked = await shellOf().getAttribute("data-vm-shell-mux");
+  if (onPicked !== stranger) {
+    die(`picking ${stranger} out of the list left the pane on ${JSON.stringify(onPicked)}.
+
+Picking a session has to change which one the panel joins, or the list is
+decoration and the panel always opens the project's own.`);
+  }
+
   console.log(
-    `the panel lists ${names.length} session(s) on this host including ${name}, which flowy did not start, and says how to attach to it`,
+    `the panel lists ${names.length} session(s) on this host including ${name}, which flowy did not start, says how to attach to it, and switches to ${stranger} when that one is picked`,
   );
 } finally {
   await browser.close();

@@ -85,7 +85,23 @@ function forgetSession(project: string, slot: number) {
   }
 }
 
-export function VmShell({ project, slot = 0 }: { project: string; slot?: number }) {
+export function VmShell({
+  project,
+  slot = 0,
+  mux = "",
+}: {
+  project: string;
+  slot?: number;
+  /**
+   * A byobu session on the host to join, by name, instead of the project's own.
+   *
+   * This is how a session flowy never started becomes reachable from the panel:
+   * the list hands the name it read off tmux, and the node joins THAT rather
+   * than deriving one from the project. Empty is the ordinary case - the
+   * project's own session, which is what Run with nothing chosen means.
+   */
+  mux?: string;
+}) {
   const box = useRef<HTMLDivElement | null>(null);
   const term = useRef<GhosttyTerminal | null>(null);
   // The detach for this panel's slot, so unmounting stops carrying the session
@@ -238,7 +254,7 @@ export function VmShell({ project, slot = 0 }: { project: string; slot?: number 
     // wire is for. See its head comment.
     detach.current = attachAgent(
       slot,
-      { session: held, project, where, rows: t.rows, cols: t.cols, adopt },
+      { session: held, project, where, mux, rows: t.rows, cols: t.cols, adopt },
       {
         out: (bytes) => t.write(bytes),
         control: (c) => {
@@ -341,6 +357,12 @@ export function VmShell({ project, slot = 0 }: { project: string; slot?: number 
       // it, so a reader that cannot see the project cannot tell a panel that
       // reattached from one that had nothing to reattach to.
       data-vm-shell-project={project}
+      // WHICH SESSION THIS PANEL WOULD JOIN, or empty for the project's own.
+      // On the element rather than only in the attach message, because a person
+      // looking at two tabs needs to know which session each is showing - and
+      // because the attach frame is unobservable to a console holding a token
+      // rather than a login, the socket being refused before it is sent.
+      data-vm-shell-mux={mux}
       data-vm-shell-floating={floating ? "yes" : "no"}
     >
       <div className="flex items-center gap-2">

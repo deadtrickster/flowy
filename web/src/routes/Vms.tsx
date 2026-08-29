@@ -55,7 +55,7 @@ import { ApiError, api } from "@/lib/api";
  * the number would attach a new terminal to a slot the node is still tearing
  * down.
  */
-function ShellTabs({ project }: { project: string }) {
+function ShellTabs({ project, mux = "" }: { project: string; mux?: string }) {
   const [tabs, setTabs] = useState<number[]>([0]);
   const [live, setLive] = useState(0);
   const next = useRef(1);
@@ -140,7 +140,7 @@ function ShellTabs({ project }: { project: string }) {
           data-shell-pane={slot}
           className={slot === live ? "flex min-h-0 flex-1 flex-col" : undefined}
         >
-          <VmShell project={project} slot={slot} />
+          <VmShell project={project} slot={slot} mux={mux} />
         </div>
       ))}
     </section>
@@ -190,6 +190,9 @@ export function Vms() {
   // pane somebody else chose. If that turns out to be wrong it wants a route,
   // not a query parameter.
   const [pane, setPane] = useState<"agents" | "shells">("shells");
+  // WHICH SESSION THE SHELLS PANE IS SHOWING, empty for the project's own. Set
+  // by picking one out of the list, including sessions flowy never started.
+  const [mux, setMux] = useState("");
   const [busy, setBusy] = useState("");
   const [opened, setOpened] = useState<string | null>(null);
   const [log, setLog] = useState("");
@@ -646,10 +649,17 @@ export function Vms() {
             sessions on this host
           </summary>
           <div className="pt-2">
-            <ShellSessions project={project} />
+            <ShellSessions project={project} onOpen={setMux} />
           </div>
         </details>
-        <ShellTabs project={project} />
+        {/*
+          THE KEY IS THE SESSION, so choosing a different one from the list
+          REMOUNTS the strip rather than leaving terminals attached to the
+          session they were opened on. Without it, picking a second session
+          would change what new tabs join and leave the open ones lying about
+          which session they are showing.
+        */}
+        <ShellTabs key={mux || project} project={project} mux={mux} />
       </section>
     </div>
   );

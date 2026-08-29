@@ -174,6 +174,16 @@ const (
 )
 
 func (a *agentShells) start(id, project, workdir, binary string, where shellWhere, size agentSize) (*agentSession, error) {
+	return a.startIn(id, project, workdir, binary, where, "", size)
+}
+
+// startIn is start with a session named explicitly.
+//
+// A NAME THE CALLER CHOSE beats the one derived from the project, because the
+// list a person picks from holds sessions this node never started - their
+// editor's, and whatever they left running. Deriving would make those
+// unreachable from the panel, which is the opposite of what the list is for.
+func (a *agentShells) startIn(id, project, workdir, binary string, where shellWhere, mux string, size agentSize) (*agentSession, error) {
 	master, slave, err := openAgentPTY()
 	if err != nil {
 		return nil, err
@@ -232,7 +242,10 @@ func (a *agentShells) start(id, project, workdir, binary string, where shellWher
 		//
 		// A NAMELESS PROJECT GETS A PLAIN SHELL rather than projectile/, which
 		// every unnamed project would otherwise share.
-		session := byobuSessionFor(project)
+		session := strings.TrimSpace(mux)
+		if session == "" {
+			session = byobuSessionFor(project)
+		}
 		mux, muxErr := byobuBin()
 		if session != "" && muxErr == nil {
 			cmd = exec.Command(mux, "new-session", "-A", "-s", session)

@@ -93,6 +93,12 @@ type agentControl struct {
 	// opened, which is a different and much worse thing. So the two are
 	// different requests rather than the same request with a hopeful outcome.
 	Adopt bool `json:"adopt,omitempty"`
+	// attach: a byobu session on the host to join, by name.
+	//
+	// NAMED RATHER THAN DERIVED, so the panel can open the session somebody
+	// picked out of the list - including one flowy never started. Empty means
+	// the project's own, which is what a Run with nothing chosen asks for.
+	Mux string `json:"mux,omitempty"`
 	// hello
 	ID      string `json:"id,omitempty"`
 	Project string `json:"project,omitempty"`
@@ -292,7 +298,16 @@ func (s *server) attachAgent(
 			return nil, err.Error()
 		}
 
-		started, err := s.agents.start(newAgentID(), c.Project, workdir, binary, where,
+		// A SESSION THE CALLER NAMED, WHEN IT NAMED ONE, and it is checked
+		// rather than passed through. `mux` arrives from a browser, and it
+		// becomes an argument to tmux: a name starting with a dash would be
+		// read as a FLAG by new-session, which is how an argument vector still
+		// gets you a command you did not write.
+		mux := strings.TrimSpace(c.Mux)
+		if strings.HasPrefix(mux, "-") {
+			return nil, "a session name may not begin with a dash"
+		}
+		started, err := s.agents.startIn(newAgentID(), c.Project, workdir, binary, where, mux,
 			agentSize{Rows: c.Rows, Cols: c.Cols})
 		if err != nil {
 			return nil, fmt.Sprintf("the shell could not be started: %v", err)

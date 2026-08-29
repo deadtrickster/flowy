@@ -19,7 +19,20 @@ import { ApiError, type ShellSession, api } from "@/lib/api";
  * from my laptop" is a line somebody types into ssh, not a button in a console
  * they may not have open.
  */
-export function ShellSessions({ project }: { project: string }) {
+export function ShellSessions({
+  project,
+  onOpen,
+}: {
+  project: string;
+  /**
+   * Called with a session name when somebody asks to open it here.
+   *
+   * The list does not own a terminal - the pane below it does - so this hands
+   * the name up rather than rendering a second panel that would be a second
+   * client on the same session for no reason.
+   */
+  onOpen?: (name: string) => void;
+}) {
   const [sessions, setSessions] = useState<ShellSession[] | null>(null);
   // WHY THERE IS NOTHING, kept apart from HAVING nothing. A host with no
   // multiplexer answers 503 and a host with no sessions answers an empty list,
@@ -80,7 +93,24 @@ export function ShellSessions({ project }: { project: string }) {
               className="flex flex-col gap-0.5 border-border-soft border-b py-1.5"
             >
               <div className="flex flex-wrap items-baseline gap-2">
-                <span className="font-mono text-xs">{s.name}</span>
+                {/*
+                  OPENING ONE IS THE POINT OF LISTING IT. A list you can only
+                  read tells somebody a session exists and leaves them to type
+                  the attach line somewhere else - which is fine as the answer
+                  for another machine, and silly as the answer for this one.
+                */}
+                {onOpen ? (
+                  <button
+                    type="button"
+                    data-shell-session-open={s.name}
+                    onClick={() => onOpen(s.name)}
+                    className="cursor-pointer font-mono text-xs hover:underline"
+                  >
+                    {s.name}
+                  </button>
+                ) : (
+                  <span className="font-mono text-xs">{s.name}</span>
+                )}
                 <span className="text-muted-foreground text-xs">
                   {s.windows.length} window{s.windows.length === 1 ? "" : "s"}
                 </span>
