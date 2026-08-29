@@ -46,13 +46,21 @@ try {
       if (!para) return null;
       const cs = getComputedStyle(para);
       const width = para.getBoundingClientRect().width;
-      // Characters per line from the ACTUAL glyph advance of this font at this
-      // size, rather than from a guess about what a character is worth.
+      // IN THE UNIT THE RULE IS WRITTEN IN. The cap is 72ch, and ch is the
+      // advance of "0" in the font actually resolved - so measuring against "0"
+      // asks the same question the stylesheet answers.
+      //
+      // The first version averaged the lowercase alphabet instead, and the two
+      // units disagree by however much a font's digits differ from its letters:
+      // the same CSS measured 78 "characters" on the host and 92 in a firecode
+      // guest, which has different fonts installed. The rule had applied in both
+      // - 604px of text against 874px uncapped - and the check called one of
+      // them a defect.
       const probe = document.createElement("span");
-      probe.textContent = "abcdefghijklmnopqrstuvwxyz";
+      probe.textContent = "0";
       probe.style.cssText = `font:${cs.font};position:absolute;visibility:hidden;white-space:pre`;
       document.body.appendChild(probe);
-      const per = probe.getBoundingClientRect().width / 26;
+      const per = probe.getBoundingClientRect().width;
       probe.remove();
       return {
         width: Math.round(width),
@@ -69,9 +77,8 @@ try {
   const wide = await read();
   if (!wide) die("no message paragraph on screen, so there is no line to measure");
 
-  // THE CAP. 75 is the top of the comfortable band; a little over is the ch
-  // unit disagreeing with the real average glyph, which is why this is not 72.
-  if (wide.chars > 80) {
+  // THE CAP, in ch, so this holds on any machine whatever fonts it has.
+  if (wide.chars > 76) {
     die(`a line of prose is ${wide.chars} characters at a 1600px window (${wide.width}px of text).
 
 45 to 75 is the comfortable measure. Past it the eye loses the line it is
