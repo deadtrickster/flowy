@@ -285,6 +285,30 @@ function ChatRoomIn() {
   // rendered identically.
   const unknownPane = asked && !linked && !PANES.includes(asked as Pane) ? asked : "";
   const setPane = (next: Pane) => navigate(`/chat/${encodeURIComponent(room)}/${next}`);
+  /*
+    AND THE PANEL IS OPENED WHEN THE URL ASKS FOR ONE.
+
+    Below lg the panel is not a column, it is a DRAWER: fixed to the right edge
+    and translated off-screen unless panelOpen. Above lg it is static and
+    panelOpen does not touch it.
+
+    setPanelOpen was called in exactly two places - the toggle button and the
+    backdrop - so nothing opened it when a THREAD was opened. Pressing "1 reply"
+    on a phone navigated to the thread route, set this pane to "thread", and
+    drew the room with no visible change at all. The operator, on a Fold 8:
+    "both folded and unfolded there is no way to see the thread. simply not
+    shown." Both of its widths are under lg, which is why neither worked.
+
+    THE URL IS A REQUEST TO SEE SOMETHING. A path that names a pane, or a
+    message whose thread is being opened, is somebody asking for that panel -
+    so it opens. Keyed on the addressed thing rather than on `pane`, which has
+    a default: `pane` is "todos" for a bare /chat/general, and opening the
+    drawer for a URL that asked for nothing would put a panel over the room
+    every time somebody walked into it.
+  */
+  useEffect(() => {
+    if (linked || asked) setPanelOpen(true);
+  }, [linked, asked]);
   /**
    * AND THE MESSAGE SOMEBODY IS POINTING AT, when the path names one.
    *
