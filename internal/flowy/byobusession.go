@@ -1,6 +1,7 @@
 package flowy
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os/exec"
@@ -113,19 +114,35 @@ func listByobuSessions(ctx context.Context) ([]byobuSession, error) {
 	}
 	const sep = "\x1f"
 
-	out, err := exec.CommandContext(ctx, mux, "list-sessions", "-F",
-		strings.Join([]string{"#{session_name}", "#{session_attached}", "#{session_created}"}, sep),
-	).Output()
-	if err != nil {
+	// EXPLICIT BUFFERS, not Output(). Output() only captures stderr into
+	// ExitError.Stderr when Stderr was nil, and "no server running" arrives on
+	// stderr - so whether the message is in hand at all depended on a condition
+	// this code did not state. It cost a gate: every one of these tests failed
+	// in a guest with "exit status 1" while the message that would have made it
+	// an ordinary empty answer was somewhere this code never looked.
+	asking := exec.CommandContext(ctx, mux, "list-sessions", "-F",
+		strings.Join([]string{"#{session_name}", "#{session_attached}", "#{session_created}"}, sep))
+	var said, complained bytes.Buffer
+	asking.Stdout = &said
+	asking.Stderr = &complained
+	if err := asking.Run(); err != nil {
 		// NO SERVER IS NOT AN ERROR. tmux exits non-zero with "no server
 		// running" when nothing has ever been started, and that is a true and
 		// ordinary answer: no sessions. Reporting it as a failure would put a
 		// red banner in front of somebody whose only crime is a fresh login.
-		if strings.Contains(string(exitOutput(err)), "no server running") {
+		//
+		// Both streams are read, because which one carries it is a tmux
+		// version's business and not a thing worth being wrong about twice.
+		whole := complained.String() + said.String()
+		if strings.Contains(whole, "no server running") || strings.Contains(whole, "no server") {
 			return []byobuSession{}, nil
+		}
+		if trimmed := strings.TrimSpace(whole); trimmed != "" {
+			return nil, errors.New(trimmed)
 		}
 		return nil, err
 	}
+	out := said.Bytes()
 
 	byName := map[string]*byobuSession{}
 	var order []string
@@ -154,6 +171,8 @@ func listByobuSessions(ctx context.Context) ([]byobuSession, error) {
 			"#{window_active}", "#{pane_current_command}", "#{window_panes}",
 		}, sep),
 	).Output()
+	// A FAILURE HERE LEAVES THE SESSIONS WITH NO WINDOWS RATHER THAN LOSING
+	// THEM. The sessions are already known; windows are the detail.
 	if err == nil {
 		for _, line := range strings.Split(strings.TrimRight(string(wins), "\n"), "\n") {
 			f := strings.Split(line, sep)
@@ -184,16 +203,6 @@ func listByobuSessions(ctx context.Context) ([]byobuSession, error) {
 var errNoByobu = errors.New(
 	"this node has no byobu or tmux on its PATH, so it cannot hold a shell " +
 		"session anybody else could attach to")
-
-// exitOutput is whatever a failed command said on stderr, which is where tmux
-// puts "no server running".
-func exitOutput(err error) []byte {
-	var ee *exec.ExitError
-	if errors.As(err, &ee) {
-		return ee.Stderr
-	}
-	return nil
-}
 
 func atoiOr(s string, fallback int) int {
 	n, err := strconv.Atoi(strings.TrimSpace(s))

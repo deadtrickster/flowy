@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -71,5 +73,46 @@ func TestANamedSessionIsNotAFlag(t *testing.T) {
 	}
 	if got := len(shells.by); got != 0 {
 		t.Fatalf("the refusal still started %d session(s)", got)
+	}
+}
+
+// TestNoServerIsAnEmptyHostNotAFailure pins the case a guest found and this
+// host cannot reach.
+//
+// A machine where nothing has ever started tmux answers `list-sessions` with
+// exit 1 and "no server running" ON STDERR. That is a true and ordinary
+// statement - there are no sessions - and it must come back as an empty list,
+// not as an error: a fresh login is not a broken node.
+//
+// IT WAS WRONG AND THE GATE SAID SO. Every live test here failed in a firecode
+// guest with "exit status 1", because the message was read from
+// ExitError.Stderr, which Output() only fills when Stderr was nil - a condition
+// the code depended on and never stated. The host could not reproduce it: this
+// machine always has a server, and TMUX_TMPDIR is ignored from inside a
+// session, so there was no way to find it here except by reading the guest.
+//
+// The command is run against a binary that behaves like tmux with no server,
+// rather than against tmux - the point is what THIS code does with that answer,
+// and a host with a server cannot produce it.
+func TestNoServerIsAnEmptyHostNotAFailure(t *testing.T) {
+	dir := t.TempDir()
+	stand := filepath.Join(dir, "tmux")
+	// Exactly what tmux 3.4 does: the message on stderr, nothing on stdout,
+	// exit 1.
+	script := "#!/bin/sh\necho 'no server running on /tmp/tmux-1000/default' >&2\nexit 1\n"
+	if err := os.WriteFile(stand, []byte(script), 0o755); err != nil {
+		t.Fatalf("writing the stand-in: %v", err)
+	}
+	t.Setenv("PATH", dir)
+
+	got, err := listByobuSessions(context.Background())
+	if err != nil {
+		t.Fatalf(`a host with no tmux server answered an error: %v
+
+That is a machine where nobody has started a session yet, which is an empty
+list. Reporting it as a failure puts a red banner in front of a fresh login.`, err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("a host with no server answered %d sessions", len(got))
 	}
 }
