@@ -158,3 +158,36 @@ a version difference becomes a panel that quietly shows nothing.`, len(got))
 		t.Fatalf("refused without saying the line was unreadable: %v", err)
 	}
 }
+
+// TestAHostShellDoesNotNeedFirecode is the branch whose whole point is that the
+// session belongs to the host rather than to a VM - so needing firecode to open
+// one was the wrong requirement in the wrong place.
+//
+// FOUND IN A GUEST, where firecode is absent: a bad session name came back as
+// "this node has no firecode on its PATH", a true sentence about something the
+// caller never asked about. Two things were wrong and both are worth keeping
+// apart: the workdir was resolved through firecode even for a host shell, and
+// the caller's own input was checked after that rather than before.
+func TestAHostShellDoesNotNeedFirecode(t *testing.T) {
+	// A PATH WITH NEITHER firecode NOR A MULTIPLEXER is the harshest version of
+	// the machine this is about, and the refusal must still be about what was
+	// asked for.
+	t.Setenv("PATH", t.TempDir())
+
+	s := &server{agents: newAgentShells()}
+	r := httptest.NewRequest(http.MethodGet, "/api/agent/socket", nil)
+	high := make(chan []byte, 4)
+	low := make(chan []byte, 4)
+
+	_, why := s.attachAgent(context.Background(), r,
+		agentControl{Type: "attach", Project: "flowy", Where: string(shellOnHost),
+			Mux: "-d", Rows: 24, Cols: 80},
+		high, low)
+	if !strings.Contains(why, "dash") {
+		t.Fatalf(`a host shell with a bad session name was refused with: %q
+
+It has to be refused for the reason the caller can act on. firecode is not
+needed to open a shell on this host, and naming it here sends somebody to
+install something that would not have helped.`, why)
+	}
+}

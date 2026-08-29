@@ -271,6 +271,16 @@ func (s *server) attachAgent(
 	}
 
 	if sess == nil {
+		// WHAT THE CALLER SENT IS CHECKED BEFORE ANYTHING IS DONE WITH IT.
+		// This was below the workdir resolution, so on a host without firecode
+		// a bad session name was refused with "no firecode on its PATH" - a
+		// true sentence about the wrong thing, and the caller never learns what
+		// was actually wrong with what they sent.
+		mux := strings.TrimSpace(c.Mux)
+		if strings.HasPrefix(mux, "-") {
+			return nil, "a session name may not begin with a dash"
+		}
+
 		where := shellInGuest
 		switch strings.TrimSpace(c.Where) {
 		case "", string(shellInGuest):
@@ -293,20 +303,21 @@ func (s *server) attachAgent(
 		// publishes - api_vm.go's rule, and a security decision rather than a
 		// tidy one: a caller who can name a directory can pack any directory on
 		// this host into a VM that has the network.
-		workdir, err := firecodeProjectPath(r.Context(), c.Project)
-		if err != nil {
-			return nil, err.Error()
+		//
+		// ONLY FOR A GUEST. A HOST SHELL DOES NOT NEED FIRECODE, and asking for
+		// the path anyway made a machine with byobu and no firecode unable to
+		// open a shell at all - on the branch whose whole point is that the
+		// session is the host's rather than a VM's. The workdir only decides
+		// where a session is CREATED; an attach to one that exists ignores it.
+		workdir := ""
+		if where == shellInGuest {
+			found, err := firecodeProjectPath(r.Context(), c.Project)
+			if err != nil {
+				return nil, err.Error()
+			}
+			workdir = found
 		}
 
-		// A SESSION THE CALLER NAMED, WHEN IT NAMED ONE, and it is checked
-		// rather than passed through. `mux` arrives from a browser, and it
-		// becomes an argument to tmux: a name starting with a dash would be
-		// read as a FLAG by new-session, which is how an argument vector still
-		// gets you a command you did not write.
-		mux := strings.TrimSpace(c.Mux)
-		if strings.HasPrefix(mux, "-") {
-			return nil, "a session name may not begin with a dash"
-		}
 		started, err := s.agents.startIn(newAgentID(), c.Project, workdir, binary, where, mux,
 			agentSize{Rows: c.Rows, Cols: c.Cols})
 		if err != nil {
