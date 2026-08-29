@@ -135,8 +135,30 @@ try {
   // It must not call a quiet reader stuck: idle and stuck are indistinguishable
   // from these columns, and a confident wrong answer is the defect this fleet
   // found six times in one night.
-  if (/\bstuck\b|\bdead\b/i.test(text)) {
-    die(`the panel calls a reader stuck, which this data cannot know:\n${text}`);
+  //
+  // ASKED OF THE PANEL'S OWN WORDS, NOT OF THE NAMES IT IS LISTING. This tested
+  // panel.innerText(), and YourReaders.tsx:165 renders {r.reader} - so every
+  // reader name this token holds was in the string being matched. A seat called
+  // `dead-claude` exists on this fleet, and \bdead\b matches it: the hyphen is a
+  // word boundary. The check would then have died saying "the panel calls a
+  // reader stuck" about a panel that had done nothing but print a name it was
+  // given.
+  //
+  // That is the exact failure this row is about - a check pointing at the panel
+  // for something that is not the panel - reproduced inside the check written to
+  // diagnose it. Whether it is the guest red I cannot say, and this does not
+  // claim to be that fix; it removes a way for the check to be wrong.
+  //
+  // So the names are taken out before the words are read. Every name the DOOR
+  // said this token holds is removed, which is the same list the panel drew
+  // from, so what is left is the panel's own vocabulary.
+  let vocabulary = text;
+  for (const name of fromDoor) {
+    vocabulary = vocabulary.split(name).join(" ");
+  }
+  if (/\bstuck\b|\bdead\b/i.test(vocabulary)) {
+    die(`the panel calls a reader stuck, which this data cannot know. With the reader
+names removed, what is left still says it:\n${vocabulary}`);
   }
 
   if (crashes.length > 0) die(`the panel threw: ${crashes.join("; ")}`);
