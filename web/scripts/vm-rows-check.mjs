@@ -126,6 +126,9 @@ element, on a node that serves the wasm. The panel said: ${JSON.stringify(why)}`
   const dims = async () => ({
     rows: await shell.getAttribute("data-vm-shell-rows").catch(() => null),
     cols: await shell.getAttribute("data-vm-shell-cols").catch(() => null),
+    // "n:saw:rows" - how many times the panel fitted, the box height the last
+    // one measured, and the row count it produced.
+    fit: await shell.getAttribute("data-vm-shell-fit").catch(() => null),
   });
 
   const read = () =>
@@ -181,6 +184,7 @@ its own resize by 100ms, and this waited ${Math.round((last.ms || 0) / 100) / 10
   samples ${samples.length}: ${JSON.stringify(samples.map((s) => `${s.ms}:${s.clientHeight}/${s.tallestChild}`))}
 
   the terminal believes it has ${d.rows} row(s) and ${d.cols} col(s)
+  the panel's own fits, as n:box-it-measured:rows-it-produced - ${d.fit}
 
 WHICH OF TWO THINGS THAT IS. If the row count still matches the ORIGINAL box
 height, fit() never ran again - the resize was dropped, and the addon's

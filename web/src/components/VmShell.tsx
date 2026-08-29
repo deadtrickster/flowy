@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { api, sessionNameFor } from "@/lib/api";
 import { attachMouseReporting } from "@/lib/mousereport";
@@ -132,6 +132,15 @@ export function VmShell({
   const adopting = useRef(false);
   const [state, setState] = useState<ShellState>("idle");
   const [dims, setDims] = useState<{ cols: number; rows: number } | null>(null);
+  // WHAT EVERY FIT SAW AND PRODUCED. Reading rows alone said fit() was not
+  // re-running and could not say why - whether it was never called, or called
+  // and measuring a height that was not the one on screen. This records both,
+  // so the next red distinguishes them instead of me inferring it.
+  const [fits, setFits] = useState<{ n: number; saw: number; rows: number }>({
+    n: 0,
+    saw: -1,
+    rows: -1,
+  });
   // WHICH MACHINE. Two values, and neither is a default that could be arrived
   // at by accident - the operator asked for host shells and the difference is
   // whether what you type can reach this machine.
@@ -357,13 +366,20 @@ export function VmShell({
     setWhy("stopped from the panel");
   };
 
+  // ONE PLACE THAT FITS, so every caller is counted and measured the same way.
+  const refit = useCallback(() => {
+    const seen = box.current?.clientHeight ?? -1;
+    fitter.current?.fit();
+    setFits((f) => ({ n: f.n + 1, saw: seen, rows: term.current?.rows ?? -1 }));
+  }, []);
+
   // REFIT THE MOMENT THE BOX CHANGES, rather than waiting for the observer.
   // The observer debounces, which is right for a drag and wrong for a switch
   // that changes the shape in one step - the terminal would sit at the old
   // size for a beat with the guest wrapping to match.
   useEffect(() => {
-    fitter.current?.fit();
-  }, []);
+    refit();
+  }, [refit]);
 
   // REFIT WHEN THE PANEL'S OWN TEXT CHANGES, because that is what resizes the
   // box. The header holds the state word and the reason, and a longer reason
@@ -389,9 +405,9 @@ export function VmShell({
   //
   // biome-ignore lint/correctness/useExhaustiveDependencies: state and why are TRIGGERS and not reads - they are the two things rendered into the header, so a change in either is what alters its height and takes space from the box below it. The body never mentions them because what it needs is the LAYOUT that follows them, which it measures itself. Removing them is removing the refit.
   useEffect(() => {
-    const id = window.requestAnimationFrame(() => fitter.current?.fit());
+    const id = window.requestAnimationFrame(() => refit());
     return () => window.cancelAnimationFrame(id);
-  }, [state, why]);
+  }, [state, why, refit]);
 
   // WHAT THE TERMINAL THINKS IT HAS, on the element, so a check can read it.
   // Geometry alone cannot tell "fit() never ran" from "fit() ran and the canvas
@@ -419,6 +435,7 @@ export function VmShell({
       data-vm-shell-session-name={sessionNameFor(project)}
       data-vm-shell-floating={floating ? "yes" : "no"}
       data-vm-shell-rows={dims ? String(dims.rows) : "none"}
+      data-vm-shell-fit={`${fits.n}:${fits.saw}:${fits.rows}`}
       data-vm-shell-cols={dims ? String(dims.cols) : "none"}
     >
       <div className="flex items-center gap-2">
