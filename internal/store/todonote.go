@@ -233,10 +233,35 @@ func TodoNoteEntryEvent(art *Artifact, p *Principal, note string) (*Event, error
 
 // noteEntryEvent builds the entry a note is.
 func noteEntryEvent(art *Artifact, p *Principal, actor, actorKind, note string) (*Event, error) {
-	meta, err := json.Marshal(map[string]string{
+	fields := map[string]string{
 		"actor_kind": actorKind,
 		"actor_user": p.UserID,
-	})
+	}
+	// WHO THE NOTE IS FOR, STAMPED WHEN IT IS WRITTEN.
+	//
+	// 01M17CVHH9FX3YVTHT9WMFSDDY. The inbox delivers chat and nothing else, so
+	// a note on a row has never reached the seat it is about - and the
+	// operator's standing way to ask an agent something is to assign a row and
+	// leave a note on it. The one channel a person is told to use was the one
+	// channel the recipient could not hear.
+	//
+	// Delivery needs to know who a note is for, and the event did not say. The
+	// row's assignee is that answer: a note on a row assigned to somebody is
+	// addressed as plainly as a message that names them.
+	//
+	// STAMPED RATHER THAN JOINED, and the reason is what "addressed" means
+	// here. This records who held the row WHEN THE NOTE WAS WRITTEN, which is
+	// who the writer was talking to. Reassigning the row afterwards does not
+	// redirect a note somebody already wrote to its old holder, and looking the
+	// assignee up at read time would do exactly that.
+	//
+	// It matches how a chat addressee works - resolved at say time onto the
+	// event - so both kinds of "this is for you" are decided in the same place
+	// and cannot drift apart.
+	if who := strings.TrimSpace(artifactString(art, AssigneeField)); who != "" {
+		fields[AssigneeField] = who
+	}
+	meta, err := json.Marshal(fields)
 	if err != nil {
 		return nil, fmt.Errorf("store: note on %s: %w", art.ID, err)
 	}

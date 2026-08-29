@@ -154,6 +154,15 @@ type inboxFilter struct {
 	// no second field to say whether it was loaded: the zero value delivers
 	// everything, and delivering too much is the failure a reader can see.
 	ignored map[string]bool
+	// as is the NAME this waiter holds - the same string a row's assignee is.
+	//
+	// It is here because a note is addressed by ASSIGNMENT, and an assignee is
+	// a name where an addressee is an id. isOwnActor answers "is this id this
+	// principal" and is the right question for a chat addressee; asking it of
+	// "claude-host" would compare a name against a UserID and quietly never
+	// match, which is a delivery rule that silently delivers nothing - the
+	// exact failure this whole row is about.
+	as string
 }
 
 // wakesFor decides whether a message this principal may read is one this waiter
@@ -196,6 +205,27 @@ func wakesFor(p *store.Principal, e *store.Event, want inboxFilter) bool {
 	// would be a wrong answer shaped like a quiet room.
 	if want.room == "" && want.ignored[e.Room] {
 		return false
+	}
+	// A NOTE REACHES THE SEAT THE ROW WAS ASSIGNED TO, AND NOBODY ELSE.
+	//
+	// It is decided here and it returns, because none of the rules below are
+	// about a note. A note has no addressee column, is not a mention, and is
+	// not room traffic somebody might be focusing away from - it is one seat
+	// being told something about work that is theirs. The assignee stamped on
+	// the event when it was written is the whole test.
+	//
+	// This is deliberately the FLOOR and not everything that could be argued
+	// for. A note on a row you merely RAISED is the obvious second case and is
+	// not here: it is a different claim about who a note is for, it doubles
+	// what a busy board delivers, and it can be added on its own evidence. The
+	// board takes hundreds of rows, so a rule that is nearly right here is a
+	// firehose rather than a small mistake.
+	//
+	// It sits AFTER the ignored check on purpose. Ignoring is a person saying
+	// "do not tell me", and this does not overrule that.
+	if e.Type == store.EventTodoNote {
+		who := noteAssigneeOf(e)
+		return who != "" && who == want.as
 	}
 	// OUTSIDE THE FOCUS, ONLY WHAT NAMES YOU. A message in another project
 	// wakes this waiter when it is addressed to it, and not otherwise: the
@@ -314,6 +344,7 @@ func (s *server) handleInboxWait(w http.ResponseWriter, r *http.Request) {
 		room:      q.Get("room"),
 		addressed: boolParam(q.Get("addressed")),
 		focus:     strings.TrimSpace(q.Get("focus")),
+		as:        name,
 
 		mentionsOnly: boolParam(q.Get("mentions")),
 	}
@@ -376,7 +407,20 @@ func (s *server) handleInboxWait(w http.ResponseWriter, r *http.Request) {
 		// wherever this one stopped.
 		for pages := 0; pages < inboxDrainPages; pages++ {
 			page, err := s.db.ListEvents(r.Context(), p, store.EventQuery{
-				Type:  chatEventType,
+				// CHAT AND NOTES, because both are things somebody said TO a
+				// seat. 01M17CVHH9FX3YVTHT9WMFSDDY: this read chat alone, so a
+				// note on a row had never once woken the agent it was about -
+				// and assigning a row and leaving a note on it is the standing
+				// way a person asks this fleet a question.
+				//
+				// Widening the TYPES does not widen who is woken. wakesFor
+				// decides that, and a note reaches only the seat the row was
+				// assigned to when it was written. Everything else about the
+				// page - the permission filter, the mark, the drain - is
+				// unchanged, so a note takes its place in the same ordering as
+				// the messages around it rather than arriving on a second
+				// channel with its own cursor to get out of step.
+				Types: []string{chatEventType, store.EventTodoNote},
 				Since: at,
 				Limit: limit,
 			})
@@ -1544,4 +1588,25 @@ func standingText(e *store.Event) any {
 		return nil
 	}
 	return e.Standing.RepliesTo
+}
+
+// noteAssigneeOf reads the seat a note was written to off the event.
+//
+// It is meta rather than a column because that is where a note event already
+// carries what it knows about itself - actor_kind and actor_user ride the same
+// map - and because a stamp that only one event type has does not earn a column
+// on every event in the log.
+//
+// An empty answer is a note on an unassigned row. It wakes nobody, which is
+// correct rather than a gap: a note on a row nobody holds is a note to the
+// board, and the board is read by looking at it.
+func noteAssigneeOf(e *store.Event) string {
+	if e == nil || len(e.Meta) == 0 {
+		return ""
+	}
+	var meta map[string]string
+	if err := json.Unmarshal(e.Meta, &meta); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(meta[store.AssigneeField])
 }
