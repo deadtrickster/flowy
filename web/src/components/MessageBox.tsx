@@ -402,10 +402,26 @@ export function MessageBox({
         onBlur={() => setAt(null)}
         onKeyDown={onKeyDown}
         onPaste={onPaste}
+        /*
+          THE ONE SYMBOL THAT CHANGES WHAT THE MESSAGE DOES, said where a
+          person is already looking. "say something…" taught nothing, and @ is
+          not decoration here: mentions.go resolves a name AT WRITE TIME and
+          records the pairs in meta.mentions, so a name nobody typed as @ - or
+          typed wrong - is drawn as prose and addresses no one. An unmentioned
+          seat is not notified. The affordance that decides whether a message
+          reaches anybody was the one nothing named.
+
+          ONLY @, because only @ exists. The chat clients teach a row of them -
+          "/ for commands, ! for shell, # for snippets" - and this composer has
+          none of those. A placeholder that advertised them would be a lie the
+          reader finds out by typing, which is worse than saying nothing. The
+          check below types what the placeholder names and requires it to do
+          something, so this stays true when the composer grows.
+        */
         placeholder={
           disabled
             ? disabledReason || "log in, or paste a token, to say something"
-            : "say something…"
+            : "say something… @ to name a seat, so it reaches them"
         }
         aria-label="message"
       />
