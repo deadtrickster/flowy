@@ -617,6 +617,9 @@ export function MessageList({
                   BUTTON, and answers a question about a control instead.
                 */
                 data-message={event.id}
+                // The row says which voice it is, so a check reads it off the page
+                // rather than deciding by eye which rectangle looked different.
+                data-msg-voice={agent ? "agent" : "person"}
                 layout
                 initial={{ opacity: 0, y: 8 }}
                 animate={{ opacity: 1, y: 0 }}
@@ -641,6 +644,27 @@ export function MessageList({
                   runs
                     ? "-mt-2 rounded-none border-border border-x border-b bg-card px-3 pt-0 pb-3"
                     : "rounded-lg border border-border bg-card p-3 hover:border-primary/40",
+                  /*
+                    WHO SPOKE, WITHOUT READING. The pill said "agent" or
+                    "human" and the two messages were otherwise the same
+                    rectangle, so telling a person's turn from an agent's cost
+                    a read of a five-character word. In a room where four
+                    agents and one person talk past each other, that is the
+                    single most useful thing a glance could carry and it
+                    carried nothing.
+
+                    A person's turn gets its own ground and a left edge. Not
+                    a right-aligned bubble, which is what the chat clients do:
+                    that shape means "me" and works where exactly two parties
+                    speak. Here the reader may be any of six, and a bubble
+                    would say something false to five of them.
+
+                    The pill stays. Shape is the fast channel and words are
+                    the exact one - a colour alone would leave a reader who
+                    cannot see it with nothing, and the same reader is why the
+                    badge was there first.
+                  */
+                  !agent && "border-l-[3px] border-l-foreground/40 bg-muted",
                   forMe && "border-primary/50 bg-primary/5",
                   // A private message is drawn as a different thing, not as a
                   // room message with a note on it. The dashed edge is what a
