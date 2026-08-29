@@ -131,6 +131,43 @@
 /* A report body is markdown rendered to HTML, so it needs its own rhythm -
    headings that step down, code that reads as code, tables that survive.
    The palette is the theme's, so a report reads like the rest of the console. */
+
+/* THE MEASURE, WHICH IS THE THING THAT MADE THIS READ AS A WALL.
+
+   Measured on the live room before changing anything: 14px text, 20px leading,
+   an 874px column - ONE HUNDRED AND EIGHTEEN characters per line. The
+   comfortable measure is 45 to 75 and the usual target is 66. At 118 the eye
+   loses the line it is returning to, so every paragraph is work, and no amount
+   of heading hierarchy fixes it.
+
+   The markdown rhythm below was never the problem. I had filed "prose is not
+   typeset" from a screenshot; it is typeset, and the line is twice as long as
+   a line should be.
+
+   ON THE BLOCKS, NOT THE CONTAINER, so the box keeps its width and only the
+   TEXT is capped - a message card that shrank to 72ch would leave its own
+   header and controls hanging over empty space. */
+.report-body > p,
+.report-body > ul,
+.report-body > ol,
+.report-body > blockquote,
+.report-body > h1,
+.report-body > h2,
+.report-body > h3 {
+  max-width: 72ch;
+}
+
+/* CODE AND TABLES KEEP THE WHOLE WIDTH. They are scanned, not read: a wrapped
+   command line or a table folded into a column is harder at 72ch, not easier,
+   and pre already scrolls itself. */
+.report-body > pre,
+.report-body > table {
+  max-width: none;
+}
+
+.report-body {
+  line-height: 1.6;
+}
 .report-body h1 {
   font-size: 1.5rem;
   font-weight: 600;
