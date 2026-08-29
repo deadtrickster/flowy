@@ -358,6 +358,32 @@ export function VmShell({
     fitter.current?.fit();
   }, []);
 
+  // AND WATCH OUR OWN BOX, WHICH IS NOT WHAT THE ADDON WATCHES.
+  //
+  // MEASURED IN THE GATE, 2026-08-29, which is the only reason this is here
+  // rather than a second guess about a panel that had already been guessed at
+  // twice. Adding a longer refusal message to the header wrapped it onto a
+  // second line and took 32px off the screen box. The box went 796 -> 764. The
+  // canvas stayed at 784. Nothing re-fitted, so 20px of terminal was left
+  // drawn below the fold - and a full-screen program's bottom row is exactly
+  // what lives there. That is "started htop - bottom truncated", reproduced.
+  //
+  // fit.observeResize() was already on, and it did not fire. It watches the
+  // element GHOSTTY made, whose height comes from rows * cellHeight - so it is
+  // derived from the fit rather than from the space available. Our container
+  // shrinking never reaches it, which is why the old note said this can grow
+  // but never shrink: growing changes ghostty's element and shrinking does not.
+  //
+  // So the thing that decides the size is the thing to observe. This watches
+  // the box the terminal actually has to live in, and re-fits when it changes.
+  useEffect(() => {
+    const el = box.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => fitter.current?.fit());
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
   const panel = (
     <section
       className={
