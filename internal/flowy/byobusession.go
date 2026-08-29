@@ -248,3 +248,70 @@ func openByobuWindow(ctx context.Context, session string, command []string) erro
 	}
 	return nil
 }
+
+// killByobuSession ends a session and everything running in it.
+//
+// THIS IS THE DANGEROUS ONE AND IT IS TREATED THAT WAY. A session here is not
+// flowy's: projectile/* is where the operator's editor lives, and killing one
+// takes down whatever they left running in it - a build, an agent, an ssh they
+// walked away from. There is no undo and no confirmation prompt at this layer,
+// so the caller has to say what it believes it is killing and be right.
+//
+// EXPECT IS THE GUARD. The caller passes the window count it saw, and this
+// refuses if the session has changed since - the same shape as `todo claim
+// --expect`, and for the same reason: a list a person read ten seconds ago is
+// not the state of the machine now, and "kill projectile/duckdb, which had one
+// window" is a claim that can be checked where "kill projectile/duckdb" is not.
+//
+// A NEGATIVE EXPECT MEANS THE CALLER DID NOT LOOK, which is refused rather than
+// waved through: an unchecked kill is exactly what this exists to prevent.
+func killByobuSession(ctx context.Context, name string, expectWindows int) error {
+	mux, err := byobuBin()
+	if err != nil {
+		return errNoByobu
+	}
+	if strings.TrimSpace(name) == "" {
+		return errors.New("which session to end has to be said")
+	}
+	if strings.HasPrefix(name, "-") {
+		return errors.New("a session name may not begin with a dash")
+	}
+	if expectWindows < 0 {
+		return errors.New(
+			"say how many windows the session had when you looked, so this can refuse if it has changed")
+	}
+
+	list, err := listByobuSessions(ctx)
+	if err != nil {
+		return err
+	}
+	var found *byobuSession
+	for i := range list {
+		if list[i].Name == name {
+			found = &list[i]
+			break
+		}
+	}
+	if found == nil {
+		// GONE IS NOT AN ERROR TO ACT ON, but it is not success either: the
+		// caller asked to end something that is not there, and saying so is
+		// what stops "it worked" from meaning two different things.
+		return errors.New("no session called " + name + " on this host")
+	}
+	if len(found.Windows) != expectWindows {
+		return errors.New(
+			"that session has " + strconv.Itoa(len(found.Windows)) +
+				" windows now and you were looking at " + strconv.Itoa(expectWindows) +
+				" - read it again before ending it")
+	}
+
+	out, err := exec.CommandContext(ctx, mux, "kill-session", "-t", name).CombinedOutput()
+	if err != nil {
+		said := strings.TrimSpace(string(out))
+		if said == "" {
+			said = err.Error()
+		}
+		return errors.New(said)
+	}
+	return nil
+}

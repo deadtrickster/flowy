@@ -144,6 +144,7 @@ var routeNeeds = map[string]string{
 	// machine serving this node.
 	"POST /api/vm/spawn":          needsOperator,
 	"POST /api/shell/window":      needsOperator,
+	"POST /api/shell/kill":        needsOperator,
 	"POST /api/vm/{name}/say":     needsOperator,
 	"POST /api/vm/{name}/down":    needsOperator,
 	"POST /api/work/{id}/claim":   needsWrite,

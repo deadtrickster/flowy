@@ -130,6 +130,7 @@ var routeParams = map[string][]string{
 	// Everything it needs is in the body; a query parameter here would be one
 	// the door ignored.
 	"POST /api/shell/window":   {},
+	"POST /api/shell/kill":     {},
 	"POST /api/vm/spawn":       {},
 	"GET /api/vm/{name}/log":   {},
 	"POST /api/vm/{name}/say":  {},

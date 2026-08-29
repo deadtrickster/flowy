@@ -365,6 +365,7 @@ var apiRoutes = []string{
 	"GET /api/vm/top",
 	"GET /api/shell/sessions",
 	"POST /api/shell/window",
+	"POST /api/shell/kill",
 	"POST /api/vm/spawn",
 	"GET /api/vm/{name}/log",
 	"POST /api/vm/{name}/say",
@@ -625,6 +626,9 @@ func (s *server) routes() http.Handler {
 	// Opening a window runs a command on this host, so it is the operator's in
 	// the same way spawning a VM is.
 	api.HandleFunc("POST /api/shell/window", s.operatorOnly(s.handleShellWindow))
+	// Ending a session ends somebody's work, and the sessions are the
+	// operator's own. Nothing below operator gets near it.
+	api.HandleFunc("POST /api/shell/kill", s.operatorOnly(s.handleShellKill))
 	api.HandleFunc("POST /api/vm/spawn", s.operatorOnly(s.handleVMSpawn))
 	api.HandleFunc("GET /api/vm/{name}/log", s.operatorOnly(s.handleVMLog))
 	api.HandleFunc("POST /api/vm/{name}/say", s.operatorOnly(s.handleVMSay))

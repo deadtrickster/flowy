@@ -457,3 +457,46 @@ func (s *server) handleShellWindow(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"session": req.Session})
 }
+
+type shellKillRequest struct {
+	Session string `json:"session"`
+	// Windows is how many the caller saw when it read the list. The guard, not
+	// a detail: a list read ten seconds ago is not the state of the machine now,
+	// and this is the only thing standing between a click and somebody's build.
+	// Absent is refused rather than treated as zero - see killByobuSession.
+	Windows *int `json:"windows"`
+}
+
+// handleShellKill ends a session and everything in it.
+//
+// THE MOST DESTRUCTIVE DOOR ON THIS NODE, and the only one that ends work
+// belonging to a person rather than to flowy. projectile/* is where their
+// editor lives; a session may hold a build, an agent, an ssh they walked away
+// from. So the caller states what it believes it is ending and is refused if
+// the session has changed since it looked.
+func (s *server) handleShellKill(w http.ResponseWriter, r *http.Request) {
+	var req shellKillRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody("body must be json: "+err.Error()))
+		return
+	}
+	// ABSENT IS NOT ZERO. A body with no `windows` is a caller that did not
+	// read the session, and a zero-window session does not exist - so treating
+	// the two the same would let an unchecked kill through as a valid claim.
+	expect := -1
+	if req.Windows != nil {
+		expect = *req.Windows
+	}
+	if err := killByobuSession(r.Context(), req.Session, expect); err != nil {
+		if errors.Is(err, errNoByobu) {
+			writeJSON(w, http.StatusServiceUnavailable, errorBody(errNoByobu.Error()))
+			return
+		}
+		// 409, not 400: the request was well formed and the world disagreed
+		// with it. A caller that reads it again may well succeed, which is
+		// exactly what a conflict means and what a bad request does not.
+		writeJSON(w, http.StatusConflict, errorBody(err.Error()))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ended": req.Session})
+}

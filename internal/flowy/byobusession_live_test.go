@@ -152,3 +152,64 @@ func TestAWindowGoesIntoASessionThatExists(t *testing.T) {
 		t.Fatal("a session name beginning with a dash was accepted")
 	}
 }
+
+// TestEndingASessionIsCheckedFirst is the guard on the one verb here that
+// cannot be undone.
+//
+// A session on this host is not flowy's - projectile/* is where the operator's
+// editor lives - so ending one takes down whatever they left in it. The guard
+// is an expected window count: a list read ten seconds ago is not the state of
+// the machine now, and this refuses when the two disagree.
+//
+// Every arm makes its own session and removes it, so the test never touches one
+// somebody else opened.
+func TestEndingASessionIsCheckedFirst(t *testing.T) {
+	mux, err := byobuBin()
+	if err != nil {
+		t.Skip("no byobu or tmux here")
+	}
+	ctx := context.Background()
+	name := "projectile/flowy-kill-test"
+	if err := exec.CommandContext(ctx, mux, "new-session", "-d", "-s", name).Run(); err != nil {
+		t.Skipf("cannot make a session here: %v", err)
+	}
+	alive := func() bool {
+		return exec.Command(mux, "has-session", "-t", name).Run() == nil
+	}
+	defer func() { _ = exec.Command(mux, "kill-session", "-t", name).Run() }()
+
+	// A STALE READING IS REFUSED, and the session survives it. This is the arm
+	// that matters: the caller believes it is ending a one-window session and
+	// the machine has two.
+	if err := openByobuWindow(ctx, name, nil); err != nil {
+		t.Fatalf("opening a second window: %v", err)
+	}
+	if err := killByobuSession(ctx, name, 1); err == nil {
+		t.Fatal("a stale window count was accepted, so the guard is not one")
+	}
+	if !alive() {
+		t.Fatal("the refused kill ended the session anyway")
+	}
+
+	// NOT LOOKING AT ALL IS ALSO REFUSED.
+	if err := killByobuSession(ctx, name, -1); err == nil {
+		t.Fatal("a kill with no reading was accepted")
+	}
+	if !alive() {
+		t.Fatal("the refused kill ended the session anyway")
+	}
+
+	// AND A CURRENT READING WORKS, or the guard would be a rule that forbids
+	// everything - which passes every arm above and is useless.
+	if err := killByobuSession(ctx, name, 2); err != nil {
+		t.Fatalf("a correct window count was refused: %v", err)
+	}
+	if alive() {
+		t.Fatal("the session survived a kill that was accepted")
+	}
+
+	// A SESSION THAT IS NOT THERE says so rather than reporting success.
+	if err := killByobuSession(ctx, name, 0); err == nil {
+		t.Fatal("ending a session that does not exist reported success")
+	}
+}
