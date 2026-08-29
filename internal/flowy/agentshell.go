@@ -75,6 +75,10 @@ type agentSession struct {
 	out []byte
 	// How much was dropped off the front, so a late reader can be told.
 	dropped int
+	// The scrollback's filter. A terminal QUESTION must not be replayed to a
+	// reader that arrives later - see agentscrub.go. Held under the same mutex
+	// as s.out, because it is state about the stream that produced it.
+	scrub scrubber
 	// Every attached reader. A send is non-blocking - see fanout.
 	readers map[chan []byte]struct{}
 	// Set once, when the shell exits or somebody stops it.
@@ -369,7 +373,13 @@ func (s *agentSession) emit(b []byte) {
 
 	s.mu.Lock()
 	s.active = time.Now()
-	s.out = append(s.out, chunk...)
+	// TWO STREAMS, AND ONLY ONE OF THEM IS STORED VERBATIM. Readers attached
+	// now get the bytes exactly as the shell produced them, because a live
+	// terminal is entitled to answer what it is asked. The scrollback keeps a
+	// copy with the questions removed, because it is replayed to somebody who
+	// arrives long after the asker has gone - and their terminal would answer
+	// into the shell's stdin. See agentscrub.go.
+	s.out = append(s.out, s.scrub.filter(chunk)...)
 	if over := len(s.out) - agentScrollback; over > 0 {
 		s.out = s.out[over:]
 		s.dropped += over
