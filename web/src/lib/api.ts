@@ -851,6 +851,32 @@ export interface VMTopRow {
   error?: string | null;
 }
 
+/**
+ * A byobu/tmux session on the node's host, and what is in it.
+ *
+ * THESE ARE NOT FLOWY'S SESSIONS. They are the host's, the operator's editor
+ * included - one session per project named projectile/<name>, the same ones
+ * `ssh host; byobu attach -t ...` reaches. `ours` says which follow that
+ * convention; the rest are listed because hiding them would answer a question
+ * nobody asked.
+ */
+export interface ShellSession {
+  name: string;
+  windows: ShellWindowRow[];
+  attached: number;
+  created: string;
+  ours: boolean;
+}
+
+/** One window in a session: what it is called and what is running in it. */
+export interface ShellWindowRow {
+  index: number;
+  name: string;
+  active: boolean;
+  command: string;
+  panes: number;
+}
+
 /** Why a row was skipped, when it was skipped, and by which seat. */
 export interface MergeBlocked {
   why: string;
@@ -2599,6 +2625,12 @@ export const api = {
    * caller keeps the failure and says which it was.
    */
   vmTop: () => request<{ at?: number; vms: VMTopRow[] }>("/api/vm/top"),
+  /**
+   * Every session on the node's host. 503 when the host has no multiplexer at
+   * all, which is a DIFFERENT answer from a host with no sessions - the caller
+   * keeps them apart so it does not offer an attach that can never work.
+   */
+  shellSessions: () => request<{ sessions: ShellSession[] }>("/api/shell/sessions"),
   /**
    * Answers 202 the moment the process is STARTED, not when the agent is done -
    * a run is minutes to hours. What happened next is `vmList` and `vmLog`.

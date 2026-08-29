@@ -1,3 +1,4 @@
+import { ShellSessions } from "@/components/ShellSessions";
 import { VmShell } from "@/components/VmShell";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -628,8 +629,26 @@ export function Vms() {
       <section
         hidden={pane !== "shells"}
         data-vm-pane="shells"
-        className={pane === "shells" ? "flex min-h-0 flex-1 flex-col pt-4" : undefined}
+        className={pane === "shells" ? "flex min-h-0 flex-1 flex-col gap-2 pt-4" : undefined}
       >
+        {/*
+          WHAT IS ALREADY RUNNING, ABOVE THE TERMINAL. The operator: "so your
+          stuff is just byobu management." A terminal with no idea what else is
+          on the host is the half of that we already had.
+
+          A <details> so it is one line when you do not want it: the terminal is
+          what the pane is for, and a list that pushed it down would be the
+          complaint that started this - "shells tabs already pushed to the
+          bottom and squished".
+        */}
+        <details data-shell-sessions-fold="">
+          <summary className="cursor-pointer text-muted-foreground text-xs hover:text-foreground">
+            sessions on this host
+          </summary>
+          <div className="pt-2">
+            <ShellSessions project={project} />
+          </div>
+        </details>
         <ShellTabs project={project} />
       </section>
     </div>
