@@ -1,3 +1,4 @@
+import { clock } from "@/lib/utils";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 
@@ -938,6 +939,29 @@ function Row({
           absence is not, because there is nowhere for it to go: a row with no
           room is in no room's panel, and this board is the only place it is
           ever seen. */}
+      {/*
+        WHEN IT LAST MOVED. A queue with no time on it cannot be triaged: a row
+        raised this morning and one nobody has touched since June read
+        identically, and the only way to tell was to open each.
+
+        `updated` rather than `created`, because the question a board is asked
+        is "has this moved", and a row that was raised in June and answered
+        today is not stale. Both are on the title, since the other question is
+        the next one somebody asks.
+
+        THROUGH clock(), which is the operator's own rule and already written:
+        01M10Y3JBD, "all time labels must show the date 'if not today'". Today
+        is the time alone; another day gains the day; another year gains the
+        year. Inventing a "3d ago" here would have been a second time format on
+        one page, disagreeing with the room's.
+      */}
+      <span
+        data-todo-when={todo.updated}
+        className="shrink-0 text-muted-foreground text-xs tabular-nums"
+        title={`raised ${clock(todo.created)}, last moved ${clock(todo.updated)}`}
+      >
+        {clock(todo.updated)}
+      </span>
       {room ? (
         <Link
           to={`/chat/${encodeURIComponent(room)}`}
