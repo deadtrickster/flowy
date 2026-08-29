@@ -83,6 +83,23 @@ export function RowNotes({ artifact, onAppended }: Props) {
   // How many files are on their way up. A count and not a flag, because two
   // pasted screenshots are two uploads and a flag would clear on the first.
   const [uploading, setUploading] = useState(0);
+  // WHAT IS ON THIS NOTE, kept so the box can SAY so.
+  //
+  // 01M17DE6CVB476710FG7K4ZWSG. The operator pasted a screenshot and could not
+  // tell whether it had attached: the reference went into the draft as markdown
+  // and the control went back to reading "attach a file", so the only evidence
+  // was a tag they had to parse in their head. Their question - "will I see the
+  // screenshot attached or not" - is about the file, and the box answered about
+  // the text.
+  //
+  // This is the operator's own requirement rather than a new idea. Their words
+  // when notes got attachments at all were "screenshots should be supported in
+  // notes/comments... PLUS LISTED IN ATTACHMENT, JIRA STYLE", and only the
+  // first half was built. The comment above attach() argued the second half was
+  // a duplicate of the markdown; it is not, because the markdown is what the
+  // note will SAY and this is what the box has GOT, and the gap between those
+  // two is exactly the doubt that was reported.
+  const [attached, setAttached] = useState<{ id: string; name: string; size: number }[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const notes = artifact.notes ?? [];
@@ -110,6 +127,11 @@ export function RowNotes({ artifact, onAppended }: Props) {
       // of answers - see 01M0GGQ8D4.
       const carried = await writeFile(file, "", pasted ? "pasted into a note" : file.name);
       setDraft((text) => `${text.replace(/\s*$/, "")}\n\n![${carried.name}](${carried.id})\n`);
+      // The NODE'S recorded size, not the browser's. writeFile answers with
+      // what was actually stored, and that is the number worth showing:
+      // agreeing with the file picker while disagreeing with the node would
+      // be a confirmation that confirms the wrong end.
+      setAttached((held) => [...held, { id: carried.id, name: carried.name, size: carried.bytes }]);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -126,6 +148,11 @@ export function RowNotes({ artifact, onAppended }: Props) {
       const written = await api.noteTodo(artifact.id, text);
       onAppended(written.item);
       setDraft("");
+      // CLEARED WITH THE DRAFT AND NOT BEFORE. The list describes what THIS
+      // note is carrying; once the note is written the files belong to it and
+      // the box is empty again. Clearing on send rather than on upload is what
+      // makes it a description of the draft instead of a log of the session.
+      setAttached([]);
     } catch (err) {
       // The node's own words. An empty note and a row with no project are both
       // refused up there with a sentence that says what to do about it, and a
@@ -247,6 +274,20 @@ export function RowNotes({ artifact, onAppended }: Props) {
             />
             {uploading > 0 ? `attaching ${uploading}…` : "attach a file"}
           </label>
+          {/* WHAT IS ACTUALLY HELD, named and sized. A chip per file, because the
+              question being answered is "is the image on this" and the answer
+              has to be the file rather than a count: "1 attached" is the same
+              sentence whether the right screenshot is on it or the wrong one. */}
+          {attached.map((f) => (
+            <span
+              key={f.id}
+              data-note-carried={f.id}
+              className="rounded border border-border bg-muted/40 px-1.5 py-0.5 text-muted-foreground text-xs"
+              title={f.id}
+            >
+              {f.name} · {fileSize(f.size)}
+            </span>
+          ))}
           {error ? <span className="text-destructive text-xs">{error}</span> : null}
           <Button
             type="submit"
@@ -262,4 +303,15 @@ export function RowNotes({ artifact, onAppended }: Props) {
       </form>
     </div>
   );
+}
+
+// fileSize renders a byte count for a person rather than for a machine.
+//
+// Local rather than shared: one caller needs it today, and a helper hoisted
+// into lib on the strength of a single use is how two spellings of the same
+// thing start. It moves when something else wants it.
+function fileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
