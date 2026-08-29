@@ -142,7 +142,19 @@ func listByobuSessions(ctx context.Context) ([]byobuSession, error) {
 		// Both streams are read, because which one carries it is a tmux
 		// version's business and not a thing worth being wrong about twice.
 		whole := complained.String() + said.String()
-		if strings.Contains(whole, "no server running") || strings.Contains(whole, "no server") {
+		// TMUX HAS TWO WAYS OF SAYING NOTHING IS RUNNING, and which one depends
+		// on whether the socket DIRECTORY exists yet:
+		//
+		//   no server running on /tmp/tmux-1000/default
+		//   error connecting to /tmp/tmux-1000/default (No such file or directory)
+		//
+		// The second is what a machine says when nothing has started a server
+		// since it booted - which is the ordinary state of a fresh guest, and
+		// the one a gate meets first. Matching only the first left every guest
+		// run reporting a broken node where the truth was an empty one.
+		if strings.Contains(whole, "no server running") ||
+			strings.Contains(whole, "no server") ||
+			strings.Contains(whole, "error connecting to") {
 			return []byobuSession{}, nil
 		}
 		if trimmed := strings.TrimSpace(whole); trimmed != "" {
