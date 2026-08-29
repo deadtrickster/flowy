@@ -368,8 +368,40 @@ export function VmShell({
 
   // ONE PLACE THAT FITS, so every caller is counted and measured the same way.
   const refit = useCallback(() => {
-    const seen = box.current?.clientHeight ?? -1;
+    const el = box.current;
+    const seen = el?.clientHeight ?? -1;
     fitter.current?.fit();
+
+    // AND THEN CHECK THE ADDON'S ARITHMETIC AGAINST WHAT IT DREW.
+    //
+    // MEASURED, and it is the whole defect. The trace read 4:740:55 - the fit
+    // ran four times, measured the box correctly at 740px, and kept 55 rows.
+    // It is not a trigger that fails to fire and not a measurement of the wrong
+    // element: proposeDimensions() divides by renderer.getMetrics().height,
+    // and the renderer does not draw rows at that height. 740/55 is 13.45 and
+    // the canvas draws 55 rows in 770px, which is 14.0 each. Over 55 rows that
+    // 0.55px becomes 30px - exactly the overflow the check reports.
+    //
+    // So the addon believes 55 rows fit and the canvas needs 30px more than
+    // there is. Nothing upstream can see that, because both numbers are right
+    // by their own metric; only comparing what was DRAWN against the space
+    // catches it.
+    //
+    // Only ever shrinks. Growing is the addon's job and it does it correctly -
+    // this exists to stop a row being drawn where nobody can see it.
+    const t = term.current;
+    if (el && t && t.rows > 1) {
+      const canvas = el.querySelector("canvas");
+      const drawn = canvas?.offsetHeight ?? 0;
+      if (drawn > el.clientHeight) {
+        // What a row ACTUALLY costs, taken from what the renderer produced
+        // rather than from the metrics that disagree with it.
+        const per = drawn / t.rows;
+        const rows = Math.max(1, Math.floor(el.clientHeight / per));
+        if (rows < t.rows) t.resize(t.cols, rows);
+      }
+    }
+
     setFits((f) => ({ n: f.n + 1, saw: seen, rows: term.current?.rows ?? -1 }));
   }, []);
 
