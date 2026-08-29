@@ -157,8 +157,15 @@ const text = rendered();
 // The frame is on every route; the rest of the list is what this one route has
 // to have painted for the check to mean anything.
 const want = ["flowy", "inbox"];
+// The frame has to offer the identity control, and WHICH one it offers is the
+// assertion: "log out" when this run signed in, "log in" when it did not. It
+// used to assert the literal phrase "bearer token", which was the paste box's
+// label in the rail - so when the box moved to /profile the check went red on
+// five room pages that had rendered perfectly. A phrase is not a property. The
+// property is that a person can always see how to change who they are.
+want.push(base && token ? "log out" : "log in");
 if (path === "/chat/general") {
-  want.push("#general", "bearer token", "thread");
+  want.push("#general", "thread");
   if (expected) want.push("watching");
 }
 if (expected) want.push(expected);
