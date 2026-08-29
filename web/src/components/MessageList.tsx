@@ -485,6 +485,18 @@ export function MessageList({
     if (atBottom && newest) onSeen?.(newest);
   }, [atBottom, newest, onSeen]);
 
+  /*
+    THE LAST MESSAGE ACTUALLY DRAWN, so a run of one speaker can be recognised
+    while the list is being built. Not what came before in the array - a folded
+    reply renders nothing, and gluing a message to a neighbour that is not on
+    screen would put it under a header nobody can see.
+
+    A PLAIN LOCAL, NOT STATE. The component body runs on every render, so this is
+    reset every time and derived entirely from `events`; state would be a second
+    copy of something already true, and one that could disagree.
+  */
+  let drawn: (typeof events)[number] | undefined;
+
   return (
     // The pill lives OUTSIDE the scroller, absolutely positioned over it.
     // Inside, it was a flex child - `sticky` still occupies its slot in flow -
@@ -538,6 +550,12 @@ export function MessageList({
             // rows back. AnimatePresence sees one leave and animates it out,
             // which is the one bit of feedback folding needs.
             if (fold?.hidden.has(event.id)) return null;
+            // WHAT CAME BEFORE THIS ON SCREEN, which is not what came before it
+            // in the array: a folded reply renders nothing, and gluing a message
+            // to a neighbour that is not drawn would group it under a header
+            // nobody can see.
+            const before = drawn;
+            drawn = event;
             // THE FOLD LIVES ON A THREAD'S HEAD ROW, whichever message of the
             // thread that is on this screen: its oldest message here, which is
             // the root whenever the root is on screen.
@@ -547,6 +565,41 @@ export function MessageList({
                 ? fold.blocks.get(event.thread)
                 : undefined;
             const agent = isAgent(event);
+            /*
+              A RUN OF ONE SPEAKER IS ONE BLOCK, and the header is drawn once for
+              it. Four messages from claude-host repeated the badge, the name,
+              the authorship mark and the private mark four times; the reader
+              takes those in once and then re-reads them on every row.
+
+              WHAT BREAKS A RUN IS THE POINT OF IT. Any of these differing means
+              a new header, because each is a thing the header exists to say:
+
+                the speaker, obviously
+
+                THE AUTHORSHIP. "signed" and "attributed" are not decoration -
+                MessageList's own note says why: attributed means this node could
+                not verify a signature of the speaker's own, so the message rests
+                on the word of whichever node relayed it, and a pinned peer could
+                otherwise write under anybody's name. Grouping across a change in
+                that mark would hide the single transition it exists to show,
+                which would be worse than the repetition it removes.
+
+                whether it was disowned, and whether it is private or addressed -
+                each is drawn in the header and each is per message
+
+                A GAP IN TIME. Two messages an hour apart are not a run whatever
+                else matches; ten minutes is the window, and it is here so that a
+                header cannot vanish because the same seat spoke again next
+                morning.
+            */
+            const runs =
+              before !== undefined &&
+              before.actor === event.actor &&
+              before.authorship === event.authorship &&
+              Boolean(before.disowned) === Boolean(event.disowned) &&
+              Boolean(before.private) === Boolean(event.private) &&
+              (before.addressee ?? "") === (event.addressee ?? "") &&
+              Date.parse(event.created) - Date.parse(before.created) < 10 * 60 * 1000;
             // For you, and not from you. An addressed message is still an
             // ordinary message in the room - the same people read it, it sits in
             // the same place - so this is a ring around it and never a filter.
@@ -582,36 +635,46 @@ export function MessageList({
                   selected?.id === event.id && "border-primary/70 ring-1 ring-primary/40",
                 )}
               >
-                <div className="flex items-center gap-2 pb-1">
-                  <Badge variant={agent ? "agent" : "human"}>{agent ? "agent" : "human"}</Badge>
-                  {event.private ? (
-                    <Badge
-                      variant="outline"
-                      title="only the sender and the addressee can read this"
-                    >
-                      private
-                    </Badge>
-                  ) : null}
-                  {/*
-                   * Who said it. The name the node recorded when it was said,
-                   * and the tail of the actor id when the message has none - a
-                   * room where every line was an id is what this replaces, and
-                   * the id stays on the title so it is still there to copy.
-                   */}
-                  {/*
+                <div
+                  className="flex items-center gap-2 pb-1"
+                  /*
+                    WHETHER THIS ROW SAYS WHO IS SPEAKING, on the element rather
+                    than only in the pixels, so a check can count headers instead
+                    of deciding by eye whether a list "looks grouped".
+                  */
+                  data-msg-header={runs ? "continues" : "opens"}
+                >
+                  {runs ? null : (
+                    <>
+                      <Badge variant={agent ? "agent" : "human"}>{agent ? "agent" : "human"}</Badge>
+                      {event.private ? (
+                        <Badge
+                          variant="outline"
+                          title="only the sender and the addressee can read this"
+                        >
+                          private
+                        </Badge>
+                      ) : null}
+                      {/*
+                       * Who said it. The name the node recorded when it was said,
+                       * and the tail of the actor id when the message has none - a
+                       * room where every line was an id is what this replaces, and
+                       * the id stays on the title so it is still there to copy.
+                       */}
+                      {/*
                   In the speaker's own colour, derived from the name so the
                   same person is the same colour here, in the roster and on a
                   todo they own. The name stays: colour is an accelerator for
                   people who see it, never the only thing carrying who spoke.
                 */}
-                  <span
-                    className="rounded px-1.5 py-0.5 font-mono text-xs"
-                    style={speakerStyle(speaker(event))}
-                    title={event.actor}
-                  >
-                    {speaker(event)}
-                  </span>
-                  {/*
+                      <span
+                        className="rounded px-1.5 py-0.5 font-mono text-xs"
+                        style={speakerStyle(speaker(event))}
+                        title={event.actor}
+                      >
+                        {speaker(event)}
+                      </span>
+                      {/*
                   Whose word this is, which is a different question from whose
                   name is on it. "authored" means this node verified a signature
                   made with the speaker's own key; "attributed" means it could
@@ -626,22 +689,22 @@ export function MessageList({
                   verified one is the badge. Neither is hidden: a reader who
                   cannot tell the two apart is the reader this replaces.
                 */}
-                  {event.authorship === "authored" ? (
-                    <Badge
-                      variant="outline"
-                      title={`${speaker(event)} signed this with their own key, and this node verified it`}
-                    >
-                      signed
-                    </Badge>
-                  ) : (
-                    <span
-                      className="text-[11px] text-muted-foreground"
-                      title="attributed: this node holds no signature of the speaker's own for this message, so it rests on the word of the node that relayed it"
-                    >
-                      attributed
-                    </span>
-                  )}
-                  {/*
+                      {event.authorship === "authored" ? (
+                        <Badge
+                          variant="outline"
+                          title={`${speaker(event)} signed this with their own key, and this node verified it`}
+                        >
+                          signed
+                        </Badge>
+                      ) : (
+                        <span
+                          className="text-[11px] text-muted-foreground"
+                          title="attributed: this node holds no signature of the speaker's own for this message, so it rests on the word of the node that relayed it"
+                        >
+                          attributed
+                        </span>
+                      )}
+                      {/*
                     AND WHETHER ITS SPEAKER HAS TAKEN IT BACK. This is where the
                     mark matters most: the actor is the whole of what a message
                     means, so a line somebody has disowned and a line nobody has
@@ -649,24 +712,32 @@ export function MessageList({
                     mark rather than replacing it - the signature verified, and
                     the person whose key made it says the key was not theirs.
                   */}
-                  {event.disowned ? (
-                    <Badge
-                      variant="outline"
-                      data-disowned={event.id}
-                      className="border-[var(--danger,#b91c1c)] text-[var(--danger,#b91c1c)]"
-                      title={
-                        event.disowned.reason ||
-                        `${event.disowned.subject} has disowned the window this message falls in`
-                      }
-                    >
-                      disowned
-                    </Badge>
-                  ) : null}
-                  {event.addressee ? (
-                    <Badge variant="outline">
-                      to {forMe ? "you" : shortId(event.addressee, 8)}
-                    </Badge>
-                  ) : null}
+                      {event.disowned ? (
+                        <Badge
+                          variant="outline"
+                          data-disowned={event.id}
+                          className="border-[var(--danger,#b91c1c)] text-[var(--danger,#b91c1c)]"
+                          title={
+                            event.disowned.reason ||
+                            `${event.disowned.subject} has disowned the window this message falls in`
+                          }
+                        >
+                          disowned
+                        </Badge>
+                      ) : null}
+                      {event.addressee ? (
+                        <Badge variant="outline">
+                          to {forMe ? "you" : shortId(event.addressee, 8)}
+                        </Badge>
+                      ) : null}
+                    </>
+                  )}
+                  {/*
+                    THE TIME STAYS ON EVERY ROW even inside a run. The identity
+                    marks are the same for all of them and are said once; when a
+                    thing happened is different for each, and a run of five with
+                    one timestamp is a run nobody can place.
+                  */}
                   <span className="ml-auto text-muted-foreground text-xs">
                     {clock(event.created)}
                   </span>
