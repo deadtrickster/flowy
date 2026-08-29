@@ -1,6 +1,6 @@
 import { type FormEvent, useCallback, useEffect, useState } from "react";
 
-import { TokenBar } from "@/components/TokenBar";
+import { TokenPaste } from "@/components/TokenBar";
 import { YourReaders } from "@/components/YourReaders";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -181,7 +181,7 @@ export function Profile() {
           DECIDES which row the rest of this page is about, so a reader who has
           the wrong seat finds the fix before the thing that confused them.
         */}
-        <TokenBar />
+        <TokenPaste />
 
         {loading ? <p className="text-muted-foreground text-xs">reading your row...</p> : null}
 

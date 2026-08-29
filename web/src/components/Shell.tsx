@@ -1,3 +1,4 @@
+import { TokenBar } from "@/components/TokenBar";
 import {
   Activity as ActivityIcon,
   Bell,
@@ -851,6 +852,14 @@ export function Shell({ children }: { children: ReactNode }) {
           ) : null}
         </div>
 
+        {/*
+          WHO YOU ARE AND HOW TO LEAVE stays here - it is furniture, and a
+          console you cannot log out of is the defect one step past a console
+          you cannot log in to. Only the PASTE-A-TOKEN box moved to /profile.
+        */}
+        <div className="order-4 shrink-0 md:order-none">
+          <TokenBar />
+        </div>
         {/*
           THE TOKEN BAR IS NOT HERE ANY MORE. It sat at the foot of the rail on
           every page of the console, with the bearer token visible in an input -

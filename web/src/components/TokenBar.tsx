@@ -1,59 +1,37 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useSession } from "@/lib/session";
-import { shortId } from "@/lib/utils";
 
 /**
  * The dev token, pasted in and kept in localStorage. It is a bearer token: the
  * node hands it out, this console only carries it, and everything the console
  * can see is whatever that token resolves to on the other end.
  */
+/**
+ * WHO YOU ARE AND HOW TO LEAVE. This is the furniture half, and it stays in the
+ * rail on every page.
+ *
+ * THE PASTE-A-TOKEN BOX IS NOT HERE ANY MORE - see TokenPaste, on /profile. The
+ * operator: "yeah move it in profile. I dont use it and it wastes time." What
+ * they meant is the dev-token input; moving the WHOLE bar took the log-in link
+ * and the log-out button with it, and the console had no way in or out on any
+ * page. Three checks caught it - this component's own note had said so:
+ * "being unable to LEAVE is the same defect one step later".
+ */
 export function TokenBar() {
-  const { token, whoami, error, loading, signIn, logOut } = useSession();
-  const [draft, setDraft] = useState(token);
+  const { whoami, logOut } = useSession();
 
   return (
-    <form
+    <div
       // Named so a check can ask where it IS, not only that it exists. The
       // rooms list pushed this off the bottom of the page before it scrolled
       // inside itself, and "the token bar is in the DOM" was true throughout.
       data-token-bar=""
       className="flex flex-col gap-2 rounded-md border border-border bg-card p-2"
-      autoComplete="off"
-      onSubmit={(event) => {
-        event.preventDefault();
-        signIn(draft);
-      }}
     >
-      <label className="font-medium text-muted-foreground text-xs" htmlFor="token">
-        bearer token
-      </label>
-      <Input
-        id="token"
-        value={draft}
-        placeholder="paste a dev token"
-        autoComplete="off"
-        spellCheck={false}
-        onChange={(event) => setDraft(event.target.value)}
-      />
-      <div className="flex items-center justify-between gap-2">
-        <Button type="submit" size="sm" variant="secondary">
-          use
-        </Button>
-        {loading ? (
-          <span className="text-muted-foreground text-xs">resolving…</span>
-        ) : whoami ? (
-          <Badge variant={whoami.agent ? "agent" : "human"}>
-            {whoami.agent ? "agent" : "user"} {shortId(whoami.agent ?? whoami.user)}
-          </Badge>
-        ) : (
-          <Badge variant="outline">{token ? "rejected" : "signed out"}</Badge>
-        )}
-      </div>
       {whoami?.project ? (
         whoami.project_fixture ? (
           /*
@@ -70,7 +48,6 @@ export function TokenBar() {
           <div className="text-muted-foreground text-xs">writing into {whoami.project}</div>
         )
       ) : null}
-      {error ? <div className="text-destructive text-xs">{error}</div> : null}
       {/*
         THE WAY IN, WHERE SOMEBODY LOOKS FOR IT.
         The operator, blocked: "fyi, i cant login because there is no login
@@ -104,6 +81,60 @@ export function TokenBar() {
           log in with a handle and password
         </Link>
       )}
+    </div>
+  );
+}
+
+/**
+ * THE DEV TOKEN, PASTED IN. On /profile, and nowhere else.
+ *
+ * It sat at the foot of the left rail on every page of the console with the
+ * bearer token visible in an input. The operator: "yeah move it in profile. I
+ * dont use it and it wastes time." It is a thing about WHO YOU ARE, so it
+ * belongs on the page about that.
+ *
+ * SEPARATE FROM TokenBar ON PURPOSE. The first attempt moved the whole bar, and
+ * the bar also holds the log-in link and the log-out button - so the console
+ * briefly had no way in and no way out on any page. Two different things had
+ * been living in one box: the furniture a person needs everywhere, and a
+ * credential field for the seats that use one.
+ *
+ * Login.tsx's own note is the other half of why both exist: "i dont want to
+ * bother with token. token is for api, not for me". Two credentials, and the
+ * console prefers neither.
+ */
+export function TokenPaste() {
+  const { token, error, loading, signIn } = useSession();
+  const [draft, setDraft] = useState(token);
+
+  return (
+    <form
+      data-token-paste=""
+      className="flex flex-col gap-2 rounded-md border border-border bg-card p-3"
+      autoComplete="off"
+      onSubmit={(event) => {
+        event.preventDefault();
+        signIn(draft);
+      }}
+    >
+      <label className="font-medium text-muted-foreground text-xs" htmlFor="token">
+        bearer token
+      </label>
+      <Input
+        id="token"
+        value={draft}
+        placeholder="paste a dev token"
+        autoComplete="off"
+        spellCheck={false}
+        onChange={(event) => setDraft(event.target.value)}
+      />
+      <div className="flex items-center gap-2">
+        <Button type="submit" size="sm" variant="secondary">
+          use
+        </Button>
+        {loading ? <span className="text-muted-foreground text-xs">resolving…</span> : null}
+        {error ? <span className="text-destructive text-xs">{error}</span> : null}
+      </div>
     </form>
   );
 }
