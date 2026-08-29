@@ -113,8 +113,65 @@ The attribute says it is grouped and the pixels say it is not, which means the
 counts above are describing something other than the page.`);
   }
 
+  // AND A RUN LOOKS LIKE ONE.
+  //
+  // Everything above was green on a version the operator called broken on
+  // sight: "where is the author of the secodn message?? why all this space".
+  // Drawing the header once is only half the change - the continuation kept its
+  // own border and an empty header row with the time pushed to the right, so it
+  // read as a message from nobody with a blank line on top. Grouping the
+  // identity while leaving the boxes apart is worse than not grouping at all.
+  //
+  // MEASURED AS GEOMETRY, because "reads as one block" is not a class. Two
+  // numbers, and each is a thing a person complained about:
+  //
+  //   the gap between a continuation and the row above it, against the gap
+  //   between two rows that each open a run. A run must be tighter.
+  //
+  //   the height of the header on a continuation, which carries only a
+  //   timestamp and must not cost a whole row.
+  const boxOf = async (which, index) => {
+    const rows = page.locator(`[data-message]:has([data-msg-header="${which}"])`);
+    return await rows.nth(index).boundingBox();
+  };
+  const firstOpen = await boxOf("opens", 0);
+  const firstCont = await boxOf("continues", 0);
+  if (!firstOpen || !firstCont) die("could not measure a run against a break");
+
+  // The continuation's top edge against the bottom edge of whatever is above
+  // it: rows are in document order, so the row above the first continuation is
+  // the head of its run.
+  const gap = await page.evaluate(() => {
+    const rows = [...document.querySelectorAll("[data-message]")];
+    const i = rows.findIndex((r) => r.querySelector('[data-msg-header="continues"]'));
+    if (i < 1) return null;
+    const above = rows[i - 1].getBoundingClientRect();
+    const here = rows[i].getBoundingClientRect();
+    const header = rows[i].querySelector('[data-msg-header="continues"]');
+    return {
+      gap: Math.round(here.top - above.bottom),
+      headerHeight: Math.round(header ? header.getBoundingClientRect().height : 0),
+      bodyHeight: Math.round(here.height),
+    };
+  });
+  if (!gap) die("no continuation with a row above it to measure against");
+
+  if (gap.gap > 4) {
+    die(`a message continuing a run sits ${gap.gap}px below the one above it.
+
+A run has to READ as one block. Grouping the header while leaving the rows as
+separate boxes is what the operator saw: "where is the author of the secodn
+message?? why all this space".`);
+  }
+  if (gap.headerHeight > gap.bodyHeight / 2) {
+    die(`the header on a continuing message is ${gap.headerHeight}px of a ${gap.bodyHeight}px row.
+
+It carries only a timestamp. A whole empty row for it is the space that was
+reported - the identity was removed and the row it sat in was not.`);
+  }
+
   console.log(
-    `${total} messages: ${opens} open a run and say who is speaking, ${continues} continue one and do not repeat it`,
+    `${total} messages: ${opens} open a run and say who is speaking, ${continues} continue one and do not repeat it; a continuation sits ${gap.gap}px below its head`,
   );
 } finally {
   await browser.close();

@@ -623,7 +623,24 @@ export function MessageList({
                 exit={{ opacity: 0 }}
                 transition={{ duration: 0.18, ease: "easeOut" }}
                 className={cn(
-                  "group rounded-lg border border-border bg-card p-3 text-left transition-colors hover:border-primary/40",
+                  "group text-left transition-colors",
+                  /*
+                    A RUN IS ONE BLOCK, AND THAT HAS TO BE VISIBLE.
+
+                    Drawing the header once was half the change and shipping
+                    only that half was worse than doing neither: the
+                    continuation kept its own border, so it read as a message
+                    from nobody. The operator, on the result: "where is the
+                    author of the secodn message?? why all this space".
+
+                    So a row that CONTINUES loses the card edge and closes the
+                    gap to the one above it. A row that OPENS one keeps the box,
+                    which is what makes the run legible as a run - the border is
+                    now the mark of "somebody started speaking here".
+                  */
+                  runs
+                    ? "-mt-2 rounded-none border-border border-x border-b bg-card px-3 pt-0 pb-3"
+                    : "rounded-lg border border-border bg-card p-3 hover:border-primary/40",
                   forMe && "border-primary/50 bg-primary/5",
                   // A private message is drawn as a different thing, not as a
                   // room message with a note on it. The dashed edge is what a
@@ -636,7 +653,7 @@ export function MessageList({
                 )}
               >
                 <div
-                  className="flex items-center gap-2 pb-1"
+                  className={runs ? "float-right pl-2" : "flex items-center gap-2 pb-1"}
                   /*
                     WHETHER THIS ROW SAYS WHO IS SPEAKING, on the element rather
                     than only in the pixels, so a check can count headers instead
