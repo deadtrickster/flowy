@@ -116,3 +116,45 @@ list. Reporting it as a failure puts a red banner in front of a fresh login.`, e
 		t.Fatalf("a host with no server answered %d sessions", len(got))
 	}
 }
+
+// TestAnUnreadableAnswerIsNotAnEmptyHost is the defect that cost a gate, kept
+// as a test because it was invisible in exactly the way this repo cares about.
+//
+// The separator between fields was a unit separator, and tmux ESCAPES
+// non-printable bytes in format output - whether it does depends on the
+// version. 3.6 on this host emitted a raw 0x1F, 3.4 in a firecode guest emitted
+// the four characters \037. So in the guest every row arrived as ONE field,
+// every row hit `continue`, and the door answered "no sessions" for a host that
+// had several: a wrong answer shaped exactly like a right one, on the door
+// whose entire subject is telling those apart.
+//
+// The separator is a tab now, which both versions pass through untouched. But
+// the reason it went unnoticed was the `continue`, so THAT is what this pins: a
+// line this cannot read has to be an error. A future tmux that changes its
+// output again should turn the panel red, not empty.
+func TestAnUnreadableAnswerIsNotAnEmptyHost(t *testing.T) {
+	dir := t.TempDir()
+	stand := filepath.Join(dir, "tmux")
+	// Exactly what tmux 3.4 did with a unit separator: the escape written out
+	// as text, so the whole row is one field.
+	script := "#!/bin/sh\n" +
+		"case \"$1\" in\n" +
+		"list-sessions) echo 'projectile/duckdb\\0370\\0371786396234' ;;\n" +
+		"*) : ;;\n" +
+		"esac\n"
+	if err := os.WriteFile(stand, []byte(script), 0o755); err != nil {
+		t.Fatalf("writing the stand-in: %v", err)
+	}
+	t.Setenv("PATH", dir)
+
+	got, err := listByobuSessions(context.Background())
+	if err == nil {
+		t.Fatalf(`tmux answered a row this cannot read and the door reported %d sessions.
+
+An answer that cannot be parsed is not an empty host. Reporting it as one is how
+a version difference becomes a panel that quietly shows nothing.`, len(got))
+	}
+	if !strings.Contains(err.Error(), "cannot read") {
+		t.Fatalf("refused without saying the line was unreadable: %v", err)
+	}
+}

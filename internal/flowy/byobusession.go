@@ -104,15 +104,23 @@ type byobuWindow struct {
 // sessions there are - a per-session call would make a busy host slower to look
 // at than a quiet one, which is backwards.
 //
-// A UNIT SEPARATOR BETWEEN FIELDS, never a space or a colon: a window's command
-// is an arbitrary command line and a session name may hold anything tmux
-// accepts, so any printable delimiter is one somebody's build command contains.
+// A TAB BETWEEN FIELDS, and it was a unit separator until a guest proved that
+// wrong. tmux ESCAPES non-printable bytes in format output, and whether it does
+// depends on the version: 3.6 on this host emitted a raw 0x1F and 3.4 in a
+// firecode guest emitted the four characters `\037`. So every row came back as
+// one field there, every row was dropped, and the door answered "no sessions"
+// on a host that had several - a wrong answer shaped exactly like a right one.
+//
+// Both versions pass a tab through untouched, measured with od on each.
+//
+// THE FREE-FORM FIELDS GO LAST and are taken with SplitN, so a name holding a
+// tab lands in the last field whole instead of shifting every column after it.
 func listByobuSessions(ctx context.Context) ([]byobuSession, error) {
 	mux, err := byobuBin()
 	if err != nil {
 		return nil, errNoByobu
 	}
-	const sep = "\x1f"
+	const sep = "\t"
 
 	// EXPLICIT BUFFERS, not Output(). Output() only captures stderr into
 	// ExitError.Stderr when Stderr was nil, and "no server running" arrives on
@@ -121,7 +129,7 @@ func listByobuSessions(ctx context.Context) ([]byobuSession, error) {
 	// in a guest with "exit status 1" while the message that would have made it
 	// an ordinary empty answer was somewhere this code never looked.
 	asking := exec.CommandContext(ctx, mux, "list-sessions", "-F",
-		strings.Join([]string{"#{session_name}", "#{session_attached}", "#{session_created}"}, sep))
+		strings.Join([]string{"#{session_attached}", "#{session_created}", "#{session_name}"}, sep))
 	var said, complained bytes.Buffer
 	asking.Stdout = &said
 	asking.Stderr = &complained
@@ -150,15 +158,21 @@ func listByobuSessions(ctx context.Context) ([]byobuSession, error) {
 		if line == "" {
 			continue
 		}
-		f := strings.Split(line, sep)
+		f := strings.SplitN(line, sep, 3)
 		if len(f) < 3 {
-			continue
+			// A ROW THIS CANNOT READ IS AN ERROR, NOT A SKIP, and that is the
+			// whole reason the escaping went unnoticed: `continue` turned an
+			// unreadable answer into an empty host, which is a state the caller
+			// has no way to question. Saying so makes the next version
+			// difference a red instead of a quiet zero.
+			return nil, errors.New("tmux answered a session line this cannot read: " +
+				strconv.Quote(line))
 		}
 		s := &byobuSession{
-			Name:     f[0],
-			Attached: atoiOr(f[1], 0),
-			Created:  f[2],
-			Ours:     strings.HasPrefix(f[0], byobuSessionPrefix),
+			Attached: atoiOr(f[0], 0),
+			Created:  f[1],
+			Name:     f[2],
+			Ours:     strings.HasPrefix(f[2], byobuSessionPrefix),
 			Windows:  []byobuWindow{},
 		}
 		byName[s.Name] = s
@@ -167,28 +181,28 @@ func listByobuSessions(ctx context.Context) ([]byobuSession, error) {
 
 	wins, err := exec.CommandContext(ctx, mux, "list-windows", "-a", "-F",
 		strings.Join([]string{
-			"#{session_name}", "#{window_index}", "#{window_name}",
-			"#{window_active}", "#{pane_current_command}", "#{window_panes}",
+			"#{window_index}", "#{window_active}", "#{window_panes}",
+			"#{session_name}", "#{window_name}", "#{pane_current_command}",
 		}, sep),
 	).Output()
 	// A FAILURE HERE LEAVES THE SESSIONS WITH NO WINDOWS RATHER THAN LOSING
 	// THEM. The sessions are already known; windows are the detail.
 	if err == nil {
 		for _, line := range strings.Split(strings.TrimRight(string(wins), "\n"), "\n") {
-			f := strings.Split(line, sep)
+			f := strings.SplitN(line, sep, 6)
 			if len(f) < 6 {
 				continue
 			}
-			s := byName[f[0]]
+			s := byName[f[3]]
 			if s == nil {
 				continue
 			}
 			s.Windows = append(s.Windows, byobuWindow{
-				Index:   atoiOr(f[1], 0),
-				Name:    f[2],
-				Active:  f[3] == "1",
-				Command: f[4],
-				Panes:   atoiOr(f[5], 0),
+				Index:   atoiOr(f[0], 0),
+				Active:  f[1] == "1",
+				Panes:   atoiOr(f[2], 0),
+				Name:    f[4],
+				Command: f[5],
 			})
 		}
 	}
