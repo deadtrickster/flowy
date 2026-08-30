@@ -2645,6 +2645,25 @@ export const api = {
    */
   vmTop: () => request<{ at?: number; vms: VMTopRow[] }>("/api/vm/top"),
   /**
+   * What a project declares its guest needs - firecode.layer, read and written
+   * over the node so a person edits it in the console and an agent edits it
+   * with the same door. 01M0G8AM6R2BGPCWZQMV6321DR.
+   *
+   * `exists` IS NOT DERIVABLE FROM `text`. A project that declares nothing and
+   * one that declares an empty file both answer "", and the editor has to say
+   * which - offering "save" on a file that is not there and offering it on one
+   * that is are the same gesture with different meanings.
+   */
+  vmLayer: (project: string) =>
+    request<{ project: string; path: string; exists: boolean; text: string }>(
+      `/api/vm/layer?project=${encodeURIComponent(project)}`,
+    ),
+  vmLayerWrite: (project: string, text: string) =>
+    request<{ project: string; path: string; exists: boolean; bytes: number }>("/api/vm/layer", {
+      method: "POST",
+      body: JSON.stringify({ project, text }),
+    }),
+  /**
    * Every session on the node's host. 503 when the host has no multiplexer at
    * all, which is a DIFFERENT answer from a host with no sessions - the caller
    * keeps them apart so it does not offer an attach that can never work.

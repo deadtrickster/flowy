@@ -54,7 +54,9 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -499,4 +501,113 @@ func (s *server) handleShellKill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ended": req.Session})
+}
+
+// layerFileName is the one file a project uses to say what its guest needs.
+// firecode's scripts/apply-layer.sh reads exactly this name; the console and
+// the applier agreeing on it by constant rather than by habit is the point.
+const layerFileName = "firecode.layer"
+
+// layerPath resolves a project name to its layer file, refusing the same way
+// its siblings do: an unknown project is told which names would have worked.
+//
+// THE PATH IS BUILT FROM THE REGISTRY'S ANSWER, never from anything the caller
+// sent. A project name reaches this door as text, and joining text onto a
+// directory is how `../../etc` becomes a file somebody writes. firecode says
+// where a project is; this only appends the one constant filename to it.
+func (s *server) layerPath(w http.ResponseWriter, r *http.Request, name string) (string, bool) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		writeJSON(w, http.StatusBadRequest,
+			errorBody(`say which project: {"project": "flowy"}`))
+		return "", false
+	}
+	dir, known, err := s.resolveVMProject(r.Context(), name)
+	if err != nil {
+		writeFirecodeFailure(w, err, nil)
+		return "", false
+	}
+	if dir == "" {
+		writeJSON(w, http.StatusBadRequest, errorBody(
+			"no project named "+name+" on this host. Registered: "+strings.Join(known, ", ")))
+		return "", false
+	}
+	return filepath.Join(dir, layerFileName), true
+}
+
+// handleVMLayerRead answers a project's declared layer.
+//
+// A PROJECT WITH NO LAYER IS 200 WITH exists:false, NOT 404. The console's next
+// move is to offer an empty editor, and it needs to know the difference between
+// "this project declares nothing yet" and "this door could not look" - which is
+// what a 404 would blur into "no such project". Absent is not empty, at the
+// wire, which is this repo's oldest rule.
+func (s *server) handleVMLayerRead(w http.ResponseWriter, r *http.Request) {
+	path, ok := s.layerPath(w, r, r.URL.Query().Get("project"))
+	if !ok {
+		return
+	}
+	text, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"project": r.URL.Query().Get("project"), "path": path,
+			"exists": false, "text": "",
+		})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, errorBody("could not read "+path+": "+err.Error()))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"project": r.URL.Query().Get("project"), "path": path,
+		"exists": true, "text": string(text),
+	})
+}
+
+// handleVMLayerWrite replaces a project's declared layer.
+//
+// WRITTEN THROUGH A TEMPORARY AND RENAMED, so a reader never sees half a file.
+// The applier hashes this file to decide whether to run: a truncated read
+// during a write would hash to something that is not any version of it, and the
+// guest would be provisioned from a file nobody wrote.
+func (s *server) handleVMLayerWrite(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Project string `json:"project"`
+		Text    string `json:"text"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody("body must be json: "+err.Error()))
+		return
+	}
+	path, ok := s.layerPath(w, r, req.Project)
+	if !ok {
+		return
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".firecode.layer.*")
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, errorBody("could not write beside "+path+": "+err.Error()))
+		return
+	}
+	name := tmp.Name()
+	if _, err := tmp.WriteString(req.Text); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(name)
+		writeJSON(w, http.StatusBadGateway, errorBody("could not write "+name+": "+err.Error()))
+		return
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(name)
+		writeJSON(w, http.StatusBadGateway, errorBody("could not close "+name+": "+err.Error()))
+		return
+	}
+	if err := os.Rename(name, path); err != nil {
+		_ = os.Remove(name)
+		writeJSON(w, http.StatusBadGateway, errorBody("could not replace "+path+": "+err.Error()))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"project": strings.TrimSpace(req.Project), "path": path,
+		"exists": true, "bytes": len(req.Text),
+	})
 }

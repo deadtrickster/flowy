@@ -184,6 +184,13 @@ export function Vms() {
   const [loaded, setLoaded] = useState(false);
   const [failure, setFailure] = useState<{ status: number; why: string } | null>(null);
   const [project, setProject] = useState("");
+  // The project's declared layer. `exists` is kept apart from the text for the
+  // reason lib/api spells out: a project that declares nothing and one that
+  // declares an empty file both read as "", and only one of them has a file.
+  const [layer, setLayer] = useState<{ text: string; exists: boolean; path: string } | null>(null);
+  const [layerDraft, setLayerDraft] = useState("");
+  const [layerWhy, setLayerWhy] = useState("");
+  const [layerSaving, setLayerSaving] = useState(false);
   const [prompt, setPrompt] = useState("");
   // WHICH PANE. Not in the URL yet: /vms is one page and the pane is a view of
   // it, so a link to /vms should land where you left off rather than on a
@@ -243,6 +250,46 @@ export function Vms() {
     const timer = setInterval(() => void refresh(), 10_000);
     return () => clearInterval(timer);
   }, [refresh]);
+
+  // THE LAYER FOLLOWS THE PROJECT PICKER, and is re-read when it changes rather
+  // than merged into the ten-second refresh: this is a file somebody is editing,
+  // and a poll that overwrote a draft every ten seconds would eat their typing.
+  useEffect(() => {
+    let dropped = false;
+    setLayer(null);
+    setLayerWhy("");
+    if (!project) return;
+    void (async () => {
+      try {
+        const got = await api.vmLayer(project);
+        if (dropped) return;
+        setLayer({ text: got.text, exists: got.exists, path: got.path });
+        setLayerDraft(got.text);
+      } catch (err) {
+        if (dropped) return;
+        // Said, not swallowed. A layer editor that silently shows an empty box
+        // when it could not read is offering to overwrite a file it never saw.
+        setLayerWhy(err instanceof Error ? err.message : String(err));
+      }
+    })();
+    return () => {
+      dropped = true;
+    };
+  }, [project]);
+
+  const saveLayer = async () => {
+    if (!project) return;
+    setLayerSaving(true);
+    setLayerWhy("");
+    try {
+      const done = await api.vmLayerWrite(project, layerDraft);
+      setLayer({ text: layerDraft, exists: true, path: done.path });
+    } catch (err) {
+      setLayerWhy(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLayerSaving(false);
+    }
+  };
 
   const spawn = async () => {
     if (!project) return;
@@ -478,6 +525,76 @@ export function Vms() {
             first turn, and waits when not.
           </p>
         </header>
+
+        {/*
+          WHAT THIS PROJECT'S GUEST GETS, editable here. 01M0G8AM6R2BGPCWZQMV6321DR,
+          the operator: "i should be able to manage them from the flowy ui...
+          also must be available for agent to edit - say we figure things out in
+          the chat together and then one of you goes ahead and adds a dependency
+          here." The file is the same one firecode's apply-layer.sh reads and an
+          agent edits in the repo; this is a third way in, not a second copy.
+
+          Only when a project is picked. An editor with no project would have to
+          invent which file it is editing, and the honest version of that is not
+          drawing it.
+        */}
+        {project ? (
+          <section className="flex flex-col gap-2 border-border border-b pb-4" data-vm-layer="">
+            <div className="flex flex-wrap items-baseline gap-2">
+              <span className="font-medium text-sm">firecode.layer</span>
+              <span className="font-mono text-[11px] text-muted-foreground" data-vm-layer-path="">
+                {layer?.path ?? `${project}/firecode.layer`}
+              </span>
+              {layer && !layer.exists ? (
+                <span className="text-[11px] text-muted-foreground" data-vm-layer-absent="">
+                  this project declares none yet - saving creates it
+                </span>
+              ) : null}
+            </div>
+            <p className="max-w-2xl text-muted-foreground text-xs">
+              ENV and RUN lines, applied in the guest as root when the VM comes up and re-applied
+              only when this file changes. No FROM: the base is the firecode image.
+            </p>
+            <textarea
+              data-vm-layer-text=""
+              aria-label="firecode.layer"
+              spellCheck={false}
+              rows={10}
+              className="rounded border border-border bg-transparent px-2 py-1 font-mono text-xs"
+              value={layerDraft}
+              onChange={(e) => setLayerDraft(e.target.value)}
+              disabled={layer === null && layerWhy === ""}
+            />
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                data-vm-layer-save=""
+                disabled={layerSaving || layer === null || layerDraft === layer.text}
+                onClick={() => void saveLayer()}
+                className="rounded border border-border px-3 py-1 text-sm disabled:opacity-50"
+              >
+                {layerSaving ? "saving…" : "save"}
+              </button>
+              {/* Whether the file on the node differs from what is in the box,
+                  said in words. A save button that is simply disabled tells a
+                  reader nothing about which of the two reasons it is. */}
+              <span className="text-muted-foreground text-xs" data-vm-layer-state="">
+                {layer === null
+                  ? layerWhy
+                    ? "could not read it"
+                    : "reading…"
+                  : layerDraft === layer.text
+                    ? "saved"
+                    : "unsaved changes"}
+              </span>
+              {layerWhy ? (
+                <span className="text-destructive text-xs" data-vm-layer-why="">
+                  {layerWhy}
+                </span>
+              ) : null}
+            </div>
+          </section>
+        ) : null}
 
         <section className="flex flex-wrap items-end gap-2 border-border border-b pb-4">
           {/*

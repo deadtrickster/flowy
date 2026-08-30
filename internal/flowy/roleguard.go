@@ -143,6 +143,7 @@ var routeNeeds = map[string]string{
 	// rows; that is a different thing from somebody who may run code on the
 	// machine serving this node.
 	"POST /api/vm/spawn":          needsOperator,
+	"POST /api/vm/layer":          needsOperator,
 	"POST /api/shell/window":      needsOperator,
 	"POST /api/shell/kill":        needsOperator,
 	"POST /api/vm/{name}/say":     needsOperator,
