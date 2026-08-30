@@ -52,6 +52,35 @@ if (asOther.status !== 403) {
   die(`a non-operator got ${asOther.status} from the layer door, expected 403`);
 }
 
+// FROM HERE THE ARMS DEPEND ON WHAT THIS HOST IS, and both hosts are correct.
+// The suite runs on machines with firecode and on machines without; api_vm.go
+// answers 503 on the second precisely so the two are not confused, and a check
+// that demanded the first would fail every guest for a fault that is not in the
+// branch. What is asserted on a node with no firecode is that it SAYS SO -
+// because the failure that matters here is a layer door answering an empty
+// editable file on a host that could never apply it.
+if (asOperator.status === 503) {
+  if (!/cannot run VMs|no firecode/i.test(asOperator.body)) {
+    die(`the node answered 503 without saying it cannot run VMs: ${asOperator.body.slice(0, 200)}`);
+  }
+  let parsed = null;
+  try {
+    parsed = JSON.parse(asOperator.body);
+  } catch {
+    /* a 503 that is not json is still a refusal, and the text was matched above */
+  }
+  if (parsed && typeof parsed.text === "string") {
+    die(`a node that cannot run VMs answered the layer door with a text field
+(${JSON.stringify(parsed.text.slice(0, 80))}). That is an editable file on a host that could
+never apply it - the collapse api_vm.go returns 503 to prevent.`);
+  }
+  console.log(
+    `this node has no firecode: the layer door says so (503) and refuses a non-operator (${asOther.status}). ` +
+      `THE ROUND TRIP WAS NOT EXERCISED - that arm needs a host with firecode.`,
+  );
+  process.exit(0);
+}
+
 // A project this host does not have must be refused with the list that would
 // have worked, not with an empty file somebody could then save over.
 const bogus = await call("/api/vm/layer?project=no-such-project-here", operatorToken);
@@ -74,6 +103,9 @@ if (asOperator.status !== 200) {
   );
 }
 const before = JSON.parse(asOperator.body);
+// Kept so the finally can put the file back: this check edits something the
+// next VM boot applies, and leaving its marker behind would have every later
+// guest run a line a test wrote.
 const restore = before.text;
 
 const browser = await chromium.launch();
