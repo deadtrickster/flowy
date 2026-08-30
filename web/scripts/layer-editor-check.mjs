@@ -75,8 +75,7 @@ if (asOperator.status === 503) {
 never apply it - the collapse api_vm.go returns 503 to prevent.`);
   }
   console.log(
-    `this node has no firecode: the layer door says so (503) and refuses a non-operator (${asOther.status}). ` +
-      `THE ROUND TRIP WAS NOT EXERCISED - that arm needs a host with firecode.`,
+    `this node has no firecode: the layer door says so (503) and refuses a non-operator (${asOther.status}). THE ROUND TRIP WAS NOT EXERCISED - that arm needs a host with firecode.`,
   );
   process.exit(0);
 }
