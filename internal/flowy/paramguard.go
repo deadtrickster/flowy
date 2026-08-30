@@ -132,6 +132,7 @@ var routeParams = map[string][]string{
 	// the door ignored.
 	"POST /api/shell/window":   {},
 	"POST /api/shell/kill":     {},
+	"POST /api/vm/layer":       {},
 	"POST /api/vm/spawn":       {},
 	"GET /api/vm/{name}/log":   {},
 	"POST /api/vm/{name}/say":  {},
