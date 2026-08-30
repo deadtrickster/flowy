@@ -308,8 +308,11 @@ func (a *agentShells) startIn(id, project, workdir, binary string, where shellWh
 	// control, and ^C goes nowhere.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true}
 	// TERM, because a program with no TERM assumes the dumbest possible
-	// terminal and stops emitting the sequences the panel exists to render.
-	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
+	// terminal. COLORFGBG beside it says what the panel actually looks like
+	// WITHOUT being asked - light on dark - so a program that reads the
+	// environment never has to send a query at all. See agentanswer.go for the
+	// queries, and for what this relay refuses to answer.
+	cmd.Env = append(os.Environ(), "TERM=xterm-256color", "COLORFGBG="+answerColorFGBG)
 
 	if err := cmd.Start(); err != nil {
 		_ = master.Close()
@@ -380,6 +383,26 @@ func (s *agentSession) emit(b []byte) {
 	// arrives long after the asker has gone - and their terminal would answer
 	// into the shell's stdin. See agentscrub.go.
 	s.out = append(s.out, s.scrub.filter(chunk)...)
+	// WHAT THE SHELL ASKED AND NOBODY WAS THERE TO ANSWER.
+	//
+	// 01M1558DPM1HRGZNJGMVW24DHF item 2. Only when NO reader is attached: a
+	// browser terminal answers these itself, so replying while one is watching
+	// would put TWO answers on the shell's stdin - and answers arriving as
+	// input is the exact defect 01M1557QDD6HQQV91KQK36JH4W was about. One
+	// answer or none.
+	//
+	// This is also precisely the case the row names: a session that outlives
+	// its browser. tmux asks on attach, and a shell reattached by nobody got
+	// silence where a terminal would have replied.
+	var owed []byte
+	if len(s.readers) == 0 {
+		owed = s.scrub.takeAnswers()
+	} else {
+		// Drop them unanswered rather than letting them pile up for whenever
+		// the last reader leaves: a reply to a question asked ten minutes ago
+		// is not an answer, it is input arriving from nowhere.
+		s.scrub.takeAnswers()
+	}
 	if over := len(s.out) - agentScrollback; over > 0 {
 		s.out = s.out[over:]
 		s.dropped += over
@@ -395,6 +418,12 @@ func (s *agentSession) emit(b []byte) {
 		}
 	}
 	s.mu.Unlock()
+
+	// OUTSIDE THE LOCK. write() takes the same mutex, so replying while holding
+	// it would deadlock the relay on the first query it ever answered.
+	if len(owed) > 0 {
+		_ = s.write(owed)
+	}
 }
 
 // attach adds a reader and hands back what has been said so far.

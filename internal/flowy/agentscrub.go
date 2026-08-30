@@ -49,6 +49,27 @@ type scrubber struct {
 	// rather than emitted, because whether it may be kept is not knowable
 	// until its final byte arrives - which may be in the next chunk.
 	pend []byte
+	// What this relay owes the shell in reply, collected while filtering.
+	//
+	// The parser here is the only thing that knows where a sequence ends, so
+	// asking a second parser the same question is how two of them drift apart.
+	// It is drained by takeAnswers, never read directly.
+	owed []byte
+}
+
+// takeAnswers returns the replies owed for the queries seen since the last
+// call, and forgets them.
+//
+// Separate from filter because the answer goes to the PTY and the filtered
+// bytes go to the scrollback - two destinations, and the caller writes to the
+// pty outside the lock that filtering holds.
+func (s *scrubber) takeAnswers() []byte {
+	if len(s.owed) == 0 {
+		return nil
+	}
+	out := s.owed
+	s.owed = nil
+	return out
 }
 
 // filter returns the bytes of b that are safe to replay.
@@ -81,6 +102,8 @@ func (s *scrubber) filter(b []byte) []byte {
 		}
 		if !isQuery(s.pend) {
 			out = append(out, s.pend...)
+		} else if reply := answerFor(s.pend); reply != nil {
+			s.owed = append(s.owed, reply...)
 		}
 		s.pend = s.pend[:0]
 	}
