@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { api, sessionNameFor } from "@/lib/api";
 import { attachMouseReporting } from "@/lib/mousereport";
+import { selectionMessage } from "@/lib/termselect";
 
 import { attachAgent, sendAgentControl, sendAgentInput, stopAgent } from "@/lib/agentsocket";
 
@@ -132,6 +133,21 @@ export function VmShell({
   const adopting = useRef(false);
   const [state, setState] = useState<ShellState>("idle");
   const [dims, setDims] = useState<{ cols: number; rows: number } | null>(null);
+  // WHAT IS SELECTED ON SCREEN, so the panel can offer to send it.
+  //
+  // 01M1558DPM1HRGZNJGMVW24DHF item 4, which that row calls the highest-value
+  // small feature on its list: "select a range in the terminal, and it goes
+  // into a message wrapped with its line numbers. In a room where the point is
+  // telling other agents what happened."
+  //
+  // POLLED ON POINTER RELEASE RATHER THAN SUBSCRIBED. ghostty-web tracks the
+  // selection and exposes getSelection/hasSelection/getSelectionPosition, but
+  // its selectionChangedEmitter is PRIVATE - there is no event to listen to. A
+  // drag ends on pointerup, so that is when the answer changes and that is when
+  // it is read. Checked rather than assumed: the API is on the Terminal class,
+  // dist/index.d.ts lines 1595-1626.
+  const [picked, setPicked] = useState<{ text: string; from?: number; to?: number } | null>(null);
+  const [sent, setSent] = useState<string | null>(null);
   // WHAT EVERY FIT SAW AND PRODUCED. Reading rows alone said fit() was not
   // re-running and could not say why - whether it was never called, or called
   // and measuring a height that was not the one on screen. This records both,
@@ -609,6 +625,48 @@ export function VmShell({
             {why}
           </span>
         ) : null}
+        {/* SEND WHAT THE TERMINAL SHOWED. 01M1558DPM1HRGZNJGMVW24DHF item 4.
+            Telling another agent what happened currently means retyping it or
+            describing it; this hands over the lines themselves.
+
+            IT SAYS HOW MANY AND WHICH, and it is not a bare "send". A control
+            that posts an unknown amount of somebody's screen to a room is one
+            nobody presses twice - the count and the line numbers are what make
+            it safe to press once. */}
+        {picked ? (
+          <button
+            type="button"
+            data-vm-shell-send=""
+            data-vm-shell-send-lines={String(picked.text.split("\n").length)}
+            className="rounded border border-border px-2 py-1 text-xs hover:bg-muted disabled:opacity-50"
+            disabled={sending}
+            onClick={() => {
+              // THE SHIPPED MESSAGE IS THE TESTED ONE. lib/termselect is what
+              // checks.d/console/termselect.sh drives; building it inline here
+              // instead would leave the only real logic untested and free to
+              // drift from the check that claims to cover it.
+              const said = selectionMessage(picked.text, {
+                from: picked.from,
+                where,
+                project,
+              });
+              setSending(true);
+              setError(null);
+              void api
+                .say("general", said.body)
+                .then(() => setSent(`sent ${said.lines} to #general`))
+                .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
+                .finally(() => setSending(false));
+            }}
+          >
+            {sending ? "sending…" : `send ${picked.text.split("\n").length} lines to #general`}
+          </button>
+        ) : null}
+        {sent ? (
+          <span data-vm-shell-sent="" className="text-muted-foreground text-xs">
+            {sent}
+          </span>
+        ) : null}
       </div>
       {/* SAID RATHER THAN LEFT BLANK. An empty black rectangle before anything
           is started reads as a terminal that failed to connect. */}
@@ -652,6 +710,23 @@ export function VmShell({
       */}
       <div
         ref={box}
+        // A DRAG ENDS HERE, so this is when the selection is worth reading. See
+        // the note on `picked`: there is no selection event to subscribe to.
+        onPointerUp={() => {
+          const t = term.current;
+          if (!t?.hasSelection?.()) {
+            setPicked(null);
+            return;
+          }
+          const text = t.getSelection?.() ?? "";
+          if (!text.trim()) {
+            setPicked(null);
+            return;
+          }
+          const at = t.getSelectionPosition?.();
+          setPicked({ text, from: at?.start?.y, to: at?.end?.y });
+          setSent(null);
+        }}
         data-vm-shell-screen=""
         className="min-h-0 flex-1 rounded border border-border bg-black"
       />
