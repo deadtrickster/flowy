@@ -1022,6 +1022,33 @@ func serverError(w http.ResponseWriter, r *http.Request, err error) {
 // tracker before the write here failed, where the number is the only way anyone
 // finds it again. msg is written by this node, never by the error.
 func serverErrorSaying(w http.ResponseWriter, r *http.Request, err error, msg string) {
+	// A REQUEST THAT IS ALREADY OVER DID NOT FAIL, and there is nobody to tell.
+	//
+	// 01M17K62JD1JGTQM2BRRTND18H, the part 4750189 did not reach. That commit
+	// taught pollUntil that a cancellation during its query is the client
+	// going. It fixed the poll and not the work AFTER the poll: the handler
+	// still resolves citations, and on the next deploy that call answered
+	// "store: list artifacts: context canceled" and was logged as a 500 in
+	// 14.7ms. Measured, on the deploy that shipped the first fix.
+	//
+	// The same shape is in every door, not only that one. Any handler doing a
+	// second query after a client hangs up reports a fault that nobody is
+	// listening for - the response cannot be delivered, so the 500 is written
+	// to a closed connection and read by nobody except the log, where it looks
+	// like the node breaking.
+	//
+	// So it is answered here rather than at each call site. There are dozens,
+	// and a rule applied at some of them is a rule that decays.
+	//
+	// IT IS STILL LOGGED, deliberately, and that is the difference between this
+	// and swallowing it. A dropped request is a fact worth having when reading
+	// a log; what it is not is a 500. The line says which it was, so the two
+	// can be counted apart - the whole complaint was 3023 requests reported as
+	// server faults when the server was doing exactly what it was told.
+	if ctxErr := r.Context().Err(); ctxErr != nil {
+		log.Printf("dropped %s %s after %v: %v", r.Method, r.URL.Path, ctxErr, err)
+		return
+	}
 	ref := errorRef()
 	log.Printf("500 %s %s ref=%s: %v", r.Method, r.URL.Path, ref, err)
 	writeJSON(w, http.StatusInternalServerError, map[string]string{"error": msg, "ref": ref})
