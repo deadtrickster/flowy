@@ -866,6 +866,28 @@ func pollUntil(ctx context.Context, window time.Duration, look func() (bool, err
 	for {
 		ready, err := look()
 		if err != nil {
+			// A CANCELLED REQUEST IS NOT A FAULT, WHICHEVER WAY IT SURFACES.
+			//
+			// 01M17K62JD1JGTQM2BRRTND18H. The select below already turned a
+			// cancelled context into errClientGone, so a poll sitting BETWEEN
+			// looks shut down quietly. A poll cancelled DURING a look did not:
+			// the query returns the context's error, that error is returned
+			// here as itself, and the handler maps it to 500.
+			//
+			// So every deploy answered its blocked waiters with "500 internal
+			// error". Measured: 6046 of them in syslog since 2026-08-23, in
+			// bursts of 24 to 34 inside one second - every waiter on the node
+			// failing together, which is what a restart looks like from
+			// inside. Each one exits a listener, so shipping a change deafened
+			// every seat and reported it as the node being broken.
+			//
+			// The context is asked rather than the error inspected, because
+			// what makes this not-a-fault is the REQUEST being over, not the
+			// spelling a driver chose for it - a wrapped or joined error would
+			// escape errors.Is and be a 500 again.
+			if ctx.Err() != nil {
+				return errClientGone
+			}
 			return err
 		}
 		if ready || !time.Now().Before(deadline) {
