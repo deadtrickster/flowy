@@ -148,6 +148,8 @@ export function VmShell({
   // dist/index.d.ts lines 1595-1626.
   const [picked, setPicked] = useState<{ text: string; from?: number; to?: number } | null>(null);
   const [sent, setSent] = useState<string | null>(null);
+  const [sendingSel, setSendingSel] = useState(false);
+  const [sendErr, setSendErr] = useState<string | null>(null);
   // WHAT EVERY FIT SAW AND PRODUCED. Reading rows alone said fit() was not
   // re-running and could not say why - whether it was never called, or called
   // and measuring a height that was not the one on screen. This records both,
@@ -639,7 +641,7 @@ export function VmShell({
             data-vm-shell-send=""
             data-vm-shell-send-lines={String(picked.text.split("\n").length)}
             className="rounded border border-border px-2 py-1 text-xs hover:bg-muted disabled:opacity-50"
-            disabled={sending}
+            disabled={sendingSel}
             onClick={() => {
               // THE SHIPPED MESSAGE IS THE TESTED ONE. lib/termselect is what
               // checks.d/console/termselect.sh drives; building it inline here
@@ -650,21 +652,31 @@ export function VmShell({
                 where,
                 project,
               });
-              setSending(true);
-              setError(null);
+              setSendingSel(true);
+              setSendErr(null);
               void api
                 .say("general", said.body)
                 .then(() => setSent(`sent ${said.lines} to #general`))
-                .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
-                .finally(() => setSending(false));
+                .catch((err: unknown) =>
+                  setSendErr(err instanceof Error ? err.message : String(err)),
+                )
+                .finally(() => setSendingSel(false));
             }}
           >
-            {sending ? "sending…" : `send ${picked.text.split("\n").length} lines to #general`}
+            {sendingSel ? "sending…" : `send ${picked.text.split("\n").length} lines to #general`}
           </button>
         ) : null}
         {sent ? (
           <span data-vm-shell-sent="" className="text-muted-foreground text-xs">
             {sent}
+          </span>
+        ) : null}
+        {/* A SEND THAT FAILED SAYS SO. Swallowing it leaves the writer
+            believing the room has lines it never received, which is the
+            silent-wrong-answer shape this panel has paid for twice. */}
+        {sendErr ? (
+          <span data-vm-shell-send-error="" className="text-destructive text-xs">
+            {sendErr}
           </span>
         ) : null}
       </div>
