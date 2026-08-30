@@ -1,0 +1,18 @@
+# WHAT A FIRECODE GUEST NEEDS TO GATE THIS REPO.
+#
+# 01M0G8AM6R2BGPCWZQMV6321DR. Until this file existed the answer lived in an
+# UNTRACKED vm-provision.sh sitting in a scratch directory - unreviewed,
+# unversioned, and applied to a fresh guest only if somebody remembered. That is
+# the drift that cost a night on 2026-08-28: go1.22 in the guest against go1.26
+# on the box, the suite red in here and green there on the SAME COMMIT, because
+# 1.22 silently ignores the `omitzero` json tag internal/store depends on.
+#
+# Applied by firecode's scripts/apply-layer.sh, which stamps this file's sha256
+# inside the guest and runs nothing while the hash is unchanged. A run that
+# fails leaves no stamp, so it is retried rather than assumed.
+#
+# EACH RUN IS ITS OWN SHELL, exactly as in a Dockerfile: a variable set in one
+# does not survive into the next. That is why the toolchain work is a script
+# rather than twenty RUN lines - it reads versions out of go.mod and .mise.toml
+# and checks them back, and that is one job with state, not twenty.
+RUN ./scripts/vm-provision.sh
