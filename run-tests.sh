@@ -418,6 +418,86 @@ preflight() {
 }
 only_exempt=no
 
+# A CHECK THAT NEVER RETURNS ENDS THE RUN FOR EVERYBODY, so every check has a
+# ceiling. 01M17SYD3XDKS8GVZ2DVMMJ762, measured 2026-08-29: unread-check.mjs
+# started at 23:20:36 - the second /tmp ran out of inodes - and sat there for
+# SIXTY MINUTES holding a live browser. The suite's log stopped, so from outside
+# it looked finished, while the flock on the gate lane stayed held and three
+# filed rows waited behind a pass that could not end.
+#
+# THE CHECK BOUNDED ITS OWN WAITS AND THAT WAS NOT ENOUGH. unread-check.mjs
+# bounds seven of them. Every individual wait can be inside its deadline while
+# the check as a whole never finishes - the browser was alive and answering, so
+# no single wait ever fired. A ceiling belongs to the runner, because the next
+# check to hang is one nobody has edited.
+#
+# AND ENDING IT MEANS ENDING THE TREE. claude-host measured the other half the
+# same night: TERM on the top shell left the node, the browser and the suite's
+# own `flowy serve` orphaned and still holding the port the next pass needs, so
+# the kill looked like it worked and the next run could not bind. Descendants
+# are walked by PID and killed leaves-first - by pid, never by name, because a
+# pattern that matches a name matches the wrong process eventually.
+bounded() {
+	local ceiling=${CHECK_CEILING:-600}
+	# 0 turns it off, and so does having nowhere to put the output. Neither is
+	# a reason to refuse to run the check - a runner that cannot bound a check
+	# still has to run it.
+	local tmp
+	if [ "$ceiling" = 0 ] || ! tmp=$(mktemp 2>/dev/null); then
+		"$@"
+		return $?
+	fi
+	("$@") >"$tmp" 2>&1 &
+	local pid=$! waited=0 status=0
+	while [ "$waited" -lt "$ceiling" ]; do
+		kill -0 "$pid" 2>/dev/null || break
+		sleep 1
+		waited=$((waited + 1))
+	done
+	if kill -0 "$pid" 2>/dev/null; then
+		# Breadth-first by pid, killed leaves-first, so a parent cannot be
+		# reaped before the children it would have taken with it.
+		#
+		# THE TRAILING NEWLINE IN THE printf IS LOAD-BEARING. With `printf
+		# '%s'` the list reaches tac without one, and tac folds the last line
+		# into the first: two pids came out as the single number 38217273821726
+		# and every kill was aimed at a process that has never existed. It
+		# failed silently - `kill` on a missing pid is an error nobody reads -
+		# so the ceiling reported "ended, with 2 process(es)" while the child
+		# was still running. Arm 3 of check-ceiling-check.sh is exactly this.
+		local all=$pid frontier=$pid
+		local next='' p='' kid=''
+		while [ -n "$frontier" ]; do
+			next=
+			for p in $frontier; do
+				for kid in $(pgrep -P "$p" 2>/dev/null || true); do
+					all="$all $kid"
+					next="$next $kid"
+				done
+			done
+			frontier=$next
+		done
+		for p in $(printf '%s\n' "$all" | tr ' ' '\n' | tac); do
+			kill -TERM "$p" 2>/dev/null || true
+		done
+		sleep 2
+		for p in $(printf '%s\n' "$all" | tr ' ' '\n' | tac); do
+			kill -KILL "$p" 2>/dev/null || true
+		done
+		cat "$tmp"
+		printf 'the check did not return within %ss and was ended, with %s process(es).\n' \
+			"$ceiling" "$(printf '%s' "$all" | wc -w)"
+		printf 'Bounding every wait inside a check does not bound the check - see 01M17SYD3XDKS8GVZ2DVMMJ762.\n'
+		printf 'CHECK_CEILING=<seconds> raises it, 0 turns it off.\n'
+		rm -f "$tmp"
+		return 124
+	fi
+	wait "$pid" || status=$?
+	cat "$tmp"
+	rm -f "$tmp"
+	return "$status"
+}
+
 check() {
 	local name="$1"
 	shift
@@ -460,7 +540,7 @@ check() {
 	started=${EPOCHREALTIME/./}
 	local clock=no
 	command -v secs_since >/dev/null 2>&1 && clock=yes
-	if out="$("$@" 2>&1)"; then
+	if out="$(bounded "$@" 2>&1)"; then
 		[ "$clock" = yes ] && timed "$name" "$(secs_since "$started")"
 		printf 'PASS %s\n' "$name"
 		if [ -n "$out" ]; then
@@ -12359,6 +12439,17 @@ a_stray_cd_reports_once() {
 	./scripts/stray-cd-check.sh run-tests.sh
 }
 
+# AND A CHECK THAT NEVER RETURNS, which is the failure that ends a run without
+# failing it. 01M17SYD3XDKS8GVZ2DVMMJ762: one check sat sixty minutes holding a
+# live browser, the log stopped so the pass looked finished, and the gate lane
+# stayed held with three filed rows behind it. Beside the stray-cd check for the
+# same reason it is first - both are about the runner, and a runner that has
+# stopped noticing makes every number below it worth less.
+a_hung_check_is_ended() {
+	cd "$ROOT" || return 1
+	./scripts/check-ceiling-check.sh run-tests.sh
+}
+
 # The loader's own guard, and it exists because moving console checks into a
 # directory buys a failure the shared list could not have. A line was either in
 # the file or it was not; a DIRECTORY can be missing, empty, or full of files
@@ -12821,6 +12912,8 @@ say "console"
 # eleven thousand lines away.
 check "a stray cd outside check() reports once, and the suite carries on" \
 	a_stray_cd_reports_once
+check "a check that never returns is ended at its ceiling, with its tree" \
+	a_hung_check_is_ended
 check "the console-check loader fails on a directory that is missing, empty, or silent" \
 	the_console_loader_refuses_to_lose_a_check
 check "a refused run says so before it says the count" \
