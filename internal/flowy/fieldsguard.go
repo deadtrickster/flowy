@@ -191,6 +191,7 @@ var openspecStateReach = map[string]string{
 	"POST /api/user/{id}/role":                 "na",
 	"POST /api/vm/{name}/down":                 "na",
 	"POST /api/vm/{name}/say":                  "na",
+	"GET /api/vm/layer":                        "na",
 	"POST /api/vm/layer":                       "na",
 	"POST /api/vm/spawn":                       "na",
 	"POST /api/work/{id}/claim":                "na",
