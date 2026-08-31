@@ -537,9 +537,26 @@ export interface Whoami {
    * comment on the node side.
    *
    * An agent has none at all: a seat's reach is minted into its token, a
-   * different mechanism for a different kind of credential.
+   * different mechanism for a different kind of credential. That is what
+   * `reach` says, and until 2026-08-31 the node did not say it - an agent
+   * answered [], the same value as a person who belongs to nothing, and this
+   * console told every seat "you belong to no project yet".
    */
   memberships?: string[] | null;
+  /**
+   * WHICH MECHANISM CARRIES THIS PRINCIPAL'S REACH, which is what makes an
+   * absent `memberships` readable:
+   *
+   *   "memberships" + a list   this person works in these
+   *   "memberships" + []       this person belongs to nothing yet
+   *   "memberships" + null     the node could not read them
+   *   "token"       + null     an agent - not a question about this principal
+   *
+   * Absent on a response with no principal at all. Branch on this rather than
+   * on the shape of `memberships`: the same null carries two different
+   * sentences and only this field tells them apart.
+   */
+  reach?: "memberships" | "token";
 }
 
 /** MeUser is the registry's row for the person or seat behind this request. */

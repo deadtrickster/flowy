@@ -69,10 +69,12 @@ function navClass({ isActive }: { isActive: boolean }) {
  * name and no control, which is the honest rendering - not a dropdown that
  * refuses when pressed.
  *
- * ABSENT IS NOT EMPTY, the same distinction the field carries on the node.
- * memberships null means nobody said (an agent, or a whoami still in flight) and
- * draws no control; [] means this person belongs to nothing, and that gets a
- * word rather than an empty menu, because a menu with no items reads as broken.
+ * ABSENT IS NOT EMPTY, the same distinction the field carries on the node -
+ * and the node now says WHICH absent it means. `reach` names the mechanism:
+ * "memberships" is a person, whose list may be a list, [] or unreadable;
+ * "token" is a seat, whose reach was minted and for whom the question does not
+ * apply. Branch on that, not on the shape of a null, because one null carries
+ * two different sentences.
  */
 function ProjectBadge() {
   const { whoami, refresh } = useSession();
@@ -81,6 +83,11 @@ function ProjectBadge() {
 
   const here = whoami?.project ?? "";
   const mine = whoami?.memberships ?? null;
+  // WHETHER MEMBERSHIP IS EVEN THIS PRINCIPAL'S MECHANISM. A seat's reach is
+  // minted into its token, so "you belong to no project yet" is not a smaller
+  // version of its situation - it is a sentence about somebody else. Until the
+  // node carried this field an agent answered [] and read that sentence.
+  const byMembership = whoami?.reach === "memberships";
   // The list is what a person may ENTER, and being here already is not a
   // reason to leave the current project out of it - it is the one that has to
   // be shown as current.
@@ -88,7 +95,7 @@ function ProjectBadge() {
   // THE PICKER EXISTS ONLY FOR A PERSON WITH SOMEWHERE TO GO. null is an agent
   // credential (or a whoami in flight) and [] is a person who belongs nowhere -
   // neither draws a control, and both still have a project their writes land in.
-  const picker = mine !== null && mine.length > 0;
+  const picker = byMembership && mine !== null && mine.length > 0;
   // THE CURRENT PROJECT IS ALWAYS AN OPTION, even when it is not a membership:
   // a token can be scoped somewhere its user does not belong, and a <select>
   // whose value matches no option silently shows the FIRST one - naming a
@@ -159,11 +166,11 @@ function ProjectBadge() {
         THE CURRENT PROJECT IS IN THE LIST AND SELECTED, so the control says
         where you are as well as where you could go.
 
-        ABSENT IS NOT EMPTY: null memberships is a whoami still in flight, or
-        a list the node could not read; [] is a person who belongs nowhere -
-        and today an agent too, which is the defect filed below. Neither draws
-        a menu - an empty one reads as broken - and [] additionally gets a
-        sentence saying why the control is missing.
+        ABSENT IS NOT EMPTY, and the node says which absent: reach "token" is
+        a seat whose reach was minted, reach "memberships" with null is a list
+        that could not be read, and [] is a person who belongs nowhere. None of
+        the three draws a menu - an empty one reads as broken - and only the
+        last gets the sentence, because it is the only one it is true of.
       */}
       {/*
         AND WHEN THERE IS NO SELECT, THE NAME IS SAID PLAINLY. Dropping the span
@@ -172,14 +179,13 @@ function ProjectBadge() {
         which project that seat's writes land in. It is only a repetition when
         the control beneath it is already saying it.
 
-        WHICH SEATS THOSE ARE, measured against the dogfood node rather than
-        assumed: an agent credential gets memberships `[]`, not null - the same
-        value a person who belongs to nothing gets - so agents take the middle
-        branch and are told "you belong to no project yet", which is not true of
-        them. The door means to answer otherwise and says so in its own comment
-        at api.go:1583; the initialiser answers [] before the guard it describes.
-        Filed as 01M1BW5G028XX66GKVXYNE0T9X. null reaches here only from the
-        error branch - "could not be read" - and from a whoami still in flight.
+        WHICH SEATS THOSE ARE. Most of the credentials reading this console are
+        agents, and they answered memberships `[]` - the same value a person who
+        belongs to nothing gets - so they took the middle branch and were told
+        "you belong to no project yet", which is not true of a seat. Measured
+        against the dogfood node, filed as 01M1BW5G028XX66GKVXYNE0T9X, and fixed
+        at the door: `reach` now says whether membership is this principal's
+        mechanism at all, and this file branches on that.
       */}
       {picker ? (
         <select
@@ -208,7 +214,7 @@ function ProjectBadge() {
           {here || "no project"}
         </span>
       )}
-      {mine !== null && mine.length === 0 ? (
+      {byMembership && mine !== null && mine.length === 0 ? (
         // WHY there is no picker, which the name above does not say. The name
         // is where the writes land; this is why you cannot change it.
         <span className="text-[10px] text-muted-foreground">you belong to no project yet</span>

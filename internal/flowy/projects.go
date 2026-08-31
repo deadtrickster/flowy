@@ -226,7 +226,38 @@ type whoamiResponse struct {
 	// them apart from an absent key. That collapse has cost this fleet six
 	// separate defects in two days.
 	Memberships []string `json:"memberships"`
+	// WHICH MECHANISM CARRIES THIS PRINCIPAL'S REACH, so an absent Memberships
+	// says which kind of absent it is.
+	//
+	// Memberships alone cannot carry three facts. A person who belongs to
+	// nothing is [], a list this node could not read is null, and an agent -
+	// for whom the question does not apply at all, because a seat's reach is
+	// minted into its token - was ALSO answering []. The field above says in
+	// its own comment that collapsing two of those has cost this fleet six
+	// defects; the third one was being collapsed a line below it.
+	//
+	// So Reach names the mechanism positively rather than leaving a reader to
+	// infer it from a missing value:
+	//
+	//   "memberships" + a list   this person works in these
+	//   "memberships" + []       this person belongs to nothing yet
+	//   "memberships" + null     this node could not read them, and says so
+	//   "token"       + null     an agent: not a question about this principal
+	//
+	// omitempty because an unauthenticated request has no principal and so no
+	// mechanism either - and an empty string would be a fourth thing to guess
+	// at.
+	Reach string `json:"reach,omitempty"`
 }
+
+// The two mechanisms a principal's reach can come from. A person's is
+// project_members and can be changed by an owner; an agent's is minted into
+// its token and cannot be changed at all, which is why "join a project" is not
+// an act available to a seat.
+const (
+	reachMemberships = "memberships"
+	reachToken       = "token"
+)
 
 // handleEnterProject puts THIS SESSION into one of this person's projects.
 //

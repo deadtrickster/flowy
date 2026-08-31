@@ -1354,6 +1354,48 @@ whoami_is_a() {
 	printf 'user %s, project pa\n' "$USER_A"
 }
 
+# WHOAMI SAYS WHICH MECHANISM CARRIES THIS PRINCIPAL'S REACH, so an absent
+# membership list is readable.
+#
+# `memberships` alone was carrying three facts with two values. A person who
+# belongs to nothing is [], a list the node could not read is null, and an agent
+# - for whom the question does not apply, because a seat's reach is minted into
+# its token - answered [] as well. So the console keyed its rail on the list and
+# told every agent seat "you belong to no project yet", which is a sentence
+# about somebody else. Filed as 01M1BW5G028XX66GKVXYNE0T9X after measuring it on
+# the dogfood node.
+#
+# ASSERTED AS A DIFFERENCE, because one reading cannot tell a rule being
+# enforced from a rule that does not exist: the same person's token and their
+# agent's token are asked the same question, and the answers have to disagree.
+# A door that ignored the distinction would answer both the same way and pass
+# any check that only looked at one of them.
+whoami_says_which_reach() {
+	recall
+	api GET "$TOKEN_A" /api/whoami || return 1
+	local person_reach person_list
+	person_reach="$(jqv .reach)"
+	person_list="$(jqv '.memberships | type')"
+	api GET "$TOKEN_A_AGENT" /api/whoami || return 1
+	local seat_reach seat_list
+	seat_reach="$(jqv .reach)"
+	seat_list="$(jqv '.memberships | type')"
+
+	want_eq "a person's reach" "$person_reach" memberships || return 1
+	want_eq "a person's memberships are a list" "$person_list" array || return 1
+	want_eq "a seat's reach" "$seat_reach" token || return 1
+	# NULL AND NOT [], and this is the whole defect: [] is the answer that means
+	# "belongs to nothing", which is a fact about a person and not about a seat.
+	want_eq "a seat has no membership list" "$seat_list" null || return 1
+	if [ "$person_reach" = "$seat_reach" ]; then
+		printf 'both tokens answered reach=%s, so the door is not telling them apart\n' \
+			"$person_reach" >&2
+		return 1
+	fi
+	printf 'a person answers reach=%s with a %s, a seat answers reach=%s with %s\n' \
+		"$person_reach" "$person_list" "$seat_reach" "$seat_list"
+}
+
 # An agent's token carries no user of its own and has to inherit one, or an
 # agent could not read the personal artifacts of the person it works for.
 agent_token_inherits() {
@@ -13518,6 +13560,7 @@ check "a request with an unknown token is 401" want_status 401 GET no-such-token
 check "an unauthenticated write is 401 too" want_status 401 POST "" /api/artifacts '{"type":"note"}'
 check "a token resolves to its user and home project" whoami_is_a
 check "an agent token inherits its user and project" agent_token_inherits
+check "whoami says which mechanism carries this principal's reach" whoami_says_which_reach
 
 say "artifacts, and what the owner sees"
 check "A creates a bug in pa" a_creates_bug

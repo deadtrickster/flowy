@@ -1582,18 +1582,35 @@ func (s *server) handleWhoami(w http.ResponseWriter, r *http.Request) {
 		}
 		// A PERSON'S MEMBERSHIPS, which an agent does not have: a token's reach
 		// is token_projects and it is a different mechanism for a different
-		// kind of principal. Asking for an agent would answer [] and imply the
-		// question makes sense for it.
-		if p.UserID != "" && p.AgentID == "" {
+		// kind of principal. This comment used to end "asking for an agent
+		// would answer [] and imply the question makes sense for it", and then
+		// the response was initialised with [] before this guard, so an agent
+		// fell past it holding exactly that answer. Measured on the dogfood
+		// node 2026-08-31 and filed as 01M1BW5G028XX66GKVXYNE0T9X: the console
+		// keys its rail on this list and told every agent seat "you belong to
+		// no project yet", which is not true of a seat.
+		//
+		// Now the mechanism is stated rather than implied - see Reach.
+		switch {
+		case p.UserID != "" && p.AgentID == "":
+			out.Reach = reachMemberships
 			if mine, err := s.db.ProjectsOfUser(r.Context(), p.UserID); err == nil {
 				out.Memberships = mine
 			} else {
 				// A list that could not be read is NOT an empty list - see the
 				// field's own comment - so it is logged and the answer says
-				// nothing rather than saying "you belong to nothing".
+				// nothing rather than saying "you belong to nothing". Reach
+				// stays "memberships": this principal HAS them, they could not
+				// be read, and that is a different sentence from an agent's.
 				log.Printf("whoami: memberships for %s: %v", p.UserID, err)
 				out.Memberships = nil
 			}
+		case p.AgentID != "":
+			// A SEAT. Its reach was minted into its token and no owner can add
+			// to it, so "which projects do you belong to" has no answer rather
+			// than an empty one.
+			out.Reach = reachToken
+			out.Memberships = nil
 		}
 	}
 	writeJSON(w, http.StatusOK, out)
