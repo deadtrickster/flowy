@@ -85,9 +85,15 @@ The picker already says which project is current, in the place you would go to c
 The operator sent this screenshot twice.`);
   }
   if (said.length === 0) {
+    // WHICH BRANCH DREW, not just that nothing did. Three of them render no
+    // select - an agent credential, a person who belongs nowhere, and a whoami
+    // still in flight - and they are the ones that have to say the name
+    // plainly, so the rendered text is the thing that identifies the fault.
+    const drew = (await control.innerText()).trim();
     die(`the rail's project control does not name ${JSON.stringify(project)} at all - going from
-three copies to none is the other way to get this wrong, and an agent credential draws no
-picker, so it is the plain name or nothing.`);
+three copies to none is the other way to get this wrong, and a credential with no picker
+(an agent, or a person who belongs to no project) has the plain name or nothing.
+The control rendered: ${JSON.stringify(drew)}`);
   }
 
   // 2. THE LEFT EDGE OF EVERY ROW LABEL.

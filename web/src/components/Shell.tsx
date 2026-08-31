@@ -85,6 +85,16 @@ function ProjectBadge() {
   // reason to leave the current project out of it - it is the one that has to
   // be shown as current.
   const others = (mine ?? []).filter((p) => p !== here);
+  // THE PICKER EXISTS ONLY FOR A PERSON WITH SOMEWHERE TO GO. null is an agent
+  // credential (or a whoami in flight) and [] is a person who belongs nowhere -
+  // neither draws a control, and both still have a project their writes land in.
+  const picker = mine !== null && mine.length > 0;
+  // THE CURRENT PROJECT IS ALWAYS AN OPTION, even when it is not a membership:
+  // a token can be scoped somewhere its user does not belong, and a <select>
+  // whose value matches no option silently shows the FIRST one - naming a
+  // project you are not in, which is worse than saying nothing.
+  const options =
+    picker && here && !(mine ?? []).includes(here) ? [here, ...(mine ?? [])] : (mine ?? []);
 
   const enter = async (project: string) => {
     setBusy(project);
@@ -150,8 +160,9 @@ function ProjectBadge() {
         where you are as well as where you could go.
 
         ABSENT IS NOT EMPTY: null memberships is an agent credential or a
-        whoami still in flight and draws nothing; [] is a person who belongs
-        nowhere and gets a sentence, because an empty menu reads as broken.
+        whoami still in flight; [] is a person who belongs nowhere. Neither
+        draws a menu - an empty one reads as broken - and [] additionally gets
+        a sentence saying why the control is missing.
       */}
       {/*
         AND WHEN THERE IS NO SELECT, THE NAME IS SAID PLAINLY. Dropping the span
@@ -161,16 +172,7 @@ function ProjectBadge() {
         silent about which project their writes land in. It is only a repetition
         when the control beneath it is already saying it.
       */}
-      {mine === null ? (
-        <span
-          className="font-mono text-foreground text-xs"
-          title={`you are writing into ${here || "no project"}`}
-        >
-          {here || "no project"}
-        </span>
-      ) : mine.length === 0 ? (
-        <span className="text-[10px] text-muted-foreground">you belong to no project yet</span>
-      ) : (
+      {picker ? (
         <select
           data-project-switcher={others.length}
           data-rail-project-select
@@ -183,13 +185,25 @@ function ProjectBadge() {
           }}
           className="w-full cursor-pointer rounded border border-border bg-transparent px-1 py-0.5 font-mono text-[10px] text-muted-foreground transition hover:border-primary/50 hover:text-foreground disabled:opacity-50"
         >
-          {mine.map((p) => (
+          {options.map((p) => (
             <option key={p} value={p}>
               {p === here ? `${p} - here` : p}
             </option>
           ))}
         </select>
+      ) : (
+        <span
+          className="font-mono text-foreground text-xs"
+          title={`you are writing into ${here || "no project"}`}
+        >
+          {here || "no project"}
+        </span>
       )}
+      {mine !== null && mine.length === 0 ? (
+        // WHY there is no picker, which the name above does not say. The name
+        // is where the writes land; this is why you cannot change it.
+        <span className="text-[10px] text-muted-foreground">you belong to no project yet</span>
+      ) : null}
       {refused ? (
         <span data-rail-enter-refused className="text-[10px] text-destructive">
           {refused}
