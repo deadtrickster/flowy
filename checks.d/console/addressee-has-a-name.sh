@@ -15,12 +15,24 @@
 # what you read, an id is what you paste into a command, and this trades neither
 # for the other.
 #
-# It runs against #naming, the room an_addressee_is_named seeds with both ways
-# of addressing somebody - by --to and by @ - because before the fix only the
-# second carried a name.
+# IT SEEDS ITS OWN ROOM. an_addressee_is_named seeds #naming with the same two
+# messages, and leaning on that was measured wrong on the first run: under a
+# filter the seeder does not execute, the room is empty, and this check refused
+# with "a fixture that did not arrive" - correctly, and having measured nothing.
+# A check that only works in a full run is a check nobody can arm on its own.
+#
+# BOTH WAYS OF ADDRESSING SOMEBODY, because before the fix the @ form carried a
+# name on the wire and the --to form did not, so one message would have proved
+# the wrong half.
 
 the_room_names_who_a_message_is_for() {
 	recall
+	api POST "$TOKEN_A" /api/chat/naming/say \
+		"$(jq -nc --arg t "$USER_B" --arg b "addressed with --to and no mention in the body" \
+			'{to: $t, body: $b}')" || return 1
+	api POST "$TOKEN_A" /api/chat/naming/say \
+		"$(jq -nc --arg b "@$HANDLE_B addressed by naming them in the sentence" '{body: $b}')" ||
+		return 1
 	cd "$ROOT/web" || return 1
 	node scripts/addressee-has-a-name-check.mjs \
 		"http://127.0.0.1:$HTTP_PORT" "$TOKEN_A" "$HANDLE_B"
