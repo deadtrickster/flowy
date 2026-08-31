@@ -415,6 +415,28 @@ func principalSeed(raw string) ([]byte, error) {
 // It exits 0 with an empty list rather than refusing: nothing exposed is a real
 // answer and a script should be able to read it. See internal/store/unkeyed.go
 // for why the credentialed flag chooses the command and decides nothing else.
+// exposedPayload is what both `flowy principal exposed` and the HTTP door
+// answer: the node that was asked, how many principals it holds no key for, and
+// each of them with the command that closes it.
+//
+// `principals` is an empty list and never null when nothing is exposed - the
+// distinction the whole finding rests on, said in the answer's own shape: a
+// reader must be able to tell "nothing exposed" from "this node could not look",
+// and a null there would read as either.
+func exposedPayload(node string, open []store.UnkeyedPrincipal) map[string]any {
+	out := make([]map[string]any, 0, len(open))
+	for _, u := range open {
+		out = append(out, map[string]any{
+			"principal":    u.Principal,
+			"handle":       u.Handle,
+			"rows":         u.Rows,
+			"credentialed": u.Credentialed,
+			"fix":          u.Fix(),
+		})
+	}
+	return map[string]any{"node": node, "exposed": len(out), "principals": out}
+}
+
 func principalExposed(args []string) error {
 	fs := flag.NewFlagSet("principal exposed", flag.ContinueOnError)
 	return withPrincipalDB(fs, args, func(ctx context.Context, db *store.DB) error {
@@ -422,18 +444,10 @@ func principalExposed(args []string) error {
 		if err != nil {
 			return err
 		}
-		out := make([]map[string]any, 0, len(open))
-		for _, u := range open {
-			out = append(out, map[string]any{
-				"principal":    u.Principal,
-				"handle":       u.Handle,
-				"rows":         u.Rows,
-				"credentialed": u.Credentialed,
-				"fix":          u.Fix(),
-			})
-		}
-		return printJSON(map[string]any{
-			"node": db.Node(), "exposed": len(out), "principals": out,
-		})
+		// THE SHAPE IS SHARED WITH THE DOOR, not spelled twice. GET
+		// /api/principals/exposed answers the same question for a reader with
+		// no DSN, and two spellings of one answer is how the console and the
+		// command line come to disagree about the same fact.
+		return printJSON(exposedPayload(db.Node(), open))
 	})
 }

@@ -391,6 +391,7 @@ var apiRoutes = []string{
 	"GET /api/inbox/unread",
 	"DELETE /api/inbox/reader/{name}",
 	"GET /api/presence",
+	"GET /api/principals/exposed",
 	"POST /api/assign",
 	"GET /api/task/{id}",
 	"POST /api/task/{id}/delegate",
@@ -780,6 +781,10 @@ func (s *server) routes() http.Handler {
 	api.HandleFunc("GET /api/inbox/unread", s.handleInboxUnread)
 	api.HandleFunc("DELETE /api/inbox/reader/{name}", s.handleInboxReaderDelete)
 	api.HandleFunc("GET /api/presence", s.handlePresence)
+	// WHO THIS NODE WOULD TAKE A ROW FOR FROM ANYBODY. operatorOnly because it
+	// is a map of the names a pinned peer could author under - see
+	// api_exposed.go, and the finding it exists to make measurable.
+	api.HandleFunc("GET /api/principals/exposed", s.operatorOnly(s.handleExposedPrincipals))
 	// Assignment and the handoff it opens. /api/inbox/tasks is a longer pattern
 	// than /api/inbox, so the mux ranks it first and the two do not collide.
 	api.HandleFunc("GET /api/inbox/tasks", s.handleInboxTasks)

@@ -13809,6 +13809,8 @@ check "a write into a fixture lands, and says it landed in a fixture" \
 	a_write_into_a_fixture_lands_and_says_so
 check "the enumeration is filtered by the edges that already existed" \
 	the_enumeration_is_permission_filtered
+check "the exposure a peer could forge under is readable without a DSN" \
+	an_exposure_is_readable_without_a_dsn
 check "anybody declares, only the operator flags and pins" \
 	declaring_is_open_and_flagging_a_fixture_is_the_operators
 check "one repository is one origin, and a move is an alias" \
@@ -20669,6 +20671,68 @@ a_logged_in_person_can_post_in_a_room() {
 	api POST "$TOKEN_OP" "/api/projects/$PROJECT_A/members" "{\"user\": \"$HANDLE_A\"}" || return 1
 	cd "$ROOT/web" || return 1
 	node scripts/person-can-post-check.mjs "http://127.0.0.1:$HTTP_PORT" "$HANDLE_A" "$pw" "$PROJECT_A"
+}
+
+# THE EXPOSURE IS READABLE WITHOUT A DATABASE PASSWORD.
+#
+# `flowy principal exposed` has answered "which principals have no key here"
+# since the finding that named it, and it answers it against a DSN. So the
+# question security row 01M0AG9HVGCXGGMK70Y9JHCVPN turns on - the exposure is
+# keyless principals, so how many are there - could be asked only by somebody
+# sitting on the box with the database password. Every seat that could do the
+# work about it, and the console the operator reads, could not see its size. A
+# finding whose closing criterion is unmeasurable from where the fleet works
+# stays open by default.
+#
+# ASSERTED AS A DIFFERENCE, in the two ways this door can be wrong.
+#
+# The first is the gate: the operator is answered and a seat is REFUSED. One
+# reading cannot tell a door that is operator-only from a door nobody guards -
+# 200 for the operator proves nothing on its own, and this suite has had a
+# security check pass for months because the door ignored the thing it tested.
+#
+# The second is the answer itself: it must agree with the command line, because
+# two spellings of one fact is how a console and a shell come to disagree. Both
+# are asked here and their `exposed` counts compared.
+#
+# AND `principals` IS A LIST EVEN WHEN IT IS EMPTY. The whole finding is about
+# telling "nothing exposed" from "this node could not look", so a null there
+# would be the defect wearing the fix's clothes.
+an_exposure_is_readable_without_a_dsn() {
+	recall
+	api GET "$TOKEN_OP" /api/principals/exposed || return 1
+	want_eq "the operator is answered" "$API_STATUS" 200 || return 1
+	local by_door kind
+	by_door="$(jqv .exposed)"
+	kind="$(jqv '.principals | type')"
+	want_eq "principals is a list, present even when nothing is exposed" "$kind" array || return 1
+	case "$by_door" in
+	'' | *[!0-9]*)
+		printf 'the door answered exposed=%q, which is not a count\n' "$by_door" >&2
+		return 1
+		;;
+	esac
+
+	# A SEAT IS REFUSED. The same request, varying only the credential.
+	want_status 403 GET "$TOKEN_A_AGENT" /api/principals/exposed || return 1
+
+	# AND THE COMMAND LINE AGREES, because they are two doors onto one store
+	# function and a difference between them would be the drift this shares
+	# exposedPayload to prevent.
+	# Its OWN status, not jq's. `x="$(cmd | jq ...)" || return 1` reads the
+	# LAST command in the pipeline, so a flowy that failed would hand jq an
+	# empty stdin, and jq answering null exits 0 - a broken command line would
+	# arrive here as a mismatched count rather than as a failure to run.
+	local cli_json by_cli
+	if ! cli_json="$("$ROOT/flowy" principal exposed 2>&1)"; then
+		printf 'flowy principal exposed failed: %s\n' "$cli_json" >&2
+		return 1
+	fi
+	by_cli="$(printf '%s' "$cli_json" | jq -r '.exposed')"
+	want_eq "the door and the command line count the same exposure" "$by_door" "$by_cli" || return 1
+
+	printf 'the operator reads exposed=%s over HTTP and %s from the command line, a seat is refused 403, and principals is a %s\n' \
+		"$by_door" "$by_cli" "$kind"
 }
 
 # A PERSON WHO IS THE OPERATOR IS THE OPERATOR, whatever they logged in with.
