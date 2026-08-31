@@ -30,10 +30,20 @@ a_row_id_has_one_face() {
 	# ever be in.
 	local row
 	api POST "$TOKEN_A" /api/artifacts \
-		'{"type": "memory", "kind": "todo", "scope": "project",
+		'{"type": "memory", "kind": "todo",
 		  "title": "one face for an id", "body": "seeded by the font check"}' ||
 		return 1
+	# ASSERTED, because the door REFUSES an unknown field and `api` does not
+	# fail on a 4xx. The first version sent "scope" where the field is
+	# "visibility", got a refusal, and the check reported "the row id null is
+	# drawn nowhere" - a true sentence about a row that was never created. A
+	# fixture that did not arrive should say the door refused it.
+	want_eq "the seeded row was created" "$API_STATUS" 200 || return 1
 	row="$(jqv .id)"
+	if [ -z "$row" ] || [ "$row" = null ]; then
+		printf 'the create answered 200 with no id: %s\n' "$API_BODY" >&2
+		return 1
+	fi
 	# In the room as PROSE - a pasted id the renderer linkifies - and the same
 	# id on the board. The chip beside a message is drawn from the row a
 	# message raised, which this does not need: prose and board are the two
