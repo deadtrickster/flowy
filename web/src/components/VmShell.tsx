@@ -69,6 +69,18 @@ type ShellState = "idle" | "starting" | "live" | "ended" | "refused";
 const heldKey = (project: string, slot: number) =>
   `flowy.vmshell.session.${project || "-"}.${slot}`;
 
+// HOW LONG SINCE ANYTHING CAME OUT OF IT, in the words a person would use.
+//
+// Seconds only below a minute: "idle 3s" and "idle 4m" answer the question
+// somebody actually has of a listed shell, which is whether it is still being
+// used or was abandoned. Rounded down deliberately - claiming 5m at 4m01s
+// would be the one place this reads as more precise than it is.
+function idleSaid(seconds: number): string {
+  if (seconds < 60) return `idle ${Math.floor(seconds)}s`;
+  if (seconds < 3600) return `idle ${Math.floor(seconds / 60)}m`;
+  return `idle ${Math.floor(seconds / 3600)}h`;
+}
+
 function readHeldSession(project: string, slot: number): string {
   try {
     return window.localStorage.getItem(heldKey(project, slot)) ?? "";
@@ -150,6 +162,15 @@ export function VmShell({
   const [sent, setSent] = useState<string | null>(null);
   const [sendingSel, setSendingSel] = useState(false);
   const [sendErr, setSendErr] = useState<string | null>(null);
+  // SHELLS THIS NODE IS RUNNING THAT THIS BROWSER DID NOT START.
+  //
+  // 01M1558DPM1HRGZNJGMVW24DHF item 3, the panel half. The session id lives in
+  // localStorage, so before the door landed only the browser that started a
+  // shell could return to it - the operator's "I started it on the laptop and
+  // I am on the phone". GET /api/agent/sessions is the list; this offers it.
+  const [others, setOthers] = useState<
+    { id: string; project: string; where: string; watchers: number; idle_seconds: number }[]
+  >([]);
   // WHAT EVERY FIT SAW AND PRODUCED. Reading rows alone said fit() was not
   // re-running and could not say why - whether it was never called, or called
   // and measuring a height that was not the one on screen. This records both,
@@ -431,6 +452,29 @@ export function VmShell({
     refit();
   }, [refit]);
 
+  // ASKED WHILE IDLE AND NOT WHILE RUNNING. A panel already holding a shell has
+  // no use for the list, and polling the door from a live terminal would be a
+  // request per panel per interval for an answer nobody is reading.
+  //
+  // A FAILURE LEAVES THE LIST EMPTY RATHER THAN SHOWING A BROKEN CONTROL. The
+  // door is operator-only, so an ordinary token gets 403 here and simply has
+  // nothing to offer - which is correct, not an error to render.
+  useEffect(() => {
+    if (state !== "idle") return;
+    let stopped = false;
+    void api
+      .agentSessions()
+      .then((page) => {
+        if (!stopped) setOthers(page.sessions ?? []);
+      })
+      .catch(() => {
+        if (!stopped) setOthers([]);
+      });
+    return () => {
+      stopped = true;
+    };
+  }, [state]);
+
   // REFIT WHEN THE PANEL'S OWN TEXT CHANGES, because that is what resizes the
   // box. The header holds the state word and the reason, and a longer reason
   // wraps it onto another line - measured in the gate: the box goes 772 -> 740
@@ -688,6 +732,54 @@ export function VmShell({
             ? "nothing is running. Run a shell opens a shell ON THIS HOST - the machine serving this console, with its files and its user. There is no VM between you and it."
             : "nothing is running. Run a shell brings up a microVM and puts its shell here - what you type goes to the guest, not to this machine."}
         </p>
+      ) : null}
+      {/*
+        SHELLS ALREADY RUNNING, OFFERED RATHER THAN ONLY REMEMBERED.
+
+        A panel adopts on mount from localStorage, so before this the only
+        session you could return to was one THIS browser started. Start a shell
+        on the laptop, open the console on the phone, and the node was still
+        running it with no way to say so.
+
+        TAKING ONE IS THE ADOPT PATH, not a second one: the chosen id is written
+        where run(true) already looks, so this is the reload case with the id
+        coming from a list instead of from storage. It also means a taken
+        session becomes this panel's remembered one, which is what a person
+        means by taking it.
+
+        THE PANEL THAT STARTED IT KEEPS DRAWING. Taking is attaching, not
+        stealing - the node fans a session out to every reader, which is why
+        this counts watchers rather than showing a session as busy.
+      */}
+      {state === "idle" && others.length > 0 ? (
+        <div data-vm-shell-others={String(others.length)} className="flex flex-col gap-1">
+          <p className="text-muted-foreground text-xs">
+            already running on this node - taking one attaches to it, it keeps running for whoever
+            else is watching:
+          </p>
+          {others.map((o) => (
+            <div key={o.id} className="flex items-center gap-2 text-xs">
+              <button
+                type="button"
+                data-vm-shell-take={o.id}
+                className="rounded border px-2 py-0.5 hover:bg-accent"
+                onClick={() => {
+                  rememberSession(project, slot, o.id);
+                  void run(true);
+                }}
+              >
+                take
+              </button>
+              <span className="text-muted-foreground">
+                {o.project} on {o.where === "host" ? "this host" : "a microVM"}
+                {" - "}
+                {o.watchers === 0 ? "nobody watching" : `${o.watchers} watching`}
+                {" - "}
+                {idleSaid(o.idle_seconds)}
+              </span>
+            </div>
+          ))}
+        </div>
       ) : null}
       {/* SAID WHILE IT IS RUNNING TOO. A prompt looks the same on either
           machine, and "which machine am I on" is not a question a person should
