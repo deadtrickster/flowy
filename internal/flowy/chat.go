@@ -991,6 +991,13 @@ func (s *server) handleInbox(w http.ResponseWriter, r *http.Request) {
 	if err := s.db.FillDisowned(r.Context(), nil, list); err != nil {
 		log.Printf("disowned: could not resolve repudiations for an inbox page: %v", err)
 	}
+	// AND WHO IT WAS WRITTEN TO, by name. Beside the disowned fill for the
+	// same reason it sits beside Citations: a second door onto the same
+	// messages is where a resolution gets forgotten, and a door that skipped
+	// this one would draw an id where every other door draws a name.
+	if err := s.db.FillAddresseeNames(r.Context(), list); err != nil {
+		log.Printf("addressee: could not resolve names for an inbox page: %v", err)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"events": list,
 		"since":  since,
@@ -1054,6 +1061,13 @@ func (s *server) readRoom(r *http.Request, room, thread string, since int64, lim
 	if err := s.db.FillDisowned(r.Context(), nil, list); err != nil {
 		log.Printf("disowned: could not resolve repudiations for a room page: %v", err)
 	}
+	// AND WHO IT WAS WRITTEN TO, by name. Beside the disowned fill for the
+	// same reason it sits beside Citations: a second door onto the same
+	// messages is where a resolution gets forgotten, and a door that skipped
+	// this one would draw an id where every other door draws a name.
+	if err := s.db.FillAddresseeNames(r.Context(), list); err != nil {
+		log.Printf("addressee: could not resolve names for a room page: %v", err)
+	}
 	return list, nil
 }
 
@@ -1093,6 +1107,13 @@ func roomBefore(
 	// carries the same mark - see readRoom.
 	if err := db.FillDisowned(ctx, nil, list); err != nil {
 		log.Printf("disowned: could not resolve repudiations for a backwards page: %v", err)
+	}
+	// AND WHO IT WAS WRITTEN TO, by name. Beside the disowned fill for the
+	// same reason it sits beside Citations: a second door onto the same
+	// messages is where a resolution gets forgotten, and a door that skipped
+	// this one would draw an id where every other door draws a name.
+	if err := db.FillAddresseeNames(ctx, list); err != nil {
+		log.Printf("addressee: could not resolve names for a backwards page: %v", err)
 	}
 	return list, nil
 }

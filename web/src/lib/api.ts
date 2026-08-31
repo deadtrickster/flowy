@@ -188,6 +188,19 @@ export interface FlowyEvent {
     /** attachment ids a message carries, space separated, in the order named. */
     attachments?: string;
   };
+  /**
+   * The NAME the node resolves for `addressee`, by the same rules it resolves a
+   * speaker's - `author` on an artifact is the same finding about who wrote a
+   * row. Absent when this node cannot name that principal, and absent is the
+   * point: a surface draws the id AS AN ID then, never dressed as a name.
+   *
+   * This console drew shortId(addressee, 8), so a room read "to MMXTYVG2" while
+   * the speaker chip beside it said "claude-host" - the same person, twice, one
+   * of them as eight characters of a ULID. It could not be fixed here:
+   * meta.mentions carries the name only for a message that named somebody with
+   * an @, and `flowy say --to NAME` addresses without writing one.
+   */
+  addressee_name?: string;
   /** What this message is answering, as the node resolved it for this reader. */
   citation?: Citation;
   /**

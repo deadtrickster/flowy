@@ -648,6 +648,22 @@ type Event struct {
 	// to the author and the one principal named here, and nothing else. See
 	// privateEventSQL, and IsDirectMessage for the same rule in Go.
 	Addressee string `json:"addressee,omitempty"`
+	// AddresseeName is the NAME this node resolves for that principal, by the
+	// same rules a speaker's is resolved - see FillAddresseeNames, which is
+	// Author's rule (authors.go) applied to the other end of the same row.
+	//
+	// It is a read-time finding like Author and Disowned: not stored, not
+	// signed, nothing replicates it. And like Author it NEVER NAMES WHAT IT
+	// CANNOT RESOLVE - "" is "this node cannot name the addressee", and a
+	// surface must draw the id as an id rather than dressed as a name.
+	//
+	// The console drew shortId(addressee, 8) here, so a room read "to
+	// MMXTYVG2" where the other end of the same row said "claude-host". A
+	// person is not their id's last eight characters, and the page could not
+	// fix it alone: meta.mentions carries the name only for a message that
+	// named them with an @, and `flowy say --to NAME` addresses somebody
+	// without writing one.
+	AddresseeName string `json:"addressee_name,omitempty"`
 	// Private says this event is a direct message: the addressee is a party to
 	// it rather than somebody it was pointed at, and only the two of them read
 	// it. It is DERIVED and never stored - there is no private column, the

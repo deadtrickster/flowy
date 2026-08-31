@@ -767,8 +767,27 @@ export function MessageList({
                         </Badge>
                       ) : null}
                       {event.addressee ? (
-                        <Badge variant="outline">
-                          to {forMe ? "you" : shortId(event.addressee, 8)}
+                        // A NAME, WHICH IS WHAT THE OTHER END OF THIS ROW SAYS.
+                        // This drew shortId(addressee, 8) and a room read "to
+                        // MMXTYVG2" two inches from a chip saying claude-host.
+                        // The id stays the fallback and stays legible AS an id
+                        // - the node answers no name when it cannot resolve
+                        // one, and an unnameable principal is a real state, not
+                        // a gap to paper over with its own identifier.
+                        <Badge
+                          variant="outline"
+                          title={
+                            forMe
+                              ? undefined
+                              : event.addressee_name
+                                ? `${event.addressee_name} (${event.addressee})`
+                                : `this node cannot name ${event.addressee}`
+                          }
+                        >
+                          to{" "}
+                          {forMe
+                            ? "you"
+                            : (event.addressee_name ?? "") || shortId(event.addressee, 8)}
                         </Badge>
                       ) : null}
                     </>

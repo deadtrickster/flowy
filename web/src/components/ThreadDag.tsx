@@ -67,7 +67,7 @@ export function threadLayout(events: FlowyEvent[]): { nodes: Node[]; edges: Edge
              */}
             {event.private ? (
               <div className="truncate pb-1 font-mono text-[10px] uppercase tracking-wide">
-                private to {shortId(event.addressee ?? "", 8)}
+                private to {(event.addressee_name ?? "") || shortId(event.addressee ?? "", 8)}
               </div>
             ) : null}
             <div className="line-clamp-3 text-xs leading-snug">{event.body}</div>

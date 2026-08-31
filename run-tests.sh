@@ -4021,6 +4021,65 @@ say_to() {
 		"$(jq -nc --arg t "$3" --arg b "$4" '{to: $t, body: $b}')"
 }
 
+# THE ADDRESSEE IS NAMED, NOT SPELLED AS AN ID.
+#
+# The console drew shortId(addressee, 8), so a room read "to MMXTYVG2" two
+# inches from a speaker chip saying "claude-host" - the same person, twice, one
+# of them as eight characters of a ULID. Measured on the dogfood node before
+# this, and it is the door's answer to fix rather than the page's: meta.mentions
+# carries the name only for a message that named somebody with an @, and
+# `flowy say --to NAME` addresses without writing one, which is the message that
+# was being drawn as an id.
+#
+# TWO WAYS OF ADDRESSING SOMEBODY, AND THE POINT IS THAT THEY AGREE. One message
+# says --to with no mention in the body, the other names them with an @. Before
+# the fix the first answered no name and the second did, so a check that read
+# only the @ form would have passed on the defect.
+#
+# AND AN UNNAMEABLE PRINCIPAL STAYS UNNAMED. addressee_name is omitempty and a
+# principal this node cannot name gets no key at all - never the id handed back
+# as though it were a name, which is the failure Author's comment in
+# internal/store/authors.go refuses in the same words. Asserted against a
+# deleted-then-addressed principal is not available here, so the arm that stands
+# for it is the one below: the name must be the HANDLE and never a prefix of the
+# id, so an implementation that fell back to shortId fails rather than passes.
+an_addressee_is_named() {
+	recall
+	local by_to by_at
+	say_to "$TOKEN_A" naming "$USER_B" "no mention of them in this sentence" || return 1
+	want_eq "say status" "$API_STATUS" 200 || return 1
+	by_to="$(jqv .id)"
+	api POST "$TOKEN_A" /api/chat/naming/say \
+		"$(jq -nc --arg b "@$HANDLE_B does this read as a name" '{body: $b}')" || return 1
+	by_at="$(jqv .id)"
+
+	api GET "$TOKEN_A" /api/chat/naming || return 1
+	# jqv takes ONE argument - `jq -r "$1"` - so --arg through it would be an
+	# argument the callee drops, which is the thing this repo refuses. Inline,
+	# and `// ""` because addressee_name is omitempty: an unnameable principal
+	# has no key at all, and jq's null would compare equal to nothing useful.
+	local named_to named_at
+	named_to="$(printf '%s' "$API_BODY" |
+		jq -r --arg id "$by_to" '.events[] | select(.id == $id) | .addressee_name // ""')"
+	named_at="$(printf '%s' "$API_BODY" |
+		jq -r --arg id "$by_at" '.events[] | select(.id == $id) | .addressee_name // ""')"
+
+	want_eq "the --to message names its addressee" "$named_to" "$HANDLE_B" || return 1
+	want_eq "the @ message names the same person the same way" "$named_at" "$HANDLE_B" || return 1
+	# THE NAME IS NOT THE ID WEARING A NAME'S CLOTHES. shortId(x, 8) is a
+	# prefix of the id, so this is the arm that tells a resolution from a
+	# fallback dressed up as one.
+	case "$USER_B" in
+	"$named_to"*)
+		printf 'the addressee name %s is a prefix of the id %s, so it is the id and not a handle\n' \
+			"$named_to" "$USER_B" >&2
+		return 1
+		;;
+	esac
+	printf 'addressed by --to and by @: both answer addressee_name %s, and it is the handle rather than a slice of %s\n' \
+		"$named_to" "$USER_B"
+}
+
 a_message_can_be_addressed() {
 	recall
 	local id
@@ -13795,6 +13854,7 @@ check "a project that holds a grant does" a_granted_project_does_see_the_room
 # checks here: an addressee opens nothing and closes nothing.
 say "chat addressing"
 check "a message carries who it is for, there and back" a_message_can_be_addressed
+check "the door names the addressee, however they were addressed" an_addressee_is_named
 check "an agent is an addressee too" an_agent_can_be_addressed
 check "a handle is an address, and it stores the principal" a_handle_is_an_address
 check "a name nothing answers to is refused at the door" \

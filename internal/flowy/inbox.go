@@ -34,6 +34,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -492,6 +493,13 @@ func (s *server) handleInboxWait(w http.ResponseWriter, r *http.Request) {
 	if err := s.db.FillDisowned(r.Context(), nil, deliver); err != nil {
 		serverError(w, r, err)
 		return
+	}
+	// AND WHO IT WAS WRITTEN TO, by name. Beside the disowned fill for the
+	// same reason it sits beside Citations: a second door onto the same
+	// messages is where a resolution gets forgotten, and a door that skipped
+	// this one would draw an id where every other door draws a name.
+	if err := s.db.FillAddresseeNames(r.Context(), deliver); err != nil {
+		log.Printf("addressee: could not resolve names for a delivery: %v", err)
 	}
 
 	// AND WHERE THIS READER STANDS IN EACH THREAD. The line already says which
