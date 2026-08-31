@@ -23,9 +23,15 @@
 
 a_row_id_has_one_face() {
 	recall
+	# A TODO AND NOT A BUG. The first version seeded a bug and the check
+	# refused: "drawn nowhere on /todos, so this run compared one surface
+	# against itself". /todos lists work, and a bug is not on it - the refusal
+	# was right and the fixture was wrong, which is the order those two should
+	# ever be in.
 	local row
 	api POST "$TOKEN_A" /api/artifacts \
-		'{"type": "bug", "title": "one face for an id", "body": "seeded by the font check"}' ||
+		'{"type": "memory", "kind": "todo", "scope": "project",
+		  "title": "one face for an id", "body": "seeded by the font check"}' ||
 		return 1
 	row="$(jqv .id)"
 	# In the room as PROSE - a pasted id the renderer linkifies - and the same
