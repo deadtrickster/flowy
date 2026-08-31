@@ -109,8 +109,22 @@ type agentControl struct {
 	// resize, client to server
 	Rows uint16 `json:"rows,omitempty"`
 	Cols uint16 `json:"cols,omitempty"`
-	// exited
-	Why string `json:"why,omitempty"`
+	// exited: WHY, and never omitempty.
+	//
+	// agentView one screen down carries the same field and deliberately does NOT
+	// omit it, with the reason written out: a client cannot tell "still running"
+	// from "the field was left out" if the running case has no field. This frame
+	// had the opposite spelling, so the moment a reason was empty the key
+	// vanished and the panel fell back to its generic "the connection closed" -
+	// which is exactly the bug dc68349 fixed one layer further along.
+	//
+	// It could not fire when found: agentshell.go always supplies a reason at
+	// the natural exit, and stop(id, why) had no non-test caller. That is a
+	// property of today's callers rather than of this type, and the type is
+	// where it should be guaranteed. An "exited" frame whose reason is empty
+	// should say so with an empty string, so the client can tell the node had
+	// nothing to say from the node not having said it.
+	Why string `json:"why"`
 }
 
 // handleAgentSocket runs one session's socket.

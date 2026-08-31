@@ -11,6 +11,7 @@ package flowy
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -339,5 +340,34 @@ func TestAnExitNoticeSurvivesTheCancel(t *testing.T) {
 			"That is what makes a shell look like it exited for no reason: the node knows why " +
 			"and the panel is never told, so it falls back to \"the connection closed\" and a " +
 			"clean exit is indistinguishable from a crash.")
+	}
+}
+
+// AN EXIT FRAME CARRIES ITS REASON FIELD EVEN WHEN THE REASON IS EMPTY.
+//
+// The sibling type agentView says it in a comment: a client cannot tell "still
+// running" from "the field was left out" if the running case has no field. The
+// control frame was spelled the other way, so an empty reason removed the key
+// altogether and the panel could not distinguish "the node has no reason for
+// you" from "no reason was sent" - and its fallback for both is the generic
+// "the connection closed" that 01M14HN1VX1CXY8RAH314PQWA8 item 2 is about.
+//
+// No path could produce an empty reason when this was found. That is a fact
+// about today's callers, not about the wire format, and it is the kind of fact
+// that stops being true silently.
+func TestAnExitedFrameAlwaysCarriesWhy(t *testing.T) {
+	encoded, err := json.Marshal(agentControl{Type: "exited", Slot: 1})
+	if err != nil {
+		t.Fatalf("marshalling an exited frame: %v", err)
+	}
+
+	var back map[string]any
+	if err := json.Unmarshal(encoded, &back); err != nil {
+		t.Fatalf("unmarshalling it again: %v", err)
+	}
+	if _, ok := back["why"]; !ok {
+		t.Fatalf("an exited frame with no reason left the field out entirely: %s\n"+
+			"A client then cannot tell an empty reason from an absent one, and shows the "+
+			"same generic text it shows for a socket that simply died.", encoded)
 	}
 }
