@@ -401,7 +401,7 @@ func readPage[T any](
 ) ([]T, error) {
 	a := &args{}
 	statement := query(a)
-	rows, err := d.sql.QueryContext(ctx, statement, a.vals...)
+	rows, err := queryRetryingDeadlock(ctx, d, statement, a.vals)
 	if err != nil {
 		return nil, fmt.Errorf("store: %s: %w", what, err)
 	}
@@ -3221,4 +3221,51 @@ func (d *DB) ListPeers(ctx context.Context) ([]*Peer, error) {
 		return nil, fmt.Errorf("store: list peers: %w", err)
 	}
 	return out, nil
+}
+
+// isDeadlock reports whether Postgres aborted this statement to break a lock
+// cycle (SQLSTATE 40P01), rather than for any of the other reasons a query can
+// fail.
+func isDeadlock(err error) bool {
+	var pqErr *pq.Error
+	return errors.As(err, &pqErr) && pqErr.Code == "40P01"
+}
+
+// queryRetryingDeadlock runs one read, and runs it once more if Postgres picked
+// it as the victim of a deadlock.
+//
+// A DEADLOCKED READ IS NOT A FAULT AND IT REACHED A PERSON AS ONE.
+// 01M17K62JD1JGTQM2BRRTND18H: at 2026-08-31T17:22:12 a listener blocked in
+// /api/inbox/wait for 20.998s was aborted with "store: list events: pq:
+// deadlock detected" and answered 500, refusing an agent's inbox. That node ran
+// 8370573 - eleven hours after the lock_timeout fix, which bounds how long a
+// schema apply WAITS and says nothing about which side Postgres aborts once a
+// cycle exists.
+//
+// A READ REALLY CAN BE THE VICTIM, measured rather than argued. A SELECT holds
+// ACCESS SHARE on every table it touches and `list events` touches several; a
+// deploy's schema.sql is one transaction taking ACCESS EXCLUSIVE across nearly
+// all of them. Reproduced deterministically against a throwaway database, both
+// ways round: the side that BLOCKS LAST is the side Postgres aborts, and with
+// the read blocking last it is aborted on a bare SELECT.
+//
+// WHY RETRYING IS CORRECT RATHER THAN PAPERING OVER. The usual objection is
+// that a deadlocked transaction lost work its caller must replay. There is
+// none: readPage runs one statement on the pool, with no transaction of its
+// own - ListEvents is called straight on it, and nothing above opens one - so
+// re-running the statement is identical to running it. 40P01 is the error
+// Postgres defines as retryable; it aborts one party precisely so the other can
+// proceed, and here the whole of the aborted state is a single SELECT.
+//
+// ONCE, NOT A LOOP, AND ONLY WHILE SOMEBODY IS WAITING. A second deadlock is a
+// different story from an unlucky first one and should be seen rather than
+// smoothed away. The context is checked first so a retry cannot outlive the
+// caller it is for: a client that has hung up is serverErrorSaying's case, and
+// this must not resurrect the request behind it.
+func queryRetryingDeadlock(ctx context.Context, d *DB, statement string, vals []any) (*sql.Rows, error) {
+	rows, err := d.sql.QueryContext(ctx, statement, vals...)
+	if err == nil || !isDeadlock(err) || ctx.Err() != nil {
+		return rows, err
+	}
+	return d.sql.QueryContext(ctx, statement, vals...)
 }
