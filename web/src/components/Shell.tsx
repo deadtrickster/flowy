@@ -159,18 +159,27 @@ function ProjectBadge() {
         THE CURRENT PROJECT IS IN THE LIST AND SELECTED, so the control says
         where you are as well as where you could go.
 
-        ABSENT IS NOT EMPTY: null memberships is an agent credential or a
-        whoami still in flight; [] is a person who belongs nowhere. Neither
-        draws a menu - an empty one reads as broken - and [] additionally gets
-        a sentence saying why the control is missing.
+        ABSENT IS NOT EMPTY: null memberships is a whoami still in flight, or
+        a list the node could not read; [] is a person who belongs nowhere -
+        and today an agent too, which is the defect filed below. Neither draws
+        a menu - an empty one reads as broken - and [] additionally gets a
+        sentence saying why the control is missing.
       */}
       {/*
         AND WHEN THERE IS NO SELECT, THE NAME IS SAID PLAINLY. Dropping the span
-        outright was a regression I nearly shipped: memberships is null for an
-        AGENT credential - which is most of the seats reading this console - and
-        the select does not render for them at all, so the rail would have gone
-        silent about which project their writes land in. It is only a repetition
-        when the control beneath it is already saying it.
+        outright was a regression, and the check caught it: no picker draws for
+        a seat with nowhere to go, so the rail would have gone silent about
+        which project that seat's writes land in. It is only a repetition when
+        the control beneath it is already saying it.
+
+        WHICH SEATS THOSE ARE, measured against the dogfood node rather than
+        assumed: an agent credential gets memberships `[]`, not null - the same
+        value a person who belongs to nothing gets - so agents take the middle
+        branch and are told "you belong to no project yet", which is not true of
+        them. The door means to answer otherwise and says so in its own comment
+        at api.go:1583; the initialiser answers [] before the guard it describes.
+        Filed as 01M1BW5G028XX66GKVXYNE0T9X. null reaches here only from the
+        error branch - "could not be read" - and from a whoami still in flight.
       */}
       {picker ? (
         <select
