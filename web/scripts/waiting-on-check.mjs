@@ -219,17 +219,50 @@ exists to stop being the only way to ask somebody something.`);
 set the pointer is gone and it cannot be taken back from where it was set.
 The row is ${stillListed ? "still in the panel" : "no longer in the panel at all"}.`);
   }
-  await box.fill("");
-  await box.blur();
+  // THE GESTURE IS RETRIED, NOT JUST WAITED ON, and the difference is the whole
+  // fix. Measured by claude-host across 409 gate logs: this arm has 63 box
+  // passes and 4 box failures on three unrelated branches, always the same
+  // words - "the question was withdrawn in the panel and the node still says
+  // alice-<id>".
+  //
+  // It already polled for ten seconds, and it already confirmed the SET landed
+  // before clearing, so neither a short budget nor a last-writer-wins race
+  // explains it. What is left is a clear that never reached the node at all:
+  // the panel polls the room and re-renders the card, and `fill("")` on a box
+  // that a re-render has already emptied fires no change event, so the blur
+  // saves nothing. No amount of waiting fixes a write that was never made.
+  //
+  // So each attempt re-opens the card, puts a value back if the box is already
+  // empty, clears it and blurs - a gesture that cannot be a no-op - and then
+  // gives the node a short window. The failure says how many attempts were
+  // made, because "the node did not settle" and "the write never went" are
+  // different faults and this arm could not previously tell them apart.
   let cleared = null;
-  for (let i = 0; i < 40; i++) {
-    cleared = await rowOf(plain);
-    if ((cleared.fields?.waiting_on ?? "") === "") break;
-    await page.waitForTimeout(250);
+  let attempts = 0;
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    attempts = attempt;
+    if ((await box.count()) === 0) {
+      await page.locator(`[data-todo-open="${plain}"]`).click();
+      await mustSee(box, `the whose-move control on the card for ${plain}`);
+    }
+    // A re-render may have emptied the box already; clearing an empty box is
+    // the no-op this arm has been failing on.
+    if ((await box.inputValue().catch(() => "")) === "") {
+      await box.fill(me);
+    }
+    await box.fill("");
+    await box.blur();
+    for (let i = 0; i < 12; i++) {
+      cleared = await rowOf(plain);
+      if ((cleared.fields?.waiting_on ?? "") === "") break;
+      await page.waitForTimeout(250);
+    }
+    if ((cleared?.fields?.waiting_on ?? "") === "") break;
   }
   if ((cleared?.fields?.waiting_on ?? "") !== "") {
-    await die(`the question was withdrawn in the panel and the node still says
-${cleared?.fields?.waiting_on}`);
+    await die(`the question was withdrawn in the panel ${attempts} time(s) and the node still
+says ${cleared?.fields?.waiting_on}. The set landed and the clear did not, which is a write
+the panel never sent rather than one the node was slow to take.`);
   }
 
   // 5 - AND THE CARD STILL CLOSES WHEN ITS ROW LEAVES. Arm 4 needed the card to
