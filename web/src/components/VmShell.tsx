@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { api, sessionNameFor } from "@/lib/api";
 import { attachMouseReporting } from "@/lib/mousereport";
+import { attachSoftKeyboard } from "@/lib/softkeys";
 import { selectionMessage } from "@/lib/termselect";
 
 import { attachAgent, sendAgentControl, sendAgentInput, stopAgent } from "@/lib/agentsocket";
@@ -131,6 +132,7 @@ export function VmShell({
   // changes shape rather than waiting on the observer's debounce.
   const fitter = useRef<GhosttyFit | null>(null);
   const unmouse = useRef<(() => void) | null>(null);
+  const unsoft = useRef<(() => void) | null>(null);
   const floatBox = useRef<HTMLDivElement | null>(null);
   // WHERE THE FLOATING PANEL HAS BEEN PUT, or null for "wherever it opens".
   // Null is not (0,0): a panel that has never been dragged sits bottom-right by
@@ -215,6 +217,8 @@ export function VmShell({
       detach.current = null;
       unmouse.current?.();
       unmouse.current = null;
+      unsoft.current?.();
+      unsoft.current = null;
       term.current?.dispose();
     };
   }, []);
@@ -381,6 +385,15 @@ export function VmShell({
     if (box.current) {
       unmouse.current?.();
       unmouse.current = attachMouseReporting(box.current, t, (data) => sendAgentInput(slot, data));
+
+      // AND THE KEYS A PHONE SENDS THAT THE EMULATOR DROPS. Backspace and
+      // Enter arrive from an Android keyboard as keydown 229, which ghostty
+      // returns early on, and as a beforeinput it preventDefaults - so without
+      // this they reach nothing at all. See lib/softkeys: it sends only the
+      // events the keydown path declined, because on a real keyboard both fire
+      // for one keystroke and the naive version types everything twice.
+      unsoft.current?.();
+      unsoft.current = attachSoftKeyboard(box.current, (data) => sendAgentInput(slot, data));
     }
 
     // And the shape, so the guest wraps where this panel wraps. A pty defaults
