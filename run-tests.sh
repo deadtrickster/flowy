@@ -13809,8 +13809,6 @@ check "a write into a fixture lands, and says it landed in a fixture" \
 	a_write_into_a_fixture_lands_and_says_so
 check "the enumeration is filtered by the edges that already existed" \
 	the_enumeration_is_permission_filtered
-check "the exposure a peer could forge under is readable without a DSN" \
-	an_exposure_is_readable_without_a_dsn
 check "anybody declares, only the operator flags and pins" \
 	declaring_is_open_and_flagging_a_fixture_is_the_operators
 check "one repository is one origin, and a move is an alias" \
@@ -20933,6 +20931,11 @@ check "a person who is logged in, with no token anywhere, can post in a room" \
 	a_logged_in_person_can_post_in_a_room
 check "a person who is the operator is the operator, by session as well as by token" \
 	a_person_who_is_the_operator_is_the_operator
+# BELOW ITS DEFINITION, which is not a style choice: check() calls the function
+# as it reads the line, so a registration above the `foo() {` that defines it is
+# `command not found` at exit 127. Measured on the first run of this one.
+check "the exposure a peer could forge under is readable without a DSN" \
+	an_exposure_is_readable_without_a_dsn
 check "a person who is logged in, with no token, sees the console instead of the locked shelf" \
 	a_logged_in_person_sees_the_console
 check "the series door answers per name, oldest first" \
