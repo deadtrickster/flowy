@@ -20689,9 +20689,18 @@ a_logged_in_person_can_post_in_a_room() {
 # 200 for the operator proves nothing on its own, and this suite has had a
 # security check pass for months because the door ignored the thing it tested.
 #
-# The second is the answer itself: it must agree with the command line, because
-# two spellings of one fact is how a console and a shell come to disagree. Both
-# are asked here and their `exposed` counts compared.
+# The second is the answer itself: it must be the SAME BYTES the command line
+# prints, because two spellings of one fact is how a console and a shell come to
+# disagree about it.
+#
+# WHAT THIS ARM DOES NOT COVER, said here rather than left to be assumed: the
+# gate's fixture keys every principal it mints, so `exposed` is 0 and the list
+# is empty. Comparing two counts that are both zero would agree just as loudly
+# if both sides were broken, which is why the comparison is over the whole
+# payload and not the number. The CONTENTS - handle, row count, the command
+# that closes each name - are covered where a keyless principal can actually be
+# built: TestAPrincipalWithNoKeyIsNamed in internal/store. What this adds is the
+# door, its gate, and that the two answers cannot drift apart.
 #
 # AND `principals` IS A LIST EVEN WHEN IT IS EMPTY. The whole finding is about
 # telling "nothing exposed" from "this node could not look", so a null there
@@ -20729,8 +20738,20 @@ an_exposure_is_readable_without_a_dsn() {
 	by_cli="$(printf '%s' "$cli_json" | jq -r '.exposed')"
 	want_eq "the door and the command line count the same exposure" "$by_door" "$by_cli" || return 1
 
-	printf 'the operator reads exposed=%s over HTTP and %s from the command line, a seat is refused 403, and principals is a %s\n' \
-		"$by_door" "$by_cli" "$kind"
+	# THE WHOLE ANSWER, not the count - see the note above about two zeroes
+	# agreeing. Sorted keys so a difference is a difference in the facts and
+	# not in the order a map happened to serialise.
+	local door_all cli_all
+	door_all="$(printf '%s' "$API_BODY" | jq -Sc .)"
+	cli_all="$(printf '%s' "$cli_json" | jq -Sc .)"
+	if [ "$door_all" != "$cli_all" ]; then
+		printf 'the door and the command line describe different exposures:\n  door: %s\n  cli:  %s\n' \
+			"$door_all" "$cli_all" >&2
+		return 1
+	fi
+
+	printf 'the operator reads the same exposure over HTTP and from the command line (exposed=%s, principals a %s), and a seat is refused 403 - contents covered by TestAPrincipalWithNoKeyIsNamed, this fixture keys everything it mints\n' \
+		"$by_door" "$kind"
 }
 
 # A PERSON WHO IS THE OPERATOR IS THE OPERATOR, whatever they logged in with.
