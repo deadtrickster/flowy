@@ -111,10 +111,41 @@ try {
     }
   }
 
-  for (const want of [quietReader, liveReader]) {
-    if ((await page.locator(`[data-reader="${want}"]`).count()) === 0) {
-      die(`the panel does not list ${want}, which the node says this token holds`);
-    }
+  /**
+   * SETTLE, RATHER THAN READ ONCE AFTER VISIBLE.
+   *
+   * This is the correction of a measured defect in this check, not a nicety.
+   * `[data-your-readers]` becomes visible when the PANEL mounts; the rows
+   * inside it are drawn when the panel's own fetch resolves, which is a
+   * separate event ordered against nothing here. So this counted the rows in
+   * the window between those two and found none.
+   *
+   * COUNTED OVER EVERY DRAIN LOG ON THE BOX - 409 of them - this check has 291
+   * passes and 3 failures, and the three box failures carry the same line as
+   * the guest ones. It was filed as "green on the box, red in a guest", which
+   * framed it as an environment difference and sent the reader looking for what
+   * a guest lacks. It is not that. It is a race that loses about 1% of the time
+   * on the box and close to always in a guest, because a guest is slower and
+   * more loaded - the guest amplifies it rather than causing it.
+   *
+   * A ONE-FRAME READ CANNOT TELL THAT FROM A PANEL THAT NEVER DRAWS. This waits
+   * for the rows to appear, up to a budget, and fails only if they never do -
+   * so a panel that genuinely drops an aged reader still fails, and now says
+   * what it DID draw instead of only what it wanted.
+   */
+  const drawnReaders = async () =>
+    page.$$eval("[data-reader]", (els) => els.map((e) => e.getAttribute("data-reader")));
+  const deadline = Date.now() + 10_000;
+  let drawn = await drawnReaders();
+  while (![quietReader, liveReader].every((w) => drawn.includes(w)) && Date.now() < deadline) {
+    await page.waitForTimeout(250);
+    drawn = await drawnReaders();
+  }
+  const missing = [quietReader, liveReader].filter((w) => !drawn.includes(w));
+  if (missing.length > 0) {
+    die(
+      `the panel does not list ${missing.join(" and ")}, which the node says this token holds - after 10s it had drawn ${JSON.stringify(drawn)}`,
+    );
   }
 
   // The guard, both directions. A "forget" on every row would be the defect
