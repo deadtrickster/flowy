@@ -8203,12 +8203,27 @@ browser_clears_the_unread_badge() {
 # It reads the row the check above left behind rather than declaring one of its
 # own, which is what makes it a statement about the console: under the code this
 # replaces there is no such row for anybody who reads in a browser.
+#
+# THE PERSON'S ROW, AND NOT THEIR AGENTS'. principal is user\x1fagent\x1fproject
+# (store.pendingKey), so matching on the user half alone matches a person AND
+# every seat that inherits them - an agent token carries its person's user id.
+# That was one row for as long as nothing opened a console on an agent
+# credential, and `scalar` handed back TWO lines the day something did:
+#
+#   ./run-tests.sh: line 8221: [: 117190604647170048
+#   117190591465652224: integer expression expected
+#
+# A shell arithmetic error rather than a wrong answer, which is the good version
+# of this failure - but the query was always describing more than it said, and
+# the prose above says "a person in a browser". An empty agent half is what
+# makes it that person.
 the_consoles_mark_is_a_reader_row_that_only_moves_forward() {
 	recall
 	local reader="console:general" mark read_to back
 	mark="$(scalar "SELECT read_cursor FROM inbox_readers
 	                 WHERE reader = '$reader'
-	                   AND split_part(principal, chr(31), 1) = '$USER_A'")" || return 1
+	                   AND split_part(principal, chr(31), 1) = '$USER_A'
+	                   AND split_part(principal, chr(31), 2) = ''")" || return 1
 	if [ -z "$mark" ]; then
 		printf 'inbox_readers holds no row called %s for user A.\n' "$reader" >&2
 		printf 'A person in a browser runs no waiter, so nothing moves their mark and\n' >&2
@@ -8230,7 +8245,8 @@ the_consoles_mark_is_a_reader_row_that_only_moves_forward() {
 	want_eq "the status of an ack of an older position" "$API_STATUS" 200 || return 1
 	back="$(scalar "SELECT read_cursor FROM inbox_readers
 	                 WHERE reader = '$reader'
-	                   AND split_part(principal, chr(31), 1) = '$USER_A'")" || return 1
+	                   AND split_part(principal, chr(31), 1) = '$USER_A'
+	                   AND split_part(principal, chr(31), 2) = ''")" || return 1
 	want_eq "the mark after an older ack" "$back" "$mark" || return 1
 	printf '%s is at %s in inbox_readers, past the %s it read, and an older ack moved nothing\n' \
 		"$reader" "$mark" "$read_to"
