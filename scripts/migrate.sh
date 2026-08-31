@@ -134,9 +134,60 @@ fingerprint() { psql_run -v ON_ERROR_STOP=1 -tAq -F'|' -d "${PSQL_DB:-$dsn}" <"$
 
 before="$(fingerprint)" || die "cannot read the schema catalogue"
 
+# BOUNDED, AND RETRIED, BECAUSE THIS RUNS AGAINST A LIVE DATABASE.
+# 01M1ACTGJDE9GCX6A38JF9MA3T, diagnosed by claude-host: the deploy at 00:17
+# restarted a node and eight inbox/wait requests died in the same second, 12.6s
+# to 20.1s each, every one of them "store: list events: pq: deadlock detected".
+#
+# A plain SELECT takes ACCESS SHARE, which conflicts with exactly one thing:
+# ACCESS EXCLUSIVE, which is DDL. schema.sql is ONE TRANSACTION, so it takes
+# locks across many tables in file order and holds all of them until it commits.
+# A reader holding ACCESS SHARE, this DDL queued behind it, and more reads queued
+# behind the DDL is the classic shape - and with several tables held at once it
+# closes into a cycle rather than a queue.
+#
+# lock_timeout makes the DDL GIVE UP instead of queueing: it waits a bounded time
+# for each lock and fails if it cannot have it. Then it is tried again. What was
+# a reader dead for twenty seconds becomes a deploy that takes a few seconds
+# longer, and if it truly cannot get in, a deploy that FAILS LOUDLY - which is
+# the right way round. statement_timeout is deliberately not used: a long apply
+# that HAS its locks is not the problem and killing it mid-transaction would be.
+#
+# NOT THE OTHER HALF. The row's larger win is skipping the apply when schema.sql
+# has not changed, and that is not done here: a wrong skip is a silently
+# unapplied schema, which this file's own comment calls "the outage, exactly".
+# That one wants a durable record of what was last applied, keyed on the FILE's
+# content rather than on two git shas, and it is the operator's call.
+schema_lock_timeout=${FLOWY_SCHEMA_LOCK_TIMEOUT:-5s}
+schema_tries=${FLOWY_SCHEMA_TRIES:-5}
 say "==> applying schema.sql"
-if ! psql_run -v ON_ERROR_STOP=1 -q -d "${PSQL_DB:-$dsn}" <"$SCHEMA"; then
-	die "schema.sql did not apply - the database is unchanged (the file is one transaction)"
+applied=no
+attempt=1
+while [ "$attempt" -le "$schema_tries" ]; do
+	# The setting rides in front of the file on the same connection, so it is in
+	# force for the transaction the file opens. Passing it with -c would be a
+	# different statement on the same session and would not survive into psql's
+	# reading of the file.
+	if printf 'SET lock_timeout = %s;\n' "$schema_lock_timeout" |
+		cat - "$SCHEMA" |
+		psql_run -v ON_ERROR_STOP=1 -q -d "${PSQL_DB:-$dsn}" 2>"$errlog"; then
+		applied=yes
+		break
+	fi
+	# THE REASON DECIDES, not the exit status. A lock timeout is worth retrying
+	# and a syntax error is not - retrying that one just prints the same failure
+	# five times and delays the report of a real defect by a minute.
+	if ! grep -qiE 'lock timeout|deadlock detected|canceling statement due to lock' "$errlog"; then
+		[ -s "$errlog" ] && sed 's/^/     /' "$errlog" >&2
+		die "schema.sql did not apply - the database is unchanged (the file is one transaction)"
+	fi
+	say "    attempt $attempt could not take its locks within $schema_lock_timeout - a reader has them; retrying"
+	attempt=$((attempt + 1))
+	sleep 2
+done
+if [ "$applied" != yes ]; then
+	[ -s "$errlog" ] && sed 's/^/     /' "$errlog" >&2
+	die "schema.sql could not take its locks in $schema_tries attempts at $schema_lock_timeout each - the database is unchanged (the file is one transaction). A reader is holding them: FLOWY_SCHEMA_LOCK_TIMEOUT and FLOWY_SCHEMA_TRIES raise the bound."
 fi
 
 after="$(fingerprint)" || die "cannot read the schema catalogue back"

@@ -1033,6 +1033,86 @@ upgrade_migrated_matches_a_fresh_database() {
 	return 1
 }
 
+# A DEPLOY DOES NOT DEADLOCK THE READERS IT LANDS ON TOP OF.
+#
+# 01M1ACTGJDE9GCX6A38JF9MA3T, diagnosed by claude-host: a deploy restarted a node
+# and eight inbox/wait requests died in the same second, 12.6s to 20.1s each,
+# every one "store: list events: pq: deadlock detected". A plain SELECT holds
+# ACCESS SHARE; schema.sql is one transaction taking ACCESS EXCLUSIVE across many
+# tables and holding all of them to commit. Reader, DDL queued behind it, more
+# readers queued behind the DDL - and with several tables held at once that
+# closes into a cycle instead of a queue.
+#
+# THIS HOLDS A REAL LOCK AND MEASURES THE CLOCK, because the flag being present
+# in the script is not the property. A `grep lock_timeout scripts/migrate.sh`
+# passes on a migrate that sets it and then queues anyway, which is exactly the
+# failure being fixed.
+#
+# The reader is a transaction that SELECTs and then sits, holding ACCESS SHARE
+# for longer than the apply is allowed to wait. Before this change migrate.sh
+# blocked for the whole hold; after it, it gives up per attempt and retries, so
+# the two arms below are about ELAPSED TIME and about what the failure says.
+upgrade_a_deploy_does_not_queue_behind_a_reader() {
+	local dsn held rc elapsed started out psql_bg_log
+	dsn="$(upg_dsn gate_baseline)"
+
+	# Hold ACCESS SHARE on a table schema.sql touches, for 25 seconds, in the
+	# background. `SELECT 1` would take no table lock at all and prove nothing.
+	psql_bg_log="$UPG/lockholder.log"
+	psql -v ON_ERROR_STOP=1 -q -d "$dsn" \
+		-c 'BEGIN; SELECT count(*) FROM events; SELECT pg_sleep(25); COMMIT;' \
+		>"$psql_bg_log" 2>&1 &
+	held=$!
+	# Give it a moment to actually take the lock. Without this the apply can win
+	# the race and the check measures nothing - a pass that means "the reader was
+	# not there yet".
+	sleep 2
+	if ! kill -0 "$held" 2>/dev/null; then
+		printf 'the lock holder exited before the apply started, so this measured nothing:\n' >&2
+		cat "$psql_bg_log" >&2
+		return 1
+	fi
+
+	started=${EPOCHREALTIME/./}
+	out="$UPG/migrate-under-lock.log"
+	FLOWY_SCHEMA_LOCK_TIMEOUT=1s FLOWY_SCHEMA_TRIES=2 \
+		"$ROOT/scripts/migrate.sh" "$dsn" >"$out" 2>&1
+	rc=$?
+	elapsed=$(((${EPOCHREALTIME/./} - started) / 1000000))
+
+	kill "$held" 2>/dev/null || true
+	wait "$held" 2>/dev/null || true
+
+	# THE POINT: it did not sit behind the reader for the whole 25 seconds.
+	# Two attempts at one second, plus a two second sleep between them, is a
+	# handful of seconds; anything near the hold means it queued.
+	if [ "$elapsed" -ge 20 ]; then
+		printf 'migrate.sh waited %ss behind a reader holding ACCESS SHARE for 25s - it queued\n' \
+			"$elapsed" >&2
+		printf 'rather than bounding its wait. That is the deadlock this row is about.\n' >&2
+		tail -20 "$out" >&2
+		return 1
+	fi
+
+	# AND IT SAID SO. A bounded wait that fails silently is a deploy that looks
+	# finished and left the schema alone - which this file calls the outage.
+	if [ "$rc" -eq 0 ]; then
+		# It got in anyway: acceptable and worth saying, but then it must not
+		# have taken the reader's whole hold to do it, which is asserted above.
+		printf 'the apply took its locks within the bound (%ss) while a reader held ACCESS SHARE\n' \
+			"$elapsed"
+		return 0
+	fi
+	if ! grep -qiE 'could not take its locks|lock timeout|deadlock' "$out"; then
+		printf 'migrate.sh failed under a held lock in %ss and did not say it was about locks:\n' \
+			"$elapsed" >&2
+		tail -20 "$out" >&2
+		return 1
+	fi
+	printf 'a reader held ACCESS SHARE and the apply gave up in %ss saying which: %s\n' \
+		"$elapsed" "$(grep -iEm1 'could not take its locks|lock timeout|deadlock' "$out" | sed 's/^ *//')"
+}
+
 # And from nothing at all, which is the other end of the same path: a brand new
 # node's database is created by running exactly this.
 upgrade_migrate_brings_an_empty_database_up() {
@@ -13185,6 +13265,8 @@ check "A MIGRATED DATABASE IS STRUCTURALLY IDENTICAL TO A FRESH ONE" \
 	upgrade_migrated_matches_a_fresh_database
 check "scripts/migrate.sh brings an empty database up to the current schema too" \
 	upgrade_migrate_brings_an_empty_database_up
+check "a deploy bounds its wait instead of deadlocking the readers it lands on" \
+	upgrade_a_deploy_does_not_queue_behind_a_reader
 check "the older database, migrated, serves the read that took the node down" \
 	upgrade_read_serves_after_the_migration
 check "a relation the binary queries, missing, is an outage this gate can see" \
