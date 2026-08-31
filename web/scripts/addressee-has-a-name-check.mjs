@@ -18,7 +18,13 @@
  * luck of a mention; what makes this a measurement is that the badge must NOT
  * be a slice of the addressee's id - the exact fallback it used to draw. So the
  * check reads the id off the node's own answer and asserts the rendered text is
- * not a prefix of it.
+ * nowhere inside it.
+ *
+ * ANYWHERE INSIDE IT, and that word was measured rather than chosen: written as
+ * "a prefix of the id" this arm could never fire, because shortId takes the
+ * TAIL - `id.slice(-tail)` - so the fallback it exists to name would have been
+ * caught by the vaguer arm below with a vaguer sentence. A check whose most
+ * specific failure is unreachable has the wrong words for the thing it is for.
  *
  * AND THE ID IS STILL REACHABLE. A name is what you read; the id is what you
  * copy into a command, and dropping it would trade one missing fact for
@@ -86,11 +92,14 @@ ${answer.length} addressed message(s). The page is not drawing the addressee at 
 
   for (const badge of badges) {
     if (badge.text === "you") continue; // the reader's own row says so instead
-    const asId = answer.find((a) => a.id.startsWith(badge.text));
+    // includes, not startsWith: shortId is id.slice(-tail), so the fallback
+    // this replaced sits at the END of the id. Guarded on length so a
+    // one-character handle cannot match a ULID by accident.
+    const asId = answer.find((a) => badge.text.length >= 4 && a.id.includes(badge.text));
     if (asId) {
       die(`the badge reads ${JSON.stringify(badge.text)}, which is a slice of the addressee's id
-${asId.id}. That is the fallback this fix replaced: a person is not their identifier's first
-characters, and the node answered the name ${JSON.stringify(asId.name)} for that very row.`);
+${asId.id}. That is the fallback this fix replaced: a person is not eight characters of their
+identifier, and the node answered the name ${JSON.stringify(asId.name)} for that very row.`);
     }
     if (!answer.some((a) => a.name === badge.text)) {
       die(`the badge reads ${JSON.stringify(badge.text)}, which is neither "you" nor any name the
