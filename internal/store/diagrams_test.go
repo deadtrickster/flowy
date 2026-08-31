@@ -163,3 +163,70 @@ func TestValidateArtifactCellOnARealDiagram(t *testing.T) {
 		t.Fatal("a cell the diagram does not contain was accepted")
 	}
 }
+
+// A DRAWIO DIAGRAM IS STORED IN A SHAPE THE CONSOLE CAN DRAW.
+//
+// Written after doing the mistake it refuses: a diagram whose body was a bare
+// <mxGraphModel> was accepted, stored, read back identical, parsed as XML and
+// passed ParseDiagramCells - and rendered to the operator as a wall of raw
+// text. Every check that ran was about whether the bytes survived. None was
+// about whether the thing could be drawn.
+func TestADrawioBodyMustBeAnMxfile(t *testing.T) {
+	const model = `<mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/></root></mxGraphModel>`
+
+	for _, tc := range []struct {
+		name    string
+		a       *Artifact
+		refused bool
+	}{
+		{
+			name:    "a bare mxGraphModel is refused - it is what renders as text",
+			a:       &Artifact{Type: DiagramType, Kind: DiagramKindDrawio, Body: model},
+			refused: true,
+		},
+		{
+			name:    "the wrapper the editor writes is accepted",
+			a:       &Artifact{Type: DiagramType, Kind: DiagramKindDrawio, Body: `<mxfile><diagram id="p1">` + model + `</diagram></mxfile>`},
+			refused: false,
+		},
+		{
+			name:    "an empty mxfile is accepted - it is the console's own new-diagram body",
+			a:       &Artifact{Type: DiagramType, Kind: DiagramKindDrawio, Body: `<mxfile></mxfile>`},
+			refused: false,
+		},
+		{
+			// A diagram is created before it is drawn: the console's "new" makes
+			// the row and opens the editor. Refusing this refuses the first step.
+			name:    "an empty body is accepted, because a diagram exists before it is drawn",
+			a:       &Artifact{Type: DiagramType, Kind: DiagramKindDrawio, Body: "   "},
+			refused: false,
+		},
+		{
+			name:    "prose is refused rather than stored as a diagram nobody can open",
+			a:       &Artifact{Type: DiagramType, Kind: DiagramKindDrawio, Body: "boil the water first"},
+			refused: true,
+		},
+		{
+			// The kind is a real field precisely so a second format can share the
+			// type. This check is drawio's and must not speak for mermaid.
+			name:    "a diagram of another format is not this check's business",
+			a:       &Artifact{Type: DiagramType, Kind: "mermaid", Body: "graph TD; a-->b"},
+			refused: false,
+		},
+		{
+			name:    "a row that is not a diagram is untouched",
+			a:       &Artifact{Type: "memory", Kind: "note", Body: model},
+			refused: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := checkDiagramRow(tc.a)
+			if tc.refused && err == nil {
+				t.Fatalf("stored without complaint; the console would draw this as raw text")
+			}
+			if !tc.refused && err != nil {
+				t.Fatalf("refused a body that is fine: %v", err)
+			}
+		})
+	}
+}

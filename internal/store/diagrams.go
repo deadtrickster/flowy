@@ -195,3 +195,61 @@ func ValidateArtifactCell(a *Artifact, cellID string) error {
 	}
 	return ValidateDiagramCell(a.ID, a.Body, cellID)
 }
+
+// checkDiagramRow refuses a drawio diagram whose body is not a draw.io file.
+//
+// WHY A WRITE CHECK AND NOT A READ ONE. The console's editor reads
+// <mxfile><diagram>...</mxfile> - see web/src/lib/diagrams.ts, whose empty
+// template is exactly that. A body without the wrapper stores perfectly well,
+// reads back byte for byte, parses as XML, and passes ParseDiagramCells, which
+// only ever looks for mxCell ids. It then renders as a wall of raw text, and
+// nothing between the author and the reader says otherwise.
+//
+// Measured 2026-08-31, by doing it: a diagram written as a bare <mxGraphModel>
+// was accepted, stored, read back, and shown to the operator as XML. Every
+// check I ran said it was fine, because every check I ran was about whether the
+// bytes survived rather than whether the thing could be drawn.
+//
+// HERE FOR THE REASON THE OTHER SHAPE CHECKS ARE HERE. Every surface writes
+// through upsertArtifact - the API, the memory tools, the FUSE drainer, the
+// editor's own save - and a rule kept per surface is a rule the next surface
+// forgets. The editor would never produce a body this refuses; everything else
+// might, and did.
+//
+// AN EMPTY BODY IS ALLOWED. A diagram is created before it is drawn - the
+// console's own "new" makes the row and opens the editor - and refusing that
+// would refuse the ordinary first step. Empty renders as an empty canvas, which
+// is honest. It is a body with CONTENT that is not an mxfile that lies.
+func checkDiagramRow(a *Artifact) error {
+	if a == nil || a.Type != DiagramType || a.Kind != DiagramKindDrawio {
+		return nil
+	}
+	body := strings.TrimSpace(a.Body)
+	if body == "" {
+		return nil
+	}
+
+	// Walked rather than unmarshalled, for ParseDiagramCells's reason: the only
+	// question here is what the FIRST element is, and an XML body this build has
+	// never seen must not stop the walk before it answers that.
+	dec := xml.NewDecoder(strings.NewReader(body))
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			return fmt.Errorf("store: a %s diagram must be draw.io xml, and this body does not parse: %w",
+				DiagramKindDrawio, err)
+		}
+		start, ok := tok.(xml.StartElement)
+		if !ok {
+			continue
+		}
+		if start.Name.Local == "mxfile" {
+			return nil
+		}
+		return fmt.Errorf(
+			"store: a %s diagram body must be an <mxfile>, and this one starts with <%s>. "+
+				"draw.io wraps the model as <mxfile><diagram><mxGraphModel>, and the console's "+
+				"editor reads that wrapper - a bare <%s> is stored intact and drawn as raw text",
+			DiagramKindDrawio, start.Name.Local, start.Name.Local)
+	}
+}

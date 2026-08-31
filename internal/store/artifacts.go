@@ -194,6 +194,20 @@ func (d *DB) upsertArtifact(ctx context.Context, q execer, a *Artifact) error {
 	if err := checkMergeRow(a); err != nil {
 		return err
 	}
+	// And a drawio diagram holds a body the console can actually draw, asked
+	// here for that same reason. A bare <mxGraphModel> stores, reads back byte
+	// for byte, parses as XML and passes the cell parser - and renders as a wall
+	// of raw text. I wrote one that way tonight and showed it to the operator.
+	// See checkDiagramRow.
+	//
+	// THIS PATH ONLY, deliberately: writeArtifactFields below runs the other
+	// shape checks and does NOT get this one, because it writes fields and
+	// status rather than the body. It cannot introduce a bad body, and refusing
+	// there would block a metadata edit on a diagram already stored - punishing
+	// the row for a defect the caller is not touching.
+	if err := checkDiagramRow(a); err != nil {
+		return err
+	}
 	// And an openspec row holds its own shape - asked here for the same reason:
 	// every surface writes through one of the same statements, and a rule kept
 	// per surface is a rule the next surface forgets. See checkOpenspecRow.
