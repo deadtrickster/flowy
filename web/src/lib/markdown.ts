@@ -181,7 +181,11 @@ function rowLinks(text: string): string {
   for (let m = ROW_ID.exec(text); m !== null; m = ROW_ID.exec(text)) {
     const start = m.index + m[1].length;
     out += escaped(text.slice(last, start));
-    out += `<a href="/a/${m[2]}">${m[2]}</a>`;
+    // MONO, BECAUSE IT IS A MACHINE STRING YOU COULD COPY - see the row
+    // 01M17DDFNM6W38QS4ZB44GB9NQ rule, and the board, which has always drawn
+    // row ids in `font-mono`. This one rendered in the body face, so the same
+    // id was mono on the board and sans in the room it was raised from.
+    out += `<a href="/a/${m[2]}" class="font-mono">${m[2]}</a>`;
     last = start + m[2].length;
   }
   return out + escaped(text.slice(last));

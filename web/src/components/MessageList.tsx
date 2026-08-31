@@ -835,7 +835,13 @@ export function MessageList({
                       aria-label={`open the row ${shortId(event.artifact)} this message raised`}
                       className="rounded border border-border px-1.5 py-0.5 text-[11px] text-muted-foreground transition hover:border-primary/50 hover:text-foreground"
                     >
-                      row {shortId(event.artifact)}
+                      {/*
+                        The WORD stays in the body face and the ID does not: one
+                        is prose telling you what the control opens, the other is
+                        a machine string you could copy, and the board has always
+                        drawn the same id in font-mono.
+                      */}
+                      row <span className="font-mono">{shortId(event.artifact)}</span>
                     </button>
                   ) : null}
                   {/* The acks on this message, and the one control that adds
