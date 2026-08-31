@@ -22,13 +22,24 @@
  *    rail for a project called anything else, and pass on a broken one called
  *    something unique. The claim is about the CONTROL, not the word.
  *
- * 2. EVERY ROW LABEL STARTS AT THE SAME X. The group headers used a 12px
+ * 2. A GROUP HEADER STARTS WHERE THE LINKS START. The headers used a 12px
  *    chevron where the links use 16px icons, so with the same gap their labels
  *    began four pixels to the left. That is what made "library" and "the log"
  *    read as rows that failed to render: the eye takes a ragged left edge for
  *    breakage before it takes it for hierarchy. Measured off the rendered text
  *    with a Range, not off the class names - a check reading `h-4 w-4` would
  *    pass on a rail whose icons were displaced by something else entirely.
+ *
+ *    THE ROOM LIST IS DELIBERATELY OUT OF SCOPE, and this is the second thing
+ *    this check got wrong rather than a convenience. A room row carries a name
+ *    of any length beside an unread badge and a close control, all of them
+ *    flexing, so its label lands where the name lets it: measured on the
+ *    dogfood rail, `doc-01M07SCJ5XDXKCSY4SJ1NR87PM` sits at 42 where every
+ *    static link sits at 44, and in the gate's 80-room fixture one row lands at
+ *    33. Asserting one edge across both families red-flagged a rail nobody has
+ *    complained about and buried the four pixels somebody did. The claim is
+ *    about the fixed nav - the links and the headers above them - which is the
+ *    thing that was actually wrong.
  */
 
 import { chromium } from "playwright";
@@ -100,7 +111,15 @@ The control rendered: ${JSON.stringify(drew)}`);
   const edges = await page.evaluate(() => {
     const nav = document.querySelector("[data-nav]");
     if (!nav) return null;
-    const rows = [...nav.querySelectorAll("a[href]"), ...nav.querySelectorAll("details > summary")];
+    // THE FIXED NAV ONLY. [data-room-list] holds rows whose width is the
+    // room's name, so their labels do not and should not share one edge - see
+    // the head of this file.
+    const roomList = nav.querySelector("[data-room-list]");
+    const inRooms = (el) => roomList?.contains(el) === true;
+    const rows = [
+      ...nav.querySelectorAll("a[href]"),
+      ...nav.querySelectorAll("details > summary"),
+    ].filter((el) => !inRooms(el));
     const out = [];
     for (const row of rows) {
       if (!(row instanceof HTMLElement) || row.offsetParent === null) continue;
@@ -111,7 +130,9 @@ The control rendered: ${JSON.stringify(drew)}`);
         const range = document.createRange();
         range.selectNodeContents(n);
         const box = range.getBoundingClientRect();
-        if (box.width > 0) out.push({ text, left: Math.round(box.left) });
+        if (box.width > 0) {
+          out.push({ text, left: Math.round(box.left), summary: row.tagName === "SUMMARY" });
+        }
         break;
       }
     }
@@ -120,8 +141,16 @@ The control rendered: ${JSON.stringify(drew)}`);
 
   if (!edges || edges.length < 4) {
     die(
-      `found ${edges ? edges.length : 0} rail rows with labels, which is too few to judge an edge`,
+      `found ${edges ? edges.length : 0} fixed-nav rows with labels, which is too few to judge an edge`,
     );
+  }
+  // AND BOTH FAMILIES HAVE TO BE PRESENT, or this passes by measuring one
+  // thing: the defect was a header sitting left of the links, and a run that
+  // saw no header at all would report a perfect edge.
+  const headers = edges.filter((e) => e.summary).length;
+  if (headers === 0 || headers === edges.length) {
+    die(`the fixed nav drew ${headers} group header(s) out of ${edges.length} rows, so this run
+cannot compare a header's left edge against a link's - that comparison IS the check`);
   }
   const lefts = [...new Set(edges.map((e) => e.left))].sort((a, b) => a - b);
   const spread = lefts[lefts.length - 1] - lefts[0];
@@ -131,13 +160,14 @@ The control rendered: ${JSON.stringify(drew)}`);
       if (!by[e.left]) by[e.left] = [];
       by[e.left].push(e.text);
     }
-    die(`the rail's row labels start at ${lefts.length} different x positions, spread ${spread}px: ${JSON.stringify(by)}
+    die(`the fixed nav's labels start at ${lefts.length} different x positions, spread ${spread}px: ${JSON.stringify(by)}
 A ragged left edge reads as rows that failed to render, which is what the operator saw.`);
   }
 
   console.log(
     `the rail names ${JSON.stringify(project)} once (${JSON.stringify(said[0])}) and all ` +
-      `${edges.length} row labels start at x=${lefts[0]}${spread ? ` (spread ${spread}px)` : ""}`,
+      `${edges.length} fixed-nav labels - ${headers} of them group headers - start at ` +
+      `x=${lefts[0]}${spread ? ` (spread ${spread}px)` : ""}`,
   );
 } finally {
   await browser.close();
