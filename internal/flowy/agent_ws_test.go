@@ -278,3 +278,66 @@ func TestAdoptDoesNotStartAnything(t *testing.T) {
 		t.Fatalf("adopt and start refused identically (%q), so adopt was not read", why)
 	}
 }
+
+// AN EXIT NOTICE MUST SURVIVE THE CANCEL THAT FOLLOWS IT.
+//
+// 01M14HN1VX1CXY8RAH314PQWA8 item 2, "shells that do not randomly exit". The
+// row's lead was that the shell is not dying arbitrarily - the REASON is not
+// arriving, so a normal exit and an unexplained one look identical on screen.
+//
+// This is the mechanism. When a session ends, agentshell.finish sets the reason
+// and closes the reader channels; the reader goroutine sees the closed channel
+// and queues an "exited" control frame carrying that reason. The frame goes on
+// the high queue. Then the context ends - the same event that ended the session
+// is what tears the socket down - and pumpByPriority selected ctx.Done() and
+// returned, leaving the frame sitting in a channel nobody will read again. The
+// handler's `defer conn.CloseNow()` is abrupt by design, so nothing flushes it
+// either.
+//
+// The client then sees a close with no exited frame and prints its generic
+// fallback, "the connection closed". The shell had a reason and said so; the
+// reason died one hop from the wire.
+//
+// WHY A DRAIN IS SAFE HERE AND NOT A LEAK. Only `high` is drained, and only
+// what is ALREADY queued - a non-blocking receive until empty. Control frames
+// are hello, resize and exited: bounded, small, and never the megabytes that
+// `low` can hold. Output is deliberately NOT drained, because a cancelled
+// session's remaining scrollback is exactly what the caller no longer wants.
+func TestAnExitNoticeSurvivesTheCancel(t *testing.T) {
+	high := make(chan []byte, 4)
+	low := make(chan []byte, 4)
+
+	// The shape at the moment a shell exits: the notice is queued, and the
+	// context that governed the session is already over.
+	high <- []byte{agentStreamControl, 'E'}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	written := make(chan []byte, 4)
+	done := make(chan struct{})
+	go func() {
+		pumpByPriority(ctx, high, low, func(frame []byte) bool {
+			written <- frame
+			return true
+		})
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("pumpByPriority did not return after its context was cancelled")
+	}
+
+	select {
+	case frame := <-written:
+		if frame[0] != agentStreamControl {
+			t.Fatalf("expected the queued control frame, got stream %d", frame[0])
+		}
+	default:
+		t.Fatal("the exit notice was queued before the context ended and was never written. " +
+			"That is what makes a shell look like it exited for no reason: the node knows why " +
+			"and the panel is never told, so it falls back to \"the connection closed\" and a " +
+			"clean exit is indistinguishable from a crash.")
+	}
+}

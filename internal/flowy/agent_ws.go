@@ -135,13 +135,47 @@ func (s *server) handleAgentSocket(w http.ResponseWriter, r *http.Request) {
 	conn.SetReadLimit(maxAgentFrame + 1024)
 
 	ctx, stop := context.WithCancel(r.Context())
-	defer stop()
+
+	// STOP, THEN LET THE PUMP FINISH, THEN CLOSE - in that order, and the order
+	// is the whole point.
+	//
+	// The frame that says WHY a shell ended is queued by the same event that
+	// ends this handler, so all three steps have to cooperate or it never
+	// reaches the wire: the context must end for pumpByPriority to reach its
+	// drain, the drain must be allowed to run, and conn.CloseNow - which is
+	// abrupt by design - must not fire until it has.
+	//
+	// Written as ONE defer rather than three, because three would run last in
+	// first out and put the wait BEFORE the cancel: the pump would still be
+	// selecting on a live context, `pumped` would never close, and this handler
+	// would hang holding a socket open forever. I wrote that version first.
+	// conn.CloseNow is registered above, so it still runs after this.
+	pumped := make(chan struct{})
+	defer func() {
+		stop()
+		<-pumped
+	}()
 
 	high := make(chan []byte, 64)
 	low := make(chan []byte, agentSendQueue)
 	go func() {
+		defer close(pumped)
 		defer stop()
 		pumpByPriority(ctx, high, low, func(frame []byte) bool {
+			// THE LAST WORD NEEDS A CONTEXT THAT IS NOT ALREADY OVER. Draining
+			// the queue after cancellation achieves nothing if the write is
+			// made on the cancelled context - conn.Write refuses immediately
+			// and the notice dies one line further along than it used to.
+			//
+			// So the drain writes on a short grace context detached from this
+			// one. Two seconds is far longer than a frame takes to reach a
+			// socket that is still open, and it is bounded, so a wedged peer
+			// delays a teardown rather than holding it.
+			if ctx.Err() != nil {
+				grace, done := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+				defer done()
+				return writeAgentFrame(grace, conn, frame)
+			}
 			return writeAgentFrame(ctx, conn, frame)
 		})
 	}()
@@ -512,9 +546,37 @@ func firecodeProjectPath(ctx context.Context, name string) (string, error) {
 // means the claim in the commit message would have been the only evidence for
 // it. See TestControlOutranksOutput.
 func pumpByPriority(ctx context.Context, high, low <-chan []byte, write func([]byte) bool) {
+	// WHAT IS ALREADY QUEUED ON `high` GOES OUT EVEN THOUGH THE CONTEXT IS OVER.
+	//
+	// 01M14HN1VX1CXY8RAH314PQWA8 item 2, "shells that do not randomly exit". The
+	// shell was not exiting arbitrarily - the REASON was not arriving. When a
+	// session ends, finish() sets the reason and closes the reader channels, the
+	// reader queues an "exited" control frame carrying it, and then the same
+	// event tears the socket down. This returned on ctx.Done() with that frame
+	// still in the channel, so the panel saw a close with no notice and printed
+	// its generic "the connection closed". A clean exit and a crash looked
+	// identical. See TestAnExitNoticeSurvivesTheCancel.
+	//
+	// ONLY `high`, AND ONLY WHAT IS ALREADY THERE - a non-blocking receive until
+	// empty. Control frames are hello, resize and exited: bounded and small.
+	// `low` is deliberately not drained, because a cancelled session's remaining
+	// scrollback is precisely what nobody is waiting for any more.
+	drain := func() {
+		for {
+			select {
+			case frame := <-high:
+				if !write(frame) {
+					return
+				}
+			default:
+				return
+			}
+		}
+	}
 	for {
 		select {
 		case <-ctx.Done():
+			drain()
 			return
 		case frame := <-high:
 			if !write(frame) {
@@ -525,6 +587,7 @@ func pumpByPriority(ctx context.Context, high, low <-chan []byte, write func([]b
 		}
 		select {
 		case <-ctx.Done():
+			drain()
 			return
 		case frame := <-high:
 			if !write(frame) {
