@@ -2085,6 +2085,27 @@ export const api = {
    * on the row. It never takes the quoted words from here, which is why there
    * is nowhere to put them.
    */
+  /**
+   * The shells THIS NODE is running, whoever started them.
+   *
+   * 01M1558DPM1HRGZNJGMVW24DHF item 3. A panel remembers its own session id in
+   * localStorage, so without this only the browser that started a shell could
+   * return to it. Operator-only, like the socket it leads to - an ordinary
+   * token gets 403 and the panel offers nothing, which is the right answer
+   * rather than an error.
+   */
+  agentSessions: () =>
+    request<{
+      sessions: {
+        id: string;
+        project: string;
+        where: string;
+        started: string;
+        watchers: number;
+        idle_seconds: number;
+      }[];
+    }>("/api/agent/sessions"),
+
   say: (
     room: string,
     body: string,
