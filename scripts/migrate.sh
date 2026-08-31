@@ -168,7 +168,11 @@ while [ "$attempt" -le "$schema_tries" ]; do
 	# force for the transaction the file opens. Passing it with -c would be a
 	# different statement on the same session and would not survive into psql's
 	# reading of the file.
-	if printf 'SET lock_timeout = %s;\n' "$schema_lock_timeout" |
+	# QUOTED. `SET lock_timeout = 1s` is a syntax error - "trailing junk after
+	# numeric literal" - because an interval needs to arrive as a string. The
+	# check caught it on the first run, and the retry logic was right to refuse
+	# to retry a syntax error five times.
+	if printf "SET lock_timeout = '%s';\n" "$schema_lock_timeout" |
 		cat - "$SCHEMA" |
 		psql_run -v ON_ERROR_STOP=1 -q -d "${PSQL_DB:-$dsn}" 2>"$errlog"; then
 		applied=yes
