@@ -108,26 +108,34 @@ function ProjectBadge() {
     return <div className="text-muted-foreground text-xs">handoff fabric console</div>;
   }
   return (
-    <div className="flex flex-col gap-0.5">
-      <div className="flex items-center gap-1.5">
+    <div className="flex flex-col gap-0.5" data-rail-project={here || "none"}>
+      {/*
+        THE PROJECT IS SAID ONCE. The operator, on a screenshot of this exact
+        corner, twice - the second time six hours after the first: the rail read
+
+          flowy          <- the product's name
+          flowy          <- this span, the project's name
+          flowy - here   <- the select, whose current option is the same word
+
+        Three rows for one word. The select already says which project is
+        current, in the same place you would go to change it, so the span was a
+        label for the control directly beneath it. It is gone.
+
+        The name still hangs off the select as data-rail-project, because it is
+        what checks read and what a reader hovers - the fact was never the
+        problem, the third copy of it was.
+      */}
+      {whoami.project_fixture ? (
+        // A FIXTURE IS WRITABLE, which is exactly why it has to be said - and
+        // this one is not a repetition of anything: nothing else on the rail
+        // says the project you are writing into is demo seed data.
         <span
-          data-rail-project={here || "none"}
-          className="font-mono text-foreground text-xs"
-          title={
-            whoami.project_fixture
-              ? `you are writing into ${here}, which is demo seed data`
-              : `you are writing into ${here || "no project"}`
-          }
+          className="self-start rounded bg-destructive/15 px-1 text-[10px] text-destructive"
+          title={`you are writing into ${here}, which is demo seed data`}
         >
-          {here || "no project"}
+          fixture
         </span>
-        {/* A FIXTURE IS WRITABLE, which is exactly why it has to be said. */}
-        {whoami.project_fixture ? (
-          <span className="rounded bg-destructive/15 px-1 text-[10px] text-destructive">
-            fixture
-          </span>
-        ) : null}
-      </div>
+      ) : null}
       {/*
         A DROPDOWN, because that is what was asked for and a row of buttons is
         not one. The operator, twice: "replacy 'handoff fabric console' with a
@@ -145,12 +153,28 @@ function ProjectBadge() {
         whoami still in flight and draws nothing; [] is a person who belongs
         nowhere and gets a sentence, because an empty menu reads as broken.
       */}
-      {mine === null ? null : mine.length === 0 ? (
+      {/*
+        AND WHEN THERE IS NO SELECT, THE NAME IS SAID PLAINLY. Dropping the span
+        outright was a regression I nearly shipped: memberships is null for an
+        AGENT credential - which is most of the seats reading this console - and
+        the select does not render for them at all, so the rail would have gone
+        silent about which project their writes land in. It is only a repetition
+        when the control beneath it is already saying it.
+      */}
+      {mine === null ? (
+        <span
+          className="font-mono text-foreground text-xs"
+          title={`you are writing into ${here || "no project"}`}
+        >
+          {here || "no project"}
+        </span>
+      ) : mine.length === 0 ? (
         <span className="text-[10px] text-muted-foreground">you belong to no project yet</span>
       ) : (
         <select
           data-project-switcher={others.length}
           data-rail-project-select
+          title={`you are writing into ${here || "no project"}`}
           value={here}
           disabled={busy !== ""}
           onChange={(e) => {
@@ -513,9 +537,22 @@ export function Shell({ children }: { children: ReactNode }) {
             never seen this console, which is the failure the flat list at least
             did not have.
           */}
+          {/*
+            A GROUP HEADER SITS IN THE SAME COLUMN AS A LINK. The chevron was
+            h-3 and every nav icon is h-4, so with the same gap-2 the group
+            labels started four pixels left of every link label. The operator
+            screenshotted this corner: "library" and "the log" read as rows that
+            failed to render rather than as folds, and a ragged left edge is
+            what does that - the eye reads misalignment as breakage before it
+            reads it as hierarchy.
+
+            The chevron keeps its own size visually because it is a thin glyph;
+            what it gets is the icon's BOX, so the text after it lands where
+            every other label lands.
+          */}
           <details className="group" open data-nav-group="library">
             <summary className="flex cursor-pointer items-center gap-2 rounded px-2 py-1 text-muted-foreground text-xs hover:bg-accent">
-              <ChevronRight className="h-3 w-3 transition-transform group-open:rotate-90" />
+              <ChevronRight className="h-4 w-4 shrink-0 transition-transform group-open:rotate-90" />
               library
             </summary>
             <div className="flex flex-col gap-0.5">
@@ -551,7 +588,7 @@ export function Shell({ children }: { children: ReactNode }) {
           </details>
           <details className="group" open data-nav-group="the log">
             <summary className="flex cursor-pointer items-center gap-2 rounded px-2 py-1 text-muted-foreground text-xs hover:bg-accent">
-              <ChevronRight className="h-3 w-3 transition-transform group-open:rotate-90" />
+              <ChevronRight className="h-4 w-4 shrink-0 transition-transform group-open:rotate-90" />
               the log
             </summary>
             <div className="flex flex-col gap-0.5">
