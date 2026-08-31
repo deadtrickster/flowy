@@ -1376,6 +1376,19 @@ func writeInbox(page inboxWaitResponse) error {
 		if len(e.Meta) > 0 {
 			line["meta"] = e.Meta
 		}
+		// AND WHO IT WAS WRITTEN TO, BY NAME, for the reason directly above
+		// applied to the other end of the line. A delivery already carries
+		// `addressee` as an id, and a waiter printing "to MMXTYVG2" is the
+		// same "? [general ...]" this function was fixed for once - the id
+		// alone makes every reader look the second one up.
+		//
+		// Absent when this node cannot name that principal, which is the
+		// answer and not a gap: a delivery with no name and an addressee is a
+		// reader being told "I cannot say who", and one that fell back to the
+		// id would be saying something false in a field called a name.
+		if e.AddresseeName != "" {
+			line["addressee_name"] = e.AddresseeName
+		}
 		// THE ROW THE MESSAGE IS ABOUT, UNDER ITS OWN NAME. Without it a
 		// delivery carried two ULIDs - the message and its thread - and a reader
 		// acting on a "raised a todo" line had nothing else to reach for, so it
