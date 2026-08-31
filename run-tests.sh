@@ -8554,9 +8554,28 @@ biome_check() {
 	npx --no-install @biomejs/biome check .
 }
 
+# THE MARKER THAT SAYS A BUNDLE WAS BUILT BY *THIS* RUN.
+#
+# In $WORK, which is mktemp'd per run, so it cannot survive from a previous one
+# and be believed. A path under web/ or state/ would persist exactly the way
+# web/dist does, which is the whole defect this exists to close.
+BUILT="$WORK/console-bundle-built"
+
 npm_build() {
 	cd "$ROOT/web" || return 1
+	# REMOVED FIRST, WRITTEN ONLY ON SUCCESS. `check` runs this inside a command
+	# substitution - a subshell - so a shell variable set here would not survive
+	# to the caller. A file does, which is why the record is one.
+	rm -f "$BUILT"
+	# THE BUILD'S OWN EXIT STATUS IS KEPT. `npm run build || return 1` would
+	# flatten every failure to 1, and vite's 2 for a type error is worth reading
+	# in the FAIL line - I wrote the flattening version first and watched the
+	# reported status change from 2 to 1 between two runs of the same break.
+	local status
 	npm run build
+	status=$?
+	[ "$status" -eq 0 ] || return "$status"
+	: >"$BUILT"
 }
 
 # The built bundle, mounted in a dom. An index that is served and a bundle that
@@ -14323,7 +14342,33 @@ console_checks() {
 		failed=$((failed + 1))
 	fi
 }
-console_checks
+# A CONSOLE CHECK WITH NO FRESH BUNDLE HAS NOT RUN.
+#
+# 01M1C2SRZV9Y8VTMAZZ6S6YT5Z. web/dist is deliberately persistent -
+# web/dist/.gitkeep is tracked and console.go embeds the directory - so when
+# `vite build` fails, the previous run's bundle is still sitting there and every
+# console check below would launch a browser at it and report on code that is
+# not in this tree.
+#
+# The run as a whole still went red without this: the build check failed and the
+# verdict counts it. The damage is to the individual LINES, which is what a
+# person reads when a run is red for one reason and they are looking at another.
+#
+# HERE AND NOT INSIDE console_checks, and that is not a style choice.
+# scripts/console-checks-check.sh lifts console_checks() out of this file with
+# sed and runs it against fixture directories to prove the loader refuses a
+# missing, empty or silent one. A precondition about the BUNDLE inside that
+# function is invisible to the lifted copy - $BUILT is unset there, the guard
+# fires on every fixture, and the loader check goes red measuring nothing. It
+# did. console_checks is about the directory; whether there is anything worth
+# measuring is this caller's question.
+if [ -e "$BUILT" ]; then
+	console_checks
+else
+	printf 'FAIL the console checks have no bundle from this run to measure\n'
+	printf '%s\n' "vite build did not finish, and web/dist still holds whatever the last successful build left there - it is tracked and embedded, so it is never empty. Every console check would have launched a browser at that stale bundle and reported on code which is not in this tree. They are refused rather than run: read the build failure above, not a verdict about somebody else's bundle." | indent
+	failed=$((failed + 1))
+fi
 check "the left and right columns can be dragged, keep their floors, and remember" \
 	the_columns_can_be_dragged
 check "the panel sets and overrides one, in a browser, and a poll does not wipe it" \
