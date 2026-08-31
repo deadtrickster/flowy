@@ -118,6 +118,7 @@ var openspecStateReach = map[string]string{
 	// browser and a process on this host. Nothing it carries reaches a change's
 	// lifecycle, which is what "na" says here rather than leaving it unanswered.
 	"GET /api/agent/socket":   "na",
+	"GET /api/agent/sessions": "na",
 	"GET /api/vm/list":        "na",
 	"GET /api/vm/top":         "na",
 	"GET /api/shell/sessions": "na",

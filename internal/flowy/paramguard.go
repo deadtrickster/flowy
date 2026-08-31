@@ -148,6 +148,7 @@ var routeParams = map[string][]string{
 	// and a URL can describe only one. A parameter left declared here would be
 	// one this door does not read.
 	"GET /api/agent/socket":               {},
+	"GET /api/agent/sessions":             {},
 	"GET /api/sync/pull":                  {"limit", "since"},
 	"GET /api/task/{id}":                  {},
 	"GET /api/todo/{id}/assignee":         {},

@@ -360,6 +360,7 @@ var apiRoutes = []string{
 	// The shell socket. One websocket per session carrying several streams,
 	// which is what lets control outrank output - see agent_ws.go.
 	"GET /api/agent/socket",
+	"GET /api/agent/sessions",
 	"GET /api/vm/projects",
 	"GET /api/vm/list",
 	"GET /api/vm/top",
@@ -615,6 +616,7 @@ func (s *server) routes() http.Handler {
 	// A shell in a VM, relayed to the panel. operatorOnly like every other VM
 	// door: a shell is the widest thing this node can be asked for.
 	api.HandleFunc("GET /api/agent/socket", s.operatorOnly(s.handleAgentSocket))
+	api.HandleFunc("GET /api/agent/sessions", s.operatorOnly(s.handleAgentSessions))
 	api.HandleFunc("GET /api/vm/projects", s.operatorOnly(s.handleVMProjects))
 	api.HandleFunc("GET /api/vm/list", s.operatorOnly(s.handleVMList))
 	// operatorOnly like every other vm door: it names this host's projects and

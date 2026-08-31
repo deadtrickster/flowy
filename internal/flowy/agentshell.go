@@ -30,6 +30,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -575,6 +576,70 @@ func (s *agentSession) reap() {
 }
 
 // get finds a session, or says it is not here.
+// LiveShell is one running session, as another device needs to see it.
+//
+// 01M1558DPM1HRGZNJGMVW24DHF item 3. The panel remembers its session id in
+// localStorage, so the browser that STARTED a shell can come back to it and no
+// other browser can - "I started it on the laptop and I am on the phone" has no
+// answer today. The registry has known about every session all along; nothing
+// asked it.
+//
+// WHAT IS ON IT IS WHAT DECIDES WHETHER TO TAKE IT, and nothing else. No output
+// and no scrollback: this is a list to choose from, and a list that carried the
+// screen would be a second delivery path for the same bytes with its own
+// permission story.
+type LiveShell struct {
+	ID      string `json:"id"`
+	Project string `json:"project"`
+	Where   string `json:"where"`
+	Started string `json:"started"`
+	// Watchers is how many browsers are attached RIGHT NOW. Zero is the
+	// interesting one - it is a shell nobody is holding - and it is why this is
+	// a count rather than a boolean: two is a shell somebody else is also
+	// looking at, which a person may want to know before typing into it.
+	Watchers int `json:"watchers"`
+	// Idle is seconds since the shell last SAID anything. A list of sessions
+	// with no ages is a list where the one you want and the one you forgot look
+	// identical.
+	Idle int `json:"idle_seconds"`
+}
+
+// live lists the sessions this node is running, newest first.
+//
+// Sessions that have finished are not listed: attaching to one hands back a
+// scrollback and an immediate "it ended", which reads as a shell that died on
+// being opened.
+func (a *agentShells) live(now time.Time) []LiveShell {
+	a.mu.Lock()
+	sessions := make([]*agentSession, 0, len(a.by))
+	for _, s := range a.by {
+		sessions = append(sessions, s)
+	}
+	a.mu.Unlock()
+
+	out := make([]LiveShell, 0, len(sessions))
+	for _, s := range sessions {
+		s.mu.Lock()
+		done, watchers, active := s.done, len(s.readers), s.active
+		s.mu.Unlock()
+		if done {
+			continue
+		}
+		idle := 0
+		if !active.IsZero() && now.After(active) {
+			idle = int(now.Sub(active).Seconds())
+		}
+		out = append(out, LiveShell{
+			ID: s.id, Project: s.project, Where: string(s.where),
+			Started: s.started.UTC().Format(time.RFC3339), Watchers: watchers, Idle: idle,
+		})
+	}
+	// Newest first: the one somebody is looking for is almost always the one
+	// they just left.
+	sort.Slice(out, func(i, j int) bool { return out[i].Started > out[j].Started })
+	return out
+}
+
 func (a *agentShells) get(id string) (*agentSession, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()

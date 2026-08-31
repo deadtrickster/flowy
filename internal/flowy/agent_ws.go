@@ -537,3 +537,28 @@ func pumpByPriority(ctx context.Context, high, low <-chan []byte, write func([]b
 		}
 	}
 }
+
+// handleAgentSessions lists the shells this node is running.
+//
+// GET /api/agent/sessions
+//
+// 01M1558DPM1HRGZNJGMVW24DHF item 3. The panel remembers its session id in
+// localStorage and adopts it on mount, so the browser that STARTED a shell can
+// return to it - and no other browser can. "I started it on the laptop and I am
+// on the phone" has had no answer, and the reason was not a permission or a
+// missing capability: the registry has held every session all along and nothing
+// ever asked it for the list.
+//
+// OPERATOR-ONLY, like the socket it leads to. This says which shells exist and
+// how long they have been quiet, which is a description of what somebody is
+// doing on this machine; the door that hands out the shell itself is already
+// behind the same guard, and a list that was easier to reach than the thing it
+// lists would be the guard leaking round its own edge.
+//
+// A LIST, NOT A SCROLLBACK. What comes back is enough to choose with - which
+// project, which machine, how many browsers are on it, how long since it said
+// anything - and nothing more. Carrying the screen here would be a second
+// delivery path for the same bytes with its own permission story to get wrong.
+func (s *server) handleAgentSessions(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"sessions": s.agents.live(time.Now())})
+}
