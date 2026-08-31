@@ -20709,7 +20709,12 @@ an_exposure_is_readable_without_a_dsn() {
 	recall
 	api GET "$TOKEN_OP" /api/principals/exposed || return 1
 	want_eq "the operator is answered" "$API_STATUS" 200 || return 1
-	local by_door kind
+	# HELD NOW, BECAUSE API_BODY IS THE LAST ANSWER AND NOT THIS ONE. The
+	# refusal below overwrites it, and comparing after that compared the seat's
+	# 403 against the command line - which is what the first run of this check
+	# actually did, and said so.
+	local door_body by_door kind
+	door_body="$API_BODY"
 	by_door="$(jqv .exposed)"
 	kind="$(jqv '.principals | type')"
 	want_eq "principals is a list, present even when nothing is exposed" "$kind" array || return 1
@@ -20741,17 +20746,34 @@ an_exposure_is_readable_without_a_dsn() {
 	# THE WHOLE ANSWER, not the count - see the note above about two zeroes
 	# agreeing. Sorted keys so a difference is a difference in the facts and
 	# not in the order a map happened to serialise.
+	#
+	# EXCEPT `node`, and measured rather than assumed: the door said
+	# "gate-2339" while the command line said "firecode" on the same database.
+	# db.Node() is each PROCESS's own answer, read from its environment, and
+	# the CLI is a second process with a DSN and no FLOWY_NODE. So node is not
+	# a fact the two share and never was - it is which node you asked, not
+	# which node the rows belong to. The exposure itself is the shared part.
 	local door_all cli_all
-	door_all="$(printf '%s' "$API_BODY" | jq -Sc .)"
-	cli_all="$(printf '%s' "$cli_json" | jq -Sc .)"
+	door_all="$(printf '%s' "$door_body" | jq -Sc '{exposed, principals}')"
+	cli_all="$(printf '%s' "$cli_json" | jq -Sc '{exposed, principals}')"
 	if [ "$door_all" != "$cli_all" ]; then
 		printf 'the door and the command line describe different exposures:\n  door: %s\n  cli:  %s\n' \
 			"$door_all" "$cli_all" >&2
 		return 1
 	fi
+	# AND EACH SAYS WHICH NODE ANSWERED, even though they need not agree: an
+	# answer about somebody's exposure that does not say whose machine it is
+	# about is an answer a reader cannot file.
+	local door_node cli_node
+	door_node="$(printf '%s' "$door_body" | jq -r '.node // ""')"
+	cli_node="$(printf '%s' "$cli_json" | jq -r '.node // ""')"
+	if [ -z "$door_node" ] || [ -z "$cli_node" ]; then
+		printf 'an exposure answer names no node: door=%q cli=%q\n' "$door_node" "$cli_node" >&2
+		return 1
+	fi
 
-	printf 'the operator reads the same exposure over HTTP and from the command line (exposed=%s, principals a %s), and a seat is refused 403 - contents covered by TestAPrincipalWithNoKeyIsNamed, this fixture keys everything it mints\n' \
-		"$by_door" "$kind"
+	printf 'the operator reads the same exposure over HTTP (node %s) and from the command line (node %s): exposed=%s, principals a %s, and a seat is refused 403 - contents covered by TestAPrincipalWithNoKeyIsNamed, this fixture keys everything it mints\n' \
+		"$door_node" "$cli_node" "$by_door" "$kind"
 }
 
 # A PERSON WHO IS THE OPERATOR IS THE OPERATOR, whatever they logged in with.
