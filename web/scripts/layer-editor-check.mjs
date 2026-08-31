@@ -115,16 +115,23 @@ try {
   await page.addInitScript((t) => localStorage.setItem("flowy.token", t), operatorToken);
   await page.goto(`${base}/vms`, { timeout: 30_000 }).catch(() => {});
 
+  // THE AGENTS PANE FIRST. The page opens on `shells` and the editor lives in
+  // `agents`, so on load the textarea is IN THE DOM AND NOT VISIBLE - which is
+  // how the first version of this check got to `fill` at all: it waited for
+  // visible, swallowed the timeout in a .catch, then counted the element and
+  // found one. A wait whose failure is discarded is not a wait.
+  const agents = page.locator('[data-vm-tab="agents"]');
+  await agents.waitFor({ state: "visible", timeout: 20_000 });
+  await agents.click();
+
   const picker = page.locator("[data-vm-project]");
-  await picker.waitFor({ state: "visible", timeout: 20_000 }).catch(() => {});
-  if ((await picker.count()) === 0) die("the vms page drew no project picker");
+  await picker.waitFor({ state: "visible", timeout: 20_000 });
   await picker.selectOption("flowy").catch(() => {});
 
   const box = page.locator("[data-vm-layer-text]");
-  await box.waitFor({ state: "visible", timeout: 15_000 }).catch(() => {});
-  if ((await box.count()) === 0) {
-    die("picking a project drew no layer editor - the operator asked to manage these from the ui");
-  }
+  // NOT SWALLOWED. "Present in the DOM" is what the old version proved, and an
+  // editor a person cannot see is not an editor they can use.
+  await box.waitFor({ state: "visible", timeout: 15_000 });
   if (crashes.length > 0) die(`the page threw: ${crashes.join("; ")}`);
 
   const mark = `# layer-editor-check ${before.text.length}`;
