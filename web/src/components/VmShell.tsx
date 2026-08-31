@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { api, sessionNameFor } from "@/lib/api";
+import { type DevUrl, devUrlScanner } from "@/lib/devurl";
 import { attachMouseReporting } from "@/lib/mousereport";
 import { attachSoftKeyboard } from "@/lib/softkeys";
 import { selectionMessage } from "@/lib/termselect";
@@ -133,6 +134,11 @@ export function VmShell({
   const fitter = useRef<GhosttyFit | null>(null);
   const unmouse = useRef<(() => void) | null>(null);
   const unsoft = useRef<(() => void) | null>(null);
+  // THE URL A DEV SERVER PRINTED, which the terminal can only draw as text.
+  // See lib/devurl - it also says whose loopback it is, because a guest's is
+  // not this browser's and opening it would reach the person's own machine.
+  const scanner = useRef<ReturnType<typeof devUrlScanner> | null>(null);
+  const [devUrl, setDevUrl] = useState<DevUrl | null>(null);
   const floatBox = useRef<HTMLDivElement | null>(null);
   // WHERE THE FLOATING PANEL HAS BEEN PUT, or null for "wherever it opens".
   // Null is not (0,0): a panel that has never been dragged sits bottom-right by
@@ -272,6 +278,12 @@ export function VmShell({
     setState("starting");
     setWhy("");
     heard.current = false;
+    // A NEW SCANNER PER RUN, and the old URL cleared with it. The previous
+    // session's dev server is not running any more - offering its address
+    // after Run would send a person to a port that is now nothing, or to
+    // whatever took it.
+    scanner.current = devUrlScanner(where);
+    setDevUrl(null);
 
     // The wasm is loaded on demand rather than at page load. It is 2MB, and
     // every console page would pay for it to serve the one panel that draws a
@@ -320,7 +332,14 @@ export function VmShell({
       slot,
       { session: held, project, where, mux, rows: t.rows, cols: t.cols, adopt },
       {
-        out: (bytes) => t.write(bytes),
+        out: (bytes) => {
+          t.write(bytes);
+          // Scanned on the way past rather than read back off the screen: the
+          // banner scrolls away, and a URL split across two writes is never
+          // whole in any one of them.
+          const found = scanner.current?.push(bytes);
+          if (found) setDevUrl(found);
+        },
         control: (c) => {
           if (c.type === "hello") {
             // ADOPTED, SO THIS IS AN ORDINARY SESSION NOW. Any error after this
@@ -802,6 +821,38 @@ export function VmShell({
           {where === "host"
             ? "this shell is on THIS HOST - no VM between you and the machine"
             : "this shell is in a microVM - nothing here reaches the host"}
+        </p>
+      ) : null}
+      {/*
+        THE DEV SERVER'S URL, ONCE SOMETHING PRINTS ONE.
+
+        The terminal can only draw it as text. This offers it - but only when
+        the shell shares a machine with the browser. A guest's 127.0.0.1 is the
+        GUEST's, and opening it from here reaches the person's own machine on
+        that port: at best nothing, at worst something else of theirs. So a
+        guest URL is said and not linked, which is the honest version of this
+        feature rather than the convenient one.
+      */}
+      {devUrl ? (
+        <p data-vm-shell-devurl={devUrl.url} className="text-muted-foreground text-xs">
+          {devUrl.reachable ? (
+            <>
+              a server is listening at{" "}
+              <button
+                type="button"
+                data-vm-shell-devurl-open=""
+                className="underline hover:text-foreground"
+                onClick={() => window.open(devUrl.url, "_blank", "noopener,noreferrer")}
+              >
+                {devUrl.url}
+              </button>
+            </>
+          ) : (
+            <span data-vm-shell-devurl-unreachable="">
+              a server is listening at {devUrl.url} INSIDE THE GUEST - that address is the guest's
+              own, not this machine's, so opening it here would not reach it
+            </span>
+          )}
         </p>
       ) : null}
       {/*
