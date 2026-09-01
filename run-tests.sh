@@ -5531,10 +5531,47 @@ a_misread_id_says_which_space_it_came_from() {
 	want_eq "the claim door says it too" "$(jqv .error)" \
 		"no such todo: $ROOM_TODO_THREAD - that id names a chat thread, not a row; $diag" || return 1
 
-	# An id nothing was ever written under stays a bare 404: there is nothing to
-	# diagnose and inventing a sentence would be worse than the silence.
-	want_status 404 GET "$TOKEN_A" /api/artifact/01HNOSUCHROW00000000000000 || return 1
-	want_eq "an id nothing answers to" "$(jqv .error)" "no such artifact" || return 1
+	# AN ID NOTHING ANSWERS TO AND A ROW OUT OF REACH SAY THE SAME THING, and
+	# the sameness IS the property. This asserted the bare sentence for a
+	# nonexistent id, on the reasoning that there is nothing to diagnose - true
+	# of the diagnosis, and the scope note is not a diagnosis. If an absent id
+	# answered one sentence and an unreachable one answered another, the
+	# difference would tell an unauthorised caller which ids are real, which is
+	# the existence oracle scopeNote's own comment refuses and the reason it
+	# stays a 404 rather than becoming a 403.
+	#
+	# So the assertion is an IDENTITY rather than a literal: one credential,
+	# two ids, one of them real in a project it cannot read, and the two
+	# answers must not differ. A literal would go stale the next time the
+	# sentence grows; this cannot, and it fails the moment the two diverge.
+	api POST "$TOKEN_B" /api/artifacts \
+		'{"type": "note", "title": "out of A reach", "body": "written in pb"}' || return 1
+	want_eq "B's row was created" "$API_STATUS" 200 || return 1
+	local unreachable absent unreachable_says absent_says
+	unreachable="$(jqv .id)"
+	absent=01HNOSUCHROW00000000000000
+
+	want_status 404 GET "$TOKEN_A" "/api/artifact/$unreachable" || return 1
+	unreachable_says="$(jqv .error)"
+	want_status 404 GET "$TOKEN_A" "/api/artifact/$absent" || return 1
+	absent_says="$(jqv .error)"
+
+	# Only the id differs between them, so compare the sentences with each id
+	# taken out - what is left is what the door says ABOUT the caller, and that
+	# is the half a caller could learn an id from.
+	if [ "${unreachable_says//$unreachable/}" != "${absent_says//$absent/}" ]; then
+		printf 'a row out of reach and an id that does not exist answer differently:\n' >&2
+		printf '  out of reach: %s\n  absent:       %s\n' "$unreachable_says" "$absent_says" >&2
+		printf 'the difference is how an unauthorised caller learns which ids are real\n' >&2
+		return 1
+	fi
+	case "$absent_says" in
+	"no such artifact"*) ;;
+	*)
+		printf 'the refusal no longer starts with "no such artifact": %s\n' "$absent_says" >&2
+		return 1
+		;;
+	esac
 
 	# AND THE SENTENCE STOPS AT THE PERMISSION BOUNDARY. B is in pb and holds a
 	# project grant onto pa, so B genuinely reads the room's messages and is
