@@ -786,7 +786,7 @@ func (s *server) readableArtifact(
 	}
 	art, err := s.db.ReadArtifact(r.Context(), principalOf(r), id, false)
 	if errors.Is(err, store.ErrNotFound) {
-		writeJSON(w, http.StatusNotFound, errorBody("no such artifact"))
+		writeJSON(w, http.StatusNotFound, errorBody("no such artifact"+s.notFoundNote(r, id)))
 		return nil, false
 	}
 	if err != nil {

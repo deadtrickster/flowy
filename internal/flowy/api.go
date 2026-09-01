@@ -355,7 +355,13 @@ func (s *server) createArtifact(w http.ResponseWriter, r *http.Request, req arti
 			// is already there. The store refused it and wrote nothing, and the
 			// answer is the one a read of that row would give: a caller must
 			// not learn an id exists by writing to it.
-			writeJSON(w, http.StatusNotFound, errorBody("no such artifact"))
+			//
+			// AND WHERE IT LOOKED. A row in a project this credential cannot
+			// read answers exactly this, and without the note the reader
+			// concludes it was deleted - see scopeNote, and the row that
+			// measured it, 01M17RVV777776424HGXJZC46M.
+			writeJSON(w, http.StatusNotFound,
+				errorBody("no such artifact"+s.notFoundNote(r, req.ID)))
 			return
 		}
 		var refusal store.DepRefusal
@@ -910,7 +916,7 @@ func (s *server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 		// And the fourth truth 404 was answering: the id is real and is not an
 		// artifact id at all. See misreadIDNote.
 		writeJSON(w, http.StatusNotFound,
-			errorBody("no such artifact"+s.misreadIDNote(r, r.PathValue("id"))))
+			errorBody("no such artifact"+s.notFoundNote(r, r.PathValue("id"))))
 		return
 	}
 	if err != nil {
@@ -1078,7 +1084,7 @@ func (s *server) handleDeleteArtifact(w http.ResponseWriter, r *http.Request) {
 
 	art, err := s.db.ReadArtifact(r.Context(), p, id, false)
 	if errors.Is(err, store.ErrNotFound) {
-		writeJSON(w, http.StatusNotFound, errorBody("no such artifact"))
+		writeJSON(w, http.StatusNotFound, errorBody("no such artifact"+s.notFoundNote(r, id)))
 		return
 	}
 	if err != nil {
@@ -1094,7 +1100,7 @@ func (s *server) handleDeleteArtifact(w http.ResponseWriter, r *http.Request) {
 	if errors.Is(err, store.ErrNotFound) {
 		// The row changed hands between the read and the delete - a merge
 		// landing mid-request - so the delete found nothing of the caller's.
-		writeJSON(w, http.StatusNotFound, errorBody("no such artifact"))
+		writeJSON(w, http.StatusNotFound, errorBody("no such artifact"+s.notFoundNote(r, id)))
 		return
 	}
 	if err != nil {
@@ -1502,7 +1508,8 @@ func (s *server) handleCreateGrant(w http.ResponseWriter, r *http.Request) {
 	if req.Artifact != "" {
 		art, err := s.db.ReadArtifact(r.Context(), p, req.Artifact, false)
 		if errors.Is(err, store.ErrNotFound) {
-			writeJSON(w, http.StatusNotFound, errorBody("no such artifact"))
+			writeJSON(w, http.StatusNotFound,
+				errorBody("no such artifact"+s.notFoundNote(r, req.Artifact)))
 			return
 		}
 		if err != nil {

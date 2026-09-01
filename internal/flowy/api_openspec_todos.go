@@ -33,7 +33,7 @@ func (s *server) handleOpenspecTodos(w http.ResponseWriter, r *http.Request) {
 	art, err := s.db.ReadArtifact(r.Context(), p, id, scopeAll(r, p))
 	if errors.Is(err, store.ErrNotFound) {
 		writeJSON(w, http.StatusNotFound,
-			errorBody("no such artifact"+s.misreadIDNote(r, id)))
+			errorBody("no such artifact"+s.notFoundNote(r, id)))
 		return
 	}
 	if err != nil {

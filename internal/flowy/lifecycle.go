@@ -199,7 +199,7 @@ func (s *server) handleArtifactStatus(w http.ResponseWriter, r *http.Request) {
 
 	art, err := s.db.ReadArtifact(ctx, p, id, false)
 	if errors.Is(err, store.ErrNotFound) {
-		writeJSON(w, http.StatusNotFound, errorBody("no such artifact"))
+		writeJSON(w, http.StatusNotFound, errorBody("no such artifact"+s.notFoundNote(r, id)))
 		return
 	}
 	if err != nil {
@@ -322,7 +322,7 @@ func (s *server) handleArtifactHistory(w http.ResponseWriter, r *http.Request) {
 
 	art, err := s.db.ReadArtifact(ctx, p, id, scopeAll(r, p))
 	if errors.Is(err, store.ErrNotFound) {
-		writeJSON(w, http.StatusNotFound, errorBody("no such artifact"))
+		writeJSON(w, http.StatusNotFound, errorBody("no such artifact"+s.notFoundNote(r, id)))
 		return
 	}
 	if err != nil {

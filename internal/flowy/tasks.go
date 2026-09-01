@@ -88,7 +88,7 @@ func (s *server) handleAssign(w http.ResponseWriter, r *http.Request) {
 
 	art, err := s.db.ReadArtifact(ctx, p, req.Artifact, false)
 	if errors.Is(err, store.ErrNotFound) {
-		writeJSON(w, http.StatusNotFound, errorBody("no such artifact"))
+		writeJSON(w, http.StatusNotFound, errorBody("no such artifact"+s.notFoundNote(r, req.Artifact)))
 		return
 	}
 	if err != nil {
