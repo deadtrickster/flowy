@@ -87,7 +87,7 @@ function ProjectBadge() {
   // minted into its token, so "you belong to no project yet" is not a smaller
   // version of its situation - it is a sentence about somebody else. Until the
   // node carried this field an agent answered [] and read that sentence.
-  const byMembership = whoami?.reach === "memberships";
+  const byMembership = whoami?.reach_from === "memberships";
   // The list is what a person may ENTER, and being here already is not a
   // reason to leave the current project out of it - it is the one that has to
   // be shown as current.
