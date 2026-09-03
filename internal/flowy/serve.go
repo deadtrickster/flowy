@@ -980,14 +980,24 @@ func (s *server) handleNode(w http.ResponseWriter, _ *http.Request) {
 	if s.console != nil {
 		bundle = s.console.bundle
 	}
+	// How many reads this process has retried after Postgres picked them as a
+	// deadlock victim. It is here rather than on /api/metrics because it is a
+	// fact about this PROCESS and not about the caller's corpus - every number
+	// on /api/metrics is scoped to what the asker may read, and this one is not
+	// about rows at all. A node that smooths over a fault has to say how often:
+	// without this, a retried deadlock and a deadlock that never happened look
+	// identical from outside. See queryRetryingDeadlock.
+	retries, retriesBy := store.DeadlockRetries()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"node":    s.node,
-		"version": version,
-		"phase":   9,
-		"console": s.console != nil && s.console.index != nil,
-		"bundle":  bundle,
-		"forge":   forgeKind,
-		"routes":  append([]string{"GET /healthz", "GET /version"}, apiRoutes...),
+		"node":                s.node,
+		"version":             version,
+		"phase":               9,
+		"console":             s.console != nil && s.console.index != nil,
+		"bundle":              bundle,
+		"forge":               forgeKind,
+		"deadlock_retries":    retries,
+		"deadlock_retries_by": retriesBy,
+		"routes":              append([]string{"GET /healthz", "GET /version"}, apiRoutes...),
 	})
 }
 
