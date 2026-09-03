@@ -44,10 +44,21 @@ func TestEveryAgentKindSaysWhetherItGates(t *testing.T) {
 		t.Fatal("agentKinds is empty, so this walk measured nothing - the set it reads has gone or been renamed")
 	}
 
-	gates, labels := 0, 0
+	gates, labels, undeclared := 0, 0, 0
 	for kind := range agentKinds {
+		// COUNTED BEFORE THE SKIP, so the totals reconcile with the set's own
+		// size. The first version counted only declared kinds and continued
+		// past the rest, so an undeclared value printed "5 kinds: 2 gate, 2 are
+		// labels" - a quantity that does not add up is the reader's problem to
+		// notice, on the line whose whole job is being read.
+		if AgentKindGates(kind) {
+			gates++
+		} else {
+			labels++
+		}
 		doc, ok := agentKindGateDoc[kind]
 		if !ok {
+			undeclared++
 			t.Errorf("agent kind %q is in the closed set and has no line in agentKindGateDoc.\n"+
 				"Say which door distinguishes it, or say plainly that nothing does - "+
 				"a value that arrives undeclared is how %q sat beside two gating values meaning nothing.",
@@ -56,11 +67,6 @@ func TestEveryAgentKindSaysWhetherItGates(t *testing.T) {
 		}
 		if strings.TrimSpace(doc) == "" {
 			t.Errorf("agent kind %q has an empty line in agentKindGateDoc, which reads as declared and says nothing", kind)
-		}
-		if AgentKindGates(kind) {
-			gates++
-		} else {
-			labels++
 		}
 	}
 
@@ -84,7 +90,7 @@ func TestEveryAgentKindSaysWhetherItGates(t *testing.T) {
 			"this test passes without measuring anything and should be rewritten rather than left green.",
 			gates, labels)
 	}
-	t.Logf("%d agent kind(s): %d gate a door, %d are labels", len(agentKinds), gates, labels)
+	t.Logf("%d agent kind(s): %d gate a door, %d are labels, %d undeclared", len(agentKinds), gates, labels, undeclared)
 }
 
 // AND THE ENUM IS THE SET. A constant named AgentKind* that never reaches
