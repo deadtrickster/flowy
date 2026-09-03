@@ -20375,7 +20375,7 @@ a_chat_url_carries_its_project() {
 # from the source, so this asks the node instead.
 #
 # THE DISAGREEMENT. projects.go says a person's reach is project_members and
-# /api/whoami answers `reach: "memberships"` with that list. auth.go:248 builds
+# /api/whoami answers `reach_from: "memberships"` with that list. auth.go:248 builds
 # a SESSION principal with Projects unset, so Principal.Reach() - which is
 # Project plus Projects - is exactly one project. Read one way that is a defect:
 # whoami names three and the filter honours one. Read the other way they are
@@ -20386,6 +20386,14 @@ a_chat_url_carries_its_project() {
 # A ROW COULD NOT SETTLE IT AND NEITHER COULD EITHER OF US. What settles it is
 # the pair of answers the node actually gives, so this measures both facts at
 # once and asserts the RELATION between them:
+#
+# THE FIELD WAS RENAMED BECAUSE OF THIS PARAGRAPH. Both of us read
+# `reach: "memberships"` beside a list of two as "you currently reach two" -
+# the comment above is that misreading, written down while it was still live,
+# and @claude-host argued it to the operator twice as a permissions defect. The
+# mechanism was right the whole time and the word was doing two jobs, so it now
+# says which mechanism the reach comes FROM. What this check asserts is
+# unchanged.
 #
 #   memberships is 2 and does not change   - the list a switcher offers
 #   reach is 1 and follows `enter`         - where this session is working
@@ -20481,7 +20489,7 @@ a_session_reaches_the_project_it_entered() {
 	# The membership list, read through the same cookie, BEFORE the switch.
 	sess GET /api/whoami || return 1
 	want_eq "whoami" "$SESS_STATUS" 200 || return 1
-	want_eq "the mechanism a person's reach comes from" "$(sessv .reach)" memberships || return 1
+	want_eq "the mechanism a person's reach comes from" "$(sessv .reach_from)" memberships || return 1
 	before="$(sessv '[.memberships[] | select(. == "'"$PROJECT_A"'" or . == "'"$other"'")] | length')"
 	want_eq "memberships covering both projects" "$before" 2 || return 1
 
