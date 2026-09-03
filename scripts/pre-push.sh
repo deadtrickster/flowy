@@ -240,11 +240,34 @@ hook)
 	;;
 esac
 
-# A SCAN THAT MEASURED NOTHING IS NOT A PASS. An empty stdin - which is what a
-# hook sees when it is wired up wrong - would otherwise exit 0 and read exactly
-# like a clean push, which is the failure this whole script exists to end.
+# A SCAN THAT MEASURED NOTHING IS NOT A PASS. An empty stdin would otherwise
+# exit 0 and read exactly like a clean push, which is the failure this whole
+# script exists to end.
+#
+# AND IT NAMES BOTH CAUSES, because it cannot tell them apart from in here.
+# claude-host, 2026-09-03: "your pre-push says 'broken hook' when git drops a
+# non-ff ref before calling it - stdin is empty for an ordinary reason. refusal
+# is right, the sentence names the wrong cause."
+#
+# They are right, and this was the wrong shape in the one script whose entire
+# job is refusing to guess. Git writes the ref lines to a hook's stdin AFTER it
+# has decided which refs it will offer, so a push it has already refused - a
+# non-fast-forward, most commonly - reaches this hook with nothing to read. That
+# is indistinguishable in here from a hook installed where git never calls it,
+# and asserting either one sends the next person to the wrong place: somebody
+# who just got a legitimate "fetch first" is told their tooling is broken.
+#
+# So the sentence says what is KNOWN - nothing arrived, therefore nothing was
+# scanned, therefore this is not a clean push - and offers the two causes as a
+# pair for the reader to tell apart with what they can see and this cannot.
 if [ "$scanned" -eq 0 ]; then
-	say "nothing was scanned - no refs arrived on stdin. This is a broken hook, not a clean push."
+	say "no refs arrived on stdin, so nothing was scanned. That is not a clean push."
+	say "  Two things do this and I cannot tell them apart from in here:"
+	say "    - git refused the push before calling me, so it offered no refs."
+	say "      Its own message is above this one - a non-fast-forward is the usual"
+	say "      one, and 'fetch first' there means this line is not your problem."
+	say "    - this hook is installed somewhere git does not call it with refs."
+	say "      Nothing above this line from git itself points at that one."
 	exit 2
 fi
 

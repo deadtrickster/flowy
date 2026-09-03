@@ -22847,11 +22847,52 @@ the_push_scan_reads_the_range_and_not_the_tip() {
 # the guard. A hook wired up wrong gets no refs on stdin, and exiting 0 there
 # would be indistinguishable from a clean push for as long as it took anybody
 # to notice.
+#
+# AND THE SENTENCE IS ASSERTED, NOT ONLY THE STATUS. This check held the exit
+# code for weeks while the words beside it named the wrong cause: "This is a
+# broken hook, not a clean push", asserted, when git ALSO hands a hook empty
+# stdin after refusing the push itself - a non-fast-forward is the ordinary
+# case. Found by claude-host reading the script, not by this check, because a
+# check that reads only a number cannot see a message that lies.
+#
+# THE PROPERTY IS THAT IT NAMES BOTH AND PICKS NEITHER. The hook cannot tell the
+# two apart from inside - git has already decided which refs to offer before it
+# is called - so the honest output is the pair, and asserting either one alone
+# sends the next reader to the wrong place.
 a_push_scan_that_read_no_refs_is_not_a_pass() {
-	local status
-	bash "$ROOT/scripts/pre-push.sh" </dev/null >/dev/null 2>&1
+	local status said
+	said="$(bash "$ROOT/scripts/pre-push.sh" </dev/null 2>&1)"
 	status=$?
-	want_eq "the exit status of a scan given no refs" "$status" 2
+	want_eq "the exit status of a scan given no refs" "$status" 2 || return 1
+
+	# BOTH CAUSES, by the words each one is named with. Matching the whole
+	# sentence would break on any rewording; these two are what the reader has
+	# to be told exists.
+	case "$said" in
+	*"refused the push before calling me"*) ;;
+	*)
+		printf 'the refusal does not say git may have refused the push itself, so a reader who just got a legitimate non-fast-forward is sent to look at their hook:\n%s\n' "$said" >&2
+		return 1
+		;;
+	esac
+	case "$said" in
+	*"installed somewhere git does not call it"*) ;;
+	*)
+		printf 'the refusal does not say the hook may be installed wrong, which is the other cause and the one this guard was written for:\n%s\n' "$said" >&2
+		return 1
+		;;
+	esac
+
+	# AND IT DOES NOT ASSERT ONE. The exact claim that was wrong, kept as a
+	# regression guard: a future edit that shortens this back to a single cause
+	# is the defect returning, not a tidier message.
+	case "$said" in
+	*"This is a broken hook"*)
+		printf 'the refusal asserts one of the two causes again:\n%s\n' "$said" >&2
+		return 1
+		;;
+	esac
+	printf 'a scan given no refs exits 2 and names both causes without choosing one\n'
 }
 
 # END TO END, THROUGH GIT ITSELF. Everything above calls the script. This one
