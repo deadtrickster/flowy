@@ -224,6 +224,57 @@ var agentKinds = map[string]bool{
 	AgentKindMonitor:  true,
 }
 
+// AgentKindGates says whether a door on this node treats this kind differently
+// from the others. TRUE means some door branches on it; FALSE means it is a
+// LABEL - a true thing to record about an agent that changes nothing it may do.
+//
+// WHY THIS EXISTS, and it is not tidiness. 01M1M8BE2E02G2ZE2D3FCCY9YW, filed
+// against the set as it stood: "agent_kind accepts reviewer and no door reads
+// it". Measured, the sentence is not quite right and the truth is worse.
+// announce.go reads AgentKind on EVERY announcement, reviewer included, and
+// MayAnnounceFederation hands a reviewer exactly the answer it hands a worker.
+// The value is not unread; it is read and non-distinguishing.
+//
+// So the closed set had four values, TWO of which change what a door does and
+// TWO of which do not, and nothing anywhere said which was which. A person
+// reading it sees system and monitor being load-bearing and concludes reviewer
+// is too - the same misreading `reach` caused on /api/whoami, where a name true
+// about the mechanism was false about the value printed beside it.
+//
+// A DECLARATION RATHER THAN A REMOVAL, deliberately. Taking `reviewer` out
+// would contradict the comment above the enum - the kind is a capability set
+// and a reviewer is meant to be no more privileged than a worker - and would
+// break any agent already minted that way. Giving it a door needs somebody to
+// decide what a reviewer may do, which is a permissions question and not this
+// function's to answer. Saying out loud which values gate needs neither, and it
+// survives either decision: give reviewer a door tomorrow and this flips with
+// it, in one place, with a test that notices.
+//
+// TestEveryAgentKindSaysWhetherItGates is what keeps it honest. A kind added to
+// the set above without an entry here fails that walk, so the next value cannot
+// arrive undeclared the way this one did.
+func AgentKindGates(kind string) bool {
+	switch kind {
+	case AgentKindSystem, AgentKindMonitor:
+		// MayAnnounceFederation branches on exactly these two.
+		return true
+	case AgentKindWorker, AgentKindReviewer:
+		return false
+	default:
+		return false
+	}
+}
+
+// agentKindGateDoc names, for each kind, the door that distinguishes it - or
+// says plainly that nothing does. It is what a person gets instead of reading
+// four files, and what the walk quotes when it refuses an undeclared value.
+var agentKindGateDoc = map[string]string{
+	AgentKindWorker:   "nothing branches on it; it is the default and the floor",
+	AgentKindReviewer: "nothing branches on it - a label, not a capability",
+	AgentKindSystem:   "MayAnnounceFederation: may post a federation-scope announcement",
+	AgentKindMonitor:  "MayAnnounceFederation: may post a federation-scope announcement",
+}
+
 // AgentKindOK reports whether kind is one this node implements. Empty is one:
 // it is what a row written before the column existed reads back as, and the
 // coalesce below makes it a worker.
