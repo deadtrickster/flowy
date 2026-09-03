@@ -860,7 +860,7 @@ export function MessageList({
                     data-reply={event.id}
                     onClick={() => onSelect(event)}
                     aria-label={`reply to ${speaker(event)}, message ${shortId(event.id)}`}
-                    className="rounded border border-border px-1.5 py-0.5 text-[11px] text-muted-foreground opacity-60 transition hover:border-primary/50 hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
+                    className="rounded border border-border px-1.5 py-0.5 text-[11px] text-muted-foreground transition hover:border-primary/50 hover:text-foreground"
                   >
                     reply
                   </button>
@@ -880,7 +880,7 @@ export function MessageList({
                       data-thread-reply={event.id}
                       onClick={() => onThreadReply(event)}
                       aria-label={`reply in the thread ${shortId(event.thread)}, message ${shortId(event.id)}`}
-                      className="rounded border border-border px-1.5 py-0.5 text-[11px] text-muted-foreground opacity-60 transition hover:border-primary/50 hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
+                      className="rounded border border-border px-1.5 py-0.5 text-[11px] text-muted-foreground transition hover:border-primary/50 hover:text-foreground"
                     >
                       reply in thread
                     </button>
@@ -968,6 +968,45 @@ export function MessageList({
                   the grammar of an identifier: they were drawn as data and
                   behaved as controls. The face moves onto the ids themselves.
                 */}
+                {/*
+                  AND ONE FOOTER IS ONE SHAPE, which is the other half of the
+                  same complaint and was still open after the face was fixed.
+
+                  MEASURED on the deployed console, computed styles rather than
+                  a screenshot: the eight controls in this row were THREE
+                  shapes. cite/todo/keep and `thread <id>` were borderless prose
+                  with an underline on hover; `row <id>` and `N replies` were
+                  bordered chips resting at full opacity; `reply` and `reply in
+                  thread` were bordered chips resting at 0.6 and lifting on
+                  group-hover. So `reply` whispered and `cite` did not, two
+                  centimetres apart, and nothing about which act they perform
+                  predicts which one a reader gets.
+
+                  The verbs being borderless is the row above's complaint in a
+                  new costume: the FACE stopped saying "identifier" and the
+                  SHAPE went on saying "prose". A control that is drawn as text
+                  is a control you have to already know about.
+
+                  SO EVERY CONTROL HERE IS THE SAME CHIP and only its words
+                  differ. Two deliberate exceptions, both of which keep the
+                  shape: `N replies` carries text-primary because it is a LINK
+                  to another surface rather than an act on this message, and
+                  `keep` carries text-primary while it is on, because that
+                  colour is its state and not its emphasis.
+
+                  RESTING AT FULL OPACITY, NOT ON HOVER, and the reason is
+                  already written twenty lines up against the row chip: a
+                  control that exists only on hover is a control a keyboard does
+                  not have. opacity-60 never made it to the other six anyway, so
+                  the choice was between spreading a half-hidden control and
+                  dropping it. The machinery is already quiet - 11px muted
+                  against 14px body - which is the thing that was actually asked
+                  for.
+
+                  The GROUPING stays: cite/todo/keep and the ids scan from the
+                  left, the reply controls are pushed right by ml-auto below.
+                  One shape does not mean one pile.
+                */}
                 <div className="flex flex-wrap items-center gap-x-2 gap-y-1 pt-1 text-[11px] text-muted-foreground">
                   {/*
                     CITING IS A CHOICE, and it used to be a side effect of
@@ -992,7 +1031,7 @@ export function MessageList({
                     type="button"
                     data-cite={event.id}
                     title="cite what you have selected in this message, or the whole message"
-                    className="cursor-pointer text-muted-foreground hover:text-foreground hover:underline"
+                    className="cursor-pointer rounded border border-border px-1.5 py-0.5 text-[11px] text-muted-foreground transition hover:border-primary/50 hover:text-foreground"
                     onClick={() => {
                       const container = document.querySelector<HTMLElement>(
                         `[data-body="${CSS.escape(event.id)}"]`,
@@ -1030,7 +1069,7 @@ export function MessageList({
                       type="button"
                       data-todo-from={event.id}
                       title="raise a todo out of what you have selected, or out of the whole message"
-                      className="cursor-pointer text-muted-foreground hover:text-foreground hover:underline"
+                      className="cursor-pointer rounded border border-border px-1.5 py-0.5 text-[11px] text-muted-foreground transition hover:border-primary/50 hover:text-foreground"
                       onClick={() => {
                         const container = document.querySelector<HTMLElement>(
                           `[data-body="${CSS.escape(event.id)}"]`,
@@ -1067,7 +1106,7 @@ export function MessageList({
                           ? "you are keeping this - drop it from your list"
                           : "keep this message in your own list"
                       }
-                      className={`cursor-pointer hover:text-foreground hover:underline ${
+                      className={`cursor-pointer rounded border border-border px-1.5 py-0.5 text-[11px] transition hover:border-primary/50 hover:text-foreground ${
                         keeping.has(event.id) ? "text-primary" : "text-muted-foreground"
                       }`}
                       onClick={() => onKeep(event, !keeping.has(event.id))}
@@ -1104,7 +1143,7 @@ export function MessageList({
                     data-thread-open={event.id}
                     onClick={() => (onOpenThread ?? onSelect)(event)}
                     aria-label={`open the thread ${shortId(event.thread)} this message is in`}
-                    className="cursor-pointer whitespace-nowrap text-muted-foreground hover:text-foreground hover:underline"
+                    className="cursor-pointer whitespace-nowrap rounded border border-border px-1.5 py-0.5 text-[11px] text-muted-foreground transition hover:border-primary/50 hover:text-foreground"
                   >
                     thread <span className="font-mono">{shortId(event.thread)}</span>
                   </button>
@@ -1134,7 +1173,7 @@ export function MessageList({
                       // scans left to right, and the reply controls are what
                       // they reach for, so the two groups stop competing for
                       // the same space on a narrow screen.
-                      className="ml-auto cursor-pointer whitespace-nowrap rounded border border-border px-1.5 text-[11px] text-primary transition hover:border-primary/50 hover:text-foreground"
+                      className="ml-auto cursor-pointer whitespace-nowrap rounded border border-border px-1.5 py-0.5 text-[11px] text-primary transition hover:border-primary/50 hover:text-foreground"
                     >
                       {(threads?.[event.thread] ?? 1) - 1} repl
                       {(threads?.[event.thread] ?? 1) - 1 === 1 ? "y" : "ies"}
@@ -1318,7 +1357,7 @@ function ReactionPicker({
         onClick={() => setOpen((was) => !was)}
         aria-label={`react to message ${shortId(message)}`}
         aria-expanded={open}
-        className="rounded border border-border px-1.5 py-0.5 text-[11px] text-muted-foreground opacity-60 transition hover:border-primary/50 hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
+        className="rounded border border-border px-1.5 py-0.5 text-[11px] text-muted-foreground transition hover:border-primary/50 hover:text-foreground"
       >
         react
       </button>
