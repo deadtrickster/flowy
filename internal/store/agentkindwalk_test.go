@@ -108,11 +108,22 @@ func TestEveryAgentKindConstantIsInTheClosedSet(t *testing.T) {
 		t.Fatal("no AgentKind constants found in store.go, so this walk measured nothing - " +
 			"they have moved, and this test is looking at the wrong file")
 	}
+	// COUNTED, so the line at the end cannot contradict the errors above it.
+	// The first version logged "N constant(s), all in the closed set"
+	// unconditionally, and printed it on the same run as an error saying one
+	// was not - the reader gets two lines that cannot both be true and has to
+	// decide which to believe.
+	stray := 0
 	for _, m := range found {
 		name, value := m[1], m[2]
 		if !agentKinds[value] {
+			stray++
 			t.Errorf("%s = %q is declared and is not in agentKinds, so mint refuses a value the tree advertises", name, value)
 		}
 	}
-	t.Logf("%d AgentKind constant(s), all in the closed set", len(found))
+	if stray == 0 {
+		t.Logf("%d AgentKind constant(s), all in the closed set", len(found))
+		return
+	}
+	t.Logf("%d AgentKind constant(s), %d of them not in the closed set", len(found), stray)
 }
