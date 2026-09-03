@@ -1607,7 +1607,7 @@ func (s *server) handleWhoami(w http.ResponseWriter, r *http.Request) {
 		// Now the mechanism is stated rather than implied - see Reach.
 		switch {
 		case p.UserID != "" && p.AgentID == "":
-			out.Reach = reachMemberships
+			out.ReachFrom = reachMemberships
 			if mine, err := s.db.ProjectsOfUser(r.Context(), p.UserID); err == nil {
 				out.Memberships = mine
 			} else {
@@ -1623,7 +1623,7 @@ func (s *server) handleWhoami(w http.ResponseWriter, r *http.Request) {
 			// A SEAT. Its reach was minted into its token and no owner can add
 			// to it, so "which projects do you belong to" has no answer rather
 			// than an empty one.
-			out.Reach = reachToken
+			out.ReachFrom = reachToken
 			out.Memberships = nil
 		}
 	}

@@ -569,7 +569,7 @@ export interface Whoami {
    * on the shape of `memberships`: the same null carries two different
    * sentences and only this field tells them apart.
    */
-  reach?: "memberships" | "token";
+  reach_from?: "memberships" | "token";
 }
 
 /** MeUser is the registry's row for the person or seat behind this request. */

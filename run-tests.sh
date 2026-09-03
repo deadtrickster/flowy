@@ -1374,11 +1374,11 @@ whoami_says_which_reach() {
 	recall
 	api GET "$TOKEN_A" /api/whoami || return 1
 	local person_reach person_list
-	person_reach="$(jqv .reach)"
+	person_reach="$(jqv .reach_from)"
 	person_list="$(jqv '.memberships | type')"
 	api GET "$TOKEN_A_AGENT" /api/whoami || return 1
 	local seat_reach seat_list
-	seat_reach="$(jqv .reach)"
+	seat_reach="$(jqv .reach_from)"
 	seat_list="$(jqv '.memberships | type')"
 
 	want_eq "a person's reach" "$person_reach" memberships || return 1

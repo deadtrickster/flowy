@@ -64,7 +64,7 @@ try {
       const token = localStorage.getItem("flowy.token");
       const r = await fetch("/api/whoami", { headers: { Authorization: `Bearer ${token}` } });
       const body = await r.json();
-      return { reach: body.reach ?? null, memberships: body.memberships ?? null };
+      return { reach_from: body.reach_from ?? null, memberships: body.memberships ?? null };
     });
     await page.close();
     return { said, project, ...reach };
@@ -76,14 +76,14 @@ try {
   // THE FIXTURE HAS TO BE THE ONE THIS CHECK IS ABOUT. A person who already
   // belongs somewhere would never see the sentence, so its absence for the seat
   // would prove nothing at all.
-  if (person.reach !== "memberships" || (person.memberships ?? []).length !== 0) {
-    die(`this run's person answers reach=${JSON.stringify(person.reach)} with ${JSON.stringify(
+  if (person.reach_from !== "memberships" || (person.memberships ?? []).length !== 0) {
+    die(`this run's person answers reach_from=${JSON.stringify(person.reach_from)} with ${JSON.stringify(
       person.memberships,
     )} memberships, so they are not the "belongs to nothing" case and the
 comparison this check makes has nothing to compare against`);
   }
-  if (seat.reach !== "token") {
-    die(`this run's agent token answers reach=${JSON.stringify(seat.reach)}, not "token" - the
+  if (seat.reach_from !== "token") {
+    die(`this run's agent token answers reach_from=${JSON.stringify(seat.reach_from)}, not "token" - the
 door is not naming a seat's mechanism, which is the fix this check stands on`);
   }
 

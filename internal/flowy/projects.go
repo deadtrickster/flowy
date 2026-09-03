@@ -236,7 +236,7 @@ type whoamiResponse struct {
 	// its own comment that collapsing two of those has cost this fleet six
 	// defects; the third one was being collapsed a line below it.
 	//
-	// So Reach names the mechanism positively rather than leaving a reader to
+	// So it names the mechanism positively rather than leaving a reader to
 	// infer it from a missing value:
 	//
 	//   "memberships" + a list   this person works in these
@@ -244,16 +244,37 @@ type whoamiResponse struct {
 	//   "memberships" + null     this node could not read them, and says so
 	//   "token"       + null     an agent: not a question about this principal
 	//
+	// IT IS reach_from AND NOT reach, BECAUSE "reach" READ AS A SET.
+	//
+	// `"reach": "memberships"` sitting beside `"memberships": ["pa","flowy"]`
+	// says the mechanism and looks like the list's label, and a reader who
+	// takes it that way concludes the session reaches BOTH projects at once. I
+	// am that reader: on 2026-09-03 I read it as an equality, called the
+	// enforcement a defect against it, and told the operator twice that
+	// widening session reach was a decision they owed us. It was not - the
+	// enforcement was right and this word was doing two jobs.
+	//
+	// WHAT A SESSION ACTUALLY REACHES AT ANY MOMENT IS `project`, the field the
+	// embedded Principal carries. memberships is the set a switcher may move
+	// that project AMONG, not a set readable together - measured in
+	// 01M1M526DX8EAY8TWAPYX4RTKC, where two ids swap 200/404 across a switch
+	// while memberships stays 2. reach_from says which of the two mechanisms
+	// chose `project`, and nothing more.
+	//
 	// omitempty because an unauthenticated request has no principal and so no
 	// mechanism either - and an empty string would be a fourth thing to guess
 	// at.
-	Reach string `json:"reach,omitempty"`
+	ReachFrom string `json:"reach_from,omitempty"`
 }
 
-// The two mechanisms a principal's reach can come from. A person's is
-// project_members and can be changed by an owner; an agent's is minted into
-// its token and cannot be changed at all, which is why "join a project" is not
-// an act available to a seat.
+// The two mechanisms a principal's reach can come FROM - not the reach itself.
+// A person's is project_members and can be changed by an owner; an agent's is
+// minted into its token and cannot be changed at all, which is why "join a
+// project" is not an act available to a seat.
+//
+// Either way the reach in force is ONE project - the principal's `project` -
+// and these name how it was chosen. See the field's own comment for what
+// happened when the distinction was left to the reader.
 const (
 	reachMemberships = "memberships"
 	reachToken       = "token"
