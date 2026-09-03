@@ -12725,6 +12725,20 @@ a_ulid_is_not_sliced_for_a_name() {
 	./scripts/truncated-ulid-check.sh .
 }
 
+# A NODE THAT CANNOT ANSWER IS NOT A NODE THAT ABORTED NOTHING. deploy.sh reads
+# deadlock_retries off the OLD binary either side of the migration, because that
+# counter dies with the process the deploy stops - 01M1MHVJ27CYXF7X4R9QBBYV9V.
+# The number is only worth reading if "no field" and "zero" stay two answers, and
+# the natural pipeline gets that right ONLY while pipefail is set, because cut
+# exits 0 on empty input. So the check runs the function with pipefail
+# deliberately off. Its own first version did not - a subshell inherits pipefail
+# and `set -u` does not clear it - and it passed against the naive pipeline it
+# was written to catch.
+absent_is_not_zero_in_the_deploy_report() {
+	cd "$ROOT" || return 1
+	./scripts/absent-is-not-zero-check.sh scripts/deploy.sh
+}
+
 # And the suite's own last word: a refusal has to reach the reader BEFORE the
 # number, because the number is the line that gets pasted into a row and the one
 # the drainer greps for its note. Measured on another seat's gate, which printed
@@ -13177,6 +13191,8 @@ check "the timings summary cannot fail the run it is reporting on" \
 	a_summary_cannot_fail_the_run_it_reports_on
 check "a ULID is not sliced for a name, because a prefix is a clock" \
 	a_ulid_is_not_sliced_for_a_name
+check "absent is not zero in the deploy's deadlock report" \
+	absent_is_not_zero_in_the_deploy_report
 check "the gate lock does not outlive the suite that took it" \
 	the_gate_lock_does_not_outlive_its_suite
 preflight "npm ci" npm_ci
