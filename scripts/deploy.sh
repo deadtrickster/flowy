@@ -454,11 +454,74 @@ fi
 # 500s. So the schema goes first within the deploy, and the deploy only starts
 # once there is a verified binary to install.
 
+# HOW MANY READS THIS DEPLOY ABORTED, asked of the binary that knows.
+#
+# 01M1M84K1Y69SSF3K583BWP5FZ measured every deadlock on this node as a read
+# against this migration: 97 of 97 cycles are one AccessShareLock waiter against
+# one AccessExclusiveLock waiter, and 91 of them name a single no-op statement,
+# ALTER TABLE events ADD COLUMN IF NOT EXISTS sig bytea. 25921f6 made a retried
+# deadlock countable at GET /api/node.
+#
+# THAT COUNTER CANNOT SEE THIS EVENT ON ITS OWN, which is why the reading is
+# taken here rather than left to whoever looks later. It lives for the process,
+# and the process holding the aborted readers is the OLD binary - still serving
+# through the migration below, stopped a few lines further down. The count is
+# minted and destroyed inside one deploy. The new binary's answer afterwards is
+# its initial 0 and would be 0 either way, so reading it after the restart
+# measures nothing and looks like success.
+#
+# So: read before migrating, read again before stopping, and report the
+# difference. Both readings come from one process lifetime, which is the only
+# way a process-lifetime counter can express one.
+#
+# IT REPORTS, IT DOES NOT GATE. A deploy that cannot reach the node, or one
+# against a binary too old to carry the field, must not fail for it - this is
+# instrumentation, and the migration above already has its own retry and its own
+# refusal. An unreadable counter says so and says nothing else.
+deadlock_retries() {
+	local tok answer
+	tok=$(find_token) || return 1
+	[ -n "$tok" ] || return 1
+	answer=$(curl -sS -m 10 -H "Authorization: Bearer $tok" "$URL/api/node" 2>/dev/null) || return 1
+	# ABSENT IS NOT ZERO. A binary from before 25921f6 has no such field, and
+	# printing 0 for it would report a clean deploy from a node that cannot
+	# answer.
+	#
+	# CHECKED EXPLICITLY RATHER THAN LEFT TO pipefail. With `set -o pipefail` a
+	# grep that matches nothing does fail the pipeline, so the naive version
+	# happens to work here - and it stops working silently the day somebody
+	# changes the set line at the top of this file, reporting 0 for a node that
+	# said nothing. `cut` exits 0 on empty input, so the failure would be a
+	# clean-looking zero. Verified both ways before relying on it.
+	local n
+	n=$(printf '%s' "$answer" | grep -o '"deadlock_retries":[0-9]\+' | head -1 | cut -d: -f2)
+	case "$n" in
+	'' | *[!0-9]*) return 1 ;;
+	esac
+	printf '%s' "$n"
+}
+
+retries_before=$(deadlock_retries) || retries_before=""
+
 # From the TREE, not from $REPO: the schema that is applied has to be the one
 # the binary was built against, and $REPO's copy is whatever anybody has edited
 # into it since.
 if ! "$TREE/scripts/migrate.sh" "$dsn"; then
 	die "the migration failed - nothing was installed and the node is still serving the old binary"
+fi
+
+# Asked while the old binary is still up. After the restart below its counter is
+# gone, and the new one starts at 0.
+retries_after=$(deadlock_retries) || retries_after=""
+if [ -n "$retries_before" ] && [ -n "$retries_after" ]; then
+	aborted=$((retries_after - retries_before))
+	if [ "$aborted" -gt 0 ]; then
+		say "    this migration aborted $aborted read(s) that the node retried - see 01M1MATA630Y3Q8X3KTW4KZ0XJ"
+	else
+		say "    this migration aborted no reads"
+	fi
+else
+	say "    deadlock_retries unknown - the node did not answer, or predates 25921f6. NOT the same as zero."
 fi
 
 # ------------------------------------------------------------------ deploy
