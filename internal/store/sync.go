@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/lib/pq"
@@ -401,7 +403,7 @@ func readPage[T any](
 ) ([]T, error) {
 	a := &args{}
 	statement := query(a)
-	rows, err := queryRetryingDeadlock(ctx, d, statement, a.vals)
+	rows, err := queryRetryingDeadlock(ctx, d, what, statement, a.vals)
 	if err != nil {
 		return nil, fmt.Errorf("store: %s: %w", what, err)
 	}
@@ -3231,6 +3233,21 @@ func isDeadlock(err error) bool {
 	return errors.As(err, &pqErr) && pqErr.Code == "40P01"
 }
 
+// WHAT THE CAUSE TURNED OUT TO BE, measured 2026-09-03 from the postgres server
+// log on 01M1M84K1Y69SSF3K583BWP5FZ. 97 of 97 deadlock cycles on this node are
+// one AccessShareLock waiter against one AccessExclusiveLock waiter - there is
+// no read-versus-read deadlock here at all - and 91 of them name the same DDL:
+//
+//	ALTER TABLE events ADD COLUMN IF NOT EXISTS sig bytea
+//
+// which schema.sql runs at every startup. IF NOT EXISTS reads as conditional,
+// but Postgres takes AccessExclusiveLock on the table BEFORE evaluating the
+// condition, so a migration with nothing to do still takes the strongest lock in
+// the system on the busiest table on the node, every boot. That column has
+// existed since 2026-08-16. The retry below is therefore the right thing to do
+// with the symptom and is not the fix: guarding each IF NOT EXISTS on
+// information_schema so a steady-state restart does a catalog read instead is.
+//
 // queryRetryingDeadlock runs one read, and runs it once more if Postgres picked
 // it as the victim of a deadlock.
 //
@@ -3262,10 +3279,62 @@ func isDeadlock(err error) bool {
 // smoothed away. The context is checked first so a retry cannot outlive the
 // caller it is for: a client that has hung up is serverErrorSaying's case, and
 // this must not resurrect the request behind it.
-func queryRetryingDeadlock(ctx context.Context, d *DB, statement string, vals []any) (*sql.Rows, error) {
+func queryRetryingDeadlock(ctx context.Context, d *DB, what, statement string, vals []any) (*sql.Rows, error) {
 	rows, err := d.sql.QueryContext(ctx, statement, vals...)
 	if err == nil || !isDeadlock(err) || ctx.Err() != nil {
 		return rows, err
 	}
+	countDeadlockRetry(ctx, what)
 	return d.sql.QueryContext(ctx, statement, vals...)
+}
+
+// A RETRY THAT NOTHING COUNTS IS A MEASUREMENT DELETED.
+//
+// The first version of the retry above swallowed the deadlock silently, and
+// that was a defect rather than an omission. Before it, a deadlocked read was a
+// 500 in syslog and could be counted per day - which is the only reason the rate
+// change on 01M1M84K1Y69SSF3K583BWP5FZ was noticed at all. After it, a retried
+// deadlock and a deadlock that never happened produce identical output, so
+// "zero deadlock 500s since 2026-09-01" was consistent both with the cause being
+// fixed and with the rate being unchanged and hidden. 01M17K62JD1JGTQM2BRRTND18H
+// is waiting on exactly that distinction and had no evidence available to it.
+//
+// The postgres server log does still hold the truth, and that is where the cause
+// was found. But it is the database reporting, not the node, and it goes away
+// with the container. A node that smooths over a fault has to say how often.
+//
+// Kept to a counter rather than a log line on purpose: this is a hot read path,
+// and a per-occurrence line during the exact incident it describes - a deploy
+// aborting every blocked listener at once - would be its own outage. The read's
+// name is recorded beside the count because the cause work needed to know WHICH
+// statement was retried and had to go to the database log to find out.
+var (
+	deadlockRetryTotal atomic.Uint64
+	deadlockRetryMu    sync.Mutex
+	deadlockRetryBy    = map[string]uint64{}
+)
+
+// countDeadlockRetry records one retried read, by the name readPage was given.
+func countDeadlockRetry(ctx context.Context, what string) {
+	deadlockRetryTotal.Add(1)
+	deadlockRetryMu.Lock()
+	deadlockRetryBy[what]++
+	deadlockRetryMu.Unlock()
+	if span := otel.SpanFrom(ctx); span != nil {
+		span.SetAttr("deadlock.retried", what)
+	}
+}
+
+// DeadlockRetries is how many reads this process has retried after Postgres
+// picked them as a deadlock victim, in total and by read. The map is a copy:
+// the caller is a request handler and must not hold the lock the read path
+// takes.
+func DeadlockRetries() (uint64, map[string]uint64) {
+	deadlockRetryMu.Lock()
+	defer deadlockRetryMu.Unlock()
+	by := make(map[string]uint64, len(deadlockRetryBy))
+	for k, v := range deadlockRetryBy {
+		by[k] = v
+	}
+	return deadlockRetryTotal.Load(), by
 }

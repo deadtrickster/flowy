@@ -118,3 +118,51 @@ func TestADeadlockedReadIsRetried(t *testing.T) {
 			"that deserves to be seen.", got)
 	}
 }
+
+// A RETRY THAT NOTHING COUNTS IS A MEASUREMENT DELETED, so the count is the
+// thing under test here rather than a detail of it. The retry above was landed
+// silent, and that removed the only signal two open rows had: with no counter, a
+// retried deadlock and a deadlock that never happened produce identical output,
+// so a quiet week says nothing about whether the cause is fixed.
+//
+// ASSERTS A DIFFERENCE, NOT AN ABSOLUTE. deadlockRetryTotal is package-level and
+// lives for the process, so any other test in this package that trips a retry
+// moves it. Reading it before and after and asserting the delta is a question
+// this test can own; asserting it equals 1 would pass alone and fail in a suite,
+// blaming whatever ran first.
+func TestARetriedDeadlockIsCounted(t *testing.T) {
+	fake := fakeDeadlockDriver
+	fake.attempts.Store(0)
+
+	const what = "deadlock counter probe"
+	beforeTotal, beforeBy := DeadlockRetries()
+
+	pool, err := sql.Open(fakeDeadlockName, "")
+	if err != nil {
+		t.Fatalf("opening the fake pool: %v", err)
+	}
+	defer pool.Close()
+	pool.SetMaxOpenConns(1)
+
+	db := &DB{sql: pool}
+	if _, err := readPage(context.Background(), db, what,
+		func(_ *args) string { return `SELECT 1` },
+		func(sc scanner) (int, error) {
+			var n int
+			return n, sc.Scan(&n)
+		}); err != nil {
+		t.Fatalf("the retried read failed: %v", err)
+	}
+
+	afterTotal, afterBy := DeadlockRetries()
+	if d := afterTotal - beforeTotal; d != 1 {
+		t.Fatalf("the total count moved by %d, want 1. A retry nothing counts is why "+
+			"\"no deadlock 500s since 2026-09-01\" could not be told apart from the rate "+
+			"being unchanged and hidden.", d)
+	}
+	if d := afterBy[what] - beforeBy[what]; d != 1 {
+		t.Fatalf("the count for %q moved by %d, want 1. The read's NAME is the half that "+
+			"matters: finding the cause needed to know which statement was retried, and "+
+			"without it that meant reading the database's own log.", what, d)
+	}
+}
