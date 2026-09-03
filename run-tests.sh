@@ -20369,6 +20369,159 @@ a_chat_url_carries_its_project() {
 		"$HANDLE_A" "$pw" "$PROJECT_A"
 }
 
+# A SESSION REACHES THE PROJECT IT ENTERED, AND MEMBERSHIPS DOES NOT MOVE.
+#
+# Two of us read the same two files opposite ways and neither reading could win
+# from the source, so this asks the node instead.
+#
+# THE DISAGREEMENT. projects.go says a person's reach is project_members and
+# /api/whoami answers `reach: "memberships"` with that list. auth.go:248 builds
+# a SESSION principal with Projects unset, so Principal.Reach() - which is
+# Project plus Projects - is exactly one project. Read one way that is a defect:
+# whoami names three and the filter honours one. Read the other way they are
+# different questions, and whoami's own comment says so in as many words - "WHERE
+# THIS PERSON MAY WORK, which is not the same question as what they may read...
+# this is the list a switcher offers".
+#
+# A ROW COULD NOT SETTLE IT AND NEITHER COULD EITHER OF US. What settles it is
+# the pair of answers the node actually gives, so this measures both facts at
+# once and asserts the RELATION between them:
+#
+#   memberships is 2 and does not change   - the list a switcher offers
+#   reach is 1 and follows `enter`         - where this session is working
+#
+# ASSERTS A DIFFERENCE, NOT AN ABSOLUTE. The same credential asks for the same
+# two ids twice, and only the entered project varies between the readings. A
+# check that read one project and found one row would pass just as well against
+# a filter that had been deleted; this one requires the answers to SWAP, which
+# nothing but a live rule can do.
+#
+# BOTH ROWS ARE 'project-only' ON PURPOSE. The read filter takes the personal
+# branch for a projectless row and the owner branch for a personal one, and this
+# person OWNS both rows - so on the default visibility a grant could widen the
+# answer and the swap would be measuring the grant table. project-only is the
+# branch with nothing under it: the project, or 404.
+#
+# THE 404 IS THE RIGHT REFUSAL and it is not this check's opinion: an absent id
+# and a row this credential cannot reach say the same sentence, which is the
+# property f1d4e19 landed. So the arm reads a status, not a body.
+#
+# ONE LOGIN, RETRIED ONLY ON 429. The login door shares the join limiter at
+# three per minute per client and every check near this one comes from
+# 127.0.0.1, so a second login here is taken from a neighbour - which is how
+# "the rooms rail follows a project switch" once went red with "could not log
+# in". A refused attempt costs nothing: allow() records a timestamp only when it
+# lets the caller through.
+#
+# ITS OWN SECOND PROJECT, declared here. Sharing PROJECT_A with everything else
+# would make the swap depend on rows other checks happen to write.
+#
+# BEFORE a_person_sets_their_own_handle_and_password, which changes HANDLE_A.
+a_session_reaches_the_project_it_entered() {
+	recall
+	local pw="sessionreach-pw-$$" other="sessionreach" jar attempt body
+	local in_a in_b before after
+	jar="$WORK/cookies-session-reach.txt"
+	rm -f "$jar"
+
+	# sess METHOD PATH [BODY] - the request an already-signed-in browser makes:
+	# the cookie and nothing else. It keeps its own status and body rather than
+	# reusing api()'s, because api() would need a bearer to say anything and the
+	# absence of one is the whole point.
+	sess() {
+		local method=$1 path=$2 payload=${3-}
+		local -a args=(--silent --show-error -b "$jar" -c "$jar" -X "$method" -w '\n%{http_code}')
+		if [ -n "$payload" ]; then
+			args+=(-H 'Content-Type: application/json' --data-binary "$payload")
+		fi
+		local out
+		out="$(curl "${args[@]}" "http://127.0.0.1:$HTTP_PORT$path")" || return 1
+		SESS_STATUS="${out##*$'\n'}"
+		SESS_BODY="${out%$'\n'*}"
+	}
+	# sessv EXPR - a value out of the last session response.
+	sessv() { printf '%s' "$SESS_BODY" | jq -r "$1"; }
+
+	printf '%s\n' "$pw" | "$ROOT/flowy" passwd --handle "$HANDLE_A" >/dev/null || return 1
+	api POST "$TOKEN_OP" "/api/projects" "{\"id\": \"$other\"}" || return 1
+	want_status 200 POST "$TOKEN_OP" "/api/projects/$PROJECT_A/members" \
+		"{\"user\": \"$HANDLE_A\"}" || return 1
+	want_status 200 POST "$TOKEN_OP" "/api/projects/$other/members" \
+		"{\"user\": \"$HANDLE_A\"}" || return 1
+
+	for attempt in 1 2 3 4 5 6 7 8; do
+		body=$(curl --silent --show-error -c "$jar" -X POST \
+			"http://127.0.0.1:$HTTP_PORT/api/login" \
+			-H 'Content-Type: application/json' \
+			-d "$(jq -nc --arg h "$HANDLE_A" --arg p "$pw" '{handle: $h, password: $p}')" \
+			-w ' [%{http_code}]') || return 1
+		case "$body" in
+		*'[429]') sleep 10 ;;
+		*) break ;;
+		esac
+	done
+	grep -q flowy_session "$jar" || {
+		printf 'the login door set no session cookie for %s after %s attempt(s) - it answered %s. That is this check failing to set itself up, not a verdict on either reading.\n' \
+			"$HANDLE_A" "$attempt" "$body" >&2
+		return 1
+	}
+
+	# IN A, and the answer says so rather than "ok" - a switch that reported
+	# success while landing somewhere else is the defect this door was built
+	# against.
+	sess POST "/api/projects/$PROJECT_A/enter" || return 1
+	want_eq "entering $PROJECT_A" "$SESS_STATUS" 200 || return 1
+	want_eq "the project it says it entered" "$(sessv .project)" "$PROJECT_A" || return 1
+	sess POST /api/artifacts \
+		"{\"type\":\"memory\",\"kind\":\"note\",\"title\":\"reach-a-$$\",\"visibility\":\"project-only\"}" || return 1
+	want_eq "filing in $PROJECT_A" "$SESS_STATUS" 200 || return 1
+	want_eq "where the row landed" "$(sessv .project)" "$PROJECT_A" || return 1
+	in_a="$(sessv .id)"
+
+	# The membership list, read through the same cookie, BEFORE the switch.
+	sess GET /api/whoami || return 1
+	want_eq "whoami" "$SESS_STATUS" 200 || return 1
+	want_eq "the mechanism a person's reach comes from" "$(sessv .reach)" memberships || return 1
+	before="$(sessv '[.memberships[] | select(. == "'"$PROJECT_A"'" or . == "'"$other"'")] | length')"
+	want_eq "memberships covering both projects" "$before" 2 || return 1
+
+	sess POST "/api/projects/$other/enter" || return 1
+	want_eq "entering $other" "$SESS_STATUS" 200 || return 1
+	want_eq "the project it says it entered" "$(sessv .project)" "$other" || return 1
+	sess POST /api/artifacts \
+		"{\"type\":\"memory\",\"kind\":\"note\",\"title\":\"reach-b-$$\",\"visibility\":\"project-only\"}" || return 1
+	want_eq "filing in $other" "$SESS_STATUS" 200 || return 1
+	want_eq "where the row landed" "$(sessv .project)" "$other" || return 1
+	in_b="$(sessv .id)"
+
+	# THE READING IN B. Its own row, and not the one it wrote four calls ago
+	# in a project it is a member of and is not currently in.
+	sess GET "/api/artifact/$in_b" || return 1
+	want_eq "in $other, the row filed in $other" "$SESS_STATUS" 200 || return 1
+	sess GET "/api/artifact/$in_a" || return 1
+	want_eq "in $other, the row filed in $PROJECT_A" "$SESS_STATUS" 404 || return 1
+
+	# AND THE MEMBERSHIPS HAVE NOT MOVED, which is the half that makes the
+	# above a distinction rather than a restriction. Same cookie, same two
+	# names, while the artifact answers were swapping underneath.
+	sess GET /api/whoami || return 1
+	after="$(sessv '[.memberships[] | select(. == "'"$PROJECT_A"'" or . == "'"$other"'")] | length')"
+	want_eq "memberships after the switch" "$after" "$before" || return 1
+	want_eq "the project the session is in" "$(sessv .project)" "$other" || return 1
+
+	# BACK TO A, and the pair swaps. Without this the check passes against a
+	# filter stuck on whichever project the session happened to enter last.
+	sess POST "/api/projects/$PROJECT_A/enter" || return 1
+	want_eq "entering $PROJECT_A again" "$SESS_STATUS" 200 || return 1
+	sess GET "/api/artifact/$in_a" || return 1
+	want_eq "back in $PROJECT_A, the row filed in $PROJECT_A" "$SESS_STATUS" 200 || return 1
+	sess GET "/api/artifact/$in_b" || return 1
+	want_eq "back in $PROJECT_A, the row filed in $other" "$SESS_STATUS" 404 || return 1
+
+	printf 'one cookie, two memberships (%s), one reach at a time: %s is readable in %s and 404 in %s, %s the other way round, and the membership list never moved\n' \
+		"$before" "$in_a" "$PROJECT_A" "$other" "$in_b"
+}
+
 # THE SERIES DOOR ANSWERS PER NAME, OLDEST FIRST.
 #
 # /api/metrics/rows answers "what do these metrics say now": one limit across
@@ -21038,6 +21191,8 @@ check "the rooms rail follows a project switch, with no reload" \
 	a_rail_follows_a_project_switch
 check "a chat url carries its project, and a bare one upgrades" \
 	a_chat_url_carries_its_project
+check "a session reaches the project it entered, and its memberships do not move" \
+	a_session_reaches_the_project_it_entered
 check "the author of a row can fix its words, and the node holds the new ones" \
 	a_person_fixes_the_words_they_wrote
 check "a person sets their own handle and password from the console" \
