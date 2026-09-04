@@ -12725,6 +12725,21 @@ a_ulid_is_not_sliced_for_a_name() {
 	./scripts/truncated-ulid-check.sh .
 }
 
+# A SUITE THAT ONLY EVER OPENS A DESK CANNOT SEE A PHONE. 01M1PBFA0P479XMRGRT5VZJZQ5:
+# of 140 browser checks, 127 open a viewport of 1200px or wider and 6 open one
+# under 1000. The operator uses a Fold 8, and three of their reports were
+# narrow-only defects that this suite called green for the whole time they
+# existed - a drawer that never opened, a control off the edge, a touch gesture
+# the browser took. None of them could have gone red at 1600px.
+#
+# A RATCHET, NOT A REQUIREMENT. Which checks have a width-dependent claim is a
+# judgement, and running all 140 twice would double an hour to re-measure things
+# that do not vary with width. This only refuses when the number goes DOWN.
+a_suite_that_only_sees_a_desk() {
+	cd "$ROOT" || return 1
+	./scripts/narrow-arm-check.sh web/scripts
+}
+
 # A NODE THAT CANNOT ANSWER IS NOT A NODE THAT ABORTED NOTHING. deploy.sh reads
 # deadlock_retries off the OLD binary either side of the migration, because that
 # counter dies with the process the deploy stops - 01M1MHVJ27CYXF7X4R9QBBYV9V.
@@ -13191,6 +13206,8 @@ check "the timings summary cannot fail the run it is reporting on" \
 	a_summary_cannot_fail_the_run_it_reports_on
 check "a ULID is not sliced for a name, because a prefix is a clock" \
 	a_ulid_is_not_sliced_for_a_name
+check "the browser checks have not stopped looking at a narrow viewport" \
+	a_suite_that_only_sees_a_desk
 check "absent is not zero in the deploy's deadlock report" \
 	absent_is_not_zero_in_the_deploy_report
 check "the gate lock does not outlive the suite that took it" \
