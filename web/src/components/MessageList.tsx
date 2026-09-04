@@ -861,6 +861,14 @@ export function MessageList({
                       {event.authorship === "authored" ? (
                         <Badge
                           variant="outline"
+                          // NAMED SO A CHECK CAN ASK FOR THE MARK RATHER THAN
+                          // GREP THE ROW. The first check written against this
+                          // matched the word "attributed" in the row's text and
+                          // went red on a message whose BODY happened to contain
+                          // it - a person writing about authorship would have
+                          // turned the console red. The mark is an element; a
+                          // check should be able to say so.
+                          data-authorship="authored"
                           title={`${speaker(event)} signed this with their own key, and this node verified it`}
                         >
                           signed
@@ -868,6 +876,7 @@ export function MessageList({
                       ) : event.disowned ? (
                         <span
                           className="text-[11px] text-muted-foreground"
+                          data-authorship="attributed"
                           title="attributed: this node holds no signature of the speaker's own for this message, so it rests on the word of the node that relayed it - and its speaker has disowned the window it falls in"
                         >
                           attributed

@@ -23,7 +23,7 @@ the_ordinary_message_carries_no_authorship_word() {
 	recall
 	local room=attrword
 	want_status 200 POST "$TOKEN_A_AGENT" "/api/chat/$room/say" \
-		'{"body": "an ordinary message, attributed like every other one here"}' >/dev/null || return 1
+		'{"body": "an ordinary message in an ordinary room"}' >/dev/null || return 1
 	want_status 200 POST "$TOKEN_A_AGENT" "/api/chat/$room/say" \
 		'{"body": "and a second, so the room is not one row"}' >/dev/null || return 1
 
