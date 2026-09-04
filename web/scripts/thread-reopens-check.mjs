@@ -170,6 +170,14 @@ It says data-room-panel-state=${JSON.stringify(said)} and its box sits at x=${
 Pressing the same thread twice is the same URL, and the drawer is opened by a URL
 change - so the second press asks for something already asked for and nothing opens.
 The operator: "threads are one time thing".`);
+      // AND STOP, so this arm cannot also print its success line. Converting
+      // die() to fail() removed the exit that used to end the arm, and the
+      // three branches above got a continue while this one did not - so a run
+      // that found the reported defect ALSO announced "opened, closed and
+      // opened again" for the same width. A check that reports both outcomes
+      // for one arm is worse than one that reports neither.
+      await page.close();
+      continue;
     }
 
     console.log(`${armName} (${width}px): the thread pane opened, closed and opened again`);
