@@ -33,6 +33,12 @@ import (
 const (
 	IDSpaceMessage = "message"
 	IDSpaceThread  = "thread"
+	// IDSpaceRow is the third mistake and the only one where the id was a row
+	// id all along: it names an artifact this principal CAN read, which is not
+	// a queue item. A finding pasted into the claim door is the case - see
+	// 01M1PSXM9P3Q9S3VXCT7SAA00S, where "no such todo" sent the reader looking
+	// in other projects for a row that was sitting in this one.
+	IDSpaceRow = "row"
 )
 
 // MisreadID is what an id turned out to be when it did not name an artifact:
@@ -46,6 +52,10 @@ const (
 type MisreadID struct {
 	Space    string `json:"space"`
 	Artifact string `json:"artifact,omitempty"`
+	// What the row turned out to be, for IDSpaceRow only: its type, and its
+	// kind after a slash when it has one. Empty in the other two spaces, where
+	// the space itself is the whole of what the caller got wrong.
+	What string `json:"what,omitempty"`
 }
 
 // MisreadArtifactID answers what the caller was holding when a lookup by
@@ -68,7 +78,32 @@ func (d *DB) MisreadArtifactID(ctx context.Context, p *Principal, id string) (*M
 	if id == "" || p == nil {
 		return nil, nil
 	}
-	// A message first, because an event id is the more specific claim: a row in
+	// A ROW FIRST, because if the id names an artifact this caller can read then
+	// they were not holding the wrong id space at all - they were holding the
+	// right kind of id for the wrong kind of row, and no amount of "that is a
+	// thread" helps them.
+	//
+	// THE READ IS THE PERMISSION CHECK AND IT IS THE WHOLE SAFETY ARGUMENT.
+	// NotATodoError deliberately collapses absent, out-of-reach and wrong-type
+	// into one answer so that naming an id in a queue verb cannot be used to
+	// discover what that id is. That guard is kept exactly: this speaks ONLY
+	// when ReadArtifact succeeds under the caller's own filter, which means the
+	// caller can already fetch the row and read its type off it. A principal
+	// who cannot read it gets nil here and the bare 404 they got before, so no
+	// door becomes an existence oracle.
+	//
+	// AND ONLY WHEN IT IS NOT A QUEUE ITEM, using readWorkItem's own test rather
+	// than a second copy of it - a note saying "not a queue item" about a row
+	// the door would have accepted would be this very defect wearing a label.
+	if art, aErr := d.ReadArtifact(ctx, p, id, false); aErr == nil {
+		if art.Type != MemoryType || !isWorkKind(art.Kind) {
+			return &MisreadID{Space: IDSpaceRow, What: describeRowType(art)}, nil
+		}
+		return nil, nil
+	} else if !errors.Is(aErr, ErrNotFound) {
+		return nil, aErr
+	}
+	// A message next, because an event id is the more specific claim: a row in
 	// the events table carrying this id is a message the caller can point at,
 	// where a thread is only the name a set of messages share.
 	e, err := d.ReadEvent(ctx, p, id)
@@ -135,4 +170,14 @@ func (d *DB) misreadThread(ctx context.Context, p *Principal, id string) (*Misre
 	// name nothing still comes back - as a thread with no artifact - because
 	// "that id is a thread" is the correction the caller needs either way.
 	return &MisreadID{Space: IDSpaceThread, Artifact: artifact.String}, nil
+}
+
+// describeRowType names a row the way a person would say it: its type, and the
+// kind after a slash when it carries one, so "memory/note" and "finding" both
+// read as themselves. It is only ever called for a row the caller can read.
+func describeRowType(art *Artifact) string {
+	if art.Kind != "" {
+		return art.Type + "/" + art.Kind
+	}
+	return art.Type
 }

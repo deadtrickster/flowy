@@ -969,6 +969,18 @@ func (s *server) misreadIDNote(r *http.Request, id string) string {
 	if err != nil || m == nil {
 		return ""
 	}
+	// THE ROW CASE ANSWERS A DIFFERENT QUESTION and so has its own sentence: the
+	// caller was not holding the wrong id space, they were holding a row that is
+	// not the kind of row this door takes. Saying "that id names a chat message"
+	// would be false and saying only "no such todo" is what sent a reader
+	// hunting through other projects for a row that was in this one.
+	//
+	// It is safe for the same reason the two below are: store.MisreadArtifactID
+	// produced it only because the caller's own filter READ that row, so this
+	// names nothing they could not fetch themselves.
+	if m.Space == store.IDSpaceRow {
+		return " - that id names a " + m.What + ", not a queue item"
+	}
 	what := "a chat message"
 	names := "; the row it is about is "
 	if m.Space == store.IDSpaceThread {
