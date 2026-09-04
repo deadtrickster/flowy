@@ -309,6 +309,29 @@ function ChatRoomIn() {
   useEffect(() => {
     if (linked || asked) setPanelOpen(true);
   }, [linked, asked]);
+  /*
+    AND PRESSING THE SAME THREAD AGAIN IS STILL A REQUEST TO SEE IT.
+
+    The operator, from a Fold 8: "on the phone threads are one time thing - i
+    replied to the host once, cloded thread pane and it foesnt come back
+    anymre." Measured at 880px, their unfolded width: the pane opens, closes on
+    its backdrop, and the same thread will not bring it back -
+    data-room-panel-state="closed" with the box at x=880 of an 880px window.
+
+    THE EFFECT ABOVE IS EDGE-TRIGGERED ON THE URL. linked and asked come from
+    useParams, so pressing a thread that is ALREADY in the path changes nothing,
+    the effect does not re-run, and nothing tells the drawer to open. Closing is
+    local state; opening is a URL change; so the two can disagree and the same
+    request cannot be made twice.
+
+    OPENED HERE RATHER THAN BY CLEARING THE PATH ON CLOSE. Dropping the thread
+    out of the URL when the drawer shuts would also work and would be worse: the
+    path is what makes a thread linkable and survivable across a reload, and
+    closing a drawer is not a decision to stop looking at that thread. So the
+    control that asks for a pane opens it, every time it is pressed, and the URL
+    keeps meaning what it meant.
+  */
+  const showPanel = useCallback(() => setPanelOpen(true), []);
   /**
    * AND THE MESSAGE SOMEBODY IS POINTING AT, when the path names one.
    *
@@ -1113,6 +1136,17 @@ function ChatRoomIn() {
     // and still arms the reply that link was made to carry.
     applied.current = event.id;
     showThread(event.thread);
+    // AND OPEN THE DRAWER, rather than leaving it to the URL effect above.
+    //
+    // The navigate below is a no-op for useParams when the path already names
+    // this message - which is exactly the case after a reader opened the thread,
+    // shut the pane, and pressed the same control again. The effect keyed on
+    // [linked, asked] then does not re-run and the drawer stays closed. That is
+    // the operator's "threads are one time thing", measured at 880px.
+    //
+    // Pressing a control IS the request, so it is honoured here every time
+    // rather than only when the URL happens to change shape.
+    showPanel();
     navigate(`/chat/${encodeURIComponent(room)}/thread/${encodeURIComponent(event.id)}`);
   };
 
@@ -1464,6 +1498,34 @@ function ChatRoomIn() {
           className="fixed inset-0 z-30 bg-background/70 lg:hidden"
           onClick={() => setPanelOpen(false)}
         />
+      ) : null}
+      {/*
+        AND A CLOSE CONTROL INSIDE THE PANEL, because on a narrow screen there
+        is nothing outside it to press.
+
+        The panel is w-[26rem] max-w-full at z-40. On a 360px phone 26rem is
+        416px, so max-w-full makes it the WHOLE viewport - and then the backdrop
+        above, at z-30 and inset-0, is underneath it everywhere, while the toggle
+        that would hide it is in the room header behind it. Measured with a real
+        browser at 360px: "backdrop covered, toggle covered". Chrome reports it
+        as "aside subtree intercepts pointer events", which reads like a flaky
+        click and is a reader with no way out.
+
+        Only below lg, where the panel is a drawer. Above it the panel is a
+        column beside the room, nothing is covered, and a close button on a
+        column that cannot be in the way is clutter.
+      */}
+      {panelOpen ? (
+        <Button
+          variant="outline"
+          size="sm"
+          data-room-panel-close=""
+          aria-label="close the room panel"
+          className="fixed top-2 right-2 z-50 lg:hidden"
+          onClick={() => setPanelOpen(false)}
+        >
+          close
+        </Button>
       ) : null}
       {/*
         The edge between the conversation and the column beside it. Only at lg
