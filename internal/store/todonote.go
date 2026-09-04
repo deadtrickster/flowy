@@ -261,6 +261,27 @@ func noteEntryEvent(art *Artifact, p *Principal, actor, actorKind, note string) 
 	if who := strings.TrimSpace(artifactString(art, AssigneeField)); who != "" {
 		fields[AssigneeField] = who
 	}
+	// AND THE RAISER, for the case the assignee cannot cover: a note on a row
+	// NOBODY holds.
+	//
+	// 2026-09-04. The operator answered a question on 01M1PA01MXCAXF8Q0N27B68E6F,
+	// which was unowned because it was parked ON them - a row waits on a person
+	// precisely when no agent is carrying it. There was no assignee to stamp, so
+	// the note woke nobody, and the seat that had asked found the answer 70
+	// minutes later by reading the board.
+	//
+	// wakesFor's own comment defers this case and says what it needs: "a note on
+	// a row you merely RAISED is the obvious second case and is not here... it
+	// can be added on its own evidence." That is the evidence. The seat that
+	// raised the row is the seat that asked the question, and on an unowned row
+	// it is the only candidate there is.
+	//
+	// STAMPED THE SAME WAY AND FOR THE SAME REASON as the assignee above: who
+	// raised it WHEN THE NOTE WAS WRITTEN, resolved here rather than looked up
+	// at read time, so the two facts a delivery rule reads cannot drift apart.
+	if who := strings.TrimSpace(artifactString(art, RaiserField)); who != "" {
+		fields[RaiserField] = who
+	}
 	meta, err := json.Marshal(fields)
 	if err != nil {
 		return nil, fmt.Errorf("store: note on %s: %w", art.ID, err)

@@ -185,17 +185,37 @@ func (d *DB) AckInbox(ctx context.Context, p *Principal, name string, cursor int
 	return d.InboxReaderAt(ctx, p, name)
 }
 
-// inboxHead is the highest reading among the chat events this principal may
-// read: where a waiter declared now would start.
+// InboxDeliveredTypes is what the inbox treats as an event somebody said to a
+// seat. It is exported because TWO places have to agree about it and they live
+// in different packages: the wait door pages over these types, and inboxHead
+// below marks a new waiter against them.
+//
+// THEY DISAGREED, and that is why this exists. 01M17CVHH9FX3YVTHT9WMFSDDY
+// widened delivery to carry a note as well as a message, and left the MARK
+// computed over chat alone - so a waiter declared at the head started above the
+// newest chat event, and any note written before it sat below the mark and was
+// never delivered. One half of the door was widened and the other was not, and
+// nothing could notice because the two sets were two literals in two files.
+//
+// A slice rather than a rule: the set is small, closed, and read in full by
+// both callers, and a predicate would let them agree about the name while
+// disagreeing about what it selects.
+var InboxDeliveredTypes = []string{ChatEventType, EventTodoNote}
+
+// inboxHead is the highest reading among the events this principal may read
+// that the inbox would DELIVER: where a waiter declared now would start.
+//
+// Over InboxDeliveredTypes and not over chat alone - see that variable for what
+// the difference cost.
 func (d *DB) inboxHead(ctx context.Context, p *Principal) (int64, error) {
 	ctx, span := otel.Start(ctx, otel.KindQuery, "inbox.head")
 	defer span.End()
 	a := &args{}
-	typeArg := a.next(ChatEventType)
+	typeArg := a.next(pq.Array(InboxDeliveredTypes))
 	filter := EventFilterSQL(p, "e", a, false)
 	var head sql.NullInt64
 	err := d.sql.QueryRowContext(ctx,
-		`SELECT max(e.seq_hlc) FROM events e WHERE e.type = `+typeArg+` AND `+filter,
+		`SELECT max(e.seq_hlc) FROM events e WHERE e.type = ANY(`+typeArg+`) AND `+filter,
 		a.vals...).Scan(&head)
 	if err != nil {
 		return 0, fmt.Errorf("store: inbox head: %w", err)

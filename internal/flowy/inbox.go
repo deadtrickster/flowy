@@ -225,7 +225,39 @@ func wakesFor(p *store.Principal, e *store.Event, want inboxFilter) bool {
 	// It sits AFTER the ignored check on purpose. Ignoring is a person saying
 	// "do not tell me", and this does not overrule that.
 	if e.Type == store.EventTodoNote {
-		who := noteAssigneeOf(e)
+		if who := noteAssigneeOf(e); who != "" {
+			return who == want.as
+		}
+		// NOBODY HOLDS THE ROW, SO THE SEAT THAT RAISED IT IS WHO WAS ASKED.
+		//
+		// The comment above defers this and names its price: a note on a row you
+		// merely raised "doubles what a busy board delivers... a rule that is
+		// nearly right here is a firehose rather than a small mistake". That
+		// price is real and this does not pay it - the raiser is consulted ONLY
+		// when there is no assignee, so every assigned row on a busy board
+		// delivers exactly what it delivered before. What changes is the set
+		// that used to reach nobody at all.
+		//
+		// AND ITS EVIDENCE ARRIVED, which is what that comment asked for.
+		// 2026-09-04: the operator answered a question by noting on
+		// 01M1PA01MXCAXF8Q0N27B68E6F, unowned because it was parked on THEM. The
+		// seat that raised it - the only one who could act on the answer - heard
+		// nothing and found it 70 minutes later by reading the board.
+		//
+		// The old reading was that an unassigned note "wakes nobody, which is
+		// correct rather than a gap: a note on a row nobody holds is a note to
+		// the board, and the board is read by looking at it." The premise is
+		// what failed. Nobody reads the board on a schedule, and a person
+		// answering a question they were asked is not addressing the board -
+		// they are replying to whoever asked, and the row records who that was.
+		//
+		// NON-EMPTY ON BOTH SIDES, and it is not defensive: the branch above
+		// carried that guard as `who != ""` and I dropped it while turning the
+		// one rule into two. The test caught it immediately - a waiter with no
+		// name and a note with no stamps compared equal, so the fallback became
+		// a broadcast. A delivery rule that ends in two empty strings matching
+		// is the one shape that turns silence into a firehose.
+		who := noteRaiserOf(e)
 		return who != "" && who == want.as
 	}
 	// OUTSIDE THE FOCUS, ONLY WHAT NAMES YOU. A message in another project
@@ -421,7 +453,11 @@ func (s *server) handleInboxWait(w http.ResponseWriter, r *http.Request) {
 				// unchanged, so a note takes its place in the same ordering as
 				// the messages around it rather than arriving on a second
 				// channel with its own cursor to get out of step.
-				Types: []string{chatEventType, store.EventTodoNote},
+				// THE SAME SET THE MARK IS COMPUTED OVER, read from one place
+				// so the two cannot be widened apart again - which is what
+				// happened when this list was widened and store.inboxHead was
+				// not. See store.InboxDeliveredTypes.
+				Types: store.InboxDeliveredTypes,
 				Since: at,
 				Limit: limit,
 			})
@@ -1618,9 +1654,35 @@ func standingText(e *store.Event) any {
 // map - and because a stamp that only one event type has does not earn a column
 // on every event in the log.
 //
-// An empty answer is a note on an unassigned row. It wakes nobody, which is
-// correct rather than a gap: a note on a row nobody holds is a note to the
-// board, and the board is read by looking at it.
+// An empty answer is a note on an unassigned row. It used to wake nobody, on the
+// reasoning that "a note on a row nobody holds is a note to the board, and the
+// board is read by looking at it" - and the premise failed on 2026-09-04: nobody
+// reads the board on a schedule, and a person answering a question they were
+// asked is replying to whoever asked, not addressing the board. So an empty
+// answer here now falls through to noteRaiserOf rather than ending delivery.
+// noteRaiserOf reads the seat that raised the row off the event, for the case
+// the assignee cannot answer.
+//
+// Same meta map and same reason as the assignee beside it, and the same
+// "resolved when the note was written" rule: a row raised by one seat and
+// re-raised by nobody is a fact that does not change, but reading it at
+// delivery time rather than write time would make an old note follow a new
+// answer to who asked.
+//
+// An empty answer here is a row raised by nothing this node recorded, and it
+// wakes nobody - which is now genuinely the floor rather than a policy: there
+// is no third column to ask.
+func noteRaiserOf(e *store.Event) string {
+	if e == nil || len(e.Meta) == 0 {
+		return ""
+	}
+	var meta map[string]string
+	if err := json.Unmarshal(e.Meta, &meta); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(meta[store.RaiserField])
+}
+
 func noteAssigneeOf(e *store.Event) string {
 	if e == nil || len(e.Meta) == 0 {
 		return ""
