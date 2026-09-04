@@ -185,6 +185,50 @@ interface Props {
  * that starts in the body and ends over the button clicks the ROW, and the row
  * listens to nothing.
  */
+/*
+  WHETHER TWO ROWS DRAWN NEXT TO EACH OTHER ARE ONE RUN.
+
+  Extracted so the answer is the same in both directions. The frame needs to know
+  whether a run CONTINUES past a row as well as whether it started before one,
+  and two copies of this list would be two chances for the header and the border
+  to disagree about where a run ends - which is a worse defect than either half,
+  because the reader would see a block with a header in the middle of it.
+
+  WHAT BREAKS A RUN IS THE POINT OF IT. Each term is a thing the header exists to
+  say, so grouping across a change in any of them would hide the transition the
+  header is there to show:
+
+    the speaker, obviously
+
+    THE AUTHORSHIP. "signed" and "attributed" are not decoration - attributed
+    means this node could not verify a signature of the speaker's own, so the
+    message rests on the word of whichever node relayed it, and a pinned peer
+    could otherwise write under anybody's name.
+
+    whether it was disowned, and whether it is private or addressed - each is
+    drawn in the header and each is per message.
+
+    A GAP IN TIME. Two messages an hour apart are not a run whatever else
+    matches; ten minutes is the window, so a header cannot vanish because the
+    same seat spoke again next morning.
+
+  EITHER SIDE MAY BE ABSENT and that is not a run: the first row drawn has
+  nothing before it and the last has nothing after, and both are ordinary
+  answers rather than edge cases - a room with one message in it takes this path
+  twice.
+*/
+function sameRun(before: FlowyEvent | undefined, after: FlowyEvent | undefined): boolean {
+  if (!before || !after) return false;
+  return (
+    before.actor === after.actor &&
+    before.authorship === after.authorship &&
+    Boolean(before.disowned) === Boolean(after.disowned) &&
+    Boolean(before.private) === Boolean(after.private) &&
+    (before.addressee ?? "") === (after.addressee ?? "") &&
+    Date.parse(after.created) - Date.parse(before.created) < 10 * 60 * 1000
+  );
+}
+
 export function MessageList({
   events,
   selected,
@@ -497,6 +541,39 @@ export function MessageList({
   */
   let drawn: (typeof events)[number] | undefined;
 
+  /*
+    WHAT COMES AFTER EACH ROW ON SCREEN, by the same rule that decides what came
+    before it.
+
+    The operator, on a screenshot of a merged run: "merging messages works, but
+    round borders do not merge". Both halves of that sentence are exact. The
+    HEADER merges - a run says who is speaking once, and message-runs.sh counts
+    it - and the FRAME does not, because the only thing the row knew was whether
+    it CONTINUED a run. A row cannot tell from that whether it is the last of
+    one, so the opening row kept all four of its corners rounded while a square
+    continuation was glued under it, and the closing row stayed square-bottomed.
+    Three lines from one seat read as three cards that had lost their headers.
+
+    So this walks the events once, in the order they will be DRAWN - skipping
+    the folded ones, exactly as the render does, because a run must not be
+    closed by a row nobody can see - and records, per id, the row that follows.
+    The render then asks sameRun in both directions and has all four cases.
+
+    A PLAIN MAP AND NOT STATE, for the reason the local above gives: it is
+    derived from `events` on every render, and a stored copy could disagree with
+    the list it describes.
+  */
+  const nextDrawn = new Map<string, (typeof events)[number] | undefined>();
+  {
+    let previous: (typeof events)[number] | undefined;
+    for (const event of events) {
+      if (fold?.hidden.has(event.id)) continue;
+      if (previous) nextDrawn.set(previous.id, event);
+      previous = event;
+    }
+    if (previous) nextDrawn.set(previous.id, undefined);
+  }
+
   return (
     // The pill lives OUTSIDE the scroller, absolutely positioned over it.
     // Inside, it was a flex child - `sticky` still occupies its slot in flow -
@@ -592,14 +669,12 @@ export function MessageList({
                 header cannot vanish because the same seat spoke again next
                 morning.
             */
-            const runs =
-              before !== undefined &&
-              before.actor === event.actor &&
-              before.authorship === event.authorship &&
-              Boolean(before.disowned) === Boolean(event.disowned) &&
-              Boolean(before.private) === Boolean(event.private) &&
-              (before.addressee ?? "") === (event.addressee ?? "") &&
-              Date.parse(event.created) - Date.parse(before.created) < 10 * 60 * 1000;
+            const runs = sameRun(before, event);
+            // AND WHETHER THE RUN GOES ON PAST THIS ROW, which the line above
+            // cannot answer: it looks backwards, so it knows a row CONTINUES a
+            // run and never that one is ENDING. That is the whole of the frame
+            // defect - see the class list below.
+            const continued = sameRun(event, nextDrawn.get(event.id));
             // For you, and not from you. An addressed message is still an
             // ordinary message in the room - the same people read it, it sits in
             // the same place - so this is a ring around it and never a filter.
@@ -641,9 +716,42 @@ export function MessageList({
                     which is what makes the run legible as a run - the border is
                     now the mark of "somebody started speaking here".
                   */
+                  /*
+                    AND THE FRAME MERGES TOO, which is the half this shipped
+                    without. The operator, on a screenshot of a merged run:
+                    "merging messages works, but round borders do not merge".
+
+                    Measured off that screenshot: the row that OPENED a run kept
+                    all four corners rounded and a square-topped continuation was
+                    glued under it, so the seam showed a curve meeting a corner;
+                    and the row that CLOSED one stayed square-bottomed while every
+                    standalone card around it was rounded, so the block ended on
+                    an edge belonging to nothing.
+
+                    It could not have been right, because `runs` looks BACKWARDS
+                    and nothing looked forward: a row could know it continued a
+                    run and never that it was the last of one. Two of the four
+                    cases had no expression. `continued` is the same predicate
+                    asked the other way - see nextDrawn above - and the four
+                    cases are now four.
+
+                    THE BORDER FOLLOWS THE SAME LOGIC AS THE RADIUS. A
+                    continuation drops its TOP border because the row above
+                    already drew that line; dropping it on both would leave the
+                    run unlined, and drawing both would give a 2px seam where
+                    every other edge is 1px.
+                  */
+                  "border-border bg-card",
                   runs
-                    ? "-mt-2 rounded-none border-border border-x border-b bg-card px-3 pt-0 pb-3"
-                    : "rounded-lg border border-border bg-card p-3 hover:border-primary/40",
+                    ? "-mt-2 border-x border-b px-3 pt-0 pb-3"
+                    : "border p-3 hover:border-primary/40",
+                  // A LONE ROW IS UNCHANGED, and that is the case most easily
+                  // lost: everything below is about runs, and a speaker who says
+                  // one thing must still get a card with four corners.
+                  !runs && !continued && "rounded-lg",
+                  !runs && continued && "rounded-t-lg rounded-b-none",
+                  runs && continued && "rounded-none",
+                  runs && !continued && "rounded-t-none rounded-b-lg",
                   /*
                     WHO SPOKE, WITHOUT READING. The pill said "agent" or
                     "human" and the two messages were otherwise the same
