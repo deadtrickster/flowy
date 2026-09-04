@@ -403,6 +403,27 @@ export function MessageBox({
         onKeyDown={onKeyDown}
         onPaste={onPaste}
         /*
+          THE KEY SAYS WHAT IT DOES, to the only keyboard that can be told.
+
+          The operator, on a Fold 8, 2026-09-04: "enter on the phone sends,
+          there is no way to have a newline" - and then three messages arrived
+          seconds apart that were meant to be one. A soft keyboard has no shift
+          to hold, so the newline branch below is unreachable there and every
+          Return commits.
+
+          That much is a decision about behaviour and it is not made here. What
+          IS wrong regardless of how that is settled is that the key LIED: with
+          no enterKeyHint an Android keyboard draws its default return arrow,
+          which is the newline glyph, over a key that sends. The operator
+          pressed what the keyboard told him was a newline. He was reading it
+          correctly - the keyboard was the thing that did not know.
+
+          So this declares the truth rather than changing it. It is derived from
+          the handler above and must move with it: if Enter ever stops sending
+          on touch, this becomes "enter" and the check reds until it does.
+        */
+        enterKeyHint="send"
+        /*
           THE ONE SYMBOL THAT CHANGES WHAT THE MESSAGE DOES, said where a
           person is already looking. "say something…" taught nothing, and @ is
           not decoration here: mentions.go resolves a name AT WRITE TIME and
