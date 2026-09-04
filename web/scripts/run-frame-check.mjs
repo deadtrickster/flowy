@@ -124,8 +124,7 @@ try {
   const lone = want.filter((r) => r.header === "opens" && r.wantBottom).length;
   if (continuing === 0 || closing === 0 || lone === 0) {
     die(
-      `this room drew ${opens} opener(s), ${continuing} continuation(s), ${closing} run-closing row(s) and ${lone} lone row(s).` +
-        ` Every shape assertion above passes on a room with no runs in it, so a fixture that stopped producing one would read as green.`,
+      `this room drew ${opens} opener(s), ${continuing} continuation(s), ${closing} run-closing row(s) and ${lone} lone row(s). Every shape assertion above passes on a room with no runs in it, so a fixture that stopped producing one would read as green.`,
     );
   }
   console.log(
