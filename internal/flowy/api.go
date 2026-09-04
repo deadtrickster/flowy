@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/deadtrickster/flowy/internal/store"
+	"github.com/deadtrickster/flowy/internal/ulid"
 )
 
 // maxBody caps a request body. Artifacts hold transcripts, so it is generous,
@@ -1002,11 +1003,82 @@ func (s *server) misreadIDNote(r *http.Request, id string) string {
 // noise beside it; only when there is no such diagnosis does "and here is what
 // I searched" become the most useful thing left to say.
 func (s *server) notFoundNote(r *http.Request, id string) string {
+	// THE SHAPE OF THE ID COMES FIRST, because when it is wrong nothing else in
+	// this function is true. A ten-character string names no row anywhere, so
+	// "searched flowy" is a report about a search that could not have found
+	// anything, and it reads as "the row is not in this project".
+	if note := shapeNote(id); note != "" {
+		return note
+	}
 	if note := s.misreadIDNote(r, id); note != "" {
 		return note
 	}
 	return s.scopeNote(r)
 }
+
+// shapeNote is what a not-found answer says about the ID ITSELF, when the id
+// could not have named anything.
+//
+// 01M0BQ2RF98DSC2D3B73KYNG9W, measured three times on three doors by two agents.
+// This room speaks ten characters - it is what fits in a sentence and what a
+// person can repeat - and every door takes twenty-six, so the ten-character form
+// answers "no such todo: 01M0BQ2RF9" and the reader concludes the row is gone.
+// One of the three then wrote a ruling about store shape on top of that reading.
+//
+// IT ASKS THE STORE NOTHING, and that is the whole of why it is safe to say. The
+// other two diagnoses here run a permission-filtered read first and speak only
+// about rows the caller could already fetch. This one is a fact about the
+// caller's own argument: it is identical for an id that matches a row, an id
+// that matches nothing, and a caller with no reach at all, so it cannot tell
+// anybody whether anything exists. It is also the only one that can help when
+// the prefix matches nothing.
+//
+// AND IT REFUSES RATHER THAN RESOLVING, which is the decision in this function.
+// git resolves a short sha and the finding suggested doing the same, but a ULID
+// is not a sha: internal/ulid/short.go measures it - ten characters of
+// millisecond clock then sixteen of randomness, so a LEADING prefix carries no
+// randomness at all and two ids 1.2 seconds apart both began 01M0HJ. Resolving
+// these would be resolving by timestamp. CLAUDE.md names the cost already paid
+// for that: "Resolve identifiers, never match prefixes - four misattributions in
+// one day came from reading actor ids by prefix." So the sentence says what the
+// string is, and the caller goes and gets the whole one.
+func shapeNote(id string) string {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return ""
+	}
+	if _, err := ulid.Parse(id); err == nil {
+		return ""
+	}
+	switch n := len(id); {
+	case n < ulid.EncodedSize:
+		note := " - that id is " + strconv.Itoa(n) + " characters and an id here is " +
+			strconv.Itoa(ulid.EncodedSize) + ", so it is part of one rather than a whole one"
+		// The clock clause only where it is TRUE. Past the tenth character a
+		// prefix has started carrying randomness, and telling somebody their
+		// twenty-character id is a clock reading would be a confident falsehood
+		// in place of the confident falsehood being removed.
+		if n <= clockChars {
+			note += "; the first " + strconv.Itoa(clockChars) +
+				" characters are a millisecond clock reading rather than an identity"
+		}
+		return note
+	case n > ulid.EncodedSize:
+		return " - that id is " + strconv.Itoa(n) + " characters and an id here is " +
+			strconv.Itoa(ulid.EncodedSize) + ", so it is not one"
+	default:
+		// The right length and still unparseable: a character outside the
+		// alphabet, or a leading character that overflows 128 bits. Said
+		// differently from the prefix case because the caller's next move is
+		// different - there is nothing to complete, something is mistyped.
+		return " - that id is the right length but is not a valid id, so it names nothing anywhere"
+	}
+}
+
+// clockChars is how many leading characters of a ULID are the timestamp: 48 bits
+// of milliseconds, base32 in 5-bit digits. Kept beside shapeNote because the
+// sentence it prints is only true for this many.
+const clockChars = 10
 
 // refuseUnreadableProject turns "a project you cannot read" into a refusal
 // instead of an empty page.

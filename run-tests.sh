@@ -5549,7 +5549,19 @@ a_misread_id_says_which_space_it_came_from() {
 	want_eq "B's row was created" "$API_STATUS" 200 || return 1
 	local unreachable absent unreachable_says absent_says
 	unreachable="$(jqv .id)"
-	absent=01HNOSUCHROW00000000000000
+	# A WELL-FORMED ID THAT NOTHING ANSWERS TO, and it has to be well formed for
+	# this comparison to be about what it says it is about. This was
+	# 01HNOSUCHROW00000000000000, which is twenty-six characters and is NOT a
+	# ULID - Crockford base32 has no I, L, O or U, and that string has both an O
+	# and a U. So the "absent" half of the identity was really "a string that
+	# could not be an id", and the two cases are different questions: an id that
+	# does not exist is a fact about the store, and a string that is not an id is
+	# a fact about the caller's own argument. The second one is asserted
+	# separately below.
+	#
+	# Timestamp zero and sixteen Z's: valid, minted in 1970, and not in any
+	# database here.
+	absent=0000000000ZZZZZZZZZZZZZZZZ
 
 	want_status 404 GET "$TOKEN_A" "/api/artifact/$unreachable" || return 1
 	unreachable_says="$(jqv .error)"
@@ -5569,6 +5581,49 @@ a_misread_id_says_which_space_it_came_from() {
 	"no such artifact"*) ;;
 	*)
 		printf 'the refusal no longer starts with "no such artifact": %s\n' "$absent_says" >&2
+		return 1
+		;;
+	esac
+
+	# AND A STRING THAT IS NOT AN ID ANSWERS DIFFERENTLY, which is the other half
+	# of the same rule rather than an exception to it.
+	#
+	# The identity above exists so that a caller cannot learn WHICH IDS ARE REAL.
+	# That is a question about the store, and the two sentences above must not
+	# differ by anything the store knows. A malformed string is not a question
+	# about the store at all: "that is twenty-six characters but not a valid id"
+	# is derived from the argument alone, is the same answer for every caller
+	# and every node, and is identical whether the fabric holds one row or a
+	# million. It cannot carry an existence bit because nothing existent could
+	# ever produce it.
+	#
+	# It is asserted as a REQUIRED DIFFERENCE and not merely permitted, because
+	# the silence it replaces is what cost three readings on three doors -
+	# 01M0BQ2RF98DSC2D3B73KYNG9W. A ten-character id out of a room answered "no
+	# such todo ... searched flowy", and the reader went looking for a row in
+	# another project. If this stops differing, that misreading is back.
+	local malformed malformed_says
+	malformed=01HNOSUCHROW00000000000000
+	want_status 404 GET "$TOKEN_A" "/api/artifact/$malformed" || return 1
+	malformed_says="$(jqv .error)"
+	if [ "${malformed_says//$malformed/}" = "${absent_says//$absent/}" ]; then
+		printf 'a string that is not an id answers exactly as a real id that is absent:\n' >&2
+		printf '  not an id: %s\n  absent:    %s\n' "$malformed_says" "$absent_says" >&2
+		printf 'so a caller holding a prefix is told to go looking for a row that never could have been there\n' >&2
+		return 1
+	fi
+
+	# THE TEN-CHARACTER FORM SPECIFICALLY, because that is the one rooms speak
+	# and the one that was actually misread. Asserted at the door rather than
+	# only in the Go test, so a change to the note that keeps the unit test
+	# green still has to face this.
+	local short_says
+	want_status 404 GET "$TOKEN_A" "/api/artifact/${unreachable:0:10}" || return 1
+	short_says="$(jqv .error)"
+	case "$short_says" in
+	*"clock reading"*) ;;
+	*)
+		printf 'a ten-character id was not told it is a clock reading: %s\n' "$short_says" >&2
 		return 1
 		;;
 	esac
