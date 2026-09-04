@@ -34,6 +34,8 @@ export function ResizeHandle({
   edge,
   onWidth,
   label,
+  collapsed,
+  onToggleCollapsed,
 }: {
   /** Where this width is remembered. One key per panel. */
   storageKey: string;
@@ -46,6 +48,16 @@ export function ResizeHandle({
   edge: "left" | "right";
   onWidth: (px: number) => void;
   label: string;
+  /**
+   * Whether the panel beside this handle is collapsed, and how to flip it.
+   *
+   * BOTH OR NEITHER. Passing one without the other would give a handle that
+   * knows the panel is collapsed and cannot say so, or a control that toggles
+   * something nothing renders. The pair is optional together: a caller with no
+   * collapse simply does not draw the button.
+   */
+  collapsed?: boolean;
+  onToggleCollapsed?: () => void;
 }) {
   // TWO PIECES OF THE SAME FACT, deliberately. The ref is the one the move
   // handler reads, because it is set SYNCHRONOUSLY inside pointerdown; the
@@ -113,7 +125,7 @@ export function ResizeHandle({
     [edge, set],
   );
 
-  return (
+  const separator = (
     <button
       type="button"
       // A separator is the right role and HTML has no tag for one, so the
@@ -139,7 +151,30 @@ export function ResizeHandle({
         // clipped by a scroll container, which this console has had twice.
         //
         // The visible line is the inner span; the button is the grab area.
-        "group relative flex w-1.5 shrink-0 cursor-col-resize items-stretch justify-center",
+        // touch-none IS THE FIX FOR THE DRAG THAT STOPPED PART WAY, and it is
+        // not the same thing as pointer capture. The operator, from a Fold 8:
+        // "i try to drag the separator and it does follow for some pixels and
+        // then stops, so i have to do it multiple times".
+        //
+        // With the default touch-action a touch screen browser spends the first
+        // few pixels of a gesture deciding whether it is a scroll. When it
+        // decides yes it takes the gesture, fires pointercancel, and every
+        // later move goes to the scroller - which is exactly "follows for some
+        // pixels and then stops", and why onPointerCancel below then clears
+        // `active`. setPointerCapture does NOT prevent that: capture routes the
+        // events this element would get, and the browser has stopped sending
+        // any. Only touch-action tells it not to arbitrate in the first place.
+        //
+        // A MOUSE NEVER SAW IT, which is why the handle read as correct: there
+        // is no scroll to lose the gesture to, so every desktop drag worked and
+        // the bug lived only where nobody was testing.
+        "group relative flex shrink-0 cursor-col-resize touch-none items-stretch justify-center",
+        // SIX PIXELS IS A MOUSE TARGET AND A FINGER IS NOT A MOUSE. The comment
+        // below argues six against one, which was the right argument against a
+        // one-pixel strip and still leaves a target a finger hits by luck. The
+        // grab area widens on a coarse pointer; the line it draws does not, so
+        // the layout is unchanged on a desk.
+        "w-1.5 pointer-coarse:w-6",
         "bg-transparent focus-visible:outline-none",
       )}
       onPointerDown={(event) => {
@@ -198,5 +233,44 @@ export function ResizeHandle({
         )}
       />
     </button>
+  );
+
+  if (!onToggleCollapsed) return separator;
+
+  // A COLLAPSE THAT CAN BE UNDONE FROM WHERE IT HAPPENED. The operator asked
+  // for a collapsible nav; the trap the bounds above already guard against is
+  // a panel with no way back, so the control stays put when the panel goes -
+  // it sits on the separator, which is still on screen at width zero.
+  //
+  // A SIBLING, NOT A CHILD. The separator is a <button> and a button inside a
+  // button is invalid HTML that browsers silently reparent, which would have
+  // moved the control out of the strip it is positioned against.
+  return (
+    <div className="relative hidden shrink-0 items-stretch md:flex">
+      {collapsed ? null : separator}
+      <button
+        type="button"
+        onClick={onToggleCollapsed}
+        aria-label={collapsed ? `show ${label}` : `hide ${label}`}
+        aria-expanded={!collapsed}
+        className={cn(
+          // Centred on the seam and pulled half its own width across it, so it
+          // reads as belonging to the edge rather than to either panel.
+          "-translate-y-1/2 absolute top-1/2 z-10 flex h-10 w-4 items-center justify-center",
+          "rounded-sm border border-border bg-card text-muted-foreground",
+          "hover:text-foreground focus-visible:outline-none focus-visible:ring-1",
+          // VISIBLE WHEN COLLAPSED, QUIET WHEN NOT. Once the panel is gone this
+          // is the only way back, so it cannot be hover-only - a touch screen
+          // has no hover and the operator is on one.
+          collapsed
+            ? "left-0 opacity-100"
+            : "-left-2 opacity-0 focus-visible:opacity-100 group-hover/nav:opacity-100 pointer-coarse:opacity-100",
+        )}
+      >
+        <span aria-hidden="true" className="text-xs leading-none">
+          {collapsed ? "\u203a" : "\u2039"}
+        </span>
+      </button>
+    </div>
   );
 }

@@ -27,7 +27,7 @@ import {
   UserRound,
   X,
 } from "lucide-react";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 
 import { CredentialBanner } from "@/components/CredentialBanner";
@@ -326,6 +326,30 @@ export function Shell({ children }: { children: ReactNode }) {
   // Not applied below the breakpoint: down there the nav is a drawer over the
   // page, and a width dragged on a desk has no meaning on a phone.
   const [navWidth, setNavWidth] = useState<number | null>(null);
+  // COLLAPSED IS A FACT ABOUT THIS SCREEN, so it is remembered the same way the
+  // width is - in localStorage, not on the node. A phone that wants the column
+  // gone and a desk that wants it there are both right, and storing this
+  // centrally would make one of them wrong on purpose. Read in the initialiser
+  // rather than an effect so the first paint is already correct: collapsing on
+  // the second frame is a visible jump on every load.
+  const [navCollapsed, setNavCollapsed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("flowy.nav.collapsed") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const toggleNavCollapsed = useCallback(() => {
+    setNavCollapsed((was) => {
+      const next = !was;
+      try {
+        localStorage.setItem("flowy.nav.collapsed", next ? "1" : "0");
+      } catch {
+        // A browser that refuses storage still collapses; it just forgets.
+      }
+      return next;
+    });
+  }, []);
   // CLOSING IS TIED TO ARRIVING SOMEWHERE, not to the tap that started it. A
   // click handler on the drawer closes it when somebody taps dead space in it,
   // and does not close it when they reach a page by keyboard - both wrong, and
@@ -374,6 +398,7 @@ export function Shell({ children }: { children: ReactNode }) {
         }
         data-nav=""
         data-nav-state={navOpen ? "open" : "closed"}
+        data-nav-collapsed={navCollapsed ? "" : undefined}
         className={cn(
           // WIDER AS A DRAWER than as a column, because a room called
           // doc-01M07SCJ5XDXKCSY4SJ1NR87 does not fit in 240px and this
@@ -386,7 +411,16 @@ export function Shell({ children }: { children: ReactNode }) {
           // emits them, not by the order they appear in the attribute. The var
           // carries its own default instead, so there is one rule and the
           // fallback IS the old value.
-          "flex w-72 shrink-0 flex-col gap-4 border-border border-r p-3 md:w-[var(--nav-w,15rem)]",
+          "group/nav flex w-72 shrink-0 flex-col gap-4 border-border border-r p-3 md:w-[var(--nav-w,15rem)]",
+          // COLLAPSED ONLY ABOVE md, because below it the nav is a drawer and
+          // already has its own way of being out of the way - collapsing the
+          // drawer as well would leave a reader on a phone with two different
+          // controls for one idea and no column either way.
+          //
+          // The padding and the border go with the width. A zero-width column
+          // that keeps p-3 is still 24px of nothing plus a line, which is what
+          // makes a "collapsed" panel look like a bug rather than a choice.
+          navCollapsed ? "md:w-0 md:overflow-hidden md:border-r-0 md:p-0" : "",
           // OPAQUE AS A DRAWER, translucent as a column. bg-card/40 over a
           // transcript is unreadable - both layers of text land on top of each
           // other - and the first build of this drawer shipped exactly that.
@@ -950,16 +984,16 @@ export function Shell({ children }: { children: ReactNode }) {
         Between the two, and only where there are two: below md the nav is a
         drawer over the page and there is no edge to drag.
       */}
-      <div className="hidden md:flex">
-        <ResizeHandle
-          storageKey="flowy.nav.width"
-          min={180}
-          max={420}
-          edge="left"
-          onWidth={setNavWidth}
-          label="width of the navigation column"
-        />
-      </div>
+      <ResizeHandle
+        storageKey="flowy.nav.width"
+        min={180}
+        max={420}
+        edge="left"
+        onWidth={setNavWidth}
+        label="the navigation column"
+        collapsed={navCollapsed}
+        onToggleCollapsed={toggleNavCollapsed}
+      />
 
       <main className="flex min-w-0 flex-1 flex-col overflow-hidden pt-12 md:pt-0">
         {/*
