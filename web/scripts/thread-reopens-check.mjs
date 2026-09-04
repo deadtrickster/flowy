@@ -44,6 +44,18 @@ const die = (why) => {
   process.exit(1);
 };
 
+// ONE REPORT FOR EVERY ARM, not the first one to fail.
+//
+// The arms fail DIFFERENTLY - 360 cannot close the panel, 880 closes it and
+// cannot reopen - and the second is the defect the operator actually reported.
+// A check that exits on the first arm hides the reported bug behind a different
+// one found at a width nobody complained about, and whoever fixes the first
+// would then see green and believe both were done.
+const failures = [];
+const fail = (why) => {
+  failures.push(why);
+};
+
 const browser = await chromium.launch();
 try {
   // BOTH OF THE OPERATOR'S WIDTHS, because they fail differently and only one
@@ -86,8 +98,10 @@ try {
 
     const chip = page.locator("text=/^thread [0-9A-Z]+$/").first();
     if ((await chip.count()) === 0) {
-      die(`no thread control on screen at ${width}px (${armName}), so there is nothing to open - this run
+      fail(`no thread control on screen at ${width}px (${armName}), so there is nothing to open - this run
 measured nothing rather than finding the pane healthy`);
+      await page.close();
+      continue;
     }
 
     // FIRST OPEN, the control. If this fails the defect is the one
@@ -95,9 +109,11 @@ measured nothing rather than finding the pane healthy`);
     await chip.click({ timeout: 10_000 });
     await page.waitForTimeout(900);
     if (!(await onScreen())) {
-      die(`the FIRST open did not bring the panel on screen at ${width}px (${armName}). That is the defect
+      fail(`the FIRST open did not bring the panel on screen at ${width}px (${armName}). That is the defect
 thread-on-a-phone-check covers, not this one - fix that first, because this check cannot
 say anything about reopening a pane that never opened.`);
+      await page.close();
+      continue;
     }
 
     // CLOSE IT THE WAY A PERSON CAN, and find out which way that is.
@@ -130,13 +146,15 @@ say anything about reopening a pane that never opened.`);
     await page.waitForTimeout(600);
 
     if (await onScreen()) {
-      die(`at ${width}px (${armName}) the thread panel will not close: backdrop ${viaBackdrop}, toggle ${viaToggle}.
+      fail(`at ${width}px (${armName}) the thread panel will not close: backdrop ${viaBackdrop}, toggle ${viaToggle}.
 The panel is w-[26rem] max-w-full at z-40, so on a screen this narrow it covers the whole
 viewport - the backdrop sits at z-30 underneath it and the toggle is in the header behind
 it. A reader who opens a thread on a phone has no control left to press.
 That is a bigger defect than the reopen this check was written for, and it is reported
 here rather than as a click timeout because the browser calls it "subtree intercepts
 pointer events", which reads like flake.`);
+      await page.close();
+      continue;
     }
 
     // AND OPEN IT AGAIN, with the same control. This is the assertion.
@@ -145,7 +163,7 @@ pointer events", which reads like flake.`);
     if (!(await onScreen())) {
       const said = await panel.getAttribute("data-room-panel-state");
       const box = await panel.boundingBox();
-      die(`the thread pane opened, closed, and would not open again at ${width}px (${armName}).
+      fail(`the thread pane opened, closed, and would not open again at ${width}px (${armName}).
 It says data-room-panel-state=${JSON.stringify(said)} and its box sits at x=${
         box ? Math.round(box.x) : "none"
       } of a ${width}px window.
@@ -159,4 +177,8 @@ The operator: "threads are one time thing".`);
   }
 } finally {
   await browser.close();
+}
+
+if (failures.length > 0) {
+  die(failures.join("\n\n"));
 }
