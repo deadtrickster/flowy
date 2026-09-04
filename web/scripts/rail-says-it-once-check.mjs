@@ -189,6 +189,26 @@ cannot compare a header's left edge against a link's - that comparison IS the ch
     }
     const lefts = [...new Set(edges.map((e) => e.left))].sort((a, b) => a - b);
     const spread = lefts[lefts.length - 1] - lefts[0];
+
+    // AND THE EDGE HAS TO BE ON THE SCREEN, which a shared edge does not imply.
+    //
+    // Measured while arming this arm's red: with the drawer left SHUT at 360px
+    // every label sits at x=-244 - the drawer is translated off the left edge -
+    // and all 22 of them share that edge perfectly, so the check passed. A rail
+    // nobody can see satisfies "the labels line up", which means the alignment
+    // assertion alone cannot fail for the case this arm exists to cover.
+    //
+    // offsetParent does not filter them out either: a transformed element is
+    // still laid out and still has one, so the "is it rendered" test above says
+    // yes about something outside the window. thread-on-a-phone-check learned
+    // this on the panel next door and wrote it down - assert where the box IS,
+    // not merely that it exists.
+    if (lefts[0] < 0) {
+      die(`${arm} (${armWidth}px): the rail's labels share a left edge at x=${lefts[0]}, which is
+off the left of a ${armWidth}px window - they line up perfectly and nobody can read them.
+A shut drawer produces exactly this, and an alignment check alone cannot tell it from a
+rail that is simply drawn.`);
+    }
     if (spread > 2) {
       const by = {};
       for (const e of edges) {
