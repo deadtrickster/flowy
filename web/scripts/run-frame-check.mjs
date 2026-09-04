@@ -59,7 +59,9 @@ try {
     .catch(() => {});
   const total = await rows.count();
   if (total < 4) {
-    die(`the room drew ${total} messages and this needs at least four - a run of three and a lone one`);
+    die(
+      `the room drew ${total} messages and this needs at least four - a run of three and a lone one`,
+    );
   }
 
   const seen = await page.evaluate(() => {
@@ -81,7 +83,9 @@ try {
   // is how a count starts lying.
   const mute = seen.filter((r) => r.header === null);
   if (mute.length > 0) {
-    die(`${mute.length} of ${seen.length} row(s) carry no data-msg-header, so which of them open a run is not knowable here`);
+    die(
+      `${mute.length} of ${seen.length} row(s) carry no data-msg-header, so which of them open a run is not knowable here`,
+    );
   }
 
   // WHAT EACH ROW SHOULD BE, derived from its neighbours the same way the
