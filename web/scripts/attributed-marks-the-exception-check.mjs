@@ -61,20 +61,23 @@ an assertion about what messages do not say, which is the one way this check cou
 report a clean console while saying nothing at all`);
   }
 
-  // WHAT EACH ROW SAYS, so a failure can name the row rather than the page.
-  const said = await rows.allInnerTexts();
-  const offenders = said
-    .map((text, i) => [i, text])
-    .filter(([, text]) => /\battributed\b/i.test(String(text)));
-
-  if (offenders.length > 0) {
-    die(`${offenders.length} of ${drawn} message row(s) still draw "attributed":
-${offenders
-  .slice(0, 3)
-  .map(([i, text]) => `  row ${i}: ${JSON.stringify(String(text).slice(0, 160))}`)
-  .join("\n")}
+  // THE MARK IS AN ELEMENT, SO ASK FOR THE ELEMENT. The first version of this
+  // matched /attributed/ in each row's text and went red on its own seed
+  // message - whose body says "attributed like every other one here". A person
+  // writing about authorship in a room would have turned the console red, and
+  // the obvious repair is to relax the pattern until it catches nothing. So the
+  // mark carries data-authorship and this asks for that.
+  const marks = page.locator("[data-message] [data-authorship]");
+  const found = await marks.count();
+  if (found > 0) {
+    const kinds = await marks.evaluateAll((els) =>
+      els.map((el) => el.getAttribute("data-authorship")),
+    );
+    die(`${found} authorship mark(s) drawn on ordinary messages: ${JSON.stringify(kinds)}
 Every message here is attributed, so the word is a constant - it tells the reader
-nothing and trains them past the disowned case where it is the whole point.`);
+nothing and trains them past the disowned case, where it is the whole point.
+"signed" is the exception worth a badge; a disowned row keeps its reading and is
+asserted by disowned-check.`);
   }
 
   console.log(`${drawn} message row(s) in ${room}, none carrying an authorship word`);
