@@ -73,6 +73,17 @@ func TestTheInboxMarkAndItsDeliveryReadOneSet(t *testing.T) {
 		t.Error("inboxHead binds ChatEventType directly as well - a mark that reads the shared set and then " +
 			"narrows to chat is the original defect wearing the fix's clothes")
 	}
+	// ONLY CLAIMED WHEN IT IS TRUE. This line used to print unconditionally, so
+	// arming the walk produced an error saying inboxHead does NOT read the
+	// shared set and, two lines later, a log saying it marks over the same
+	// variable. Two lines that cannot both be true, on the run whose whole job
+	// is being read - the same defect this branch is about, in the file
+	// asserting it.
+	if t.Failed() {
+		t.Logf("the inbox delivers %d type(s): %v - and the mark above does not agree with them",
+			len(InboxDeliveredTypes), InboxDeliveredTypes)
+		return
+	}
 	t.Logf("the inbox delivers %d type(s) and marks over the same variable: %v",
 		len(InboxDeliveredTypes), InboxDeliveredTypes)
 }
