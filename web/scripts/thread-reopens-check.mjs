@@ -84,17 +84,43 @@ thread-on-a-phone-check covers, not this one - fix that first, because this chec
 say anything about reopening a pane that never opened.`);
   }
 
-  // CLOSE IT the way a person does.
-  const backdrop = page.locator("[data-room-panel-backdrop]").first();
-  if ((await backdrop.count()) > 0) {
-    await backdrop.click({ timeout: 10_000 });
-  } else {
-    await page.locator("[data-room-panel-toggle]").first().click({ timeout: 10_000 });
-  }
+  // CLOSE IT THE WAY A PERSON CAN, and find out which way that is.
+  //
+  // Both close controls can be UNREACHABLE at this width, which is the first
+  // thing this check found. The panel is w-[26rem] max-w-full at z-40, so on a
+  // 390px screen it covers the whole viewport - and the backdrop is fixed
+  // inset-0 at z-30, underneath it everywhere. There is no "outside" left to
+  // tap. The toggle lives in the room header, under the panel for the same
+  // reason. Playwright reports this as "aside ... subtree intercepts pointer
+  // events" rather than as a missing element, which is why it reads like a
+  // flaky click and is not one.
+  //
+  // So each control is TRIED with a short timeout and the outcome recorded. A
+  // panel that cannot be closed is a worse defect than one that cannot reopen,
+  // and it must be reported as itself rather than as a timeout.
+  const tryClose = async (selector) => {
+    const el = page.locator(selector).first();
+    if ((await el.count()) === 0) return "absent";
+    try {
+      await el.click({ timeout: 4_000 });
+      return "clicked";
+    } catch {
+      return "covered";
+    }
+  };
+  const viaBackdrop = await tryClose("[data-room-panel-backdrop]");
+  const viaToggle =
+    viaBackdrop === "clicked" ? "not tried" : await tryClose("[data-room-panel-toggle]");
   await page.waitForTimeout(600);
+
   if (await onScreen()) {
-    die(`the panel is still on screen after pressing its own close control at ${width}px, so
-this run cannot tell whether reopening works - it never shut`);
+    die(`at ${width}px the thread panel will not close: backdrop ${viaBackdrop}, toggle ${viaToggle}.
+The panel is w-[26rem] max-w-full at z-40, so on a screen this narrow it covers the whole
+viewport - the backdrop sits at z-30 underneath it and the toggle is in the header behind
+it. A reader who opens a thread on a phone has no control left to press.
+That is a bigger defect than the reopen this check was written for, and it is reported
+here rather than as a click timeout because the browser calls it "subtree intercepts
+pointer events", which reads like flake.`);
   }
 
   // AND OPEN IT AGAIN, with the same control. This is the assertion.
