@@ -833,10 +833,30 @@ export function MessageList({
                   key an operator had pinned could write messages under anybody's
                   name and they were rendered here exactly like this person's own.
 
-                  Nearly everything is attributed until principals have keys, so
-                  the attributed mark is quiet - muted text, no border - and the
-                  verified one is the badge. Neither is hidden: a reader who
-                  cannot tell the two apart is the reader this replaces.
+                  MARK THE EXCEPTION, NOT THE RULE. This used to draw a quiet
+                  "attributed" on every message that was not signed, which today
+                  is very nearly all of them - principals do not have keys yet.
+                  The operator asked what it meant, on 01M1PA01MXCAXF8Q0N27B68E6F,
+                  from a screenshot where the word sat beside their own handle and
+                  beside an agent's on every row in view. A word that appears on
+                  everything carries no information, and one that sounds like a
+                  caveat and appears on everything teaches a reader to skip the
+                  one case where it matters. Their answer: "yes, draw nothing for
+                  common case".
+
+                  So "signed" is the badge and the ordinary case is silent. The
+                  distinction survives as the presence or absence of the badge
+                  rather than as two labels, and it starts MEANING something on
+                  the day the first principal has a key, instead of being a
+                  constant the reader has already learned to ignore.
+
+                  EXCEPT ON A MESSAGE SOMEBODY HAS DISOWNED, which is the one
+                  place the word is not a constant. "Authored and disowned" is a
+                  key its owner says was not theirs; "attributed and disowned" is
+                  a relay nobody can vouch for - a stolen key and a forgery, and
+                  a surface that drew them the same would lose exactly the
+                  difference the disowned mark exists to raise. disowned-check
+                  asserts both readings survive on that row, and it is right to.
                 */}
                       {event.authorship === "authored" ? (
                         <Badge
@@ -845,14 +865,14 @@ export function MessageList({
                         >
                           signed
                         </Badge>
-                      ) : (
+                      ) : event.disowned ? (
                         <span
                           className="text-[11px] text-muted-foreground"
-                          title="attributed: this node holds no signature of the speaker's own for this message, so it rests on the word of the node that relayed it"
+                          title="attributed: this node holds no signature of the speaker's own for this message, so it rests on the word of the node that relayed it - and its speaker has disowned the window it falls in"
                         >
                           attributed
                         </span>
-                      )}
+                      ) : null}
                       {/*
                     AND WHETHER ITS SPEAKER HAS TAKEN IT BACK. This is where the
                     mark matters most: the actor is the whole of what a message
