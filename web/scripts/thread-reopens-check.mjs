@@ -140,13 +140,17 @@ say anything about reopening a pane that never opened.`);
         return "covered";
       }
     };
-    const viaBackdrop = await tryClose("[data-room-panel-backdrop]");
+    const viaClose = await tryClose("[data-room-panel-close]");
+    const viaBackdrop =
+      viaClose === "clicked" ? "not tried" : await tryClose("[data-room-panel-backdrop]");
     const viaToggle =
-      viaBackdrop === "clicked" ? "not tried" : await tryClose("[data-room-panel-toggle]");
+      viaClose === "clicked" || viaBackdrop === "clicked"
+        ? "not tried"
+        : await tryClose("[data-room-panel-toggle]");
     await page.waitForTimeout(600);
 
     if (await onScreen()) {
-      fail(`at ${width}px (${armName}) the thread panel will not close: backdrop ${viaBackdrop}, toggle ${viaToggle}.
+      fail(`at ${width}px (${armName}) the thread panel will not close: close ${viaClose}, backdrop ${viaBackdrop}, toggle ${viaToggle}.
 The panel is w-[26rem] max-w-full at z-40, so on a screen this narrow it covers the whole
 viewport - the backdrop sits at z-30 underneath it and the toggle is in the header behind
 it. A reader who opens a thread on a phone has no control left to press.
