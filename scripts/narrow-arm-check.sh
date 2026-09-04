@@ -36,7 +36,7 @@ NARROW_BELOW=1000
 # THE FLOOR, and the only line to edit when an arm is added or deliberately
 # removed. Raising it is the point of the row; lowering it should require
 # somebody to type the smaller number and say why in the commit.
-FLOOR=6
+FLOOR=7
 
 die() {
 	printf 'narrow-arm: %s\n' "$*" >&2
