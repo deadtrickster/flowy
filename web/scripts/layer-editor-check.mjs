@@ -28,10 +28,16 @@ if (!base || !operatorToken || !otherToken) {
   process.exit(2);
 }
 
+// BEFORE ANYTHING IS EDITED, exiting here is correct: nothing has been written
+// to the node yet, so there is nothing to put back. Inside the try below this
+// name is deliberately shadowed by one that THROWS - see there for why.
 const die = (message) => {
   console.error(message);
   process.exit(1);
 };
+
+// A failure that must run the teardown on its way out.
+class CheckFailed extends Error {}
 
 const call = async (path, token, init = {}) => {
   const res = await fetch(new URL(path, base), {
@@ -108,7 +114,31 @@ const before = JSON.parse(asOperator.body);
 const restore = before.text;
 
 const browser = await chromium.launch();
+let failed = false;
 try {
+  /*
+    INSIDE THIS BLOCK die() THROWS INSTEAD OF EXITING, and the shadowing is the
+    point rather than a trick.
+
+    Everything from here on has edited firecode.layer on the node, and the
+    finally below puts it back - its comment says "PUT BACK, always". It did
+    not. `die` was `process.exit(1)`, and process.exit SKIPS finally, so every
+    failure of this check left its marker in the shared checkout.
+
+    That is not a tidiness problem. firecode refuses to pack
+    /home/dead/Projects/flowy while it has uncommitted tracked changes, so one
+    failed run of this check stopped VM starts for the whole fleet until
+    somebody noticed a two-line diff. Measured 2026-09-05: my own red run at
+    18:29 left "# layer-editor-check 1074" behind and the next vm_up refused.
+
+    Shadowing rather than renaming the six calls below, so that a die() ADDED
+    here later is safe by construction. A rule that depends on the next person
+    knowing it is a rule that will be broken.
+  */
+  const die = (message) => {
+    throw new CheckFailed(message);
+  };
+
   const page = await browser.newPage({ viewport: { width: 1500, height: 1000 } });
   const crashes = [];
   page.on("pageerror", (err) => crashes.push(String(err)));
@@ -214,13 +244,23 @@ ${after.status}: ${(got?.text ?? after.body).slice(0, 200)}`);
     `the editor wrote ${got.path} and the node has it back (${got.text.length} bytes), ` +
       `and the same door answers ${asOther.status} to a non-operator`,
   );
+} catch (err) {
+  // A check failure, reported the way it always was. Anything else is a bug in
+  // the check itself and keeps its stack.
+  if (!(err instanceof CheckFailed)) throw err;
+  console.error(err.message);
+  failed = true;
 } finally {
-  // PUT BACK, always. This check edits a file the next VM boot will apply, so
-  // leaving its marker behind would make every later guest run a line written
-  // by a test.
+  // PUT BACK, always - and now actually always. This check edits a file the
+  // next VM boot will apply, so leaving its marker behind makes every later
+  // guest run a line written by a test, and leaves a shared checkout dirty
+  // enough that firecode will not pack it at all.
   await call("/api/vm/layer", operatorToken, {
     method: "POST",
     body: JSON.stringify({ project: "flowy", text: restore }),
   });
   await browser.close();
 }
+
+// AFTER the teardown, never inside it.
+if (failed) process.exit(1);
