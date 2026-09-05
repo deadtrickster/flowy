@@ -35,13 +35,42 @@ import (
 	"github.com/deadtrickster/flowy/internal/store"
 )
 
+// parkedOnSomebodyElse reports whether a row is waiting on a person who is not
+// this seat, and whose answer has not arrived.
+//
+// IT IS A FUNCTION BECAUSE IT WAS TWO COPIES AND ONE OF THEM WAS MISSING. The
+// rule was written inline in the "mine" arm of the switch below and simply not
+// written in the unowned arm, so a row nobody held and nobody could start was
+// offered to every seat as available work. A rule that has to be remembered in
+// each new arm is one that will be missing from the next.
+func parkedOnSomebodyElse(a *store.Artifact, me string, answered bool) bool {
+	waiting := store.WaitingOnOf(a)
+	return waiting != "" && waiting != me && !answered
+}
+
 // nagView is everything the nag used to compute for itself.
 type nagView struct {
 	// Mine, Unowned and Open are the caller's view of the board: what they are
 	// carrying, what nobody is, and how much is open at all.
-	Mine    int `json:"mine"`
+	Mine int `json:"mine"`
+	// Unowned is what nobody is carrying AND anybody could start. A row parked
+	// on a person is neither, and it is counted separately below.
 	Unowned int `json:"unowned"`
 	Open    int `json:"open"`
+	// UnownedWaiting is the rows nobody holds and nobody can start, because
+	// they are waiting on somebody. It sits beside Unowned for the same reason
+	// MineWaiting sits beside MineTodo: they were one number, so a row that
+	// needed a decision read exactly like a row that needed an author.
+	//
+	// Measured 2026-09-06: both unowned rows on this board were parked on the
+	// operator, and /api/nag still answered unowned: 2. The nag told every seat
+	// "YOU HAVE HELPER SLOTS AND 2 UNOWNED ROW(S)" every fifteen minutes about
+	// rows no agent could advance, and one of them had been picked up and put
+	// back down that way for sixteen days.
+	UnownedWaiting int `json:"unowned_waiting"`
+	// UnownedWaitingIDs is which ones, so "why can nobody take these" is a read
+	// rather than a hunt.
+	UnownedWaitingIDs []string `json:"unowned_waiting_ids"`
 	// MineTodo is the caller's rows that have not been started - claimed, or
 	// handed to them, and still sitting at todo.
 	//
@@ -168,10 +197,11 @@ func (s *server) readNag(ctx context.Context, p *store.Principal, all bool) (nag
 	// "this node does not report which rows" - a different answer from
 	// "none are waiting", and the one a console cannot tell apart.
 	view := nagView{
-		StaleAfter:     int(nagStaleAfter.Seconds()),
-		MineTodoIDs:    []string{},
-		MineWaitingIDs: []string{},
-		AnswersOwedIDs: []string{},
+		StaleAfter:        int(nagStaleAfter.Seconds()),
+		MineTodoIDs:       []string{},
+		MineWaitingIDs:    []string{},
+		AnswersOwedIDs:    []string{},
+		UnownedWaitingIDs: []string{},
 	}
 	// Asked of the node rather than computed here, so the rule for "quiet" has
 	// one home - the same reason the workload moved out of four bash scripts.
@@ -188,7 +218,23 @@ func (s *server) readNag(ctx context.Context, p *store.Principal, all bool) (nag
 	if err != nil {
 		return nagView{}, err
 	}
-	now := time.Now()
+	view.count(rows, me, answered, time.Now())
+	view.Workload = store.WorkloadOf(rows)
+	return view, nil
+}
+
+// count is the classification, split from the fetching so it can be reached
+// without a database.
+//
+// IT IS A SEAM RATHER THAN A TIDY-UP. The defect this file just fixed - an
+// unowned row parked on somebody still counted as available work - could not be
+// asserted from a test, because the only way into the switch was through a DB
+// method, and a check that skips whenever DATABASE_URL is unset is a check that
+// cannot fail. Measured: with the fix reverted, a test of the rule in isolation
+// still passed, because it was testing the helper and not the arm that calls it.
+func (view *nagView) count(
+	rows []*store.Artifact, me string, answered map[string]bool, now time.Time,
+) {
 	for _, a := range rows {
 		if store.DoneAt(a) {
 			continue
@@ -197,7 +243,22 @@ func (s *server) readNag(ctx context.Context, p *store.Principal, all bool) (nag
 		who := store.AssigneeOf(a)
 		switch {
 		case who == "" || store.NobodyName(who):
-			view.Unowned++
+			// NOBODY'S IS NOT THEREBY ANYBODY'S. The arm below already refuses
+			// to call a blocked row work, and every word of its reasoning holds
+			// here: a row waiting on somebody else is neither started nor
+			// startable.
+			//
+			// Unowned is the stronger case, because of the advice attached to
+			// it. mcp_steal.go offers unowned rows as the ones that "need no
+			// negotiation - todo_assign one to yourself", and a row parked on
+			// the operator needs more negotiation than anything else on the
+			// board.
+			if parkedOnSomebodyElse(a, me, answered[a.ID]) {
+				view.UnownedWaiting++
+				view.UnownedWaitingIDs = append(view.UnownedWaitingIDs, a.ID)
+			} else {
+				view.Unowned++
+			}
 		case who == me:
 			view.Mine++
 			// NOT STARTED IS NOT THE SAME AS NOT DONE. A row this seat holds
@@ -209,8 +270,7 @@ func (s *server) readNag(ctx context.Context, p *store.Principal, all bool) (nag
 			// waiting on somebody else is neither started nor startable, and
 			// counting it as work waiting for me is what made a blocked seat
 			// and a stalled one read alike.
-			waiting := store.WaitingOnOf(a)
-			blocked := waiting != "" && waiting != me && !answered[a.ID]
+			blocked := parkedOnSomebodyElse(a, me, answered[a.ID])
 			if blocked {
 				view.MineWaiting++
 				view.MineWaitingIDs = append(view.MineWaitingIDs, a.ID)
@@ -246,8 +306,6 @@ func (s *server) readNag(ctx context.Context, p *store.Principal, all bool) (nag
 			view.AnswersOwedIDs = append(view.AnswersOwedIDs, a.ID)
 		}
 	}
-	view.Workload = store.WorkloadOf(rows)
-	return view, nil
 }
 
 // nagStaleAfter is how long a row this seat holds as `active` may go without a
