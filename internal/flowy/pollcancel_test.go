@@ -22,7 +22,7 @@ import (
 func TestACancelledPollIsNotAServerError(t *testing.T) {
 	t.Run("a query error after cancellation is the client going", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
-		err := pollUntil(ctx, time.Second, func() (bool, error) {
+		err := pollUntil(ctx, nil, time.Second, func() (bool, error) {
 			cancel() // the server begins shutting down mid-query
 			return false, context.Canceled
 		})
@@ -35,7 +35,7 @@ func TestACancelledPollIsNotAServerError(t *testing.T) {
 	// its cancellation; what makes this not-a-fault is that the request is over.
 	t.Run("a wrapped or renamed cancellation is still the client going", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
-		err := pollUntil(ctx, time.Second, func() (bool, error) {
+		err := pollUntil(ctx, nil, time.Second, func() (bool, error) {
 			cancel()
 			return false, fmt.Errorf("driver: %w", errors.New("connection closed mid-query"))
 		})
@@ -49,7 +49,7 @@ func TestACancelledPollIsNotAServerError(t *testing.T) {
 	// broken database into a waiter that quietly reports nothing to say.
 	t.Run("a real error on a live request is still an error", func(t *testing.T) {
 		boom := errors.New("the store is on fire")
-		err := pollUntil(context.Background(), time.Second, func() (bool, error) {
+		err := pollUntil(context.Background(), nil, time.Second, func() (bool, error) {
 			return false, boom
 		})
 		if !errors.Is(err, boom) {
@@ -58,7 +58,7 @@ func TestACancelledPollIsNotAServerError(t *testing.T) {
 	})
 
 	t.Run("a poll that finds something still says so", func(t *testing.T) {
-		if err := pollUntil(context.Background(), time.Second, func() (bool, error) {
+		if err := pollUntil(context.Background(), nil, time.Second, func() (bool, error) {
 			return true, nil
 		}); err != nil {
 			t.Fatalf("a successful poll answered %v", err)

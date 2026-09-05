@@ -52,7 +52,7 @@ func (s *server) handleNagWait(w http.ResponseWriter, r *http.Request) {
 		cursor  string
 		changed bool
 	)
-	err := pollUntil(r.Context(), waitWindowOf(r.URL.Query().Get("window")), func() (bool, error) {
+	err := pollUntil(r.Context(), s.draining, waitWindowOf(r.URL.Query().Get("window")), func() (bool, error) {
 		next, err := s.readNag(r.Context(), p, scopeAll(r, p))
 		if err != nil {
 			return false, err

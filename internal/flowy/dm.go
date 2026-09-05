@@ -343,7 +343,7 @@ func (s *server) handleDMWait(w http.ResponseWriter, r *http.Request) {
 	thread := q.Get("thread")
 
 	var list []*store.Event
-	err = pollUntil(r.Context(), waitWindowOf(q.Get("window")), func() (bool, error) {
+	err = pollUntil(r.Context(), s.draining, waitWindowOf(q.Get("window")), func() (bool, error) {
 		var err error
 		list, err = s.readDMs(r, thread, cursor, intParam(q.Get("limit")))
 		return len(list) > 0, err

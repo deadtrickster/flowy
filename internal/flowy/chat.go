@@ -837,7 +837,7 @@ func (s *server) handleChatWait(w http.ResponseWriter, r *http.Request) {
 	thread := q.Get("thread")
 
 	var list []*store.Event
-	err = pollUntil(r.Context(), waitWindowOf(q.Get("window")), func() (bool, error) {
+	err = pollUntil(r.Context(), s.draining, waitWindowOf(q.Get("window")), func() (bool, error) {
 		var err error
 		list, err = s.readRoom(r, room, thread, cursor, intParam(q.Get("limit")))
 		return len(list) > 0, err
@@ -861,7 +861,7 @@ func (s *server) handleChatWait(w http.ResponseWriter, r *http.Request) {
 // different ideas of how long "blocks" is, and how one of them ends up hanging
 // past the server's write timeout. The contract is the room's, unchanged: a
 // poll always returns.
-func pollUntil(ctx context.Context, window time.Duration, look func() (bool, error)) error {
+func pollUntil(ctx context.Context, draining <-chan struct{}, window time.Duration, look func() (bool, error)) error {
 	deadline := time.Now().Add(window)
 	for {
 		ready, err := look()
@@ -896,14 +896,36 @@ func pollUntil(ctx context.Context, window time.Duration, look func() (bool, err
 		select {
 		case <-ctx.Done():
 			return errClientGone
+		case <-draining:
+			// A RESTART IS THE WINDOW ENDING, NOT THE CLIENT LEAVING.
+			//
+			// 01M17K62JD1JGTQM2BRRTND18H, the half the cancellation fix did not
+			// reach. errClientGone means "nobody is there to write to", which
+			// is true when the client hangs up and false on a deploy: the
+			// waiter is still on the other end, still listening, and gets
+			// nothing - a dropped connection its monitor reports as LISTENER
+			// REFUSED. So shipping a change deafened every seat on the node and
+			// told them the node was broken.
+			//
+			// Returning nil ends the poll the way a quiet window already ends
+			// it: an empty page with the cursor unmoved. Every client on this
+			// fabric already handles that - it is the ordinary case, several
+			// times a minute - so the one behaviour nobody had to write is the
+			// one a restart now produces.
+			//
+			// It also lets Shutdown finish instead of waiting out its ten
+			// seconds on polls that were never going to answer, which is what
+			// severed the connections in the first place.
+			return nil
 		case <-time.After(waitTick):
 		}
 	}
 }
 
-// errClientGone says the request was cancelled under the poll - the client hung
-// up, or the server is shutting down. There is nothing to write, and writing
-// anyway would only log a broken pipe.
+// errClientGone says the request was cancelled under the poll: the client hung
+// up. There is nothing to write, and writing anyway would only log a broken
+// pipe. A node shutting down is NOT this - the client is still there, and the
+// select above answers it with an empty page instead.
 var errClientGone = errors.New("the client went away")
 
 // handleInbox is every chat message the principal may see and did not write.

@@ -430,7 +430,7 @@ func (s *server) handleInboxWait(w http.ResponseWriter, r *http.Request) {
 	// ScopeAll is not offered here even to the operator. ?scope=all is a view
 	// of the node; an inbox is what was said to you, and a waiter that woke on
 	// every message on the machine would be a wake-up nobody could act on.
-	err = pollUntil(r.Context(), waitWindowOf(q.Get("window")), func() (bool, error) {
+	err = pollUntil(r.Context(), s.draining, waitWindowOf(q.Get("window")), func() (bool, error) {
 		// Forward to the head, not one page per tick. A waiter resuming after a
 		// busy night has a backlog above its mark, and a page every 250ms would
 		// spend the whole window walking it and answer with the oldest corner

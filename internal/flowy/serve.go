@@ -37,6 +37,13 @@ type server struct {
 	// survives it - a replicated session id would name a shell on a node that
 	// has no idea about it. See internal/flowy/agentshell.go.
 	agents *agentShells
+	// draining is closed when this node begins shutting down, and it is the
+	// only thing that tells a blocked long poll the difference between "you
+	// went away" and "I am going away". Nil means never - a server that is not
+	// wired for shutdown blocks on it forever, which is what a select on a nil
+	// channel does and exactly the behaviour a test wants. Closed once, by
+	// RegisterOnShutdown below.
+	draining chan struct{}
 	// joins rate-limits the one unauthenticated door. It is per-process and
 	// deliberately simple: the endpoint grants nothing, so the limit is about
 	// keeping the board tidy rather than about security.
@@ -195,6 +202,7 @@ func serve(args []string) error {
 		started:    time.Now(),
 		tracer:     newTracer(*node, db),
 		joins:      newJoinLimiter(),
+		draining:   make(chan struct{}),
 		agents:     newAgentShells(),
 		reproBase:  strings.TrimRight(strings.TrimSpace(*repro), "/"),
 	}
@@ -252,6 +260,19 @@ func serve(args []string) error {
 		IdleTimeout:       120 * time.Second,
 		ErrorLog:          log.New(os.Stderr, "http: ", log.LstdFlags),
 	}
+
+	// TELL THE BLOCKED POLLS BEFORE WAITING FOR THEM.
+	//
+	// 01M17K62JD1JGTQM2BRRTND18H. Shutdown waits for in-flight requests, and a
+	// long poll is in-flight for up to its whole window - so without this the
+	// ten second grace expires, Shutdown gives up, and the process exits with
+	// every waiter's connection severed mid-request. 6046 of those since
+	// 2026-08-23, in bursts of 24 to 34 inside one second.
+	//
+	// Closing draining first turns each of them into an ordinary empty page,
+	// so they finish in one tick and Shutdown returns because it is done
+	// rather than because it timed out.
+	httpSrv.RegisterOnShutdown(func() { close(srv.draining) })
 
 	errCh := make(chan error, 1)
 	go func() {
