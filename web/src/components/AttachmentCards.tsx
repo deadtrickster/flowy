@@ -35,7 +35,25 @@ function Card({ id }: { id: string }) {
     return () => window.removeEventListener("keydown", shut);
   }, [whole]);
   const [open, setOpen] = useState(false);
-  const [content, setContent] = useState<string | null>(null);
+  // THREE STATES, NOT TWO, AND THE THIRD IS WHY THIS IS undefined AND NOT null.
+  //
+  // The operator, on five renders another seat had just posted: "all attachments
+  // \"not on this node\"". Nothing was wrong with them - 1.5MB and 425KB of
+  // image/png, on the node, readable. The card said that WHILE IT WAS STILL
+  // FETCHING, because content was null before the answer arrived and null is
+  // also what the node sends when it genuinely holds no bytes.
+  //
+  //   undefined   not answered yet
+  //   null        answered, and there is no payload - store.ErrNoBytes, the
+  //               real "not on this node"
+  //   string      answered, with bytes
+  //
+  // A small file hides this: 77 bytes fills before anybody reads the words, so
+  // the bug is invisible exactly where it would be convenient to test. That is
+  // the same shape as the panel that was asked whether it had drawn while it was
+  // still loading and reported "drew no panel at all" - wait for a RESOLVED
+  // state, and give the unresolved one its own name.
+  const [content, setContent] = useState<string | null | undefined>(undefined);
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
@@ -110,6 +128,10 @@ function Card({ id }: { id: string }) {
             ) : null}
             <button
               type="button"
+              // Named for the same reason data-attachment is: a check should
+              // ask for the control by name rather than by its label, which is
+              // "open" or "hide" depending on the state it is trying to change.
+              data-attachment-toggle={id}
               className="ml-auto text-primary underline"
               onClick={() => setOpen((on) => !on)}
             >
@@ -118,8 +140,15 @@ function Card({ id }: { id: string }) {
           </>
         )}
       </div>
+      {open && content === undefined && !err ? (
+        <span className="text-muted-foreground" data-attachment-loading={id}>
+          fetching…
+        </span>
+      ) : null}
       {open && content === null && !err ? (
-        <span className="text-muted-foreground">not on this node</span>
+        <span className="text-muted-foreground" data-attachment-absent={id}>
+          not on this node
+        </span>
       ) : null}
       {/* Rendered from the SNIFFED type and never from the claim, which is the
           rule the field naming exists to keep: "image/png" on a payload of
@@ -137,7 +166,7 @@ function Card({ id }: { id: string }) {
         A console screenshot is 1500 wide. At 256 tall the thing it was taken to
         show is not in it, which made the agreement about posting them worthless.
       */}
-      {open && content !== null && sniffed?.startsWith("image/") ? (
+      {open && typeof content === "string" && sniffed?.startsWith("image/") ? (
         <button
           type="button"
           data-attachment-open={id}
@@ -160,7 +189,7 @@ function Card({ id }: { id: string }) {
         reader, which is the scrolling defect this console has already paid for
         once.
       */}
-      {whole && content !== null && sniffed?.startsWith("image/") ? (
+      {whole && typeof content === "string" && sniffed?.startsWith("image/") ? (
         // A BACKDROP THAT CLOSES IS A CONTROL, so it is a button.
         //
         // It was a div with role="presentation" and an onClick, which biome
@@ -191,7 +220,7 @@ function Card({ id }: { id: string }) {
           />
         </button>
       ) : null}
-      {open && content !== null && !sniffed?.startsWith("image/") ? (
+      {open && typeof content === "string" && !sniffed?.startsWith("image/") ? (
         <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-muted p-2 font-mono text-[10px]">
           {atob(content).slice(0, 2048)}
         </pre>
