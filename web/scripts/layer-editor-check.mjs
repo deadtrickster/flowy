@@ -202,21 +202,23 @@ try {
   // sent both readers after a node dropping a write, which is the alarming
   // reading and the wrong one.
   //
-  // AND `:text-is`, NOT `:text`, WHICH IS WHY IT FLAKED AT ALL. Playwright's
-  // `:text("saved")` is a SUBSTRING match, and the other state this span renders
-  // is "unsaved changes" - which contains "saved". Measured rather than read off
-  // the docs: a span holding "unsaved changes" matches `:text("saved")` and does
-  // not match `:text-is("saved")`.
+  // AND `:text-is`, NOT `:text`, BECAUSE THE SUBSTRING FORM CAN MATCH THE OTHER
+  // STATE. Playwright's `:text("saved")` is a substring match and this span's
+  // other value is "unsaved changes", which contains "saved". Measured on a
+  // page built for the purpose: a span reading "unsaved changes" matches
+  // `:text("saved")` and does not match `:text-is("saved")`.
   //
-  // So the wait matched the UNSAVED state instantly and never waited for
-  // anything. The check has been racing the POST since it was written, and the
-  // swallow above meant nothing could ever notice. That is the whole
-  // intermittency: when the write was slower than the round trip, the node had
-  // not got the text yet and the check blamed the store.
+  // STATED CAREFULLY, because the stronger claim is not established. This makes
+  // the wait unable to match the state it exists to exclude. Whether the old
+  // selector WAS matching it at this moment in a real run is a different claim,
+  // and it is not proven here - the browser half of this check cannot run in a
+  // firecode VM at all (the layer door answers 503 without a firecode on the
+  // host and the check early-exits), so the arm that would settle it needs the
+  // box. The intermittency stays open: see 01M1SHA4C23AXVY1FETTXE23Y2.
   //
-  // The two changes are one fix and neither is sufficient. text-is makes the
-  // wait real; not swallowing makes a wait that times out say so instead of
-  // carrying on. See 01M1SHA4C23AXVY1FETTXE23Y2.
+  // Three changes, none sufficient alone. text-is makes the wait unable to pass
+  // on the wrong state; not swallowing makes a wait that times out say so; the
+  // guard above asserts the first at the one moment it is knowably true.
   const reported = await saved
     .waitFor({ state: "visible", timeout: 15_000 })
     .then(() => true)
