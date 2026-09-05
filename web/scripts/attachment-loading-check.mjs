@@ -129,7 +129,7 @@ tell a slow file from a missing one.`);
   }
   const drew = await page.locator("[data-attachment] img").count();
   if (drew === 0) {
-    die(`the answer arrived with bytes and no picture was drawn`);
+    die("the answer arrived with bytes and no picture was drawn");
   }
 
   // 3. ANSWERED, EMPTY - the real "not on this node".
