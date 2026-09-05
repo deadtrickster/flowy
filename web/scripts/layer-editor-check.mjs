@@ -138,20 +138,74 @@ try {
   const wanted = `${restore}\n${mark}\n`;
   await box.fill(wanted);
 
+  const saved = page.locator('[data-vm-layer-state]:text-is("saved")');
+
+  // THE LOCATOR MUST EXCLUDE THE STATE IT IS MEANT TO EXCLUDE, asserted here on
+  // the live page at the one moment it is knowably false: the box has just been
+  // filled and not saved, so this span reads "unsaved changes" and the saved
+  // locator must match NOTHING.
+  //
+  // Without this the wait below can pass for the wrong reason and no run will
+  // ever say so - which is precisely what happened. `:text("saved")` is a
+  // substring match and "unsaved changes" contains "saved", so the old wait
+  // matched the opposite state instantly and the check raced the POST for as
+  // long as it has existed.
+  if ((await saved.count()) !== 0) {
+    die(
+      "the box holds unsaved changes and the saved-state locator already matches - " +
+        "it is matching the state it exists to exclude, so the wait after the save proves nothing",
+    );
+  }
+
   const save = page.locator("[data-vm-layer-save]");
   if (await save.isDisabled()) die("save is disabled with unsaved changes in the box");
   await save.click();
-  await page
-    .locator('[data-vm-layer-state]:text("saved")')
+
+  // TWO FAILURES, TWO SENTENCES. This wait used to end in `.catch(() => {})`,
+  // so an editor that never reported the save was indistinguishable from one
+  // that did: the check carried on, read the node, found the old text, and said
+  // "the editor said saved and the node does not have it" - which it could not
+  // know, having just discarded the only evidence that would say so.
+  //
+  // It cost two drainer cycles five days apart - 01M1AH5Z5H on 2026-08-31 and
+  // 01M1SD4HYAE9BAA1BYJW821X2Y on 2026-09-05, unrelated trees both times - and
+  // sent both readers after a node dropping a write, which is the alarming
+  // reading and the wrong one.
+  //
+  // AND `:text-is`, NOT `:text`, WHICH IS WHY IT FLAKED AT ALL. Playwright's
+  // `:text("saved")` is a SUBSTRING match, and the other state this span renders
+  // is "unsaved changes" - which contains "saved". Measured rather than read off
+  // the docs: a span holding "unsaved changes" matches `:text("saved")` and does
+  // not match `:text-is("saved")`.
+  //
+  // So the wait matched the UNSAVED state instantly and never waited for
+  // anything. The check has been racing the POST since it was written, and the
+  // swallow above meant nothing could ever notice. That is the whole
+  // intermittency: when the write was slower than the round trip, the node had
+  // not got the text yet and the check blamed the store.
+  //
+  // The two changes are one fix and neither is sufficient. text-is makes the
+  // wait real; not swallowing makes a wait that times out say so instead of
+  // carrying on. See 01M1SHA4C23AXVY1FETTXE23Y2.
+  const reported = await saved
     .waitFor({ state: "visible", timeout: 15_000 })
-    .catch(() => {});
+    .then(() => true)
+    .catch(() => false);
+  if (!reported) {
+    die(
+      "the editor never reported the save - no 'saved' state appeared within 15s of the click, " +
+        "so the node was not asked and nothing here says whether it kept the text. " +
+        "This is the page half, not the store half.",
+    );
+  }
 
   // THE NODE'S COPY, asked for separately. The page holding the right text
   // proves only that the page is holding it.
   const after = await call("/api/vm/layer?project=flowy", operatorToken);
   const got = after.status === 200 ? JSON.parse(after.body) : null;
   if (!got || !got.text.includes(mark)) {
-    die(`the editor said saved and the node does not have it. Asked the node again and got
+    die(`the editor reported the save and the node does not have it - the page half
+worked and the store half did not. Asked the node again and got
 ${after.status}: ${(got?.text ?? after.body).slice(0, 200)}`);
   }
   if (!got.exists) die("the node kept the text and still reports exists:false");
