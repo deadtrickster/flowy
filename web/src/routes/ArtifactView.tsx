@@ -51,6 +51,16 @@ export function ArtifactView() {
   const signedIn = whoami != null;
   const [artifact, setArtifact] = useState<Artifact | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /*
+    WHETHER THIS ROW IS ONLY VISIBLE BECAUSE THE READER IS THE OPERATOR.
+
+    Drawn on the page when true. An operator who is shown a row from a project
+    they are not standing in has had the meaning of "this row" quietly widened,
+    and a console that widens it without saying so is the same defect this view
+    was fixed for: a state that is true and unnamed. It is also the answer to
+    "why can I see this and my agent cannot".
+  */
+  const [asNode, setAsNode] = useState(false);
   // Where the replacement lives, from ITS OWN ref rather than from the row on
   // screen. Built out of this artifact's project and type it was a guess: a
   // replacement is a different row and may sit in another project or be another
@@ -138,24 +148,66 @@ export function ArtifactView() {
         // something else: the section simply does not draw.
         if (!stopped) setOrigins([]);
       });
+    /*
+      READ IT AS YOURSELF FIRST, AND AS THE NODE ONLY IF THAT MISSED.
+
+      A 404 from this door does not say whether the row is absent or merely out
+      of reach - deliberately, because an answer that distinguished them would
+      tell an unauthorised caller which ids are real. So the client cannot know
+      in advance whether widening would help, and asking first would widen every
+      read an operator makes rather than the ones that need it.
+
+      The retry costs one request, happens only after a miss, and only for an
+      operator - the door ignores scope=all for anybody else (auth.go:263), so
+      this is not a permission the console is granting itself.
+
+      The operator, 2026-09-05, on a link to a row in a project they were not
+      standing in: "interesting what you have raised linked as .../p/_/_/<id>
+      which is 404". The row was real, in Oracle, with a page of its own. The
+      console could not read its fields and drew the link with placeholders for
+      the ones it could not see.
+    */
     api
       .artifact(id)
       .then((found) => {
         if (!stopped) {
           setArtifact(found);
+          setAsNode(false);
           setError(null);
         }
       })
       .catch((err: Error) => {
-        if (!stopped) {
+        if (stopped) return;
+        if (!whoami?.operator) {
           setArtifact(null);
+          setAsNode(false);
           setError(err.message);
+          return;
         }
+        api
+          .artifact(id, true)
+          .then((found) => {
+            if (!stopped) {
+              setArtifact(found);
+              setAsNode(true);
+              setError(null);
+            }
+          })
+          .catch(() => {
+            // The row is absent, or absent to the node as well. Either way the
+            // first refusal is the honest one to show - the retry adds nothing
+            // a reader could act on.
+            if (!stopped) {
+              setArtifact(null);
+              setAsNode(false);
+              setError(err.message);
+            }
+          });
       });
     return () => {
       stopped = true;
     };
-  }, [signedIn, id]);
+  }, [signedIn, id, whoami?.operator]);
 
   return (
     /*
@@ -313,6 +365,22 @@ export function ArtifactView() {
                     <CardTitle className="text-base" data-artifact-title={artifact.id}>
                       {artifact.title || artifact.id}
                     </CardTitle>
+                    {/*
+                      SAID WHERE THE ROW IS, not in a toast that goes away. This
+                      is the whole reason the reader can see this page, and a
+                      reader who does not know it will quote the row to somebody
+                      whose credential cannot open it - which is exactly the
+                      round trip this fix exists to end.
+                    */}
+                    {asNode ? (
+                      <span
+                        data-as-node={artifact.project ?? ""}
+                        className="shrink-0 rounded border border-border px-1.5 py-0.5 text-[11px] text-muted-foreground"
+                        title="This row is outside the project you are in. You can see it because you are the operator."
+                      >
+                        as node{artifact.project ? ` · ${artifact.project}` : ""}
+                      </span>
+                    ) : null}
                     {whoami && artifact.owner_user && whoami.user === artifact.owner_user ? (
                       <button
                         type="button"

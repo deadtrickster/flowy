@@ -3010,7 +3010,21 @@ export const api = {
       },
     ),
 
-  artifact: (id: string) => request<Artifact>(`/api/artifact/${encodeURIComponent(id)}`),
+  /**
+   * One row by id.
+   *
+   * `asNode` asks the door to answer outside this credential's reach, which it
+   * honours only for an operator - see auth.go:263, scope=all AND p.Operator.
+   * So a caller that passes it and is not an operator gets exactly the answer
+   * it would have got anyway, and nothing here has to know who is asking.
+   *
+   * It is a parameter rather than something this function decides, because the
+   * console makes node scope an explicit choice everywhere else it offers one
+   * (Traces reads it off the URL, Metrics off a checkbox) and a fetch that
+   * quietly widened what an operator sees would be the first that did not.
+   */
+  artifact: (id: string, asNode = false) =>
+    request<Artifact>(`/api/artifact/${encodeURIComponent(id)}${asNode ? "?scope=all" : ""}`),
 
   /**
    * openspec is the openspec board: the spec and change rows, newest first,
