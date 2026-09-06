@@ -1054,6 +1054,47 @@ func (s *server) consoleHandler() http.Handler {
 // of what this says.
 const internalError = "internal error"
 
+// unavailableError is what a 503 says: something this node needs is not
+// answering, and the caller's request was not the problem.
+//
+// IT IS A FIXED STRING, like internalError and for the same reason - written by
+// this node, never from the error - so nothing about the schema or the failing
+// statement reaches a caller through it. What it adds is the one bit a caller
+// can act on, which a 500 actively denies them: retry, do not stand down.
+const unavailableError = "a service this node depends on is unreachable"
+
+// unreachableDependency reports whether err is this node failing to REACH
+// something, rather than failing AT something.
+//
+// 01M1TVXD941TRAM4B07N54JFJB, measured twice in one morning. The node's
+// database crash-looped on a full disk, and every door answered "500 internal
+// error". A 500 means the node broke, so every waiter in the fleet stood down
+// over a dependency that came back on its own minutes later - and each seat
+// reported LISTENER REFUSED, which reads as the node's fault and sent people
+// looking at the wrong thing.
+//
+// The node knew, and said so in its own log, every time:
+//
+//	500 GET /api/node ref=03a8877c: store: resolve token:
+//	  dial tcp 127.0.0.1:5433: connect: connection refused
+//
+// None of it reached the caller, because the body is deliberately opaque and
+// the ref is only resolvable by whoever can read the log. So the one party who
+// could act on it - the waiter deciding whether to retry - was the only one not
+// told.
+//
+// A DIAL FAILURE IS THE DISCRIMINATOR. It means nothing was listening, which is
+// never something the caller did and is usually temporary. Deliberately NOT
+// specific to the database: an unreachable forge or peer is the same answer to
+// the same question, and a check that named the database would be wrong for
+// those and would have to be remembered again at the next dependency. That is
+// how the nag ended up counting blocked rows as work - a rule written into one
+// arm and not the next.
+func unreachableDependency(err error) bool {
+	var op *net.OpError
+	return errors.As(err, &op) && op.Op == "dial"
+}
+
 // serverError logs err and answers the opaque 500.
 func serverError(w http.ResponseWriter, r *http.Request, err error) {
 	serverErrorSaying(w, r, err, internalError)
@@ -1092,6 +1133,23 @@ func serverErrorSaying(w http.ResponseWriter, r *http.Request, err error, msg st
 		return
 	}
 	ref := errorRef()
+
+	// UNREACHABLE IS NOT BROKEN, and the difference is what the caller does
+	// next. See unreachableDependency: a 500 tells a waiter to stand down, and
+	// standing down over a database that returns in ninety seconds is how a
+	// disk blip became a fleet with no listeners.
+	//
+	// The log line keeps the same shape either way - status, door, ref, and the
+	// whole error chain - so nothing an operator reads is lost by the status
+	// being softer. Only the STATUS and the sentence change, and only for a
+	// failure the caller can usefully retry.
+	if unreachableDependency(err) {
+		log.Printf("503 %s %s ref=%s: %v", r.Method, r.URL.Path, ref, err)
+		writeJSON(w, http.StatusServiceUnavailable,
+			map[string]string{"error": unavailableError, "ref": ref})
+		return
+	}
+
 	log.Printf("500 %s %s ref=%s: %v", r.Method, r.URL.Path, ref, err)
 	writeJSON(w, http.StatusInternalServerError, map[string]string{"error": msg, "ref": ref})
 }
