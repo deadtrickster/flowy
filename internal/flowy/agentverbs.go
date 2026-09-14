@@ -180,6 +180,11 @@ const skillsUsage = `flowy skills - the skills on the shelf: rows of kind=skill,
 usage:
   flowy skills                     list: id, visibility, title
   flowy skills show ID             the body of one, on stdout
+  flowy skills file --title T [--scope S] [body]
+                                   put one on the shelf: the body on stdin or
+                                   as the argument; scope personal, project or
+                                   shared (default project - a skill is for
+                                   the people who work here)
   flowy skills [--project P]       another project's shelf, if the token reaches it
 
 A skill is an artifact with kind=skill (not type=skill - that filter answers
@@ -189,6 +194,8 @@ nothing, and was tried). Reading one costs the row's body and nothing else.
 func skillsCmd(args []string) error {
 	fs := flag.NewFlagSet("skills", flag.ContinueOnError)
 	project := fs.String("project", "", "another project's shelf")
+	title := fs.String("title", "", "for `file`: one line naming the skill")
+	scope := fs.String("scope", "project", "for `file`: personal, project or shared")
 	urlFlag := fs.String("url", "", "node to talk to")
 	token := fs.String("token", "", "bearer token")
 	agent := fs.String("agent", "", agentFlagHelp)
@@ -207,6 +214,36 @@ func skillsCmd(args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
+	if len(rest) > 0 && rest[0] == "file" {
+		if strings.TrimSpace(*title) == "" {
+			return errors.New("a skill has a title: flowy skills file --title T\n\n" + skillsUsage)
+		}
+		body, err := bodyOrStdin(rest[1:], "skills file", skillsUsage)
+		if err != nil {
+			return err
+		}
+		visibility, err := scopeVisibility(*scope)
+		if err != nil {
+			return err
+		}
+		payload, err := json.Marshal(map[string]any{
+			"type": store.MemoryType, "kind": "skill",
+			"title": *title, "body": body, "visibility": visibility,
+		})
+		if err != nil {
+			return err
+		}
+		var answer struct {
+			ID string `json:"id"`
+		}
+		if err := call(ctx, http.MethodPost, "/api/artifacts", payload, &answer); err != nil {
+			return err
+		}
+		fmt.Println(answer.ID)
+		fmt.Fprintf(os.Stderr, "filed skill %s at scope %s; `flowy skills show %s` reads it back\n",
+			answer.ID, *scope, answer.ID)
+		return nil
+	}
 	if len(rest) > 0 && rest[0] == "show" {
 		if len(rest) < 2 || strings.TrimSpace(rest[1]) == "" {
 			return errors.New("which one: flowy skills show ID\n\n" + skillsUsage)
@@ -227,7 +264,7 @@ func skillsCmd(args []string) error {
 		return nil
 	}
 	if len(rest) > 0 {
-		return fmt.Errorf("flowy skills takes no argument but `show ID`, got %q\n\n%s", rest[0], skillsUsage)
+		return fmt.Errorf("flowy skills takes `show ID` or `file --title T`, got %q\n\n%s", rest[0], skillsUsage)
 	}
 	q := url.Values{}
 	q.Set("kind", "skill")
