@@ -192,6 +192,13 @@ nothing, and was tried). Reading one costs the row's body and nothing else.
 `
 
 func skillsCmd(args []string) error {
+	// The subcommand comes first and the flags after it - `flowy skills file
+	// --title T` - and Go's flag parser stops at the first bare word, so the
+	// word is taken off before the flags are read.
+	sub := ""
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		sub, args = args[0], args[1:]
+	}
 	fs := flag.NewFlagSet("skills", flag.ContinueOnError)
 	project := fs.String("project", "", "another project's shelf")
 	title := fs.String("title", "", "for `file`: one line naming the skill")
@@ -203,7 +210,7 @@ func skillsCmd(args []string) error {
 		return err
 	}
 	rest := fs.Args()
-	if len(rest) > 0 && rest[0] == "help" {
+	if sub == "help" || (len(rest) > 0 && rest[0] == "help") {
 		fmt.Print(skillsUsage)
 		return nil
 	}
@@ -214,11 +221,11 @@ func skillsCmd(args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	if len(rest) > 0 && rest[0] == "file" {
+	if sub == "file" {
 		if strings.TrimSpace(*title) == "" {
 			return errors.New("a skill has a title: flowy skills file --title T\n\n" + skillsUsage)
 		}
-		body, err := bodyOrStdin(rest[1:], "skills file", skillsUsage)
+		body, err := bodyOrStdin(rest, "skills file", skillsUsage)
 		if err != nil {
 			return err
 		}
@@ -244,12 +251,12 @@ func skillsCmd(args []string) error {
 			answer.ID, *scope, answer.ID)
 		return nil
 	}
-	if len(rest) > 0 && rest[0] == "show" {
-		if len(rest) < 2 || strings.TrimSpace(rest[1]) == "" {
+	if sub == "show" {
+		if len(rest) < 1 || strings.TrimSpace(rest[0]) == "" {
 			return errors.New("which one: flowy skills show ID\n\n" + skillsUsage)
 		}
 		var art store.Artifact
-		if err := call(ctx, http.MethodGet, "/api/artifact/"+url.PathEscape(rest[1]), nil, &art); err != nil {
+		if err := call(ctx, http.MethodGet, "/api/artifact/"+url.PathEscape(rest[0]), nil, &art); err != nil {
 			return err
 		}
 		if art.Kind != "skill" {
@@ -263,8 +270,8 @@ func skillsCmd(args []string) error {
 		}
 		return nil
 	}
-	if len(rest) > 0 {
-		return fmt.Errorf("flowy skills takes `show ID` or `file --title T`, got %q\n\n%s", rest[0], skillsUsage)
+	if sub != "" || len(rest) > 0 {
+		return fmt.Errorf("flowy skills takes `show ID` or `file --title T`, got %q\n\n%s", sub+strings.Join(rest, " "), skillsUsage)
 	}
 	q := url.Values{}
 	q.Set("kind", "skill")
