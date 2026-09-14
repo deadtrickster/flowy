@@ -116,6 +116,20 @@ func listenCmd(args []string) error {
 	}
 	spool := filepath.Join(dir, "inbox-spool-"+unsafeInName.ReplaceAllString(*as, "-")+".jsonl")
 	printLine := lineFilter(*ignoreRoom)
+	// THE WATCHER FILTERS FOR ITSELF. The holder's spool has everything the
+	// holder asked for, and a watcher that wanted less would otherwise get the
+	// holder's level - measured within minutes of the first watcher running:
+	// a session armed to hear what named it was handed every agent-to-agent
+	// exchange in the room. So the watcher applies wakesFor's own two levels
+	// locally, against the principal the token resolves to.
+	watchKeep := printLine
+	if *toMe || *mentions || *room != "" {
+		me, err := whoAmI(base, bearer)
+		if err != nil {
+			return fmt.Errorf("cannot filter as a watcher without knowing who this token is: %w", err)
+		}
+		watchKeep = attentionFilter(printLine, me, *toMe, *mentions, *room)
+	}
 
 	for {
 		lock, err := holdWaiterName(*as)
@@ -127,7 +141,7 @@ func listenCmd(args []string) error {
 			fmt.Fprintf(os.Stderr, "WATCHING: pid %d (%s) holds %q's reader; following what it "+
 				"delivers from %s, and taking the name over if it dies\n",
 				held.pid, held.kind, *as, spool)
-			followSpool(spool, func() bool { return pidAlive(held.pid) }, printLine)
+			followSpool(spool, func() bool { return pidAlive(held.pid) }, watchKeep)
 			fmt.Fprintf(os.Stderr, "the waiter (pid %d) is gone; taking %q over\n", held.pid, *as)
 			continue
 		}
@@ -190,6 +204,65 @@ func lineFilter(ignoreRoom string) func(string) bool {
 		}
 		return e.Room != ignoreRoom
 	}
+}
+
+// attentionFilter is wakesFor's `addressed` and `mentionsOnly`, applied to a
+// spooled line by a watcher: named or nothing under --mentions; named, or a
+// person's unaddressed broadcast, under --to-me; one room under --room. The
+// definitions are the node's (inbox.go); only where they run is different.
+func attentionFilter(inner func(string) bool, me principalIDs, toMe, mentions bool, room string) func(string) bool {
+	return func(line string) bool {
+		if !inner(line) {
+			return false
+		}
+		var e struct {
+			Room      string `json:"room"`
+			Addressee string `json:"addressee"`
+			Private   bool   `json:"private"`
+			Type      string `json:"type"`
+			Meta      struct {
+				ActorKind string `json:"actor_kind"`
+			} `json:"meta"`
+		}
+		if err := json.Unmarshal([]byte(line), &e); err != nil {
+			return true
+		}
+		if room != "" && e.Room != room {
+			return false
+		}
+		named := e.Addressee != "" && (e.Addressee == me.user || e.Addressee == me.agent)
+		// A note reached the spool because the node decided it was for this
+		// seat; a DM names you by construction.
+		if e.Type == "todo.note" || e.Private {
+			return true
+		}
+		if mentions {
+			return named
+		}
+		if toMe {
+			return named || (e.Meta.ActorKind == "user" && e.Addressee == "")
+		}
+		return true
+	}
+}
+
+type principalIDs struct {
+	user, agent string
+}
+
+// whoAmI resolves the token to its ids, for the addressee test.
+func whoAmI(base, bearer string) (principalIDs, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	var w struct {
+		User  string `json:"user"`
+		Agent string `json:"agent"`
+	}
+	if err := peerRequest(ctx, &http.Client{Timeout: 30 * time.Second}, http.MethodGet,
+		base+"/api/whoami", bearer, nil, &w); err != nil {
+		return principalIDs{}, err
+	}
+	return principalIDs{user: w.User, agent: w.Agent}, nil
 }
 
 // filterStdout swaps os.Stdout for a pipe whose lines pass through keep. The

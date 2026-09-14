@@ -81,3 +81,37 @@ func TestAHeldNameIsATypedRefusalThatNamesListen(t *testing.T) {
 		}
 	}
 }
+
+func TestAWatcherAppliesTheNodesTwoLevelsToASpooledLine(t *testing.T) {
+	me := principalIDs{user: "U1", agent: "A1"}
+	all := func(string) bool { return true }
+	toMe := attentionFilter(all, me, true, false, "")
+	mentions := attentionFilter(all, me, false, true, "")
+	named := `{"room":"general","addressee":"A1","meta":{"actor_kind":"agent"}}`
+	broadcast := `{"room":"general","addressee":"","meta":{"actor_kind":"user"}}`
+	toOther := `{"room":"general","addressee":"A9","meta":{"actor_kind":"user"}}`
+	agentChat := `{"room":"general","addressee":"","meta":{"actor_kind":"agent"}}`
+	note := `{"type":"todo.note","addressee":""}`
+	for _, c := range []struct {
+		name          string
+		line          string
+		toMe, mention bool
+	}{
+		{"named", named, true, true},
+		{"a person's broadcast", broadcast, true, false},
+		{"a person's message to somebody else", toOther, false, false},
+		{"agents talking", agentChat, false, false},
+		{"a note the node routed here", note, true, true},
+	} {
+		if got := toMe(c.line); got != c.toMe {
+			t.Errorf("--to-me on %s: got %v want %v", c.name, got, c.toMe)
+		}
+		if got := mentions(c.line); got != c.mention {
+			t.Errorf("--mentions on %s: got %v want %v", c.name, got, c.mention)
+		}
+	}
+	room := attentionFilter(all, me, false, false, "build")
+	if room(named) || !room(`{"room":"build"}`) {
+		t.Error("--room narrows to one room")
+	}
+}
