@@ -153,19 +153,126 @@ func listenCmd(args []string) error {
 	}
 }
 
+// runningBinary identifies the executable THIS process is running, by the only
+// thing that survives being renamed out from under it: the inode it was opened
+// on.
+//
+// /proc/self/exe follows to the running inode even after the path has been
+// replaced, which is what makes the comparison below possible at all.
+type runningBinary struct {
+	path string
+	dev  uint64
+	ino  uint64
+}
+
+// thisBinary reads what is running now. An error means we cannot tell, and the
+// caller must treat that as "not stale" rather than as stale - a check that
+// cannot read is not a check that found something.
+func thisBinary() (runningBinary, error) {
+	var b runningBinary
+	// The PATH, which may carry a " (deleted)" suffix once the file has been
+	// replaced. That suffix is the kernel describing the link, not part of any
+	// filename, so it comes off before the path is used for anything.
+	link, err := os.Readlink("/proc/self/exe")
+	if err != nil {
+		return b, err
+	}
+	b.path = strings.TrimSuffix(link, " (deleted)")
+
+	// The IDENTITY. Stat on /proc/self/exe resolves to the running inode, not
+	// to whatever now sits at the path.
+	fi, err := os.Stat("/proc/self/exe")
+	if err != nil {
+		return b, err
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		return b, fmt.Errorf("no stat for /proc/self/exe on this platform")
+	}
+	b.dev, b.ino = uint64(st.Dev), st.Ino
+	return b, nil
+}
+
+// replaced reports whether the file at this binary's path is no longer the file
+// this process is running.
+//
+// 01M2FYTJP67A44HJAQQNSRQDH3. `listen` is one process for the life of a session
+// and deliberately never re-execs, so a deploy that replaces the binary
+// underneath it leaves it running the old one indefinitely - delivering
+// messages perfectly well while missing whatever the new build added. The
+// symptom is never "my listener broke", it is "the feature you shipped is not
+// here", reported days later by somebody with no reason to suspect the age of
+// their own process.
+//
+// An `inbox` loop does not have this problem: it exits at every deadline and
+// the next iteration opens whatever is at the path now. Measured on .78 - a
+// reader on a replaced inode at 12:20 was on the new one by 12:35, with nobody
+// restarting anything. The better the listener, the staler it gets.
+//
+// WHY (dev,inode) AND NOT A VERSION STRING OR A HASH. A version names a COMMIT:
+// two clients built from 2c729ff on this fleet differ by 25MB and stamp the
+// same string, so comparing stamps agrees with everything. The NODE's hash
+// answers nothing either - the node is a different binary from the client, and
+// its identity says nothing about ours. What is actually being asked is "is the
+// file I was started from still the file I am running", and that is a question
+// about one machine, needing no node round trip and no agreement about naming.
+//
+// A missing or unreadable path is NOT stale: the check failing is different
+// from the check finding something, and reporting the first as the second is
+// how a monitor cries wolf at a mount that blipped.
+func (b runningBinary) replaced() bool {
+	if b.path == "" {
+		return false
+	}
+	fi, err := os.Stat(b.path)
+	if err != nil {
+		return false
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		return false
+	}
+	return uint64(st.Dev) != b.dev || st.Ino != b.ino
+}
+
 // listenAsWaiter is `inbox`'s loop, run until something is wrong with the
 // credential. A delivery and a quiet deadline both just go round again.
 func listenAsWaiter(base, bearer, as, room, seat string, toMe bool, focus string, mentions bool,
 	printLine func(string) bool,
 ) error {
 	client := &http.Client{Timeout: (inboxPollWindow + 30) * time.Second}
+
+	// THE STALENESS REPORT GOES AROUND THE ATTENTION FILTER, deliberately.
+	// Taken before filterStdout swaps os.Stdout below: the filters exist to
+	// decide which MESSAGES concern this seat, and a line saying this process
+	// is running a replaced binary is not a message and concerns it whatever
+	// --to-me or --mentions say. Passing it through attentionFilter would let
+	// "not addressed to you" silence the one line that is always about you.
+	stream := os.Stdout
+	self, selfErr := thisBinary()
+
 	// The room filter for a printed line rides on stdout: waitOnInbox prints
 	// through writeInbox, so an ignored room is filtered by re-reading what it
 	// wrote. Simpler: hand waitOnInbox a stdout that filters.
 	restore := filterStdout(printLine)
 	defer restore()
 	backoff := firstInboxBackoff
+	said := false
 	for {
+		// Once per poll, and only ever ONE line: a listener that repeated this
+		// every deadline would be the flooding watcher this fleet already
+		// stopped twice.
+		if !said && selfErr == nil && self.replaced() {
+			said = true
+			if out, err := json.Marshal(map[string]any{
+				"type": "stale_binary",
+				"path": self.path,
+				"note": "the file this listener was started from has been replaced; " +
+					"it is still running the old one and will until the session restarts",
+			}); err == nil {
+				fmt.Fprintln(stream, string(out))
+			}
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(defaultInboxDeadline)*time.Second+time.Minute)
 		err := waitOnInbox(ctx, client, base, bearer, as, room, bearer, seat, toMe, focus, mentions, defaultInboxDeadline)
 		cancel()
