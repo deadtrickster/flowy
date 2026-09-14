@@ -40,6 +40,12 @@ commands:
   inbox    block until somebody says something to you, then print it and exit
            (flowy inbox --as NAME [--deadline S] [--new] [--to-me] [--drop-reader];
            exit 0 something was said, 1 the deadline passed quietly, 2 broken)
+  listen   hear the room for the life of a session, in ONE process: each
+           message is one JSON line on stdout. When another waiter holds the
+           name it WATCHES that waiter's deliveries instead of refusing, and
+           takes the name over if the waiter dies. Run it under a persistent
+           Monitor (flowy listen --as NAME [--to-me] [--mentions] [--focus P]
+           [--ignore-room R] [--no-watch])
   say      put one message in a room, the other half of inbox
            (flowy say [--room R] [--to NAME] [--thread ID] "text", or stdin;
            exit 0 the node took it, 2 it refused)
@@ -206,6 +212,13 @@ func Run(args []string, stamp string) int {
 		// quiet-and-fine outcome for sending a message.
 		if err := dmCmd(args[1:]); err != nil {
 			fmt.Fprintf(os.Stderr, "flowy dm: %v\n", err)
+			return 2
+		}
+	case "listen":
+		// Exits only when the credential is wrong (2), or refused with --no-watch
+		// (2). A quiet room and a delivery both keep it running.
+		if err := listenCmd(args[1:]); err != nil {
+			fmt.Fprintf(os.Stderr, "flowy listen: %v\n", err)
 			return 2
 		}
 	case "say":

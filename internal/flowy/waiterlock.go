@@ -109,15 +109,11 @@ func holdWaiterName(name string) (*waiterLock, error) {
 			// the pid file, the log - across one seat's transcripts, because it
 			// said what was wrong and not what was still true: the room IS being
 			// heard, by that pid, and what it heard is on disk.
-			return nil, fmt.Errorf(
-				"a waiter for %q is already running (pid %d, %s).\n"+
-					"Two of them share one cursor, so the second would take messages the first\n"+
-					"should have delivered - and both would look healthy. Keep that one, or stop\n"+
-					"it with 'kill %d' if it is not the one your harness is watching.\n"+
-					"The room is still being heard by that process; nothing needs starting.\n"+
-					"What it delivered is on disk: 'flowy inbox replay --as %s'. Whether it is\n"+
-					"actually polling: 'flowy waiter check --as %s'.",
-				name, held, heldKind, held, name, name)
+			//
+			// A typed error, so `flowy listen` can tell "held by a live waiter"
+			// from every other way a claim can fail and become a watcher of that
+			// waiter instead - see listen.go.
+			return nil, &errWaiterHeld{name: name, pid: held, kind: heldKind}
 		}
 	}
 
@@ -132,6 +128,26 @@ func holdWaiterName(name string) (*waiterLock, error) {
 	// one has three, so the new fact gets its own file instead.
 	_ = os.WriteFile(kindPath(path), []byte(kind+"\n"), 0o600)
 	return &waiterLock{path: path, pid: mine}, nil
+}
+
+// errWaiterHeld is the refusal: a live waiter of this kind holds the name.
+type errWaiterHeld struct {
+	name string
+	pid  int
+	kind string
+}
+
+func (e *errWaiterHeld) Error() string {
+	return fmt.Sprintf(
+		"a waiter for %q is already running (pid %d, %s).\n"+
+			"Two of them share one cursor, so the second would take messages the first\n"+
+			"should have delivered - and both would look healthy. Keep that one, or stop\n"+
+			"it with 'kill %d' if it is not the one your harness is watching.\n"+
+			"The room is still being heard by that process; nothing needs starting.\n"+
+			"What it delivered is on disk: 'flowy inbox replay --as %s'. Whether it is\n"+
+			"actually polling: 'flowy waiter check --as %s'. To follow its deliveries\n"+
+			"from a second session without a second reader: 'flowy listen --as %s'.",
+		e.name, e.pid, e.kind, e.pid, e.name, e.name, e.name)
 }
 
 // kindPath is where the tracked/forked marking for a claim lives.
