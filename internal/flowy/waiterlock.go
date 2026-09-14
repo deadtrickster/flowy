@@ -104,12 +104,20 @@ func holdWaiterName(name string) (*waiterLock, error) {
 			_ = syscall.Kill(held, syscall.SIGTERM)
 			time.Sleep(500 * time.Millisecond)
 		} else {
+			// AND WHAT TO DO INSTEAD OF STARTING ANOTHER. Measured on lab2x1: this
+			// refusal was followed by 105 shell inspections of the listener - ps,
+			// the pid file, the log - across one seat's transcripts, because it
+			// said what was wrong and not what was still true: the room IS being
+			// heard, by that pid, and what it heard is on disk.
 			return nil, fmt.Errorf(
 				"a waiter for %q is already running (pid %d, %s).\n"+
 					"Two of them share one cursor, so the second would take messages the first\n"+
 					"should have delivered - and both would look healthy. Keep that one, or stop\n"+
-					"it with 'kill %d' if it is not the one your harness is watching.",
-				name, held, heldKind, held)
+					"it with 'kill %d' if it is not the one your harness is watching.\n"+
+					"The room is still being heard by that process; nothing needs starting.\n"+
+					"What it delivered is on disk: 'flowy inbox replay --as %s'. Whether it is\n"+
+					"actually polling: 'flowy waiter check --as %s'.",
+				name, held, heldKind, held, name, name)
 		}
 	}
 

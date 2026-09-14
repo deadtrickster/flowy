@@ -24,6 +24,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 )
 
 const usage = `flowy - Handoff Fabric node
@@ -42,6 +43,30 @@ commands:
   say      put one message in a room, the other half of inbox
            (flowy say [--room R] [--to NAME] [--thread ID] "text", or stdin;
            exit 0 the node took it, 2 it refused)
+  read     the last few messages in a room, oldest first - a mention's
+           antecedents. Moves no cursor (flowy read [--room R] [--last N]
+           [--thread ID] [--json])
+  dm       a direct message: private, addressed, no room
+           (flowy dm --to NAME "text", or stdin)
+  get      one door's answer on stdout, through this client's token and
+           base URL - instead of a hand-built curl. --jq picks a field
+           (flowy get /api/PATH [--jq EXPR]; a path that is not a door is
+           refused here, not 404'd there)
+  skills   the shelf: rows of kind=skill, and the body of one
+           (flowy skills | show ID)
+  attach   put a file on the node as an attachment row
+           (flowy attach FILE [--title T] [--type MIME] [--room R] [--message M])
+  roster   who is listening, per the node's own reading of the polls
+           (flowy roster [--json])
+  instructions
+           the rules that bind this seat, node > project > seat, composed by
+           the node for THIS token - read it at the start of a session and
+           after a compaction, not a row by id (flowy instructions [--json])
+  waiter   is this seat still hearing the room: the reader's last poll, its
+           process, and whether that process is alive
+           (flowy waiter check --as NAME [--stale 10m])
+  nag      what is waiting on you: rows assigned, questions unanswered
+           (flowy nag [wait]; env: FLOWY_ADDR, FLOWY_TOKEN, FLOWY_AGENT)
   worklog  the chronology: read what the last few seats did, append before you
            stop. The verb a spawned agent has, since it is given no MCP server
            (flowy worklog read [--limit N] | append "what changed" [--next N]
@@ -216,6 +241,33 @@ func Run(args []string, stamp string) int {
 			fmt.Fprintf(os.Stderr, "flowy get: %v\n", err)
 			return 1
 		}
+	// The four below are the verbs agents guessed at before they existed - see
+	// agentverbs.go for the counts. Each is `get` with a name and a rendering.
+	case "read":
+		if err := readCmd(args[1:]); err != nil {
+			fmt.Fprintf(os.Stderr, "flowy read: %v\n", err)
+			return 1
+		}
+	case "skills", "skill":
+		if err := skillsCmd(args[1:]); err != nil {
+			fmt.Fprintf(os.Stderr, "flowy skills: %v\n", err)
+			return 1
+		}
+	case "attach":
+		if err := attachCmd(args[1:]); err != nil {
+			fmt.Fprintf(os.Stderr, "flowy attach: %v\n", err)
+			return 2
+		}
+	case "roster", "presence", "who":
+		if err := rosterCmd(args[1:]); err != nil {
+			fmt.Fprintf(os.Stderr, "flowy roster: %v\n", err)
+			return 1
+		}
+	case "instructions", "rules":
+		if err := instructionsCmd(args[1:]); err != nil {
+			fmt.Fprintf(os.Stderr, "flowy instructions: %v\n", err)
+			return 1
+		}
 	case "queue":
 		// `queue wait` has outcomes rather than only a result, so its codes are
 		// mapped here beside inbox's for the same reason: a script must tell
@@ -306,6 +358,14 @@ func Run(args []string, stamp string) int {
 	case "note":
 		if err := noteCmd(args[1:]); err != nil {
 			fmt.Fprintf(os.Stderr, "flowy note: %v\n", err)
+			// The flag a note does not have is the flag a message has. Measured:
+			// `flowy note --room general --thread ID <<'MSG'` - a note is a
+			// memory, and the seat wanted to say something. Name the other verb.
+			if strings.Contains(err.Error(), "-room") || strings.Contains(err.Error(), "-thread") ||
+				strings.Contains(err.Error(), "-to") {
+				fmt.Fprintln(os.Stderr, "flowy note: a note is a memory; to put text in a room, "+
+					"that is `flowy say [--room R] [--to NAME] [--thread ID]`")
+			}
 			return 1
 		}
 	case "merge":
@@ -325,6 +385,17 @@ func Run(args []string, stamp string) int {
 		}
 	case "version", "--version", "-v":
 		fmt.Println(version)
+		// AND THE NODE'S, when one answers. Measured on lab2x1: a client three
+		// weeks behind its node lacked `get`, `dm`, `waiter` and `nag`, and the
+		// seat spent 163 curls and 52 help reads working around verbs it
+		// already had - in a binary it did not have. Nothing said "update".
+		// A `+src` build is a developer's and always differs; only a released
+		// binary can be behind.
+		if node, ok := nodeBuild(); ok && node != version && !strings.HasSuffix(version, "+src") {
+			fmt.Fprintf(os.Stderr, "the node at %s runs %s - this client is a different build; "+
+				"rebuild or reinstall it before trusting the menu above\n",
+				resolveURL("", os.Getenv("FLOWY_ADDR")), node)
+		}
 	case "help", "--help", "-h":
 		fmt.Print(usage)
 	default:
