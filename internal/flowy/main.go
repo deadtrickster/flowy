@@ -62,6 +62,8 @@ commands:
            (flowy skills | show ID)
   attach   put a file on the node as an attachment row
            (flowy attach FILE [--title T] [--type MIME] [--room R] [--message M])
+  retire   tombstone a row this seat superseded: gone from listings, id
+           answers 410 not 404. Owner only (flowy retire ID [--dry-run])
   roster   who is listening, per the node's own reading of the polls
            (flowy roster [--json])
   instructions
@@ -270,6 +272,11 @@ func Run(args []string, stamp string) int {
 		if err := attachCmd(args[1:]); err != nil {
 			fmt.Fprintf(os.Stderr, "flowy attach: %v\n", err)
 			return 2
+		}
+	case "retire":
+		if err := retireCmd(args[1:]); err != nil {
+			fmt.Fprintf(os.Stderr, "flowy retire: %v\n", err)
+			return 1
 		}
 	case "roster", "presence", "who":
 		if err := rosterCmd(args[1:]); err != nil {

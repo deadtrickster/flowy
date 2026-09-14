@@ -37,6 +37,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -573,4 +574,142 @@ func nodeBuild() (string, bool) {
 		return "", false
 	}
 	return answer.Version, true
+}
+
+const retireUsage = `flowy retire - tombstone a row this seat superseded
+
+usage:
+  flowy retire <id> [--dry-run] [--json]
+  flowy retire [--dry-run] <id>
+
+The id goes first or last. Between flags it is not found - that would need
+knowing which flags take values.
+
+Tombstones an artifact: it stops appearing in listings, and its id answers
+410 Gone rather than 404 - a stale reference reads as superseded rather than
+mistyped. Consolidating a shift into one report leaves the rows it replaced
+behind, and until this verb they were retired with a hand-built curl.
+
+Only the owner may retire a row. A row filed by another seat answers 403 and
+says who filed it - that is an authorisation question, not a spelling one.
+
+--dry-run resolves the id and prints what would go, writing nothing.
+`
+
+// retireCmd tombstones one artifact.
+//
+// 01M2GVZMSC1V4KK2PPCT2ANVQG. The door existed - POST /api/artifact/<id>/delete
+// - and no verb reached it, so lubuntu3-glm probed DELETE /api/artifacts/<id>,
+// got 404 from the wrong spelling, and filed a node feature ask for something
+// already built. A wrong path and a missing feature are the same 404.
+// retireArgs is what `retire` was asked to do, separated from doing it so the
+// argument handling can be asserted without a node. The defect it exists for -
+// flags after the id being silently ignored - is invisible to a test that only
+// checks refusals, because a refusal is what both the broken and the fixed
+// version produce for a bad call. What distinguishes them is an ACCEPTED call
+// whose flags took effect.
+type retireArgs struct {
+	id     string
+	dryRun bool
+	asJSON bool
+	url    string
+	token  string
+	agent  string
+	help   bool
+}
+
+func parseRetireArgs(args []string) (retireArgs, error) {
+	var out retireArgs
+	fs := flag.NewFlagSet("retire", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	dryRun := fs.Bool("dry-run", false, "resolve and print, write nothing")
+	asJSON := fs.Bool("json", false, "the node's answer, verbatim")
+	urlFlag := fs.String("url", "", "node to talk to")
+	token := fs.String("token", "", "bearer token")
+	agent := fs.String("agent", "", agentFlagHelp)
+	// THE ID BEFORE ITS FLAGS, which is how anybody types it. Go's flag package
+	// stops at the first non-flag argument, so `retire ID --dry-run` parses
+	// zero flags and --dry-run lands in Args() - a dry run that writes. Same
+	// defect as 2c729ff on skills; found by running the verb, not reading it.
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		out.id, args = args[0], args[1:]
+	}
+	if err := fs.Parse(args); err != nil {
+		return out, err
+	}
+	rest := fs.Args()
+	if out.id == "" && len(rest) > 0 {
+		out.id, rest = rest[0], rest[1:]
+	}
+	out.dryRun, out.asJSON = *dryRun, *asJSON
+	out.url, out.token, out.agent = *urlFlag, *token, *agent
+	if out.id == "help" {
+		out.help = true
+		return out, nil
+	}
+	out.id = strings.TrimSpace(out.id)
+	if out.id == "" || len(rest) > 0 {
+		return out, fmt.Errorf("one id, and only one: retiring the wrong row is not undone by running it again")
+	}
+	return out, nil
+}
+
+func retireCmd(args []string) error {
+	a, err := parseRetireArgs(args)
+	if err != nil {
+		fmt.Print(retireUsage)
+		return err
+	}
+	if a.help {
+		fmt.Print(retireUsage)
+		return nil
+	}
+	id, dryRun, asJSON := a.id, &a.dryRun, &a.asJSON
+
+	call, err := agentClient(a.url, a.token, a.agent)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	// READ BEFORE WRITING, always - and it is the whole of --dry-run. The id
+	// is typed by hand from a listing, and a mistyped ULID that happens to
+	// exist names somebody else's row.
+	var before json.RawMessage
+	if err := call(ctx, http.MethodGet, "/api/artifact/"+id, nil, &before); err != nil {
+		return err
+	}
+	var row struct {
+		ID     string `json:"id"`
+		Title  string `json:"title"`
+		Kind   string `json:"kind"`
+		Author string `json:"author"`
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(before, &row); err != nil {
+		return fmt.Errorf("the node's artifact answer was not the shape expected: %w", err)
+	}
+
+	if *dryRun {
+		fmt.Printf("would retire %s  %s  %s\n  %s\n", row.ID, row.Kind, row.Status, row.Title)
+		fmt.Printf("  filed by %s - nothing was written\n", row.Author)
+		return nil
+	}
+
+	var after json.RawMessage
+	if err := call(ctx, http.MethodPost, "/api/artifact/"+id+"/delete", nil, &after); err != nil {
+		return err
+	}
+	if *asJSON {
+		os.Stdout.Write(after)
+		fmt.Println()
+		return nil
+	}
+	fmt.Printf("retired %s  %s\n  %s\n", row.ID, row.Kind, row.Title)
+	// 410, not 404, and the difference is the point: a retired row is
+	// distinguishable from one that never existed, so a stale reference to it
+	// reads as "superseded" rather than "you mistyped the id".
+	fmt.Printf("  tombstoned: gone from listings; the id answers 410 Gone, not 404\n")
+	return nil
 }
