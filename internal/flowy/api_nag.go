@@ -125,8 +125,16 @@ type nagView struct {
 	// wants an answer, and the row stays with whoever is doing it.
 	AnswersOwed    int      `json:"answers_owed"`
 	AnswersOwedIDs []string `json:"answers_owed_ids"`
-	Stale          int      `json:"stale"`
-	StaleAfter     int      `json:"stale_after_seconds"`
+	// Stale carries its ids where mine_waiting deliberately does not. A seat
+	// can list its own rows, so repeating their ids is noise - but `stale` is
+	// not a property of the row, it is nagStaleAfter applied to Updated, and
+	// that rule lives here. A listing shows Updated and not the verdict, so a
+	// consumer given only the number must re-derive the threshold to find the
+	// row. That is the duplication the workload probe left four bash scripts
+	// to end.
+	Stale      int      `json:"stale"`
+	StaleIDs   []string `json:"stale_ids"`
+	StaleAfter int      `json:"stale_after_seconds"`
 	// Workload is the distribution probe, whole, including its thresholds so
 	// that nobody re-derives them from the shares.
 	Workload store.Workload `json:"workload"`
@@ -199,6 +207,7 @@ func (s *server) readNag(ctx context.Context, p *store.Principal, all bool) (nag
 	view := nagView{
 		StaleAfter:        int(nagStaleAfter.Seconds()),
 		MineTodoIDs:       []string{},
+		StaleIDs:          []string{},
 		MineWaitingIDs:    []string{},
 		AnswersOwedIDs:    []string{},
 		UnownedWaitingIDs: []string{},
@@ -296,6 +305,7 @@ func (view *nagView) count(
 			// waking the seat every cycle.
 			if a.Status == "active" && !blocked && now.Sub(a.Updated) > nagStaleAfter {
 				view.Stale++
+				view.StaleIDs = append(view.StaleIDs, a.ID)
 			}
 		}
 		// OUTSIDE THE CARRIER SWITCH, because an answer can be owed on a row

@@ -166,6 +166,15 @@ func nagLines(view nagView) string {
 	if len(view.AnswersOwedIDs) > 0 {
 		fmt.Fprintf(&b, "       owed on %s\n", strings.Join(view.AnswersOwedIDs, " "))
 	}
+	// AND THE QUIET ONES, for the same reason and not the opposite one. These
+	// rows ARE this seat's own, which is the test the blocked ids fail - but
+	// `stale` is not a property the listing carries. It is nagStaleAfter
+	// applied to Updated, and a seat reading `stale 1` beside ten active rows
+	// has to re-derive that threshold against all ten to find the one. The
+	// rule has a home; the answer should come from it.
+	if len(view.StaleIDs) > 0 {
+		fmt.Fprintf(&b, "       quiet since %s\n", strings.Join(view.StaleIDs, " "))
+	}
 	// The spread, then who is not listening. The quiet line is NOT inside the
 	// spread block, and that is the fix for a bug this file had for one commit:
 	// an early return on an empty board skipped it, so the one board where a
