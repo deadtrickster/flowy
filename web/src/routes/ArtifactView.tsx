@@ -480,6 +480,27 @@ export function ArtifactView() {
                     <AttachmentCards ids={carried} />
                   </div>
                 ) : null}
+                {/* THE ROW THAT IS ITSELF A FILE.
+
+                    `carried` is what a row REFERENCES. Nothing drew a row that
+                    IS an attachment, so one written by `flowy attach` with no
+                    --message showed a title, a size in the field list, and no
+                    way to see or keep the bytes. Measured 2026-09-23 on
+                    01M37K5B311HWS54GN8CP819XF: snake.jpg, 151 KB image/jpeg,
+                    on the node and readable, and this page offered neither a
+                    preview nor a save.
+
+                    It read as "the console cannot render images". It can, and
+                    always could - but only inside a message, because
+                    ThreadList draws cards from event.meta.attachments and an
+                    attachment written without a message has no message to hang
+                    from. The card here is that same card. */}
+                {artifact.type === "attachment" ? (
+                  <div data-artifact-self-attachment={artifact.id}>
+                    <div className="pb-1 font-medium text-muted-foreground text-xs">file</div>
+                    <AttachmentCards ids={[artifact.id]} />
+                  </div>
+                ) : null}
                 {artifact.discovery ? (
                   <div>
                     <div className="pb-1 font-medium text-muted-foreground text-xs">discovery</div>

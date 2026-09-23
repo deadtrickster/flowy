@@ -90,6 +90,14 @@ function Card({ id }: { id: string }) {
   // since the day it was written - absent and empty being indistinguishable to
   // a `typeof` test.
   const digest = typeof fields.sha256 === "string" ? fields.sha256 : undefined;
+  // WHAT THE SAVED FILE IS CALLED. fields.filename is what the writer sent and
+  // is the only value that carries an extension; the title is a human label and
+  // is often the same string, but a card whose title was edited would otherwise
+  // save "screenshot from tuesday" with no suffix and no application willing to
+  // open it. The last fallback is the id, which is at least unique and at least
+  // says where it came from.
+  const filename =
+    (typeof fields.filename === "string" && fields.filename) || item?.title || `${id}.bin`;
 
   return (
     // A COLUMN. It was `flex items-center`, a row, and the preview is a sibling
@@ -137,6 +145,41 @@ function Card({ id }: { id: string }) {
             >
               {open ? "hide" : "open"}
             </button>
+            {/*
+              A WAY TO KEEP THE FILE, which this card has never had.
+
+              The operator, on attachments posted from the client: "nor do they
+              have a download button". The preview was the whole of it - a
+              person could look at an image and not save it, and for anything
+              that is not an image the card showed 2 KB of its bytes as text
+              and nothing else. A pdf or a tarball was unreachable.
+
+              A data: URL rather than a link to the node, for the reason this
+              file already records about previews: GET /api/attachment/{id}
+              answers JSON with base64, not bytes, so an href pointing at the
+              node downloads the envelope. The bytes are already here by the
+              time this renders - it is what the preview draws from - so the
+              save costs nothing beyond the anchor.
+
+              SNIFFED, NEVER THE CLAIM, the same rule the preview follows: a
+              writer's "image/png" on a payload of markup is how a render path
+              becomes an injection surface, and a download path is no safer.
+
+              Only once content has RESOLVED to a string. undefined is still
+              fetching and null is "no bytes on this node" - offering a save
+              for either hands the reader an empty file and calls it the
+              attachment.
+            */}
+            {typeof content === "string" ? (
+              <a
+                data-attachment-download={id}
+                href={`data:${sniffed || "application/octet-stream"};base64,${content}`}
+                download={filename}
+                className="text-primary underline"
+              >
+                save
+              </a>
+            ) : null}
           </>
         )}
       </div>
