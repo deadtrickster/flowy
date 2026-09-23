@@ -261,9 +261,22 @@ function mentionsRenderer(meta: string | undefined, me: Reader | undefined) {
  * meta is the node's resolved mentions - meta.mentions, "name:id" pairs - and
  * me is whoever is reading, for the ring.
  */
-export function renderChat(body: string, meta?: string, me?: Reader): string {
+export function renderChat(
+  body: string,
+  meta?: string,
+  me?: Reader,
+  files: Map<string, ResolvedAttachment> = new Map(),
+): string {
   const marked = new Marked({ ...DIALECT, breaks: true });
-  marked.use({ renderer: { text: mentionsRenderer(meta, me) } });
+  // The same image renderer a document gets. A body that refers to a file it
+  // carries - `![what it shows](01M0...)` - is documented below as THE way to
+  // put a picture in a message, and the room drew it as <img src="01M0...">:
+  // the id as a URL, a broken glyph. The operator, 2026-09-23: "ha you replying
+  // with something that renders a broken image tag". The resolver's three
+  // states (pending, shown, cannot be shown) hold here as they do in a document.
+  marked.use({
+    renderer: { text: mentionsRenderer(meta, me), image: documentImageRenderer(files) },
+  });
   return sanitize(marked.parse(body, { async: false }) as string);
 }
 
