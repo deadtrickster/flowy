@@ -3409,34 +3409,36 @@ an_attachment_over_the_ceiling_is_refused_with_the_number() {
 # Both halves are asserted, because fixing the usage line without fixing the
 # refusal leaves anybody who learned the old order with the same dead end - and
 # asserting only the refusal would pass on a usage line that still teaches it.
-attach_argument_order_is_refused_by_name() {
-	local out
-	# The trap: a real file, named first.
-	if out=$("$ROOT/flowy" attach /dev/null --title x 2>&1); then
-		printf 'attach FILE --title was accepted:\n%s\n' "$out" >&2
+attach_either_argument_order_is_the_same_request() {
+	recall
+	local out first last in="$WORK/att-order"
+	# Its own bytes, so an ONLY= run that skipped the round-trip check still has
+	# a file to attach - empty is refused, so the file has to say something.
+	printf 'either order is the same request\n' >"$in" || return 1
+	# FILE first, the order the usage line has always printed, must parse: the
+	# flags after it reach the request. Measured on the row: the attachment's
+	# title is the flag's value, not the file's name.
+	if ! first=$("$ROOT/flowy" attach "$in" --title "order-first" --url "http://127.0.0.1:$HTTP_PORT" --token "$TOKEN_A" 2>&1); then
+		printf 'attach FILE --title was refused:\n%s\n' "$first" >&2
 		return 1
 	fi
-	case "$out" in
-	*"flags come before FILE"*) ;;
-	*)
-		printf 'the refusal does not say the order is the problem:\n%s\n' "$out" >&2
+	if ! last=$("$ROOT/flowy" attach --title "order-last" --url "http://127.0.0.1:$HTTP_PORT" --token "$TOKEN_A" "$in" 2>&1); then
+		printf 'attach --title FILE was refused:\n%s\n' "$last" >&2
 		return 1
-		;;
-	esac
-	# And it hands back the line that works, with the file it was holding.
-	case "$out" in
-	*"--title x /dev/null"*) ;;
-	*)
-		printf 'the refusal does not print the corrected command:\n%s\n' "$out" >&2
-		return 1
-		;;
-	esac
-	# The usage text teaches the order that works.
+	fi
+	first=$(printf '%s' "$first" | head -n 1)
+	last=$(printf '%s' "$last" | head -n 1)
+	want_tool attachment_list "$TOKEN_A" '{"limit": 200}' || return 1
+	want_eq "FILE first: the title came from the flag after it" \
+		"$(printf '%s' "$TOOL_JSON" | jq -r --arg id "$first" '.items[] | select(.id == $id) | .title')" order-first || return 1
+	want_eq "FILE last: the title came from the flag before it" \
+		"$(printf '%s' "$TOOL_JSON" | jq -r --arg id "$last" '.items[] | select(.id == $id) | .title')" order-last || return 1
+	# The usage text says so, and does not teach one order as the only one.
 	out=$("$ROOT/flowy" attach help 2>&1)
 	case "$out" in
-	*"[--message ID] FILE"*) ;;
+	*"first or last"*) ;;
 	*)
-		printf 'the usage line still prints FILE before the flags:\n%s\n' "$out" >&2
+		printf 'the usage does not say the file may come first or last:\n%s\n' "$out" >&2
 		return 1
 		;;
 	esac
@@ -3446,11 +3448,11 @@ attach_argument_order_is_refused_by_name() {
 	case "$out" in
 	*"id of the message"* | *"ID of a message"*) ;;
 	*)
-		printf '--message is still documented as the message text:\n%s\n' "$out" >&2
+		printf -- '--message is still documented as the message text:\n%s\n' "$out" >&2
 		return 1
 		;;
 	esac
-	printf 'order refused by name, usage and --message both say it\n'
+	printf 'FILE first and FILE last both landed (%s, %s); usage and --message say it\n' "$first" "$last"
 }
 
 # Empty is not legal, and the refusal says which of the two things went wrong.
@@ -14070,8 +14072,8 @@ check "and a person can make one over http, with the same defaults and the same 
 check "over the ceiling is refused, and the refusal names it" \
 	an_attachment_over_the_ceiling_is_refused_with_the_number
 check "an attachment with no bytes is not an attachment" an_empty_attachment_is_refused
-check "attach says the flags come before FILE, and prints the line that works" \
-	attach_argument_order_is_refused_by_name
+check "attach takes FILE first or last, and --message is documented as an id" \
+	attach_either_argument_order_is_the_same_request
 check "an attachment B may not read is not readable and not listable" \
 	b_cannot_read_or_list_as_attachment
 check "the content type is decided from the bytes, and the claim is kept as a claim" \
