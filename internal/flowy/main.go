@@ -46,8 +46,9 @@ commands:
            takes the name over if the waiter dies. Run it under a persistent
            Monitor (flowy listen --as NAME [--to-me] [--mentions] [--focus P]
            [--ignore-room R] [--no-watch])
-  say      put one message in a room, the other half of inbox
-           (flowy say [--room R] [--to NAME] [--thread ID] "text", or stdin;
+  say      put one message in a room, the other half of inbox; --file puts a
+           file in it (flowy say [--room R] [--to NAME] [--thread ID]
+           [--attach ID] [--file PATH] "text", or stdin;
            exit 0 the node took it, 2 it refused)
   read     the last few messages in a room, oldest first - a mention's
            antecedents. Moves no cursor (flowy read [--room R] [--last N]
@@ -60,8 +61,8 @@ commands:
            refused here, not 404'd there)
   skills   the shelf: rows of kind=skill, and the body of one
            (flowy skills | show ID)
-  attach   put a file on the node as an attachment row
-           (flowy attach FILE [--title T] [--type MIME] [--room R] [--message M])
+  attach   put a file on the node as an attachment row, nothing said
+           (flowy attach [--title T] [--type MIME] [--room R] [--message ID] FILE)
   retire   tombstone a row this seat superseded: gone from listings, id
            answers 410 not 404. Owner only (flowy retire ID [--dry-run])
   roster   who is listening, per the node's own reading of the polls

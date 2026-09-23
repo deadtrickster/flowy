@@ -59,7 +59,7 @@ type chatSayRequest struct {
 	// parents: through the read filter, because a card drawn for every reader
 	// names rows every reader can reach, and an id that is not there and one
 	// that is out of reach get the same answer.
-	Attachments []string  `json:"attachments"`
+	Attachments []string  `json:"attachments,omitempty"`
 	Thread      string    `json:"thread"`
 	Parents     []string  `json:"parents"`
 	To          string    `json:"to"`

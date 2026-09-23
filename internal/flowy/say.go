@@ -2,6 +2,7 @@ package flowy
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -9,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -18,7 +20,7 @@ import (
 const sayUsage = `flowy say - put one message in a room
 
 usage:
-  flowy say [--room R] [--to NAME] [--thread ID] "text"
+  flowy say [--room R] [--to NAME] [--thread ID] [--attach ID] [--file PATH] "text"
   echo "text" | flowy say [--room R]
 
   --room R      the room to say it in, default general. A room exists because
@@ -27,6 +29,12 @@ usage:
                 hide: an addressed message is read by exactly the principals
                 that read the room before it
   --thread ID   continue a thread rather than starting one
+  --attach ID   carry an attachment already on the node (flowy attach printed
+                its id). May be given more than once; the order is kept
+  --file PATH   put this file on the node as an attachment and carry it, in one
+                go - the bytes land through the attachment door first, then the
+                message goes out naming what landed. May be given more than once.
+                The type is read from the extension, the title is the file's name
   --url URL     node to tell (default $FLOWY_ADDR, then http://127.0.0.1:8787)
   --token T     bearer token (default $FLOWY_TOKEN, then ~/.config/flowy/token)
   --agent NAME  the seat speaking, whose token is ~/.config/flowy/agents/NAME
@@ -36,6 +44,11 @@ usage:
 
   The text is one argument, or stdin when there is none - so a long message
   comes from a heredoc instead of being fought with through shell quoting.
+
+  A message carries its attachments by id: the console draws a card for each,
+  and the node refuses an id the speaker cannot read. Until --attach and --file
+  existed a seat asked to "send the jpeg here" could only write a row and say
+  its id in prose, which is a pointer, not a message with a picture in it.
 
   Exit 0 when the node accepted it, 2 when it did not. A refusal is a failure
   here rather than a JSON body to remember to read: the failure mode this
@@ -58,6 +71,10 @@ func sayCmd(args []string) error {
 	room := fs.String("room", "general", "the room to say it in")
 	to := fs.String("to", "", "address it at somebody - routing and waking, not privacy")
 	thread := fs.String("thread", "", "continue this thread rather than starting one")
+	var attach stringList
+	fs.Var(&attach, "attach", "carry this attachment id; may repeat")
+	var files stringList
+	fs.Var(&files, "file", "attach this file and carry it; may repeat")
 	urlFlag := fs.String("url", "", "node to talk to (default $FLOWY_ADDR or "+defaultTUIAddr+")")
 	token := fs.String("token", "", "bearer token (default $FLOWY_TOKEN, then ~/.config/flowy/token)")
 	agent := fs.String("agent", "", agentFlagHelp)
@@ -80,6 +97,14 @@ func sayCmd(args []string) error {
 	if strings.TrimSpace(*room) == "" {
 		return errors.New("--room cannot be empty")
 	}
+	// Every file is read BEFORE anything is posted. A file that is not there
+	// is a typo to fix, not a reason to leave half a message on the node: with
+	// two files and the second missing, uploading the first and then refusing
+	// would leave an orphan row that nothing names.
+	toUpload, err := filesToAttach(files)
+	if err != nil {
+		return err
+	}
 
 	base := resolveURL(*urlFlag, os.Getenv("FLOWY_ADDR"))
 	bearer, err := resolveToken(*token, os.Getenv("FLOWY_TOKEN"), *agent, os.Getenv("FLOWY_AGENT"))
@@ -90,14 +115,27 @@ func sayCmd(args []string) error {
 		return errNoToken()
 	}
 
-	payload, err := json.Marshal(chatSayRequest{Body: body, Thread: *thread, To: *to})
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	client := &http.Client{Timeout: 120 * time.Second}
+
+	// The ids the message will carry: what was named, then what was uploaded,
+	// in the order given. A nil slice marshals to nothing at all, so a say
+	// without either flag posts the request it always posted.
+	var carried []string
+	carried = append(carried, attach...)
+	for _, f := range toUpload {
+		id, err := uploadAttachment(ctx, client, base, bearer, f, *room)
+		if err != nil {
+			return fmt.Errorf("attach %s: %w", f.name, err)
+		}
+		carried = append(carried, id)
+	}
+
+	payload, err := json.Marshal(chatSayRequest{Body: body, Thread: *thread, To: *to, Attachments: carried})
 	if err != nil {
 		return err
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	client := &http.Client{Timeout: 30 * time.Second}
 
 	var said store.Event
 	if err := peerRequest(ctx, client, http.MethodPost,
@@ -219,4 +257,60 @@ func bodyOrStdin(rest []string, verb, usage string) (string, error) {
 		return "", err
 	}
 	return strings.TrimRight(string(text), "\n"), nil
+}
+
+// fileToAttach is one --file, read and named before any door is knocked on.
+type fileToAttach struct {
+	name  string
+	ctype string
+	raw   []byte
+}
+
+// filesToAttach reads every --file, refusing the lot on the first that cannot
+// be read. The error is the OS's, which names the path - the thing the caller
+// mistyped.
+func filesToAttach(paths []string) ([]fileToAttach, error) {
+	out := make([]fileToAttach, 0, len(paths))
+	for _, path := range paths {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		name := filepath.Base(path)
+		out = append(out, fileToAttach{name: name, ctype: mimeByExtension(name), raw: raw})
+	}
+	return out, nil
+}
+
+// uploadAttachment puts one file through the attachment door - the same shape
+// `flowy attach` sends - and answers the id the node minted for it. The room
+// rides on the row so the attachment says where it was shown, the way an
+// attachment written beside a message does.
+func uploadAttachment(ctx context.Context, client *http.Client, base, bearer string,
+	f fileToAttach, room string,
+) (string, error) {
+	payload, err := json.Marshal(attachmentWriteArgs{
+		Title:    f.name,
+		Content:  base64.StdEncoding.EncodeToString(f.raw),
+		Type:     f.ctype,
+		Filename: f.name,
+		Room:     room,
+	})
+	if err != nil {
+		return "", err
+	}
+	var out struct {
+		Item struct {
+			ID string `json:"id"`
+		} `json:"item"`
+		Size int64 `json:"size_bytes"`
+	}
+	if err := peerRequest(ctx, client, http.MethodPost, base+"/api/attachment", bearer, payload, &out); err != nil {
+		return "", err
+	}
+	if out.Item.ID == "" {
+		return "", errors.New("the node answered the upload without an id, so the message cannot name it")
+	}
+	fmt.Fprintf(os.Stderr, "attached %s (%d bytes) as %s  %s\n", f.name, out.Size, f.ctype, out.Item.ID)
+	return out.Item.ID, nil
 }
