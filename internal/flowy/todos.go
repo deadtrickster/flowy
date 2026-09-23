@@ -87,11 +87,31 @@ func withRoom(fields map[string]any, room, message string) map[string]any {
 // gets. It is a type rather than a string so the HTTP surface can tell it from
 // a store that could not answer - one is the caller's mistake and 404, the
 // other is this node's and 500 - and both surfaces say the same sentence.
-type unreadableMessage struct{ id string }
+type unreadableMessage struct {
+	id string
+	// hangs is the sentence after the refusal: what the caller was trying to
+	// hang off the message, in the caller's own words. The todo sentence was
+	// the only one, and it was sent to attachment writers too - "a todo is
+	// raised out of a conversation in front of you" told three seats that
+	// `flowy attach --message TEXT` had a permissions problem, when the field
+	// wanted an id. Measured 2026-09-23.
+	hangs string
+}
+
+// todoHangsOff is what a todo does with its message; the default.
+const todoHangsOff = "a todo is raised out of a conversation in front of you, or out of none"
+
+// attachmentHangsOff is what an attachment does with its message, and it says
+// the one thing the refusal is usually answering: that the field is an id.
+const attachmentHangsOff = "an attachment hangs off a message in front of you, or off none - " +
+	"message is the ID of that message, not text"
 
 func (e unreadableMessage) Error() string {
-	return "message " + e.id + " is not one you can read; a todo is raised out of " +
-		"a conversation in front of you, or out of none"
+	hangs := e.hangs
+	if hangs == "" {
+		hangs = todoHangsOff
+	}
+	return "message " + e.id + " is not one you can read; " + hangs
 }
 
 // readableMessage refuses a message id the writer cannot read, and says so.
@@ -103,6 +123,14 @@ func (e unreadableMessage) Error() string {
 // message that is not here and one that is out of reach get the same answer,
 // which is the answer a read of it would give.
 func readableMessage(ctx context.Context, db *store.DB, p *store.Principal, id string) error {
+	return readableMessageOf(ctx, db, p, id, todoHangsOff)
+}
+
+// readableMessageOf is readableMessage with the caller's own sentence on the
+// refusal - the same check, the same answer for missing and out of reach, and
+// a second half that names what the caller was doing rather than what a todo
+// does.
+func readableMessageOf(ctx context.Context, db *store.DB, p *store.Principal, id, hangs string) error {
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return nil
@@ -112,7 +140,7 @@ func readableMessage(ctx context.Context, db *store.DB, p *store.Principal, id s
 		return err
 	}
 	if len(unreadable) > 0 {
-		return unreadableMessage{id: id}
+		return unreadableMessage{id: id, hangs: hangs}
 	}
 	return nil
 }
