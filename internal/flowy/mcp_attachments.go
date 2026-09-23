@@ -248,7 +248,7 @@ func writeAttachmentFrom(
 	// linking mechanism: a message names an artifact on the event row already,
 	// and the item names the message in fields already, so an attachment is
 	// reachable from a conversation with nothing new to learn.
-	if err := readableMessage(ctx, db, p, a.Message); err != nil {
+	if err := readableMessageOf(ctx, db, p, a.Message, attachmentHangsOff); err != nil {
 		return nil, err
 	}
 

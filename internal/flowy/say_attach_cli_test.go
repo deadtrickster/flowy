@@ -214,3 +214,26 @@ func TestAttachTakesTheFileBeforeTheFlagsAsItsUsageSays(t *testing.T) {
 		t.Errorf("the flags-first order stopped working: %d uploads", len(n.attachments))
 	}
 }
+
+// THE REFUSAL NAMES WHAT THE CALLER WAS DOING. One error type answers "message
+// X is not one you can read" for a todo raised out of a message and for an
+// attachment hung off one, and its second half used to be the todo's sentence
+// in both cases - which told an attachment writer who had passed text where an
+// id goes that they had a permission problem with todos. The attachment door
+// now says it wanted an id; the todo door still says what a todo does.
+func TestAnUnreadableMessageRefusalSaysWhatWasHangingOffIt(t *testing.T) {
+	todo := unreadableMessage{id: "01X"}.Error()
+	if !strings.Contains(todo, "a todo is raised") {
+		t.Errorf("the todo refusal lost its sentence: %q", todo)
+	}
+	att := unreadableMessage{id: "01X", hangs: attachmentHangsOff}.Error()
+	if !strings.HasPrefix(att, "message 01X is not one you can read; ") {
+		t.Errorf("the refusal changed its first half: %q", att)
+	}
+	if strings.Contains(att, "todo") {
+		t.Errorf("the attachment refusal still talks about todos: %q", att)
+	}
+	if !strings.Contains(att, "ID") || !strings.Contains(att, "not text") {
+		t.Errorf("the attachment refusal does not say the field is an id: %q", att)
+	}
+}
