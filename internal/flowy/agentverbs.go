@@ -302,19 +302,20 @@ func skillsCmd(args []string) error {
 const attachUsage = `flowy attach - put a file on the node, as an attachment row
 
 usage:
+  flowy attach FILE [--title T] [--type MIME] [--body TEXT] [--room R] [--message ID]
   flowy attach [--title T] [--type MIME] [--body TEXT] [--room R] [--message ID] FILE
 
-  FILE          LAST, after the flags. Go's flag parser stops at the first
-                argument that is not a flag, so FILE first leaves every flag
-                after it unparsed and this verb refuses with "which file"
-                while holding the file you named.
+  FILE          first or last; either order is the same request. Go's flag
+                parser stops at the first argument that is not a flag, so a
+                leading FILE is taken as the file before the flags are parsed
   --title T     default the file's name
   --type MIME   default from the extension, else application/octet-stream
-  --body TEXT   a note beside it
-  --room R      the room this belongs to
-  --message ID  the ID of a message it hangs from, not its text. An id you
-                cannot read is refused by the node, which reads as a
-                permission problem and is a type error.
+  --body TEXT   a note beside it, on the row
+  --room R      the room this belongs to, recorded on the row
+  --message ID  the ID of a message it hangs from, not its text, recorded on
+                the row. An id you cannot read is refused by the node, which
+                reads as a permission problem and is a type error. Nothing is
+                said in any room by this verb
 
 Prints the attachment's id. The node's body shape is content_base64 plus
 filename plus content_type; six other shapes were tried by hand before this
@@ -323,15 +324,27 @@ verb existed, and every one was refused by field name.
 A file attached to a message does NOT make the message carry it: the ids a
 message carries ride inside its signature, so they are written when it is said
 and cannot be added afterwards. This verb attaches a file TO a conversation;
-saying a message WITH a file is a different operation.
+saying a message WITH a file is a different operation - to put a file IN a
+message, the picture in the room rather than a row and a pointer, use
+flowy say --file PATH "text", or attach here and then flowy say --attach ID "text".
 `
 
 func attachCmd(args []string) error {
+	// The file may come first, as the usage line shows it. The flag package
+	// stops at the first word that is not a flag, so `flowy attach FILE --title
+	// T` parsed FILE as the only argument and then saw no flags, or - when the
+	// caller put the flags first - saw the file. Both orders are the same
+	// request; a leading non-flag word is the file and the rest are flags.
+	// Measured 2026-09-23: four seats typed the documented FILE-first order and
+	// read "which file" as the file being unreadable.
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") && args[0] != "help" {
+		args = append(args[1:], args[0])
+	}
 	fs := flag.NewFlagSet("attach", flag.ContinueOnError)
 	title := fs.String("title", "", "title, default the file's name")
 	ctype := fs.String("type", "", "content type, default from the extension")
 	body := fs.String("body", "", "a note beside the file")
-	room := fs.String("room", "", "also say it in this room")
+	room := fs.String("room", "", "the room this belongs to, recorded on the row")
 	// THE ID OF A MESSAGE, NOT ITS TEXT. This read "the room message, with
 	// --room", and two seats passed prose to it: the node resolves the value
 	// through readableMessage, so a sentence comes back as "message <that
@@ -350,25 +363,8 @@ func attachCmd(args []string) error {
 		fmt.Print(attachUsage)
 		return nil
 	}
-	// "WHICH FILE" IS THE WRONG ANSWER WHEN A FILE WAS NAMED. Go's flag parser
-	// stops at the first non-flag argument, so `attach FILE --title x` leaves
-	// [FILE --title x] in fs.Args() and the count test refuses with a question
-	// the caller already answered - while the usage line above printed FILE
-	// first, which is the order that cannot work. The order is fixed there; this
-	// says so for anybody who typed it the old way, and names the file it is
-	// holding so there is no doubt it was received.
-	if len(rest) > 1 {
-		for _, a := range rest[1:] {
-			if strings.HasPrefix(a, "-") {
-				return errors.New("the flags come before FILE: got " + rest[0] +
-					" and then " + a + ", which this could not parse as a flag " +
-					"because the file name ended the flags\n\n" +
-					"  flowy attach " + strings.Join(rest[1:], " ") + " " + rest[0] + "\n")
-			}
-		}
-	}
 	if len(rest) != 1 {
-		return errors.New("which file: flowy attach [flags] FILE\n\n" + attachUsage)
+		return errors.New("which file: flowy attach FILE [flags]\n\n" + attachUsage)
 	}
 	raw, err := os.ReadFile(rest[0])
 	if err != nil {
