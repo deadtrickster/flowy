@@ -83,7 +83,22 @@ export function ArtifactView() {
   // of the field and the body, deduplicated, field order first.
   const listed = artifact ? todoAttachments(artifact) : [];
   const inBody = artifact?.body ? attachmentsIn(artifact.body) : [];
-  const carried = [...listed, ...inBody.filter((id) => !listed.includes(id))];
+  // AND THE ROW ITSELF, WHEN THE ROW IS A FILE. This page drew everything an
+  // attachment row had to say about a picture except the picture: the title,
+  // the badges and the body prose, and then nothing. carried is what a row
+  // CARRIES, and an attachment row carries nothing - it IS the file - so the
+  // files section never rendered and the card component was never reached.
+  //
+  // The operator, on five attachments posted to a room: "the attachment rows
+  // they did do not render images nor do they have a download button". This is
+  // the row every seat makes, because `flowy attach` without --message makes
+  // exactly this and nothing else, so it is the page the link in the room goes
+  // to.
+  //
+  // First in the list, before anything the body happens to name: on a page
+  // about one file, that file is not a footnote.
+  const own = artifact?.type === "attachment" && artifact.id ? [artifact.id] : [];
+  const carried = [...own, ...listed, ...inBody].filter((id, at, all) => all.indexOf(id) === at);
   // The bytes for the ones the body refers to. Fetched before the render
   // rather than swapped in after it - see useBodyAttachments.
   const bodyFiles = useBodyAttachments(artifact?.body ?? "");
@@ -476,8 +491,15 @@ export function ArtifactView() {
                     anything. The cards are the room's own. */}
                 {carried.length > 0 ? (
                   <div data-artifact-attachments={carried.length}>
-                    <div className="pb-1 font-medium text-muted-foreground text-xs">files</div>
-                    <AttachmentCards ids={carried} />
+                    <div className="pb-1 font-medium text-muted-foreground text-xs">
+                      {own.length > 0 ? "the file" : "files"}
+                    </div>
+                    {/* OPEN WITHOUT A CLICK when the page is about this file.
+                        Lazy bytes are right in a transcript, where a room of
+                        cards would otherwise be a room of megabytes; they are
+                        wrong here, where a person has already navigated to one
+                        file and the click only hides the answer. */}
+                    <AttachmentCards ids={carried} eager={own.length > 0} />
                   </div>
                 ) : null}
                 {artifact.discovery ? (

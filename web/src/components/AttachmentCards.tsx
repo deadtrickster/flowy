@@ -15,8 +15,20 @@ import { shortId } from "@/lib/utils";
  * content type is a CLAIM the writer made and never what this renders from -
  * the same rule the write made - so the preview says "claims image/png"
  * rather than pretending the node verified it.
+ *
+ * `eager` is the exception, and it is a narrow one: a card on the ATTACHMENT
+ * ROW'S OWN PAGE is the thing that page is about, so hiding it behind a click
+ * is hiding the answer to the question that was asked. In a transcript the
+ * click stays - a room of cards must not cost a room of megabytes.
+ *
+ * AND THE BYTES CAN BE TAKEN AWAY. Until this was written there was no
+ * download anywhere in the console: a picture could be seen full size and
+ * nothing else could be reached at all, so a pdf, a log or a tarball was
+ * readable only by a seat with a token and a shell. The operator, on five
+ * attachments posted to a room: "the attachment rows they did do not render
+ * images nor do they have a download button".
  */
-function Card({ id }: { id: string }) {
+function Card({ id, eager = false }: { id: string; eager?: boolean }) {
   const [item, setItem] = useState<Artifact | null>(null);
   // Whether the full-size view is up. Per card, so two images in one message
   // cannot both be open and fight over the overlay.
@@ -34,7 +46,8 @@ function Card({ id }: { id: string }) {
     window.addEventListener("keydown", shut);
     return () => window.removeEventListener("keydown", shut);
   }, [whole]);
-  const [open, setOpen] = useState(false);
+  // Open from the start only where the page IS this file - see `eager` above.
+  const [open, setOpen] = useState(eager);
   // THREE STATES, NOT TWO, AND THE THIRD IS WHY THIS IS undefined AND NOT null.
   //
   // The operator, on five renders another seat had just posted: "all attachments
@@ -55,6 +68,13 @@ function Card({ id }: { id: string }) {
   // state, and give the unresolved one its own name.
   const [content, setContent] = useState<string | null | undefined>(undefined);
   const [err, setErr] = useState<string | null>(null);
+  // WHAT THE DOWNLOAD SAID, and it is a third state again rather than a flag.
+  // null is "nothing to report", a string is "asked and cannot hand it over" -
+  // a row whose bytes are not on this node, or a read the node refused. A
+  // download control that silently does nothing is the failure this whole file
+  // has been bitten by twice; if it cannot save, it says which.
+  const [why, setWhy] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     let stopped = false;
@@ -90,6 +110,59 @@ function Card({ id }: { id: string }) {
   // since the day it was written - absent and empty being indistinguishable to
   // a `typeof` test.
   const digest = typeof fields.sha256 === "string" ? fields.sha256 : undefined;
+  // THE FILE'S OWN NAME, which is not its title. fields.filename is what the
+  // writer called the file - "snake.jpg" - and the title is a sentence a person
+  // wrote about it - "snake for Nikita". Saving the title puts a file called
+  // "snake for Nikita" with no extension in somebody's Downloads, which no
+  // viewer will open. The id is the last resort and is at least unambiguous.
+  const saveAs = (typeof fields.filename === "string" && fields.filename) || id;
+
+  /**
+   * Hand the bytes to the browser's own download, which is the only way a page
+   * can put a file where a person can find it.
+   *
+   * IT FETCHES RATHER THAN LINKING, and that is forced: GET /api/attachment/{id}
+   * answers JSON with base64, so there is no URL that serves the file - an <a
+   * href> would download a document full of JSON. It also carries the token,
+   * which a plain link would not for a seat authenticating on a bearer rather
+   * than the operator's cookie.
+   *
+   * It re-asks even when the preview is already open. One extra read of a file
+   * a person has just chosen to save is cheaper than a stale copy: the state
+   * here is a snapshot from whenever the card was opened.
+   */
+  const save = async () => {
+    setSaving(true);
+    setWhy(null);
+    try {
+      const page = await api.attachment(id);
+      if (page.content === null) {
+        // The node can see the row and holds no payload - store.ErrNoBytes,
+        // which attachments_http.go keeps apart from a 404 on purpose. Say it,
+        // rather than saving an empty file that looks like the real one.
+        setWhy("not on this node, so there is nothing to save");
+        return;
+      }
+      const raw = atob(page.content);
+      const bytes = new Uint8Array(raw.length);
+      for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+      // The SNIFFED type, as everything else here does; octet-stream when the
+      // node could not name one, so the browser saves rather than guesses.
+      const blob = new Blob([bytes], { type: sniffed || "application/octet-stream" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = saveAs;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (e) {
+      setWhy(e instanceof Error ? e.message : "the node refused to hand it over");
+    } finally {
+      setSaving(false);
+    }
+  };
 
   return (
     // A COLUMN. It was `flex items-center`, a row, and the preview is a sibling
@@ -126,20 +199,44 @@ function Card({ id }: { id: string }) {
                 {digest.slice(0, 12)}
               </span>
             ) : null}
-            <button
-              type="button"
-              // Named for the same reason data-attachment is: a check should
-              // ask for the control by name rather than by its label, which is
-              // "open" or "hide" depending on the state it is trying to change.
-              data-attachment-toggle={id}
-              className="ml-auto text-primary underline"
-              onClick={() => setOpen((on) => !on)}
-            >
-              {open ? "hide" : "open"}
-            </button>
+            <span className="ml-auto flex shrink-0 items-center gap-2">
+              {/* SAVE IT, which until now the console could not do at all. It
+                sits beside open rather than inside it: a reader wanting the
+                file does not want to look at it first, and a tarball has
+                nothing to look at. */}
+              <button
+                type="button"
+                data-attachment-save={id}
+                className="text-primary underline disabled:opacity-60"
+                disabled={saving}
+                title={`save ${saveAs}`}
+                onClick={() => void save()}
+              >
+                {saving ? "saving…" : "download"}
+              </button>
+              <button
+                type="button"
+                // Named for the same reason data-attachment is: a check should
+                // ask for the control by name rather than by its label, which is
+                // "open" or "hide" depending on the state it is trying to change.
+                data-attachment-toggle={id}
+                className="text-primary underline"
+                onClick={() => setOpen((on) => !on)}
+              >
+                {open ? "hide" : "open"}
+              </button>
+            </span>
           </>
         )}
       </div>
+      {/* Why the download handed nothing over. Its own line and its own
+          attribute, so a check can ask what the control SAID rather than
+          watching for a file that was never going to arrive. */}
+      {why ? (
+        <span className="text-muted-foreground" data-attachment-save-why={id}>
+          {why}
+        </span>
+      ) : null}
       {open && content === undefined && !err ? (
         <span className="text-muted-foreground" data-attachment-loading={id}>
           fetching…
@@ -229,13 +326,19 @@ function Card({ id }: { id: string }) {
   );
 }
 
-/** The row of cards under a message that carries attachments. */
-export function AttachmentCards({ ids }: { ids: string[] }) {
+/**
+ * The row of cards under a message that carries attachments.
+ *
+ * `eager` opens every card in the list without a click, and belongs only where
+ * the page is ABOUT the files - an attachment row's own page. A transcript
+ * passes nothing and keeps the click.
+ */
+export function AttachmentCards({ ids, eager = false }: { ids: string[]; eager?: boolean }) {
   if (ids.length === 0) return null;
   return (
     <div className="flex flex-col gap-1 pt-1">
       {ids.map((id) => (
-        <Card key={id} id={id} />
+        <Card key={id} id={id} eager={eager} />
       ))}
     </div>
   );
