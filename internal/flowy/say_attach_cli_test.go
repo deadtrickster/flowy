@@ -237,3 +237,54 @@ func TestAnUnreadableMessageRefusalSaysWhatWasHangingOffIt(t *testing.T) {
 		t.Errorf("the attachment refusal does not say the field is an id: %q", att)
 	}
 }
+
+// A PICTURE IS IN THE BODY, JIRA STYLE. The console draws an image inline
+// only from a markdown reference in the body - `![what it shows](01M0...)` -
+// and lists whatever `attachments` names as cards at the foot. A --file that
+// only filled the field produced a card and no picture; the operator, shown
+// three such messages: "most of the replies didnt attach anything". So an
+// uploaded picture is written into the body as well, by the id the node
+// answered, unless the body already refers to it. A file that is not a
+// picture is listed and not drawn: an <img> of a log renders as a broken glyph.
+func TestSayFileWritesAPictureIntoTheBodyAndListsTheRest(t *testing.T) {
+	dir := t.TempDir()
+	pic := filepath.Join(dir, "snake.jpg")
+	log := filepath.Join(dir, "run.log")
+	for _, p := range []string{pic, log} {
+		if err := os.WriteFile(p, []byte("bytes"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	n := &sayNode{}
+	if err := n.say(t, "--file", pic, "--file", log, "for Nikita"); err != nil {
+		t.Fatalf("say: %v", err)
+	}
+	said := n.says[0]
+	body, _ := said["body"].(string)
+	ids := attachmentsOf(t, said)
+	if len(ids) != 2 {
+		t.Fatalf("the message carried %v, want both uploads", ids)
+	}
+	if !strings.HasPrefix(body, "for Nikita") {
+		t.Errorf("the caller's words are not first: %q", body)
+	}
+	if !strings.Contains(body, "![snake.jpg]("+ids[0]+")") {
+		t.Errorf("the picture is not in the body by its id: %q", body)
+	}
+	if strings.Contains(body, ids[1]) {
+		t.Errorf("a log was drawn as a picture: %q", body)
+	}
+}
+
+// A BODY THAT ALREADY SHOWS THE PICTURE IS LEFT ALONE. --attach names an id
+// the caller may well have written into the body by hand; writing it a second
+// time would draw the picture twice.
+func TestSayDoesNotDrawAPictureTheBodyAlreadyShows(t *testing.T) {
+	n := &sayNode{}
+	if err := n.say(t, "--attach", "01AAA", "look: ![a snake](01AAA)"); err != nil {
+		t.Fatalf("say: %v", err)
+	}
+	if got := n.says[0]["body"]; got != "look: ![a snake](01AAA)" {
+		t.Errorf("the body was rewritten: %q", got)
+	}
+}

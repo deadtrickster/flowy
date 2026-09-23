@@ -34,7 +34,10 @@ usage:
   --file PATH   put this file on the node as an attachment and carry it, in one
                 go - the bytes land through the attachment door first, then the
                 message goes out naming what landed. May be given more than once.
-                The type is read from the extension, the title is the file's name
+                The type is read from the extension, the title is the file's name.
+                A picture is also drawn INTO the body, as ![name](id) after your
+                text, so the room shows it rather than a card; any other file is
+                listed and not drawn. A body that already names the id is left alone
   --url URL     node to tell (default $FLOWY_ADDR, then http://127.0.0.1:8787)
   --token T     bearer token (default $FLOWY_TOKEN, then ~/.config/flowy/token)
   --agent NAME  the seat speaking, whose token is ~/.config/flowy/agents/NAME
@@ -130,6 +133,7 @@ func sayCmd(args []string) error {
 			return fmt.Errorf("attach %s: %w", f.name, err)
 		}
 		carried = append(carried, id)
+		body = drawPictureInto(body, f, id)
 	}
 
 	payload, err := json.Marshal(chatSayRequest{Body: body, Thread: *thread, To: *to, Attachments: carried})
@@ -313,4 +317,22 @@ func uploadAttachment(ctx context.Context, client *http.Client, base, bearer str
 	}
 	fmt.Fprintf(os.Stderr, "attached %s (%d bytes) as %s  %s\n", f.name, out.Size, f.ctype, out.Item.ID)
 	return out.Item.ID, nil
+}
+
+// drawPictureInto writes an uploaded picture into the body as a markdown image
+// by its id - `![name](01M0...)`, the shape the console draws inline - unless
+// the body already names that id. Anything that is not a picture is left to
+// the attachments list: an <img> of a log renders as a broken glyph, and the
+// card at the foot is the right place for it.
+//
+// MEASURED 2026-09-23: three messages carried a jpeg in the `attachments`
+// field alone and drew a card each; the operator's reading was "most of the
+// replies didnt attach anything". The picture in the room is the body
+// reference, and the field is the list - the console's own composer does
+// both, "JIRA style", and so does this.
+func drawPictureInto(body string, f fileToAttach, id string) string {
+	if !strings.HasPrefix(f.ctype, "image/") || strings.Contains(body, id) {
+		return body
+	}
+	return strings.TrimRight(body, "\n") + "\n\n![" + f.name + "](" + id + ")"
 }
