@@ -1,5 +1,6 @@
 import { memo, useMemo } from "react";
 
+import { useBodyAttachments } from "@/lib/attachrefs";
 import { renderChat } from "@/lib/markdown";
 
 /**
@@ -34,9 +35,14 @@ export const MessageBody = memo(function MessageBody({
   user?: string;
   agent?: string;
 }) {
+  // The files the body refers to, fetched before the render so the picture is
+  // in the HTML rather than swapped in under React - see useBodyAttachments.
+  // The map is a new identity only when a fetch lands, so a body with no
+  // references keeps the memo it had.
+  const files = useBodyAttachments(body);
   const html = useMemo(
-    () => ({ __html: renderChat(body, mentions, { user, agent }) }),
-    [body, mentions, user, agent],
+    () => ({ __html: renderChat(body, mentions, { user, agent }, files) }),
+    [body, mentions, user, agent, files],
   );
   return (
     <div
