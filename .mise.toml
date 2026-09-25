@@ -12,5 +12,18 @@
 #
 # The suite reads this file for the number rather than carrying a second copy of
 # it, so the pin and the check cannot drift apart. See shell_scripts_formatted.
+# SAME HOLE, ONE TOOL DOWN. 01M37RE102B6R5EG142K711BWZ.
+#
+# gofmt came from whatever go was on the PATH. Measured 2026-09-23 on
+# internal/store/forge_test.go, untouched since c3ee4e4:
+#
+#   go1.26.0   clean
+#   go1.27.0   a diff at lines 303-311, composite literals one tab shallower
+#
+# 1.26.0 is the version the gate runs and the version this tree is clean under,
+# so the pin states what is already true rather than reformatting the repo to
+# suit a number somebody typed. Moving it is a deliberate commit: change it here,
+# run `gofmt -w` once, and land both together.
 [tools]
 shfmt = "3.13.1"
+go = "1.26.0"

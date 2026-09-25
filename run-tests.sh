@@ -782,6 +782,56 @@ go_build() {
 # every seat at once. They are in .git/info/exclude, so git already agrees they
 # are not this tree's source.
 gofmt_clean() {
+	# AN ABSENT FORMATTER IS NOT A CLEAN ONE.
+	#
+	# This was `out="$(gofmt -l ...)"` with no presence test: with no gofmt on
+	# the PATH the command fails, $out is empty, and the check prints "gofmt
+	# clean" and passes. A suite that reports a formatter it never ran is worse
+	# than one without the check, because the second is honest. The shfmt check
+	# refuses an absent formatter for this reason; this one did not.
+	if ! command -v gofmt >/dev/null 2>&1; then
+		printf 'gofmt is not installed, so the Go sources were NOT CHECKED - install it (mise) or this suite is lying about them\n' >&2
+		return 1
+	fi
+	# AND IT IS THE VERSION THIS REPO IS FORMATTED WITH. 01M37RE102B6R5EG142K711BWZ.
+	#
+	# The same hole the shfmt pin closed, one tool down. gofmt was resolved from
+	# whatever go was on the PATH of whoever ran the gate, and two versions
+	# disagree about a file both of them call clean. Measured by lubuntu3-glm on
+	# 2026-09-23, internal/store/forge_test.go, untouched since c3ee4e4:
+	#
+	#   go1.26.0   clean
+	#   go1.27.0   a diff at lines 303-311, composite literals one tab shallower
+	#
+	# Neither is wrong, so "gofmt clean" was a property of the machine and not of
+	# the repo. It cost a full suite read as one failure out of 845 on a branch
+	# that had touched none of it - the exact reading the shfmt pin was added to
+	# remove, and the worst shape for a check to fail in: true of the repository,
+	# false of the change, and red for every seat at once.
+	#
+	# THE NUMBER IS READ OUT OF .mise.toml, not typed here, so the pin and the
+	# check cannot drift - a version asserted against a copy of itself agrees
+	# with whoever edited it last.
+	#
+	# THE BINARY IS ASKED, NOT THE TOOLCHAIN. `go version` reports the go that
+	# would build, which need not be the go that shipped the gofmt on the PATH -
+	# one from a distribution package and one from mise is the ordinary case.
+	# `go version <path>` reads the version out of the binary itself, so what is
+	# asserted is the formatter that is about to run.
+	local want have
+	want=$(sed -n 's/^go *= *"\([^"]*\)".*/\1/p' "$ROOT/.mise.toml" | head -1)
+	have=$(go version "$(command -v gofmt)" 2>/dev/null | sed -n 's/.*: *go\([0-9][0-9.]*\).*/\1/p')
+	if [ -z "$want" ]; then
+		printf 'no go pin in .mise.toml, so this check has no version to hold anything to\n' >&2
+		return 1
+	fi
+	if [ "$want" != "$have" ]; then
+		printf 'gofmt is %s and this repo is formatted with %s.\n' "${have:-of no version this could read}" "$want" >&2
+		printf 'Two versions disagree about files both of them call clean, so a diff here\n' >&2
+		printf 'would say nothing about the sources. Get the pinned one - run mise install\n' >&2
+		printf 'in the repo, which reads .mise.toml - and run this again.\n' >&2
+		return 1
+	fi
 	local out
 	local -a files
 	mapfile -t files < <(find . \( -path ./vendor -o -path ./.claude \) -prune -o -name '*.go' -print)
