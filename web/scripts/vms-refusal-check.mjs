@@ -59,6 +59,41 @@ try {
     die("/vms drew no panel at all for a non-operator, so there is nothing to judge");
   }
 
+  // VISIBLE IS NOT SETTLED, and that distinction is this check's whole flake.
+  // 01M2HXBYPKEDD867TZHVYEP1BS: it failed once and passed four times on the same
+  // code, and again twice on 2026-09-25, with `/vms in state "reading" drew no
+  // refusal sentence`.
+  //
+  // The panel carries data-vm-panel WHILE LOADING - Vms.tsx renders
+  // data-vm-state="reading" for the whole of it, and the node is allowed twenty
+  // seconds for `firecode ps`, which that file's own comment says is "longer
+  // than a reader, or a check, would assume". So waiting for the panel to be
+  // visible returns during the load, and the refusal sentence this check is
+  // about does not exist yet. Under full-suite contention - 845 checks, a
+  // browser, a postgres and a node server on one VM - the window is wide enough
+  // to lose.
+  //
+  // So wait for the state to SETTLE, which is the condition the assertions
+  // actually depend on, rather than for the element that is there either way.
+  // The negation is in the selector so Playwright polls it: any state but
+  // reading, which covers ok, forbidden, unavailable and refused, and needs no
+  // list of them here that a fifth state would silently fall out of.
+  //
+  // AND IT IS NOT SWALLOWED. The wait above ends in `.catch(() => {})` and that
+  // is right for it - a panel that never appears is reported by the count test
+  // below with a better sentence. A state that never settles has no such second
+  // test, and swallowing it would put the timeout back as the original flake,
+  // one layer down. Forty minutes went into attributing this the first time,
+  // almost all of it excluding a branch that had nothing to do with it.
+  const settled = page.locator('[data-vm-panel]:not([data-vm-state="reading"])');
+  try {
+    await settled.waitFor({ state: "visible", timeout: 30_000 });
+  } catch {
+    die(`/vms never left state "reading" in 30s, so nothing was measured. The page is still
+loading, not broken: the node is allowed twenty seconds for the host read, and this check
+is not a measurement of how long that takes.`);
+  }
+
   const state = await panel.getAttribute("data-vm-state");
   if (state === "ok") {
     die(`this token opened /vms (state ${JSON.stringify(state)}), so it is not the non-operator

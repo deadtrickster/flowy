@@ -301,22 +301,57 @@ export function Todos() {
    * honest answer to "cannot say which".
    */
   const [waiting, setWaiting] = useState<Set<string>>(new Set());
+  /**
+   * WHETHER THE MARKS HAVE BEEN READ YET, which is not the same question as
+   * whether any row is marked.
+   *
+   * The rows come from the todo query and the marks come from this second
+   * fetch, so there is a window where every row is drawn and none of them is
+   * marked - correctly, because the answer has not arrived. Nothing on the page
+   * said which of the two states it was in, and a reader cannot tell them apart
+   * either: "nothing is waiting" and "not asked yet" look identical.
+   *
+   * 01M2HXBYPKEDD867TZHVYEP1BS. waiting-row-check waited for the row element to
+   * be visible and then read data-todo-waiting, and the row is visible before
+   * this fetch lands - so under full-suite contention it read the window and
+   * reported `the row the node calls waiting is drawn with no mark`. It could
+   * not wait for the mark instead, because the absent mark is the thing it
+   * exists to catch.
+   *
+   * Vms.tsx had the same problem and states it the same way: its panel used to
+   * carry no state while loading, "which made 'still reading' indistinguishable
+   * from 'rendered with no state' to anything looking at the attribute". This
+   * is that attribute, for this page.
+   */
+  const [marksRead, setMarksRead] = useState(false);
   useEffect(() => {
     if (!signedIn) {
       setWaiting(new Set());
+      setMarksRead(false);
       return;
     }
     let stopped = false;
     api
       .nag()
       .then((view) => {
-        if (!stopped) setWaiting(new Set(view.mine_todo_ids ?? []));
+        if (!stopped) {
+          setWaiting(new Set(view.mine_todo_ids ?? []));
+          setMarksRead(true);
+        }
       })
       .catch(() => {
         // Left unmarked rather than guessed. A nag that could not be read is
         // not "nothing is waiting" - see the rail, which draws no dot for the
         // same reason.
-        if (!stopped) setWaiting(new Set());
+        //
+        // AND THE ATTEMPT IS STILL FINISHED. A refusal is an answer: the marks
+        // are as read as they are going to get, and leaving this false would
+        // hold anything waiting on it until its own timeout, then report a
+        // hang where there was a refused fetch.
+        if (!stopped) {
+          setWaiting(new Set());
+          setMarksRead(true);
+        }
       });
     return () => {
       stopped = true;
@@ -356,7 +391,7 @@ export function Todos() {
   const answered = signedIn && loaded && !error;
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full flex-col" data-todo-marks={marksRead ? "read" : "reading"}>
       {/*
         Two views of one queue. The counts live in the tab titles because the
         question "is there anything waiting to land" should be answerable

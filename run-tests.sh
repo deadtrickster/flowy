@@ -11802,6 +11802,50 @@ a_reference_is_a_triple_everywhere_it_is_drawn() {
 # Anything else is a caller reassembling a reference from memory. App.tsx
 # declares the route as a plain literal rather than a template, so it is not
 # what the pattern looks for.
+# A PAGE A BROWSER CHECK WAITS ON MUST SAY WHEN IT IS STILL LOADING.
+#
+# 01M2HXBYPKEDD867TZHVYEP1BS, and this guards the seam the fix for it stands on.
+# Two console checks read an attribute the moment their element became visible,
+# and both elements exist before the data the assertion is about: the /vms panel
+# carries data-vm-panel through the whole host read, and a todo row is drawn from
+# the todo query while its waiting mark comes from a later /api/nag. Each check
+# reported a real-looking defect - "drew no refusal sentence", "drawn with no
+# mark" - about a page that was about to draw it, and only under full-suite
+# contention, which is where a flake costs the most: it makes a green branch
+# inadmissible and the queue says "no gate has measured it" rather than red.
+#
+# The remedy in both places is that the page publishes whether it has finished
+# asking, and the check waits for THAT. So these two attributes are load-bearing
+# for two other checks, and removing either turns its check from "reads too
+# early" into "times out" - a slower version of the same silence.
+#
+# THE ARM THAT PROVES THE SEARCH CAN SEE ANYTHING comes first, for the reason
+# only_one_place_builds_a_reference records: a pattern that matches nothing
+# passes forever.
+a_loading_page_says_it_is_loading() {
+	local src=$ROOT/web/src all missing=""
+	all="$(grep -rn 'data-vm-state\|data-todo-marks' "$src" || true)"
+	if [ -z "$all" ]; then
+		printf 'neither loading marker is anywhere in web/src, so this check proves nothing\n' >&2
+		return 1
+	fi
+	# Each marker, and the LOADING value it must be able to take - the attribute
+	# alone is not the claim. A panel that only ever says "ok" tells a waiter
+	# nothing about the window before it.
+	printf '%s\n' "$all" | grep -q 'data-vm-state="reading"' ||
+		missing="$missing\n  Vms.tsx no longer publishes data-vm-state=\"reading\", so vms-refusal-check cannot tell a loading panel from a refused one"
+	printf '%s\n' "$all" | grep -q 'data-todo-marks' ||
+		missing="$missing\n  Todos.tsx no longer publishes data-todo-marks, so waiting-row-check cannot tell an unread mark from an absent one"
+	printf '%s\n' "$all" | grep -q '"reading"' ||
+		missing="$missing\n  no page says \"reading\" at all, and both waiters key on that word"
+	if [ -n "$missing" ]; then
+		# shellcheck disable=SC2059 # the \n are the point; the string is ours
+		printf "a browser check waits on a marker that is gone:$missing\n" >&2
+		return 1
+	fi
+	printf 'both loading markers are published, with their loading value\n'
+}
+
 only_one_place_builds_a_reference() {
 	local all found
 	# One invocation, filtered afterwards, so the arm that finds violations and
@@ -22062,6 +22106,8 @@ check "a reference is a triple everywhere it is drawn, and a wrong segment does 
 	a_reference_is_a_triple_everywhere_it_is_drawn
 check "one place builds a reference, and the pattern that says so can see one" \
 	only_one_place_builds_a_reference
+check "a page a browser check waits on still says when it is loading" \
+	a_loading_page_says_it_is_loading
 check "a disowned message says so on the screen and to a waiter, and the one before the window does not" \
 	a_disowned_message_says_so_and_the_one_before_it_does_not
 # HERE AND NOT IN PHASE 1, because it needs the one node in this suite with no

@@ -111,6 +111,37 @@ try {
     const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
     await page.addInitScript((t) => localStorage.setItem("flowy.token", t), token);
     await page.goto(`${base}/todos`, { timeout: 20_000 });
+    // THE MARKS COME FROM A SECOND FETCH, so a visible row is not a measurable
+    // one. 01M2HXBYPKEDD867TZHVYEP1BS: the rows are drawn from the todo query
+    // and data-todo-waiting is applied from /api/nag afterwards, so for a window
+    // every row is on screen and none is marked - correctly. This check waited
+    // for the row to be visible and read the attribute inside that window, and
+    // reported "drawn with no mark" on a page that was about to draw it. Under
+    // full-suite contention that window is wide enough to lose.
+    //
+    // It cannot wait for the mark: an absent mark is the defect this exists to
+    // catch, and waiting for it would be a check that cannot fail. So it waits
+    // for the page to say the marks have been READ, which Todos.tsx now
+    // publishes the way Vms.tsx publishes its panel state.
+    //
+    // NOT CAUGHT, because a timeout here means the page never finished asking
+    // and no assertion below has been measured. Swallowing it would reinstate
+    // the flake one layer down.
+    try {
+      await page
+        .locator('[data-todo-marks="read"]')
+        .waitFor({ state: "attached", timeout: 30_000 });
+    } catch {
+      // Said in this check's own words rather than Playwright's. The catch at
+      // the bottom would report a locator timeout on a selector, and the whole
+      // cost of this flake the first time was attribution - forty minutes,
+      // almost all of it excluding a branch that had nothing to do with it.
+      throw new Error(
+        '/todos never said its waiting marks were read (data-todo-marks stayed "reading" for 30s), ' +
+          "so nothing below was measured. The page never finished asking /api/nag - that is a slow " +
+          "or refused fetch, not a missing mark.",
+      );
+    }
     const marked = page.locator(`[data-todo-row="${waiting}"]`);
     await marked.waitFor({ state: "visible", timeout: 20_000 });
     if ((await marked.getAttribute("data-todo-waiting")) === null) {
