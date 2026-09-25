@@ -11848,6 +11848,54 @@ a_loading_page_says_it_is_loading() {
 	printf 'both loading markers are published, with their loading value\n'
 }
 
+# CLAUDE.md MAY NOT DENY A VERB THAT EXISTS. 01M3BPE2NME4H6KG76PPMR63FN.
+#
+# The file every agent is told to read first said "There is no withdraw verb on
+# `flowy merge`". The verb landed in a13c18b on 2026-08-18; the sentence denying it
+# was written in f28c818 on 2026-08-20, two days later, and stood for 38 days. It
+# was never true.
+#
+# A wrong instruction is worse than a missing one: an agent that trusts the file
+# and never runs --help does not find out, and the two verbs are not
+# interchangeable - `merge withdraw` leaves a tombstone naming who took the row
+# back and why, `todo done` closes the item and says nothing.
+#
+# THE VERB LIST IS READ FROM THE DISPATCHER, not typed here, so a verb added
+# tomorrow is covered without anybody remembering this check exists. That is the
+# same rule the shfmt and go pins keep: a fact asserted against a copy of itself
+# agrees with whoever edited it last.
+claude_md_denies_no_verb_that_exists() {
+	local doc="$ROOT/CLAUDE.md" src="$ROOT/internal/flowy/merge.go"
+	[ -r "$doc" ] || {
+		printf 'no CLAUDE.md at %s, so this check has nothing to read\n' "$doc" >&2
+		return 1
+	}
+	local -a verbs=()
+	# `case "open", "file":` - every quoted word on a case line, minus the help
+	# and empty arms, which are not verbs anybody documents.
+	mapfile -t verbs < <(grep -oE '^[[:space:]]*case "[^)]*' "$src" |
+		grep -oE '"[a-z][a-z-]+"' | tr -d '"' | grep -vxE 'help' | sort -u)
+	if [ "${#verbs[@]}" -eq 0 ]; then
+		printf 'no verbs could be read out of %s, so this check proves nothing\n' "$src" >&2
+		return 1
+	fi
+	local v found=""
+	for v in "${verbs[@]}"; do
+		# The shapes a denial takes. Matched case-insensitively and across the
+		# line, because the sentence that started this was "There is no withdraw
+		# verb on `flowy merge`".
+		if grep -qiE "(no|not a) \`?$v\`? (verb|subcommand)|there is no \`?$v\`?" "$doc"; then
+			found="$found $v"
+		fi
+	done
+	if [ -n "$found" ]; then
+		printf 'CLAUDE.md denies a verb the dispatcher has:%s\n' "$found" >&2
+		printf '%s\n' "internal/flowy/merge.go dispatches it. A reader who trusts the file uses the wrong verb and never finds out." | indent
+		return 1
+	fi
+	printf 'CLAUDE.md denies none of the %d dispatched verb(s): %s\n' "${#verbs[@]}" "${verbs[*]}"
+}
+
 only_one_place_builds_a_reference() {
 	local all found
 	# One invocation, filtered afterwards, so the arm that finds violations and
@@ -22108,6 +22156,8 @@ check "a reference is a triple everywhere it is drawn, and a wrong segment does 
 	a_reference_is_a_triple_everywhere_it_is_drawn
 check "one place builds a reference, and the pattern that says so can see one" \
 	only_one_place_builds_a_reference
+check "CLAUDE.md does not deny a verb the code dispatches" \
+	claude_md_denies_no_verb_that_exists
 check "a page a browser check waits on still says when it is loading" \
 	a_loading_page_says_it_is_loading
 check "a disowned message says so on the screen and to a waiter, and the one before the window does not" \

@@ -52,8 +52,27 @@ a better version of the same change. Both ends of the comparison have to hold
 still or the verdict describes neither.
 
 A red row retries on its own once you push a fix - the red is keyed on branch
-sha and target sha, so a new tip is a new question. There is no withdraw verb
-on `flowy merge`; `flowy todo done --id <row>` is what takes it out.
+sha and target sha, so a new tip is a new question. With nothing to push, though,
+neither sha moves, and in a queue of one the target cannot move either: a row red
+on a flake nobody is fixing re-asks never. Measured 2026-09-05 on
+01M1SD4HYAE9BAA1BYJW821X2Y, where the only candidate in the queue was the red one.
+
+Taking a row out has two verbs and they are not interchangeable.
+
+    flowy merge withdraw --id <row> --note "why"
+
+takes the request out and leaves a tombstone naming who took it back and what they
+said. `--note` is required, and it is the only required note on that verb, because
+every other queue event leaves an artifact behind - a landing leaves a sha, a red
+leaves a verdict - and a withdrawal leaves an absence.
+
+    flowy todo done --id <row>
+
+closes the queue item and says nothing about why. Reach for it when the row itself
+is finished, not when a branch is being taken back.
+
+Abandon is a third thing: it gives back the target LOCK and leaves the request in
+the queue.
 
 ## The rules that have teeth
 
