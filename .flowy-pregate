@@ -89,4 +89,70 @@ for f in .flowy-gate run-tests.sh; do
 	fi
 done
 
+# UNFORMATTED WEB CODE, ASKED HERE BECAUSE THE SUITE ANSWERS IT TOO LATE.
+# 01M3BG0YJKFKB0N7T45QRYPXMQ.
+#
+# Measured by flowy-claude over 289 drain passes with a verdict: 77 red, and
+# `biome check web/` is 34 of the 77 - 44% of every red this box has produced. It
+# never flips. Across every row+tip gated more than once, the pairs where biome
+# failed and the same unchanged tip later passed number zero. It is an agent
+# filing unformatted code, every time.
+#
+# The suite already catches it at check 11 of 769, inside the first minute, and
+# then keeps going - deliberately, so one run reports every problem rather than
+# the first one. So the answer is known at minute one and delivered after the
+# whole suite: on drain-01M1RWCHPZ0V98T59T0WGVQYA9-72a123b, 843 checks ran to
+# report `passed: 842 failed: 1`. Each occurrence spends a full gate and the
+# target lock to learn something that was true before it started.
+#
+# THIS CHECK FAILS OPEN, WHICH IS BACKWARDS FROM EVERY OTHER CHECK IN THIS FILE,
+# and the asymmetry is the reason.
+#
+# Pre-gate runs BEFORE the suite's npm ci, so the biome it can reach is the one
+# the LAST gate installed. A branch that bumps the pin would be judged by the old
+# version, and two formatters disagreeing about what is clean is a defect this
+# repo has already paid for twice - 01M0JW6GCY for shfmt, 01M37RE102B6R5EG142K711BWZ
+# for gofmt. Refusing on that disagreement would turn an optimisation into a red
+# somebody's branch did not earn.
+#
+# The suite is still the authority and will still catch it. So: refuse only when
+# this can establish that its biome is the pinned one, and otherwise say why it
+# could not and pass. "Could not check, proceeding" is a check failing open
+# everywhere else on this board; it is right here, and only here, because a
+# second authority exists downstream.
+if [ -d web ]; then
+	# THE PIN, AS package.json STATES IT. ^1.9.4 is a range, so the test is the
+	# major-minor-patch the range names rather than an exact string - an
+	# installed 1.9.5 satisfies ^1.9.4 and is not the same formatter. Compared
+	# as "same minor line", which is what biome's own compatibility promise
+	# covers, and anything outside it declines rather than refuses.
+	# `|| true` ON BOTH, AND THE SECOND ONE IS LOAD-BEARING. This file runs under
+	# `set -euo pipefail`, so an absent biome makes `npx --no-install` exit
+	# non-zero, fails the pipeline, and kills the whole pre-gate - which is exit
+	# 1 with no bad line and no explanation, and the drainer refuses the run.
+	# Measured by moving web/node_modules aside: exit 1, zero `bad` lines, not
+	# one word about biome. A check written to fail open that takes the gate down
+	# when its tool is missing is the opposite of what it says it is.
+	want=$(sed -n 's/.*"@biomejs\/biome": *"[^0-9]*\([0-9][0-9.]*\)".*/\1/p' web/package.json 2>/dev/null | head -1 || true)
+	have=$(cd web && npx --no-install @biomejs/biome --version 2>/dev/null |
+		sed -n 's/.*[Vv]ersion: *\([0-9][0-9.]*\).*/\1/p' | head -1 || true)
+	if [ -z "$have" ]; then
+		ok "biome is not installed in this worktree yet, so formatting is the suite's to judge"
+	elif [ -z "$want" ]; then
+		ok "web/package.json states no biome version this could hold $have to - leaving formatting to the suite"
+	elif [ "${want%.*}" != "${have%.*}" ]; then
+		ok "biome here is $have and web/package.json asks for $want - a different minor line, so formatting is the suite's to judge"
+	elif (cd web && npx --no-install @biomejs/biome check . >/dev/null 2>&1); then
+		ok "web/ is biome $have clean, which is 44% of this box's historical reds not happening"
+	else
+		# The diff itself, not just the verdict: a refusal that says "reformat
+		# it" costs the reader the run they just lost plus a command to find out
+		# what. Capped, because biome on a badly formatted tree can print more
+		# than a queue message should carry.
+		bad "web/ is not biome clean, and the suite would spend a full gate to tell you the same thing.
+    cd web && npx @biomejs/biome check --write .
+$(cd web && npx --no-install @biomejs/biome check . 2>&1 | head -20 | sed 's/^/    /')"
+	fi
+fi
+
 exit "$fail"
