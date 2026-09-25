@@ -498,7 +498,10 @@ export function ArtifactView() {
                 {artifact.type === "attachment" ? (
                   <div data-artifact-self-attachment={artifact.id}>
                     <div className="pb-1 font-medium text-muted-foreground text-xs">file</div>
-                    <AttachmentCards ids={[artifact.id]} />
+                    {/* eager: this page's entire subject is this one file, so the
+                        preview and the save are not behind a click. The cards in
+                        a transcript stay lazy - see AttachmentCards. */}
+                    <AttachmentCards ids={[artifact.id]} eager />
                   </div>
                 ) : null}
                 {artifact.discovery ? (

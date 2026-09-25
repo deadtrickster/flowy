@@ -9,14 +9,16 @@ import { shortId } from "@/lib/utils";
  * attachment's own row, fetched lazily so a room full of cards costs the
  * badges and not the bytes.
  *
- * The bytes are fetched on demand, never eagerly: content is base64 and a
- * screenshot is a megabyte. An image claim renders a preview once loaded,
- * everything else names itself and offers the payload behind a click. The
+ * The bytes are fetched on demand rather than with the listing - content is
+ * base64 and a screenshot is a megabyte. An image claim renders a preview once
+ * loaded, everything else names itself and offers the payload behind a click -
+ * except on a page whose subject IS the file, which asks for `eager` and gets
+ * the preview and the save without one. The
  * content type is a CLAIM the writer made and never what this renders from -
  * the same rule the write made - so the preview says "claims image/png"
  * rather than pretending the node verified it.
  */
-function Card({ id }: { id: string }) {
+function Card({ id, eager = false }: { id: string; eager?: boolean }) {
   const [item, setItem] = useState<Artifact | null>(null);
   // Whether the full-size view is up. Per card, so two images in one message
   // cannot both be open and fight over the overlay.
@@ -34,7 +36,26 @@ function Card({ id }: { id: string }) {
     window.addEventListener("keydown", shut);
     return () => window.removeEventListener("keydown", shut);
   }, [whole]);
-  const [open, setOpen] = useState(false);
+  // EAGER IS "THIS PAGE IS ABOUT THIS FILE", not "always show everything".
+  //
+  // 01M3BHV07Z871GTVWZQZPSQ42Z. The lazy fetch below is right in a transcript -
+  // a room of cards would be a room of megabytes, which is the whole reason
+  // content is only stored when the card is open. It is wrong on an attachment
+  // row's own page, where the bytes ARE the answer to the question that was
+  // asked, and lubuntu3-glm put it best while filing the check this satisfies:
+  // a page about one file that hides it behind a control is the same blank page
+  // with one more step in front of it.
+  //
+  // So the caller says which situation it is in, and the default is the cautious
+  // one.
+  //
+  // THE INITIAL STATE AND NOT AN OVERRIDE. Written first as
+  // `const open = clicked || eager`, which made `hide` inert on exactly the
+  // cards that show most: clicking it cleared the reader's half and eager held
+  // the union true. A reader who can open a thing and not close it has been
+  // given a control that lies. eager seeds the state; the toggle owns it after
+  // that.
+  const [open, setOpen] = useState(eager);
   // THREE STATES, NOT TWO, AND THE THIRD IS WHY THIS IS undefined AND NOT null.
   //
   // The operator, on five renders another seat had just posted: "all attachments
@@ -172,13 +193,26 @@ function Card({ id }: { id: string }) {
             */}
             {typeof content === "string" ? (
               <a
-                data-attachment-download={id}
+                data-attachment-save={id}
                 href={`data:${sniffed || "application/octet-stream"};base64,${content}`}
                 download={filename}
                 className="text-primary underline"
               >
                 save
               </a>
+            ) : content === null && !err ? (
+              /*
+                ABSENT IS NOT EMPTY, AND IT SAYS SO WHERE THE CONTROL WOULD BE.
+                The reason already existed in the preview area and only once the
+                card was open, so a reader looking for a way to keep the file
+                found nothing at all and no sentence about why. A control that
+                explains itself only when pressed is still a control that
+                appears to do nothing - so the reason replaces it rather than
+                sitting behind it, and there is deliberately nothing to click.
+              */
+              <span data-attachment-save-why={id} className="text-muted-foreground">
+                no bytes on this node to save
+              </span>
             ) : null}
           </>
         )}
@@ -273,12 +307,12 @@ function Card({ id }: { id: string }) {
 }
 
 /** The row of cards under a message that carries attachments. */
-export function AttachmentCards({ ids }: { ids: string[] }) {
+export function AttachmentCards({ ids, eager = false }: { ids: string[]; eager?: boolean }) {
   if (ids.length === 0) return null;
   return (
     <div className="flex flex-col gap-1 pt-1">
       {ids.map((id) => (
-        <Card key={id} id={id} />
+        <Card key={id} id={id} eager={eager} />
       ))}
     </div>
   );
