@@ -22158,6 +22158,71 @@ check "one place builds a reference, and the pattern that says so can see one" \
 	only_one_place_builds_a_reference
 check "CLAUDE.md does not deny a verb the code dispatches" \
 	claude_md_denies_no_verb_that_exists
+
+# AND THE OTHER DIRECTION: CLAUDE.md MAY NOT OFFER A VERB THAT DOES NOT EXIST.
+# 01M3BPE2NME4H6KG76PPMR63FN, the follow-up.
+#
+# The check above catches the file DENYING something real. It cannot catch the
+# file OFFERING something unreal, and the same commit that fixed the denial left
+# one: "Abandon is a third thing" named a queue operation with no way to call it.
+# There is no `flowy merge abandon` - the word appears in the codebase only in
+# merge.go's own error text and that error's test. The handle is a door,
+# POST /api/merge/<row>/abandon, which merge.go prints a curl for.
+#
+# Nothing failed. An agent reading that line types the verb it implies, gets
+# "unknown merge command", and has learned that the file is unreliable - which
+# is the cost this pair of checks exists to stop.
+#
+# THE VERB LIST IS READ FROM THE DISPATCHER here too, so neither direction has a
+# list anybody has to remember to update.
+claude_md_offers_no_verb_that_is_missing() {
+	local doc="$ROOT/CLAUDE.md" src="$ROOT/internal/flowy/merge.go"
+	[ -r "$doc" ] || {
+		printf 'no CLAUDE.md at %s, so this check has nothing to read\n' "$doc" >&2
+		return 1
+	}
+	local -a verbs=()
+	mapfile -t verbs < <(grep -oE '^[[:space:]]*case "[^)]*' "$src" |
+		grep -oE '"[a-z][a-z-]+"' | tr -d '"' | sort -u)
+	if [ "${#verbs[@]}" -eq 0 ]; then
+		printf 'no verbs could be read out of %s, so this check proves nothing\n' "$src" >&2
+		return 1
+	fi
+	# `flowy merge <word>`, which is how the file writes an invocation. The
+	# space after "merge" is load-bearing: "`flowy merge` verb" is prose about
+	# the command and names no verb, and it has a backtick there instead.
+	# cut rather than awk: the verb is the third word of a three-word match, and
+	# awk's '{print $3}' is a single-quoted $3 that shellcheck reads as a shell
+	# expansion that will not expand. Silencing that needs a directive inside a
+	# process substitution, where it does not reach.
+	local -a offered=()
+	mapfile -t offered < <(grep -oE 'flowy merge [a-z][a-z-]*' "$doc" |
+		cut -d' ' -f3 | sort -u)
+	if [ "${#offered[@]}" -eq 0 ]; then
+		printf 'no "flowy merge <verb>" invocation was found in CLAUDE.md, so this check read nothing\n' >&2
+		printf '%s\n' "A pattern that matches nothing passes forever. The file documents the queue; if it stopped, this check has to be told why." | indent
+		return 1
+	fi
+	local o missing=""
+	for o in "${offered[@]}"; do
+		local seen=""
+		local v
+		for v in "${verbs[@]}"; do
+			[ "$o" = "$v" ] && seen=yes
+		done
+		[ -n "$seen" ] || missing="$missing $o"
+	done
+	if [ -n "$missing" ]; then
+		printf 'CLAUDE.md offers a merge verb the dispatcher does not have:%s\n' "$missing" >&2
+		printf '%s\n' "internal/flowy/merge.go dispatches: ${verbs[*]}. A reader types what the file shows and is refused." | indent
+		return 1
+	fi
+	printf 'the %d merge invocation(s) in CLAUDE.md all name a dispatched verb: %s\n' \
+		"${#offered[@]}" "${offered[*]}"
+}
+
+check "CLAUDE.md offers no merge verb the code lacks" \
+	claude_md_offers_no_verb_that_is_missing
 check "a page a browser check waits on still says when it is loading" \
 	a_loading_page_says_it_is_loading
 check "a disowned message says so on the screen and to a waiter, and the one before the window does not" \

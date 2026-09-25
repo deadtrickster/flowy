@@ -71,8 +71,15 @@ leaves a verdict - and a withdrawal leaves an absence.
 closes the queue item and says nothing about why. Reach for it when the row itself
 is finished, not when a branch is being taken back.
 
-Abandon is a third thing: it gives back the target LOCK and leaves the request in
-the queue.
+Abandon is a third thing: it gives back the target LOCK and leaves the request
+in the queue. It has no `flowy merge` verb - the handle is the door:
+
+    curl -X POST -H "Authorization: Bearer $FLOWY_TOKEN" \
+      -d '{"reason":"..."}' $FLOWY_ADDR/api/merge/<row>/abandon
+
+`merge withdraw` prints that same curl when the row you are withdrawing is the
+one holding the target, because withdrawing it then would leave the target
+reserved with no row left to say why.
 
 ## The rules that have teeth
 
