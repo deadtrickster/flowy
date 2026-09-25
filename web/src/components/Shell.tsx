@@ -280,7 +280,7 @@ export function Shell({ children }: { children: ReactNode }) {
   // it, because the room view is what knows when something has been read.
   const { counts, direct } = useUnread();
   // The node's rooms, not this file's idea of them. See useRooms.
-  const { shown: rooms, hidden, close, reopen } = useRoomList();
+  const { shown: rooms, hidden, close, reopen, listOf, listState } = useRoomList();
   const { isIgnored, ignore, unignore } = useIgnoredRooms();
   // How much is waiting for this principal, for the two rows where "waiting"
   // has an answer that ever reaches zero. lib/waiting holds the reasoning for
@@ -781,6 +781,18 @@ export function Shell({ children }: { children: ReactNode }) {
         */}
         <div
           data-room-list=""
+          /*
+            WHICH PROJECT THESE ROOMS ARE, and whether they are an answer.
+
+            The rail never unmounts on a project switch and is visible
+            throughout, so its presence says nothing about whose rooms are in
+            it. Anything asking "did the rail follow the switch" needs a mark
+            that cannot be satisfied by the rail it is replacing - see
+            useRoomList, where both values are set from the fetch rather than
+            from the session.
+          */
+          data-room-list-project={listOf}
+          data-room-list-state={listState}
           className="order-2 flex flex-col gap-0.5 md:order-none md:min-h-28 md:flex-1 md:overflow-y-auto"
         >
           {rooms.map((room) => (

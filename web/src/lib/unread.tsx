@@ -187,6 +187,28 @@ export function useIgnoredRooms() {
 export function useRoomList() {
   const [rooms, setRooms] = useState<string[] | null>(null);
   const [hidden, setHidden] = useState<string[]>([]);
+  /**
+   * WHICH PROJECT THE LIST ON SCREEN IS THE ANSWER FOR, and whether it is an
+   * answer at all.
+   *
+   * The rail deliberately keeps showing the previous project's rooms while the
+   * next project's fetch is in flight - an empty sidebar is a worse answer than
+   * a stale one, which is the decision recorded above. That is right for a
+   * person and unreadable for anything else: the rail is mounted and visible
+   * throughout, so "the rooms of the project you just entered" and "the rooms
+   * of the project you just left" are the same DOM until the fetch lands.
+   *
+   * So the list says which project it is of, set from the project the fetch was
+   * FOR when that fetch returns, never from the session. whoami's project
+   * changes the instant the switch takes and the rooms arrive later; a reader
+   * keyed on the session would be told the rail had followed before it had.
+   *
+   * `reading` and `unreachable` are separate because the failure path below
+   * renders ROOMS - the defaults - and a reader that could not tell that from a
+   * node's answer would assert against a list nobody published.
+   */
+  const [listOf, setListOf] = useState("");
+  const [listState, setListState] = useState<"reading" | "read" | "unreachable">("reading");
   // The note's id, so the second write updates the row the first one made
   // rather than filing a new one each time.
   const noteId = useRef("");
@@ -211,9 +233,18 @@ export function useRoomList() {
    */
   const project = useSession().whoami?.project ?? "";
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: project is a TRIGGER and not a read - the effect asks the node again when the project changes underneath a mounted tree, and the answer arrives in the response rather than being computed from it, so the body never mentions it. Removing it is what this commit fixes.
+  // `project` WAS a trigger this effect never mentioned, suppressed here as a
+  // dependency the linter could not see the point of. It is an ordinary read
+  // now: the answer is labelled with the project it was fetched for, so the
+  // body uses the value and the rule is satisfied rather than silenced. The
+  // suppression that stood here stopped having an effect the moment that line
+  // was added, and biome says so.
   useEffect(() => {
     let live = true;
+    // The question is open again the moment the project changes. Left as it
+    // was, a reader would see the previous project's `read` over this
+    // project's rooms and never know a fetch was outstanding.
+    setListState("reading");
     api
       .rooms()
       .then((answer) => {
@@ -223,11 +254,21 @@ export function useRoomList() {
         // yet, or a project with nothing in it, should still offer the rooms
         // this console has always offered rather than nothing at all.
         setRooms(names.length > 0 ? names : ROOMS);
+        // The project this answer was fetched for, captured from the effect's
+        // own closure rather than read at render - by the time anything reads
+        // it the session may already be somewhere else.
+        setListOf(project);
+        setListState("read");
       })
       .catch(() => {
         // Unreachable is not "no rooms" - it is "we do not know", and the
         // honest render of that is what we knew before.
-        if (live) setRooms(ROOMS);
+        if (!live) return;
+        setRooms(ROOMS);
+        // listOf is deliberately NOT advanced. The rooms on screen are the
+        // defaults, not this project's, and saying otherwise would be the
+        // wrong answer in the shape of a right one.
+        setListState("unreachable");
       });
     api
       .hiddenRooms()
@@ -301,6 +342,10 @@ export function useRoomList() {
     shown: all.filter((room) => !hidden.includes(room)),
     /** The ones this reader has closed, in the order the node lists them. */
     hidden: all.filter((room) => hidden.includes(room)),
+    /** The project the rooms on screen are the node's answer for. */
+    listOf,
+    /** Whether they are an answer at all: reading, read, or unreachable. */
+    listState,
     close: (room: string) => write([...hidden.filter((r) => r !== room), room]),
     reopen: (room: string) => write(hidden.filter((r) => r !== room)),
   };

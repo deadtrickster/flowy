@@ -38,14 +38,25 @@ if (!base || !handle || !password || !projectA || !projectB) {
   process.exit(2);
 }
 
+/**
+ * FAILING THROWS RATHER THAN EXITING, so the browser below is closed.
+ *
+ * process.exit runs no `finally`. This check opens a chromium at line 48 and
+ * closes it in one, so every red left a browser behind - and this check is the
+ * joint most frequent genuine red on the box, 7 of the 43 flake-shaped reds
+ * across 289 drain passes. A leaked browser makes the box slower, and the
+ * checks that fail under a slow box are the ones that leak. The exit code is
+ * restored at the bottom, where the process has nothing left open.
+ */
+class CheckFailed extends Error {}
 const die = (why) => {
-  console.error(why);
-  process.exit(1);
+  throw new CheckFailed(why);
 };
 
 const only = `only-in-b-${Date.now().toString(36)}`;
 
 const browser = await chromium.launch();
+let failed = false;
 try {
   const page = await browser.newPage({ viewport: { width: 1400, height: 950 } });
   const crashes = [];
@@ -79,9 +90,36 @@ try {
       .catch(() => die(`entering ${JSON.stringify(project)} was refused or never took`));
   };
 
-  /** The room names the rail is offering right now. */
-  const rail = async () => {
-    await page.locator("[data-room-list]").waitFor({ state: "visible", timeout: 20_000 });
+  /**
+   * The room names the rail is offering FOR a project, once the rail says the
+   * list is that project's answer.
+   *
+   * Waiting for [data-room-list] to be VISIBLE was the defect this check spent
+   * seven reds on. The rail does not unmount when the project changes - the
+   * assertion at the bottom is that it updates in place, with no reload - so it
+   * is already visible when the wait begins, the wait returns at once, and the
+   * texts read are whichever project's rooms were there before the switch
+   * finished. The wait succeeded, which is why no timeout ever fixed it.
+   *
+   * The mark cannot be satisfied by the rail being replaced: the project is set
+   * from the fetch that produced the rooms, not from the session, so it still
+   * names the old project until the new answer lands.
+   */
+  const rail = async (project) => {
+    const list = page.locator("[data-room-list]");
+    await page
+      .locator(`[data-room-list][data-room-list-project="${project}"][data-room-list-state="read"]`)
+      .waitFor({ state: "visible", timeout: 20_000 })
+      .catch(async () => {
+        // Which of the three it stopped at, because "unreachable" is the node
+        // refusing and "reading" is the box being slow, and they are different
+        // bugs to go and look for.
+        const state = await list.getAttribute("data-room-list-state").catch(() => null);
+        const of = await list.getAttribute("data-room-list-project").catch(() => null);
+        die(
+          `the rail never became ${JSON.stringify(project)}'s list within 20s - it says state=${state} project=${JSON.stringify(of)}.`,
+        );
+      });
     return await page.locator("[data-room-list] a[href^='/chat/']").allInnerTexts();
   };
 
@@ -101,7 +139,7 @@ try {
 
   // Into A, where that room does not exist.
   await enter(projectA);
-  const inA = await rail();
+  const inA = await rail(projectA);
   if (inA.some((name) => name.includes(only))) {
     die(`the rail in ${projectA} offers ${only}, which is a room in ${projectB}.
 A room belongs to a project, so this is a link into a room this session cannot write in.`);
@@ -109,7 +147,7 @@ A room belongs to a project, so this is a link into a room this session cannot w
 
   // And back to B, WITHOUT A RELOAD. This is the assertion.
   await enter(projectB);
-  const inB = await rail();
+  const inB = await rail(projectB);
   if (!inB.some((name) => name.includes(only))) {
     die(`after switching from ${projectA} to ${projectB} the rail still shows ${projectA}'s rooms.
 It is missing ${only}, which exists in ${projectB} and was just written there.
@@ -119,6 +157,13 @@ Rail now: ${inB.join(", ") || "(empty)"}`);
 
   if (crashes.length > 0) die(`the page threw: ${crashes.join("; ")}`);
   console.log(`the rail followed ${projectA} -> ${projectB} with no reload, and ${only} appeared`);
+} catch (err) {
+  // The browser is closed by the finally below before this decides the exit
+  // code, which is the whole reason die throws.
+  console.error(err instanceof CheckFailed ? err.message : err);
+  failed = true;
 } finally {
   await browser.close();
 }
+
+if (failed) process.exit(1);
