@@ -3397,6 +3397,62 @@ an_attachment_over_the_ceiling_is_refused_with_the_number() {
 	printf 'over the ceiling: %s\n' "$refusal"
 }
 
+# THE SHELL VERB'S OWN ARGUMENT ORDER, which is not the node's business and was
+# wrong in the only place anybody reads.
+#
+# 01M3B832KX1JX2K5BCM6Z7HTDB. `flowy attach` printed `attach FILE [--title T]
+# ...` as its usage, and that order cannot work: Go's flag package stops parsing
+# at the first non-flag argument, so the file name ends the flags and the count
+# test refuses with "which file" while holding the file that was named. Two seats
+# typed the printed order and read the answer as the file being unreadable.
+#
+# Both halves are asserted, because fixing the usage line without fixing the
+# refusal leaves anybody who learned the old order with the same dead end - and
+# asserting only the refusal would pass on a usage line that still teaches it.
+attach_argument_order_is_refused_by_name() {
+	local out
+	# The trap: a real file, named first.
+	if out=$("$ROOT/flowy" attach /dev/null --title x 2>&1); then
+		printf 'attach FILE --title was accepted:\n%s\n' "$out" >&2
+		return 1
+	fi
+	case "$out" in
+	*"flags come before FILE"*) ;;
+	*)
+		printf 'the refusal does not say the order is the problem:\n%s\n' "$out" >&2
+		return 1
+		;;
+	esac
+	# And it hands back the line that works, with the file it was holding.
+	case "$out" in
+	*"--title x /dev/null"*) ;;
+	*)
+		printf 'the refusal does not print the corrected command:\n%s\n' "$out" >&2
+		return 1
+		;;
+	esac
+	# The usage text teaches the order that works.
+	out=$("$ROOT/flowy" attach help 2>&1)
+	case "$out" in
+	*"[--message ID] FILE"*) ;;
+	*)
+		printf 'the usage line still prints FILE before the flags:\n%s\n' "$out" >&2
+		return 1
+		;;
+	esac
+	# And --message is documented as an id. The node resolves it through
+	# readableMessage, so prose comes back as "message <that prose> is not one
+	# you can read" - a type error wearing a permission refusal.
+	case "$out" in
+	*"id of the message"* | *"ID of a message"*) ;;
+	*)
+		printf '--message is still documented as the message text:\n%s\n' "$out" >&2
+		return 1
+		;;
+	esac
+	printf 'order refused by name, usage and --message both say it\n'
+}
+
 # Empty is not legal, and the refusal says which of the two things went wrong.
 an_empty_attachment_is_refused() {
 	recall
@@ -13970,6 +14026,8 @@ check "and a person can make one over http, with the same defaults and the same 
 check "over the ceiling is refused, and the refusal names it" \
 	an_attachment_over_the_ceiling_is_refused_with_the_number
 check "an attachment with no bytes is not an attachment" an_empty_attachment_is_refused
+check "attach says the flags come before FILE, and prints the line that works" \
+	attach_argument_order_is_refused_by_name
 check "an attachment B may not read is not readable and not listable" \
 	b_cannot_read_or_list_as_attachment
 check "the content type is decided from the bytes, and the claim is kept as a claim" \

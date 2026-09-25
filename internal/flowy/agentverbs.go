@@ -302,17 +302,28 @@ func skillsCmd(args []string) error {
 const attachUsage = `flowy attach - put a file on the node, as an attachment row
 
 usage:
-  flowy attach FILE [--title T] [--type MIME] [--body TEXT] [--room R] [--message M]
+  flowy attach [--title T] [--type MIME] [--body TEXT] [--room R] [--message ID] FILE
 
+  FILE          LAST, after the flags. Go's flag parser stops at the first
+                argument that is not a flag, so FILE first leaves every flag
+                after it unparsed and this verb refuses with "which file"
+                while holding the file you named.
   --title T     default the file's name
   --type MIME   default from the extension, else application/octet-stream
   --body TEXT   a note beside it
-  --room R      also say it in this room ...
-  --message M   ... with this text
+  --room R      the room this belongs to
+  --message ID  the ID of a message it hangs from, not its text. An id you
+                cannot read is refused by the node, which reads as a
+                permission problem and is a type error.
 
 Prints the attachment's id. The node's body shape is content_base64 plus
 filename plus content_type; six other shapes were tried by hand before this
 verb existed, and every one was refused by field name.
+
+A file attached to a message does NOT make the message carry it: the ids a
+message carries ride inside its signature, so they are written when it is said
+and cannot be added afterwards. This verb attaches a file TO a conversation;
+saying a message WITH a file is a different operation.
 `
 
 func attachCmd(args []string) error {
@@ -321,7 +332,13 @@ func attachCmd(args []string) error {
 	ctype := fs.String("type", "", "content type, default from the extension")
 	body := fs.String("body", "", "a note beside the file")
 	room := fs.String("room", "", "also say it in this room")
-	message := fs.String("message", "", "the room message, with --room")
+	// THE ID OF A MESSAGE, NOT ITS TEXT. This read "the room message, with
+	// --room", and two seats passed prose to it: the node resolves the value
+	// through readableMessage, so a sentence comes back as "message <that
+	// sentence> is not one you can read", which reads as a permission problem
+	// and is a type error. The MCP surface for the same field has always said
+	// id; this line was the outlier.
+	message := fs.String("message", "", "id of the message this hangs from, with --room")
 	urlFlag := fs.String("url", "", "node to talk to")
 	token := fs.String("token", "", "bearer token")
 	agent := fs.String("agent", "", agentFlagHelp)
@@ -333,8 +350,25 @@ func attachCmd(args []string) error {
 		fmt.Print(attachUsage)
 		return nil
 	}
+	// "WHICH FILE" IS THE WRONG ANSWER WHEN A FILE WAS NAMED. Go's flag parser
+	// stops at the first non-flag argument, so `attach FILE --title x` leaves
+	// [FILE --title x] in fs.Args() and the count test refuses with a question
+	// the caller already answered - while the usage line above printed FILE
+	// first, which is the order that cannot work. The order is fixed there; this
+	// says so for anybody who typed it the old way, and names the file it is
+	// holding so there is no doubt it was received.
+	if len(rest) > 1 {
+		for _, a := range rest[1:] {
+			if strings.HasPrefix(a, "-") {
+				return errors.New("the flags come before FILE: got " + rest[0] +
+					" and then " + a + ", which this could not parse as a flag " +
+					"because the file name ended the flags\n\n" +
+					"  flowy attach " + strings.Join(rest[1:], " ") + " " + rest[0] + "\n")
+			}
+		}
+	}
 	if len(rest) != 1 {
-		return errors.New("which file: flowy attach FILE\n\n" + attachUsage)
+		return errors.New("which file: flowy attach [flags] FILE\n\n" + attachUsage)
 	}
 	raw, err := os.ReadFile(rest[0])
 	if err != nil {
