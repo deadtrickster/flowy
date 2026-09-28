@@ -74,8 +74,11 @@ func TestAListingSaysWhenItFilled(t *testing.T) {
 		t.Errorf("a page of 2 over %d rows did not say it filled.\n"+
 			"Without that flag this answer is indistinguishable from the whole set, "+
 			"which is how two readers reported a page as a fact. body=%v", rows, cut)
-	}
-	if note, _ := cut["truncated_note"].(string); note == "" {
+	} else if note, _ := cut["truncated_note"].(string); note == "" {
+		// Only worth asking once the flag IS set. Asked unconditionally, this
+		// fires on a missing flag too and reports "the flag is set and nothing
+		// says what to do about it" about an answer that set no flag - which is
+		// the check describing a state that is not the one it found.
 		t.Errorf("the flag is set and nothing says what to do about it - a reader " +
 			"that learns its answer was cut still needs the next move")
 	}
