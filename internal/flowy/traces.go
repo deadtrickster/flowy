@@ -40,14 +40,17 @@ func (s *server) handleListTraces(w http.ResponseWriter, r *http.Request) {
 		}
 		since = at
 	}
-	list, err := s.db.ListTraces(r.Context(), p, store.SpanQuery{
+	spq := store.SpanQuery{
 		Since: since, ScopeAll: scopeAll(r, p), Limit: intParam(q.Get("limit")),
-	})
+	}
+	list, err := s.db.ListTraces(r.Context(), p, spq)
 	if err != nil {
 		serverError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"node": s.node, "traces": list})
+	body := map[string]any{"node": s.node, "traces": list}
+	discloseTruncation(body, len(list), spq.PageLimit())
+	writeJSON(w, http.StatusOK, body)
 }
 
 // handleReadTrace answers one trace: the spans of it this principal may read,

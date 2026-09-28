@@ -178,6 +178,9 @@ type SpanQuery struct {
 	Limit    int
 }
 
+// PageLimit is the page size that actually ran - see ArtifactQuery.PageLimit.
+func (q SpanQuery) PageLimit() int { return q.limit() }
+
 func (q SpanQuery) limit() int { return clampLimit(q.Limit) }
 
 // ListSpans returns the spans p may read, oldest first inside a trace and

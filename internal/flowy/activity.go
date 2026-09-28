@@ -221,12 +221,17 @@ func (s *server) handleActivity(w http.ResponseWriter, r *http.Request) {
 	if recent {
 		cursor = since
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	activityBody := map[string]any{
 		"items":  items,
 		"since":  since,
 		"cursor": cursor,
 		"query":  q.Get("q"),
-	})
+	}
+	// A CURSOR IS NOT A DISCLOSURE. This door hands back a cursor to carry on
+	// from, which tells a caller how to ask for more and not whether there is
+	// more - and a reader counting what came back is not paging at all.
+	discloseTruncation(activityBody, len(items), query.PageLimit())
+	writeJSON(w, http.StatusOK, activityBody)
 }
 
 // itemOf renders one event as a timeline line.

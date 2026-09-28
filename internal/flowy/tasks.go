@@ -249,15 +249,18 @@ func (s *server) handleInboxTasks(w http.ResponseWriter, r *http.Request) {
 	p := principalOf(r)
 	q := r.URL.Query()
 
-	list, err := s.db.ListTasks(r.Context(), p, store.TaskQuery{
+	tq := store.TaskQuery{
 		State: q.Get("state"),
 		Limit: intParam(q.Get("limit")),
-	})
+	}
+	list, err := s.db.ListTasks(r.Context(), p, tq)
 	if err != nil {
 		serverError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"tasks": list})
+	body := map[string]any{"tasks": list}
+	discloseTruncation(body, len(list), tq.PageLimit())
+	writeJSON(w, http.StatusOK, body)
 }
 
 // handleGetTask returns one task, to a party to it. Anybody else gets 404: a

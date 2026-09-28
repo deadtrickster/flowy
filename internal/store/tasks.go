@@ -208,6 +208,12 @@ type TaskQuery struct {
 	Limit int
 }
 
+// PageLimit is the page size that actually ran, so a caller can tell a full
+// page from "that is all of them". See ArtifactQuery.PageLimit: the asked-for
+// number is not it, because zero means the default and an over-cap number means
+// the cap.
+func (q TaskQuery) PageLimit() int { return q.limit() }
+
 func (q TaskQuery) limit() int {
 	if q.Limit > 0 && q.Limit <= 1000 {
 		return q.Limit

@@ -67,6 +67,9 @@ type SyncQuery struct {
 	Limit int
 }
 
+// PageLimit is the page size that actually ran - see ArtifactQuery.PageLimit.
+func (q SyncQuery) PageLimit() int { return q.limit() }
+
 func (q SyncQuery) limit() int {
 	if q.Limit > 0 && q.Limit <= maxSyncLimit {
 		return q.Limit

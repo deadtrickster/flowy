@@ -221,6 +221,9 @@ type EventQuery struct {
 	Limit     int
 }
 
+// PageLimit is the page size that actually ran - see ArtifactQuery.PageLimit.
+func (q EventQuery) PageLimit() int { return q.limit() }
+
 func (q EventQuery) limit() int { return clampLimit(q.Limit) }
 
 // narrow appends the caller's own filters - the ones that are about what they

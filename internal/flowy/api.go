@@ -796,7 +796,10 @@ func (s *server) handleListArtifacts(w http.ResponseWriter, r *http.Request) {
 	if s.refuseUnreadableProject(w, r, q.Get("project")) {
 		return
 	}
-	list, err := s.db.ListArtifacts(r.Context(), p, store.ArtifactQuery{
+	// Named rather than inline, because the truncation disclosure below has to
+	// ask THIS query what page size ran - a second literal would be a second
+	// copy of the clamping rule.
+	aq := store.ArtifactQuery{
 		Type:       q.Get("type"),
 		Kind:       q.Get("kind"),
 		Project:    q.Get("project"),
@@ -808,7 +811,8 @@ func (s *server) handleListArtifacts(w http.ResponseWriter, r *http.Request) {
 		Tags:       tagsArg(q["tag"]),
 		ScopeAll:   scopeAll(r, p),
 		Limit:      intParam(q.Get("limit")),
-	})
+	}
+	list, err := s.db.ListArtifacts(r.Context(), p, aq)
 	if err != nil {
 		serverError(w, r, err)
 		return
@@ -873,6 +877,7 @@ func (s *server) handleListArtifacts(w http.ResponseWriter, r *http.Request) {
 	// question "what else is there" is one nobody asks about a page that
 	// answered.
 	body := stampScope(map[string]any{"artifacts": list}, answerScopeOf(r, p))
+	discloseTruncation(body, len(list), aq.PageLimit())
 	if len(list) == 0 {
 		if hint := s.vocabularyHint(r, p, q); len(hint) > 0 {
 			body["vocabulary"] = hint
@@ -1244,7 +1249,7 @@ func (s *server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	if s.refuseUnreadableProject(w, r, q.Get("project")) {
 		return
 	}
-	hits, err := s.db.SearchArtifacts(r.Context(), p, store.ArtifactQuery{
+	sq := store.ArtifactQuery{
 		Query:    query,
 		Type:     q.Get("type"),
 		Kind:     q.Get("kind"),
@@ -1252,13 +1257,19 @@ func (s *server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		Status:   q.Get("status"),
 		ScopeAll: scopeAll(r, p),
 		Limit:    intParam(q.Get("limit")),
-	})
+	}
+	hits, err := s.db.SearchArtifacts(r.Context(), p, sq)
 	if err != nil {
 		serverError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, stampScope(
-		map[string]any{"query": query, "artifacts": hits}, answerScopeOf(r, principalOf(r))))
+	// A SEARCH THAT FILLED ITS PAGE IS THE WORST CASE FOR THIS, because a
+	// reader asks a search "is there anything like X" and a full page reads as
+	// the answer rather than as the first screen of it.
+	body := stampScope(
+		map[string]any{"query": query, "artifacts": hits}, answerScopeOf(r, principalOf(r)))
+	discloseTruncation(body, len(hits), sq.PageLimit())
+	writeJSON(w, http.StatusOK, body)
 }
 
 // eventRequest is the append body. There is no project field: an event lands in
@@ -1563,14 +1574,15 @@ func (s *server) handleListEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	list, err := s.db.ListEvents(r.Context(), p, store.EventQuery{
+	eq := store.EventQuery{
 		Thread:   q.Get("thread"),
 		Room:     q.Get("room"),
 		Type:     q.Get("type"),
 		Since:    since,
 		ScopeAll: scopeAll(r, p),
 		Limit:    intParam(q.Get("limit")),
-	})
+	}
+	list, err := s.db.ListEvents(r.Context(), p, eq)
 	if err != nil {
 		serverError(w, r, err)
 		return
@@ -1585,7 +1597,12 @@ func (s *server) handleListEvents(w http.ResponseWriter, r *http.Request) {
 	if err := s.db.FillAddresseeNames(r.Context(), list); err != nil {
 		log.Printf("addressee: could not resolve names for an event page: %v", err)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"events": list})
+	// THE DOOR THAT BURNED ME. ?limit=400 answers with the OLDEST 400 events
+	// when more than 400 match, and I read a conclusion about recent ones off
+	// it. The order is the door's business; saying the page filled is this.
+	eventBody := map[string]any{"events": list}
+	discloseTruncation(eventBody, len(list), eq.PageLimit())
+	writeJSON(w, http.StatusOK, eventBody)
 }
 
 // grantRequest is the body of a grant. Leave artifact empty for a project-wide
@@ -1753,6 +1770,39 @@ func (s *server) handleWhoami(w http.ResponseWriter, r *http.Request) {
 
 // intParam parses an optional positive integer parameter, treating anything
 // unparseable as absent.
+// A LISTING SAYS WHEN IT FILLED, because a cut answer is byte-for-byte
+// indistinguishable from a whole one. 01M3MYAZE8809HVAF0DDG4PBHT.
+//
+// Two readers on 2026-09-28 counted the rows of one name inside
+// /api/artifacts?kind=metric&limit=N and reported the count as a fact about the
+// series - 35 and 38, both the page, one offered as proof of pruning and the
+// other as proof of retention. The series had 196. Neither read was careless:
+// nothing in the response distinguishes "these are all of them" from "these are
+// the first N", so there was nothing to be careful about.
+//
+// WHAT THIS CAN AND CANNOT SAY. A full page means there MAY be more - the set
+// could be exactly the page size - so the flag says the page filled rather than
+// claiming rows exist past it. Certainty would cost a second query on every
+// listing, to answer a question most callers are not asking.
+//
+// ABSENT WHEN IT DID NOT FILL, not false, matching withheld and refused above:
+// a reader that sees no flag has been told the page did not fill, and a reader
+// on an older node sees nothing either way. False on every short page would
+// make those two the same value again, one layer along.
+//
+// pageLimit is the size that RAN, from the query's own PageLimit - not the
+// asked-for number, which is zero when the caller passed none and is the cap
+// when they asked for more than it. Comparing against the asked-for number
+// calls every default-sized answer complete.
+func discloseTruncation(body map[string]any, got, pageLimit int) {
+	if pageLimit <= 0 || got < pageLimit {
+		return
+	}
+	body["truncated"] = true
+	body["truncated_note"] = "this page filled at " + strconv.Itoa(pageLimit) +
+		", so there may be more past it - ask again with a larger limit, or narrow the query"
+}
+
 func intParam(s string) int {
 	n, err := strconv.Atoi(s)
 	if err != nil || n < 0 {

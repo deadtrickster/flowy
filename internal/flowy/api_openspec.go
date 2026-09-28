@@ -104,19 +104,22 @@ func (s *server) handleOpenspecList(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorBody(err.Error()))
 		return
 	}
-	list, err := s.db.ListArtifacts(r.Context(), p, store.ArtifactQuery{
+	oq := store.ArtifactQuery{
 		Type:     store.MemoryType,
 		Kinds:    []string{store.SpecKind, store.ChangeKind},
 		Status:   q.Get("status"),
 		Room:     room,
 		ScopeAll: scopeAll(r, p),
 		Limit:    intParam(q.Get("limit")),
-	})
+	}
+	list, err := s.db.ListArtifacts(r.Context(), p, oq)
 	if err != nil {
 		serverError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, stampScope(map[string]any{"artifacts": list}, answerScopeOf(r, p)))
+	body := stampScope(map[string]any{"artifacts": list}, answerScopeOf(r, p))
+	discloseTruncation(body, len(list), oq.PageLimit())
+	writeJSON(w, http.StatusOK, body)
 }
 
 // handleOpenspecConflicts lists what one change clashes with: every other
