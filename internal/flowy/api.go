@@ -716,6 +716,43 @@ func tagsArg(values []string) []string {
 // category is the same kind of narrowing over what kind of work a queue item is
 // - and it is the reason that set is closed, because "give me the bugs" is only
 // a question with an answer if there is one word for bugs.
+//
+// LIMIT IS ONE WINDOW OVER EVERY MATCH, SO A COUNT WITHIN THE PAGE IS NOT A
+// COUNT. 01M3MY5FGT5C1S3BKTW6R3TWVA.
+//
+// The rows come back newest first and limit cuts the whole set, not each group
+// inside it - so grouping a page by some field and counting the groups answers a
+// question about the page and reads exactly like an answer about the store. A
+// busy name crowds out a quiet one, and the number moves when the limit moves
+// with nothing having changed.
+//
+// Measured on this door on 2026-09-28, by two agents independently inside one
+// hour, both reporting the result as a fact about a series:
+//
+//	?kind=metric&limit=100    leticlproof.srcfiles appears  7 times
+//	?kind=metric&limit=400    leticlproof.srcfiles appears 38 times
+//	/api/metrics/series       leticlproof.srcfiles has    196 readings
+//
+// One of them offered 35 as retention pruning a series and the other offered 38
+// as proof history was kept. Same page, opposite conclusions, neither about the
+// series.
+//
+// So: per-name questions have their own doors, and they exist because this one
+// cannot answer them without answering two questions at once.
+// /api/metrics/series bounds POINTS PER SERIES and says so in its parameter name;
+// api_dashboards.go states the same trap for /api/metrics/rows. This note is here
+// rather than only there because this is the door a reader reaches first - it is
+// the one that takes kind=metric.
+//
+// AND THIS NOTE IS A STOPGAP, WHICH IT HAS TO SAY OR IT READS LIKE A FIX.
+// Measured by flowy-claude across the surface: 21 doors accept `limit` and NONE
+// of them discloses truncation in the answer, so a caller holding 38 rows cannot
+// tell 38 from the first 38 of 4096. That is why two readers got it wrong in an
+// hour - the answer is indistinguishable from a complete one, and a comment does
+// not change what the response says. The shape that would is already written on
+// the other surface, mcp_tools.go:1183: a count beside the items, a `truncated`
+// flag, and a sentence naming the next move. Recorded as its own row; this
+// comment covers one door of twenty-one.
 func (s *server) handleListArtifacts(w http.ResponseWriter, r *http.Request) {
 	p := principalOf(r)
 	q := r.URL.Query()
