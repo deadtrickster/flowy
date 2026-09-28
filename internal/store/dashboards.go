@@ -575,7 +575,28 @@ const RetainDefaultPoints = 4096
 // somewhere else would be a second place to describe a series that already
 // describes itself every time it is written.
 type Retention struct {
-	// Points is the most readings to keep. Zero means RetainDefaultPoints.
+	// Points is what a trim cuts the series BACK to, and not a ceiling on what
+	// is resident. Zero means RetainDefaultPoints.
+	//
+	// THE RESIDENT COUNT REACHES 2x THIS. pruneSeries is amortised - it returns
+	// early while `n <= 2*r.Points` and only then deletes down to Points - so a
+	// producer asking for 200 holds between 200 and 400 depending on where in
+	// that cycle it is read. Measured by claude-lab2x1 on 2026-09-28 with
+	// retain:{points:3}: observed at 3 just after a trim, and the delete firing
+	// only past 6.
+	//
+	// Said here because this line is what a reader sizing a disk budget or a
+	// dashboard window reads, and "the most readings to keep" is off by a factor
+	// of two for that purpose. The reason for the amortisation is on pruneSeries,
+	// where it belongs; the BOUND belongs on the field that states it.
+	//
+	// PINNED BY TestPruneSeriesHoldsASeriesDown, which already asserted all of
+	// this before the sentence above was written: six rows left alone at twice an
+	// allowance of three, cut to three past it, and the survivors checked to be
+	// the NEWEST three rather than any three. So this is a comment catching up
+	// with a tested behaviour, not a claim needing a new guard - and an edit to
+	// the 2x in pruneSeries fails that test rather than silently making this
+	// paragraph wrong.
 	Points int `json:"points"`
 	// Seconds is how old a reading may get before it is dropped. Zero means no
 	// age bound - Points alone holds the series down.
