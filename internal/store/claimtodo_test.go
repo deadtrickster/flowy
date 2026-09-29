@@ -269,3 +269,88 @@ func TestAClaimWithANilEventToSayIsStillAClaim(t *testing.T) {
 		t.Fatalf("it is still carried by %q after a release", got)
 	}
 }
+
+// A CLOSED ROW TAKES NO CARRIER, AND GIVING ONE BACK IS ALWAYS ALLOWED.
+// 01M3N6FWWH5K8QTAEXNSAK6ZKF.
+//
+// Measured before this guard existed: claim on a done row answered "X is carrying
+// <id>", wrote the assignee and left the status at done, so the row said somebody
+// had it while every status-grouping reader filed it under done.
+//
+// The last two arms are the ones that matter as much as the refusal. Clearing has
+// to keep working or a row closed while somebody held it keeps that name forever -
+// refusing both directions would be this same defect pointed the other way. And
+// reopening has to make the row claimable again, or the refusal is a wall with no
+// door, which is how the row this fixes came to be filed.
+func TestAClosedRowTakesNoCarrierAndAlwaysGivesOneBack(t *testing.T) {
+	ctx, db := open(t)
+	project := declaredProject(t, ctx, db, "claim-closed")
+	p := &Principal{UserID: "01USER-cc", AgentID: "01AGENT-cc", Project: project}
+
+	id := todoRow(t, ctx, db, project, "a row that gets closed")
+
+	// Carried first, so the clearing arm below has something real to take off.
+	if _, _, err := db.ClaimTodo(ctx, p, id, "agent-cc", ""); err != nil {
+		t.Fatalf("claim while open: %v", err)
+	}
+	art, err := db.GetArtifact(ctx, id)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if err := db.SetArtifactStatus(ctx, art, DoneStatus); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	// 1. A CLAIM ON A DONE ROW IS REFUSED, and the refusal says how to reopen -
+	//    a refusal that only says no leaves the caller where this row started.
+	_, _, err = db.ClaimTodo(ctx, p, id, "agent-other", "agent-cc")
+	if err == nil {
+		t.Fatal("a claim on a done row was accepted")
+	}
+	for _, want := range []string{"is done", "--status todo"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("the refusal never says %q: %v", want, err)
+		}
+	}
+
+	// 2. AND SO IS A PLAIN ASSIGNMENT. Two verbs through one door, one rule.
+	if _, _, err := db.AssignTodo(ctx, p, id, "agent-other", nil); err == nil {
+		t.Fatal("a plain assignment onto a done row was accepted")
+	}
+
+	// 3. THE CARRIER DID NOT MOVE. The refusal has to leave the row alone, not
+	//    half-write it - which is the failure being fixed, in reverse.
+	art, err = db.GetArtifact(ctx, id)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if got := AssigneeOf(art); got != "agent-cc" {
+		t.Fatalf("the refused writes moved the carrier to %q", got)
+	}
+
+	// 4. CLEARING IS ALLOWED ON A CLOSED ROW, so a stale name can always come off.
+	//
+	// THROUGH THE GUARDED PATH, because a HELD row refuses an unguarded write
+	// whoever it is from - "a held row moves by naming its holder" - and that rule
+	// is older than this one and not about being closed. The first version of this
+	// arm called AssignTodo with no expect and read the refusal as mine; it was
+	// the holder guard doing its job. Handing work back is a claim of nobody.
+	if _, _, err := db.ClaimTodo(ctx, p, id, "", "agent-cc"); err != nil {
+		t.Fatalf("clearing a carrier off a done row was refused: %v", err)
+	}
+	art, err = db.GetArtifact(ctx, id)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if got := AssigneeOf(art); got != "" {
+		t.Fatalf("after clearing, the carrier is still %q", got)
+	}
+
+	// 5. REOPENED, IT TAKES A CARRIER AGAIN. The door the refusal names works.
+	if err := db.SetArtifactStatus(ctx, art, "todo"); err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	if _, _, err := db.ClaimTodo(ctx, p, id, "agent-cc", ""); err != nil {
+		t.Fatalf("claim after reopening: %v", err)
+	}
+}

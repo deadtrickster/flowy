@@ -214,6 +214,39 @@ func (d *DB) seatHandle(ctx context.Context, p *Principal) string {
 	return strings.TrimSpace(handle)
 }
 
+// refuseCarrierOnClosed keeps a carrier off a row that is finished, and lets one
+// be taken OFF it. 01M3N6FWWH5K8QTAEXNSAK6ZKF.
+//
+// Measured by flowy-claude and reproduced on a closed row of my own: `claim` on a
+// done row answered "claude-host is carrying <id>", wrote the assignee, and left
+// the status at done. So the row said somebody had it while every reader that
+// groups by status still filed it under done - the call was accepted, the answer
+// said it worked, and the state it was about did not move. That is the shape
+// CLAUDE.md names for an argument the callee drops.
+//
+// REFUSING RATHER THAN REOPENING, which was the other option on the row. A claim
+// that quietly reopens moves a row nobody asked to move, and todo/active/done
+// exists here so that a transition is a decision somebody made. The refusal names
+// the command that reopens, because a wall with no door is how the row this fixes
+// came to be filed in the first place.
+//
+// AND CLEARING IS ALWAYS ALLOWED, which is the half that keeps this from becoming
+// the same defect pointed the other way. A row closed while somebody was carrying
+// it keeps a stale carrier, and if setting and clearing were refused together that
+// name could never come off. Refuse putting one on; never refuse taking one off.
+func refuseCarrierOnClosed(art *Artifact, name string) error {
+	if art == nil || art.Status != DoneStatus || name == "" {
+		return nil
+	}
+	// refuseAssign is printf-style, so the id goes through a verb rather than
+	// through concatenation - go vet catches the other spelling, and an id with a
+	// percent in it would otherwise be formatted rather than printed.
+	return refuseAssign("todo %s is done, so it cannot take a carrier - nobody works a "+
+		"closed row, and a name on one reads as work in flight to every board that "+
+		"groups by status. Reopen it first if the work is not finished: "+
+		"flowy todo done --id %s --status todo", art.ID, art.ID)
+}
+
 func (d *DB) AssignTodo(
 	ctx context.Context, p *Principal, todo, asked string, said *Event,
 ) (*Artifact, *Event, error) {
@@ -248,6 +281,9 @@ func (d *DB) AssignTodo(
 	}
 	art, err := d.readWorkItem(ctx, p, strings.TrimSpace(todo))
 	if err != nil {
+		return nil, nil, err
+	}
+	if err := refuseCarrierOnClosed(art, name); err != nil {
 		return nil, nil, err
 	}
 

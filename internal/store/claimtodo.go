@@ -99,6 +99,11 @@ func (d *DB) ClaimTodo(
 	if err != nil {
 		return nil, nil, err
 	}
+	// Same rule as the plain assignment, and stated once in assign.go: a closed
+	// row takes no carrier, and giving one back is always allowed.
+	if err := refuseCarrierOnClosed(art, name); err != nil {
+		return nil, nil, err
+	}
 	fields, err := ArtifactFields(art)
 	if err != nil {
 		return nil, nil, err
