@@ -1803,6 +1803,31 @@ func discloseTruncation(body map[string]any, got, pageLimit int) {
 		", so there may be more past it - ask again with a larger limit, or narrow the query"
 }
 
+// AND WHEN THE DOOR ALREADY KNOWS THE WHOLE SET, SAY IT EXACTLY.
+//
+// discloseTruncation above has to hedge - "there may be more" - because a full
+// page and a set exactly the size of the page are the same reading. Two doors do
+// not have that problem: the log tail and the stacktrace list each run a second
+// statement that counts the WHOLE filtered set before the limit is applied, to
+// answer "where is this crashing" and "how many of these are errors". That count
+// is already in the answer, so the exact number of rows not shown is known and
+// costs nothing extra.
+//
+// Exact beats hedged where it is free: "showing 400 of 1913" tells a reader how
+// much they are missing, which "there may be more" cannot.
+//
+// STILL ABSENT WHEN NOTHING WAS CUT, for discloseTruncation's reason - a reader
+// that sees no flag has been told the answer is whole, and false on every
+// complete page merges that with "this node does not say".
+func discloseAgainstTotal(body map[string]any, got, total int) {
+	if total <= got {
+		return
+	}
+	body["truncated"] = true
+	body["truncated_note"] = "showing " + strconv.Itoa(got) + " of " + strconv.Itoa(total) +
+		" - ask again with a larger limit, or narrow the query"
+}
+
 func intParam(s string) int {
 	n, err := strconv.Atoi(s)
 	if err != nil || n < 0 {

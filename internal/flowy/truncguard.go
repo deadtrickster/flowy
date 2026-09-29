@@ -48,6 +48,11 @@ var truncationSays = map[string]string{
 	"GET /api/search":      truncationDisclosed,
 	"GET /api/traces":      truncationDisclosed,
 
+	// The dashboard three. metrics/rows is hedged - it runs no count over the
+	// whole set - and the other two are EXACT, because their counts are taken
+	// over every matching row before the limit, so they can say "showing 400 of
+	// 1913" rather than "there may be more".
+	//
 	// Reads whose rows come from a shared reader used by several doors, so the
 	// page size that ran is not in the handler's hands yet. Untouched here
 	// rather than half-done.
@@ -55,9 +60,9 @@ var truncationSays = map[string]string{
 	"GET /api/dm":           truncationNotYet,
 	"GET /api/inbox":        truncationNotYet,
 	"GET /api/merge-queue":  truncationNotYet,
-	"GET /api/metrics/rows": truncationNotYet,
-	"GET /api/logs/tail":    truncationNotYet,
-	"GET /api/stacktraces":  truncationNotYet,
+	"GET /api/metrics/rows": truncationDisclosed,
+	"GET /api/logs/tail":    truncationDisclosed,
+	"GET /api/stacktraces":  truncationDisclosed,
 	"GET /api/proposals":    truncationNotYet,
 	"GET /api/ready":        truncationNotYet,
 	"GET /api/sync/pull":    truncationNotYet,

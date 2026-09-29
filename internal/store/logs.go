@@ -105,6 +105,15 @@ type LogLine struct {
 type LogCounts struct {
 	Levels map[string]int `json:"levels"`
 	Types  map[string]int `json:"types"`
+	// Total is the whole filtered set, and it is NOT the sum of either map
+	// above. A line with no level is counted here and dropped from Levels, and
+	// one with no type is dropped from Types - so summing a map gives a number
+	// that is sometimes the set and sometimes less, with nothing to say which.
+	//
+	// It is here because a caller comparing the lines it received against the
+	// set they came from is asking whether its tail was cut, and that question
+	// needs the set rather than a lower bound on it.
+	Total int `json:"total"`
 }
 
 // TailLogs answers "the last N lines of this stream, filtered", oldest first.
@@ -178,6 +187,9 @@ func (d *DB) TailLogs(ctx context.Context, p *Principal, stream, needle string,
 		if err := crows.Scan(&lvl, &typ, &n); err != nil {
 			return nil, nil, fmt.Errorf("store: count logs: %w", err)
 		}
+		// Counted before the two conditionals, so a line with no level and no
+		// type still lands in the total.
+		counts.Total += n
 		if lvl != "" {
 			counts.Levels[lvl] += n
 		}

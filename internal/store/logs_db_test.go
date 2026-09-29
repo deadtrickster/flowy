@@ -144,3 +144,70 @@ func TestTailLogsFiltersAndCounts(t *testing.T) {
 		t.Fatal("a tail with no stream must be refused")
 	}
 }
+
+// TestLogCountsTotalIsNotTheSumOfTheMaps asserts the difference the Total field
+// exists for: a line with no level is counted by the whole-set query and dropped
+// from Levels, so summing that map is sometimes the set and sometimes less.
+//
+// Written because a handler was about to compare the lines it returned against
+// sum(Levels) to decide whether the tail had been cut. On a stream where every
+// line carries a level the two agree, which is exactly the shape that passes
+// review and is wrong later.
+func TestLogCountsTotalIsNotTheSumOfTheMaps(t *testing.T) {
+	ctx, db := open(t)
+	project := declaredProject(t, ctx, db, "logs-total")
+	p := &Principal{UserID: "u-" + ulid.NewString(), Project: project}
+	stream := "serened." + ulid.NewString()
+
+	push := func(level, typ, msg string) {
+		t.Helper()
+		f := map[string]any{"stream": stream, "message": msg}
+		if level != "" {
+			f["level"] = level
+		}
+		if typ != "" {
+			f["type"] = typ
+		}
+		raw, err := json.Marshal(f)
+		if err != nil {
+			t.Fatalf("fields: %v", err)
+		}
+		art := &Artifact{
+			ID: ulid.NewString(), Type: MemoryType, Kind: LogKind,
+			Project: &project, OwnerUser: p.UserID, Title: stream, Fields: raw,
+		}
+		if err := db.CreateArtifact(ctx, art); err != nil {
+			t.Fatalf("push %q: %v", msg, err)
+		}
+	}
+
+	push("ERROR", "app", "one with a level")
+	push("ERROR", "app", "another with a level")
+	push("", "app", "one with NO level")
+
+	_, counts, err := db.TailLogs(ctx, p, stream, "", nil, nil, 0)
+	if err != nil {
+		t.Fatalf("tail: %v", err)
+	}
+
+	levelled := 0
+	for _, n := range counts.Levels {
+		levelled += n
+	}
+
+	if counts.Total != 3 {
+		t.Errorf("Total is %d over three pushed lines - it is meant to be the whole "+
+			"filtered set, so a reader comparing against it would be told the tail was "+
+			"cut when it was not, or whole when it was", counts.Total)
+	}
+	// The difference, which is the whole point: agreeing here would mean Total is
+	// just another name for the sum and the field bought nothing.
+	if levelled == counts.Total {
+		t.Errorf("sum(Levels)=%d equals Total=%d, so the line with no level was counted "+
+			"in both - either the push did not land or Total is being computed from the "+
+			"map it is supposed to be independent of", levelled, counts.Total)
+	}
+	if levelled != 2 {
+		t.Errorf("sum(Levels)=%d, want 2 - the levelled lines only", levelled)
+	}
+}

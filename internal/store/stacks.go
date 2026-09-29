@@ -102,6 +102,10 @@ type Stack struct {
 // question a pile of stacktraces exists to answer: where is this crashing.
 type StackCounts struct {
 	TopFrames map[string]int `json:"top_frames"`
+	// Total is every matching trace, and not the sum of TopFrames: a trace with
+	// no top frame is counted by the query and dropped from the map. See
+	// LogCounts.Total, which is the same distinction on the neighbouring door.
+	Total int `json:"total"`
 }
 
 // StacksThrough answers "the stacktraces of this stream, optionally only those
@@ -173,6 +177,8 @@ func (d *DB) StacksThrough(ctx context.Context, p *Principal, stream, symbol, fi
 		if err := crows.Scan(&top, &n); err != nil {
 			return nil, nil, fmt.Errorf("store: count stacktraces: %w", err)
 		}
+		// Before the conditional, so a trace with no top frame is still counted.
+		counts.Total += n
 		if top != "" {
 			counts.TopFrames[top] += n
 		}

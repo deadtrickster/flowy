@@ -25,6 +25,8 @@ package flowy
 import (
 	"net/http"
 	"strings"
+
+	"github.com/deadtrickster/flowy/internal/store"
 )
 
 // metricsRowsParams are the query parameters this door honours, and the whole
@@ -62,7 +64,15 @@ func (s *server) handleMetricsRows(w http.ResponseWriter, r *http.Request) {
 		serverError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"metrics": list})
+	// HEDGED, unlike the two doors below, because this one runs no count over the
+	// whole set - and it is the door whose own comment documents the trap that
+	// "one limit spans every name". A reader grouping this page by name and
+	// counting the groups is doing exactly what two readers did on 2026-09-28.
+	// The page size compared against is the one that RAN: store.Metrics clamps
+	// internally, so the asked-for number is not it.
+	metricsBody := map[string]any{"metrics": list}
+	discloseTruncation(metricsBody, len(list), store.ClampedLimit(intParam(q.Get("limit"))))
+	writeJSON(w, http.StatusOK, metricsBody)
 }
 
 // metricsSeriesParams is the door's vocabulary. `points` rather than `limit`
@@ -139,7 +149,12 @@ func (s *server) handleLogsTail(w http.ResponseWriter, r *http.Request) {
 	}
 	// stream is echoed for the same reason series echoes asked: an empty lines
 	// array cannot say whether the stream is quiet or the name was wrong.
-	writeJSON(w, http.StatusOK, map[string]any{"lines": lines, "counts": counts, "stream": stream})
+	body := map[string]any{"lines": lines, "counts": counts, "stream": stream}
+	// EXACT HERE, not hedged. store.TailLogs counts the whole filtered set in a
+	// second statement before applying the limit - see its comment - so the
+	// number of lines this tail is not showing is already known.
+	discloseAgainstTotal(body, len(lines), counts.Total)
+	writeJSON(w, http.StatusOK, body)
 }
 
 // stacksParams is the closed set for GET /api/stacktraces.
@@ -171,5 +186,9 @@ func (s *server) handleStacks(w http.ResponseWriter, r *http.Request) {
 		serverError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"stacktraces": list, "counts": counts, "stream": stream})
+	stacksBody := map[string]any{"stacktraces": list, "counts": counts, "stream": stream}
+	// Same as the tail above: the top-frame counts are over every matching trace
+	// before the limit, so "showing 200 of 4000" is a fact this door already has.
+	discloseAgainstTotal(stacksBody, len(list), counts.Total)
+	writeJSON(w, http.StatusOK, stacksBody)
 }

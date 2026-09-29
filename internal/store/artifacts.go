@@ -1275,6 +1275,17 @@ func priorityOrderSQL(alias string) string {
 	return sql + fmt.Sprintf(" ELSE %d END ASC", priorityRank[""])
 }
 
+// ClampedLimit is clampLimit for callers outside this package - the doors whose
+// limit is a bare int rather than a query struct, so there is no PageLimit to
+// ask. store.Metrics is the one that matters: it clamps internally, so a handler
+// comparing its row count against the asked-for number calls every
+// default-sized answer complete.
+//
+// Exported rather than reimplemented, for PageLimit's reason: a second copy of
+// the rule is a second thing to keep in step, and the two copies disagreeing is
+// how a disclosure starts lying.
+func ClampedLimit(asked int) int { return clampLimit(asked) }
+
 // PageLimit is that same number, for a caller that has to know whether a full
 // page means "that is all of them". Limit as asked is not it: zero means the
 // default and over the cap means the cap, so a caller comparing against the
