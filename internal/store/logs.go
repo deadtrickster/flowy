@@ -116,6 +116,23 @@ type LogCounts struct {
 	Total int `json:"total"`
 }
 
+// TailLimit is the page size a tail actually runs with: 400 when none is asked
+// for, 4096 at the top. Its own numbers rather than clampLimit's, because a log
+// tail is read in screenfuls and an artifact page is not.
+//
+// Exported because the door has to disclose what it cut, and a handler that
+// reimplemented this would be a second copy of the rule - the two disagreeing is
+// how a disclosure starts lying. Same argument as store.ClampedLimit.
+func TailLimit(asked int) int {
+	if asked <= 0 {
+		return 400
+	}
+	if asked > 4096 {
+		return 4096
+	}
+	return asked
+}
+
 // TailLogs answers "the last N lines of this stream, filtered", oldest first.
 //
 // OLDEST FIRST, like SeriesOf and for the same reason: a log read top to bottom
@@ -137,12 +154,7 @@ func (d *DB) TailLogs(ctx context.Context, p *Principal, stream, needle string,
 	if strings.TrimSpace(stream) == "" {
 		return nil, nil, fmt.Errorf("store: tail logs: a stream must be named")
 	}
-	if limit <= 0 {
-		limit = 400
-	}
-	if limit > 4096 {
-		limit = 4096
-	}
+	limit = TailLimit(limit)
 
 	a := &args{}
 	filter := ArtifactFilterSQL(p, "ar", a, false)

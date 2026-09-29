@@ -48,10 +48,16 @@ var truncationSays = map[string]string{
 	"GET /api/search":      truncationDisclosed,
 	"GET /api/traces":      truncationDisclosed,
 
-	// The dashboard three. metrics/rows is hedged - it runs no count over the
-	// whole set - and the other two are EXACT, because their counts are taken
-	// over every matching row before the limit, so they can say "showing 400 of
-	// 1913" rather than "there may be more".
+	// The dashboard three. metrics/rows can only hedge - it runs no count over
+	// the whole set. The other two usually say how many rows are not shown,
+	// because each counts the whole filtered set in a second statement.
+	//
+	// NOT "exactly", which is what this said and what the commit that added it
+	// claimed. The count and the page are two statements with no snapshot around
+	// them, so "400 of 1913" is two readings of a moving set, and on an
+	// append-only log the count is the earlier one. Both doors therefore keep the
+	// full-page test as well - see discloseCut, where the count proving nothing
+	// and a full page still discloses.
 	//
 	// Reads whose rows come from a shared reader used by several doors, so the
 	// page size that ran is not in the handler's hands yet. Untouched here

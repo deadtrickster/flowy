@@ -1803,29 +1803,39 @@ func discloseTruncation(body map[string]any, got, pageLimit int) {
 		", so there may be more past it - ask again with a larger limit, or narrow the query"
 }
 
-// AND WHEN THE DOOR ALREADY KNOWS THE WHOLE SET, SAY IT EXACTLY.
+// AND WHEN THE DOOR HAS BOTH A COUNT AND A PAGE SIZE, USE BOTH.
 //
-// discloseTruncation above has to hedge - "there may be more" - because a full
-// page and a set exactly the size of the page are the same reading. Two doors do
-// not have that problem: the log tail and the stacktrace list each run a second
-// statement that counts the WHOLE filtered set before the limit is applied, to
-// answer "where is this crashing" and "how many of these are errors". That count
-// is already in the answer, so the exact number of rows not shown is known and
-// costs nothing extra.
+// discloseTruncation above hedges - "there may be more" - because a full page
+// and a set exactly the size of the page are one reading. Two doors run a second
+// statement that counts the whole filtered set, so they can usually do better
+// and say how many rows are not shown.
 //
-// Exact beats hedged where it is free: "showing 400 of 1913" tells a reader how
-// much they are missing, which "there may be more" cannot.
+// USUALLY, NOT ALWAYS, and the exception is why this takes a page size too.
+// The count and the page are separate statements with no snapshot around them -
+// TailLogs counts, then selects - and a log is append-only, so the total is the
+// EARLIER reading and can only under-report. If the set crosses the limit
+// between the two, the page fills while total is still <= got, and a check that
+// only compared those two would say nothing at all. That is a false negative on
+// the busiest stream, which is the one somebody is tailing.
 //
-// STILL ABSENT WHEN NOTHING WAS CUT, for discloseTruncation's reason - a reader
-// that sees no flag has been told the answer is whole, and false on every
-// complete page merges that with "this node does not say".
-func discloseAgainstTotal(body map[string]any, got, total int) {
-	if total <= got {
-		return
+// So: the exact sentence when the count proves rows were left behind, and the
+// hedge when it does not but the page filled anyway. A door with no count passes
+// total 0 and gets the hedge, which is discloseTruncation's behaviour.
+//
+// Absent when neither fires, for the reason discloseTruncation states.
+func discloseCut(body map[string]any, got, total, pageLimit int) {
+	switch {
+	case total > got:
+		body["truncated"] = true
+		body["truncated_note"] = "showing " + strconv.Itoa(got) + " of " + strconv.Itoa(total) +
+			" - ask again with a larger limit, or narrow the query"
+	case pageLimit > 0 && got >= pageLimit:
+		// The count did not prove it and the page is full. It may have been cut
+		// by rows that arrived after the count ran, so this says no number.
+		body["truncated"] = true
+		body["truncated_note"] = "this page filled at " + strconv.Itoa(pageLimit) +
+			", so there may be more past it - ask again with a larger limit, or narrow the query"
 	}
-	body["truncated"] = true
-	body["truncated_note"] = "showing " + strconv.Itoa(got) + " of " + strconv.Itoa(total) +
-		" - ask again with a larger limit, or narrow the query"
 }
 
 func intParam(s string) int {

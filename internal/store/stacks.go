@@ -108,6 +108,19 @@ type StackCounts struct {
 	Total int `json:"total"`
 }
 
+// StackLimit is the page size a stacktrace list runs with: 100 by default,
+// 1000 at the top. Exported for TailLimit's reason - the door discloses what it
+// cut, and the rule lives in one place.
+func StackLimit(asked int) int {
+	if asked <= 0 {
+		return 100
+	}
+	if asked > 1000 {
+		return 1000
+	}
+	return asked
+}
+
 // StacksThrough answers "the stacktraces of this stream, optionally only those
 // passing through a symbol or a file", newest first, with a count by top frame.
 //
@@ -130,12 +143,7 @@ func (d *DB) StacksThrough(ctx context.Context, p *Principal, stream, symbol, fi
 	if strings.TrimSpace(stream) == "" {
 		return nil, nil, fmt.Errorf("store: read stacktraces: a stream must be named")
 	}
-	if limit <= 0 {
-		limit = 100
-	}
-	if limit > 1000 {
-		limit = 1000
-	}
+	limit = StackLimit(limit)
 
 	a := &args{}
 	filter := ArtifactFilterSQL(p, "ar", a, false)

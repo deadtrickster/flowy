@@ -71,7 +71,9 @@ func (s *server) handleMetricsRows(w http.ResponseWriter, r *http.Request) {
 	// The page size compared against is the one that RAN: store.Metrics clamps
 	// internally, so the asked-for number is not it.
 	metricsBody := map[string]any{"metrics": list}
-	discloseTruncation(metricsBody, len(list), store.ClampedLimit(intParam(q.Get("limit"))))
+	// No count over the whole set here, so no total to pass - the hedge is all
+	// this door can honestly say.
+	discloseCut(metricsBody, len(list), 0, store.ClampedLimit(intParam(q.Get("limit"))))
 	writeJSON(w, http.StatusOK, metricsBody)
 }
 
@@ -150,10 +152,11 @@ func (s *server) handleLogsTail(w http.ResponseWriter, r *http.Request) {
 	// stream is echoed for the same reason series echoes asked: an empty lines
 	// array cannot say whether the stream is quiet or the name was wrong.
 	body := map[string]any{"lines": lines, "counts": counts, "stream": stream}
-	// EXACT HERE, not hedged. store.TailLogs counts the whole filtered set in a
-	// second statement before applying the limit - see its comment - so the
-	// number of lines this tail is not showing is already known.
-	discloseAgainstTotal(body, len(lines), counts.Total)
+	// Both signals. The count usually proves how many lines are not shown, but it
+	// is a SECOND STATEMENT taken before the page - so on a stream being written
+	// to it can under-report, and the full page is what catches that. See
+	// discloseCut.
+	discloseCut(body, len(lines), counts.Total, store.TailLimit(intParam(q.Get("limit"))))
 	writeJSON(w, http.StatusOK, body)
 }
 
@@ -187,8 +190,8 @@ func (s *server) handleStacks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	stacksBody := map[string]any{"stacktraces": list, "counts": counts, "stream": stream}
-	// Same as the tail above: the top-frame counts are over every matching trace
-	// before the limit, so "showing 200 of 4000" is a fact this door already has.
-	discloseAgainstTotal(stacksBody, len(list), counts.Total)
+	// Same as the tail above, and with the same caveat: the top-frame counts are
+	// taken before the page, so the full page is the second signal.
+	discloseCut(stacksBody, len(list), counts.Total, store.StackLimit(intParam(q.Get("limit"))))
 	writeJSON(w, http.StatusOK, stacksBody)
 }

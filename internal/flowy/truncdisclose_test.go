@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -99,5 +100,50 @@ func TestAListingSaysWhenItFilled(t *testing.T) {
 		t.Fatalf("both pages held %d rows, so `limit` changed nothing and this test "+
 			"measured a door that is not honouring the parameter it is about",
 			len(cutList))
+	}
+}
+
+// TestDiscloseCutUsesBothSignals pins the three outcomes against each other,
+// because the interesting one cannot be reached by the count alone.
+//
+// The count and the page are separate statements with no snapshot around them,
+// and on an append-only stream the count is the earlier reading - so a set that
+// crosses the limit between them leaves total <= got with the page full. A
+// disclosure that only compared the count against what it received would say
+// nothing there, on the busiest stream, which is the one being tailed.
+func TestDiscloseCutUsesBothSignals(t *testing.T) {
+	// The count proves rows were left behind: say how many.
+	exact := map[string]any{}
+	discloseCut(exact, 3, 9, 3)
+	if got, _ := exact["truncated"].(bool); !got {
+		t.Errorf("3 of 9 did not disclose: %v", exact)
+	}
+	if note, _ := exact["truncated_note"].(string); !strings.Contains(note, "3 of 9") {
+		t.Errorf("the count proved 6 rows are missing and the note does not say so: %q", note)
+	}
+
+	// THE RACE. The count was taken before the page and under-reports, so it
+	// proves nothing - but the page is full, which does.
+	raced := map[string]any{}
+	discloseCut(raced, 400, 400, 400)
+	if got, _ := raced["truncated"].(bool); !got {
+		t.Errorf("a full page with a count that proves nothing did not disclose - this is "+
+			"the false negative the second signal exists for: %v", raced)
+	}
+	if note, _ := raced["truncated_note"].(string); strings.Contains(note, "of 400") {
+		t.Errorf("the hedged case claimed a number it cannot stand behind: %q", note)
+	}
+
+	// Neither: a short page under its limit, with the count agreeing.
+	whole := map[string]any{}
+	discloseCut(whole, 2, 2, 400)
+	if _, said := whole["truncated"]; said {
+		t.Errorf("a short page claimed it was cut: %v", whole)
+	}
+
+	// And the difference that makes the first two distinguishable at all.
+	if exact["truncated_note"] == raced["truncated_note"] {
+		t.Errorf("the exact and hedged notes are identical, so a reader cannot tell a "+
+			"counted shortfall from a full page: %q", exact["truncated_note"])
 	}
 }
