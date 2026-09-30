@@ -803,14 +803,16 @@ func (s *server) handleChatRead(w http.ResponseWriter, r *http.Request) {
 			serverError(w, r, err)
 			return
 		}
-		writeChatEvents(w, room, since, list, s.reactionsFor(r, list), s.threadsFor(r, list))
+		writeChatEvents(w, room, since, list, s.reactionsFor(r, list), s.threadsFor(r, list),
+			store.ClampedLimit(intParam(q.Get("limit"))))
 	case "recent":
 		list, err := s.readRoomBefore(r, room, q.Get("thread"), before, intParam(q.Get("limit")))
 		if err != nil {
 			serverError(w, r, err)
 			return
 		}
-		writeChatWindow(w, room, before, list, s.reactionsFor(r, list), s.threadsFor(r, list))
+		writeChatWindow(w, room, before, list, s.reactionsFor(r, list), s.threadsFor(r, list),
+			store.ClampedLimit(intParam(q.Get("limit"))))
 	default:
 		writeJSON(w, http.StatusBadRequest, errorBody("order must be log or recent"))
 	}
@@ -849,7 +851,11 @@ func (s *server) handleChatWait(w http.ResponseWriter, r *http.Request) {
 		serverError(w, r, err)
 		return
 	}
-	writeChatEvents(w, room, cursor, list, s.reactionsFor(r, list), s.threadsFor(r, list))
+	// 0: this is the wait door, which truncguard.go records as not-yet. Whether a
+	// wait should disclose is a decision on 01M3MYAZE8809HVAF0DDG4PBHT - it hands
+	// back a cursor, so a caller with a full page is already paging forward - and
+	// passing the real size here would settle it silently.
+	writeChatEvents(w, room, cursor, list, s.reactionsFor(r, list), s.threadsFor(r, list), 0)
 }
 
 // pollUntil is the watcher loop, and there is one of it. It calls look until
@@ -1020,7 +1026,7 @@ func (s *server) handleInbox(w http.ResponseWriter, r *http.Request) {
 	if err := s.db.FillAddresseeNames(r.Context(), list); err != nil {
 		log.Printf("addressee: could not resolve names for an inbox page: %v", err)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	inboxBody := map[string]any{
 		"events": list,
 		"since":  since,
 		// THE HIGHEST READING IN THE PAGE, whichever end it was taken from.
@@ -1034,7 +1040,11 @@ func (s *server) handleInbox(w http.ResponseWriter, r *http.Request) {
 		// nothing when they carry nothing, which a direct message does. See
 		// roomProjectOf.
 		"project": roomProjectOf(list),
-	})
+	}
+	// The query above is the one that ran, so it knows the page size - no clamp
+	// to re-derive here.
+	discloseCut(inboxBody, len(list), 0, query.PageLimit())
+	writeJSON(w, http.StatusOK, inboxBody)
 }
 
 // highestReading is the newest reading in a page, or the cursor the caller came
@@ -1157,12 +1167,17 @@ func roomBefore(
 //
 // A client can tell whether anything older exists without another request: the
 // window filled its limit or it did not.
+// pageLimit is the size that RAN, or 0 from a caller that does not disclose -
+// see truncguard.go. The wait doors pass 0 on purpose: they share these writers
+// with the plain reads, and whether a wait should disclose is a decision on
+// 01M3MYAZE8809HVAF0DDG4PBHT rather than a consequence of this refactor.
 func writeChatWindow(
 	w http.ResponseWriter, room string, before int64,
 	list []*store.Event, reactions map[string][]store.Reaction, threads map[string]int,
+	pageLimit int,
 ) {
 	cursor, older := chatWindowEnds(before, list)
-	writeJSON(w, http.StatusOK, map[string]any{
+	body := map[string]any{
 		"room":      room,
 		"events":    list,
 		"since":     int64(0),
@@ -1172,7 +1187,9 @@ func writeChatWindow(
 		"reactions": reactions,
 		"threads":   threads,
 		"now":       nodeNow(),
-	})
+	}
+	discloseCut(body, len(list), 0, pageLimit)
+	writeJSON(w, http.StatusOK, body)
 }
 
 // chatWindowEnds is the arithmetic behind those two cursors, so the tool surface
@@ -1191,11 +1208,13 @@ func chatWindowEnds(before int64, list []*store.Event) (cursor, older int64) {
 
 // writeChatEvents answers with the events and the cursor to ask for next, so a
 // client never has to know that the cursor is a packed clock reading.
+// pageLimit as in writeChatWindow: the size that ran, or 0 from the wait door.
 func writeChatEvents(
 	w http.ResponseWriter, room string, since int64,
 	list []*store.Event, reactions map[string][]store.Reaction, threads map[string]int,
+	pageLimit int,
 ) {
-	writeJSON(w, http.StatusOK, map[string]any{
+	body := map[string]any{
 		"room":   room,
 		"events": list,
 		"since":  since,
@@ -1225,7 +1244,9 @@ func writeChatEvents(
 		// and wrong in the direction nobody checks, since a reader shown a
 		// number stops asking.
 		"threads": threads,
-	})
+	}
+	discloseCut(body, len(list), 0, pageLimit)
+	writeJSON(w, http.StatusOK, body)
 }
 
 // threadsFor is how long each thread on a page is, as this reader sees it.

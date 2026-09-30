@@ -325,7 +325,7 @@ func (s *server) handleDMRead(w http.ResponseWriter, r *http.Request) {
 		serverError(w, r, err)
 		return
 	}
-	writeDMs(w, since, list)
+	writeDMs(w, since, list, store.ClampedLimit(intParam(r.URL.Query().Get("limit"))))
 }
 
 // handleDMWait is the watcher over the private log, and it is the room watcher's
@@ -355,7 +355,8 @@ func (s *server) handleDMWait(w http.ResponseWriter, r *http.Request) {
 		serverError(w, r, err)
 		return
 	}
-	writeDMs(w, cursor, list)
+	// 0: the wait door stays not-yet by decision - see writeChatEvents.
+	writeDMs(w, cursor, list, 0)
 }
 
 // readDMs is the one read both endpoints share, so the list and the long poll
@@ -381,11 +382,15 @@ func (s *server) readDMs(r *http.Request, thread string, since int64, limit int)
 // private in the body rather than leaving a client to work it out from three
 // absent fields: a surface that has to infer "this is not a room" is a surface
 // that will one day draw a DM as a room message.
-func writeDMs(w http.ResponseWriter, since int64, list []*store.Event) {
-	writeJSON(w, http.StatusOK, map[string]any{
+// pageLimit is the size that RAN, or 0 from the wait door - which shares this
+// writer and stays not-yet by decision. See writeChatEvents.
+func writeDMs(w http.ResponseWriter, since int64, list []*store.Event, pageLimit int) {
+	body := map[string]any{
 		"private": true,
 		"events":  list,
 		"since":   since,
 		"cursor":  cursorOf(since, list),
-	})
+	}
+	discloseCut(body, len(list), 0, pageLimit)
+	writeJSON(w, http.StatusOK, body)
 }

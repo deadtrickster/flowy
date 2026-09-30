@@ -229,3 +229,57 @@ func TestReadyDisclosesThePageNotTheFilteredSubset(t *testing.T) {
 		t.Errorf("a page of 50 over three todos claimed it was cut: %v", whole)
 	}
 }
+
+// TestASharedWriterDisclosesForTheReadAndNotForTheWait pins the contract that
+// lets one writer serve two doors with different answers.
+//
+// writeChatEvents is called by handleChatRead and by handleChatWait, and only
+// the read discloses - the wait is recorded as not-yet in truncguard.go because
+// it hands back a cursor, and that is a decision on 01M3MYAZE8809HVAF0DDG4PBHT
+// rather than a property of the writer. So the writer takes the page size and
+// the wait passes 0, which means BOTH readings have to be asserted: a writer
+// that ignored the parameter would satisfy either one alone.
+func TestASharedWriterDisclosesForTheReadAndNotForTheWait(t *testing.T) {
+	full := []*store.Event{
+		{ID: "01AAA", Body: "one"},
+		{ID: "01BBB", Body: "two"},
+	}
+
+	answer := func(pageLimit int) map[string]any {
+		t.Helper()
+		w := httptest.NewRecorder()
+		writeChatEvents(w, "general", 0, full, nil, nil, pageLimit)
+		if w.Code != http.StatusOK {
+			t.Fatalf("pageLimit %d: status %d", pageLimit, w.Code)
+		}
+		var body map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatalf("pageLimit %d: decode: %v", pageLimit, err)
+		}
+		return body
+	}
+
+	// The read door: two events against a page size of two, so it filled.
+	read := answer(2)
+	if got, _ := read["truncated"].(bool); !got {
+		t.Errorf("the read door's page filled at 2 and did not say so: %v", read)
+	}
+
+	// The wait door: the same list, and no page size to judge it against.
+	wait := answer(0)
+	if _, said := wait["truncated"]; said {
+		t.Errorf("the wait door disclosed, which settles a question the row is still "+
+			"holding open - a wait hands back a cursor, so whether a full window means "+
+			"anything is a decision, not this writer's to make: %v", wait)
+	}
+
+	// The witness that the two came from the same writer over the same rows: if
+	// the events differed, the assertions above would be about two answers rather
+	// than one parameter.
+	re, _ := json.Marshal(read["events"])
+	wa, _ := json.Marshal(wait["events"])
+	if string(re) != string(wa) {
+		t.Fatalf("the two answers carry different events, so this measured two calls "+
+			"rather than one parameter:\n read %s\n wait %s", re, wa)
+	}
+}

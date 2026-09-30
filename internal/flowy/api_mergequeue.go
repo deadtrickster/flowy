@@ -134,6 +134,12 @@ func (s *server) handleMergeQueue(w http.ResponseWriter, r *http.Request) {
 	if err == nil {
 		scope := answerScopeOf(r, principalOf(r))
 		response.Project, response.AllProjects = scope.Project, scope.All
+		// The page size that RAN, from the same clamp the store applies - the
+		// query is built inside readMergeQueue, which the wait door also calls.
+		if cut, note := cutNote(len(response.Items), 0,
+			store.ClampedLimit(intParam(r.URL.Query().Get("limit")))); cut {
+			response.Truncated, response.TruncatedNote = true, note
+		}
 	}
 	if err != nil {
 		if errors.Is(err, errBadQueueParam) {
@@ -402,7 +408,14 @@ type mergeQueueAnswer struct {
 	TipFrom   string           `json:"tip_from"`
 	Items     []mergeQueueItem `json:"items"`
 	Decided   bool             `json:"decided"`
-	Lock      *mergeQueueLock  `json:"lock,omitempty"`
+	// Truncated and TruncatedNote say whether Items is the whole queue or a
+	// page of it - see cutNote in api.go, which decides the wording for every
+	// door. Set by the plain read only: the wait door shares this type and is
+	// recorded as not-yet in truncguard.go, so leaving these zero there is the
+	// decision holding rather than an omission.
+	Truncated     bool            `json:"truncated,omitempty"`
+	TruncatedNote string          `json:"truncated_note,omitempty"`
+	Lock          *mergeQueueLock `json:"lock,omitempty"`
 	// Changed and Cursor are the wait door's answer only - see
 	// api_mergequeuewait.go. They ride this type rather than a wrapper so the
 	// plain read and the waited read are one shape to a client.

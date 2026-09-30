@@ -1824,18 +1824,29 @@ func discloseTruncation(body map[string]any, got, pageLimit int) {
 //
 // Absent when neither fires, for the reason discloseTruncation states.
 func discloseCut(body map[string]any, got, total, pageLimit int) {
+	if cut, note := cutNote(got, total, pageLimit); cut {
+		body["truncated"] = true
+		body["truncated_note"] = note
+	}
+}
+
+// cutNote is the disclosure itself, decided once for the two shapes that carry
+// it. Most doors answer with a map and use discloseCut above; /api/merge-queue
+// answers with a typed struct shared with its wait door, and a second copy of
+// these sentences in that file is a second thing to keep in step - which is the
+// argument ClampedLimit and PageLimit are already here for.
+func cutNote(got, total, pageLimit int) (bool, string) {
 	switch {
 	case total > got:
-		body["truncated"] = true
-		body["truncated_note"] = "showing " + strconv.Itoa(got) + " of " + strconv.Itoa(total) +
+		return true, "showing " + strconv.Itoa(got) + " of " + strconv.Itoa(total) +
 			" - ask again with a larger limit, or narrow the query"
 	case pageLimit > 0 && got >= pageLimit:
 		// The count did not prove it and the page is full. It may have been cut
 		// by rows that arrived after the count ran, so this says no number.
-		body["truncated"] = true
-		body["truncated_note"] = "this page filled at " + strconv.Itoa(pageLimit) +
+		return true, "this page filled at " + strconv.Itoa(pageLimit) +
 			", so there may be more past it - ask again with a larger limit, or narrow the query"
 	}
+	return false, ""
 }
 
 func intParam(s string) int {

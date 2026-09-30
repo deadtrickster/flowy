@@ -59,13 +59,17 @@ var truncationSays = map[string]string{
 	// full-page test as well - see discloseCut, where the count proving nothing
 	// and a full page still discloses.
 	//
-	// Reads whose rows come from a shared reader used by several doors, so the
-	// page size that ran is not in the handler's hands yet. Untouched here
-	// rather than half-done.
-	"GET /api/chat/{room}":  truncationNotYet,
-	"GET /api/dm":           truncationNotYet,
-	"GET /api/inbox":        truncationNotYet,
-	"GET /api/merge-queue":  truncationNotYet,
+	// THE FOUR READS THAT SHARE A WRITER WITH A WAIT DOOR. My first pass recorded
+	// these as "the page size that ran is not in the handler's hands", which was
+	// wrong - store.ClampedLimit gives it to any caller. The real coupling is the
+	// ANSWER: writeChatEvents and writeDMs are each called by a read door and a
+	// wait door, so the writers take a page size and the wait doors pass 0. That
+	// keeps the long-poll question a decision on the row instead of a side effect
+	// of this change.
+	"GET /api/chat/{room}":  truncationDisclosed,
+	"GET /api/dm":           truncationDisclosed,
+	"GET /api/inbox":        truncationDisclosed,
+	"GET /api/merge-queue":  truncationDisclosed,
 	"GET /api/metrics/rows": truncationDisclosed,
 	"GET /api/logs/tail":    truncationDisclosed,
 	"GET /api/stacktraces":  truncationDisclosed,
