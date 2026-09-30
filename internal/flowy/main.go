@@ -53,21 +53,30 @@ commands:
   read     the last few messages in a room, oldest first - a mention's
            antecedents. Moves no cursor (flowy read [--room R] [--last N]
            [--thread ID] [--json])
+  search, find
+           find an artifact by its words, best first, across every row this
+           token may read - the verb to reach for BEFORE reporting that
+           something is not written down anywhere. Matches title, body,
+           discovery and tags, and marks a hit that has been superseded
+           (flowy search [--type T] [--kind K] [--project P] [--status S]
+           [--limit N] [--json] TERMS...)
   dm       a direct message: private, addressed, no room
            (flowy dm --to NAME "text", or stdin)
   get      one door's answer on stdout, through this client's token and
            base URL - instead of a hand-built curl. --jq picks a field
            (flowy get /api/PATH [--jq EXPR]; a path that is not a door is
            refused here, not 404'd there)
-  skills   the shelf: rows of kind=skill, and the body of one
+  skills, skill
+           the shelf: rows of kind=skill, and the body of one
            (flowy skills | show ID)
   attach   put a file on the node as an attachment row, nothing said
            (flowy attach [--title T] [--type MIME] [--room R] [--message ID] FILE)
   retire   tombstone a row this seat superseded: gone from listings, id
            answers 410 not 404. Owner only (flowy retire ID [--dry-run])
-  roster   who is listening, per the node's own reading of the polls
+  roster, presence, who
+           who is listening, per the node's own reading of the polls
            (flowy roster [--json])
-  instructions
+  instructions, rules
            the rules that bind this seat, node > project > seat, composed by
            the node for THIS token - read it at the start of a session and
            after a compaction, not a row by id (flowy instructions [--json])
@@ -262,6 +271,16 @@ func Run(args []string, stamp string) int {
 	case "read":
 		if err := readCmd(args[1:]); err != nil {
 			fmt.Fprintf(os.Stderr, "flowy read: %v\n", err)
+			return 1
+		}
+	case "search", "find":
+		// 1 rather than 2, matching `read`: both are read-only lookups where
+		// the only failure is that the node or the token would not answer.
+		// Zero hits is not a failure - it is an answer, and the verb says on
+		// stderr that it is an answer about this token's reach rather than
+		// about the fabric.
+		if err := searchCmd(args[1:]); err != nil {
+			fmt.Fprintf(os.Stderr, "flowy search: %v\n", err)
 			return 1
 		}
 	case "skills", "skill":

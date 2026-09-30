@@ -743,3 +743,186 @@ func retireCmd(args []string) error {
 	fmt.Printf("  tombstoned: gone from listings; the id answers 410 Gone, not 404\n")
 	return nil
 }
+
+// ------------------------------------------------------------- search
+
+const searchUsage = `flowy search - find an artifact by its words, ranked and permission-filtered
+
+usage:
+  flowy search [--type T] [--kind K] [--project P] [--status S]
+               [--limit N] [--json] TERMS...
+
+  --type T      artifact type: memory, todo, report, attachment, ...
+  --kind K      kind: note, skill, ...
+  --project P   another project's artifacts, if this token reaches it
+  --status S    todo, active or done
+  --limit N     how many, default 20
+  --json        one JSON object per line instead of a table
+
+The terms are matched against title, body, discovery AND tags, so a word an
+agent only ever wrote in a discovery still finds the row. Hits come back best
+first, and only artifacts this token may read are ranked at all - a row it
+cannot see does not occupy a result slot.
+
+A hit that has been superseded says so, because a search is where a stale
+document is most likely to be found: the words that matched are in the replaced
+row as readily as in the row that replaced it.
+
+LOOK HERE BEFORE DERIVING. Say what you looked for, then say what you concluded
+is missing; if those are two different nouns, you have not looked yet.
+`
+
+// searchCmd is the fifth verb this file's header counted and the only one of
+// the five it did not add. The census there recorded 10 hand-built curls to
+// GET /api/search from one seat, and by 2026-09-30 the cost of having no name
+// for it had compounded: three seats spent an evening establishing a class -
+// a process scan whose pattern matches the scanning process - that was already
+// written down twice on 2026-08-25 and once by the operator on 2026-08-16.
+// `GET /api/search?q=pgrep` returns all three, first hit, in one call.
+//
+// None of the three seats called that door. Two of them reported, in the room,
+// that the node HAS no keyword search: one had queried /api/artifacts?q=, which
+// is a different door and refuses q with a 400 listing the parameters it does
+// take, and read that 400 as an answer about the node rather than about the
+// address. The capability was documented the whole time - docs/reference.md
+// lists the door - and unreachable from the only tool those seats actually
+// hold, which is this client.
+//
+// So the argument for a verb is not that the door is undiscoverable from the
+// source. It is that an absence is the one claim a failed search cannot
+// establish, and a generic `get` requires knowing the path before you can ask
+// whether the path exists.
+func searchCmd(args []string) error {
+	fs := flag.NewFlagSet("search", flag.ContinueOnError)
+	typ := fs.String("type", "", "artifact type: memory, todo, report, attachment")
+	kind := fs.String("kind", "", "kind: note, skill")
+	project := fs.String("project", "", "another project's artifacts")
+	status := fs.String("status", "", "todo, active or done")
+	limit := fs.Int("limit", 20, "how many hits")
+	asJSON := fs.Bool("json", false, "one JSON object per line instead of a table")
+	urlFlag := fs.String("url", "", "node to talk to")
+	token := fs.String("token", "", "bearer token")
+	agent := fs.String("agent", "", agentFlagHelp)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	rest := fs.Args()
+	if len(rest) > 0 && rest[0] == "help" {
+		fmt.Print(searchUsage)
+		return nil
+	}
+	// The terms are the argument, joined, so `flowy search pgrep self match`
+	// asks one query rather than silently searching for the first word. A
+	// search with no terms is refused here: the door answers an empty query
+	// with an empty list, which reads as "nothing like that exists".
+	query := strings.TrimSpace(strings.Join(rest, " "))
+	if query == "" {
+		return errors.New("what are you looking for: flowy search TERMS\n\n" + searchUsage)
+	}
+	if *limit <= 0 {
+		return errors.New("--limit is a positive count")
+	}
+	call, err := agentClient(*urlFlag, *token, *agent)
+	if err != nil {
+		return err
+	}
+	q := url.Values{}
+	q.Set("q", query)
+	q.Set("limit", fmt.Sprint(*limit))
+	for name, v := range map[string]string{
+		"type": *typ, "kind": *kind, "project": *project, "status": *status,
+	} {
+		if v != "" {
+			q.Set(name, v)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	var page struct {
+		Query     string         `json:"query"`
+		Artifacts []store.Ranked `json:"artifacts"`
+		Truncated bool           `json:"truncated"`
+		Note      string         `json:"truncated_note"`
+	}
+	if err := call(ctx, http.MethodGet, "/api/search?"+q.Encode(), nil, &page); err != nil {
+		return err
+	}
+	enc := json.NewEncoder(os.Stdout)
+	for _, hit := range page.Artifacts {
+		if *asJSON {
+			if err := enc.Encode(hit); err != nil {
+				return err
+			}
+			continue
+		}
+		fmt.Print(searchLine(hit))
+	}
+	if len(page.Artifacts) == 0 {
+		// Two different answers, and a reader who conflates them stops looking:
+		// nothing matched HERE is not nothing matched.
+		fmt.Fprintf(os.Stderr,
+			"no artifact this token can read matches %q - a row in a project it cannot reach does not appear here\n",
+			query)
+		return nil
+	}
+	// The door discloses a filled page and this prints it, because a search
+	// that filled its page is the worst case for a reader asking "is there
+	// anything like X": the first screen reads as the answer.
+	if page.Truncated {
+		note := page.Note
+		if note == "" {
+			note = "this page filled, so there may be more past it"
+		}
+		fmt.Fprintf(os.Stderr, "%s\n", note)
+	}
+	return nil
+}
+
+// searchLine is one hit as a person reads it: when it was written, what it is,
+// its id, and the title. The id is on the same line as the title because the
+// next thing a reader does is fetch one.
+//
+// The superseded marker is the load-bearing part. The node derives it on the
+// way out - nothing is written on the old row when a newer one replaces it -
+// and a search that dropped it would rank a replaced document beside its
+// replacement with no way to tell them apart. On 2026-09-30 three notes on one
+// subject were filed in 82 minutes, each announcing in its TITLE that it
+// superseded the last, and none of them setting fields.supersedes. Prose in a
+// title reaches a person reading the room that hour. This reaches whoever
+// searches for those words in a month.
+func searchLine(hit store.Ranked) string {
+	if hit.Artifact == nil {
+		return ""
+	}
+	a := hit.Artifact
+	when := a.Created.Format("2006-01-02")
+	what := a.Type
+	if a.Kind != "" {
+		what = a.Type + "/" + a.Kind
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s  %-16s %s  %s\n", when, what, a.ID, a.Title)
+	where := ""
+	if a.Project != nil {
+		where = *a.Project
+	}
+	if a.Status != "" {
+		where = strings.TrimSpace(where + " " + a.Status)
+	}
+	if where != "" {
+		fmt.Fprintf(&b, "  %s\n", where)
+	}
+	// ReplacedByRef is the address - project/type/id - and ReplacedBy is only
+	// an id. Printing the id alone would hand a reader three segments to guess,
+	// and store.go says plainly that nothing keeps a replacement in the same
+	// project or type as the row it replaced. So the ref when there is one, and
+	// the bare id when the replacement is personal to its author and has no
+	// address to give.
+	switch {
+	case a.ReplacedByRef != "":
+		fmt.Fprintf(&b, "  SUPERSEDED by %s - read that one\n", a.ReplacedByRef)
+	case a.ReplacedBy != "":
+		fmt.Fprintf(&b, "  SUPERSEDED by %s - read that one\n", a.ReplacedBy)
+	}
+	return b.String()
+}

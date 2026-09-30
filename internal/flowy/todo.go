@@ -71,11 +71,18 @@ Ids go to stdout and everything a person reads goes to stderr.
 const noteKindUsage = `flowy note - a memory, from a shell
 
 usage:
-  flowy note write --title T [--scope S] [body]
+  flowy note write --title T [--scope S] [--supersedes ID] [body]
 
 A note is one agent's own record by default - scope personal - which is what
 separates it from a queue row. Say --scope project to write one the room can
 read.
+
+--supersedes ID says this note replaces an older one. The node then marks the
+older note as superseded for everyone who reads or searches it afterwards, and
+says so once in the room that note lives in. Announcing a replacement in chat
+reaches the people reading that hour; this reaches whoever looks the words up
+later. Use it whenever a note corrects one already filed, rather than writing
+"supersedes ID" in the title and hoping the next reader sees it.
 `
 
 // todoCmd is `flowy todo ...`.
@@ -546,6 +553,7 @@ func cliNoteWrite(args []string) error {
 	fs := flag.NewFlagSet("note write", flag.ContinueOnError)
 	title := fs.String("title", "", "one line naming what this is about")
 	scope := fs.String("scope", "personal", "who may read it: "+strings.Join(store.MemScopes, ", "))
+	supersedes := fs.String("supersedes", "", "id of the note this one replaces")
 	url, token, agent := doorFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -565,10 +573,39 @@ func cliNoteWrite(args []string) error {
 	if err != nil {
 		return err
 	}
-	payload, err := json.Marshal(map[string]any{
+	write := map[string]any{
 		"type": store.MemoryType, "kind": "note",
 		"title": *title, "body": body, "visibility": visibility,
-	})
+	}
+	// THE EDGE THE NODE ALREADY HAS AND NOTHING HERE COULD SET.
+	//
+	// fields.supersedes points the new note at the one it replaces. The node
+	// derives replaced_by on the old row from it at read time, so every later
+	// search of those same words marks the stale one, and handleCreateArtifact
+	// also announces the supersession in the room the replaced row lives in.
+	// Neither happens for a note whose replacement only says "supersedes X" in
+	// its title, which is what three seats wrote on 2026-09-30: prose reaches
+	// the people reading that hour and nobody after them.
+	//
+	// It is a bare id by deliberate ruling (see store.SupersedesField), so it
+	// is passed through as typed - the door and the store validate it, and a
+	// client that reformatted it into an address would break the shape every
+	// node already agrees on.
+	if id := strings.TrimSpace(*supersedes); id != "" {
+		// A slash means somebody passed the ADDRESS - project/type/id, the form
+		// replaced_by_ref prints - and the field takes the bare id. Refused
+		// here rather than stored, because the store would hold it and the
+		// lookup that resolves it would then quietly match nothing: the old row
+		// would read as unreplaced, which is the failure this flag exists to
+		// prevent.
+		if strings.ContainsAny(id, " /") {
+			return fmt.Errorf(
+				"--supersedes takes one bare artifact id, not %q - pass the id alone, not project/type/id",
+				*supersedes)
+		}
+		write["fields"] = map[string]any{store.SupersedesField: id}
+	}
+	payload, err := json.Marshal(write)
 	if err != nil {
 		return err
 	}
@@ -580,5 +617,9 @@ func cliNoteWrite(args []string) error {
 	}
 	fmt.Println(answer.ID)
 	fmt.Fprintf(os.Stderr, "wrote %s at scope %s\n", answer.ID, *scope)
+	if id := strings.TrimSpace(*supersedes); id != "" {
+		fmt.Fprintf(os.Stderr,
+			"%s now reads as superseded by this one, and its room has been told\n", id)
+	}
 	return nil
 }
