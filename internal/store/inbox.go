@@ -826,3 +826,82 @@ func (d *DB) RoomMembers(ctx context.Context, p *Principal) ([]*RoomMember, erro
 	}
 	return out, nil
 }
+
+// MentionsPerProject counts, for each project this PERSON is a member of, the
+// chat messages addressed to them that are newer than `since`.
+//
+// THE ONE THING THAT CROSSES A PROJECT BOUNDARY HERE IS A NUMBER, and that is
+// the whole design rather than a shortcut taken to avoid a permissions change.
+//
+// 01M10V97MD, the operator: "if I (and i suppose anybody else) mentioned in the
+// other 'non current' project - I cant know it. we need notifications for
+// mentions and same counter as we have for todos". The counter is what was asked
+// for. Handing over the MESSAGES would need a session to read outside the
+// project it is sitting in, and it must not: a cookie session's reach is the one
+// project it entered - memberships is the list a switcher OFFERS, reach is where
+// the session is working - and the suite reds any widening of that. Measured on
+// 01M1M526DX8EAY8TWAPYX4RTKC: one cookie, two memberships, a project-only row in
+// each, and the two ids swap on switching while memberships stays 2.
+//
+// So this deliberately does NOT go through EventFilterSQL. That filter answers
+// "what may this principal read", and the answer here is a count of things it
+// may NOT read yet. The authority is membership instead, joined in SQL rather
+// than passed in, so a caller cannot ask about a project the person does not
+// belong to: the join is the permission check, and there is no parameter that
+// widens it.
+//
+// What a reader learns from a nonzero count is that switching project is worth
+// doing - which is the whole job of a counter, and the switch itself is an act
+// they already have. What they do not learn is who said it or what it said.
+//
+// ADDRESSED, not "mentions my name in the text". Addressee is set by the node
+// from --to, so it is a fact about delivery rather than a guess at a substring -
+// a name in a sentence is not a claim on anybody's attention, and a fleet whose
+// counter fired on every occurrence of "claude-host" would be a counter nobody
+// could clear.
+//
+// Their own messages are excluded, the same exclusion the room badge makes: a
+// reader is not owed a notification about what they said themselves.
+//
+// The map holds only projects with a nonzero count. A zero is not a fact worth a
+// row - it is the ordinary state of most projects most of the time - and a
+// caller that wants the full list has the memberships it asked with.
+func (d *DB) MentionsPerProject(ctx context.Context, userID string, since int64) (map[string]int, error) {
+	ctx, span := otel.Start(ctx, otel.KindQuery, "inbox.mentions_per_project")
+	defer span.End()
+	if strings.TrimSpace(userID) == "" {
+		// Not an error: a principal with no user is a seat, and "which projects
+		// do you belong to" has no answer for one rather than an empty one. The
+		// caller says that sentence; this returns nothing to say it about.
+		return map[string]int{}, nil
+	}
+	rows, err := d.sql.QueryContext(ctx,
+		`SELECT e.project, count(*)
+		   FROM events e
+		   JOIN project_members m
+		     ON m.project = e.project
+		    AND m.user_id = $1
+		  WHERE e.type = $2
+		    AND e.addressee = $1
+		    AND e.actor <> $1
+		    AND e.seq_hlc > $3
+		    AND e.project IS NOT NULL
+		  GROUP BY e.project
+		  ORDER BY e.project`,
+		userID, ChatEventType, since)
+	if err != nil {
+		return nil, fmt.Errorf("store: mentions per project: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := map[string]int{}
+	for rows.Next() {
+		var project string
+		var n int
+		if err := rows.Scan(&project, &n); err != nil {
+			return nil, fmt.Errorf("store: mentions per project: %w", err)
+		}
+		out[project] = n
+	}
+	return out, rows.Err()
+}

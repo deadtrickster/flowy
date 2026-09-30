@@ -67,6 +67,7 @@ var openspecStateReach = map[string]string{
 	"GET /api/forge":                     "na",
 	"GET /api/forge/status":              "na",
 	"GET /api/inbox":                     "na",
+	"GET /api/inbox/mentions":            "na",
 	"GET /api/inbox/readers":             "na",
 	"GET /api/inbox/tasks":               "na",
 	"GET /api/inbox/unread":              "na",

@@ -1910,3 +1910,88 @@ func heardInProject(e *store.Event, art *store.Artifact) *store.Event {
 	}
 	return e
 }
+
+// handleInboxMentions is how a person learns that switching project is worth
+// doing, without learning anything about what was said there.
+//
+// GET /api/inbox/mentions?as=<reader>
+//
+//	{"reader":"deadtrickster","cursor":1173...,"here":"flowy",
+//	 "mentions":{"Lab":3,"pa":1},"elsewhere":4,"reach_from":"memberships"}
+//
+// 01M10V97MD item 4, the operator: "if I (and i suppose anybody else) mentioned
+// in the other 'non current' project - I cant know it. we need notifications for
+// mentions and same counter as we have for todos".
+//
+// WHY THIS IS A SECOND DOOR RATHER THAN A PARAMETER ON /api/inbox/unread. That
+// one counts what a reader has not seen IN A PLACE they can already read, and
+// its whole permission story is EventFilterSQL: ask it about somewhere you
+// cannot reach and the honest answer is zero. This one answers a question that
+// filter cannot be asked - how much is waiting where you are NOT - so it is
+// authorised differently, by membership joined in SQL rather than by reach. Two
+// authorities, two doors: folding them together would put a parameter on the
+// unread door that changes which rule decides its answer, and a reader could no
+// longer tell from the call which one they got.
+//
+// `elsewhere` is the number the rail draws, and it is computed here rather than
+// left to the caller: it is the total minus the current project, because a count
+// that includes where you already are is not a reason to go anywhere, and two
+// clients subtracting it themselves is two chances to disagree with the map
+// beside it. The per-project map is there too, because a number that cannot be
+// answered is a nag rather than a signal - the same reason MineTodoIDs sits
+// beside MineTodo on the nag view.
+//
+// A SEAT GETS THE SENTENCE, NOT AN EMPTY MAP. An agent's reach is minted into
+// its token, so "which of your projects has something waiting" does not apply to
+// one - exactly as whoami says of memberships, and as the rail's picker already
+// renders. reach_from carries which principal this is, so a client branches on
+// the mechanism rather than on the shape of an empty map.
+func (s *server) handleInboxMentions(w http.ResponseWriter, r *http.Request) {
+	p := principalOf(r)
+	name := strings.TrimSpace(r.URL.Query().Get("as"))
+	if name == "" {
+		writeJSON(w, http.StatusBadRequest,
+			errorBody("as is required: a count is against a reader, and the reader is what holds its place"))
+		return
+	}
+	reader, err := s.db.InboxReaderAt(r.Context(), p, name)
+	if errors.Is(err, store.ErrNoReader) {
+		s.noSuchReader(w, r, name)
+		return
+	}
+	if err != nil {
+		serverError(w, r, err)
+		return
+	}
+	body := map[string]any{
+		"reader": reader.Reader,
+		"cursor": reader.Cursor,
+		"here":   p.Project,
+		// Not omitempty, and both are always present: a client has to be able to
+		// tell "nothing is waiting anywhere" from "this question does not apply
+		// to you", and for a seat those differ by reach_from alone.
+		"mentions":  map[string]int{},
+		"elsewhere": 0,
+	}
+	// THE SAME TEST whoami USES, in the same words, because two places deciding
+	// what a person is would eventually disagree - and the rail keys its picker
+	// on whoami's answer while it would key this count on mine.
+	if p.UserID != "" && p.AgentID == "" {
+		body["reach_from"] = reachMemberships
+		per, err := s.db.MentionsPerProject(r.Context(), p.UserID, reader.Cursor)
+		if err != nil {
+			serverError(w, r, err)
+			return
+		}
+		elsewhere := 0
+		for project, n := range per {
+			if project != p.Project {
+				elsewhere += n
+			}
+		}
+		body["mentions"], body["elsewhere"] = per, elsewhere
+	} else if p.AgentID != "" {
+		body["reach_from"] = reachToken
+	}
+	writeJSON(w, http.StatusOK, body)
+}

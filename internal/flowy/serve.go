@@ -410,6 +410,7 @@ var apiRoutes = []string{
 	"POST /api/inbox/reader",
 	"GET /api/inbox/readers",
 	"GET /api/inbox/unread",
+	"GET /api/inbox/mentions",
 	"DELETE /api/inbox/reader/{name}",
 	"GET /api/presence",
 	"GET /api/principals/exposed",
@@ -800,6 +801,10 @@ func (s *server) routes() http.Handler {
 	// is a 57-bit reading and the client asking is a browser, whose numbers are
 	// doubles - see handleInboxUnread.
 	api.HandleFunc("GET /api/inbox/unread", s.handleInboxUnread)
+	// And how much is waiting in the projects this person is NOT in. A separate
+	// door because it is authorised by membership rather than by reach - see
+	// handleInboxMentions, which says why that cannot be a parameter here.
+	api.HandleFunc("GET /api/inbox/mentions", s.handleInboxMentions)
 	api.HandleFunc("DELETE /api/inbox/reader/{name}", s.handleInboxReaderDelete)
 	api.HandleFunc("GET /api/presence", s.handlePresence)
 	// WHO THIS NODE WOULD TAKE A ROW FOR FROM ANYBODY. operatorOnly because it

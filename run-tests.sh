@@ -20816,8 +20816,77 @@ a_session_reaches_the_project_it_entered() {
 	sess GET "/api/artifact/$in_b" || return 1
 	want_eq "back in $PROJECT_A, the row filed in $other" "$SESS_STATUS" 404 || return 1
 
-	printf 'one cookie, two memberships (%s), one reach at a time: %s is readable in %s and 404 in %s, %s the other way round, and the membership list never moved\n' \
-		"$before" "$in_a" "$PROJECT_A" "$other" "$in_b"
+	# AND THE COUNT CROSSES WHERE THE CONTENT DOES NOT. 01M10V97MD item 4, the
+	# operator: "if I ... mentioned in the other 'non current' project - I cant
+	# know it. we need notifications for mentions and same counter as we have for
+	# todos".
+	#
+	# This is the arm that makes both halves of that statement in one session at
+	# one moment: the SAME cookie, sitting in $PROJECT_A, is told a message waits
+	# in $other AND still refused the row filed there. Asserting either alone
+	# would pass on a node that had got the other wrong - a count that leaked
+	# content, or a refusal that also hid the count, which is the state this row
+	# sat in for 34 days.
+	#
+	# THE READER IS DECLARED BEFORE THE MESSAGE IS SENT, and that ordering is the
+	# assertion working rather than a detail. A reader starts at the moment it is
+	# declared, so a message sent first is BELOW the cursor and correctly counts
+	# as nothing - which is indistinguishable from a door that cannot see across
+	# a project at all. The first cut of this check had them the other way round
+	# and read a working door as a broken one.
+	sess POST /api/inbox/reader "{\"as\": \"$HANDLE_A\"}" || return 1
+	want_eq "declaring a reader for the person" "$SESS_STATUS" 200 || return 1
+
+	# THE SPEAKER IS IN $other, not merely able to read it. token_projects grants
+	# REACH and a say lands in the principal's own project - "you write where you
+	# are" - so widening TOKEN_B's reach put the message in TOKEN_B's project and
+	# the count was right to ignore it. The token is minted INTO $other instead,
+	# the way an operator writes one, and it belongs to USER_B because a reader is
+	# owed no notification about what they said themselves.
+	local speaker="mentions-speaker-$$"
+	psql_do "INSERT INTO tokens (token, user_id, project) VALUES ('$speaker', '$USER_B', '$other')
+	         ON CONFLICT (token) DO UPDATE SET user_id = excluded.user_id, project = excluded.project" || return 1
+	api POST "$speaker" "/api/chat/general/say" \
+		"$(jq -nc --arg to "$USER_A" '{body: "the counter is the ask, not the message", to: $to}')" || return 1
+	want_eq "the mention landed in $other" "$API_STATUS" 200 || return 1
+	want_eq "and it landed in $other rather than the speaker's own project" \
+		"$(jqv .project)" "$other" || return 1
+	want_eq "addressed to the person" "$(jqv .addressee)" "$USER_A" || return 1
+
+	sess GET "/api/inbox/mentions?as=$HANDLE_A" || return 1
+	want_eq "the mentions door answers a person" "$SESS_STATUS" 200 || return 1
+	want_eq "the mechanism it answers by" "$(sessv .reach_from)" memberships || return 1
+	want_eq "it says which project the session is in" "$(sessv .here)" "$PROJECT_A" || return 1
+	want_eq "the mention in $other is counted" "$(sessv '.mentions["'"$other"'"]')" 1 || return 1
+	# `elsewhere` is what a rail draws, and it must not include where you already
+	# are: a count you cannot act on by switching is not a reason to switch.
+	want_eq "and it counts as elsewhere" "$(sessv .elsewhere)" 1 || return 1
+	want_eq "the current project contributes nothing to elsewhere" \
+		"$(sessv '.mentions["'"$PROJECT_A"'"] // 0')" 0 || return 1
+
+	# THE OTHER HALF, through the same cookie: the row in $other is still
+	# refused. The count crossed; the content did not.
+	sess GET "/api/artifact/$in_b" || return 1
+	want_eq "the row in $other is still out of reach" "$SESS_STATUS" 404 || return 1
+
+	# A SEAT IS TOLD THE QUESTION DOES NOT APPLY rather than handed an empty map,
+	# because memberships are not an agent's mechanism - the distinction whoami
+	# draws, asserted here so the two cannot drift.
+	# TOKEN_A_AGENT rather than TOKEN_B: TOKEN_B is a PERSON's token, and asking
+	# it produced "memberships" - correctly, which is how this arm found its own
+	# mistake. A seat is the one with an agent id.
+	api POST "$TOKEN_A_AGENT" /api/inbox/reader "{\"as\": \"seat-mentions-$$\"}" || return 1
+	api GET "$TOKEN_A_AGENT" "/api/inbox/mentions?as=seat-mentions-$$" || return 1
+	want_eq "a seat is answered" "$API_STATUS" 200 || return 1
+	want_eq "by the mechanism a seat has" "$(jqv .reach_from)" token || return 1
+	want_eq "and is given no per-project count to read" "$(jqv '.mentions | length')" 0 || return 1
+
+	# The speaker goes away again, so a credential this check minted cannot be
+	# holding reach into $other for whatever runs after it.
+	psql_do "DELETE FROM tokens WHERE token = '$speaker'" || return 1
+
+	printf 'one cookie, two memberships (%s), one reach at a time: %s is readable in %s and 404 in %s, %s the other way round, and the membership list never moved; and a mention in %s counts as 1 elsewhere while its room stays out of reach\n' \
+		"$before" "$in_a" "$PROJECT_A" "$other" "$in_b" "$other"
 }
 
 # THE SERIES DOOR ANSWERS PER NAME, OLDEST FIRST.
