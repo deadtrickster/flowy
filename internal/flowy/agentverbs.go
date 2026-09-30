@@ -764,6 +764,12 @@ agent only ever wrote in a discovery still finds the row. Hits come back best
 first, and only artifacts this token may read are ranked at all - a row it
 cannot see does not occupy a result slot.
 
+EVERY TERM MUST MATCH. The query is an AND, so each word you add NARROWS the
+result - "scroll" finds 38 rows on this node and "scroll anchoring" finds 2.
+Start with the one word most likely to be in the document and add a second only
+to cut a result set that is too large. Typing a sentence and getting nothing back
+is the search working, not the fabric being empty.
+
 A hit that has been superseded says so, because a search is where a stale
 document is most likely to be found: the words that matched are in the replaced
 row as readily as in the row that replaced it.
@@ -815,6 +821,14 @@ func searchCmd(args []string) error {
 	// asks one query rather than silently searching for the first word. A
 	// search with no terms is refused here: the door answers an empty query
 	// with an empty list, which reads as "nothing like that exists".
+	//
+	// Joined into ONE plainto_tsquery, which ANDs them - so a caller who types
+	// a phrase gets the intersection and a long phrase usually gets nothing.
+	// That is the failure this verb exists to prevent, arriving by a different
+	// road: a reader who searched four words, saw nothing, and concluded the
+	// fabric holds nothing. Measured on the live node while writing this -
+	// "scroll" 38 hits, "scroll anchoring" 2 - so the zero-hit message names
+	// the term count and the usage says it outright.
 	query := strings.TrimSpace(strings.Join(rest, " "))
 	if query == "" {
 		return errors.New("what are you looking for: flowy search TERMS\n\n" + searchUsage)
@@ -863,6 +877,13 @@ func searchCmd(args []string) error {
 		fmt.Fprintf(os.Stderr,
 			"no artifact this token can read matches %q - a row in a project it cannot reach does not appear here\n",
 			query)
+		// Two ways to get nothing, and they want opposite next moves: widen the
+		// query, or accept that nothing is written down. A caller who does not
+		// know the terms are ANDed cannot tell which they are looking at, and
+		// the wrong reading - "it is not written down" - is the expensive one.
+		if hint := narrowHint(len(rest)); hint != "" {
+			fmt.Fprintln(os.Stderr, hint)
+		}
 		return nil
 	}
 	// The door discloses a filled page and this prints it, because a search
@@ -925,4 +946,21 @@ func searchLine(hit store.Ranked) string {
 		fmt.Fprintf(&b, "  SUPERSEDED by %s - read that one\n", a.ReplacedBy)
 	}
 	return b.String()
+}
+
+// narrowHint is what a zero-hit search says about its own query, and it is a
+// function so the two cases can be asserted rather than read off a terminal.
+//
+// Empty for a single term: there the result is the fabric's answer, and telling
+// somebody to narrow a one-word query would send them the wrong way. For two or
+// more it names the count, because the AND is the likely cause and a caller who
+// does not know about it reads the silence as "nothing is written down" - the
+// expensive half of two readings that want opposite next moves.
+func narrowHint(terms int) string {
+	if terms < 2 {
+		return ""
+	}
+	return fmt.Sprintf(
+		"every one of those %d terms has to match the same row; try the one word most likely to be in it",
+		terms)
 }

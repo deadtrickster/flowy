@@ -257,3 +257,23 @@ func TestSearchLineSurvivesANilArtifact(t *testing.T) {
 		t.Errorf("a nil artifact prints nothing, not %q", got)
 	}
 }
+
+// TestNarrowHintOnlyFiresWhereNarrowingIsTheLikelyCause pins both directions,
+// because a hint that always fired would be advice to widen a query that is
+// already one word - and that is how a reader is sent looking for a broader
+// spelling of a thing the fabric genuinely does not hold.
+func TestNarrowHintOnlyFiresWhereNarrowingIsTheLikelyCause(t *testing.T) {
+	if got := narrowHint(1); got != "" {
+		t.Errorf("a one-word miss is the fabric's answer, not a narrowing problem: %q", got)
+	}
+	if got := narrowHint(0); got != "" {
+		t.Errorf("no terms is refused before the call; the hint stays quiet: %q", got)
+	}
+	got := narrowHint(4)
+	if !strings.Contains(got, "4 terms") {
+		t.Errorf("the hint names how many terms had to match: %q", got)
+	}
+	if !strings.Contains(got, "one word") {
+		t.Errorf("the hint says what to do next, not just what went wrong: %q", got)
+	}
+}
