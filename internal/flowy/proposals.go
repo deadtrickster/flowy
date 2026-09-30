@@ -119,5 +119,10 @@ func (s *server) handleListProposals(w http.ResponseWriter, r *http.Request) {
 		serverError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"count": len(list), "items": list})
+	// count IS THE PAGE, not the set - which is the trap 01M3MY5FGT5C1S3BKTW6R3TWVA
+	// was filed about, one door along. It is kept because callers read it, and the
+	// disclosure below is what says whether it is the whole answer.
+	body := map[string]any{"count": len(list), "items": list}
+	discloseCut(body, len(list), 0, q.PageLimit())
+	writeJSON(w, http.StatusOK, body)
 }

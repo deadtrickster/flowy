@@ -165,13 +165,22 @@ func (s *server) handleReady(w http.ResponseWriter, r *http.Request) {
 		serverError(w, r, err)
 		return
 	}
+	// THE PAGE LENGTH, TAKEN BEFORE ?ready=true NARROWS IT. The filter below runs
+	// in this handler, after the store has already cut the page, so len(rows)
+	// afterwards is the size of a subset of a page - and comparing THAT against
+	// the page size would report a full page as complete whenever the filter
+	// removed anything. The question "was the page cut" is about what the store
+	// handed over.
+	paged := len(rows)
 	ready := len(store.ReadyOnly(rows))
 	if r.URL.Query().Get("ready") == "true" {
 		rows = store.ReadyOnly(rows)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	body := map[string]any{
 		"count": len(rows), "ready": ready, "items": rows,
-	})
+	}
+	discloseCut(body, paged, 0, q.PageLimit())
+	writeJSON(w, http.StatusOK, body)
 }
 
 // writeQueueError turns a store refusal by one of the queue verbs into a status

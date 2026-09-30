@@ -69,9 +69,14 @@ var truncationSays = map[string]string{
 	"GET /api/metrics/rows": truncationDisclosed,
 	"GET /api/logs/tail":    truncationDisclosed,
 	"GET /api/stacktraces":  truncationDisclosed,
-	"GET /api/proposals":    truncationNotYet,
-	"GET /api/ready":        truncationNotYet,
-	"GET /api/sync/pull":    truncationNotYet,
+	"GET /api/proposals":    truncationDisclosed,
+	"GET /api/ready":        truncationDisclosed,
+	// sync/pull is held back on a decision, not on effort. Its limit is rows per
+	// table per page, so "the page filled" is a question per table rather than
+	// one about the answer, and its response is a typed struct rather than the
+	// map every other door here builds. It is also the one door whose callers
+	// page by cursor as their normal mode, which is the long polls' argument.
+	"GET /api/sync/pull": truncationNotYet,
 
 	// The long polls. A wait answers with what arrived inside its window, and a
 	// caller that gets a full page has a cursor to carry on from - which is the

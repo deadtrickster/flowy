@@ -147,3 +147,85 @@ func TestDiscloseCutUsesBothSignals(t *testing.T) {
 			"counted shortfall from a full page: %q", exact["truncated_note"])
 	}
 }
+
+// TestReadyDisclosesThePageNotTheFilteredSubset pins the ordering inside
+// handleReady: ?ready=true narrows the rows AFTER the store has cut the page, so
+// the question "was the page cut" has to be asked of what the store handed over.
+//
+// The discriminator is a full page that the filter empties. Three unassigned
+// todos are all not-ready, so ?ready=true with limit=2 returns NO items over a
+// page that filled - and a check comparing the filtered length against the page
+// size would see 0 < 2 and call the answer complete.
+func TestReadyDisclosesThePageNotTheFilteredSubset(t *testing.T) {
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		t.Skip("DATABASE_URL is not set; run ./run-tests.sh for the live checks")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	t.Cleanup(cancel)
+
+	db, err := store.Open(ctx, dsn, "test-node")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	project := "ready-page-" + ulid.NewString()
+	if err := db.DeclareProject(ctx, &store.Project{ID: project}); err != nil {
+		t.Fatalf("declare project: %v", err)
+	}
+	p := &store.Principal{UserID: "u-" + ulid.NewString(), Project: project}
+	s := &server{db: db, node: "test-node"}
+
+	for i := 0; i < 3; i++ {
+		art := &store.Artifact{
+			ID: ulid.NewString(), Type: store.MemoryType, Kind: "todo",
+			Project: &project, OwnerUser: p.UserID,
+			Title: "unassigned, so not ready",
+		}
+		if err := db.CreateArtifact(ctx, art); err != nil {
+			t.Fatalf("write todo %d: %v", i, err)
+		}
+	}
+
+	ask := func(target string) map[string]any {
+		t.Helper()
+		r := httptest.NewRequest(http.MethodGet, target, nil)
+		r = r.WithContext(context.WithValue(ctx, principalKey{}, p))
+		w := httptest.NewRecorder()
+		s.handleReady(w, r)
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s: status %d, body %s", target, w.Code, w.Body.String())
+		}
+		var body map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatalf("%s: decode: %v", target, err)
+		}
+		return body
+	}
+
+	// The page filled and the filter took everything off it.
+	filtered := ask("/api/ready?limit=2&ready=true")
+	if n, _ := filtered["count"].(float64); n != 0 {
+		t.Fatalf("expected the ready filter to empty a page of unassigned todos, got count %v - "+
+			"the fixture is wrong and the assertion below would be about nothing", n)
+	}
+	if got, _ := filtered["truncated"].(bool); !got {
+		t.Errorf("a page that filled at 2 and was then emptied by ?ready=true did not "+
+			"disclose: %v\nThis is the ordering the handler exists to get right - the "+
+			"filtered length is the size of a subset of a page, not the page.", filtered)
+	}
+
+	// And the same page unfiltered, which is the reading that would pass either way.
+	unfiltered := ask("/api/ready?limit=2")
+	if got, _ := unfiltered["truncated"].(bool); !got {
+		t.Errorf("a page of 2 over three todos did not disclose: %v", unfiltered)
+	}
+
+	// A page larger than the set says nothing, filtered or not - the witness that
+	// the flag is about the limit and not about the filter.
+	whole := ask("/api/ready?limit=50&ready=true")
+	if _, said := whole["truncated"]; said {
+		t.Errorf("a page of 50 over three todos claimed it was cut: %v", whole)
+	}
+}
