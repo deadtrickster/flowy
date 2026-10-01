@@ -259,6 +259,21 @@ try {
     return {
       id: row.getAttribute("data-body"),
       at: Math.round(row.getBoundingClientRect().top - top),
+      // AND ITS BOTTOM EDGE, which is the one that holds.
+      //
+      // The row at the top of the viewport is the OLDEST loaded, and a row's
+      // height depends on its predecessor: MessageList draws a run as one block,
+      // so a row that opens a run keeps its card edge and a row that continues
+      // one loses it. Paging back gives the boundary row a predecessor, so that
+      // row changes height - measured at 22px before and 45px after, which is
+      // the whole of the 23px this check used to see against a tolerance of 24.
+      //
+      // A row growing upward does not move what the reader is reading. The text
+      // stays and a header appears above it, and the view preserves exactly
+      // that: the distance from the viewport to the bottom of the transcript is
+      // unchanged, so the row's BOTTOM lands where it was. Asserting on the top
+      // measures run-grouping; asserting on the bottom measures scrolling.
+      bottom: Math.round(row.getBoundingClientRect().bottom - top),
     };
   });
   if (!anchor) {
@@ -266,10 +281,82 @@ try {
     process.exit(1);
   }
 
+  // WAIT FOR THE COUNT TO STOP GROWING, not for it to change once.
+  //
+  // `if (grew > rowsSettled) break` is satisfied by the FIRST page to land, and
+  // the fetch can run again straight away: the trigger is scrollTop under 240
+  // (MessageList.tsx), fired from the scroll event that the view's own
+  // correction produces, so a correction that lands near the top asks for the
+  // next page immediately. Measuring the anchor after the first growth measures
+  // it mid-cascade.
+  //
+  // So: grow at least once, then require two consecutive readings the same
+  // before believing it has settled. The trail is kept either way - a rare
+  // failure that cannot be read is a rare failure forever.
+  const trail = [];
+  const look = async (what) => {
+    const seen = await scroller.evaluate((el, id) => {
+      const row = el.querySelector(`[data-body="${id}"]`);
+      // THE HEADER ABOVE THE FIRST MESSAGE, measured because it CHANGES SIZE
+      // as pages arrive: it draws an "older messages" button while there is
+      // more and a plain "the beginning of #room" span once there is not, and
+      // a bordered button with padding is not the height of a span.
+      // scrollHeight cannot tell that apart from rows being inserted, and the
+      // view's correction is computed from scrollHeight.
+      const found = el.querySelectorAll("[data-body]");
+      const first = el.firstElementChild;
+      const header =
+        first && (found.length === 0 || !first.contains(found[0]))
+          ? Math.round(first.getBoundingClientRect().height)
+          : 0;
+      // HOW MUCH CONTENT IS BELOW THE ANCHOR. The view's correction preserves
+      // the distance from the viewport top to the BOTTOM of the transcript, so
+      // it holds the reader still only while nothing below them changes
+      // height. If this number moves, the correction was right and the reader
+      // moved anyway - which is the difference between a race and a wrong
+      // invariant.
+      // MEASURED WITH RECTS AND scrollTop, not offsetTop: offsetTop is relative
+      // to the nearest positioned ancestor, which is not this scroller, so it
+      // answered the same number either side of a prepend - a fact about a
+      // wrapper rather than about the transcript.
+      const cTop = el.getBoundingClientRect().top;
+      const rect = row ? row.getBoundingClientRect() : null;
+      const inContent = rect ? Math.round(rect.top - cTop + el.scrollTop) : null;
+      const rowTall = rect ? Math.round(rect.height) : null;
+      const below = rect ? Math.round(el.scrollHeight - inContent - rect.height) : null;
+      return {
+        rows: found.length,
+        rowTall,
+        inContent,
+        top: Math.round(el.scrollTop),
+        height: Math.round(el.scrollHeight),
+        header,
+        below,
+        anchorAt: row
+          ? Math.round(row.getBoundingClientRect().top - el.getBoundingClientRect().top)
+          : null,
+      };
+    }, anchor.id);
+    trail.push(
+      `${what}: rows ${seen.rows} scrollTop ${seen.top} scrollHeight ${seen.height} ` +
+        `header ${seen.header}px rowTall ${seen.rowTall}px at ${seen.inContent}px ` +
+        `below ${seen.below}px anchor ${seen.anchorAt}px`,
+    );
+    return seen;
+  };
+
+  await look("asked");
   let grew = 0;
+  let steady = 0;
   for (let waited = 0; waited < 10_000; waited += 200) {
-    grew = await rows();
-    if (grew > rowsSettled) break;
+    const seen = await look(`+${waited}ms`);
+    if (seen.rows > rowsSettled && seen.rows === grew) {
+      steady += 1;
+      if (steady >= 2) break;
+    } else {
+      steady = 0;
+    }
+    grew = seen.rows;
     await page.waitForTimeout(200);
   }
   if (grew <= rowsSettled) {
@@ -285,7 +372,7 @@ try {
   const moved = await scroller.evaluate((el, id) => {
     const row = el.querySelector(`[data-body="${id}"]`);
     if (!row) return null;
-    return Math.round(row.getBoundingClientRect().top - el.getBoundingClientRect().top);
+    return Math.round(row.getBoundingClientRect().bottom - el.getBoundingClientRect().top);
   }, anchor.id);
   if (moved === null) {
     console.error(
@@ -293,11 +380,19 @@ try {
     );
     process.exit(1);
   }
-  if (Math.abs(moved - anchor.at) > AT_END) {
+  if (Math.abs(moved - anchor.bottom) > AT_END) {
     console.error(
-      `paging back moved the reader: the message they were on was ${anchor.at}px into the view and is now ${moved}px.
+      `paging back moved the reader: the bottom of the message they were on was ${anchor.bottom}px
+  into the view and is now ${moved}px (its top went ${anchor.at}px -> see the trail).
   Older messages are prepended, so the view has to put the reader back on the line they were reading
-  before the browser paints - see the layout effect in MessageList.`,
+  before the browser paints - see the layout effect in MessageList.
+
+  THE TRAIL, because this fails about once in 240 gate runs and one number has
+  never been enough to say why - 01M3SVH1Y00T6AXCASXJBSEF7D. Read scrollHeight
+  against the anchor: a correction computed from a scrollHeight that then grew
+  moves the reader by the difference, and a second page landing mid-measurement
+  moves them by a page.
+${trail.map((t) => `    ${t}`).join("\n")}`,
     );
     process.exit(1);
   }
@@ -314,7 +409,7 @@ try {
   console.log(
     `ok  #${room} holds ${inTheRoom}, opened on ${rowsSettled}, stayed at the end ` +
       `(worst drift ${worst.fromEnd}px over ${WATCH_MS / 1000}s, no pill), ` +
-      `and paging back to ${grew} rows moved the reader ${Math.abs(moved - anchor.at)}px`,
+      `and paging back to ${grew} rows moved the reader ${Math.abs(moved - anchor.bottom)}px`,
   );
 } finally {
   await browser.close();
