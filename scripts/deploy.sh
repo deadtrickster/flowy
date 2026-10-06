@@ -562,12 +562,31 @@ node_sh() {
 			"$SSH_HOST" "$1"
 	fi
 }
+# WRITE BESIDE IT, THEN RENAME OVER IT, because the destination is RUNNING.
+#
+# MEASURED on the first real remote deploy, 2026-10-07: scp answered
+# `dest open "/home/dead/Projects/flowy-dogfood/flowy": Failure` and the deploy
+# refused. That is ETXTBSY - the kernel will not let a running executable be
+# opened for writing.
+#
+# The local path never had the problem and that is why it was not anticipated:
+# `cp -f` UNLINKS the destination when it cannot open it and creates a new file,
+# so the running process keeps the old inode and the new binary lands beside it.
+# scp has no such behaviour; it opens the path and takes the error.
+#
+# rename(2) is the operation that was wanted all along: it replaces the
+# directory entry, leaves the running inode alone until the process exits, and
+# is atomic - no window where the path holds half a binary. The temp file is on
+# the same filesystem for exactly that reason.
 put_binary() {
 	if [ -z "$SSH_HOST" ]; then
 		cp -f "$1" "$LIVE_BIN"
-	else
-		scp -i "$SSH_KEY" -o IdentitiesOnly=yes -o BatchMode=yes -q "$1" "$SSH_HOST:$LIVE_BIN"
+		return
 	fi
+	scp -i "$SSH_KEY" -o IdentitiesOnly=yes -o BatchMode=yes -q "$1" "$SSH_HOST:$LIVE_BIN.new" || return 1
+	# chmod before the rename: a binary that arrives without its executable bit
+	# fails at restart, which reads as a bad build rather than a bad transfer.
+	node_sh "chmod 755 '$LIVE_BIN.new' && mv -f '$LIVE_BIN.new' '$LIVE_BIN'"
 }
 
 say "==> installing and restarting${SSH_HOST:+ on $SSH_HOST}"

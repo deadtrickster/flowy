@@ -55,6 +55,34 @@
 # shellcheck disable=SC2153
 set -euo pipefail
 
+# THE DECIMAL SEPARATOR IS NOT A PROPERTY OF THIS REPO EITHER.
+#
+# Every check here is timed with ${EPOCHREALTIME/./} - bash's microsecond clock
+# with the point removed, so integer arithmetic can subtract it exactly.
+# EPOCHREALTIME is formatted according to LC_NUMERIC, and LC_NUMERIC is a
+# property of the machine.
+#
+# MEASURED 2026-10-07 on lubuntu3, running this suite there for the first time
+# while moving the gate off the laptop:
+#
+#   laptop    LC_NUMERIC=C.UTF-8      1791323535.616356   the point is stripped
+#   lubuntu3  LC_NUMERIC=de_DE.UTF-8  1791324776,073398   the comma survives
+#
+# and every single check logged "line 298: 1791323513,011538: value too great
+# for base". The checks still PASSED, which is the bad half: the suite ran with
+# every timing wrong and the hung-check ceiling doing arithmetic on a string it
+# could not parse, and called itself fine. Same shape as the shfmt and gofmt
+# pins - "it works" was a property of whose machine ran it.
+#
+# The laptop cannot reproduce it: `locale -a | grep -c de_DE` is 0 here and 1
+# there, so LC_NUMERIC=de_DE.UTF-8 silently falls back to C and the point comes
+# back. It was found by running the suite on the other machine, not by thinking
+# about it.
+#
+# Set once here rather than at the four ${EPOCHREALTIME/./} sites, because the
+# fifth one somebody adds would have the bug again.
+export LC_NUMERIC=C
+
 cd "$(dirname "$0")"
 
 ROOT="$PWD"
