@@ -13826,7 +13826,7 @@ printf 'flowy serve pid %s on 127.0.0.1:%s\n' "$SERVE_PID" "$HTTP_PORT"
 #
 # MEASURED, and the reason the name carries a pid: `ss -ltnp` on this box showed
 # TWO flowy processes on port 8787 - one on 127.0.0.1 belonging to another
-# seat's suite, one on 192.168.1.55 which is the fleet's node. Both suites named
+# seat's suite, one on lubuntu3.fritz.box which is the fleet's node. Both suites named
 # their node "gate", so a bare name check would have accepted the other seat's
 # node as its own.
 # AN EMPTY NODE IS A STATE NOTHING ELSE HERE MEASURES, and it is the state every

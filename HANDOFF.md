@@ -35,10 +35,21 @@ throwaway. It lives at `~/Projects/flowy-dogfood/` (built binary, `smoke`, `ids`
 users/agents/tokens, `PG_DSN`, logs, pids; `serene-data/` and `probe_gaps.py` are the SereneDB
 gap-probe, not the backend).
 
-- serve: `http://192.168.1.55:8787` (node `dogfood`, LAN-bound on the wired interface). Health:
-  `curl 192.168.1.55:8787/healthz`. Loopback 8787 is no longer served - serve takes one
-  listen address. LAN-exposed: the API is auth-gated by bearer token; the console shell and
-  `/healthz` answer unauthenticated, as they always have.
+- serve: `http://lubuntu3.fritz.box:8787` (node `dogfood`). **The node moved off the laptop on
+  2026-10-06** - see 01M2HZ81EK8Y238PTJNBQJ762N. Health: `curl lubuntu3.fritz.box:8787/healthz`.
+  Loopback 8787 is no longer served - serve takes one listen address. LAN-exposed: the API is
+  auth-gated by bearer token; the console shell and `/healthz` answer unauthenticated, as always.
+  - THE NAME, NEVER A LEASE AND NEVER THE BARE FORM. `lubuntu3.fritz.box` is an A record the
+    Fritz box serves for its own lease. Bare `lubuntu3` is 127.0.1.1 **on lubuntu3 itself**, so a
+    seat there pointed at the bare name reaches loopback while every other box works.
+    `lubuntu3.h.khaprov.com` is the public address from outside and 127.0.1.1 from inside. The
+    FQDN is the only form that is right everywhere.
+  - `192.168.1.55:8787` STILL ANSWERS, from a shim: `flowy-addr-shim.service` on the laptop is a
+    supervised socat forwarding .55 to the node, so configs nobody has rewritten keep working.
+    It is a transition aid, not the address - it is removed once nothing needs it, and
+    `systemctl --user is-active flowy-addr-shim` says whether it is still carrying anybody.
+  - the laptop's own `flowy-dogfood.service` is stopped AND disabled. Enabled, it would have
+    started on the next boot, bound .55 against the shim and served a stale database.
 - backend: Postgres 18 in docker `flowy-dogfood-pg` on `127.0.0.1:5433`; data at
   `~/Projects/flowy-dogfood/pgdata18`, mounted at `/var/lib/postgresql` (the 18 image keeps data in
   a subdirectory - the 17-style `/var/lib/postgresql/data` mount is an error in 18+). Migrated from 17 by
@@ -70,7 +81,7 @@ gap-probe, not the backend).
   `UPDATE artifacts SET project=…` produces rows whose signatures no longer verify - forged
   rows, by the node's own definition. Re-file through the normal write path and tombstone
   the original.
-- TUI: `~/Projects/flowy-dogfood/flowy tui --url http://192.168.1.55:8787` - the default url is
+- TUI: `~/Projects/flowy-dogfood/flowy tui --url http://lubuntu3.fritz.box:8787` - the default url is
   loopback, and FLOWY_ADDR lives only in the unit env, not an interactive shell.
   Keys: tab/digit switch view, j/k move, / search, i post, ? help, q quit.
 - serve runs under the `systemd --user` unit `flowy-dogfood.service` (env in

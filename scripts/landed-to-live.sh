@@ -27,7 +27,7 @@
 # cache re-states a fact that is still true, which is the harmless direction.
 set -uo pipefail
 
-NODE=${FLOWY_ADDR:-http://192.168.1.55:8787}
+NODE=${FLOWY_ADDR:-http://lubuntu3.fritz.box:8787}
 REPO=${FLOWY_REPO:-/home/dead/Projects/flowy}
 STATE=${FLOWY_LIVE_STATE:-$HOME/.cache/flowy-live}
 EVERY=${FLOWY_LIVE_EVERY:-120}

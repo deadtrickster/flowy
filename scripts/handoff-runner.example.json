@@ -16,7 +16,7 @@
   "build_script": "/opt/flowy/scripts/build-sut.sh",
   "build_config_dir": "/opt/flowy/scripts/build-sut.d",
 
-  "console_origins": ["http://192.168.1.55:8787"],
+  "console_origins": ["http://lubuntu3.fritz.box:8787"],
 
   "projects": {
     "serenedb": {

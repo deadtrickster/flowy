@@ -47,7 +47,32 @@ DEPLOY_REF=${FLOWY_DEPLOY_REF:-master}
 LIVE_DIR=${FLOWY_LIVE_DIR:-$HOME/Projects/flowy-dogfood}
 LIVE_BIN="$LIVE_DIR/flowy"
 UNIT=${FLOWY_UNIT:-flowy-dogfood}
-URL=${FLOWY_URL:-http://192.168.1.55:8787}
+URL=${FLOWY_URL:-http://lubuntu3.fritz.box:8787}
+# WHERE THE NODE RUNS, which stopped being "here" on 2026-10-06.
+# 01M2HZ81EK8Y238PTJNBQJ762N.
+#
+# Empty means local and everything below behaves exactly as it did. Set to an
+# ssh destination, the binary is copied there and the unit restarted there -
+# because a deploy that restarts a LOCAL unit after the node moved restarts a
+# disabled service on a decommissioned host, health-checks a URL that reaches
+# the real node, and reports success having changed nothing. LANDED would never
+# become LIVE again and the only symptom would be a version that never moves.
+#
+# THE BARE NAME HERE AND THE FQDN IN $URL, which is not an inconsistency.
+#
+# $URL is read by clients, and a client can be anywhere - including ON lubuntu3,
+# where bare `lubuntu3` is 127.0.1.1 from /etc/hosts. So the URL must be the
+# FQDN or it is wrong on exactly one host.
+#
+# This is an ssh destination, used only from the machine running the deploy, and
+# it matches the convention the other fleet scripts already use (see
+# ~/bin/fleet/ssh.sh). MEASURED: the FQDN's host key was NOT in known_hosts
+# while the bare name's was, because every existing script connects by the bare
+# name - so defaulting this to the FQDN fails with "host key verification
+# failed" on a box that has only ever ssh'd the short way. A deploy that cannot
+# reach the node is worse than one that names it less precisely.
+SSH_HOST=${FLOWY_SSH_HOST:-dead@lubuntu3}
+SSH_KEY=${FLOWY_SSH_KEY:-$HOME/bin/fleet/headless_server}
 # Which commit is currently deployed, so a schema change between then and now
 # can be noticed rather than remembered.
 STAMP="$LIVE_DIR/.deployed-commit"
@@ -526,20 +551,39 @@ fi
 
 # ------------------------------------------------------------------ deploy
 
-say "==> installing and restarting"
-if [ -f "$LIVE_BIN" ]; then
-	cp -f "$LIVE_BIN" "$LIVE_BIN.prev" || die "could not keep a rollback copy"
-fi
-cp -f "$tmp" "$LIVE_BIN" || die "could not write $LIVE_BIN"
-systemctl --user restart "$UNIT" || die "could not restart $UNIT"
+# ON THE HOST THAT RUNS THE NODE, which is this one only when SSH_HOST is empty.
+# Each of these is the local command when it is, and the same command over ssh
+# when it is not - so there is one deploy path and not two that drift.
+node_sh() {
+	if [ -z "$SSH_HOST" ]; then
+		bash -c "$1"
+	else
+		ssh -i "$SSH_KEY" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=10 \
+			"$SSH_HOST" "$1"
+	fi
+}
+put_binary() {
+	if [ -z "$SSH_HOST" ]; then
+		cp -f "$1" "$LIVE_BIN"
+	else
+		scp -i "$SSH_KEY" -o IdentitiesOnly=yes -o BatchMode=yes -q "$1" "$SSH_HOST:$LIVE_BIN"
+	fi
+}
+
+say "==> installing and restarting${SSH_HOST:+ on $SSH_HOST}"
+node_sh "test -f '$LIVE_BIN' && cp -f '$LIVE_BIN' '$LIVE_BIN.prev' || true" ||
+	die "could not keep a rollback copy"
+put_binary "$tmp" || die "could not write $LIVE_BIN"
+node_sh "systemctl --user restart '$UNIT'" || die "could not restart $UNIT"
 
 # --------------------------------------------------------------- prove it
 
 rollback() {
 	printf 'ROLLING BACK to %s.prev\n' "$LIVE_BIN" >&2
-	if [ -f "$LIVE_BIN.prev" ]; then
-		cp -f "$LIVE_BIN.prev" "$LIVE_BIN" && systemctl --user restart "$UNIT"
-	fi
+	# On the node's host. A rollback that copied the previous binary HERE would
+	# report success and leave the broken one serving.
+	node_sh "test -f '$LIVE_BIN.prev' && cp -f '$LIVE_BIN.prev' '$LIVE_BIN' && systemctl --user restart '$UNIT'" ||
+		printf 'the rollback itself failed - %s needs a hand\n' "${SSH_HOST:-this host}" >&2
 	exit 1
 }
 

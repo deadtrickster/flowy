@@ -34,7 +34,7 @@ set -euo pipefail
 # mode of a guard that is too broad.
 protected="${FLOWY_LAND_GUARD_REFS:-refs/heads/master}"
 
-node="${FLOWY_ADDR:-http://192.168.1.55:8787}"
+node="${FLOWY_ADDR:-http://lubuntu3.fritz.box:8787}"
 case "$node" in
 http://* | https://*) ;;
 *) node="http://$node" ;;

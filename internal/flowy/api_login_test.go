@@ -36,7 +36,7 @@ func TestTheLoginDoorsAreOutsideTheToken(t *testing.T) {
 // succeeds and then does nothing at all.
 func TestTheSessionCookieIsHttpOnlyLaxAndSecureOnlyOnTLS(t *testing.T) {
 	s := &server{}
-	plain := httptest.NewRequest("POST", "http://192.168.1.55:8787/api/login", nil)
+	plain := httptest.NewRequest("POST", "http://lubuntu3.fritz.box:8787/api/login", nil)
 	c := s.sessionCookieFor(plain, "abc", time.Now().Add(time.Hour))
 	if !c.HttpOnly {
 		t.Error("the session cookie is readable by page scripts")
