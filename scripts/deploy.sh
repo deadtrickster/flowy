@@ -68,10 +68,24 @@ URL=${FLOWY_URL:-http://lubuntu3.fritz.box:8787}
 # it matches the convention the other fleet scripts already use (see
 # ~/bin/fleet/ssh.sh). MEASURED: the FQDN's host key was NOT in known_hosts
 # while the bare name's was, because every existing script connects by the bare
-# name - so defaulting this to the FQDN fails with "host key verification
-# failed" on a box that has only ever ssh'd the short way. A deploy that cannot
-# reach the node is worse than one that names it less precisely.
-SSH_HOST=${FLOWY_SSH_HOST:-dead@lubuntu3}
+# name - so naming the FQDN here fails with "host key verification failed" on a
+# box that has only ever ssh'd the short way.
+#
+# EMPTY BY DEFAULT, WHICH IS THE COMMON CASE AGAIN. This defaulted to
+# dead@lubuntu3 for one day - the day the node was on lubuntu3 and the drainer
+# was still on the laptop. The drainer moved on 2026-10-07, so the machine that
+# runs deploys is now the machine the node is on, and the default has to be
+# "local" or every landing ssh's to the host it is already running on.
+#
+# MEASURED on lubuntu3 before it could bite: there is no
+# ~/bin/fleet/headless_server there, and `ssh dead@lubuntu3` from lubuntu3
+# answers "Host key verification failed". With the old default the first landing
+# would have gated for fifteen minutes and failed at the last step, after the
+# suite had passed.
+#
+# Set it when the node is somewhere else - deploying from the laptop at an
+# already-moved node is the case it exists for.
+SSH_HOST=${FLOWY_SSH_HOST:-}
 SSH_KEY=${FLOWY_SSH_KEY:-$HOME/bin/fleet/headless_server}
 # Which commit is currently deployed, so a schema change between then and now
 # can be noticed rather than remembered.
