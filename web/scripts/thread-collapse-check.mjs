@@ -329,9 +329,7 @@ extra: ${extra.join(", ") || "none"}`,
   const phoneCrashes = [];
   phone.on("pageerror", (err) => phoneCrashes.push(String(err)));
   await phone.addInitScript((t) => localStorage.setItem("flowy.token", t), token);
-  await phone
-    .goto(`${base}/chat/${encodeURIComponent(room)}`, { timeout: 30_000 })
-    .catch(() => {});
+  await phone.goto(`${base}/chat/${encodeURIComponent(room)}`, { timeout: 30_000 }).catch(() => {});
   await phone
     .locator(`[data-message="${rootA.id}"]`)
     .waitFor({ state: "visible", timeout: 20_000 })
